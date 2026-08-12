@@ -106,11 +106,21 @@
 
 use perl_lexer::{PerlLexer, StringPart, TokenType};
 use perl_parser_core::ast::{Node, NodeKind};
+use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
+use std::sync::LazyLock;
 
 /// Undelta-encoded semantic token `(line, character, length, type, modifiers)`.
 pub type RawSemanticToken = (u32, u32, u32, u32, u32);
+
+/// Maximum source bytes admitted to the opaque lexer in a bounded traversal.
+///
+/// The compatibility collector remains unlimited. A caller that supplies a
+/// cancellation callback or budget receives `SourceLimitExceeded` before
+/// lexing a larger source, so one `PerlLexer::next_token` call can never hide
+/// more than 256 KiB of source scanning from the caller's polling authority.
+pub const MAX_BOUNDED_LEXER_SOURCE_BYTES: usize = 256 * 1024;
 
 /// LSP semantic token encoding format for client transmission
 ///
@@ -374,7 +384,7 @@ fn tokenize_sql_body(
     let mut word_start = None;
     for (index, character) in body.char_indices().chain(std::iter::once((body.len(), ' '))) {
         traversal.admit_work()?;
-        if character.is_alphanumeric() || character == '_' {
+        if is_regex_word_character(character) {
             word_start.get_or_insert(index);
             continue;
         }
@@ -394,6 +404,14 @@ fn tokenize_sql_body(
         }
     }
     Ok(())
+}
+
+static WORD_CHARACTER_RE: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"(?u)^\w$").ok());
+
+fn is_regex_word_character(character: char) -> bool {
+    let mut encoded = [0u8; 4];
+    let text = character.encode_utf8(&mut encoded);
+    WORD_CHARACTER_RE.as_ref().is_some_and(|regex| regex.is_match(text))
 }
 
 fn is_sql_keyword(word: &str) -> bool {
@@ -495,7 +513,7 @@ fn tokenize_json_body(
             }
             cursor = cursor.saturating_add(current_len);
         }
-        let Some(key_end_offset) = key_end_offset else {
+        let Some(_closing_quote_end) = key_end_offset else {
             break;
         };
         while cursor < body.len() {
@@ -511,6 +529,9 @@ fn tokenize_json_body(
         if body.as_bytes().get(cursor) != Some(&b':') {
             continue;
         }
+        // Preserve the historical regex geometry: whitespace before the colon
+        // belongs to the json_heredoc_key span, while the colon does not.
+        let key_end_offset = cursor;
         let key_start = body_start + key_start_offset;
         let key_end = body_start + key_end_offset;
         let (sl, sc) = to_pos16(key_start);
@@ -623,8 +644,13 @@ fn find_bytes_at_controlled(
 /// Caller-owned limits for semantic-token traversal.
 ///
 /// Cancellation is polled before every lexer step and every AST node. A work
-/// budget counts those same units, so cancellation admits no additional work
-/// after it is observed and budget exhaustion reports an exact `work_done`.
+/// unit is also charged for every interpolation part and substring candidate,
+/// heredoc character, raw-token copy, heapsort comparison or swap, overlap
+/// candidate, and encoded token. Cancellation is checked before the budget, so
+/// simultaneous cancellation and exhaustion reports `Cancelled`. A zero budget
+/// admits no work. Once either stop is observed, no further work is performed;
+/// overshoot is zero work units. The only opaque interval is one lexer call,
+/// bounded to [`MAX_BOUNDED_LEXER_SOURCE_BYTES`] for controlled traversals.
 #[non_exhaustive]
 pub struct SemanticTokensTraversalControl<'a> {
     cancellation: Option<&'a (dyn Fn() -> bool + Send + Sync)>,
@@ -646,6 +672,10 @@ impl<'a> SemanticTokensTraversalControl<'a> {
     ) -> Self {
         Self { cancellation: Some(cancellation), work_budget }
     }
+
+    const fn is_bounded(&self) -> bool {
+        self.cancellation.is_some() || self.work_budget.is_some()
+    }
 }
 
 /// Result of a controlled semantic-token traversal.
@@ -656,20 +686,27 @@ pub enum SemanticTokensTraversalOutcome {
     Complete(Vec<EncodedToken>),
     /// The caller cancelled traversal before the next work unit was admitted.
     Cancelled {
-        /// Number of lexer steps and AST nodes visited before cancellation.
+        /// Exact number of admitted units described by the traversal control.
         work_done: usize,
     },
     /// The deterministic work budget was consumed before traversal completed.
     BudgetExhausted {
         /// Explicitly incomplete raw tokens collected before exhaustion.
         partial: PartialSemanticTokens,
-        /// Exact number of admitted lexer-step and AST-node work units.
+        /// Exact number of admitted units described by the traversal control.
         work_done: usize,
     },
     /// No AST was available at the core collection boundary.
     NoAst,
     /// Collection failed before an AST could be supplied to traversal.
     CollectionFailure(SemanticTokensCollectionError),
+    /// A bounded collector cannot safely admit an opaque lexer call for this source.
+    SourceLimitExceeded {
+        /// Source size presented by the caller.
+        source_bytes: usize,
+        /// Maximum source size supported by the bounded collector.
+        limit_bytes: usize,
+    },
 }
 
 /// Typed collection failure supplied to the core semantic-token boundary.
@@ -809,7 +846,8 @@ pub fn collect_semantic_tokens(
         SemanticTokensTraversalOutcome::Cancelled { .. }
         | SemanticTokensTraversalOutcome::BudgetExhausted { .. }
         | SemanticTokensTraversalOutcome::NoAst
-        | SemanticTokensTraversalOutcome::CollectionFailure(_) => Vec::new(),
+        | SemanticTokensTraversalOutcome::CollectionFailure(_)
+        | SemanticTokensTraversalOutcome::SourceLimitExceeded { .. } => Vec::new(),
     }
 }
 
@@ -858,6 +896,16 @@ pub fn collect_semantic_tokens_controlled(
                     );
                 }
             }
+        };
+    }
+
+    if control.is_bounded() && text.len() > MAX_BOUNDED_LEXER_SOURCE_BYTES {
+        if let Err(stop) = traversal.admit_work() {
+            return interrupted_outcome(stop, ast_tokens, lexer_tokens, traversal.work_done);
+        }
+        return SemanticTokensTraversalOutcome::SourceLimitExceeded {
+            source_bytes: text.len(),
+            limit_bytes: MAX_BOUNDED_LEXER_SOURCE_BYTES,
         };
     }
 
@@ -1843,6 +1891,82 @@ mod tests {
     }
 
     #[test]
+    fn heredoc_scanners_preserve_json_and_sql_geometry() -> Result<(), Box<dyn std::error::Error>> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut json_tokens = Vec::new();
+        tokenize_json_body(
+            r#""key"   : 1, "a\"b": 2, "not-key""#,
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut json_tokens,
+            &mut traversal,
+        )
+        .map_err(|_| "unexpected JSON traversal stop")?;
+        assert_eq!(json_tokens, vec![tok(0, 0, 8, 22, 0), tok(0, 13, 6, 22, 0)]);
+
+        let mut sql_tokens = Vec::new();
+        tokenize_sql_body(
+            "éSELECT SELECTé select notselect",
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut sql_tokens,
+            &mut traversal,
+        )
+        .map_err(|_| "unexpected SQL traversal stop")?;
+        assert_eq!(sql_tokens, vec![tok(0, 18, 6, 21, 0)]);
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_finalization_preserves_overlap_and_tie_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let ast = vec![tok(0, 0, 5, 7, 3), tok(0, 8, 2, 11, 0)];
+        let lexer = vec![tok(0, 0, 5, 13, 0), tok(0, 4, 7, 16, 0), tok(1, 2, 3, 17, 0)];
+
+        let encoded = finalize_tokens_controlled(&ast, &lexer, &mut traversal)
+            .map_err(|_| "unexpected finalization stop")?;
+
+        assert_eq!(encoded, vec![[0, 4, 7, 16, 0], [1, 2, 3, 17, 0]]);
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_single_lexer_token_stops_before_opaque_lexing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = format!("#{}", "x".repeat(MAX_BOUNDED_LEXER_SOURCE_BYTES));
+        let mut parser = Parser::new("");
+        let ast = parser.parse()?;
+        let polls = AtomicUsize::new(0);
+        let cancellation = || {
+            polls.fetch_add(1, Ordering::Relaxed);
+            false
+        };
+        let control = SemanticTokensTraversalControl::new(&cancellation, None);
+
+        let outcome = collect_semantic_tokens_controlled(
+            &ast,
+            &source,
+            &|offset| (0, offset as u32),
+            &control,
+        );
+
+        assert!(matches!(
+            outcome,
+            SemanticTokensTraversalOutcome::SourceLimitExceeded {
+                source_bytes,
+                limit_bytes: MAX_BOUNDED_LEXER_SOURCE_BYTES,
+            } if source_bytes == source.len()
+        ));
+        assert_eq!(polls.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[test]
     fn cancellation_stops_during_lexer_traversal_without_extra_work()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = "my $first = 1; my $second = 2;";
@@ -1927,7 +2051,8 @@ mod tests {
                 return Err("budget exhaustion was incorrectly reported as cancellation".into());
             }
             SemanticTokensTraversalOutcome::NoAst
-            | SemanticTokensTraversalOutcome::CollectionFailure(_) => {
+            | SemanticTokensTraversalOutcome::CollectionFailure(_)
+            | SemanticTokensTraversalOutcome::SourceLimitExceeded { .. } => {
                 return Err("budget exhaustion was incorrectly reported as input failure".into());
             }
         }
