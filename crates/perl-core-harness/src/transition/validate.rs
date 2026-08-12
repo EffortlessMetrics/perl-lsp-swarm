@@ -7,8 +7,8 @@
 
 use crate::transition::model::AcceptedBaseline;
 use perl_core_harness_types::{
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, RUN_REPORT_SCHEMA_VERSION,
-    RunFileResult, RunReport, RunnerStatus,
+    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, ObservedSemanticBoundary,
+    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunnerStatus,
 };
 use std::collections::BTreeSet;
 
@@ -54,8 +54,8 @@ impl ValidatedCompileBaselineV2 {
 /// Validate a current run report for definitive transition classification.
 ///
 /// Requires a complete successful harness execution (`harness_status == Some(0)`)
-/// plus path uniqueness, per-file assertion bounds, and summary/file-result
-/// reconciliation.
+/// plus path uniqueness, per-file assertion bounds, summary/file-result
+/// reconciliation, and failure / semantic-boundary identity cardinality.
 pub fn validate_run_report(
     report: &RunReport,
 ) -> Result<ValidatedRunReport, EvidenceValidationError> {
@@ -78,6 +78,8 @@ pub fn validate_run_report(
     }
     validate_file_result_assertions(&report.file_results, "current")?;
     validate_summary_against_file_results(report)?;
+    validate_failure_inventory(&report.failures, &report.file_results, "current")?;
+    validate_semantic_boundary_identities(&report.semantic_boundaries, "current")?;
     Ok(ValidatedRunReport { inner: report.clone() })
 }
 
@@ -119,12 +121,14 @@ pub fn validate_compile_baseline_v2(
     let files_passed =
         baseline.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
     let files_failed = files_total.saturating_sub(files_passed);
-    let tap_assertions_total = checked_assertion_sum(&baseline.file_results, "accepted", |result| {
-        result.assertions_total
-    })?;
-    let tap_assertions_passed = checked_assertion_sum(&baseline.file_results, "accepted", |result| {
-        result.assertions_passed
-    })?;
+    let tap_assertions_total =
+        checked_assertion_sum(&baseline.file_results, "accepted", |result| {
+            result.assertions_total
+        })?;
+    let tap_assertions_passed =
+        checked_assertion_sum(&baseline.file_results, "accepted", |result| {
+            result.assertions_passed
+        })?;
     if baseline.files_total != files_total
         || baseline.files_passed != files_passed
         || baseline.files_failed != files_failed
@@ -136,6 +140,8 @@ pub fn validate_compile_baseline_v2(
             "accepted V2 aggregate file/TAP totals do not reconcile with detailed file_results",
         ));
     }
+    validate_failure_inventory(&baseline.expected_failures, &baseline.file_results, "accepted")?;
+    validate_semantic_boundary_identities(&baseline.semantic_boundaries, "accepted")?;
     Ok(ValidatedCompileBaselineV2 { inner: baseline.clone() })
 }
 
@@ -159,12 +165,14 @@ pub fn validate_accepted_baseline(
                 .filter(|result| result.status == RunnerStatus::Pass)
                 .count();
             let files_failed = files_total.saturating_sub(files_passed);
-            let tap_assertions_total = checked_assertion_sum(&value.file_results, "accepted", |result| {
-                result.assertions_total
-            })?;
-            let tap_assertions_passed = checked_assertion_sum(&value.file_results, "accepted", |result| {
-                result.assertions_passed
-            })?;
+            let tap_assertions_total =
+                checked_assertion_sum(&value.file_results, "accepted", |result| {
+                    result.assertions_total
+                })?;
+            let tap_assertions_passed =
+                checked_assertion_sum(&value.file_results, "accepted", |result| {
+                    result.assertions_passed
+                })?;
             if value.files_total != files_total
                 || value.files_passed != files_passed
                 || value.files_failed != files_failed
@@ -175,6 +183,10 @@ pub fn validate_accepted_baseline(
                 return Err(EvidenceValidationError::new(
                     "accepted V1 aggregate file/TAP totals do not reconcile with detailed file_results",
                 ));
+            }
+            validate_failure_inventory(&value.expected_failures, &value.file_results, "accepted")?;
+            if let Some(boundaries) = &value.semantic_boundaries {
+                validate_semantic_boundary_identities(boundaries, "accepted")?;
             }
             Ok(())
         }
@@ -203,12 +215,10 @@ fn validate_summary_against_file_results(
     let files_passed =
         report.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
     let files_failed = files_total.saturating_sub(files_passed);
-    let tap_assertions_total = checked_assertion_sum(&report.file_results, "current", |result| {
-        result.assertions_total
-    })?;
-    let tap_assertions_passed = checked_assertion_sum(&report.file_results, "current", |result| {
-        result.assertions_passed
-    })?;
+    let tap_assertions_total =
+        checked_assertion_sum(&report.file_results, "current", |result| result.assertions_total)?;
+    let tap_assertions_passed =
+        checked_assertion_sum(&report.file_results, "current", |result| result.assertions_passed)?;
     if report.summary.files_total != files_total
         || report.summary.files_passed != files_passed
         || report.summary.files_failed != files_failed
@@ -219,6 +229,119 @@ fn validate_summary_against_file_results(
         return Err(EvidenceValidationError::new(
             "current summary file/TAP totals do not reconcile with detailed file_results",
         ));
+    }
+    Ok(())
+}
+
+fn validate_failure_inventory(
+    failures: &[RunFailure],
+    file_results: &[RunFileResult],
+    side: &str,
+) -> Result<(), EvidenceValidationError> {
+    let mut keys = BTreeSet::new();
+    let mut failure_paths = BTreeSet::new();
+    for failure in failures {
+        if failure.path.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure inventory contains an empty path"
+            )));
+        }
+        if failure.phase.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure path {} has an empty phase",
+                failure.path
+            )));
+        }
+        if failure.bucket.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure path {} has an empty bucket",
+                failure.path
+            )));
+        }
+        if failure.workstream.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure path {} has an empty workstream",
+                failure.path
+            )));
+        }
+        let key = (failure.path.as_str(), failure.phase.as_str(), failure.bucket.as_str());
+        if !keys.insert(key) {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failure inventory repeats identity {}/{}/{}",
+                failure.path, failure.phase, failure.bucket
+            )));
+        }
+        failure_paths.insert(failure.path.as_str());
+    }
+    for result in file_results {
+        if result.status == RunnerStatus::Fail && !failure_paths.contains(result.path.as_str()) {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} failing file {} has no failure record",
+                result.path
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_semantic_boundary_identities(
+    boundaries: &[ObservedSemanticBoundary],
+    side: &str,
+) -> Result<(), EvidenceValidationError> {
+    let mut keys = BTreeSet::new();
+    for boundary in boundaries {
+        if boundary.path.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary has an empty path"
+            )));
+        }
+        if boundary.id.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary path {} has an empty stable id",
+                boundary.path
+            )));
+        }
+        if boundary.reason.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary {} has an empty reason",
+                boundary.id
+            )));
+        }
+        if boundary.source_kind.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary {} has an empty source kind",
+                boundary.id
+            )));
+        }
+        if boundary.owner_workstream.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary {} has no owning workstream",
+                boundary.id
+            )));
+        }
+        if boundary.supporting_test.trim().is_empty() {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary {} has no supporting test",
+                boundary.id
+            )));
+        }
+        if boundary.source_span.start > boundary.source_span.end {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary {} has a reversed source span",
+                boundary.id
+            )));
+        }
+        let key = (
+            boundary.path.as_str(),
+            boundary.id.as_str(),
+            boundary.source_span.start,
+            boundary.source_span.end,
+        );
+        if !keys.insert(key) {
+            return Err(EvidenceValidationError::new(format!(
+                "{side} semantic boundary inventory contains a duplicate key"
+            )));
+        }
     }
     Ok(())
 }
