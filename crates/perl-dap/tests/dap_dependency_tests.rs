@@ -1,14 +1,15 @@
-//! DAP Dependency Management Tests (AC18)
+//! DAP dependency and package-surface tests (AC18).
 //!
-//! Repository-backed checks for dependency expectations and fallback assets.
+//! These checks enforce the product boundary: `perl-dap` ships the native
+//! adapter, while `Perl::LanguageServer` may appear only in repository-only
+//! conformance or historical material.
 //!
-//! Run with: `cargo test -p perl-dap --features dap-phase3`
+//! Run with: `cargo test -p perl-dap --features dap-phase3 --test dap_dependency_tests`
 
 #[cfg(feature = "dap-phase3")]
 mod dap_dependencies {
     use anyhow::Result;
     use perl_lsp_rs_core::config::PerlOracleEnv;
-    use serde_json::Value;
     use std::path::PathBuf;
 
     fn repo_root() -> PathBuf {
@@ -19,36 +20,45 @@ mod dap_dependencies {
         Ok(std::fs::read_to_string(path)?)
     }
 
-    /// Public crate docs must describe the native runtime rather than the legacy bridge.
     #[test]
     // AC:18
-    fn test_published_crate_rustdoc_is_native_first() -> Result<()> {
+    fn published_crate_rustdoc_is_native_only() -> Result<()> {
         let crate_root = read(repo_root().join("crates/perl-dap/src/lib.rs"))?;
         assert!(crate_root.contains("Native Debug Adapter Protocol implementation for Perl"));
         assert!(crate_root.contains("The supported first-mile runtime is the native"));
-        assert!(crate_root.contains("default-off library compatibility"));
-        assert!(!crate_root.contains("**Legacy Bridge Mode**"));
-        assert!(!crate_root.contains("## Native and Bridge Modes"));
-        assert!(!crate_root.contains("Users can start with bridge mode today"));
-        assert!(!crate_root.contains("adapter.spawn_pls_dap"));
+        assert!(crate_root.contains("not a runtime backend or published compatibility feature"));
+
+        for forbidden in [
+            "pub mod bridge_adapter",
+            "pub use bridge_adapter",
+            "BridgeAdapter",
+            "DapBridgeEnvConfig",
+            "spawn_pls_dap",
+            "legacy-pls-bridge",
+            "Native and Bridge Modes",
+        ] {
+            assert!(
+                !crate_root.contains(forbidden),
+                "published crate root contains removed PLS surface {forbidden:?}"
+            );
+        }
         Ok(())
     }
 
-    /// The default library and release build must not activate the PLS bridge.
     #[test]
     // AC:18
-    fn test_legacy_pls_bridge_is_explicit_and_default_off() -> Result<()> {
+    fn cargo_feature_graph_contains_no_pls_runtime_feature() -> Result<()> {
         let dap_manifest = read(repo_root().join("crates/perl-dap/Cargo.toml"))?;
         assert!(dap_manifest.contains("default = [\"dap-phase2\", \"dap-phase3\"]"));
-        assert!(dap_manifest.contains("legacy-pls-bridge = []"));
-        assert!(dap_manifest.contains("dap-phase1 = [\"legacy-pls-bridge\"]"));
-        assert!(dap_manifest.contains("required-features = [\"legacy-pls-bridge\"]"));
-        assert!(dap_manifest.contains("no-default-features = true"));
         assert!(dap_manifest.contains("features = [\"dap-phase2\", \"dap-phase3\"]"));
-        assert!(!dap_manifest.contains("all-features = true"));
+        assert!(!dap_manifest.contains("legacy-pls-bridge"));
+        assert!(!dap_manifest.contains("dap-phase1"));
+        assert!(!dap_manifest.contains("bridge_adapter_unit_tests"));
+        assert!(!dap_manifest.contains("bridge_integration_tests"));
 
         let lsp_manifest = read(repo_root().join("crates/perl-lsp-rs/Cargo.toml"))?;
-        assert!(lsp_manifest.contains("dap-phase1 = [\"perl-dap/legacy-pls-bridge\"]"));
+        assert!(!lsp_manifest.contains("legacy-pls-bridge"));
+        assert!(!lsp_manifest.contains("dap-phase1"));
         assert!(lsp_manifest.contains("dap-phase3 = []"));
 
         let release_workflow = read(repo_root().join(".github/workflows/release.yml"))?;
@@ -57,83 +67,85 @@ mod dap_dependencies {
         Ok(())
     }
 
-    /// Public crate landing-page docs must not require legacy bridge dependencies.
     #[test]
     // AC:18
-    fn test_crate_readme_is_native_first() -> Result<()> {
+    fn production_source_contains_no_pls_proxy_or_mode() -> Result<()> {
+        let dap_src = repo_root().join("crates/perl-dap/src");
+        assert!(!dap_src.join("bridge_adapter.rs").exists());
+
+        for path in [
+            "crates/perl-dap/src/lib.rs",
+            "crates/perl-dap/src/server/mode.rs",
+            "crates/perl-dap/src/server/lifecycle.rs",
+            "crates/perl-lsp-rs/src/lib.rs",
+        ] {
+            let content = read(repo_root().join(path))?;
+            for forbidden in [
+                "BridgeAdapter",
+                "DapBridgeEnvConfig",
+                "DapMode::Bridge",
+                "spawn_pls_dap",
+                "legacy-pls-bridge",
+                "dap-phase1",
+            ] {
+                assert!(
+                    !content.contains(forbidden),
+                    "production source {path} contains removed PLS surface {forbidden:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    // AC:18
+    fn product_shaped_pls_bridge_tests_are_removed() {
+        let root = repo_root();
+        for path in [
+            "crates/perl-dap/tests/bridge_adapter_unit_tests.rs",
+            "crates/perl-dap/tests/bridge_integration_tests.rs",
+            "crates/perl-lsp-rs/tests/dap_bridge_tests.rs",
+        ] {
+            assert!(!root.join(path).exists(), "removed PLS runtime test still exists: {path}");
+        }
+    }
+
+    #[test]
+    // AC:18
+    fn crate_readme_describes_native_runtime_and_repo_only_conformance() -> Result<()> {
         let readme = read(repo_root().join("crates/perl-dap/README.md"))?;
-        assert!(!readme.contains("Perl::LanguageServer"));
-        assert!(!readme.contains("BridgeAdapter"));
-        assert!(!readme.contains("cpanm Perl::LanguageServer"));
         assert!(readme.contains("Native launch"));
-        assert!(readme.contains("Legacy compatibility"));
+        assert!(readme.contains("not a runtime backend, package feature, or user prerequisite"));
+        assert!(readme.contains("repository-only conformance lanes"));
+        assert!(!readme.contains("cpanm Perl::LanguageServer"));
+        assert!(!readme.contains("--bridge"));
         Ok(())
     }
 
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac18-version-detection
     #[test]
     // AC:18
-    fn test_devel_tsperldap_version_detection() -> Result<()> {
-        let fixture =
-            repo_root().join("crates/perl-dap/tests/fixtures/mocks/perl_shim_responses.json");
-        let json: Value = serde_json::from_str(&read(fixture)?)?;
-        let description = json
-            .get("description")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("missing fixture description"))?;
-        assert!(description.contains("Devel::TSPerlDAP"));
-        assert!(json.get("set_breakpoints").is_some());
-        assert!(json.get("stack_trace").is_some());
-        assert!(json.get("scopes").is_some());
-        Ok(())
-    }
+    fn first_mile_dap_docs_do_not_require_pls() -> Result<()> {
+        for path in [
+            "docs/tutorials/DAP_USER_GUIDE.md",
+            "docs/tutorials/DAP_BRIDGE_SETUP_GUIDE.md",
+            "book/src/dap/user-guide.md",
+            "book/src/dap/bridge-setup.md",
+        ] {
+            let content = read(repo_root().join(path))?;
+            assert!(!content.contains("cpanm Perl::LanguageServer"), "PLS install in {path}");
+            assert!(!content.contains("cpan Perl::LanguageServer"), "PLS install in {path}");
+            assert!(!content.contains("--bridge"), "removed bridge CLI in {path}");
+        }
 
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac18-bundled-shim
-    #[test]
-    // AC:18
-    fn test_bundled_shim_fallback() -> Result<()> {
-        let architecture_doc = read(repo_root().join("docs/reference/CRATE_ARCHITECTURE_DAP.md"))?;
-        assert!(architecture_doc.contains("perl-shim"));
-        assert!(architecture_doc.contains("TSPerlDAP.pm"));
-
-        let fixture_index =
-            read(repo_root().join("crates/perl-dap/tests/fixtures/FIXTURE_INDEX.md"))?;
-        assert!(fixture_index.contains("perl_shim_responses.json"));
-        Ok(())
-    }
-
-    /// First-mile DAP docs must describe the native `perl-dap` path only.
-    #[test]
-    // AC:18
-    fn test_native_dap_user_docs_do_not_require_bridge_or_pls() -> Result<()> {
         let user_guide = read(repo_root().join("docs/tutorials/DAP_USER_GUIDE.md"))?;
-        assert!(!user_guide.contains("Perl::LanguageServer"));
-        assert!(!user_guide.contains("BridgeAdapter"));
-        assert!(!user_guide.contains("cpanm Perl::LanguageServer"));
         assert!(user_guide.contains("Native `perl-dap`"));
         assert!(user_guide.contains("local Perl interpreter"));
-
-        let bridge_pointer = read(repo_root().join("docs/tutorials/DAP_BRIDGE_SETUP_GUIDE.md"))?;
-        assert!(!bridge_pointer.contains("Perl::LanguageServer"));
-        assert!(!bridge_pointer.contains("BridgeAdapter"));
-        assert!(!bridge_pointer.contains("cpanm Perl::LanguageServer"));
-
-        let book_page = read(repo_root().join("book/src/dap/user-guide.md"))?;
-        assert!(!book_page.contains("Perl::LanguageServer"));
-        assert!(!book_page.contains("BridgeAdapter"));
-        assert!(!book_page.contains("0.9.x"));
-
-        let book_bridge_page = read(repo_root().join("book/src/dap/bridge-setup.md"))?;
-        assert!(!book_bridge_page.contains("Perl::LanguageServer"));
-        assert!(!book_bridge_page.contains("BridgeAdapter"));
-        assert!(!book_bridge_page.contains("cpanm Perl::LanguageServer"));
         Ok(())
     }
 
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac18-perl-version
     #[test]
     // AC:18
-    fn test_perl_version_compatibility() -> Result<()> {
+    fn perl_version_compatibility() -> Result<()> {
         let perl_version = PerlOracleEnv::for_dap_test_fixture().and_then(|oracle| {
             let mut cmd = oracle.into_command();
             cmd.arg("-e").arg("print $];");
@@ -154,45 +166,6 @@ mod dap_dependencies {
             }
         }
 
-        Ok(())
-    }
-
-    /// Legacy bridge dependency details belong in reference documentation only.
-    #[test]
-    // AC:18
-    fn test_legacy_bridge_reference_documents_pls_dependency() -> Result<()> {
-        let guide = read(repo_root().join("docs/reference/DAP_LEGACY_BRIDGE_COMPAT.md"))?;
-        assert!(guide.contains("cpan Perl::LanguageServer"));
-        assert!(guide.contains("cpanm Perl::LanguageServer"));
-        assert!(guide.contains("Perl::LanguageServer not found"));
-        assert!(guide.contains("--bridge"));
-        assert!(guide.contains("BridgeAdapter"));
-        assert!(guide.contains("launch.json"));
-        Ok(())
-    }
-
-    /// Legacy bridge library symbols must advertise their transition status.
-    #[test]
-    // AC:18
-    fn test_legacy_bridge_api_is_explicitly_deprecated() -> Result<()> {
-        let crate_root = read(repo_root().join("crates/perl-dap/src/lib.rs"))?;
-        assert!(crate_root.contains("#[cfg(feature = \"legacy-pls-bridge\")]"));
-        assert!(crate_root.contains(
-            "legacy Perl::LanguageServer compatibility; use the native DapServer/DebugAdapter path"
-        ));
-        assert!(crate_root.contains("pub mod bridge_adapter;"));
-        assert!(crate_root.contains("pub use bridge_adapter::{BridgeAdapter, DapBridgeEnvConfig};"));
-        assert!(crate_root.contains("#[doc(hidden)]"));
-
-        let mode_module = read(repo_root().join("crates/perl-dap/src/server/mode.rs"))?;
-        assert!(mode_module.contains(
-            "legacy Perl::LanguageServer compatibility; use DapMode::Native instead"
-        ));
-        assert!(mode_module.contains("#[doc(hidden)]"));
-
-        let lifecycle = read(repo_root().join("crates/perl-dap/src/server/lifecycle.rs"))?;
-        assert!(lifecycle.contains("#![allow(deprecated)]"));
-        assert!(lifecycle.contains("legacy Perl::LanguageServer bridge support is not enabled"));
         Ok(())
     }
 }
