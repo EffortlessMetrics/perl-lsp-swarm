@@ -1,0 +1,80 @@
+name: Diagnose content-bound sidecar authority
+
+on:
+  push:
+    branches:
+      - agent/corpus-sidecar-path-authority-6885
+    paths:
+      - .github/workflows/diagnose-sidecar-authority-6938.yml
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v5
+        with:
+          ref: agent/corpus-sidecar-path-authority-6885
+          fetch-depth: 0
+
+      - name: Verify bounded base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 8a50e945ced6c4d2a046527014365e9b14bdecbf HEAD
+          test "$(git diff --name-only 8a50e945ced6c4d2a046527014365e9b14bdecbf HEAD | sort)" = $'.github/workflows/diagnose-sidecar-authority-6938.yml\n.github/workflows/verify-sidecar-authority-6938.yml'
+
+      - name: Verify with diagnostic annotations
+        shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          set -euo pipefail
+
+          run_checked() {
+            local label="$1"
+            shift
+            local log="/tmp/${label//[^a-zA-Z0-9]/_}.log"
+            if "$@" >"$log" 2>&1; then
+              cat "$log"
+              return 0
+            fi
+            cat "$log"
+            python3 - "$label" "$log" <<'PY'
+          import sys
+          from pathlib import Path
+
+          title = sys.argv[1]
+          lines = Path(sys.argv[2]).read_text(errors='replace').splitlines()
+          message = '\n'.join(lines[-80:]) or 'command failed without output'
+          message = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          title = title.replace('%', '%25').replace('\r', ' ').replace('\n', ' ')
+          print(f'::error title={title}::{message}')
+          PY
+            return 1
+          }
+
+          rustup show
+          run_checked "cargo fmt check" cargo fmt --all -- --check
+          run_checked "corpus all-target check" cargo check -p perl-corpus --all-targets --locked
+          run_checked "corpus all-target tests" cargo test -p perl-corpus --all-targets --locked
+          run_checked "corpus all-target clippy" cargo clippy -p perl-corpus --all-targets --locked -- -D warnings
+          run_checked "diff check" git diff --check
+
+      - name: Remove temporary verification surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/verify-sidecar-authority-6938.yml
+          rm .github/workflows/diagnose-sidecar-authority-6938.yml
+          git add .github/workflows/verify-sidecar-authority-6938.yml \
+            .github/workflows/diagnose-sidecar-authority-6938.yml
+          test "$(git diff --cached --name-only | sort)" = $'.github/workflows/diagnose-sidecar-authority-6938.yml\n.github/workflows/verify-sidecar-authority-6938.yml'
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "ci: record hosted sidecar authority verification"
+          git push origin HEAD:agent/corpus-sidecar-path-authority-6885
