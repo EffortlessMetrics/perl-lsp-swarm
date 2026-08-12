@@ -115,19 +115,20 @@ class DapScorecardPacketTests(unittest.TestCase):
     def _write_scorecard(self, value: dict | None = None) -> None:
         self.raw.write_text(json.dumps(value or self._scorecard()), encoding="utf-8")
 
-    def _write_status(self, verdict: str = "PASS") -> None:
+    def _write_status(self, scorecard: dict | None = None) -> None:
+        blocks = MODULE.expected_generated_status_blocks(scorecard or self._scorecard())
+        launch_begin = MODULE.STATUS_MARKERS[0][0]
+        launch_end = MODULE.STATUS_MARKERS[0][1]
+        session_begin = MODULE.STATUS_MARKERS[1][0]
+        session_end = MODULE.STATUS_MARKERS[1][1]
         self.status.write_text(
             "# DAP\n"
-            "<!-- BEGIN: DAP_LAUNCH_SCORECARD -->\n"
-            f"| Metric | Value | Target | Status |\n"
-            f"|---|---|---|---|\n"
-            f"| Launch | 5/5 | 80% | {verdict} |\n"
-            "<!-- END: DAP_LAUNCH_SCORECARD -->\n"
-            "<!-- BEGIN: DAP_SESSION_SCORECARD -->\n"
-            f"| Metric | Value | Target | Status |\n"
-            f"|---|---|---|---|\n"
-            f"| Session | proven | proven | {verdict} |\n"
-            "<!-- END: DAP_SESSION_SCORECARD -->\n",
+            f"{launch_begin}\n"
+            f"{blocks[launch_begin]}\n"
+            f"{launch_end}\n"
+            f"{session_begin}\n"
+            f"{blocks[session_begin]}\n"
+            f"{session_end}\n",
             encoding="utf-8",
         )
 
@@ -278,8 +279,39 @@ class DapScorecardPacketTests(unittest.TestCase):
         self._write_scorecard(scorecard)
         self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
         self._write_scorecard()
-        self._write_status("SKIP")
+        self._write_status()
+        self.status.write_text(
+            self.status.read_text(encoding="utf-8").replace("| PASS |", "| SKIP |", 1),
+            encoding="utf-8",
+        )
         self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
+
+    def test_generated_status_must_reconcile_with_receipt(self) -> None:
+        mutations = (
+            ("5/5 (100 %)", "4/5 (80 %)"),
+            ("| cold_launch_p95 | 5 ms |", "| cold_launch_p95 | 0 ms |"),
+            ("variables proven", "forged green detail"),
+        )
+        for old, new in mutations:
+            with self.subTest(old=old, new=new):
+                self._write_status()
+                text = self.status.read_text(encoding="utf-8")
+                self.assertIn(old, text)
+                self.status.write_text(text.replace(old, new, 1), encoding="utf-8")
+                self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
+
+    def test_generated_status_rejects_duplicate_markers(self) -> None:
+        text = self.status.read_text(encoding="utf-8")
+        self.status.write_text(text + "\n" + MODULE.STATUS_MARKERS[0][0] + "\n", encoding="utf-8")
+        self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
+
+    def test_metric_detail_must_be_a_safe_markdown_cell(self) -> None:
+        for detail in ("forged | PASS", "forged\nPASS"):
+            with self.subTest(detail=detail):
+                scorecard = self._scorecard()
+                scorecard["variables"]["detail"] = detail
+                self._write_scorecard(scorecard)
+                self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
 
     def test_post_packet_status_mutation_and_dirty_flag_fail(self) -> None:
         self._build()

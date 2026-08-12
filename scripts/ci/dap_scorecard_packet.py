@@ -24,10 +24,12 @@ from dap_scorecard_packet_common import (  # noqa: E402
     REQUIRED_THRESHOLD_PCT,
     RUNTIME_SCHEMA_VERSION,
     SCHEMA_VERSION,
+    STATUS_MARKERS,
     PacketError,
     as_int,
     as_object,
     expect_equal,
+    expected_generated_status_blocks,
     read_json,
     relative_path,
     run_text,
@@ -70,7 +72,7 @@ def build_packet(args: argparse.Namespace) -> dict[str, Any]:
     verify_head(root, args.repository_sha)
     status_lines = assert_repository_state(root)
     scorecard = validate_scorecard(read_json(raw_path))
-    validate_generated_status(status_path)
+    validate_generated_status(status_path, scorecard)
     binary_sha256 = sha256(binary_path)
     validate_exact_binary_subject(scorecard, binary_path, binary_sha256)
     binary_version = run_text([str(binary_path), "--version"])
@@ -187,7 +189,7 @@ def validate_packet(args: argparse.Namespace) -> Mapping[str, Any]:
 
     generated_status = as_object(packet.get("generated_status"), "packet.generated_status")
     validate_subject_hash(root, generated_status, "generated DAP status")
-    validate_generated_status(root / str(generated_status.get("path")))
+    validate_generated_status(root / str(generated_status.get("path")), raw_scorecard)
     validate_tracked_packet_records(
         root,
         packet.get("fixtures"),

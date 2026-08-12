@@ -154,7 +154,12 @@ def validate_scorecard(raw: Any) -> Mapping[str, Any]:
     if scorecard.get("perl_available") is not True:
         raise PacketError("scorecard receipt does not prove a usable Perl runtime")
     perl = as_object(scorecard.get("perl"), "scorecard.perl")
-    if not isinstance(perl.get("path"), str) or not isinstance(perl.get("version"), str):
+    if (
+        not isinstance(perl.get("path"), str)
+        or not perl.get("path")
+        or not isinstance(perl.get("version"), str)
+        or not perl.get("version")
+    ):
         raise PacketError("scorecard.perl path/version are missing")
 
     _validate_rate(scorecard, "launch", expected_names=REQUIRED_LAUNCH_FIXTURE_NAMES)
@@ -165,6 +170,13 @@ def validate_scorecard(raw: Any) -> Mapping[str, Any]:
             raise PacketError(
                 f"scorecard.{name} must be {expected}, got {metric.get('status')!r}: "
                 f"{metric.get('detail', '<no detail>')}"
+            )
+        detail = metric.get("detail")
+        if not isinstance(detail, str) or not detail:
+            raise PacketError(f"scorecard.{name}.detail is missing")
+        if "|" in detail or "\r" in detail or "\n" in detail:
+            raise PacketError(
+                f"scorecard.{name}.detail must be a safe single-line Markdown table cell"
             )
     return scorecard
 

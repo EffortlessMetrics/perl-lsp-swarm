@@ -8,9 +8,11 @@ import io
 import stat
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 SCRIPT = Path(__file__).resolve().parents[1] / "ci" / "dap_scorecard_runtime.py"
 SPEC = importlib.util.spec_from_file_location("dap_scorecard_runtime", SCRIPT)
@@ -18,8 +20,8 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
-import dap_scorecard_transport as TRANSPORT  # noqa: E402
 import dap_scorecard_probes as PROBES  # noqa: E402
+import dap_scorecard_transport as TRANSPORT  # noqa: E402
 
 
 class _FakeProcess:
@@ -141,6 +143,23 @@ class DapScorecardRuntimeTests(unittest.TestCase):
                 str(raised.exception),
             )
 
+    def test_stderr_tail_is_hard_byte_bounded(self) -> None:
+        suffix = b"TAIL"
+        dap = object.__new__(TRANSPORT.DapProcess)
+        dap.process = SimpleNamespace(
+            stderr=io.BytesIO(
+                b"x" * (TRANSPORT.MAX_STDERR_TAIL_BYTES + TRANSPORT.STDERR_READ_CHUNK_BYTES)
+                + suffix
+            )
+        )
+        dap._stderr = bytearray()
+        dap._stderr_lock = threading.Lock()
+
+        dap._stderr_loop()
+
+        self.assertLessEqual(len(dap._stderr), TRANSPORT.MAX_STDERR_TAIL_BYTES)
+        self.assertTrue(dap.stderr_tail().endswith(suffix.decode("ascii")))
+
     def test_invocation_counter_records_real_process_spawn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             binary = self._executable(
@@ -204,7 +223,6 @@ class DapScorecardRuntimeTests(unittest.TestCase):
 
     def test_valid_timing_and_invocation_receipt_has_no_policy_failures(self) -> None:
         self.assertEqual(MODULE.scorecard_failures(self._valid_scorecard()), [])
-
 
     def test_deep_pagination_selects_unique_locals_big(self) -> None:
         expected = {

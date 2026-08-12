@@ -18,6 +18,8 @@ MAX_FRAME_BODY_BYTES = 1024 * 1024
 MESSAGE_QUEUE_CAPACITY = 64
 MAX_RETAINED_MESSAGES = 256
 MAX_RETAINED_MESSAGE_BYTES = 4 * 1024 * 1024
+MAX_STDERR_TAIL_BYTES = 64 * 1024
+STDERR_READ_CHUNK_BYTES = 4 * 1024
 OBSERVED_LABEL_TAIL = 32
 READER_POLL_SECONDS = 0.05
 
@@ -136,7 +138,8 @@ class DapProcess:
 
         self._messages: queue.Queue[QueueItem] = queue.Queue(maxsize=MESSAGE_QUEUE_CAPACITY)
         self._pending: deque[BufferedMessage] = deque()
-        self._stderr: deque[str] = deque(maxlen=80)
+        self._stderr = bytearray()
+        self._stderr_lock = threading.Lock()
         self._next_seq = 1
         self._retained_lock = threading.Lock()
         self._retained_messages = 0
@@ -212,11 +215,18 @@ class DapProcess:
 
     def _stderr_loop(self) -> None:
         assert self.process.stderr is not None
-        for raw in iter(self.process.stderr.readline, b""):
-            self._stderr.append(raw.decode("utf-8", errors="replace").rstrip())
+        read_chunk = getattr(self.process.stderr, "read1", self.process.stderr.read)
+        while raw := read_chunk(STDERR_READ_CHUNK_BYTES):
+            with self._stderr_lock:
+                self._stderr.extend(raw)
+                overflow = len(self._stderr) - MAX_STDERR_TAIL_BYTES
+                if overflow > 0:
+                    del self._stderr[:overflow]
 
     def stderr_tail(self) -> str:
-        return "\n".join(self._stderr)
+        with self._stderr_lock:
+            raw = bytes(self._stderr)
+        return raw.decode("utf-8", errors="replace").rstrip()
 
     @staticmethod
     def _discard_if_unmatched(message: Mapping[str, Any]) -> bool:

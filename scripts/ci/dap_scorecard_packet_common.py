@@ -178,22 +178,144 @@ def validate_subject_hash(root: Path, subject: Mapping[str, Any], context: str) 
     expect_equal(sha256(root / path_value), digest_value, f"{context} SHA-256")
 
 
-def validate_generated_status(status_path: Path) -> None:
+def _format_rate(metric: Mapping[str, Any], context: str) -> str:
+    passed = as_nonnegative_int(metric.get("passed"), f"{context}.passed")
+    total = as_nonnegative_int(metric.get("total"), f"{context}.total")
+    if total == 0:
+        return "SKIP"
+    pct = (passed * 100) // total
+    return f"{passed}/{total} ({pct} %)"
+
+
+def _status_for_rate(metric: Mapping[str, Any], context: str) -> str:
+    passed = as_nonnegative_int(metric.get("passed"), f"{context}.passed")
+    total = as_nonnegative_int(metric.get("total"), f"{context}.total")
+    threshold = as_nonnegative_int(metric.get("threshold_pct"), f"{context}.threshold_pct")
+    if total == 0:
+        return "SKIP"
+    return "PASS" if (passed * 100) // total >= threshold else "FAIL"
+
+
+def _format_latency(value: Any, context: str, limit_ms: int) -> tuple[str, str]:
+    if value is None:
+        return "—", "SKIP"
+    latency = as_nonnegative_int(value, context)
+    return f"{latency} ms", "PASS" if latency <= limit_ms else "FAIL"
+
+
+def _metric_detail(scorecard: Mapping[str, Any], name: str) -> tuple[Mapping[str, Any], str]:
+    metric = as_object(scorecard.get(name), f"scorecard.{name}")
+    detail = metric.get("detail")
+    if not isinstance(detail, str) or not detail:
+        raise PacketError(f"scorecard.{name}.detail is missing")
+    if "|" in detail or "\r" in detail or "\n" in detail:
+        raise PacketError(f"scorecard.{name}.detail is not a safe single-line Markdown cell")
+    return metric, detail
+
+
+def expected_generated_status_blocks(scorecard: Mapping[str, Any]) -> Mapping[str, str]:
+    """Render the two generated scorecard blocks exactly as xtask does."""
+
+    launch = as_object(scorecard.get("launch"), "scorecard.launch")
+    attach = as_object(scorecard.get("attach"), "scorecard.attach")
+    variables, variables_detail = _metric_detail(scorecard, "variables")
+    evaluate, evaluate_detail = _metric_detail(scorecard, "evaluate")
+    deep_pagination, deep_detail = _metric_detail(scorecard, "deep_pagination")
+    memory, memory_detail = _metric_detail(scorecard, "memory")
+
+    launch_threshold = as_nonnegative_int(
+        launch.get("threshold_pct"), "scorecard.launch.threshold_pct"
+    )
+    attach_threshold = as_nonnegative_int(
+        attach.get("threshold_pct"), "scorecard.attach.threshold_pct"
+    )
+    p50, p50_status = _format_latency(
+        launch.get("p50_ms"), "scorecard.launch.p50_ms", 2_000
+    )
+    p95, p95_status = _format_latency(
+        launch.get("p95_ms"), "scorecard.launch.p95_ms", 5_000
+    )
+    availability_note = "" if scorecard.get("perl_available") is True else " (perl unavailable)"
+
+    launch_block = "\n".join(
+        (
+            "| Metric | Value | Target | Status |",
+            "|---|---|---|---|",
+            (
+                f"| Launch success rate | {_format_rate(launch, 'scorecard.launch')} "
+                f"| ≥ {launch_threshold} % | {_status_for_rate(launch, 'scorecard.launch')} |"
+            ),
+            "| Fixtures tested | hello, loops, eval, args, begin_end | 5 | — |",
+            f"| cold_launch_p50 | {p50} | ≤ 2 000 ms | {p50_status} |",
+            f"| cold_launch_p95 | {p95} | ≤ 5 000 ms | {p95_status} |",
+        )
+    )
+    session_block = "\n".join(
+        (
+            "| Metric | Value | Target | Status |",
+            "|---|---|---|---|",
+            (
+                "| Attach success rate (TCP loopback) | "
+                f"{_format_rate(attach, 'scorecard.attach')}{availability_note} "
+                f"| ≥ {attach_threshold} % | {_status_for_rate(attach, 'scorecard.attach')} |"
+            ),
+            (
+                "| Variables pane correctness (real session) | "
+                f"{variables_detail} | expected named variables in scope "
+                f"| {variables.get('status')} |"
+            ),
+            (
+                "| Evaluate correctness (real session) | "
+                f"{evaluate_detail} | evaluate($x + 1) => 42 "
+                f"| {evaluate.get('status')} |"
+            ),
+            (
+                "| Deep truncation/pagination correctness | "
+                f"{deep_detail} | page [250..274] over @big "
+                f"| {deep_pagination.get('status')} |"
+            ),
+            (
+                "| Memory footprint baseline (portable proxy) | "
+                f"{memory_detail} | best-effort baseline | {memory.get('status')} |"
+            ),
+        )
+    )
+    return {
+        STATUS_MARKERS[0][0]: launch_block,
+        STATUS_MARKERS[1][0]: session_block,
+    }
+
+
+def validate_generated_status(
+    status_path: Path, scorecard: Mapping[str, Any] | None = None
+) -> None:
     try:
         text = status_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise PacketError(f"missing generated DAP status: {status_path}") from exc
     except OSError as exc:
         raise PacketError(f"cannot read generated DAP status {status_path}: {exc}") from exc
+
+    expected_blocks = expected_generated_status_blocks(scorecard) if scorecard is not None else {}
     for begin, end in STATUS_MARKERS:
+        if text.count(begin) != 1 or text.count(end) != 1:
+            raise PacketError(
+                f"generated status must contain exactly one marker pair {begin!r} / {end!r}"
+            )
         start = text.find(begin)
-        stop = text.find(end)
-        if start < 0 or stop < 0 or stop <= start:
+        stop = text.find(end, start + len(begin))
+        if stop <= start:
             raise PacketError(f"generated status is missing marker pair {begin!r} / {end!r}")
-        block = text[start : stop + len(end)]
+        raw_body = text[start + len(begin) : stop]
+        if not raw_body.startswith("\n") or not raw_body.endswith("\n"):
+            raise PacketError(f"generated status block {begin!r} has noncanonical boundaries")
+        block = raw_body[1:-1]
         if "receipt missing" in block:
             raise PacketError("generated DAP status still reports a missing receipt")
         if "| SKIP |" in block:
             raise PacketError("generated DAP status contains SKIP in a required scorecard block")
         if "| FAIL |" in block:
             raise PacketError("generated DAP status contains FAIL in a required scorecard block")
+        expected = expected_blocks.get(begin)
+        if expected is not None:
+            expect_equal(block, expected, f"generated status block {begin}")
