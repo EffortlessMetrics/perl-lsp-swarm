@@ -7,6 +7,9 @@ mod complexity;
 mod config;
 mod nested_quantifier;
 
+#[cfg(test)]
+mod analysis_contract_tests;
+
 pub use analysis::{
     EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisCompleteness, RegexDiagnostic,
     RegexDiagnosticClass, RegexDiagnosticCode, RegexFacts, RegexRange,

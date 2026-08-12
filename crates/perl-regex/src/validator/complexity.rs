@@ -44,7 +44,7 @@ pub(crate) fn find_complexity_diagnostics(
                                 if unicode_property_count > config.max_unicode_properties
                                     && !emitted_unicode_limit
                                 {
-                                    diagnostics.push(policy_diagnostic(
+                                    diagnostics.extend(policy_diagnostic(
                                         RegexDiagnosticCode::UnicodePropertyLimit,
                                         property_offset,
                                         2,
@@ -101,7 +101,7 @@ pub(crate) fn find_complexity_diagnostics(
                             .filter(|candidate| matches!(candidate, GroupType::Lookbehind))
                             .count();
                         if depth >= config.max_nesting && !emitted_lookbehind_limit {
-                            diagnostics.push(policy_diagnostic(
+                            diagnostics.extend(policy_diagnostic(
                                 RegexDiagnosticCode::LookbehindNestingLimit,
                                 group_offset,
                                 1,
@@ -121,7 +121,7 @@ pub(crate) fn find_complexity_diagnostics(
                         if depth >= config.max_nesting
                             && !emitted_branch_reset_nesting_limit
                         {
-                            diagnostics.push(policy_diagnostic(
+                            diagnostics.extend(policy_diagnostic(
                                 RegexDiagnosticCode::BranchResetNestingLimit,
                                 group_offset,
                                 1,
@@ -142,7 +142,7 @@ pub(crate) fn find_complexity_diagnostics(
                     if *branch_count > config.max_branch_reset_branches
                         && !emitted_branch_reset_branch_limit
                     {
-                        diagnostics.push(policy_diagnostic(
+                        diagnostics.extend(policy_diagnostic(
                             RegexDiagnosticCode::BranchResetBranchLimit,
                             i,
                             1,
@@ -170,6 +170,7 @@ fn policy_diagnostic(
     width: usize,
     input_len: usize,
     limit: usize,
-) -> RegexDiagnostic {
-    RegexDiagnostic::new(code, RegexRange::anchored(offset, width, input_len), Some(limit))
+) -> Option<RegexDiagnostic> {
+    RegexRange::anchored(offset, width, input_len)
+        .map(|range| RegexDiagnostic::new(code, range, Some(limit)))
 }

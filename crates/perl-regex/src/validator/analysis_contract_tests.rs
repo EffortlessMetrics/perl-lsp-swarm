@@ -1,7 +1,7 @@
 use super::analysis::RegexRange;
 
 #[test]
-fn anchored_range_rejects_overflow_and_out_of_bounds() {
+fn anchored_range_preserves_present_and_rejects_absent_ranges() {
     assert_eq!(RegexRange::anchored(2, 3, 5), Some(RegexRange { start: 2, end: 5 }));
     assert_eq!(RegexRange::anchored(6, 0, 5), None);
     assert_eq!(RegexRange::anchored(4, 2, 5), None);
