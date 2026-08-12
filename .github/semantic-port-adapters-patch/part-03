@@ -1,0 +1,401 @@
+        ProviderReadinessState::Ready | ProviderReadinessState::ReadyLimited => {}
++        _ => {
++            return Ok(no_value_draft(
++                ProviderQueryOutcome::Unavailable,
++                Vec::new(),
++                SemanticReasonCode::Unknown,
++                vec!["unknown_readiness_state".to_string()],
++                None,
++                unavailable_traces(request, unavailable_trace_seeds),
++            ));
++        }
++    }
++    if !snapshot.matches_request(request) {
++        return Ok(no_value_draft(
++            ProviderQueryOutcome::Unavailable,
++            Vec::new(),
++            SemanticReasonCode::MissingGeneration,
++            vec!["adapter_snapshot_generation_mismatch".to_string()],
++            None,
++            unavailable_traces(request, unavailable_trace_seeds),
++        ));
++    }
++    if !snapshot.is_primary() && !snapshot.is_fallback() {
++        return Ok(no_value_draft(
++            ProviderQueryOutcome::Unavailable,
++            Vec::new(),
++            SemanticReasonCode::UnsupportedEffect,
++            vec!["adapter_snapshot_is_not_a_serving_path".to_string()],
++            None,
++            unavailable_traces(request, unavailable_trace_seeds),
++        ));
++    }
++    if (snapshot.is_primary() && !request.context.is_degraded_ready())
++        || (snapshot.is_fallback() && !request.context.is_fallback_ready())
++    {
++        return Ok(no_value_draft(
++            ProviderQueryOutcome::Unavailable,
++            Vec::new(),
++            SemanticReasonCode::MissingGeneration,
++            vec!["provider_query_context_is_not_read_ready".to_string()],
++            None,
++            unavailable_traces(request, unavailable_trace_seeds),
++        ));
++    }
++    if request.kind == ProviderQueryKind::Readiness {
++        return Ok(no_value_draft(
++            ProviderQueryOutcome::Unavailable,
++            Vec::new(),
++            SemanticReasonCode::UnsupportedEffect,
++            vec!["readiness_denominator_not_owned_by_fact_adapter".to_string()],
++            None,
++            unavailable_traces(request, unavailable_trace_seeds),
++        ));
++    }
++
++    let mut selection = select_records(request, records);
++
++    if selection.any_status(SemanticFactStatus::Stale) {
++        selection.without_values();
++        return finish_no_value_selection(
++            request,
++            control,
++            snapshot,
++            unavailable_trace_seeds,
++            selection,
++            ProviderQueryOutcome::Stale,
++            SemanticReasonCode::StaleDependency,
++            Vec::new(),
++        );
++    }
++    if selection.any_status(SemanticFactStatus::Refused) {
++        selection.without_values();
++        let boundary = selection.first_boundary();
++        return finish_no_value_selection(
++            request,
++            control,
++            snapshot,
++            unavailable_trace_seeds,
++            selection,
++            ProviderQueryOutcome::Refused,
++            SemanticReasonCode::UnsupportedEffect,
++            boundary.into_iter().map(|_| "semantic_boundary_refused_value".to_string()).collect(),
++        );
++    }
++    if selection.ambiguous {
++        selection.without_values();
++        return finish_no_value_selection(
++            request,
++            control,
++            snapshot,
++            unavailable_trace_seeds,
++            selection,
++            ProviderQueryOutcome::Ambiguous,
++            SemanticReasonCode::CompatibilityBoundary,
++            vec!["multiple_canonical_targets_match_subject".to_string()],
++        );
++    }
++    if selection.value_count() == 0 && selection.has_dynamic_boundary() {
++        selection.without_values();
++        return finish_no_value_selection(
++            request,
++            control,
++            snapshot,
++            unavailable_trace_seeds,
++            selection,
++            ProviderQueryOutcome::Dynamic,
++            SemanticReasonCode::DynamicValue,
++            vec!["dynamic_boundary_prevents_static_value".to_string()],
++        );
++    }
++    if selection.value_count() == 0 {
++        if selection.records.is_empty() {
++            if let Some(grant) = exact_empty_grant(request)? {
++                return finish_draft(
++                    request,
++                    control,
++                    ProviderQueryResultDraft::new(
++                        ProviderQueryOutcome::Exact,
++                        Vec::new(),
++                        Some(grant),
++                        ProviderQueryEvidenceInput::primary_completed(),
++                    ),
++                );
++            }
++        }
++        selection.without_values();
++        return finish_no_value_selection(
++            request,
++            control,
++            snapshot,
++            unavailable_trace_seeds,
++            selection,
++            ProviderQueryOutcome::Unavailable,
++            SemanticReasonCode::MissingGeneration,
++            vec!["no_authoritative_value_or_complete_denominator".to_string()],
++        );
++    }
++
++    let boundary = selection.first_boundary();
++    let all_exact = selection
++        .all_records()
++        .all(|record| record.is_exact_for(request));
++    let traces = selection.traces(request, snapshot.fallback_state);
++    let facts = selection.to_facts()?;
++
++    if snapshot.is_fallback() {
++        let draft = ProviderQueryResultDraft::new(
++            ProviderQueryOutcome::Fallback,
++            facts,
++            None,
++            ProviderQueryEvidenceInput::new(
++                ProviderResultPath::Fallback,
++                boundary,
++                SemanticReasonCode::CompatibilityBoundary,
++                traces,
++                vec!["explicit_semantic_fallback_path".to_string()],
++                ProviderQueryTerminalState::Completed,
++            ),
++        );
++        return finish_draft(request, control, draft);
++    }
++
++    if snapshot.can_claim_exact(request)
++        && all_exact
++        && boundary.is_none()
++        && selection
++            .records
++            .values()
++            .all(|(_, role)| !role_is_supporting(*role))
++    {
++        let draft = ProviderQueryResultDraft::new(
++            ProviderQueryOutcome::Exact,
++            facts,
++            None,
++            ProviderQueryEvidenceInput::new(
++                ProviderResultPath::Primary,
++                None,
++                SemanticReasonCode::ExactSource,
++                traces,
++                Vec::new(),
++                ProviderQueryTerminalState::Completed,
++            ),
++        );
++        return finish_draft(request, control, draft);
++    }
++
++    let mut limitations = Vec::new();
++    if request.context.readiness_state == ProviderReadinessState::ReadyLimited {
++        limitations.push("provider_readiness_limited".to_string());
++    }
++    if snapshot.freshness != SemanticFreshness::Fresh {
++        limitations.push("adapter_snapshot_freshness_not_exact".to_string());
++    }
++    if snapshot.lifecycle == LifecyclePhase::Unknown {
++        limitations.push("adapter_snapshot_lifecycle_unknown".to_string());
++    }
++    if all_exact && boundary.is_none() && limitations.is_empty() {
++        limitations.push("selected_fact_set_requires_qualified_read".to_string());
++    }
++    let semantic_reason = selection
++        .all_records()
++        .find(|record| record.envelope.reason_code != SemanticReasonCode::ExactSource)
++        .map(|record| record.envelope.reason_code)
++        .unwrap_or(SemanticReasonCode::ExactSource);
++    let draft = ProviderQueryResultDraft::new(
++        ProviderQueryOutcome::Degraded,
++        facts,
++        None,
++        ProviderQueryEvidenceInput::new(
++            ProviderResultPath::Primary,
++            boundary,
++            semantic_reason,
++            traces,
++            limitations,
++            ProviderQueryTerminalState::Completed,
++        ),
++    );
++    finish_draft(request, control, draft)
++}
++
++fn finish_no_value_selection(
++    request: &ProviderQueryRequest,
++    control: &dyn ProviderQueryControl,
++    snapshot: &ProviderAdapterSnapshot,
++    unavailable_trace_seeds: &[UnavailableTraceSeed],
++    selection: QuerySelection<'_>,
++    outcome: ProviderQueryOutcome,
++    reason: SemanticReasonCode,
++    limitations: Vec<String>,
++) -> Result<ProviderQueryResultDraft, ProviderQueryContractError> {
++    let boundary = selection.first_boundary();
++    let mut traces = selection.traces(request, snapshot.fallback_state);
++    if outcome == ProviderQueryOutcome::Unavailable {
++        traces.extend(unavailable_traces(request, unavailable_trace_seeds));
++        canonicalize_traces(&mut traces);
++    }
++    let facts = selection.to_facts()?;
++    let draft = ProviderQueryResultDraft::new(
++        outcome,
++        facts,
++        None,
++        ProviderQueryEvidenceInput::new(
++            ProviderResultPath::Primary,
++            boundary,
++            reason,
++            traces,
++            limitations,
++            ProviderQueryTerminalState::Completed,
++        ),
++    );
++    finish_draft(request, control, draft)
++}
++
++fn finish_draft(
++    request: &ProviderQueryRequest,
++    control: &dyn ProviderQueryControl,
++    draft: ProviderQueryResultDraft,
++) -> Result<ProviderQueryResultDraft, ProviderQueryContractError> {
++    if request.context.cancellation == super::semantic_port::ProviderCancellationState::Cancelled
++        || control.is_cancelled()
++    {
++        return Ok(terminal_draft(
++            ProviderQueryOutcome::Cancelled,
++            ProviderQueryTerminalState::Cancelled,
++        ));
++    }
++    if request.context.deadline == super::semantic_port::ProviderQueryDeadline::Expired
++        || control.deadline_expired()
++    {
++        return Ok(terminal_draft(
++            ProviderQueryOutcome::DeadlineExceeded,
++            ProviderQueryTerminalState::DeadlineExceeded,
++        ));
++    }
++    Ok(draft)
++}
++
++fn terminal_draft(
++    outcome: ProviderQueryOutcome,
++    terminal_state: ProviderQueryTerminalState,
++) -> ProviderQueryResultDraft {
++    ProviderQueryResultDraft::new(
++        outcome,
++        Vec::new(),
++        None,
++        ProviderQueryEvidenceInput::new(
++            ProviderResultPath::Primary,
++            None,
++            SemanticReasonCode::Unknown,
++            Vec::new(),
++            Vec::new(),
++            terminal_state,
++        ),
++    )
++}
++
++fn no_value_draft(
++    outcome: ProviderQueryOutcome,
++    facts: Vec<ProviderQueryFact>,
++    reason: SemanticReasonCode,
++    limitations: Vec<String>,
++    boundary: Option<BoundaryLink>,
++    traces: Vec<ProviderFactTrace>,
++) -> ProviderQueryResultDraft {
++    ProviderQueryResultDraft::new(
++        outcome,
++        facts,
++        None,
++        ProviderQueryEvidenceInput::new(
++            ProviderResultPath::Primary,
++            boundary,
++            reason,
++            traces,
++            limitations,
++            ProviderQueryTerminalState::Completed,
++        ),
++    )
++}
++
++fn trace_seeds_from_records(records: &[AdapterFactRecord]) -> Vec<UnavailableTraceSeed> {
++    let mut seeds: Vec<_> = records
++        .iter()
++        .filter_map(UnavailableTraceSeed::from_record)
++        .collect();
++    seeds.sort();
++    seeds.dedup();
++    seeds
++}
++
++fn file_source_trace_seed(
++    source: FileFactShardSource,
++    snapshot: &ProviderAdapterSnapshot,
++    denominators: &BTreeMap<FileId, ShardDenominator>,
++) -> UnavailableTraceSeed {
++    let snapshot_material = denominators
++        .values()
++        .map(|denominator| denominator.snapshot_id(source))
++        .collect::<Vec<_>>()
++        .join("|");
++    let source_hash = (!snapshot_material.is_empty()).then(|| {
++        format!(
++            "adapter-snapshot:{:016x}",
++            stable_hash_bytes(snapshot_material.as_bytes())
++        )
++    });
++    let model_version = denominators
++        .values()
++        .map(|denominator| denominator.producer_schema_version)
++        .max()
++        .or(snapshot.model_version);
++    UnavailableTraceSeed::for_file_source(source, snapshot, source_hash, model_version)
++}
++
++fn unavailable_traces(
++    request: &ProviderQueryRequest,
++    seeds: &[UnavailableTraceSeed],
++) -> Vec<ProviderFactTrace> {
++    let mut traces: Vec<_> = seeds.iter().map(|seed| seed.trace(request)).collect();
++    canonicalize_traces(&mut traces);
++    traces
++}
++
++fn canonicalize_traces(traces: &mut Vec<ProviderFactTrace>) {
++    traces.sort_by(|left, right| {
++        left.source
++            .cmp(&right.source)
++            .then_with(|| left.provenance.cmp(&right.provenance))
++            .then_with(|| left.confidence.cmp(&right.confidence))
++            .then_with(|| left.freshness.cmp(&right.freshness))
++            .then_with(|| left.fallback_state.cmp(&right.fallback_state))
++            .then_with(|| left.source_hash.cmp(&right.source_hash))
++            .then_with(|| left.anchor_id.cmp(&right.anchor_id))
++            .then_with(|| left.model_version.cmp(&right.model_version))
++    });
++    traces.dedup();
++}
++
++fn select_records<'a>(
++    request: &ProviderQueryRequest,
++    records: &'a [AdapterFactRecord],
++) -> QuerySelection<'a> {
++    match &request.kind {
++        ProviderQueryKind::Declaration => select_declarations(request, records),
++        ProviderQueryKind::References {
++            include_declaration,
++        } => select_references(request, records, *include_declaration),
++        ProviderQueryKind::Visibility => select_visibility(request, records),
++        ProviderQueryKind::ScopeBindings => select_scope_bindings(request, records),
++        ProviderQueryKind::Boundaries => select_boundaries(request, records),
++        ProviderQueryKind::Readiness => QuerySelection::default(),
++    }
++}
++
++fn select_declarations<'a>(
++    request: &ProviderQueryRequest,
++    records: &'a [AdapterFactRecord],
++) -> QuerySelection<'a> {
++    let mut selection = QuerySelection::default();
++    match &request.subject {
++        ProviderQuerySubject::Position { .. } => {
++    
