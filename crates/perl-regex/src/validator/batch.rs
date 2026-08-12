@@ -1,18 +1,31 @@
+use crate::{
+    analyzer::{CaptureMode, EffectiveModifiers, ExtendedMode},
+    syntax::event::{
+        RegexEventBudget, RegexExtendedMode, RegexModeState, parse_regex_events,
+    },
+};
+
 use super::{
     analysis::{
-        EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisCompleteness,
-        RegexDiagnostic, RegexDiagnosticClass, RegexDiagnosticCode, RegexFacts, RegexRange,
+        EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisBudget,
+        RegexAnalysisCompleteness, RegexDiagnostic, RegexDiagnosticClass, RegexDiagnosticCode,
+        RegexFacts, RegexRange,
     },
     code_execution, complexity,
     config::RegexValidationConfig,
     nested_quantifier,
 };
 
-pub(crate) fn analyze(pattern: &str, config: &RegexValidationConfig) -> RegexAnalysis {
+pub(crate) fn analyze(
+    pattern: &str,
+    config: &RegexValidationConfig,
+    modifiers: EffectiveModifiers,
+) -> RegexAnalysis {
+    let stream = parse_regex_events(pattern, initial_mode(modifiers));
     let mut diagnostics = Vec::new();
     let mut facts = RegexFacts::default();
 
-    for finding in code_execution::find_code_executions(pattern) {
+    for finding in code_execution::find_code_executions(&stream) {
         let (kind, code, width) = match finding.kind {
             code_execution::EmbeddedCodeKind::Immediate => (
                 EmbeddedCodeKind::Immediate,
@@ -30,7 +43,7 @@ pub(crate) fn analyze(pattern: &str, config: &RegexValidationConfig) -> RegexAna
         diagnostics.push(RegexDiagnostic::new(code, range, None));
     }
 
-    for offset in nested_quantifier::find_nested_quantifiers(pattern) {
+    for offset in nested_quantifier::find_nested_quantifiers(&stream) {
         let range = RegexRange::anchored(offset, 1, pattern.len());
         facts.nested_quantifiers.push(range);
         diagnostics.push(RegexDiagnostic::new(
@@ -40,9 +53,10 @@ pub(crate) fn analyze(pattern: &str, config: &RegexValidationConfig) -> RegexAna
         ));
     }
 
-    let policy_diagnostics = complexity::find_complexity_diagnostics(pattern, config);
+    let policy_diagnostics = complexity::find_complexity_diagnostics(&stream, config);
+    let exhausted = stream.exhausted.map(map_budget);
     let dynamic = !facts.embedded_code.is_empty();
-    let policy_limited = !policy_diagnostics.is_empty();
+    let policy_limited = !policy_diagnostics.is_empty() || exhausted.is_some();
     diagnostics.extend(policy_diagnostics);
     diagnostics.sort_by_key(|diagnostic| {
         (diagnostic.range.start, diagnostic.range.end, diagnostic.code)
@@ -52,6 +66,8 @@ pub(crate) fn analyze(pattern: &str, config: &RegexValidationConfig) -> RegexAna
         diagnostics,
         facts,
         completeness: RegexAnalysisCompleteness::from_flags(dynamic, policy_limited),
+        exhausted,
+        malformed: stream.malformed,
     }
 }
 
@@ -62,6 +78,26 @@ pub(crate) fn first_compatibility_diagnostic(
         .diagnostics
         .iter()
         .min_by_key(|diagnostic| compatibility_priority(diagnostic))
+}
+
+fn initial_mode(modifiers: EffectiveModifiers) -> RegexModeState {
+    let extended = match modifiers.extended {
+        ExtendedMode::Off => RegexExtendedMode::Off,
+        ExtendedMode::Extended => RegexExtendedMode::Extended,
+        ExtendedMode::ExtraExtended { .. } => RegexExtendedMode::ExtraExtended,
+    };
+    RegexModeState {
+        extended,
+        captures_by_default: matches!(modifiers.captures, CaptureMode::CapturingByDefault),
+    }
+}
+
+fn map_budget(budget: RegexEventBudget) -> RegexAnalysisBudget {
+    match budget {
+        RegexEventBudget::Events => RegexAnalysisBudget::Events,
+        RegexEventBudget::Nesting => RegexAnalysisBudget::Nesting,
+        RegexEventBudget::Steps => RegexAnalysisBudget::Steps,
+    }
 }
 
 fn compatibility_priority(diagnostic: &RegexDiagnostic) -> (u8, usize, usize, RegexDiagnosticCode) {
