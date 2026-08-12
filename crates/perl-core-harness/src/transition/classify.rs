@@ -1,22 +1,16 @@
-//! Minimal transition classifier core.
+//! Transition classifier over canonically validated compiler evidence.
 //!
-//! This slice only settles three discriminating outcomes against an accepted
-//! ratchet:
-//! - incomparable observations → [`CompatibilityTransition::NotProven`]
-//! - any accepted pass that becomes a fail → [`CompatibilityTransition::Regression`]
-//! - exact V2 observation identity → [`CompatibilityTransition::NoChange`]
-//!
-//! Assertion deltas, improvements, and V1 migration remain follow-up classifier
-//! slices. Aggregate `summary` fields cannot manufacture a transition: they are
-//! ignored for Regression/Improvement scoring and must reconcile with detailed
-//! `file_results` before `NoChange`. Compiler/invocation/capability/environment
-//! subject ids are retained on the V2 ratchet but are not present on
-//! [`RunReport`]; they are bound in receipts by a later slice.
+//! Raw accepted baselines and current reports are validated before any
+//! definitive transition arm. Invalid, incomplete, or incomparable evidence
+//! remains [`CompatibilityTransition::NotProven`].
 
 use crate::transition::model::AcceptedBaseline;
+use crate::transition::validation::{
+    ValidatedAcceptedBaseline, ValidatedRunReport, validate_accepted_baseline,
+    validate_run_report,
+};
 use perl_core_harness_types::{
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition, CompileBaselineV2,
-    RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunnerStatus,
+    CompatibilityTransition, CompileBaselineV2, RunFileResult, RunReport, RunnerStatus,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,24 +27,38 @@ pub struct Classification {
     pub semantic_boundary_change: bool,
 }
 
-/// Classify `current` against `accepted` for the minimal core outcomes above.
+/// Validate and classify `current` against `accepted`.
+///
+/// This compatibility entry point retains the existing API while ensuring raw
+/// deserialized evidence cannot reach a definitive transition arm.
 pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> Classification {
-    if current.harness_status.is_some_and(|status| status != 0) {
-        return not_proven(format!(
-            "accepted and current observations are not comparable: current harness_status {:?} is not a complete successful run",
-            current.harness_status
-        ));
-    }
-    if let Some(path) = first_duplicate_path(accepted.file_results()) {
-        return not_proven(format!(
-            "accepted and current observations are not comparable: accepted observation repeats file-result path {path}"
-        ));
-    }
-    if let Some(path) = first_duplicate_path(&current.file_results) {
-        return not_proven(format!(
-            "accepted and current observations are not comparable: current observation repeats file-result path {path}"
-        ));
-    }
+    let accepted = match validate_accepted_baseline(accepted) {
+        Ok(validated) => validated,
+        Err(validation) => {
+            return not_proven(format!(
+                "accepted and current observations are not comparable: {validation}"
+            ));
+        }
+    };
+    let current = match validate_run_report(current) {
+        Ok(validated) => validated,
+        Err(validation) => {
+            return not_proven(format!(
+                "accepted and current observations are not comparable: {validation}"
+            ));
+        }
+    };
+    classify_validated_transition(accepted, current)
+}
+
+/// Classify evidence that has already passed the canonical validators.
+#[must_use]
+pub fn classify_validated_transition(
+    accepted: ValidatedAcceptedBaseline<'_>,
+    current: ValidatedRunReport<'_>,
+) -> Classification {
+    let accepted = accepted.as_inner();
+    let current = current.as_inner();
 
     if let AcceptedBaseline::V2(value) = accepted
         && let Some(reason) = v2_incomparable(value, current)
@@ -77,7 +85,7 @@ pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> 
         return Classification {
             transition: CompatibilityTransition::Regression,
             reason: format!(
-                "complete observation regresses the accepted ratchet: {}",
+                "complete validated observation regresses the accepted ratchet: {}",
                 regressions.join("; ")
             ),
             requires_candidate: false,
@@ -90,81 +98,37 @@ pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> 
         && accepted.buckets() == &current.buckets
         && accepted.failures() == current.failures.as_slice()
         && value.semantic_boundaries == current.semantic_boundaries
-        && current.harness_status == Some(0)
-        && summary_matches_file_results(current)
     {
         return Classification {
             transition: CompatibilityTransition::NoChange,
-            reason: "complete observation exactly matches the accepted v2 ratchet".into(),
+            reason: "complete validated observation exactly matches the accepted v2 ratchet".into(),
             requires_candidate: false,
             semantic_boundary_change: false,
         };
     }
 
     not_proven(
-        "observation is comparable but outside the minimal classifier slice; defer to a later transition arm"
+        "validated observation is comparable but outside the minimal classifier slice; defer to a later transition arm"
             .into(),
     )
 }
 
 fn v2_incomparable(value: &CompileBaselineV2, current: &RunReport) -> Option<String> {
-    if value.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION {
-        return Some(format!(
-            "accepted and current observations are not comparable: unsupported accepted V2 schema {}",
-            value.schema_version
-        ));
-    }
-    if value.report_schema_version != RUN_REPORT_SCHEMA_VERSION
-        || current.schema_version != RUN_REPORT_SCHEMA_VERSION
-    {
-        return Some(
-            "accepted and current observations are not comparable: report schema is not the supported run-report version"
-                .into(),
-        );
-    }
-    if let Some(path) = first_duplicate_str(value.file_membership.iter().map(String::as_str)) {
-        return Some(format!(
-            "accepted and current observations are not comparable: accepted V2 file_membership repeats path {path}"
-        ));
-    }
-    let membership = value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    let accepted_paths =
-        value.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
-    if membership != accepted_paths {
-        return Some(
-            "accepted and current observations are not comparable: accepted V2 file_results do not match immutable file_membership"
-                .into(),
-        );
-    }
     let accepted_subject =
         (value.mode, value.profile, value.runner, value.perl_resolved_ref.as_str());
     let current_subject =
         (current.mode, current.profile, current.runner, current.perl_ref.as_str());
+    let accepted_membership =
+        value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let observed_membership =
         current.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
-    if accepted_subject == current_subject && membership == observed_membership {
+    if accepted_subject == current_subject && accepted_membership == observed_membership {
         return None;
     }
     Some(
         "accepted and current observations are not comparable: V2 subject identity or immutable file membership differs"
             .into(),
     )
-}
-
-fn summary_matches_file_results(current: &RunReport) -> bool {
-    let files_total = current.file_results.len();
-    let files_passed =
-        current.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
-    let files_failed = files_total.saturating_sub(files_passed);
-    let tap_assertions_total =
-        current.file_results.iter().map(|result| result.assertions_total).sum::<usize>();
-    let tap_assertions_passed =
-        current.file_results.iter().map(|result| result.assertions_passed).sum::<usize>();
-    current.summary.files_total == files_total
-        && current.summary.files_passed == files_passed
-        && current.summary.files_failed == files_failed
-        && current.summary.tap_assertions_total == tap_assertions_total
-        && current.summary.tap_assertions_passed == tap_assertions_passed
 }
 
 fn not_proven(reason: String) -> Classification {
@@ -174,15 +138,6 @@ fn not_proven(reason: String) -> Classification {
         requires_candidate: false,
         semantic_boundary_change: false,
     }
-}
-
-fn first_duplicate_path(results: &[RunFileResult]) -> Option<&str> {
-    first_duplicate_str(results.iter().map(|result| result.path.as_str()))
-}
-
-fn first_duplicate_str<'a>(paths: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    let mut seen = BTreeSet::new();
-    paths.into_iter().find(|path| !seen.insert(*path))
 }
 
 fn index_by_path(results: &[RunFileResult]) -> BTreeMap<&str, &RunFileResult> {
