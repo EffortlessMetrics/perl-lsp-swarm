@@ -893,7 +893,7 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        RouteObservation, RouteSyntax, SCENARIO_FIXTURES, check_scenarios,
+        RouteObservation, RouteSyntax, SCENARIO_FIXTURES, check_scenarios, edge_targets,
         frontmatter_metadata_chars, frontmatter_value, missing_markers,
         missing_route_target_message, resolve_route_syntax, route_line_observations,
         route_observations, route_targets, route_tokens,
