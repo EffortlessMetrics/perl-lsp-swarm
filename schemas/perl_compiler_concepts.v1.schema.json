@@ -36,6 +36,11 @@
     "complete": {
       "type": "boolean"
     },
+    "inventory_authority": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
     "concepts": {
       "type": "array",
       "minItems": 1,
@@ -44,6 +49,51 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "complete": {
+            "const": true
+          }
+        },
+        "required": ["complete"]
+      },
+      "then": {
+        "required": ["inventory_authority"],
+        "properties": {
+          "concepts": {
+            "items": {
+              "type": "object",
+              "properties": {
+                "gold": {
+                  "not": {
+                    "const": "missing"
+                  }
+                },
+                "oracle": {
+                  "not": {
+                    "const": "missing"
+                  }
+                },
+                "composition": {
+                  "not": {
+                    "const": "missing"
+                  }
+                },
+                "ownership": {
+                  "enum": [
+                    "boundary",
+                    "not_applicable"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "parser_state": {
       "enum": [
@@ -123,7 +173,7 @@
       "properties": {
         "concept_id": {
           "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9_.-]*[a-z0-9]$"
+          "pattern": "^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)*$"
         },
         "family": {
           "type": "string",
