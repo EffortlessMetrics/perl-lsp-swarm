@@ -26,6 +26,7 @@ pub use strategy::MAX_EDIT_SIZE;
 // Keep the raw engine private; the public facade normalizes complete-tree accounting.
 #[path = "incremental_advanced_reuse.rs"]
 mod incremental_advanced_reuse_engine;
+/// Canonical advanced-reuse analyzer and public accounting types.
 #[path = "incremental_advanced_reuse_facade.rs"]
 pub mod incremental_advanced_reuse;
 #[cfg(test)]
