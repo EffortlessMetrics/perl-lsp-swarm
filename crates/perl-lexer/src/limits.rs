@@ -9,6 +9,7 @@ pub(crate) const MAX_REGEX_BYTES: usize = 64 * 1024; // 64KB max for regex patte
 pub(crate) const MAX_HEREDOC_BYTES: usize = 256 * 1024; // 256KB max for heredoc bodies
 pub(crate) const MAX_DELIM_NEST: usize = 128; // Max nesting depth for delimiters
 pub(crate) const MAX_HEREDOC_DEPTH: usize = 100; // Max nesting depth for heredocs
+pub(crate) const HEREDOC_TIMEOUT_MS: u64 = 5000; // 5 seconds timeout for heredoc parsing
 
 /// Maximum scan iterations for a single regex literal.
 /// This is a lexer parse budget, not regex-engine backtracking detection.

@@ -25,9 +25,9 @@ pub struct QuoteOperatorCheckpoint {
 
 /// A checkpoint that captures all mutable lexer state needed for token replay.
 ///
-/// Input references are deliberately not persisted. Heredoc recovery uses the
-/// deterministic byte budget configured by the lexer, and checkpoints that
-/// already have queued heredocs are rejected by the incremental replay layer.
+/// Input references are deliberately not persisted. Checkpoints that already
+/// have queued heredocs are rejected by the incremental replay layer before
+/// re-entering the timeout-sensitive heredoc path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LexerCheckpoint {
     /// Current position in the input.
@@ -152,8 +152,8 @@ impl LexerCheckpoint {
     }
 
     /// Whether restoring this checkpoint would re-enter a pending-heredoc
-    /// byte-budget path. Incremental callers fail closed for this state so
-    /// heredoc recovery remains owned by a fresh full lex.
+    /// timeout-sensitive path. Incremental callers fail closed for this state
+    /// so heredoc recovery remains owned by a fresh full lex.
     #[must_use]
     pub fn is_timeout_sensitive(&self) -> bool {
         !self.pending_heredocs.is_empty()
@@ -356,7 +356,7 @@ pub trait Checkpointable {
 
     /// Restore mutable replay state into a lexer for the target input.
     ///
-    /// The target lexer retains its configured deterministic recovery policy.
+    /// The target lexer retains its configured recovery policy.
     fn restore(&mut self, checkpoint: &LexerCheckpoint);
 
     /// Check whether every source-relative checkpoint offset is valid.
