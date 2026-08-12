@@ -12,12 +12,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
-use std::io::{BufWriter, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const DISCOVERY_RAW_SCHEMA_VERSION: &str = "perl_core_harness.discovery_raw.v2";
 const RAW_STREAM_ENCODING: &str = "hex";
+const RAW_STREAM_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
@@ -175,25 +176,66 @@ impl CheckRunnerRecordsConfig {
     }
 }
 
+#[derive(Debug)]
+struct CapturedStream {
+    retained: Vec<u8>,
+    observed_byte_length: u64,
+    full_sha256: String,
+    truncated: bool,
+    capture_error: Option<String>,
+}
+
+impl CapturedStream {
+    fn empty() -> Self {
+        Self {
+            retained: Vec::new(),
+            observed_byte_length: 0,
+            full_sha256: sha256_digest(&[]),
+            truncated: false,
+            capture_error: None,
+        }
+    }
+
+    fn failed(message: &str) -> Self {
+        Self {
+            capture_error: Some(message.to_string()),
+            ..Self::empty()
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct RawByteStream {
     encoding: String,
-    byte_length: usize,
+    limit_bytes: usize,
+    observed_byte_length: u64,
+    retained_byte_length: usize,
     sha256: String,
+    retained_sha256: String,
     payload_hex: String,
-    utf8_text: Option<String>,
+    truncated: bool,
+    capture_error: Option<String>,
 }
 
 impl RawByteStream {
-    fn from_bytes(bytes: &[u8]) -> Self {
+    fn from_capture(capture: CapturedStream, limit_bytes: usize) -> Self {
+        let retained_sha256 = sha256_digest(&capture.retained);
         Self {
             encoding: RAW_STREAM_ENCODING.to_string(),
-            byte_length: bytes.len(),
-            sha256: sha256_digest(bytes),
-            payload_hex: encode_hex(bytes),
-            utf8_text: std::str::from_utf8(bytes).ok().map(str::to_owned),
+            limit_bytes,
+            observed_byte_length: capture.observed_byte_length,
+            retained_byte_length: capture.retained.len(),
+            sha256: capture.full_sha256,
+            retained_sha256,
+            payload_hex: encode_hex(&capture.retained),
+            truncated: capture.truncated,
+            capture_error: capture.capture_error,
         }
+    }
+
+    fn empty(limit_bytes: usize) -> Self {
+        Self::from_capture(CapturedStream::empty(), limit_bytes)
     }
 
     fn bytes(&self) -> Result<Vec<u8>> {
@@ -205,26 +247,73 @@ impl RawByteStream {
 
     fn validate(&self) -> Result<()> {
         let bytes = self.bytes()?;
-        if bytes.len() != self.byte_length {
+        if bytes.len() != self.retained_byte_length {
             bail!(
-                "raw stream byte length mismatch: declared {}, decoded {}",
-                self.byte_length,
+                "raw stream retained length mismatch: declared {}, decoded {}",
+                self.retained_byte_length,
                 bytes.len()
             );
         }
-        let digest = sha256_digest(&bytes);
-        if digest != self.sha256 {
-            bail!("raw stream digest mismatch");
+        if self.retained_byte_length > self.limit_bytes {
+            bail!("raw stream retained bytes exceed the declared capture limit");
         }
-        let utf8_text = std::str::from_utf8(&bytes).ok().map(str::to_owned);
-        if utf8_text != self.utf8_text {
-            bail!("raw stream UTF-8 projection does not match its exact bytes");
+        let retained_u64 = u64::try_from(self.retained_byte_length).unwrap_or(u64::MAX);
+        if self.observed_byte_length < retained_u64 {
+            bail!("raw stream observed length is smaller than its retained length");
+        }
+        if self.truncated != (self.observed_byte_length > retained_u64) {
+            bail!("raw stream truncation flag disagrees with observed and retained lengths");
+        }
+        if self.truncated && self.retained_byte_length != self.limit_bytes {
+            bail!("truncated raw stream did not retain exactly its configured byte limit");
+        }
+        let retained_digest = sha256_digest(&bytes);
+        if retained_digest != self.retained_sha256 {
+            bail!("raw stream retained digest mismatch");
+        }
+        if !self.truncated && self.capture_error.is_none() && self.sha256 != retained_digest {
+            bail!("complete raw stream digest mismatch");
         }
         Ok(())
     }
 
-    fn utf8(&self) -> Option<&str> {
-        self.utf8_text.as_deref()
+    fn complete(&self) -> bool {
+        !self.truncated && self.capture_error.is_none()
+    }
+
+    fn utf8_text(&self) -> Result<Option<String>> {
+        if !self.complete() {
+            return Ok(None);
+        }
+        Ok(String::from_utf8(self.bytes()?).ok())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum DiscoveryProcessOutcome {
+    Exited { code: i32 },
+    TerminatedWithoutCode,
+    SpawnFailed { error: String },
+    WaitFailed { error: String },
+    CaptureSetupFailed { stream: String },
+}
+
+impl DiscoveryProcessOutcome {
+    const fn succeeded(&self) -> bool {
+        matches!(self, Self::Exited { code: 0 })
+    }
+
+    fn summary(&self) -> String {
+        match self {
+            Self::Exited { code } => format!("exited with status {code}"),
+            Self::TerminatedWithoutCode => "terminated without an exit code".to_string(),
+            Self::SpawnFailed { .. } => "spawn failed".to_string(),
+            Self::WaitFailed { .. } => "wait failed".to_string(),
+            Self::CaptureSetupFailed { stream } => {
+                format!("failed to attach bounded {stream} capture")
+            }
+        }
     }
 }
 
@@ -237,11 +326,9 @@ struct DiscoveryRawEnvelope {
     host_perl: String,
     working_directory: String,
     argv: Vec<String>,
-    status: Option<i32>,
-    success: bool,
+    process: DiscoveryProcessOutcome,
     stdout: RawByteStream,
     stderr: RawByteStream,
-    spawn_error: Option<String>,
 }
 
 impl DiscoveryRawEnvelope {
@@ -251,11 +338,122 @@ impl DiscoveryRawEnvelope {
         }
         self.stdout.validate().context("validating raw discovery stdout")?;
         self.stderr.validate().context("validating raw discovery stderr")?;
-        if self.spawn_error.is_some() && self.status.is_some() {
-            bail!("spawn-failed discovery cannot also carry an exit status");
+        for error in match &self.process {
+            DiscoveryProcessOutcome::SpawnFailed { error }
+            | DiscoveryProcessOutcome::WaitFailed { error } => Some(error),
+            DiscoveryProcessOutcome::CaptureSetupFailed { stream } => Some(stream),
+            DiscoveryProcessOutcome::Exited { .. }
+            | DiscoveryProcessOutcome::TerminatedWithoutCode => None,
+        } {
+            if error.trim().is_empty() {
+                bail!("raw discovery process outcome contains an empty failure detail");
+            }
         }
         Ok(())
     }
+
+    fn complete_success(&self) -> bool {
+        self.process.succeeded() && self.stdout.complete() && self.stderr.complete()
+    }
+}
+
+fn capture_stream<R: Read>(mut reader: R, limit_bytes: usize) -> CapturedStream {
+    let mut retained = Vec::with_capacity(limit_bytes.min(64 * 1024));
+    let mut observed_byte_length = 0u64;
+    let mut full_hasher = Sha256::new();
+    let mut capture_error = None;
+    let mut buffer = [0u8; 16 * 1024];
+
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                let read_u64 = u64::try_from(read).unwrap_or(u64::MAX);
+                observed_byte_length = observed_byte_length.saturating_add(read_u64);
+                full_hasher.update(&buffer[..read]);
+                let remaining = limit_bytes.saturating_sub(retained.len());
+                let keep = remaining.min(read);
+                retained.extend_from_slice(&buffer[..keep]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                capture_error = Some(error.to_string());
+                break;
+            }
+        }
+    }
+
+    let retained_u64 = u64::try_from(retained.len()).unwrap_or(u64::MAX);
+    CapturedStream {
+        retained,
+        observed_byte_length,
+        full_sha256: format!("sha256:{:x}", full_hasher.finalize()),
+        truncated: observed_byte_length > retained_u64,
+        capture_error,
+    }
+}
+
+fn run_bounded_command(mut command: Command) -> (DiscoveryProcessOutcome, RawByteStream, RawByteStream) {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return (
+                DiscoveryProcessOutcome::SpawnFailed { error: error.to_string() },
+                RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+                RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+            );
+        }
+    };
+
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return (
+            DiscoveryProcessOutcome::CaptureSetupFailed { stream: "stdout".to_string() },
+            RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+            RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+        );
+    };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return (
+            DiscoveryProcessOutcome::CaptureSetupFailed { stream: "stderr".to_string() },
+            RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+            RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+        );
+    };
+
+    let (status_result, stdout_capture, stderr_capture) = std::thread::scope(|scope| {
+        let stdout_handle = scope.spawn(|| capture_stream(stdout, RAW_STREAM_MAX_BYTES));
+        let stderr_handle = scope.spawn(|| capture_stream(stderr, RAW_STREAM_MAX_BYTES));
+        let status_result = child.wait();
+        if status_result.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let stdout_capture = stdout_handle
+            .join()
+            .unwrap_or_else(|_| CapturedStream::failed("stdout capture thread panicked"));
+        let stderr_capture = stderr_handle
+            .join()
+            .unwrap_or_else(|_| CapturedStream::failed("stderr capture thread panicked"));
+        (status_result, stdout_capture, stderr_capture)
+    });
+
+    let process = match status_result {
+        Ok(status) => match status.code() {
+            Some(code) => DiscoveryProcessOutcome::Exited { code },
+            None => DiscoveryProcessOutcome::TerminatedWithoutCode,
+        },
+        Err(error) => DiscoveryProcessOutcome::WaitFailed { error: error.to_string() },
+    };
+    (
+        process,
+        RawByteStream::from_capture(stdout_capture, RAW_STREAM_MAX_BYTES),
+        RawByteStream::from_capture(stderr_capture, RAW_STREAM_MAX_BYTES),
+    )
 }
 
 fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
@@ -285,22 +483,7 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
     command.env("LC_ALL", "C");
     sanitize_perl_env(&mut command);
 
-    let (status, success, stdout, stderr, spawn_error) = match command.output() {
-        Ok(output) => (
-            output.status.code(),
-            output.status.success(),
-            RawByteStream::from_bytes(&output.stdout),
-            RawByteStream::from_bytes(&output.stderr),
-            None,
-        ),
-        Err(error) => (
-            None,
-            false,
-            RawByteStream::from_bytes(&[]),
-            RawByteStream::from_bytes(&[]),
-            Some(error.to_string()),
-        ),
-    };
+    let (process, stdout, stderr) = run_bounded_command(command);
     let envelope = DiscoveryRawEnvelope {
         schema_version: DISCOVERY_RAW_SCHEMA_VERSION.to_string(),
         runner: config.runner,
@@ -308,26 +491,22 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
         host_perl: config.host_perl.display().to_string(),
         working_directory: t_dir.display().to_string(),
         argv,
-        status,
-        success,
+        process,
         stdout,
         stderr,
-        spawn_error,
     };
     envelope.validate()?;
     write_json(&config.output, &envelope)?;
-    if !envelope.success {
-        let detail = envelope
-            .spawn_error
-            .as_deref()
-            .or_else(|| envelope.stderr.utf8().map(str::trim).filter(|text| !text.is_empty()))
-            .unwrap_or("stderr is empty or not valid UTF-8; inspect the raw stream");
+    if !envelope.complete_success() {
         bail!(
-            "upstream discovery failed; raw evidence was written to {}: {detail}",
+            "upstream discovery did not produce complete byte-exact evidence ({}; stdout_complete={}; stderr_complete={}); raw evidence was written to {}",
+            envelope.process.summary(),
+            envelope.stdout.complete(),
+            envelope.stderr.complete(),
             config.output.display()
         );
     }
-    let stdout = envelope.stdout.utf8().ok_or_else(|| {
+    let stdout = envelope.stdout.utf8_text()?.ok_or_else(|| {
         color_eyre::eyre::eyre!(
             "upstream discovery stdout is not valid UTF-8; byte-exact raw evidence is {}",
             config.output.display()
@@ -896,7 +1075,7 @@ fn write_json_lines(path: &Path, records: &[RunnerRecord]) -> Result<()> {
     create_parent(path)?;
     let file = fs::File::create(path)
         .with_context(|| format!("creating runner records {}", path.display()))?;
-    let mut writer = BufWriter::new(file);
+    let mut writer = std::io::BufWriter::new(file);
     for record in records {
         serde_json::to_writer(&mut writer, record).context("serializing runner record")?;
         writer
@@ -919,6 +1098,7 @@ mod tests {
     use super::*;
     use perl_core_harness_types::RunSummary;
     use perl_core_harness_types::SemanticBoundarySourceSpan;
+    use std::io::Cursor;
 
     type TestResult = Result<()>;
 
@@ -1066,46 +1246,144 @@ mod tests {
             host_perl: "perl".into(),
             working_directory: "t".into(),
             argv: vec!["TEST".into(), "--dumptests".into()],
-            status: Some(7),
-            success: false,
-            stdout: RawByteStream::from_bytes(b"partial output"),
-            stderr: RawByteStream::from_bytes(b"broken prepared tree"),
-            spawn_error: None,
+            process: DiscoveryProcessOutcome::Exited { code: 7 },
+            stdout: RawByteStream::from_capture(
+                capture_stream(Cursor::new(b"partial output"), RAW_STREAM_MAX_BYTES),
+                RAW_STREAM_MAX_BYTES,
+            ),
+            stderr: RawByteStream::from_capture(
+                capture_stream(Cursor::new(b"broken prepared tree"), RAW_STREAM_MAX_BYTES),
+                RAW_STREAM_MAX_BYTES,
+            ),
         };
         envelope.validate()?;
         let encoded = serde_json::to_string(&envelope)?;
         let decoded: DiscoveryRawEnvelope = serde_json::from_str(&encoded)?;
-        if decoded != envelope || decoded.stderr.utf8() != Some("broken prepared tree") {
+        if decoded != envelope
+            || decoded.stderr.utf8_text()?.as_deref() != Some("broken prepared tree")
+        {
             bail!("failed discovery evidence did not survive round-trip");
+        }
+        if decoded.complete_success() {
+            bail!("nonzero process status must not become successful discovery");
         }
         Ok(())
     }
 
     #[test]
-    fn raw_stream_round_trips_invalid_utf8_nul_and_large_payloads() -> TestResult {
-        let mut bytes = vec![0, 0x80, 0xff, b'a', b'\n'];
-        bytes.extend(std::iter::repeat_n(0x81, 65_536));
-        let stream = RawByteStream::from_bytes(&bytes);
+    fn raw_stream_round_trips_invalid_utf8_and_nul_within_limit() -> TestResult {
+        let bytes = vec![0, 0x80, 0xff, b'a', b'\n'];
+        let stream = RawByteStream::from_capture(
+            capture_stream(Cursor::new(bytes.clone()), RAW_STREAM_MAX_BYTES),
+            RAW_STREAM_MAX_BYTES,
+        );
         stream.validate()?;
         if stream.bytes()? != bytes {
             bail!("raw stream did not round-trip byte-for-byte");
         }
-        if stream.utf8().is_some() {
+        if stream.utf8_text()?.is_some() {
             bail!("invalid UTF-8 stream must not acquire a text projection");
         }
         Ok(())
     }
 
+    fn assert_over_limit_capture(label: &str) -> TestResult {
+        let limit = 8;
+        let bytes = vec![b'x'; limit + 5];
+        let stream = RawByteStream::from_capture(
+            capture_stream(Cursor::new(bytes), limit),
+            limit,
+        );
+        stream.validate()?;
+        if !stream.truncated
+            || stream.observed_byte_length != 13
+            || stream.retained_byte_length != limit
+            || stream.complete()
+        {
+            bail!("{label} over-limit capture was not represented as bounded truncation");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stdout_over_limit_is_bounded_and_non_authoritative() -> TestResult {
+        assert_over_limit_capture("stdout")
+    }
+
+    #[test]
+    fn stderr_over_limit_is_bounded_and_non_authoritative() -> TestResult {
+        assert_over_limit_capture("stderr")
+    }
+
     #[test]
     fn distinct_lossy_sequences_remain_distinct() -> TestResult {
-        let first = RawByteStream::from_bytes(&[0x80]);
-        let second = RawByteStream::from_bytes(&[0x81]);
+        let first = RawByteStream::from_capture(
+            capture_stream(Cursor::new([0x80]), RAW_STREAM_MAX_BYTES),
+            RAW_STREAM_MAX_BYTES,
+        );
+        let second = RawByteStream::from_capture(
+            capture_stream(Cursor::new([0x81]), RAW_STREAM_MAX_BYTES),
+            RAW_STREAM_MAX_BYTES,
+        );
         if String::from_utf8_lossy(&[0x80]) != String::from_utf8_lossy(&[0x81]) {
             bail!("fixture must demonstrate a lossy-decoding collision");
         }
         if first.payload_hex == second.payload_hex || first.sha256 == second.sha256 {
             bail!("byte-exact streams collapsed distinct invalid UTF-8 sequences");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn process_outcome_cannot_contradict_a_separate_success_flag() -> TestResult {
+        let contradictory_success = r#"{
+            "schema_version":"perl_core_harness.discovery_raw.v2",
+            "runner":"test",
+            "profile":"base",
+            "host_perl":"perl",
+            "working_directory":"t",
+            "argv":["TEST","--dumptests"],
+            "status":7,
+            "success":true,
+            "stdout":{},
+            "stderr":{}
+        }"#;
+        let contradictory_failure = contradictory_success.replace("\"status\":7", "\"status\":0").replace("\"success\":true", "\"success\":false");
+        let missing_outcome = contradictory_success
+            .replace("\"status\":7,", "")
+            .replace("\"success\":true,", "");
+        for invalid in [
+            contradictory_success.to_string(),
+            contradictory_failure,
+            missing_outcome,
+        ] {
+            if serde_json::from_str::<DiscoveryRawEnvelope>(&invalid).is_ok() {
+                bail!("legacy contradictory or missing process outcome must not decode as v2");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn complete_success_is_derived_from_process_and_stream_completeness() -> TestResult {
+        let stream = RawByteStream::from_capture(
+            capture_stream(Cursor::new(b"base/ok.t\n"), RAW_STREAM_MAX_BYTES),
+            RAW_STREAM_MAX_BYTES,
+        );
+        let mut envelope = DiscoveryRawEnvelope {
+            schema_version: DISCOVERY_RAW_SCHEMA_VERSION.into(),
+            runner: HarnessRunner::Test,
+            profile: HarnessProfile::Base,
+            host_perl: "perl".into(),
+            working_directory: "t".into(),
+            argv: vec!["TEST".into(), "--dumptests".into()],
+            process: DiscoveryProcessOutcome::Exited { code: 0 },
+            stdout: stream,
+            stderr: RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+        };
+        assert!(envelope.complete_success());
+        envelope.process = DiscoveryProcessOutcome::Exited { code: 1 };
+        assert!(!envelope.complete_success());
         Ok(())
     }
 
