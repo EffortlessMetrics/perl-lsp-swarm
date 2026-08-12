@@ -174,9 +174,7 @@ use crate::lexer::helpers::{
     empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
     is_perl_punctuation_variable, is_quote_op_word_prefix, truncate_preview,
 };
-use crate::limits::{
-    HEREDOC_TIMEOUT_MS, MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES,
-};
+use crate::limits::{MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
 
 impl<'a> PerlLexer<'a> {
     /// Create a new lexer that emits `HeredocBody` tokens (for LSP folding)
@@ -238,18 +236,6 @@ impl<'a> PerlLexer<'a> {
 
                     // Scan line by line looking for the terminator
                     while self.position < self.input.len() {
-                        // Timeout protection (Issue #443)
-                        if self.start_time.elapsed().as_millis() > HEREDOC_TIMEOUT_MS as u128 {
-                            self.pending_heredocs.remove(0);
-                            self.position = self.input.len();
-                            return Some(Token {
-                                token_type: TokenType::Error(Arc::from("Heredoc parsing timeout")),
-                                text: Arc::from(&self.input[body_start..]),
-                                start: body_start,
-                                end: self.input.len(),
-                            });
-                        }
-
                         // Budget cap for huge bodies - optimized check
                         if self.position - body_start > MAX_HEREDOC_BYTES {
                             // Remove the pending heredoc to avoid infinite loop
@@ -531,7 +517,6 @@ impl<'a> PerlLexer<'a> {
         let saved_line_start_offset = self.line_start_offset;
         let saved_current_quote_op = self.current_quote_op.clone();
         let saved_eof_emitted = self.eof_emitted;
-        let saved_start_time = self.start_time;
 
         let token = self.next_token();
 
@@ -551,7 +536,6 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = saved_line_start_offset;
         self.current_quote_op = saved_current_quote_op;
         self.eof_emitted = saved_eof_emitted;
-        self.start_time = saved_start_time;
 
         token
     }
@@ -592,7 +576,6 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = 0;
         self.current_quote_op = None;
         self.eof_emitted = false;
-        self.start_time = std::time::Instant::now();
     }
 
     /// Switch the lexer into format-body parsing mode.

@@ -194,9 +194,7 @@ mod tests {
         let replayed = capture_live_checkpoint(source, expected.position)
             .ok_or_else(|| anyhow::anyhow!("live checkpoint replay failed"))?;
 
-        let mut expected_without_operation_time = expected.clone();
-        expected_without_operation_time.start_time = replayed.start_time;
-        assert_eq!(replayed, expected_without_operation_time);
+        assert_eq!(replayed, *expected);
         Ok(())
     }
 
@@ -223,7 +221,7 @@ mod tests {
         );
         assert!(
             capture_live_checkpoint(source, queued.position).is_none(),
-            "timeout-sensitive queued-heredoc checkpoints must fall back"
+            "queued-heredoc checkpoints must fall back before the deterministic heredoc budget path"
         );
 
         let resumed = lexed
@@ -237,6 +235,41 @@ mod tests {
             lexed.checkpoints.iter().any(|summary| summary.byte == resumed.position),
             "restart summaries must resume after the heredoc queue drains"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn replayable_checkpoint_reaches_deterministic_heredoc_budget() -> Result<()> {
+        let body = "x".repeat(256 * 1024 + 1);
+        let source = format!("my $value = <<EOF;\n{body}\nEOF\n");
+        let line_index = LineIndex::new(&source);
+        let fresh = lex_source_with_checkpoints(&source, &line_index);
+        let checkpoint = capture_live_checkpoint(&source, 0)
+            .ok_or_else(|| anyhow::anyhow!("start checkpoint should be replayable"))?;
+
+        assert!(!checkpoint.is_timeout_sensitive());
+        assert!(
+            fresh.tokens.iter().any(|token| token.token_type == TokenType::UnknownRest),
+            "fresh lex must take deterministic heredoc budget recovery"
+        );
+
+        let replayed = lex_from_live_checkpoint(&source, &line_index, &checkpoint)?;
+        assert_eq!(replayed.tokens.len(), fresh.tokens.len());
+        for (index, (actual, expected)) in replayed.tokens.iter().zip(&fresh.tokens).enumerate() {
+            assert_eq!(actual.token_type, expected.token_type, "token kind {index}");
+            assert_eq!(actual.text, expected.text, "token payload {index}");
+            assert_eq!(actual.start, expected.start, "token start {index}");
+            assert_eq!(actual.end, expected.end, "token end {index}");
+        }
+        assert_eq!(replayed.checkpoints.len(), fresh.checkpoints.len());
+        for (index, (actual, expected)) in
+            replayed.checkpoints.iter().zip(&fresh.checkpoints).enumerate()
+        {
+            assert_eq!(actual.byte, expected.byte, "checkpoint byte {index}");
+            assert_eq!(actual.mode, expected.mode, "checkpoint mode {index}");
+            assert_eq!(actual.line, expected.line, "checkpoint line {index}");
+            assert_eq!(actual.column, expected.column, "checkpoint column {index}");
+        }
         Ok(())
     }
 }

@@ -28,7 +28,6 @@ impl Checkpointable for PerlLexer<'_> {
         };
 
         LexerCheckpoint {
-            start_time: self.start_time,
             position: self.position,
             mode: self.mode,
             delimiter_stack: self.delimiter_stack.clone(),
@@ -64,7 +63,6 @@ impl Checkpointable for PerlLexer<'_> {
     }
 
     fn restore(&mut self, checkpoint: &LexerCheckpoint) {
-        self.start_time = checkpoint.start_time;
         self.position = checkpoint.position;
         self.mode = checkpoint.mode;
         self.delimiter_stack.clone_from(&checkpoint.delimiter_stack);
