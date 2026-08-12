@@ -464,7 +464,11 @@ fn classify_cli_rejects_series_membership_mismatch() {
         ])
         .output()
         .expect("spawn classify CLI");
-    assert!(!result.status.success());
+    assert!(
+        !result.status.success(),
+        "expected CLI failure, but it succeeded. stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("file_membership mismatch"), "unexpected stderr: {stderr}");
     assert!(!output.exists(), "membership mismatch must not write a classify receipt");
