@@ -25,28 +25,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "3d535bc044166a8ccf603315f5b493ddbf81dc83"
+          git merge-base --is-ancestor 3d535bc044166a8ccf603315f5b493ddbf81dc83 HEAD
+          test "$(git diff --name-only 3d535bc044166a8ccf603315f5b493ddbf81dc83 HEAD)" = ".github/workflows/fix-topology-helper-6745.yml"
           python3 - <<'PY'
           from pathlib import Path
 
           path = Path('crates/perl-corpus/src/api/topology.rs')
           source = path.read_text()
-          old = '''    fn topology_from_root(root: &Path) -> Result<CorpusTopology, CorpusTopologyError> {
-              fs::create_dir_all(root.join("test_corpus")).expect("create test corpus layer");
-              fs::create_dir_all(root.join("crates/perl-corpus/fuzz"))
-                  .expect("create fuzz corpus layer");
-              topology_from_root(root)
-          }
-          '''
-          new = '''    fn topology_from_root(root: &Path) -> Result<CorpusTopology, CorpusTopologyError> {
-              fs::create_dir_all(root.join("test_corpus")).expect("create test corpus layer");
-              fs::create_dir_all(root.join("crates/perl-corpus/fuzz"))
-                  .expect("create fuzz corpus layer");
-              CorpusTopology::from_paths(&CorpusPaths::from_root(root.to_path_buf()))
-          }
-          '''
+          old = '        topology_from_root(root)\n'
+          new = (
+              '        CorpusTopology::from_paths(&CorpusPaths::from_root(root.to_path_buf()))\n'
+          )
           if source.count(old) != 1:
-              raise SystemExit(f'expected one recursive helper body, found {source.count(old)}')
+              raise SystemExit(f'expected one recursive helper call, found {source.count(old)}')
           path.write_text(source.replace(old, new))
           PY
           cargo fmt -p perl-corpus
