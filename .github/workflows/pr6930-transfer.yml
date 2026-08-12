@@ -1,19 +1,29 @@
-name: PR 6930 transfer receipt
+name: PR 6930 transfer applicator
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
     paths:
       - '.github/workflows/pr6930-transfer.yml'
 
 permissions:
-  contents: read
+  contents: write
   issues: read
+  pull-requests: read
 
 jobs:
-  transfer:
+  apply-transfer:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: true
+
       - name: Fetch, recover, and verify transfer archive
         env:
           GH_TOKEN: ${{ github.token }}
@@ -95,10 +105,53 @@ jobs:
               destination.write(archive)
           PY
 
-      - name: Upload verified transfer archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
-        with:
-          name: pr6930-transfer-${{ github.event.pull_request.head.sha }}
-          path: pr6930.tar.gz
-          if-no-files-found: error
-          retention-days: 1
+      - name: Apply exact transfer and remove applicator
+        run: |
+          rm -rf .transfer-pr6930
+          mkdir .transfer-pr6930
+          tar -xzf pr6930.tar.gz -C .transfer-pr6930
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          expected = {
+              '.github/workflows/pr-candidate-set.yml': (1532, '651ed6b7e82d95796ce4af095eed6d7fa14cf8d7aa96a90774077f2b80557d43'),
+              'policy/pr-candidate-sets.toml': (7205, 'ee0d3cc910b60b7c314ccdd60b5040b5a59585250542fc66ebe06607939d4257'),
+              'xtask/src/bin/pr-candidate-set.rs': (26279, 'f94d6392ec740f7110b78c220fbcb3ee0f5278c5c585231399e484b867afcfca'),
+          }
+          root = Path('.transfer-pr6930')
+          actual = sorted(
+              path.relative_to(root).as_posix()
+              for path in root.rglob('*')
+              if path.is_file()
+          )
+          if actual != sorted(expected):
+              raise SystemExit(f'unexpected transfer path set: {actual!r}')
+          for relative, (length, digest) in expected.items():
+              data = (root / relative).read_bytes()
+              observed = hashlib.sha256(data).hexdigest()
+              if len(data) != length or observed != digest:
+                  raise SystemExit(
+                      f'{relative}: expected {length}/{digest}, got {len(data)}/{observed}'
+                  )
+              destination = Path(relative)
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              destination.write_bytes(data)
+          PY
+          git rm .github/workflows/pr6930-transfer.yml
+          rm -rf .transfer-pr6930 pr6930.tar.gz
+          git diff --check
+          git status --short
+
+      - name: Commit exact repaired candidate
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add \
+            .github/workflows/pr-candidate-set.yml \
+            policy/pr-candidate-sets.toml \
+            xtask/src/bin/pr-candidate-set.rs
+          git commit -m 'fix(pr): bind candidate reconciliation to semantic observations'
+          git push origin "HEAD:${HEAD_BRANCH}"
