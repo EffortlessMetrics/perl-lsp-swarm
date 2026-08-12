@@ -44,6 +44,20 @@ impl NativeCriticProfile {
         raw.parse().ok()
     }
 
+    /// Parse a legacy string carrier without changing its historical semantics.
+    ///
+    /// The older runtime carriers used an exact-token parse and fell back to
+    /// [`Self::Strict`] for anything else. Keep that behavior explicit while
+    /// configuration boundaries use [`Self::parse`] and its normalization.
+    #[must_use]
+    pub fn parse_legacy(raw: &str) -> Option<Self> {
+        match raw {
+            "recommended" => Some(Self::Recommended),
+            "strict" => Some(Self::Strict),
+            _ => None,
+        }
+    }
+
     /// Stable canonical profile label for configuration, receipts, and display.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -384,9 +398,7 @@ fn severity_enabled(severity: Severity, config: &CriticConfig) -> bool {
 mod profile_tests {
     use std::str::FromStr;
 
-    use super::{
-        MAX_REJECTED_PROFILE_CHARS, NativeCriticProfile, NativeCriticProfileParseError,
-    };
+    use super::{MAX_REJECTED_PROFILE_CHARS, NativeCriticProfile, NativeCriticProfileParseError};
 
     #[test]
     fn recommended_is_the_internal_default() {
@@ -399,26 +411,32 @@ mod profile_tests {
             NativeCriticProfile::from_str(" Recommended "),
             Ok(NativeCriticProfile::Recommended)
         );
-        assert_eq!(
-            NativeCriticProfile::from_str("STRICT"),
-            Ok(NativeCriticProfile::Strict)
-        );
+        assert_eq!(NativeCriticProfile::from_str("STRICT"), Ok(NativeCriticProfile::Strict));
         assert!(NativeCriticProfile::from_str("recomended").is_err());
+    }
+
+    #[test]
+    fn legacy_parsing_keeps_exact_token_compatibility() {
+        assert_eq!(
+            NativeCriticProfile::parse_legacy("recommended"),
+            Some(NativeCriticProfile::Recommended)
+        );
+        assert_eq!(NativeCriticProfile::parse_legacy("strict"), Some(NativeCriticProfile::Strict));
+        assert!(NativeCriticProfile::parse_legacy(" RECOMMENDED ").is_none());
+        assert!(NativeCriticProfile::parse_legacy("STRICT").is_none());
     }
 
     #[test]
     fn invalid_tokens_preserve_the_original_value_in_the_error() {
         let error = NativeCriticProfile::from_str(" recomended ");
-        assert_eq!(
-            error,
-            Err(NativeCriticProfileParseError { value: " recomended ".to_string() })
-        );
+        assert_eq!(error, Err(NativeCriticProfileParseError { value: " recomended ".to_string() }));
     }
 
     #[test]
     fn invalid_token_display_escapes_control_characters_without_changing_evidence() {
         let raw = "strict\n\t\u{0007}'";
-        let error = NativeCriticProfile::from_str(raw).expect_err("control-bearing token must fail");
+        let error =
+            NativeCriticProfile::from_str(raw).expect_err("control-bearing token must fail");
         let rendered = error.to_string();
 
         assert_eq!(error.value(), raw);
