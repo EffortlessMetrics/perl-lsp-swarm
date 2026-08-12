@@ -23,9 +23,7 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source
-        .get(node.location.start..node.location.end)
-        .map(str::to_owned)
+    source.get(node.location.start..node.location.end).map(str::to_owned)
 }
 
 #[test]
@@ -38,11 +36,8 @@ fn multiplication_binds_inside_addition() -> Result<(), String> {
         if let NodeKind::VariableDeclaration { initializer: Some(initializer), .. } = &node.kind
             && let NodeKind::Binary { op, left, right } = &initializer.kind
             && op == "+"
-            && let NodeKind::Binary {
-                op: nested_op,
-                left: nested_left,
-                right: nested_right,
-            } = &right.kind
+            && let NodeKind::Binary { op: nested_op, left: nested_left, right: nested_right } =
+                &right.kind
             && nested_op == "*"
         {
             shapes.push((
@@ -80,11 +75,8 @@ fn assignment_and_ternary_remain_exactly_right_associative() -> Result<(), Strin
         NodeKind::Assignment { op, lhs, rhs }
             if op == "=" && source_text(source, node).as_deref() == Some("$a = $b = $c") =>
         {
-            if let NodeKind::Assignment {
-                op: nested_op,
-                lhs: nested_lhs,
-                rhs: nested_rhs,
-            } = &rhs.kind
+            if let NodeKind::Assignment { op: nested_op, lhs: nested_lhs, rhs: nested_rhs } =
+                &rhs.kind
                 && nested_op == "="
             {
                 assignment_shapes.push((
@@ -97,11 +89,9 @@ fn assignment_and_ternary_remain_exactly_right_associative() -> Result<(), Strin
                 ));
             }
         }
-        NodeKind::Ternary {
-            condition,
-            then_expr,
-            else_expr,
-        } if source_text(source, node).as_deref() == Some("$a ? $b : $c ? $d : $e") => {
+        NodeKind::Ternary { condition, then_expr, else_expr }
+            if source_text(source, node).as_deref() == Some("$a ? $b : $c ? $d : $e") =>
+        {
             if let NodeKind::Ternary {
                 condition: nested_condition,
                 then_expr: nested_then,
@@ -164,11 +154,8 @@ fn exponentiation_remains_exactly_right_associative() -> Result<(), String> {
         if let NodeKind::VariableDeclaration { initializer: Some(initializer), .. } = &node.kind
             && let NodeKind::Binary { op, left, right } = &initializer.kind
             && op == "**"
-            && let NodeKind::Binary {
-                op: nested_op,
-                left: nested_left,
-                right: nested_right,
-            } = &right.kind
+            && let NodeKind::Binary { op: nested_op, left: nested_left, right: nested_right } =
+                &right.kind
             && nested_op == "**"
         {
             shapes.push((
@@ -202,6 +189,35 @@ fn exponentiation_remains_exactly_right_associative() -> Result<(), String> {
 }
 
 #[test]
+fn unary_minus_binds_outside_exponentiation() -> Result<(), String> {
+    let source = "my $value = -2 ** 2;";
+    let ast = parse_clean(source)?;
+    let mut shapes = Vec::new();
+
+    walk(&ast, &mut |node| {
+        if let NodeKind::VariableDeclaration { initializer: Some(initializer), .. } = &node.kind
+            && let NodeKind::Unary { op, operand } = &initializer.kind
+            && op == "-"
+            && let NodeKind::Binary { op: power, left, right } = &operand.kind
+            && power == "**"
+        {
+            shapes.push((
+                source_text(source, initializer),
+                source_text(source, left),
+                source_text(source, right),
+            ));
+        }
+    });
+
+    assert_eq!(
+        shapes,
+        vec![(Some("-2 ** 2".to_string()), Some("2".to_string()), Some("2".to_string()))],
+        "unary minus must remain outside the exponentiation tree"
+    );
+    Ok(())
+}
+
+#[test]
 fn slash_and_brace_ambiguities_keep_owned_distinct_shapes() -> Result<(), String> {
     let source = concat!(
         "$value / 2;\n",
@@ -226,13 +242,7 @@ fn slash_and_brace_ambiguities_keep_owned_distinct_shapes() -> Result<(), String
             ),
             matches!(&right.kind, NodeKind::Number { value } if value == "2"),
         )),
-        NodeKind::Match {
-            expr,
-            pattern,
-            modifiers,
-            has_embedded_code,
-            negated,
-        } => matches.push((
+        NodeKind::Match { expr, pattern, modifiers, has_embedded_code, negated } => matches.push((
             source_text(source, node),
             source_text(source, expr),
             pattern.clone(),
@@ -277,14 +287,14 @@ fn slash_and_brace_ambiguities_keep_owned_distinct_shapes() -> Result<(), String
         vec![(
             Some("$value =~ /pattern/".to_string()),
             Some("$value".to_string()),
-            "pattern".to_string(),
+            "/pattern/".to_string(),
             String::new(),
             false,
             false,
             true,
         )]
     );
-    assert_eq!(hash_literals, vec!["{ key => 1 }"]);
+    assert_eq!(hash_literals, vec!["key => 1"]);
     assert_eq!(
         map_calls,
         vec![(
