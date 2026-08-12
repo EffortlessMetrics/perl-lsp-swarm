@@ -46,7 +46,6 @@ struct ServerIdentity {
     package_manifest: PathBuf,
     implementation_crate: String,
     implementation_manifest: PathBuf,
-    compatibility_executable: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,29 +183,40 @@ fn validate_contract(
     )?;
     require_equal("workspace repository", workspace_repository, &public_repository_url)?;
 
-    validate_cargo_identity(
+    let primary_manifest = validate_cargo_package_identity(
         repo_root,
         "primary server",
         &contract.server.package_manifest,
         &contract.server.cargo_package,
-        &contract.server.primary_executable,
         workspace_repository,
     )?;
-    validate_cargo_identity(
+    validate_cargo_binary_identity(
+        repo_root,
+        "primary server",
+        &contract.server.package_manifest,
+        &primary_manifest,
+        &contract.server.primary_executable,
+    )?;
+    validate_cargo_package_identity(
         repo_root,
         "server implementation",
         &contract.server.implementation_manifest,
         &contract.server.implementation_crate,
-        &contract.server.compatibility_executable,
         workspace_repository,
     )?;
-    validate_cargo_identity(
+    let debug_adapter_manifest = validate_cargo_package_identity(
         repo_root,
         "debug adapter",
         &contract.debug_adapter.package_manifest,
         &contract.debug_adapter.cargo_package,
-        &contract.debug_adapter.executable,
         workspace_repository,
+    )?;
+    validate_cargo_binary_identity(
+        repo_root,
+        "debug adapter",
+        &contract.debug_adapter.package_manifest,
+        &debug_adapter_manifest,
+        &contract.debug_adapter.executable,
     )?;
     validate_facade_dependency(
         repo_root,
@@ -252,14 +262,13 @@ fn validate_repository_context(
     Ok(())
 }
 
-fn validate_cargo_identity(
+fn validate_cargo_package_identity(
     repo_root: &Path,
     label: &str,
     manifest_path: &Path,
     expected_package: &str,
-    expected_binary: &str,
     workspace_repository: &str,
-) -> Result<()> {
+) -> Result<toml::Value> {
     validate_relative_path(manifest_path)?;
     let manifest = read_toml(repo_root, manifest_path)?;
     let package_name = toml_string(&manifest, &["package", "name"], "Cargo package name")?;
@@ -272,7 +281,18 @@ fn validate_cargo_identity(
         workspace_repository,
     )?;
 
-    let binary_names = cargo_binary_names(repo_root, manifest_path, &manifest, package_name)?;
+    Ok(manifest)
+}
+
+fn validate_cargo_binary_identity(
+    repo_root: &Path,
+    label: &str,
+    manifest_path: &Path,
+    manifest: &toml::Value,
+    expected_binary: &str,
+) -> Result<()> {
+    let package_name = toml_string(manifest, &["package", "name"], "Cargo package name")?;
+    let binary_names = cargo_binary_names(repo_root, manifest_path, manifest, package_name)?;
     if !binary_names.contains(expected_binary) {
         bail!(
             "{label} manifest {} does not expose binary {:?}; found {:?}",

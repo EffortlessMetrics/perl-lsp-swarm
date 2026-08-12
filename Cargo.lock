@@ -2043,7 +2043,10 @@ dependencies = [
 name = "perllsp"
 version = "0.17.0"
 dependencies = [
+ "anyhow",
  "perl-lsp-rs",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
