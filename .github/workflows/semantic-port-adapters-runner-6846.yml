@@ -15,13 +15,12 @@ jobs:
     env:
       BASE_HEAD: d19c114a7de42488612121fd91264700be0da477
       OLD_CHILD_HEAD: 0e8eb95f3338a9861d3c71034063783a90da87f1
-      PATCH_SHA256: f3e503b4766208e2e61b91077b5d534470c74494f39cf1e04ab2760e26743d57
     steps:
-      - name: Check out patch authority
+      - name: Check out exact adapter candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: agent/semantic-port-adapters-runner-6846
-          path: patch-source
+          ref: 0e8eb95f3338a9861d3c71034063783a90da87f1
+          path: candidate
           persist-credentials: false
 
       - name: Check out exact semantic-port base
@@ -32,31 +31,67 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Verify base and reconstruct exact patch
+      - name: Reconstruct current stacked adapter diff
         shell: bash
         run: |
           set -euo pipefail
+          : > "$RUNNER_TEMP/semantic-port-adapters.log"
+          test "$(git -C candidate rev-parse HEAD)" = "$OLD_CHILD_HEAD"
           test "$(git -C work rev-parse HEAD)" = "$BASE_HEAD"
-          cat patch-source/.github/semantic-port-adapters-patch/part-* > "$RUNNER_TEMP/semantic-port-adapters.patch"
-          actual_patch_sha256="$(sha256sum "$RUNNER_TEMP/semantic-port-adapters.patch" | awk '{print $1}')"
-          printf 'actual_patch_sha256=%s\n' "$actual_patch_sha256"
-          test "$actual_patch_sha256" = "$PATCH_SHA256"
 
-      - name: Apply adapter rebuild to final contract
-        shell: bash
-        working-directory: work
-        run: |
-          set -euo pipefail
-          git apply --3way --index "$RUNNER_TEMP/semantic-port-adapters.patch"
+          cp candidate/.changes/unreleased/product-6846-Added-210342.yaml \
+            work/.changes/unreleased/product-6846-Added-210342.yaml
+          cp candidate/crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs \
+            work/crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs
+          cp candidate/crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs \
+            work/crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('work/crates/perl-lsp-rs-core/src/providers/mod.rs')
+          text = path.read_text(encoding='utf-8')
+          declaration = 'pub mod semantic_port;\n'
+          reexport = 'pub use semantic_port::*;\n'
+          if text.count(declaration) != 1:
+              raise SystemExit(f'semantic_port declaration anchor count: {text.count(declaration)}')
+          if text.count(reexport) != 1:
+              raise SystemExit(f'semantic_port re-export anchor count: {text.count(reexport)}')
+          text = text.replace(
+              declaration,
+              declaration + 'pub mod semantic_port_adapters;\n',
+          )
+          text = text.replace(
+              reexport,
+              reexport + 'pub use semantic_port_adapters::*;\n',
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          git -C work add \
+            .changes/unreleased/product-6846-Added-210342.yaml \
+            crates/perl-lsp-rs-core/src/providers/mod.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs \
+            crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs
+
           printf '%s\n' \
             .changes/unreleased/product-6846-Added-210342.yaml \
             crates/perl-lsp-rs-core/src/providers/mod.rs \
             crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs \
             crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs \
             | sort > "$RUNNER_TEMP/expected-adapter-paths"
-          git diff --cached --name-only | sort > "$RUNNER_TEMP/actual-adapter-paths"
+          git -C work diff --cached --name-only | sort > "$RUNNER_TEMP/actual-adapter-paths"
           diff -u "$RUNNER_TEMP/expected-adapter-paths" "$RUNNER_TEMP/actual-adapter-paths"
-          git diff --cached --check
+
+          printf '%s\n' \
+            $'9\t0\t.changes/unreleased/product-6846-Added-210342.yaml' \
+            $'2\t0\tcrates/perl-lsp-rs-core/src/providers/mod.rs' \
+            $'1313\t0\tcrates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs' \
+            $'415\t0\tcrates/perl-lsp-rs-core/tests/semantic_port_adapters.rs' \
+            | sort > "$RUNNER_TEMP/expected-adapter-numstat"
+          git -C work diff --cached --numstat | sort > "$RUNNER_TEMP/actual-adapter-numstat"
+          diff -u "$RUNNER_TEMP/expected-adapter-numstat" "$RUNNER_TEMP/actual-adapter-numstat"
+          git -C work diff --cached --check
 
       - name: Install Rust 1.95
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
