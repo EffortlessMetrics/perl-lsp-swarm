@@ -22,6 +22,7 @@ This skill compiles the settled repository protocol rather than creating a secon
 - issue #3949 owns the repository development protocol and artifact boundaries;
 - issue #3786 owns the exact staged-tree commit gate;
 - issue #3985 owns affected committed-diff and pre-push proof routing;
+- issue #7365 owns completion of the executable local diff-scoped RIPR path;
 - issue #3987 owns thin current-head CI;
 - issue #3988 owns merge fan-in and protected integration;
 - issue #3989 owns post-merge reconciliation;
@@ -54,6 +55,7 @@ concern or request
    → review-candidate          # implementation, reachability, product vision
    → improve-test-suite        # stronger and cheaper discrimination
    → simplify-candidate
+→ prove-before-push            # affected proof, Changie, diff RIPR or honest boundary
 → publish-pr
 → address-review-comments      # human, bot, and candidate-owned CI findings
 → affected proof and affected review
@@ -68,6 +70,7 @@ The graph is intentionally cyclic:
 - material premise, owner, or claim change returns to `prepare-issue`;
 - weak, circular, stale, or missing proof returns to `prepare-proof`;
 - candidate-owned implementation or test failure returns to `build-candidate`;
+- pre-push product/test failure or RIPR observation gap returns to candidate/proof work;
 - accepted review findings route through `address-review-comments` and affected proof;
 - substantive candidate mutation refreshes only affected review dimensions;
 - a named prerequisite becomes a separate claim lane only when it gains an accountable
@@ -91,6 +94,7 @@ Do not write runtime activity merely because a stage occurred.
 | Test, fixture, oracle, or proof artifact | executable discrimination and its limitations | once the intended wrong behavior has been observed red |
 | `.changes/unreleased/` | user-visible/release-note disposition | when the user-visible effect is settled, while context is still fresh |
 | Branch/worktree | one coherent candidate under one writer | when mutation begins |
+| Local candidate result | exact committed range, selected/deferred affected proof, Changie, diff RIPR disposition, limitations | after `prove-before-push` executes or honestly classifies the boundary |
 | PR body | cumulative claim, changed production path, proof, hardening, simplification, deviations, risk, limitations | when the candidate is coherent enough to publish |
 | Inline review thread | localized finding and evidence-backed disposition | when the finding is stable and addressable |
 | Submitted review | cumulative substantive judgment | after applicable lenses are joined against the current semantic candidate |
@@ -143,10 +147,16 @@ staged-index input and the commit gate has a sub-30-second contract.
 
 ### Before push and publication
 
-The pre-push/affected-proof boundary owns the committed base/head range, affected Cargo
-closure, focused behavioral proof, Changie dry rendering, and diff-scoped RIPR routing
-through the shared change-set authority from #3985. Use the repository hook/xtask
-surface; do not recreate base selection or package classification inside a skill.
+`prove-before-push` owns the candidate-facing skill boundary. The committed-diff policy
+from #3985 owns the resolved base/head, affected Cargo closure, focused behavioral proof,
+Changie dry rendering, and diff-scoped RIPR routing. Use the repository planner, hook,
+change-set resolver, and current supported RIPR surfaces; do not recreate base selection
+or package classification inside the skill.
+
+The current `pre-push-plan` is planning-only and the ordinary hook does not yet execute
+the complete diff-scoped RIPR result. #7365 owns that implementation gap. Until it lands,
+run and validate the current local receipts where available and preserve an exact local
+RIPR `NOT_PROVEN` or remote-only boundary otherwise.
 
 A local result is candidate evidence, not merge authorization. `NOT_PROVEN` remains
 visible when the instrument, base/head identity, or required environment is unavailable.
