@@ -82,6 +82,16 @@ pub enum RegexDiagnosticCode {
     BranchResetNestingLimit,
     /// Configured branch count inside a branch-reset group was exceeded.
     BranchResetBranchLimit,
+    /// A modifier character is not recognized by the static model.
+    UnknownModifier,
+    /// A known modifier is not valid for the selected operator family.
+    ModifierNotAllowedForOperator,
+    /// More than one effective `/a`, `/d`, `/l`, or `/u` mode was requested.
+    ConflictingCharacterSetModifiers,
+    /// The modifier form requires a newer Perl language version.
+    ModifierRequiresPerlVersion,
+    /// The requested feature-qualified behavior is unavailable for the profile.
+    ModifierRequiresFeature,
 }
 
 impl RegexDiagnosticCode {
@@ -96,6 +106,11 @@ impl RegexDiagnosticCode {
             Self::LookbehindNestingLimit => "lookbehind_nesting_limit",
             Self::BranchResetNestingLimit => "branch_reset_nesting_limit",
             Self::BranchResetBranchLimit => "branch_reset_branch_limit",
+            Self::UnknownModifier => "unknown_modifier",
+            Self::ModifierNotAllowedForOperator => "modifier_not_allowed_for_operator",
+            Self::ConflictingCharacterSetModifiers => "conflicting_character_set_modifiers",
+            Self::ModifierRequiresPerlVersion => "modifier_requires_perl_version",
+            Self::ModifierRequiresFeature => "modifier_requires_feature",
         }
     }
 
@@ -109,6 +124,11 @@ impl RegexDiagnosticCode {
             | Self::LookbehindNestingLimit
             | Self::BranchResetNestingLimit
             | Self::BranchResetBranchLimit => RegexDiagnosticClass::PolicyLimit,
+            Self::UnknownModifier
+            | Self::ModifierNotAllowedForOperator
+            | Self::ConflictingCharacterSetModifiers
+            | Self::ModifierRequiresPerlVersion
+            | Self::ModifierRequiresFeature => RegexDiagnosticClass::Syntax,
         }
     }
 }
@@ -166,6 +186,21 @@ impl RegexDiagnostic {
                 "Too many branches in branch reset group (max {})",
                 self.limit.unwrap_or_default()
             ),
+            RegexDiagnosticCode::UnknownModifier => {
+                "Unknown regex modifier".to_string()
+            }
+            RegexDiagnosticCode::ModifierNotAllowedForOperator => {
+                "Regex modifier is not valid for this operator".to_string()
+            }
+            RegexDiagnosticCode::ConflictingCharacterSetModifiers => {
+                "Character-set regex modifiers are mutually exclusive".to_string()
+            }
+            RegexDiagnosticCode::ModifierRequiresPerlVersion => {
+                "Regex modifier requires a newer Perl version".to_string()
+            }
+            RegexDiagnosticCode::ModifierRequiresFeature => {
+                "Regex modifier requires an unavailable Perl feature".to_string()
+            }
         }
     }
 }
