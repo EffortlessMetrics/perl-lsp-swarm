@@ -26,9 +26,42 @@ jobs:
 
       - name: Apply mechanical namespace migration
         run: |
-          # This workspace uses exact workspace versions without a leading '='.
-          # Keep the migration assertion exact while matching the live contract.
-          sed -i 's/version = "=0.17.0"/version = "0.17.0"/g' scripts/agent_move_release_readiness_7166.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/agent_move_release_readiness_7166.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace('version = "=0.17.0"', 'version = "0.17.0"')
+          text = text.replace(
+              '''    cargo = replace_required(
+                  cargo,
+                  "[profile.release.package.perl-kwalitee]",
+                  "[profile.release.package.perl-release-readiness]",
+                  label="release profile",
+              )
+          ''',
+              '''    cargo = cargo.replace(
+                  "[profile.release.package.perl-kwalitee]",
+                  "[profile.release.package.perl-release-readiness]",
+              )
+          ''',
+          )
+          text = text.replace(
+              '''    cargo = replace_required(
+                  cargo,
+                  "[profile.release-opt.package.perl-kwalitee]",
+                  "[profile.release-opt.package.perl-release-readiness]",
+                  label="release-opt profile",
+              )
+          ''',
+              '''    cargo = cargo.replace(
+                  "[profile.release-opt.package.perl-kwalitee]",
+                  "[profile.release-opt.package.perl-release-readiness]",
+              )
+          ''',
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
           python3 scripts/agent_move_release_readiness_7166.py
 
       - name: Format Rust
