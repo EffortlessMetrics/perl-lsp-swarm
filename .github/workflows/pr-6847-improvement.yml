@@ -29,8 +29,9 @@ jobs:
       - name: Apply bounded patch
         run: python3 scripts/ci/apply_pr_6847_improvement.py
 
-      - name: Verify focused contracts
+      - name: Format and verify focused contracts
         run: |
+          cargo fmt --all
           cargo fmt --all -- --check
           cargo test -p xtask --test gate_policy_profile_tests --locked inline_completion_gates_are_split_scoped_ordered_and_budgeted
           cargo test -p xtask --locked gate_runner_reports_independent_results_when_a_peer_fails
