@@ -1,17 +1,21 @@
-//! TAP (Test Anything Protocol) output reader.
+//! TAP (Test Anything Protocol) compatibility projection for LSP consumers.
 //!
-//! `perl-lsp` does not run tests itself — `yath`, `prove`, or `perl` do. This
-//! module *reads* their TAP output and turns it into structured results the
-//! editor can act on: which assertions failed, their source location when the
-//! producer reported it, and TODO/SKIP status (which are **not** hard failures).
+//! [`perl_test_facts`] is the canonical server-side TAP parser. This module
+//! preserves the historical `perl-lsp-rs-core` result shapes while consumers
+//! migrate to the richer canonical report. It does not implement a second TAP
+//! grammar.
 //!
-//! The reader is intentionally conservative. It parses the well-specified TAP
-//! grammar (plan line, `ok`/`not ok`, directives, `# diagnostics`, `Bail out!`,
-//! nested-subtest indentation) and does not attempt to statically reconstruct
-//! anything the producer did not print.
+//! `perl-lsp` still does not run tests itself: `yath`, `prove`, `perl`, or a
+//! reviewed project command produce TAP. The pure facts crate reads that output;
+//! product layers associate the result with source/test identity and render it.
 
-use regex::Regex;
-use std::sync::LazyLock;
+pub use perl_test_facts::{
+    TapAssertion as CanonicalTapAssertion,
+    TapAssertionOutcome as CanonicalTapAssertionOutcome,
+    TapAssertionStatus as CanonicalTapAssertionStatus,
+    TapPlan as CanonicalTapPlan,
+    TapReport as CanonicalTapReport,
+};
 
 /// A TODO/SKIP directive attached to a test line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +27,7 @@ pub enum TapDirective {
     Skip(String),
 }
 
-/// A single `ok` / `not ok` line.
+/// A single `ok` / `not ok` line projected for historical LSP consumers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TapTest {
     /// The 1-based test number, if present.
@@ -36,22 +40,20 @@ pub struct TapTest {
     pub directive: Option<TapDirective>,
     /// Nesting depth from TAP indentation (0 = top level).
     pub depth: usize,
-    /// Diagnostic (`#`) lines that followed this test line.
+    /// Diagnostic lines retained by the canonical parser.
     pub diagnostics: Vec<String>,
-    /// Source file parsed from an `# at FILE line N.` diagnostic, if present.
+    /// Source file reported by the runner, if present.
     pub file: Option<String>,
-    /// Source line parsed from an `# at FILE line N.` diagnostic, if present.
+    /// Source line reported by the runner, if present.
     pub line: Option<usize>,
-    /// `got` value parsed from diagnostics, if present.
+    /// First `got`/`received` value reported by the runner, if present.
     pub got: Option<String>,
-    /// `expected` value parsed from diagnostics, if present.
+    /// First `expected`/`wanted` value reported by the runner, if present.
     pub expected: Option<String>,
 }
 
 impl TapTest {
-    /// Whether this line is a *hard* failure: a `not ok` that is not marked
-    /// TODO or SKIP. TODO failures and SKIP lines are not hard failures — this
-    /// must agree with `summarize()`, which counts skipped tests separately.
+    /// Whether this line is a hard failure: a `not ok` that is not TODO/SKIP.
     pub fn is_failure(&self) -> bool {
         !self.ok && !self.is_todo() && !self.is_skipped()
     }
@@ -61,104 +63,118 @@ impl TapTest {
         matches!(self.directive, Some(TapDirective::Skip(_)))
     }
 
-    /// Whether this test is a TODO (expected-failing) test.
+    /// Whether this test was marked TODO.
     pub fn is_todo(&self) -> bool {
         matches!(self.directive, Some(TapDirective::Todo(_)))
     }
 }
 
-/// The `1..N` plan line.
+/// Historical projection of the top-level TAP plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TapPlan {
-    /// The number of planned tests (`N` in `1..N`).
+    /// Number of planned top-level assertions.
     pub count: usize,
-    /// The skip-all reason for a `1..0 # SKIP reason` plan, if present.
+    /// Skip-all reason for a zero-count `# SKIP` plan, if present.
     pub skip_all: Option<String>,
 }
 
-/// Aggregate counts for a parsed TAP stream.
+/// Aggregate counts for the compatibility report.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TapSummary {
-    /// Total `ok`/`not ok` lines observed (top level and nested).
+    /// Total parsed assertions, including nested assertions.
     pub total: usize,
-    /// Hard failures (`not ok` without TODO).
+    /// Hard failures (`not ok` without TODO/SKIP).
     pub failed: usize,
-    /// Passing lines (`ok` without SKIP).
+    /// Passing assertions (`ok` without SKIP).
     pub passed: usize,
-    /// Skipped lines.
+    /// Skipped assertions.
     pub skipped: usize,
-    /// TODO lines (both passing and failing).
+    /// TODO assertions, passing or failing.
     pub todo: usize,
 }
 
-/// A fully parsed TAP stream.
+/// Historical LSP-facing projection of a canonical TAP report.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TapReport {
-    /// The plan line, if present.
+    /// Top-level plan, if present.
     pub plan: Option<TapPlan>,
-    /// All test lines in order.
+    /// Assertions in protocol order.
     pub tests: Vec<TapTest>,
-    /// The `Bail out!` reason, if the run bailed.
+    /// Bailout reason, if the run bailed out.
     pub bailed_out: Option<String>,
     /// Aggregate counts.
     pub summary: TapSummary,
 }
 
 impl TapReport {
-    /// The hard failures in this report (`not ok` without TODO).
+    /// Hard failures in this report.
     pub fn failures(&self) -> Vec<&TapTest> {
-        self.tests.iter().filter(|t| t.is_failure()).collect()
+        self.tests.iter().filter(|test| test.is_failure()).collect()
     }
 
-    /// Whether the run passed: no hard failures and no bail-out. Note a plan
-    /// mismatch is reported via [`Self::plan_mismatch`] separately.
+    /// Whether there are no hard failures and no bailout.
+    ///
+    /// Plan mismatch remains an independent structural result.
     pub fn passed(&self) -> bool {
         self.bailed_out.is_none() && self.summary.failed == 0
     }
 
-    /// If a plan was declared, whether the number of top-level tests differs
-    /// from the plan count. Returns `None` when there is no plan to compare.
+    /// Return `(actual, planned)` when the top-level assertion count differs.
     pub fn plan_mismatch(&self) -> Option<(usize, usize)> {
         let plan = self.plan.as_ref()?;
         if plan.skip_all.is_some() {
             return None;
         }
-        let top_level = self.tests.iter().filter(|t| t.depth == 0).count();
-        (top_level != plan.count).then_some((top_level, plan.count))
+        let actual = self.tests.iter().filter(|test| test.depth == 0).count();
+        (actual != plan.count).then_some((actual, plan.count))
     }
 }
 
-/// The result of focusing a TAP report on one named subtest.
+/// Result of focusing a compatibility report on one buffered subtest summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubtestFocus {
-    /// The requested subtest name.
+    /// Requested subtest name.
     pub name: String,
-    /// Whether a subtest summary line with that name was found in the output.
+    /// Whether a matching summary line was found.
     pub found: bool,
-    /// Whether that subtest passed (its summary line was `ok`). Meaningless
-    /// when `found` is false.
+    /// Whether the matching summary line passed.
     pub passed: bool,
-    /// Number of nested `not ok` (hard) failures attributed to the subtest.
+    /// Nested hard failures immediately preceding the summary line.
     pub inner_failed: usize,
 }
 
-/// Focus a parsed TAP report on a single subtest by name.
+/// Parse TAP into the canonical dependency-free result model.
 ///
-/// Test2/Test::More print a buffered subtest as a run of indented (`depth > 0`)
-/// assertion lines followed by a `depth == 0` summary line whose description is
-/// the subtest name. We match that summary line and attribute the immediately
-/// preceding nested failures to it. Returns `None` when no summary line with
-/// `name` is present — the caller then reports a whole-file run without focus
-/// (e.g. a dynamic subtest name, or a runner that did not label the subtest).
-pub fn focus_subtest(report: &TapReport, name: &str) -> Option<SubtestFocus> {
-    let summary_idx =
-        report.tests.iter().position(|test| test.depth == 0 && test.description == name)?;
-    let summary = &report.tests[summary_idx];
+/// New consumers should prefer this function so structural diagnostics, YAML
+/// blocks, unknown raw records, and TAP stream line numbers are retained.
+#[must_use]
+pub fn parse_tap_facts(output: &str) -> CanonicalTapReport {
+    perl_test_facts::parse_tap(output)
+}
 
-    // Count nested failures in the contiguous depth>0 run just before the
-    // summary line (buffered subtest body).
+/// Parse TAP and project it into the historical LSP-facing result shape.
+///
+/// This function exists for source compatibility. Parsing itself is delegated
+/// to [`perl_test_facts::parse_tap`].
+#[must_use]
+pub fn parse_tap(output: &str) -> TapReport {
+    project_report(&parse_tap_facts(output))
+}
+
+/// Focus a parsed report on a named buffered subtest.
+///
+/// Test2/Test::More generally emit indented assertions followed by a depth-zero
+/// summary assertion. This helper attributes the contiguous nested failures to
+/// that summary. It does not claim the subtest executed in isolation.
+pub fn focus_subtest(report: &TapReport, name: &str) -> Option<SubtestFocus> {
+    let summary_index = report
+        .tests
+        .iter()
+        .position(|test| test.depth == 0 && test.description == name)?;
+    let summary = &report.tests[summary_index];
+
     let mut inner_failed = 0;
-    for test in report.tests[..summary_idx].iter().rev() {
+    for test in report.tests[..summary_index].iter().rev() {
         if test.depth == 0 {
             break;
         }
@@ -175,180 +191,74 @@ pub fn focus_subtest(report: &TapReport, name: &str) -> Option<SubtestFocus> {
     })
 }
 
-static PLAN_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^1\.\.(\d+)\s*(?:#\s*[Ss][Kk][Ii][Pp]\S*\s*(.*))?$")
-        .unwrap_or_else(|_| unreachable!("static TAP plan pattern is valid"))
-});
-
-static TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(not )?ok\b[ \t]*(\d+)?[ \t]*(?:-[ \t]*)?(.*)$")
-        .unwrap_or_else(|_| unreachable!("static TAP test pattern is valid"))
-});
-
-static DIRECTIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)#\s*(todo|skip)\b\s*(.*)$")
-        .unwrap_or_else(|_| unreachable!("static TAP directive pattern is valid"))
-});
-
-static AT_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bat\s+(.+?)\s+line\s+(\d+)")
-        .unwrap_or_else(|_| unreachable!("static TAP at-line pattern is valid"))
-});
-
-static GOT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(?:got|received):\s*(.*)$")
-        .unwrap_or_else(|_| unreachable!("static TAP got pattern is valid"))
-});
-
-static EXPECTED_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(?:expected|wanted):\s*(.*)$")
-        .unwrap_or_else(|_| unreachable!("static TAP expected pattern is valid"))
-});
-
-/// Parse a TAP stream into a structured [`TapReport`].
-pub fn parse_tap(output: &str) -> TapReport {
-    let mut report = TapReport::default();
-
-    for raw_line in output.lines() {
-        let depth = indentation_depth(raw_line);
-        let line = raw_line.trim_start();
-
-        if line.is_empty() {
-            continue;
-        }
-
-        if let Some(reason) = line.strip_prefix("Bail out!") {
-            report.bailed_out = Some(reason.trim().to_string());
-            continue;
-        }
-
-        // TAP version header — ignore.
-        if line.starts_with("TAP version") {
-            continue;
-        }
-
-        // Plan line `1..N`.
-        if let Some(caps) = PLAN_RE.captures(line) {
-            let count = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
-            let skip_all = caps.get(2).map(|m| m.as_str().trim().to_string()).filter(|s| {
-                // A `1..0 # SKIP` marks skip-all; `1..N` (N>0) has no skip text.
-                !s.is_empty() || count == 0
-            });
-            report.plan = Some(TapPlan { count, skip_all });
-            continue;
-        }
-
-        // Test line.
-        if let Some(test) = parse_test_line(line, depth) {
-            report.tests.push(test);
-            continue;
-        }
-
-        // Diagnostic line: attach to the most recent test.
-        if let Some(diag) = line.strip_prefix('#') {
-            let diag = diag.trim();
-            if diag.is_empty() {
-                continue;
-            }
-            if let Some(last) = report.tests.last_mut() {
-                apply_diagnostic(last, diag);
-            }
-            continue;
-        }
-    }
-
-    report.summary = summarize(&report.tests);
-    report
-}
-
-/// Number of leading indentation "levels" (4 spaces or a tab each) — TAP nests
-/// subtests with 4-space indentation.
-fn indentation_depth(line: &str) -> usize {
-    let mut spaces = 0usize;
-    for ch in line.chars() {
-        match ch {
-            ' ' => spaces += 1,
-            '\t' => spaces += 4,
-            _ => break,
-        }
-    }
-    spaces / 4
-}
-
-fn parse_test_line(line: &str, depth: usize) -> Option<TapTest> {
-    let caps = TEST_RE.captures(line)?;
-    let ok = caps.get(1).is_none();
-    let number = caps.get(2).and_then(|m| m.as_str().parse().ok());
-    let rest = caps.get(3).map(|m| m.as_str()).unwrap_or("").trim();
-
-    // Split off a trailing directive `# TODO ...` / `# SKIP ...`.
-    let (description, directive) = if let Some(dcaps) = DIRECTIVE_RE.captures(rest) {
-        let whole = dcaps.get(0).map(|m| m.start()).unwrap_or(rest.len());
-        let desc = rest[..whole].trim_end().trim_end_matches('#').trim().to_string();
-        let kind = dcaps.get(1).map(|m| m.as_str().to_ascii_lowercase()).unwrap_or_default();
-        let reason = dcaps.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
-        let directive = match kind.as_str() {
-            "todo" => Some(TapDirective::Todo(reason)),
-            "skip" => Some(TapDirective::Skip(reason)),
-            _ => None,
-        };
-        (desc, directive)
-    } else {
-        (rest.to_string(), None)
+fn project_report(report: &CanonicalTapReport) -> TapReport {
+    let tests = report.assertions.iter().map(project_assertion).collect();
+    let plan = report.plan.as_ref().map(project_plan);
+    let summary = TapSummary {
+        total: report.assertions.len(),
+        failed: report.failed_count(),
+        passed: report.passed_count(),
+        skipped: report.skipped_count(),
+        todo: report.todo_count(),
     };
 
-    Some(TapTest {
-        number,
-        ok,
-        description,
+    TapReport {
+        plan,
+        tests,
+        bailed_out: report.bail_out.clone(),
+        summary,
+    }
+}
+
+fn project_assertion(assertion: &CanonicalTapAssertion) -> TapTest {
+    let directive = match assertion.status {
+        CanonicalTapAssertionStatus::Todo => Some(TapDirective::Todo(
+            directive_reason(assertion.directive.as_deref(), "todo").unwrap_or_default(),
+        )),
+        CanonicalTapAssertionStatus::Skip => Some(TapDirective::Skip(
+            directive_reason(assertion.directive.as_deref(), "skip").unwrap_or_default(),
+        )),
+        _ => None,
+    };
+
+    let mut diagnostics = assertion.diagnostic_lines.clone();
+    diagnostics.extend(assertion.diagnostics.iter().cloned());
+
+    TapTest {
+        number: assertion.number.and_then(|number| usize::try_from(number).ok()),
+        ok: matches!(assertion.outcome, CanonicalTapAssertionOutcome::Pass),
+        description: assertion.name.clone().unwrap_or_default(),
         directive,
-        depth,
-        diagnostics: Vec::new(),
-        file: None,
-        line: None,
-        got: None,
-        expected: None,
-    })
+        depth: assertion.depth,
+        diagnostics,
+        file: assertion.source_file.clone(),
+        line: assertion.source_line,
+        got: assertion.got.clone(),
+        expected: assertion.expected.clone(),
+    }
 }
 
-fn apply_diagnostic(test: &mut TapTest, diag: &str) {
-    if let Some(caps) = AT_LINE_RE.captures(diag) {
-        if test.file.is_none() {
-            test.file = caps.get(1).map(|m| m.as_str().trim().to_string());
-        }
-        if test.line.is_none() {
-            test.line = caps.get(2).and_then(|m| m.as_str().parse().ok());
-        }
-    }
-    if let Some(caps) = GOT_RE.captures(diag)
-        && test.got.is_none()
-    {
-        test.got = caps.get(1).map(|m| m.as_str().trim().to_string());
-    }
-    if let Some(caps) = EXPECTED_RE.captures(diag)
-        && test.expected.is_none()
-    {
-        test.expected = caps.get(1).map(|m| m.as_str().trim().to_string());
-    }
-    test.diagnostics.push(diag.to_string());
+fn project_plan(plan: &CanonicalTapPlan) -> TapPlan {
+    let count = if plan.end < plan.start {
+        0
+    } else {
+        let count = u64::from(plan.end) - u64::from(plan.start) + 1;
+        usize::try_from(count).unwrap_or(usize::MAX)
+    };
+    let skip_all =
+        (count == 0).then(|| directive_reason(plan.directive.as_deref(), "skip")).flatten();
+
+    TapPlan { count, skip_all }
 }
 
-fn summarize(tests: &[TapTest]) -> TapSummary {
-    let mut summary = TapSummary::default();
-    for test in tests {
-        summary.total += 1;
-        if test.is_todo() {
-            summary.todo += 1;
-        }
-        if test.is_skipped() {
-            summary.skipped += 1;
-        } else if test.is_failure() {
-            summary.failed += 1;
-        } else if test.ok {
-            summary.passed += 1;
-        }
+fn directive_reason(directive: Option<&str>, expected_kind: &str) -> Option<String> {
+    let directive = directive?.trim();
+    let split = directive.find(char::is_whitespace).unwrap_or(directive.len());
+    let kind = &directive[..split];
+    if !kind.eq_ignore_ascii_case(expected_kind) {
+        return None;
     }
-    summary
+    Some(directive[split..].trim().to_string())
 }
 
 #[cfg(test)]
