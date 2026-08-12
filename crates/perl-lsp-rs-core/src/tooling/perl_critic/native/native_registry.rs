@@ -1,5 +1,6 @@
 //! Native critic rule registry and profile orchestration.
 
+use super::super::identity::{CriticFindingShape, NativeCriticIdentityDisposition};
 use super::super::{CriticConfig, Severity, Violation};
 use super::native_contract::{CriticContext, CriticFinding, CriticRule, PragmaEntries};
 use super::native_suppressions::CriticSuppressionMap;
@@ -13,6 +14,62 @@ use super::{
     UndefComparisonRule, UninitializedVariableRule, UnquotedBarewordRule, UnreachableCodeRule,
     UnusedLexicalVariableRule, UnusedParameterRule,
 };
+
+const GENERAL: CriticFindingShape = CriticFindingShape::General;
+
+// Producer-owned logical dispositions. Combined native rules appear once per
+// logical finding shape; this is intentionally not reducible to the rule-ID
+// catalog because that would lose the distinction completeness must prove.
+static NATIVE_IDENTITY_DISPOSITIONS: &[NativeCriticIdentityDisposition] = &[
+    NativeCriticIdentityDisposition::new("native.testing.require_use_strict", GENERAL),
+    NativeCriticIdentityDisposition::new("native.testing.require_use_warnings", GENERAL),
+    NativeCriticIdentityDisposition::new("native.common.assignment_in_condition", GENERAL),
+    NativeCriticIdentityDisposition::new("native.common.printf_format_arity", GENERAL),
+    NativeCriticIdentityDisposition::new("native.common.deprecated_defined", GENERAL),
+    NativeCriticIdentityDisposition::new(
+        "native.common.undef_comparison",
+        CriticFindingShape::LiteralUndefComparison,
+    ),
+    NativeCriticIdentityDisposition::new("native.common.stale_dollar_at", GENERAL),
+    NativeCriticIdentityDisposition::new("native.common.unreachable_code", GENERAL),
+    NativeCriticIdentityDisposition::new("native.io.bareword_filehandle", GENERAL),
+    NativeCriticIdentityDisposition::new("native.io.two_arg_open", GENERAL),
+    NativeCriticIdentityDisposition::new("native.io.pipe_open", GENERAL),
+    NativeCriticIdentityDisposition::new("native.io.unchecked_open_close", GENERAL),
+    NativeCriticIdentityDisposition::new(
+        "native.security.qx_readpipe",
+        CriticFindingShape::Qx,
+    ),
+    NativeCriticIdentityDisposition::new(
+        "native.security.qx_readpipe",
+        CriticFindingShape::Readpipe,
+    ),
+    NativeCriticIdentityDisposition::new(
+        "native.security.backtick_exec",
+        CriticFindingShape::Backtick,
+    ),
+    NativeCriticIdentityDisposition::new("native.security.string_eval", GENERAL),
+    NativeCriticIdentityDisposition::new(
+        "native.security.system_exec",
+        CriticFindingShape::SystemCall,
+    ),
+    NativeCriticIdentityDisposition::new(
+        "native.security.system_exec",
+        CriticFindingShape::ExecCall,
+    ),
+    NativeCriticIdentityDisposition::new("native.variables.unused_lexical", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.unused_parameter", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.duplicate_parameter", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.parameter_shadows_global", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.duplicate_lexical", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.shadowed_lexical", GENERAL),
+    NativeCriticIdentityDisposition::new("native.regex.capture_without_match", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.undeclared", GENERAL),
+    NativeCriticIdentityDisposition::new("native.variables.uninitialized", GENERAL),
+    NativeCriticIdentityDisposition::new("native.syntax.unquoted_bareword", GENERAL),
+    NativeCriticIdentityDisposition::new("native.documentation.require_pod_sections", GENERAL),
+    NativeCriticIdentityDisposition::new("native.syntax.prohibit_leading_zeros", GENERAL),
+];
 
 /// Native critic rule bundle used by receipt and readiness tooling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +268,12 @@ impl NativeCriticRegistry {
     #[must_use]
     pub fn rule_ids(&self) -> Vec<&'static str> {
         self.rules.iter().map(|rule| rule.id()).collect()
+    }
+
+    /// Producer-owned `(rule_id, shape)` obligations for identity coverage.
+    #[must_use]
+    pub const fn identity_dispositions() -> &'static [NativeCriticIdentityDisposition] {
+        NATIVE_IDENTITY_DISPOSITIONS
     }
 
     /// Run all registered rules and return collected findings.

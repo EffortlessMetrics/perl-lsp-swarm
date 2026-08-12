@@ -3,8 +3,8 @@
 //! Diagnostic codes are presentation and compatibility surfaces. They are not
 //! sufficient evidence that two findings are the same logical result: some
 //! public codes cover multiple syntax shapes, while some native rules cover
-//! multiple public codes. This registry therefore keys aliases by producer,
-//! code, and a small reviewed finding shape.
+//! multiple public codes. Producers therefore construct checked observed
+//! identities, and the registry resolves only those checked values.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -12,7 +12,7 @@ use std::fmt;
 use serde::Serialize;
 
 /// Schema version for serialized critic identity records.
-pub const CRITIC_IDENTITY_SCHEMA_VERSION: u16 = 1;
+pub const CRITIC_IDENTITY_SCHEMA_VERSION: u16 = 2;
 
 /// Producer that emitted an observed critic or diagnostic identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -35,6 +35,10 @@ pub enum CriticFindingShape {
     /// No narrower syntax distinction is required.
     #[default]
     General,
+    /// Comparison against an explicit literal `undef`.
+    LiteralUndefComparison,
+    /// Comparison whose operand may be undefined through data flow.
+    PotentiallyUndefComparison,
     /// Backtick command execution.
     Backtick,
     /// `qx` command execution.
@@ -45,6 +49,261 @@ pub enum CriticFindingShape {
     SystemCall,
     /// `exec` process replacement.
     ExecCall,
+}
+
+/// Checked producer/code/shape identity for one observed finding.
+///
+/// The fields are private. Unambiguous findings use [`Self::general`]; codes
+/// and rules with multiple reviewed shapes have named constructors. This keeps
+/// callers from assembling arbitrary producer/code/shape triples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct CriticObservedIdentity<'a> {
+    origin: CriticFindingOrigin,
+    code: &'a str,
+    shape: CriticFindingShape,
+}
+
+impl<'a> CriticObservedIdentity<'a> {
+    /// Construct an observed identity for a producer/code pair whose contract
+    /// has exactly one general shape.
+    pub fn general(
+        origin: CriticFindingOrigin,
+        code: &'a str,
+    ) -> Result<Self, CriticObservedIdentityError> {
+        if CriticIdentityRegistry::requires_reviewed_shape(origin, code) {
+            return Err(CriticObservedIdentityError {
+                origin,
+                code: code.to_string(),
+            });
+        }
+
+        Ok(Self { origin, code, shape: CriticFindingShape::General })
+    }
+
+    /// Built-in PL404 finding comparing against an explicit literal `undef`.
+    #[must_use]
+    pub const fn built_in_literal_undef_comparison() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::BuiltInDiagnostic,
+            "PL404",
+            CriticFindingShape::LiteralUndefComparison,
+        )
+    }
+
+    /// Built-in PL404 finding inferred from a potentially undefined operand.
+    #[must_use]
+    pub const fn built_in_potentially_undef_comparison() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::BuiltInDiagnostic,
+            "PL404",
+            CriticFindingShape::PotentiallyUndefComparison,
+        )
+    }
+
+    /// Built-in PL601 backtick finding.
+    #[must_use]
+    pub const fn built_in_backtick_exec() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::BuiltInDiagnostic,
+            "PL601",
+            CriticFindingShape::Backtick,
+        )
+    }
+
+    /// Built-in PL601 `qx` finding.
+    #[must_use]
+    pub const fn built_in_qx_exec() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::BuiltInDiagnostic,
+            "PL601",
+            CriticFindingShape::Qx,
+        )
+    }
+
+    /// Built-in PL606 `readpipe` finding.
+    #[must_use]
+    pub const fn built_in_readpipe_exec() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::BuiltInDiagnostic,
+            "PL606",
+            CriticFindingShape::Readpipe,
+        )
+    }
+
+    /// Built-in PL603 `system` finding.
+    #[must_use]
+    pub const fn built_in_system_call() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::BuiltInDiagnostic,
+            "PL603",
+            CriticFindingShape::SystemCall,
+        )
+    }
+
+    /// Built-in PL604 `exec` finding.
+    #[must_use]
+    pub const fn built_in_exec_call() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::BuiltInDiagnostic,
+            "PL604",
+            CriticFindingShape::ExecCall,
+        )
+    }
+
+    /// Native explicit-literal `undef` comparison finding.
+    #[must_use]
+    pub const fn native_literal_undef_comparison() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::NativeCritic,
+            "native.common.undef_comparison",
+            CriticFindingShape::LiteralUndefComparison,
+        )
+    }
+
+    /// Native backtick execution finding.
+    #[must_use]
+    pub const fn native_backtick_exec() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::NativeCritic,
+            "native.security.backtick_exec",
+            CriticFindingShape::Backtick,
+        )
+    }
+
+    /// Native `qx` execution finding.
+    #[must_use]
+    pub const fn native_qx_exec() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::NativeCritic,
+            "native.security.qx_readpipe",
+            CriticFindingShape::Qx,
+        )
+    }
+
+    /// Native `readpipe` execution finding.
+    #[must_use]
+    pub const fn native_readpipe_exec() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::NativeCritic,
+            "native.security.qx_readpipe",
+            CriticFindingShape::Readpipe,
+        )
+    }
+
+    /// Native `system` execution finding.
+    #[must_use]
+    pub const fn native_system_call() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::NativeCritic,
+            "native.security.system_exec",
+            CriticFindingShape::SystemCall,
+        )
+    }
+
+    /// Native `exec` execution finding.
+    #[must_use]
+    pub const fn native_exec_call() -> CriticObservedIdentity<'static> {
+        Self::reviewed(
+            CriticFindingOrigin::NativeCritic,
+            "native.security.system_exec",
+            CriticFindingShape::ExecCall,
+        )
+    }
+
+    const fn reviewed(
+        origin: CriticFindingOrigin,
+        code: &'a str,
+        shape: CriticFindingShape,
+    ) -> Self {
+        Self { origin, code, shape }
+    }
+
+    /// Producer that emitted this finding.
+    #[must_use]
+    pub const fn origin(self) -> CriticFindingOrigin {
+        self.origin
+    }
+
+    /// Producer-owned public code or policy spelling.
+    #[must_use]
+    pub const fn code(self) -> &'a str {
+        self.code
+    }
+
+    /// Reviewed finding shape.
+    #[must_use]
+    pub const fn shape(self) -> CriticFindingShape {
+        self.shape
+    }
+}
+
+/// A general observed identity was requested for a code that requires a
+/// producer-owned reviewed shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CriticObservedIdentityError {
+    origin: CriticFindingOrigin,
+    code: String,
+}
+
+impl CriticObservedIdentityError {
+    /// Producer whose code needs a reviewed shape.
+    #[must_use]
+    pub const fn origin(&self) -> CriticFindingOrigin {
+        self.origin
+    }
+
+    /// Code or rule ID that cannot use the general constructor.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+}
+
+impl fmt::Display for CriticObservedIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "critic identity {:?}:{:?} requires a reviewed finding shape",
+            self.origin, self.code
+        )
+    }
+}
+
+impl std::error::Error for CriticObservedIdentityError {}
+
+/// Producer-owned identity disposition for one native logical finding.
+///
+/// The native rule registry owns the complete set of these values. The shared
+/// identity registry consumes the set to prove every `(rule_id, shape)` pair is
+/// represented, including each branch of combined native rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct NativeCriticIdentityDisposition {
+    rule_id: &'static str,
+    shape: CriticFindingShape,
+}
+
+impl NativeCriticIdentityDisposition {
+    pub(crate) const fn new(rule_id: &'static str, shape: CriticFindingShape) -> Self {
+        Self { rule_id, shape }
+    }
+
+    /// Native rule ID that emits this logical finding.
+    #[must_use]
+    pub const fn rule_id(self) -> &'static str {
+        self.rule_id
+    }
+
+    /// Producer-owned logical shape emitted by the rule.
+    #[must_use]
+    pub const fn shape(self) -> CriticFindingShape {
+        self.shape
+    }
+
+    /// Convert the producer disposition into a checked observed identity.
+    #[must_use]
+    pub const fn observed(self) -> CriticObservedIdentity<'static> {
+        CriticObservedIdentity::reviewed(CriticFindingOrigin::NativeCritic, self.rule_id, self.shape)
+    }
 }
 
 /// Stable category of a canonical critic finding.
@@ -109,6 +368,18 @@ impl CriticAlias {
     #[must_use]
     pub const fn shape(self) -> CriticFindingShape {
         self.shape
+    }
+
+    /// Checked observed identity represented by this registered alias.
+    #[must_use]
+    pub const fn observed(self) -> CriticObservedIdentity<'static> {
+        CriticObservedIdentity::reviewed(self.origin, self.code, self.shape)
+    }
+
+    fn matches(self, observed: &CriticObservedIdentity<'_>) -> bool {
+        self.origin == observed.origin
+            && self.code == observed.code
+            && self.shape == observed.shape
     }
 }
 
@@ -208,6 +479,16 @@ static IDENTITIES: &[CriticIdentityEntry] = &[
             CriticAlias::new(BUILTIN, "PL500", GENERAL),
         ],
     ),
+    CriticIdentityEntry::distinct(
+        "critic.common.potentially_undef_comparison",
+        CriticIdentityCategory::Syntax,
+        "the native rule covers explicit literal undef comparisons, not inferred maybe-undef data flow",
+        &[CriticAlias::new(
+            BUILTIN,
+            "PL404",
+            CriticFindingShape::PotentiallyUndefComparison,
+        )],
+    ),
     CriticIdentityEntry::equivalent(
         "critic.common.printf_format_arity",
         CriticIdentityCategory::Syntax,
@@ -226,8 +507,16 @@ static IDENTITIES: &[CriticIdentityEntry] = &[
         "critic.common.undef_comparison",
         CriticIdentityCategory::Syntax,
         &[
-            CriticAlias::new(NATIVE, "native.common.undef_comparison", GENERAL),
-            CriticAlias::new(BUILTIN, "PL404", GENERAL),
+            CriticAlias::new(
+                NATIVE,
+                "native.common.undef_comparison",
+                CriticFindingShape::LiteralUndefComparison,
+            ),
+            CriticAlias::new(
+                BUILTIN,
+                "PL404",
+                CriticFindingShape::LiteralUndefComparison,
+            ),
         ],
     ),
     CriticIdentityEntry::equivalent(
@@ -557,17 +846,13 @@ impl CriticIdentityRegistry {
         IDENTITIES
     }
 
-    /// Resolve one observed producer/code/shape into its canonical identity.
+    /// Resolve one checked observed identity into its canonical identity.
     #[must_use]
     pub fn resolve(
-        origin: CriticFindingOrigin,
-        code: &str,
-        shape: CriticFindingShape,
+        observed: &CriticObservedIdentity<'_>,
     ) -> Option<&'static CriticIdentityEntry> {
         IDENTITIES.iter().find(|entry| {
-            entry.aliases.iter().any(|alias| {
-                alias.origin == origin && alias.code == code && alias.shape == shape
-            })
+            entry.aliases.iter().any(|alias| alias.matches(observed))
         })
     }
 
@@ -581,6 +866,12 @@ impl CriticIdentityRegistry {
     #[must_use]
     pub fn aliases_for(canonical_id: &str) -> Option<&'static [CriticAlias]> {
         Self::by_canonical_id(canonical_id).map(|entry| entry.aliases)
+    }
+
+    fn requires_reviewed_shape(origin: CriticFindingOrigin, code: &str) -> bool {
+        IDENTITIES.iter().flat_map(|entry| entry.aliases).any(|alias| {
+            alias.origin == origin && alias.code == code && alias.shape != CriticFindingShape::General
+        })
     }
 
     /// Validate uniqueness, disposition, and deterministic ordering.
@@ -641,9 +932,34 @@ mod tests {
 
     use super::{
         BUILTIN, CRITIC_IDENTITY_SCHEMA_VERSION, CriticFindingOrigin, CriticFindingShape,
-        CriticIdentityDisposition, CriticIdentityRegistry, EXTERNAL, NATIVE,
+        CriticIdentityDisposition, CriticIdentityRegistry, CriticObservedIdentity, EXTERNAL, NATIVE,
     };
     use crate::tooling::perl_critic::{NativeCriticProfile, NativeCriticRegistry};
+
+    fn resolve_general(
+        origin: CriticFindingOrigin,
+        code: &str,
+    ) -> Option<&'static super::CriticIdentityEntry> {
+        CriticObservedIdentity::general(origin, code)
+            .ok()
+            .and_then(|observed| CriticIdentityRegistry::resolve(&observed))
+    }
+
+    fn registered_native_dispositions() -> BTreeSet<(&'static str, CriticFindingShape)> {
+        CriticIdentityRegistry::entries()
+            .iter()
+            .flat_map(|entry| entry.aliases())
+            .filter(|alias| alias.origin() == CriticFindingOrigin::NativeCritic)
+            .map(|alias| (alias.code(), alias.shape()))
+            .collect()
+    }
+
+    fn producer_native_dispositions() -> BTreeSet<(&'static str, CriticFindingShape)> {
+        NativeCriticRegistry::identity_dispositions()
+            .iter()
+            .map(|disposition| (disposition.rule_id(), disposition.shape()))
+            .collect()
+    }
 
     #[test]
     fn registry_validates() {
@@ -652,8 +968,7 @@ mod tests {
 
     #[test]
     fn strict_alias_resolves_in_both_directions() {
-        let canonical = CriticIdentityRegistry::resolve(BUILTIN, "PL100", CriticFindingShape::General)
-            .map(|entry| entry.canonical_id());
+        let canonical = resolve_general(BUILTIN, "PL100").map(|entry| entry.canonical_id());
         assert_eq!(canonical, Some("critic.testing.require_use_strict"));
 
         let aliases = CriticIdentityRegistry::aliases_for("critic.testing.require_use_strict");
@@ -669,14 +984,22 @@ mod tests {
     }
 
     #[test]
-    fn shared_public_codes_require_reviewed_shapes() {
+    fn general_constructor_rejects_codes_with_reviewed_shapes() {
+        assert!(CriticObservedIdentity::general(BUILTIN, "PL404").is_err());
+        assert!(CriticObservedIdentity::general(BUILTIN, "PL601").is_err());
+        assert!(
+            CriticObservedIdentity::general(NATIVE, "native.security.qx_readpipe").is_err()
+        );
+        assert!(CriticObservedIdentity::general(NATIVE, "native.security.system_exec").is_err());
+    }
+
+    #[test]
+    fn shared_public_codes_require_producer_owned_shapes() {
         let backtick = CriticIdentityRegistry::resolve(
-            BUILTIN,
-            "PL601",
-            CriticFindingShape::Backtick,
+            &CriticObservedIdentity::built_in_backtick_exec(),
         )
         .map(|entry| entry.canonical_id());
-        let qx = CriticIdentityRegistry::resolve(BUILTIN, "PL601", CriticFindingShape::Qx)
+        let qx = CriticIdentityRegistry::resolve(&CriticObservedIdentity::built_in_qx_exec())
             .map(|entry| entry.canonical_id());
         assert_eq!(backtick, Some("critic.security.backtick_exec"));
         assert_eq!(qx, Some("critic.security.qx_exec"));
@@ -684,19 +1007,32 @@ mod tests {
     }
 
     #[test]
-    fn combined_native_rules_require_reviewed_shapes() {
-        let system = CriticIdentityRegistry::resolve(
-            NATIVE,
-            "native.security.system_exec",
-            CriticFindingShape::SystemCall,
+    fn pl404_literal_and_data_flow_findings_remain_distinct() {
+        let literal = CriticIdentityRegistry::resolve(
+            &CriticObservedIdentity::built_in_literal_undef_comparison(),
         )
         .map(|entry| entry.canonical_id());
-        let exec = CriticIdentityRegistry::resolve(
-            NATIVE,
-            "native.security.system_exec",
-            CriticFindingShape::ExecCall,
+        let inferred = CriticIdentityRegistry::resolve(
+            &CriticObservedIdentity::built_in_potentially_undef_comparison(),
         )
         .map(|entry| entry.canonical_id());
+        let native = CriticIdentityRegistry::resolve(
+            &CriticObservedIdentity::native_literal_undef_comparison(),
+        )
+        .map(|entry| entry.canonical_id());
+
+        assert_eq!(literal, Some("critic.common.undef_comparison"));
+        assert_eq!(native, literal);
+        assert_eq!(inferred, Some("critic.common.potentially_undef_comparison"));
+        assert_ne!(literal, inferred);
+    }
+
+    #[test]
+    fn combined_native_rules_require_producer_owned_shapes() {
+        let system = CriticIdentityRegistry::resolve(&CriticObservedIdentity::native_system_call())
+            .map(|entry| entry.canonical_id());
+        let exec = CriticIdentityRegistry::resolve(&CriticObservedIdentity::native_exec_call())
+            .map(|entry| entry.canonical_id());
         assert_eq!(system, Some("critic.security.system_call"));
         assert_eq!(exec, Some("critic.security.exec_call"));
         assert_ne!(system, exec);
@@ -705,28 +1041,38 @@ mod tests {
     #[test]
     fn unknown_external_policy_is_not_guessed() {
         assert!(
-            CriticIdentityRegistry::resolve(
-                CriticFindingOrigin::ExternalPerlCritic,
-                "Unknown::Policy",
-                CriticFindingShape::General,
-            )
-            .is_none()
+            resolve_general(CriticFindingOrigin::ExternalPerlCritic, "Unknown::Policy").is_none()
         );
     }
 
     #[test]
-    fn every_native_rule_has_an_explicit_identity_disposition() {
+    fn every_native_rule_and_shape_has_an_explicit_identity_disposition() {
         let catalog: BTreeSet<&str> = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict)
             .rule_ids()
             .into_iter()
             .collect();
-        let registered: BTreeSet<&str> = CriticIdentityRegistry::entries()
+        let disposition_rules: BTreeSet<&str> = NativeCriticRegistry::identity_dispositions()
             .iter()
-            .flat_map(|entry| entry.aliases())
-            .filter(|alias| alias.origin() == CriticFindingOrigin::NativeCritic)
-            .map(|alias| alias.code())
+            .map(|disposition| disposition.rule_id())
             .collect();
-        assert_eq!(registered, catalog);
+
+        assert_eq!(disposition_rules, catalog);
+        assert_eq!(registered_native_dispositions(), producer_native_dispositions());
+    }
+
+    #[test]
+    fn native_shape_completeness_detects_a_missing_combined_rule_branch() {
+        let producer = producer_native_dispositions();
+        let mut registered = registered_native_dispositions();
+
+        assert!(registered.remove(&(
+            "native.security.qx_readpipe",
+            CriticFindingShape::Readpipe,
+        )));
+        assert_ne!(registered, producer);
+        assert!(producer.difference(&registered).any(|(rule_id, shape)| {
+            *rule_id == "native.security.qx_readpipe" && *shape == CriticFindingShape::Readpipe
+        }));
     }
 
     #[test]

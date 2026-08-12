@@ -16,7 +16,8 @@ pub use built_in::{BuiltInAnalyzer, Policy};
 pub use identity::{
     CRITIC_IDENTITY_SCHEMA_VERSION, CriticAlias, CriticFindingOrigin, CriticFindingShape,
     CriticIdentityCategory, CriticIdentityDisposition, CriticIdentityEntry,
-    CriticIdentityRegistry, CriticIdentityRegistryError,
+    CriticIdentityRegistry, CriticIdentityRegistryError, CriticObservedIdentity,
+    CriticObservedIdentityError, NativeCriticIdentityDisposition,
 };
 pub use native::{
     AssignmentInConditionRule, CriticCategory, CriticContext, CriticFinding, CriticFix,
@@ -28,8 +29,8 @@ pub use native::{
     UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
 };
 pub use normalized::{
-    CriticFindingCandidate, CriticFindingContributor, CriticObservedIdentity,
-    NormalizedCriticFinding, normalize_critic_findings,
+    CriticFindingCandidate, CriticFindingContributor, CriticSourceIdentity,
+    NormalizedCriticFinding, OwnedCriticObservedIdentity, normalize_critic_findings,
 };
 pub use quick_fix::{QuickFix, TextEdit};
 pub use types::{CriticConfig, Severity, Violation};
