@@ -30,6 +30,13 @@ pub use native::{
 pub use quick_fix::{QuickFix, TextEdit};
 pub use types::{CriticConfig, Severity, Violation};
 
+/// Error returned when an external native-critic profile token is not recognized.
+///
+/// The concrete error is owned by the profile implementation; this public alias
+/// keeps the error name stable without requiring every caller to know that
+/// implementation module's path.
+pub type NativeCriticProfileParseError = <NativeCriticProfile as std::str::FromStr>::Err;
+
 #[cfg(not(feature = "lsp-compat"))]
 pub use types::ViolationSummary;
 
