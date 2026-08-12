@@ -241,11 +241,7 @@ fn symbolic_unary_forms_bind_outside_exponentiation() -> Result<(), String> {
 
         assert_eq!(
             shapes,
-            vec![(
-                Some(format!("{op}2 ** 2")),
-                Some("2".to_string()),
-                Some("2".to_string()),
-            )],
+            vec![(Some(format!("{op}2 ** 2")), Some("2".to_string()), Some("2".to_string()),)],
             "{op} must wrap the complete exponentiation tree"
         );
     }
@@ -269,11 +265,7 @@ fn symbolic_unary_forms_bind_outside_exponentiation() -> Result<(), String> {
     });
     assert_eq!(
         shapes,
-        vec![(
-            Some("2 ** !0".to_string()),
-            Some("2".to_string()),
-            Some("0".to_string()),
-        )],
+        vec![(Some("2 ** !0".to_string()), Some("2".to_string()), Some("0".to_string()),)],
         "the right-hand symbolic unary must remain inside the exponentiation tree"
     );
     Ok(())
