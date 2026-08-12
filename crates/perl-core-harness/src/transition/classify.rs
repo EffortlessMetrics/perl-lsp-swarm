@@ -1,18 +1,19 @@
 //! Transition classifier over canonically validated compiler evidence.
 //!
-//! Raw accepted baselines and current reports are validated before any
-//! definitive transition arm. Invalid, incomplete, or incomparable evidence
-//! remains [`CompatibilityTransition::NotProven`].
+//! Context-free classification is deliberately non-authoritative because V1
+//! lacks complete comparison identity and `RunReport` does not carry the V2
+//! series/invocation/capability/environment subject set. Definitive transition
+//! arms require an exact [`CompilerComparisonContext`].
 
 use crate::transition::model::AcceptedBaseline;
 use crate::transition::validation::{
-    ValidatedAcceptedBaseline, ValidatedRunReport, validate_accepted_baseline,
-    validate_run_report,
+    CompilerComparisonContext, ValidatedComparison, validate_accepted_baseline,
+    validate_comparison, validate_run_report_structure,
 };
 use perl_core_harness_types::{
-    CompatibilityTransition, CompileBaselineV2, RunFileResult, RunReport, RunnerStatus,
+    CompatibilityTransition, RunFileResult, RunReport, RunnerStatus,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// Classification result for one accepted/current observation pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,45 +28,44 @@ pub struct Classification {
     pub semantic_boundary_change: bool,
 }
 
-/// Validate and classify `current` against `accepted`.
-///
-/// This compatibility entry point retains the existing API while ensuring raw
-/// deserialized evidence cannot reach a definitive transition arm.
+/// Structurally validate raw subjects, then refuse a definitive transition
+/// because no exact series/invocation context was supplied.
 pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> Classification {
-    let accepted = match validate_accepted_baseline(accepted) {
-        Ok(validated) => validated,
-        Err(validation) => {
-            return not_proven(format!(
-                "accepted and current observations are not comparable: {validation}"
-            ));
-        }
-    };
-    let current = match validate_run_report(current) {
-        Ok(validated) => validated,
-        Err(validation) => {
-            return not_proven(format!(
-                "accepted and current observations are not comparable: {validation}"
-            ));
-        }
-    };
-    classify_validated_transition(accepted, current)
+    if let Err(validation) = validate_accepted_baseline(accepted) {
+        return not_proven(format!(
+            "accepted and current observations are not comparable: {validation}"
+        ));
+    }
+    if let Err(validation) = validate_run_report_structure(current) {
+        return not_proven(format!(
+            "accepted and current observations are not comparable: {validation}"
+        ));
+    }
+    not_proven(
+        "accepted and current observations are not comparable: an exact V2 compiler comparison context is required"
+            .into(),
+    )
 }
 
-/// Classify evidence that has already passed the canonical validators.
-#[must_use]
-pub fn classify_validated_transition(
-    accepted: ValidatedAcceptedBaseline<'_>,
-    current: ValidatedRunReport<'_>,
+/// Validate an exact V2 comparison context and classify the resulting evidence.
+pub fn classify_transition_with_context(
+    accepted: &AcceptedBaseline,
+    current: &RunReport,
+    context: &CompilerComparisonContext,
 ) -> Classification {
-    let accepted = accepted.as_inner();
-    let current = current.as_inner();
-
-    if let AcceptedBaseline::V2(value) = accepted
-        && let Some(reason) = v2_incomparable(value, current)
-    {
-        return not_proven(reason);
+    match validate_comparison(accepted, current, context) {
+        Ok(comparison) => classify_validated_transition(comparison),
+        Err(validation) => not_proven(format!(
+            "accepted and current observations are not comparable: {validation}"
+        )),
     }
+}
 
+/// Classify evidence that has already passed the canonical pair validator.
+#[must_use]
+pub fn classify_validated_transition(comparison: ValidatedComparison<'_>) -> Classification {
+    let accepted = comparison.accepted();
+    let current = comparison.current();
     let accepted_by_path = index_by_path(accepted.file_results());
     let current_by_path = index_by_path(&current.file_results);
     let mut regressions = Vec::new();
@@ -93,8 +93,13 @@ pub fn classify_validated_transition(
         };
     }
 
-    if let AcceptedBaseline::V2(value) = accepted
-        && accepted.file_results() == current.file_results.as_slice()
+    let AcceptedBaseline::V2(value) = accepted else {
+        return not_proven(
+            "validated comparison unexpectedly retained a V1 baseline without complete subject identity"
+                .into(),
+        );
+    };
+    if accepted.file_results() == current.file_results.as_slice()
         && accepted.buckets() == &current.buckets
         && accepted.failures() == current.failures.as_slice()
         && value.semantic_boundaries == current.semantic_boundaries
@@ -113,24 +118,6 @@ pub fn classify_validated_transition(
     )
 }
 
-fn v2_incomparable(value: &CompileBaselineV2, current: &RunReport) -> Option<String> {
-    let accepted_subject =
-        (value.mode, value.profile, value.runner, value.perl_resolved_ref.as_str());
-    let current_subject =
-        (current.mode, current.profile, current.runner, current.perl_ref.as_str());
-    let accepted_membership =
-        value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    let observed_membership =
-        current.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
-    if accepted_subject == current_subject && accepted_membership == observed_membership {
-        return None;
-    }
-    Some(
-        "accepted and current observations are not comparable: V2 subject identity or immutable file membership differs"
-            .into(),
-    )
-}
-
 fn not_proven(reason: String) -> Classification {
     Classification {
         transition: CompatibilityTransition::NotProven,
@@ -141,5 +128,8 @@ fn not_proven(reason: String) -> Classification {
 }
 
 fn index_by_path(results: &[RunFileResult]) -> BTreeMap<&str, &RunFileResult> {
-    results.iter().map(|result| (result.path.as_str(), result)).collect()
+    results
+        .iter()
+        .map(|result| (result.path.as_str(), result))
+        .collect()
 }
