@@ -7,15 +7,15 @@
 //!
 //! Test items reference, but do not implement, the broader `source_identity.v1`
 //! contract tracked by #4835/#4851. [`SourceIdentityRef`] is an opaque SHA-256
-//! reference to that future canonical envelope; no path, URI, workspace root, or
-//! other free-form source string is frozen into this wire format.
+//! reference to revision-independent logical-source identity material from that
+//! future canonical envelope; no content revision, path, URI, workspace root,
+//! or other free-form source string is frozen into this wire format.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
-
+use crate::sha2::{Digest as _, Sha256};
 use crate::{Confidence, Digest, SourceRange};
+use serde::{Deserialize, Serialize};
 
 /// Schema version for serialized [`TestItemSnapshot`] values.
 pub const TEST_ITEM_SCHEMA_VERSION: u32 = 1;
@@ -37,18 +37,22 @@ const TEST_ITEM_ID_DOMAIN: &[u8] = b"perl-lsp:test-item-id:v1";
 pub struct SourceIdentityRef {
     /// Referenced source-identity schema version.
     schema_version: u32,
-    /// SHA-256 digest of the canonical, domain-separated source-identity envelope.
+    /// SHA-256 digest of revision-independent logical-source identity material.
+    ///
+    /// Content revision belongs in [`TestItemSnapshot::source_digest`] and must
+    /// not be included in this digest, so item IDs survive source edits.
     digest_sha256: [u8; 32],
 }
 
 impl SourceIdentityRef {
-    /// Build a v1 source-identity reference from the canonical envelope digest.
+    /// Build a v1 reference from a logical-source identity digest.
+    ///
+    /// The digest must cover only revision-independent logical-source material.
+    /// Content revision is freshness metadata on [`TestItemSnapshot`], not part
+    /// of canonical item identity.
     #[must_use]
     pub const fn from_sha256(digest_sha256: [u8; 32]) -> Self {
-        Self {
-            schema_version: SOURCE_IDENTITY_REF_SCHEMA_VERSION,
-            digest_sha256,
-        }
+        Self { schema_version: SOURCE_IDENTITY_REF_SCHEMA_VERSION, digest_sha256 }
     }
 
     /// Referenced source-identity schema version.
@@ -57,7 +61,7 @@ impl SourceIdentityRef {
         self.schema_version
     }
 
-    /// Canonical envelope digest.
+    /// Revision-independent logical-source identity digest.
     #[must_use]
     pub const fn digest_sha256(&self) -> &[u8; 32] {
         &self.digest_sha256
@@ -337,15 +341,10 @@ impl TestItemSnapshot {
             return Err(TestItemValidationError::DuplicateItemId);
         }
 
-        let roots: Vec<&TestItem> = self
-            .items
-            .iter()
-            .filter(|item| item.parent_id.is_none())
-            .collect();
+        let roots: Vec<&TestItem> =
+            self.items.iter().filter(|item| item.parent_id.is_none()).collect();
         if roots.len() != 1 || roots[0].kind != TestItemKind::File {
-            return Err(TestItemValidationError::InvalidRootCount {
-                observed: roots.len(),
-            });
+            return Err(TestItemValidationError::InvalidRootCount { observed: roots.len() });
         }
         let root = roots[0];
         if root.range.start_byte != 0 || root.range.end_byte != self.source_len {
@@ -355,9 +354,7 @@ impl TestItemSnapshot {
             });
         }
         if root.order_in_parent != 0 {
-            return Err(TestItemValidationError::InvalidFileOrder {
-                item_id: root.id.clone(),
-            });
+            return Err(TestItemValidationError::InvalidFileOrder { item_id: root.id.clone() });
         }
 
         let mut sibling_slots = BTreeSet::new();
@@ -376,9 +373,7 @@ impl TestItemSnapshot {
             let mut cursor = item.parent_id.as_ref();
             while let Some(parent_id) = cursor {
                 if !seen.insert(parent_id.clone()) {
-                    return Err(TestItemValidationError::ParentCycle {
-                        item_id: item.id.clone(),
-                    });
+                    return Err(TestItemValidationError::ParentCycle { item_id: item.id.clone() });
                 }
                 cursor = by_id.get(parent_id).and_then(|parent| parent.parent_id.as_ref());
             }
@@ -401,55 +396,37 @@ impl TestItemSnapshot {
             });
         }
         if item.id != item.expected_id() {
-            return Err(TestItemValidationError::ItemIdMismatch {
-                item_id: item.id.clone(),
-            });
+            return Err(TestItemValidationError::ItemIdMismatch { item_id: item.id.clone() });
         }
-        if item.structural_key.is_empty()
-            || item.structural_key.chars().any(char::is_control)
-        {
-            return Err(TestItemValidationError::InvalidStructuralKey {
-                item_id: item.id.clone(),
-            });
+        if item.structural_key.is_empty() || item.structural_key.chars().any(char::is_control) {
+            return Err(TestItemValidationError::InvalidStructuralKey { item_id: item.id.clone() });
         }
         if !valid_range(item.range, self.source_len) {
-            return Err(TestItemValidationError::InvalidRange {
-                item_id: item.id.clone(),
-            });
+            return Err(TestItemValidationError::InvalidRange { item_id: item.id.clone() });
         }
         if let Some(name_range) = item.name_range
             && (!valid_range(name_range, self.source_len)
                 || name_range.start_byte < item.range.start_byte
                 || name_range.end_byte > item.range.end_byte)
         {
-            return Err(TestItemValidationError::InvalidNameRange {
-                item_id: item.id.clone(),
-            });
+            return Err(TestItemValidationError::InvalidNameRange { item_id: item.id.clone() });
         }
         if matches!(&item.name, TestItemName::Named(name) if name.is_empty()) {
-            return Err(TestItemValidationError::EmptyNamedItem {
-                item_id: item.id.clone(),
-            });
+            return Err(TestItemValidationError::EmptyNamedItem { item_id: item.id.clone() });
         }
         if item.kind == TestItemKind::File {
             if item.parent_id.is_some() {
-                return Err(TestItemValidationError::FileHasParent {
-                    item_id: item.id.clone(),
-                });
+                return Err(TestItemValidationError::FileHasParent { item_id: item.id.clone() });
             }
         } else {
-            let parent_id = item
-                .parent_id
-                .as_ref()
-                .ok_or_else(|| TestItemValidationError::MissingParent {
-                    item_id: item.id.clone(),
-                })?;
-            let parent = by_id.get(parent_id).ok_or_else(|| {
-                TestItemValidationError::UnknownParent {
+            let parent_id = item.parent_id.as_ref().ok_or_else(|| {
+                TestItemValidationError::MissingParent { item_id: item.id.clone() }
+            })?;
+            let parent =
+                by_id.get(parent_id).ok_or_else(|| TestItemValidationError::UnknownParent {
                     item_id: item.id.clone(),
                     parent_id: parent_id.clone(),
-                }
-            })?;
+                })?;
             if item.range.start_byte < parent.range.start_byte
                 || item.range.end_byte > parent.range.end_byte
             {
@@ -465,15 +442,10 @@ impl TestItemSnapshot {
     /// Return direct children in stable producer-assigned sibling order.
     #[must_use]
     pub fn children_of(&self, parent_id: &TestItemId) -> Vec<&TestItem> {
-        let mut children: Vec<&TestItem> = self
-            .items
-            .iter()
-            .filter(|item| item.parent_id.as_ref() == Some(parent_id))
-            .collect();
+        let mut children: Vec<&TestItem> =
+            self.items.iter().filter(|item| item.parent_id.as_ref() == Some(parent_id)).collect();
         children.sort_by(|left, right| {
-            left.order_in_parent
-                .cmp(&right.order_in_parent)
-                .then_with(|| left.id.cmp(&right.id))
+            left.order_in_parent.cmp(&right.order_in_parent).then_with(|| left.id.cmp(&right.id))
         });
         children
     }
@@ -536,28 +508,16 @@ impl TestItemSnapshot {
             if let Some(previous) = old.get(id)
                 && !previous.identity_material_eq(item)
             {
-                return Err(TestItemDeltaError::IdentityCollision {
-                    item_id: id.clone(),
-                });
+                return Err(TestItemDeltaError::IdentityCollision { item_id: id.clone() });
             }
         }
 
-        let added = new
-            .keys()
-            .filter(|id| !old.contains_key(*id))
-            .cloned()
-            .collect();
-        let removed = old
-            .keys()
-            .filter(|id| !new.contains_key(*id))
-            .cloned()
-            .collect();
+        let added = new.keys().filter(|id| !old.contains_key(*id)).cloned().collect();
+        let removed = old.keys().filter(|id| !new.contains_key(*id)).cloned().collect();
         let changed = new
             .iter()
             .filter_map(|(id, item)| {
-                old.get(id)
-                    .is_some_and(|previous| !previous.discovery_eq(item))
-                    .then(|| id.clone())
+                old.get(id).is_some_and(|previous| !previous.discovery_eq(item)).then(|| id.clone())
             })
             .collect();
 
@@ -621,9 +581,15 @@ pub enum TestItemDeltaError {
 impl std::fmt::Display for TestItemDeltaError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidOlderSnapshot(error) => write!(formatter, "invalid older snapshot: {error}"),
-            Self::InvalidNewerSnapshot(error) => write!(formatter, "invalid newer snapshot: {error}"),
-            Self::DifferentSource => formatter.write_str("cannot diff snapshots for different sources"),
+            Self::InvalidOlderSnapshot(error) => {
+                write!(formatter, "invalid older snapshot: {error}")
+            }
+            Self::InvalidNewerSnapshot(error) => {
+                write!(formatter, "invalid newer snapshot: {error}")
+            }
+            Self::DifferentSource => {
+                formatter.write_str("cannot diff snapshots for different sources")
+            }
             Self::NonMonotonicGeneration { older, newer } => write!(
                 formatter,
                 "newer generation must be greater than older generation ({newer} <= {older})"
@@ -755,6 +721,10 @@ mod tests {
         "subtest 'outer' => sub {\n    subtest 'same' => sub { ok(1) };\n    subtest 'same' => sub { ok(1) };\n};\n"
     }
 
+    fn edited_source() -> &'static str {
+        "subtest 'outer' => sub {\n    subtest 'edit' => sub { ok(1) };\n    subtest 'same' => sub { ok(1) };\n};\n"
+    }
+
     fn source_ref(seed: u8) -> SourceIdentityRef {
         SourceIdentityRef::from_sha256([seed; 32])
     }
@@ -801,8 +771,12 @@ mod tests {
         }
     }
 
-    fn line_span(text: &str, occurrence: usize) -> Result<(u32, u32), Box<dyn std::error::Error>> {
-        let starts: Vec<usize> = text.match_indices("subtest 'same'").map(|(index, _)| index).collect();
+    fn line_span(
+        text: &str,
+        marker: &str,
+        occurrence: usize,
+    ) -> Result<(u32, u32), Box<dyn std::error::Error>> {
+        let starts: Vec<usize> = text.match_indices(marker).map(|(index, _)| index).collect();
         let start = *starts
             .get(occurrence)
             .ok_or_else(|| io::Error::other("missing subtest occurrence"))?;
@@ -811,11 +785,13 @@ mod tests {
         Ok((u32::try_from(line_start)?, u32::try_from(line_end)?))
     }
 
-    fn snapshot_with_ref(
+    fn snapshot_with_content(
         generation: u64,
         source_ref: SourceIdentityRef,
+        text: &str,
+        first_child_name: &str,
+        second_child_name: &str,
     ) -> Result<TestItemSnapshot, Box<dyn std::error::Error>> {
-        let text = source();
         let digest = Digest::of(text);
         let index = Utf8LineIndex::new(text);
         let source_len = u32::try_from(text.len())?;
@@ -831,9 +807,9 @@ mod tests {
             index.source_range(0, source_len),
             None,
         );
-        let outer_name_start = u32::try_from(text.find("'outer'").ok_or_else(|| {
-            io::Error::other("missing outer name")
-        })?)?;
+        let outer_name_start = u32::try_from(
+            text.find("'outer'").ok_or_else(|| io::Error::other("missing outer name"))?,
+        )?;
         let outer = item(
             &source_ref,
             &digest,
@@ -849,18 +825,11 @@ mod tests {
                 outer_name_start.saturating_add(6),
             )),
         );
-        let (first_start, first_end) = line_span(text, 0)?;
-        let (second_start, second_end) = line_span(text, 1)?;
-        let first_name = u32::try_from(text[first_start as usize..]
-            .find("'same'")
-            .ok_or_else(|| io::Error::other("missing first name"))?)?
-            .saturating_add(first_start)
-            .saturating_add(1);
-        let second_name = u32::try_from(text[second_start as usize..]
-            .find("'same'")
-            .ok_or_else(|| io::Error::other("missing second name"))?)?
-            .saturating_add(second_start)
-            .saturating_add(1);
+        let child_marker = "    subtest '";
+        let (first_start, first_end) = line_span(text, child_marker, 0)?;
+        let (second_start, second_end) = line_span(text, child_marker, 1)?;
+        let first_name = first_start.saturating_add(u32::try_from(child_marker.len())?);
+        let second_name = second_start.saturating_add(u32::try_from(child_marker.len())?);
         let first = item(
             &source_ref,
             &digest,
@@ -868,10 +837,13 @@ mod tests {
             Some(outer.id.clone()),
             0,
             TestItemKind::Subtest,
-            TestItemName::Named("same".to_string()),
+            TestItemName::Named(first_child_name.to_string()),
             "subtest:1",
             index.source_range(first_start, first_end),
-            Some(index.source_range(first_name, first_name.saturating_add(4))),
+            Some(index.source_range(
+                first_name,
+                first_name.saturating_add(u32::try_from(first_child_name.len())?),
+            )),
         );
         let second = item(
             &source_ref,
@@ -880,10 +852,13 @@ mod tests {
             Some(outer.id.clone()),
             1,
             TestItemKind::Subtest,
-            TestItemName::Named("same".to_string()),
+            TestItemName::Named(second_child_name.to_string()),
             "subtest:2",
             index.source_range(second_start, second_end),
-            Some(index.source_range(second_name, second_name.saturating_add(4))),
+            Some(index.source_range(
+                second_name,
+                second_name.saturating_add(u32::try_from(second_child_name.len())?),
+            )),
         );
         Ok(TestItemSnapshot::new(
             source_ref,
@@ -892,6 +867,13 @@ mod tests {
             source_len,
             vec![second, outer, file, first],
         ))
+    }
+
+    fn snapshot_with_ref(
+        generation: u64,
+        source_ref: SourceIdentityRef,
+    ) -> Result<TestItemSnapshot, Box<dyn std::error::Error>> {
+        snapshot_with_content(generation, source_ref, source(), "same", "same")
     }
 
     fn snapshot(generation: u64) -> Result<TestItemSnapshot, Box<dyn std::error::Error>> {
@@ -917,7 +899,9 @@ mod tests {
         TestItemSnapshot::new(source_ref, digest, generation, 0, vec![file])
     }
 
-    fn root_mut(snapshot: &mut TestItemSnapshot) -> Result<&mut TestItem, Box<dyn std::error::Error>> {
+    fn root_mut(
+        snapshot: &mut TestItemSnapshot,
+    ) -> Result<&mut TestItem, Box<dyn std::error::Error>> {
         snapshot
             .items
             .iter_mut()
@@ -954,24 +938,11 @@ mod tests {
         let first_source = source_ref(1);
         let second_source = source_ref(2);
         let root = TestItemId::new(&first_source, None, TestItemKind::File, "file");
-        let child = TestItemId::new(
-            &first_source,
-            Some(&root),
-            TestItemKind::Subtest,
-            "subtest:1",
-        );
-        let different_key = TestItemId::new(
-            &first_source,
-            Some(&root),
-            TestItemKind::Subtest,
-            "subtest:2",
-        );
-        let different_source = TestItemId::new(
-            &second_source,
-            Some(&root),
-            TestItemKind::Subtest,
-            "subtest:1",
-        );
+        let child = TestItemId::new(&first_source, Some(&root), TestItemKind::Subtest, "subtest:1");
+        let different_key =
+            TestItemId::new(&first_source, Some(&root), TestItemKind::Subtest, "subtest:2");
+        let different_source =
+            TestItemId::new(&second_source, Some(&root), TestItemKind::Subtest, "subtest:1");
 
         assert!(root.as_str().starts_with("test_item.v1:sha256:"));
         assert_ne!(child, different_key);
@@ -979,8 +950,8 @@ mod tests {
     }
 
     #[test]
-    fn validation_detects_identity_material_substitution()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn validation_detects_identity_material_substitution() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut snapshot = snapshot(7)?;
         let target = snapshot
             .items
@@ -989,16 +960,13 @@ mod tests {
             .ok_or_else(|| io::Error::other("missing subtest"))?;
         target.structural_key.push_str(":substituted");
 
-        assert!(matches!(
-            snapshot.validate(),
-            Err(TestItemValidationError::ItemIdMismatch { .. })
-        ));
+        assert!(matches!(snapshot.validate(), Err(TestItemValidationError::ItemIdMismatch { .. })));
         Ok(())
     }
 
     #[test]
-    fn nearest_item_returns_the_narrowest_containing_item()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn nearest_item_returns_the_narrowest_containing_item() -> Result<(), Box<dyn std::error::Error>>
+    {
         let snapshot = snapshot(7)?;
         let target = snapshot
             .items
@@ -1024,9 +992,8 @@ mod tests {
 
         let empty = empty_snapshot(1);
         empty.validate()?;
-        let empty_item = empty
-            .nearest_at(0)
-            .ok_or_else(|| io::Error::other("missing empty-file fallback"))?;
+        let empty_item =
+            empty.nearest_at(0).ok_or_else(|| io::Error::other("missing empty-file fallback"))?;
         assert_eq!(empty_item.kind, TestItemKind::File);
         Ok(())
     }
@@ -1062,8 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_preserves_stable_ids_across_generations()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn diff_preserves_stable_ids_across_generations() -> Result<(), Box<dyn std::error::Error>> {
         let old = snapshot(7)?;
         let mut newer = snapshot(8)?;
         let target = newer
@@ -1082,8 +1048,35 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_new_generation_does_not_churn_items()
+    fn edit_and_rediscover_keeps_ids_and_reports_content_delta()
     -> Result<(), Box<dyn std::error::Error>> {
+        let source_ref = source_ref(1);
+        let old = snapshot_with_content(7, source_ref.clone(), source(), "same", "same")?;
+        let newer = snapshot_with_content(8, source_ref, edited_source(), "edit", "same")?;
+
+        assert_ne!(old.source_digest, newer.source_digest);
+        assert_eq!(old.source_ref, newer.source_ref);
+        let old_ids: Vec<&TestItemId> = old.items.iter().map(|item| &item.id).collect();
+        let newer_ids: Vec<&TestItemId> = newer.items.iter().map(|item| &item.id).collect();
+        assert_eq!(old_ids, newer_ids);
+
+        let edited_item = newer
+            .items
+            .iter()
+            .find(|item| item.structural_key == "subtest:1")
+            .ok_or_else(|| io::Error::other("missing edited subtest"))?;
+        assert_eq!(edited_item.name, TestItemName::Named("edit".to_string()));
+
+        let delta = old.diff(&newer)?;
+        assert!(delta.added.is_empty());
+        assert!(delta.removed.is_empty());
+        assert_eq!(delta.changed, vec![edited_item.id.clone()]);
+        assert_eq!((delta.old_generation, delta.new_generation), (7, 8));
+        Ok(())
+    }
+
+    #[test]
+    fn equivalent_new_generation_does_not_churn_items() -> Result<(), Box<dyn std::error::Error>> {
         let old = snapshot(7)?;
         let newer = snapshot(8)?;
         let delta = old.diff(&newer)?;
@@ -1098,10 +1091,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let old = snapshot(7)?;
         let other_source = snapshot_with_ref(8, source_ref(2))?;
-        assert!(matches!(
-            old.diff(&other_source),
-            Err(TestItemDeltaError::DifferentSource)
-        ));
+        assert!(matches!(old.diff(&other_source), Err(TestItemDeltaError::DifferentSource)));
 
         let equal_generation = snapshot(7)?;
         assert!(matches!(
@@ -1121,16 +1111,12 @@ mod tests {
         let old = snapshot(7)?;
         let mut invalid = snapshot(8)?;
         invalid.items[0].generation = 7;
-        assert!(matches!(
-            old.diff(&invalid),
-            Err(TestItemDeltaError::InvalidNewerSnapshot(_))
-        ));
+        assert!(matches!(old.diff(&invalid), Err(TestItemDeltaError::InvalidNewerSnapshot(_))));
         Ok(())
     }
 
     #[test]
-    fn serde_roundtrip_is_deterministic_and_closed()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn serde_roundtrip_is_deterministic_and_closed() -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = snapshot(7)?;
         let encoded = serde_json::to_string(&snapshot)?;
         let decoded: TestItemSnapshot = serde_json::from_str(&encoded)?;
