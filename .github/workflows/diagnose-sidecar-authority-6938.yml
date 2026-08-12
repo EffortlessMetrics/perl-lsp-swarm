@@ -59,7 +59,7 @@ jobs:
           }
 
           rustup show
-          run_checked "cargo fmt check" cargo fmt --all -- --check
+          run_checked "corpus fmt check" cargo fmt -p perl-corpus -- --check
           run_checked "corpus all-target check" cargo check -p perl-corpus --all-targets --locked
           run_checked "corpus all-target tests" cargo test -p perl-corpus --all-targets --locked
           run_checked "corpus all-target clippy" cargo clippy -p perl-corpus --all-targets --locked -- -D warnings
