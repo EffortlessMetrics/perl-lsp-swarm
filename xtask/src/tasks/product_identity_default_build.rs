@@ -23,8 +23,6 @@ struct ServerIdentity {
     primary_executable: String,
     package_manifest: PathBuf,
     implementation_crate: String,
-    implementation_manifest: PathBuf,
-    compatibility_executable: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,22 +55,15 @@ pub(super) fn check(repo_root: &Path) -> Result<()> {
     )?;
     validate_default_binary(
         repo_root,
-        "server compatibility",
-        &contract.server.implementation_manifest,
-        &contract.server.compatibility_executable,
-    )?;
-    validate_default_binary(
-        repo_root,
         "debug adapter",
         &contract.debug_adapter.package_manifest,
         &contract.debug_adapter.executable,
     )?;
 
     println!(
-        "Product identity default build: implementation {}, binaries [{}, {}, {}]",
+        "Product identity default build: implementation {}, binaries [{}, {}]",
         contract.server.implementation_crate,
         contract.server.primary_executable,
-        contract.server.compatibility_executable,
         contract.debug_adapter.executable
     );
     Ok(())
@@ -324,8 +315,6 @@ mod tests {
 primary_executable = "perllsp"
 package_manifest = "crates/perllsp/Cargo.toml"
 implementation_crate = "perl-lsp-rs"
-implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
-compatibility_executable = "perl-lsp"
 
 [debug_adapter]
 executable = "perl-dap"
@@ -379,20 +368,6 @@ package_manifest = "crates/perl-dap/Cargo.toml"
     }
 
     #[test]
-    fn compatibility_binary_hidden_by_required_feature_fails() -> Result<()> {
-        let repo = fixture_repo()?;
-        write_binary_manifest(
-            repo.path(),
-            "crates/perl-lsp-rs",
-            "perl-lsp-rs",
-            "perl-lsp",
-            "required-features = [\"internal-only\"]\n",
-            "[features]\ninternal-only = []\n",
-        )?;
-        expect_failure(repo.path(), "binary \"perl-lsp\" is unavailable in the default feature set")
-    }
-
-    #[test]
     fn dap_binary_hidden_by_required_feature_fails() -> Result<()> {
         let repo = fixture_repo()?;
         write_binary_manifest(
@@ -434,14 +409,7 @@ package_manifest = "crates/perl-dap/Cargo.toml"
             &facade_manifest("perl-lsp-rs = { workspace = true }", ""),
         )?;
         write(repo.path(), "crates/perllsp/src/main.rs", "")?;
-        write_binary_manifest(
-            repo.path(),
-            "crates/perl-lsp-rs",
-            "perl-lsp-rs",
-            "perl-lsp",
-            "",
-            "",
-        )?;
+        write(repo.path(), "crates/perl-lsp-rs/Cargo.toml", "[package]\nname = \"perl-lsp-rs\"\n")?;
         write_binary_manifest(repo.path(), "crates/perl-dap", "perl-dap", "perl-dap", "", "")?;
         Ok(repo)
     }
