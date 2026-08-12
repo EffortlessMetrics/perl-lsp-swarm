@@ -167,12 +167,24 @@ fn production_rust_sources() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>>
 
 fn uses_lower_tier_incremental(source: &str) -> bool {
     let compact = compact_whitespace(source);
-    compact.contains("perl_parser_core::incremental")
+    if compact.contains("perl_parser_core::incremental")
         || (compact.contains("perl_parser_core::{")
             && (compact.contains("incremental::{")
                 || compact.contains("incremental,")
                 || compact.contains("incremental}")
                 || compact.contains("incrementalas")))
+    {
+        return true;
+    }
+
+    compact.split(';').any(|statement| {
+        ["useperl_parser_coreas", "externcrateperl_parser_coreas"].iter().any(|prefix| {
+            statement.strip_prefix(prefix).is_some_and(|remainder| {
+                let alias = remainder.split([':', '{', ',', '}']).next().unwrap_or_default();
+                !alias.is_empty() && compact.contains(&format!("{alias}::incremental"))
+            })
+        })
+    })
 }
 
 fn normalized_workspace_path(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -302,18 +314,20 @@ fn every_public_incremental_generation_has_one_non_production_disposition() -> T
 
 #[test]
 fn lower_tier_consumer_detector_covers_direct_nested_and_aliased_imports() {
-    assert!(uses_lower_tier_incremental(
-        "use perl_parser_core::incremental::IncrementalState;"
-    ));
+    assert!(uses_lower_tier_incremental("use perl_parser_core::incremental::IncrementalState;"));
     assert!(uses_lower_tier_incremental(
         "use perl_parser_core::{ParseOutput, incremental::{IncrementalEdit, IncrementalState}};"
     ));
     assert!(uses_lower_tier_incremental(
         "use perl_parser_core::{incremental as core_incremental, ParseOutput};"
     ));
-    assert!(!uses_lower_tier_incremental(
-        "use perl_parser_core::{ParseOutput, Parser};"
+    assert!(uses_lower_tier_incremental(
+        "use perl_parser_core as core; core::incremental::IncrementalState;"
     ));
+    assert!(uses_lower_tier_incremental(
+        "extern crate perl_parser_core as core; core::incremental::IncrementalState;"
+    ));
+    assert!(!uses_lower_tier_incremental("use perl_parser_core::{ParseOutput, Parser};"));
 }
 
 #[test]
@@ -397,12 +411,10 @@ fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResu
         .ok_or("the tree-sitter lower-tier consumer is missing from the authority ledger")?;
     assert_eq!(consumer.source_path, "crates/tree-sitter-perl-rs/src/lib.rs");
 
-    let core_facade = compact_whitespace(&read(
-        crate_root().join("../perl-parser-core/src/lib.rs"),
-    )?);
-    let kernel_source = compact_whitespace(&read(
-        crate_root().join("../perl-parser-core/src/incremental.rs"),
-    )?);
+    let core_facade =
+        compact_whitespace(&read(crate_root().join("../perl-parser-core/src/lib.rs"))?);
+    let kernel_source =
+        compact_whitespace(&read(crate_root().join("../perl-parser-core/src/incremental.rs"))?);
 
     assert!(
         core_facade.contains("pubmodincremental;"),
@@ -421,9 +433,7 @@ fn active_lower_tier_kernel_and_consumer_are_explicitly_classified() -> TestResu
 #[test]
 fn compatibility_crate_forwards_the_canonical_implementation() -> TestResult {
     let manifest = load_manifest()?;
-    let compatibility_source = read(
-        crate_root().join("../perl-incremental-parsing/src/lib.rs"),
-    )?;
+    let compatibility_source = read(crate_root().join("../perl-incremental-parsing/src/lib.rs"))?;
     let compact = compact_whitespace(&compatibility_source);
 
     assert!(!manifest.compatibility.behavior_authority);
