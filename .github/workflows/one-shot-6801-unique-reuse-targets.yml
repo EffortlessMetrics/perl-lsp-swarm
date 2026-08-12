@@ -31,86 +31,91 @@ jobs:
           engine = Path("crates/perl-parser/src/incremental/incremental_advanced_reuse.rs")
           text = engine.read_text(encoding="utf-8")
 
+          content_old = (
+              "                        if confidence >= config.min_confidence {\n"
+              "                            reuse_map.insert(\n"
+              "                                *old_pos,\n"
+              "                                ReuseStrategy {\n"
+              "                                    target_position: *new_pos,\n"
+              "                                    reuse_type: ReuseType::ContentUpdate,\n"
+              "                                    confidence_score: confidence,\n"
+              "                                    position_adjustment: (*new_pos as isize) - (*old_pos as isize),\n"
+              "                                },\n"
+              "                            );\n"
+              "                            self.analysis_stats.content_matches += 1;\n"
+              "                            break;\n"
+              "                        }\n"
+          )
+          content_new = (
+              "                        if confidence >= config.min_confidence\n"
+              "                            && self.try_register_match(\n"
+              "                                reuse_map,\n"
+              "                                *old_pos,\n"
+              "                                *new_pos,\n"
+              "                                ReuseType::ContentUpdate,\n"
+              "                                confidence,\n"
+              "                            )\n"
+              "                        {\n"
+              "                            self.analysis_stats.content_matches += 1;\n"
+              "                            break;\n"
+              "                        }\n"
+          )
+
+          aggressive_scan_old = (
+              "            let mut best_match: Option<(usize, f64)> = None;\n"
+              "\n"
+              "            for (new_pos, new_info) in &new_analysis.node_info {\n"
+              "                if old_info.children_count > 0\n"
+          )
+          aggressive_scan_new = (
+              "            let mut best_match: Option<(usize, f64)> = None;\n"
+              "\n"
+              "            for (new_pos, new_info) in &new_analysis.node_info {\n"
+              "                if reuse_map\n"
+              "                    .values()\n"
+              "                    .any(|strategy| strategy.target_position == *new_pos)\n"
+              "                {\n"
+              "                    continue;\n"
+              "                }\n"
+              "\n"
+              "                if old_info.children_count > 0\n"
+          )
+
+          aggressive_insert_old = (
+              "                if confidence >= config.min_confidence * 0.7 {\n"
+              "                    // Final threshold check\n"
+              "                    reuse_map.insert(\n"
+              "                        *old_pos,\n"
+              "                        ReuseStrategy {\n"
+              "                            target_position: best_pos,\n"
+              "                            reuse_type: ReuseType::StructuralEquivalent,\n"
+              "                            confidence_score: confidence,\n"
+              "                            position_adjustment: (best_pos as isize) - (*old_pos as isize),\n"
+              "                        },\n"
+              "                    );\n"
+              "                    self.analysis_stats.reuse_candidates_found += 1;\n"
+              "                }\n"
+          )
+          aggressive_insert_new = (
+              "                if confidence >= config.min_confidence * 0.7\n"
+              "                    && self.try_register_match(\n"
+              "                        reuse_map,\n"
+              "                        *old_pos,\n"
+              "                        best_pos,\n"
+              "                        ReuseType::StructuralEquivalent,\n"
+              "                        confidence,\n"
+              "                    )\n"
+              "                {\n"
+              "                    // Final threshold check\n"
+              "                    self.analysis_stats.reuse_candidates_found += 1;\n"
+              "                }\n"
+          )
+
           replacements = [
-              (
-                  """                        if confidence >= config.min_confidence {
-                            reuse_map.insert(
-                                *old_pos,
-                                ReuseStrategy {
-                                    target_position: *new_pos,
-                                    reuse_type: ReuseType::ContentUpdate,
-                                    confidence_score: confidence,
-                                    position_adjustment: (*new_pos as isize) - (*old_pos as isize),
-                                },
-                            );
-                            self.analysis_stats.content_matches += 1;
-                            break;
-                        }
-                  """,
-                  """                        if confidence >= config.min_confidence
-                            && self.try_register_match(
-                                reuse_map,
-                                *old_pos,
-                                *new_pos,
-                                ReuseType::ContentUpdate,
-                                confidence,
-                            )
-                        {
-                            self.analysis_stats.content_matches += 1;
-                            break;
-                        }
-                  """,
-              ),
-              (
-                  """            let mut best_match: Option<(usize, f64)> = None;
-
-            for (new_pos, new_info) in &new_analysis.node_info {
-                if old_info.children_count > 0
-                  """,
-                  """            let mut best_match: Option<(usize, f64)> = None;
-
-            for (new_pos, new_info) in &new_analysis.node_info {
-                if reuse_map
-                    .values()
-                    .any(|strategy| strategy.target_position == *new_pos)
-                {
-                    continue;
-                }
-
-                if old_info.children_count > 0
-                  """,
-              ),
-              (
-                  """                if confidence >= config.min_confidence * 0.7 {
-                    // Final threshold check
-                    reuse_map.insert(
-                        *old_pos,
-                        ReuseStrategy {
-                            target_position: best_pos,
-                            reuse_type: ReuseType::StructuralEquivalent,
-                            confidence_score: confidence,
-                            position_adjustment: (best_pos as isize) - (*old_pos as isize),
-                        },
-                    );
-                    self.analysis_stats.reuse_candidates_found += 1;
-                }
-                  """,
-                  """                if confidence >= config.min_confidence * 0.7
-                    && self.try_register_match(
-                        reuse_map,
-                        *old_pos,
-                        best_pos,
-                        ReuseType::StructuralEquivalent,
-                        confidence,
-                    )
-                {
-                    // Final threshold check
-                    self.analysis_stats.reuse_candidates_found += 1;
-                }
-                  """,
-              ),
+              (content_old, content_new),
+              (aggressive_scan_old, aggressive_scan_new),
+              (aggressive_insert_old, aggressive_insert_new),
           ]
-
           for old, new in replacements:
               count = text.count(old)
               if count != 1:
