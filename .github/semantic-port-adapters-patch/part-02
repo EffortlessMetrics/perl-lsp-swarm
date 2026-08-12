@@ -1,0 +1,392 @@
+roviderQueryCapability,
++    ) -> String {
++        format!(
++            "file-fact-shard-v1:{}:{:016x}:{}:{}",
++            source.token(),
++            stable_hash_bytes(self.source_uri.as_bytes()),
++            self.file_id.0,
++            capability_token(capability)
++        )
++    }
++
++    fn snapshot_id(&self, source: FileFactShardSource) -> String {
++        format!(
++            "file-fact-snapshot-v1:{}:{:016x}:{}:{:016x}:{}:{}:{}:{}:{}",
++            source.token(),
++            stable_hash_bytes(self.source_uri.as_bytes()),
++            self.file_id.0,
++            self.content_hash,
++            self.producer_schema_version,
++            optional_hash_token(self.anchors_hash),
++            optional_hash_token(self.entities_hash),
++            optional_hash_token(self.occurrences_hash),
++            optional_hash_token(self.edges_hash),
++        )
++    }
++}
++
++/// Adapter over current parser, semantic-analyzer, workspace, or ProjectModel file shards.
++pub struct FileFactShardPort {
++    records: Vec<AdapterFactRecord>,
++    denominators: BTreeMap<FileId, ShardDenominator>,
++    source: FileFactShardSource,
++    snapshot: ProviderAdapterSnapshot,
++    unavailable_trace_seeds: Vec<UnavailableTraceSeed>,
++}
++
++impl FileFactShardPort {
++    /// Adapt file-fact shards with a constrained, truthful source identity.
++    pub fn try_new(
++        shards: &[FileFactShard],
++        source: FileFactShardSource,
++        snapshot: ProviderAdapterSnapshot,
++    ) -> Result<Self, ProviderAdapterError> {
++        let mut records = Vec::new();
++        let mut denominators = BTreeMap::new();
++        let mut source_uris = BTreeSet::new();
++        let mut fact_ids = BTreeSet::new();
++
++        for shard in shards {
++            if shard.source_uri.trim().is_empty() {
++                return Err(ProviderAdapterError::InvalidShardIdentity(shard.file_id));
++            }
++            if denominators.contains_key(&shard.file_id) {
++                return Err(ProviderAdapterError::DuplicateShardFile(shard.file_id));
++            }
++            if !source_uris.insert(shard.source_uri.clone()) {
++                return Err(ProviderAdapterError::DuplicateShardSourceUri(
++                    shard.source_uri.clone(),
++                ));
++            }
++
++            let mut denominator = ShardDenominator {
++                source_uri: shard.source_uri.clone(),
++                file_id: shard.file_id,
++                content_hash: shard.content_hash,
++                producer_schema_version: shard.producer_schema_version,
++                anchors_hash: shard.anchors_hash,
++                entities_hash: shard.entities_hash,
++                occurrences_hash: shard.occurrences_hash,
++                edges_hash: shard.edges_hash,
++                incomplete_capabilities: BTreeSet::new(),
++            };
++            adapt_shard(
++                shard,
++                source,
++                &snapshot,
++                &mut records,
++                &mut fact_ids,
++                &mut denominator,
++            )?;
++            denominators.insert(shard.file_id, denominator);
++        }
++
++        records.sort_by_key(|record| record.envelope.fact_id);
++        let mut unavailable_trace_seeds = trace_seeds_from_records(&records);
++        if unavailable_trace_seeds.is_empty() {
++            unavailable_trace_seeds.push(file_source_trace_seed(
++                source,
++                &snapshot,
++                &denominators,
++            ));
++        }
++        Ok(Self {
++            records,
++            denominators,
++            source,
++            snapshot,
++            unavailable_trace_seeds,
++        })
++    }
++
++    /// Resolve one shard-local entity identity to the canonical adapter identity.
++    ///
++    /// File-fact entity IDs are local to their shard. Callers that retain a local
++    /// ID must bind it to the owning file before issuing an `Entity` query.
++    #[must_use]
++    pub fn canonical_entity_id(
++        &self,
++        file_id: FileId,
++        local_entity_id: EntityId,
++    ) -> Option<EntityId> {
++        self.denominators.get(&file_id).map(|denominator| {
++            stable_shard_entity_id(
++                self.source,
++                &denominator.source_uri,
++                file_id,
++                local_entity_id,
++            )
++        })
++    }
++
++    fn exact_empty_grant(
++        &self,
++        request: &ProviderQueryRequest,
++    ) -> Result<Option<ProviderCompletenessGrant>, ProviderQueryContractError> {
++        if !self.snapshot.can_claim_exact(request) {
++            return Ok(None);
++        }
++        let Some(provenance) = self.source.completeness_provenance() else {
++            return Ok(None);
++        };
++        let file_id = match &request.subject {
++            ProviderQuerySubject::File(file_id)
++            | ProviderQuerySubject::Position { file_id, .. } => *file_id,
++            _ => return Ok(None),
++        };
++        let Some(denominator) = self.denominators.get(&file_id) else {
++            return Ok(None);
++        };
++        let capability = ProviderQueryCapability::from_query(&request.kind);
++        if !denominator.is_complete_for(capability) {
++            return Ok(None);
++        }
++        issue_provider_completeness_grant(
++            request,
++            self.source.producer(),
++            denominator.denominator_id(self.source, capability),
++            denominator.snapshot_id(self.source),
++            1,
++            provenance,
++            SemanticConfidence::Known(Confidence::High),
++            SemanticFreshness::Fresh,
++        )
++        .map(Some)
++    }
++}
++
++impl ProviderSemanticPort for FileFactShardPort {
++    fn query(
++        &self,
++        request: &ProviderQueryRequest,
++        control: &dyn ProviderQueryControl,
++    ) -> Result<ProviderQueryResultDraft, ProviderQueryContractError> {
++        query_records(
++            request,
++            control,
++            &self.records,
++            &self.snapshot,
++            &self.unavailable_trace_seeds,
++            |request| self.exact_empty_grant(request),
++        )
++    }
++}
++
++/// Adapter over facts that already use the canonical semantic envelope.
++///
++/// Producer identities are preserved verbatim. HIR, PIR-A, and framework
++/// attribution can appear only when a selected canonical envelope actually names
++/// that producer. This adapter never issues exact-empty authority and never
++/// authorizes edits from ordinary facts.
++pub struct CanonicalEnvelopePort {
++    records: Vec<AdapterFactRecord>,
++    snapshot: ProviderAdapterSnapshot,
++    unavailable_trace_seeds: Vec<UnavailableTraceSeed>,
++}
++
++impl CanonicalEnvelopePort {
++    /// Construct a canonical-envelope adapter and reject conflicting identities.
++    pub fn try_new(
++        inputs: impl IntoIterator<Item = CanonicalEnvelopeInput>,
++        snapshot: ProviderAdapterSnapshot,
++    ) -> Result<Self, ProviderAdapterError> {
++        let mut records = Vec::new();
++        let mut fact_ids = BTreeSet::new();
++        for input in inputs {
++            let fact_id = input.envelope.fact_id;
++            if !fact_ids.insert(fact_id) {
++                return Err(ProviderAdapterError::DuplicateFactId(fact_id));
++            }
++            let trace_source = source_for_producer(input.envelope.producer);
++            records.push(AdapterFactRecord::try_new(
++                input.envelope,
++                input.generation_scope,
++                input.symbols,
++                None,
++                trace_source,
++                None,
++                snapshot.model_version,
++            )?);
++        }
++        records.sort_by_key(|record| record.envelope.fact_id);
++        let unavailable_trace_seeds = trace_seeds_from_records(&records);
++        if unavailable_trace_seeds.is_empty() {
++            return Err(ProviderAdapterError::MissingCanonicalEvidence);
++        }
++        Ok(Self {
++            records,
++            snapshot,
++            unavailable_trace_seeds,
++        })
++    }
++}
++
++impl ProviderSemanticPort for CanonicalEnvelopePort {
++    fn query(
++        &self,
++        request: &ProviderQueryRequest,
++        control: &dyn ProviderQueryControl,
++    ) -> Result<ProviderQueryResultDraft, ProviderQueryContractError> {
++        query_records(
++            request,
++            control,
++            &self.records,
++            &self.snapshot,
++            &self.unavailable_trace_seeds,
++            |_request| Ok(None),
++        )
++    }
++}
++
++#[derive(Debug, Default)]
++struct QuerySelection<'a> {
++    records: BTreeMap<FactId, (&'a AdapterFactRecord, ProviderQueryFactRole)>,
++    ambiguous: bool,
++}
++
++impl<'a> QuerySelection<'a> {
++    fn insert(&mut self, record: &'a AdapterFactRecord, role: ProviderQueryFactRole) {
++        self.records
++            .entry(record.envelope.fact_id)
++            .and_modify(|(_, current)| *current = merge_roles(*current, role))
++            .or_insert((record, role));
++    }
++
++    fn value_count(&self) -> usize {
++        self.records
++            .values()
++            .filter(|(_, role)| role_is_value(*role))
++            .count()
++    }
++
++    fn all_records(&self) -> impl Iterator<Item = &'a AdapterFactRecord> + '_ {
++        self.records.values().map(|(record, _)| *record)
++    }
++
++    fn without_values(&mut self) {
++        for (_, role) in self.records.values_mut() {
++            *role = match *role {
++                ProviderQueryFactRole::SelectorValue => ProviderQueryFactRole::Selector,
++                ProviderQueryFactRole::Value => ProviderQueryFactRole::Supporting,
++                other => other,
++            };
++        }
++    }
++
++    fn has_dynamic_boundary(&self) -> bool {
++        self.all_records().any(|record| {
++            record.envelope.boundary.as_ref().is_some_and(|boundary| {
++                matches!(
++                    boundary.kind,
++                    BoundaryKind::DynamicValue
++                        | BoundaryKind::DynamicRequire
++                        | BoundaryKind::DynamicIncludePath
++                        | BoundaryKind::CompileTimeExecution
++                        | BoundaryKind::SymbolicReference
++                )
++            }) || record.envelope.kind == SemanticFactKind::Boundary
++                && record.envelope.reason_code == SemanticReasonCode::DynamicValue
++        })
++    }
++
++    fn first_boundary(&self) -> Option<BoundaryLink> {
++        self.all_records()
++            .find_map(|record| record.envelope.boundary.clone())
++    }
++
++    fn any_status(&self, status: SemanticFactStatus) -> bool {
++        self.all_records()
++            .any(|record| record.envelope.status() == status)
++    }
++
++    fn to_facts(&self) -> Result<Vec<ProviderQueryFact>, ProviderQueryContractError> {
++        self.records
++            .values()
++            .map(|(record, role)| record.to_query_fact(*role))
++            .collect()
++    }
++
++    fn traces(
++        &self,
++        request: &ProviderQueryRequest,
++        fallback_state: ProviderFallbackState,
++    ) -> Vec<ProviderFactTrace> {
++        let mut traces: Vec<_> = self
++            .all_records()
++            .filter_map(|record| record.trace(request, fallback_state))
++            .collect();
++        canonicalize_traces(&mut traces);
++        traces
++    }
++}
++
++fn query_records<F>(
++    request: &ProviderQueryRequest,
++    control: &dyn ProviderQueryControl,
++    records: &[AdapterFactRecord],
++    snapshot: &ProviderAdapterSnapshot,
++    unavailable_trace_seeds: &[UnavailableTraceSeed],
++    exact_empty_grant: F,
++) -> Result<ProviderQueryResultDraft, ProviderQueryContractError>
++where
++    F: FnOnce(
++        &ProviderQueryRequest,
++    ) -> Result<Option<ProviderCompletenessGrant>, ProviderQueryContractError>,
++{
++    if !request.is_well_formed() {
++        return Err(ProviderQueryContractError::MalformedRequest);
++    }
++    if request.context.cancellation == super::semantic_port::ProviderCancellationState::Cancelled
++        || control.is_cancelled()
++    {
++        return Ok(terminal_draft(
++            ProviderQueryOutcome::Cancelled,
++            ProviderQueryTerminalState::Cancelled,
++        ));
++    }
++    if request.context.deadline == super::semantic_port::ProviderQueryDeadline::Expired
++        || control.deadline_expired()
++    {
++        return Ok(terminal_draft(
++            ProviderQueryOutcome::DeadlineExceeded,
++            ProviderQueryTerminalState::DeadlineExceeded,
++        ));
++    }
++    if request.context.readiness_requirement == ProviderReadinessRequirement::EditAuthorizing {
++        return Ok(no_value_draft(
++            ProviderQueryOutcome::Unavailable,
++            Vec::new(),
++            SemanticReasonCode::UnsupportedEffect,
++            vec!["edit_authority_requires_guarded_plan".to_string()],
++            None,
++            unavailable_traces(request, unavailable_trace_seeds),
++        ));
++    }
++    match request.context.readiness_state {
++        ProviderReadinessState::Failed => {
++            return Ok(terminal_draft(
++                ProviderQueryOutcome::Error,
++                ProviderQueryTerminalState::Failed,
++            ));
++        }
++        ProviderReadinessState::Stale => {
++            return Ok(no_value_draft(
++                ProviderQueryOutcome::Stale,
++                Vec::new(),
++                SemanticReasonCode::StaleDependency,
++                vec!["request_readiness_stale".to_string()],
++                None,
++                Vec::new(),
++            ));
++        }
++        ProviderReadinessState::Building | ProviderReadinessState::Unavailable => {
++            return Ok(no_value_draft(
++                ProviderQueryOutcome::Unavailable,
++                Vec::new(),
++                SemanticReasonCode::MissingGeneration,
++                vec!["required_semantic_snapshot_not_ready".to_string()],
++                None,
++                unavailable_traces(request, unavailable_trace_seeds),
++            ));
++        }
++
