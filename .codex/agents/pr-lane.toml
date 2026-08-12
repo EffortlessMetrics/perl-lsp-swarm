@@ -38,15 +38,18 @@ Continuity contract:
   `$prepare-issue`; encode the current synthesis in the issue when useful.
 - weak or absent executable proof -> continue with `$prepare-proof`; require an observed
   discriminating red or preserve `NOT_PROVEN`.
+- `CANDIDATE_READY` -> continue in this lane with `$prove-before-push`; only a current
+  `LOCAL_CANDIDATE_PROVEN` result enters ordinary `$publish-pr`.
 - `REVIEW_CURRENT` -> continue in this lane with `$verify-live-ci`.
 - `CHANGES_REQUIRED`, `REVIEW_FINDINGS_OPEN`, or a valid candidate-owned finding ->
   continue in this lane with `$address-review-comments`; use `$build-candidate` when
-  implementation or test construction is required; run affected proof; then continue
-  through affected `$final-challenge` and `$review-pr`.
+  implementation or test construction is required; commit a coherent candidate, run
+  `$prove-before-push`, then continue through affected `$final-challenge` and
+  `$review-pr`.
 - `WEAK_PROOF`, `PROOF_REVISE`, or executable `NOT_PROVEN` evidence -> continue in this
   lane with `$prepare-proof`, then resume the route that requested proof.
-- candidate-owned CI failure -> continue in this lane through `$build-candidate`,
-  affected proof, and affected review.
+- candidate-owned CI failure -> continue through `$build-candidate`,
+  `$prove-before-push`, and affected review in this lane.
 - `INTEGRATION_READY` -> continue to `$merge-reconcile` when the parent granted merge
   authority; otherwise return the exact merge boundary.
 - `PR_IN_FLIGHT` or another remote-owned wait -> return `IN_FLIGHT` with the wake event.
@@ -57,11 +60,12 @@ Continuity contract:
 - `SUPERSEDED_OR_CLOSE` -> continue to `$merge-reconcile` when close authority was
   granted; otherwise return the durable closeout recommendation.
 
-Do not stop after producing a review or repair packet when the next skill is authorized,
-useful, and still inside this PR. Do not close and respawn merely to switch from review
-to repair, repair to proof, proof to review, or review to integration. Preserve the local
-cache and worktree until the lane reaches a real wait, blocker, terminal disposition,
-external-action boundary, or precise `NOT_PROVEN` boundary.
+Do not stop after producing a review, repair, or proof packet when the next skill is
+authorized, useful, and still inside this PR. Do not close and respawn merely to switch
+from review to repair, repair to candidate proof, candidate proof to review, or review
+to integration. Preserve the local cache and worktree until the lane reaches a real
+wait, blocker, terminal disposition, external-action boundary, or precise `NOT_PROVEN`
+boundary.
 
 Role-specialized help:
 - a dedicated reviewer may keep one independent review context across `$review-pr`,
@@ -79,6 +83,8 @@ Durable-state boundary:
 - `.spec/`, ADR, policy, schema, or contract holds settled cross-PR/public invariants;
 - tests/fixtures/oracles hold executable discrimination;
 - `.changes/unreleased/` holds the user-visible disposition while context is fresh;
+- the candidate-bound local result holds exact committed-range affected proof, Changie,
+  diff-scoped RIPR disposition, and limitations;
 - the PR body holds the cumulative candidate claim, proof, hardening, simplification,
   deviations, risk, rollback, and limitations;
 - reviews/checks/closeout hold current judgment, integration facts, landed effect, and
@@ -111,7 +117,7 @@ event. The graph and skills own the procedure.
 
 Return the typed `$deliver-pr` result with current candidate identity, roles and skills
 traversed, durable state written or deliberately not written, findings and dispositions,
-changes made, proof run/not run, substantive review state, live integration state, exact
-next skill or wake event, and verified cleanup of lane-created worktree/process resources
-when the lane no longer needs them.
+changes made, local candidate proof run/not run, substantive review state, live
+integration state, exact next skill or wake event, and verified cleanup of lane-created
+worktree/process resources when the lane no longer needs them.
 """
