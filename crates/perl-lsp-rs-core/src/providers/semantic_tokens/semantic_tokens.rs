@@ -1064,10 +1064,15 @@ pub fn collect_semantic_tokens_controlled(
     let readonly_enabled = controlled_value!(ast_uses_readonly(ast, &mut traversal));
 
     // 2a) Collect variable declaration spans for modifier tagging
-    let decl_spans = controlled_value!(declaration_readonly_flags(ast, &mut traversal))
-        .into_iter()
-        .map(|((start, end), is_readonly)| (start, end, is_readonly))
-        .collect::<Vec<_>>();
+    let decl_spans = controlled_value!(declaration_readonly_flags(
+        ast,
+        const_fast_enabled,
+        readonly_enabled,
+        &mut traversal,
+    ))
+    .into_iter()
+    .map(|((start, end), is_readonly)| (start, end, is_readonly))
+    .collect::<Vec<_>>();
 
     // 2a-ii) Collect assignment LHS spans to apply the "modification" modifier (bit 7)
     let assignment_spans = controlled_value!(assignment_lhs_spans(ast, &mut traversal));
@@ -1477,11 +1482,11 @@ where
 
 fn declaration_readonly_flags(
     ast: &Node,
+    const_fast_enabled: bool,
+    readonly_enabled: bool,
     traversal: &mut TraversalState<'_, '_>,
 ) -> Result<FxHashMap<(usize, usize), bool>, TraversalStop> {
     let mut flags = FxHashMap::default();
-    let const_fast_enabled = ast_uses_const_fast(ast, traversal)?;
-    let readonly_enabled = ast_uses_readonly(ast, traversal)?;
 
     walk_ast_full_controlled(ast, traversal, &mut |node| {
         match &node.kind {
@@ -1789,7 +1794,10 @@ mod tests {
             &|offset| pos16(&source, offset),
             &SemanticTokensTraversalControl::new(&never_cancelled, None),
         );
-        assert!(matches!(complete, SemanticTokensTraversalOutcome::Complete(_)));
+        assert!(
+            matches!(complete, SemanticTokensTraversalOutcome::Complete(_)),
+            "an unlimited traversal must complete, got {complete:?}"
+        );
         let total_work = complete_polls.load(Ordering::Relaxed);
         let budget = total_work.checked_sub(1).ok_or("complete traversal recorded no work")?;
         let bounded_never_cancelled = || false;
@@ -1802,11 +1810,14 @@ mod tests {
             &control,
         );
 
-        assert!(matches!(
-            bounded,
-            SemanticTokensTraversalOutcome::BudgetExhausted { work_done, .. }
-                if work_done == budget
-        ));
+        assert!(
+            matches!(
+                bounded,
+                SemanticTokensTraversalOutcome::BudgetExhausted { work_done, .. }
+                    if work_done == budget
+            ),
+            "a budget of {budget} must exhaust with work_done == {budget}, got {bounded:?}"
+        );
         Ok(())
     }
 
