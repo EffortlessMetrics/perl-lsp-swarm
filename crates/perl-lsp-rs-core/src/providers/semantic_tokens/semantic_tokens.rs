@@ -609,19 +609,6 @@ fn is_special_variable(full_name: &str) -> bool {
     )
 }
 
-/// Find the first occurrence of `needle` in `haystack` starting at byte offset `from`.
-///
-/// Returns the absolute offset within `haystack` where `needle` begins,
-/// or `None` if not found. Used to locate interpolated-string parts within
-/// the full token text so we can derive their absolute source positions.
-fn find_bytes_at(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(from);
-    }
-    let end = haystack.len().saturating_sub(needle.len());
-    (from..=end).find(|&i| haystack[i..i + needle.len()] == *needle)
-}
-
 fn find_bytes_at_controlled(
     haystack: &[u8],
     from: usize,
@@ -1453,70 +1440,6 @@ fn finalize_tokens_controlled(
     Ok(encoded)
 }
 
-/// Remove overlapping tokens to comply with LSP specification
-/// Prefers tokens with higher specificity (AST over lexer) and longer spans
-fn remove_overlapping_tokens(
-    raw_tokens: Vec<(u32, u32, u32, u32, u32)>,
-) -> Vec<(u32, u32, u32, u32, u32)> {
-    // Sort by start position first
-    let mut sorted_tokens = raw_tokens;
-    sorted_tokens
-        .sort_by_key(|&(line, start_char, _length, _token_type, _modifier)| (line, start_char));
-
-    let mut result = Vec::new();
-
-    for token in sorted_tokens {
-        let (line, start_char, length, _token_type, _modifier) = token;
-
-        // Check if this token overlaps with the last token in result
-        if let Some(&(last_line, last_start, last_length, _last_type, _last_modifier)) =
-            result.last()
-        {
-            // Tokens overlap if they're on the same line and ranges intersect
-            if line == last_line && start_char < last_start + last_length {
-                // Choose the token with better specificity or longer length
-                if length > last_length {
-                    result.pop(); // Remove the previous token
-                    result.push(token);
-                }
-                // If current token is not better, skip it
-            } else {
-                result.push(token);
-            }
-        } else {
-            result.push(token);
-        }
-    }
-
-    result
-}
-
-/// Thread-safe token encoding from raw position data
-fn encode_raw_tokens_to_deltas(
-    mut raw_tokens: Vec<(u32, u32, u32, u32, u32)>,
-) -> Vec<EncodedToken> {
-    // Sort by position (line, then character)
-    raw_tokens.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-    let mut out: Vec<EncodedToken> = Vec::new();
-    let mut prev_line = 0u32;
-    let mut prev_char = 0u32;
-
-    for (line, char, len, kind, mods) in raw_tokens {
-        let (dline, dchar) = if line == prev_line {
-            (0, char.saturating_sub(prev_char))
-        } else {
-            (line.saturating_sub(prev_line), char)
-        };
-
-        out.push([dline, dchar, len, kind, mods]);
-        prev_line = line;
-        prev_char = char;
-    }
-
-    out
-}
-
 /// Comprehensive AST walker for semantic token extraction.
 fn walk_ast_full<F>(node: &Node, visitor: &mut F) -> bool
 where
@@ -1682,6 +1605,29 @@ mod tests {
     // Helper to create token tuple
     fn tok(line: u32, start: u32, len: u32, kind: u32, mods: u32) -> (u32, u32, u32, u32, u32) {
         (line, start, len, kind, mods)
+    }
+
+    fn finalized_raw_tokens(input: Vec<RawSemanticToken>) -> Vec<RawSemanticToken> {
+        let control = SemanticTokensTraversalControl::unlimited();
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let encoded = match finalize_tokens_controlled(&input, &[], &mut traversal) {
+            Ok(tokens) => tokens,
+            Err(_) => return Vec::new(),
+        };
+        let mut line = 0u32;
+        let mut character = 0u32;
+        encoded
+            .into_iter()
+            .map(|[delta_line, delta_character, length, kind, modifiers]| {
+                if delta_line == 0 {
+                    character = character.saturating_add(delta_character);
+                } else {
+                    line = line.saturating_add(delta_line);
+                    character = delta_character;
+                }
+                (line, character, length, kind, modifiers)
+            })
+            .collect()
     }
 
     fn pos16(source: &str, byte_offset: usize) -> (u32, u32) {
@@ -2150,7 +2096,7 @@ mod tests {
     fn test_remove_overlapping_tokens_basic() {
         // No overlap
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 6, 5, 0, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result, input);
     }
 
@@ -2159,7 +2105,7 @@ mod tests {
         // Touching is NOT overlap
         // [0, 5) and [5, 10)
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 5, 5, 0, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result, input);
     }
 
@@ -2170,7 +2116,7 @@ mod tests {
         // Expect Outer kept
         let input = vec![tok(0, 0, 10, 0, 0), tok(0, 2, 3, 1, 0)];
         // Sorted: Outer, Inner
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 0, 10, 0, 0));
     }
@@ -2181,7 +2127,7 @@ mod tests {
         // Sorted: A, B
         // Expect B (longer) replaces A
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 0, 10, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 0, 10, 1, 0));
     }
@@ -2193,7 +2139,7 @@ mod tests {
         // Overlap at 4. B is longer.
         // Expect A replaced by B.
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 4, 6, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 4, 6, 1, 0));
     }
@@ -2205,7 +2151,7 @@ mod tests {
         // Overlap at 8. A is longer.
         // Expect A kept, B dropped.
         let input = vec![tok(0, 0, 10, 0, 0), tok(0, 8, 7, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 0, 10, 0, 0));
     }
@@ -2216,7 +2162,7 @@ mod tests {
         // B [0, 5) len 5
         // Expect A kept (first one)
         let input = vec![tok(0, 0, 5, 1, 0), tok(0, 0, 5, 2, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tok(0, 0, 5, 1, 0));
     }
@@ -2224,7 +2170,7 @@ mod tests {
     #[test]
     fn test_remove_overlapping_tokens_different_lines() {
         let input = vec![tok(0, 0, 5, 0, 0), tok(1, 0, 5, 0, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result, input);
     }
 
@@ -2237,7 +2183,7 @@ mod tests {
     #[test]
     fn mutation_hardening_empty_input() {
         let input = vec![];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 0, "Empty input must produce empty output");
     }
 
@@ -2246,7 +2192,7 @@ mod tests {
     #[test]
     fn mutation_hardening_single_token() {
         let input = vec![tok(0, 0, 5, 0, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 1, "Single token must be preserved");
         assert_eq!(result[0], input[0], "Single token must match input exactly");
     }
@@ -2257,7 +2203,7 @@ mod tests {
     fn mutation_hardening_adjacent_non_overlapping() {
         // Token A: [0, 5), Token B: [5, 10) - touching but not overlapping
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 5, 5, 1, 0)];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 2, "Adjacent non-overlapping tokens must both be kept");
         assert_eq!(result[0], tok(0, 0, 5, 0, 0));
         assert_eq!(result[1], tok(0, 5, 5, 1, 0));
@@ -2269,7 +2215,7 @@ mod tests {
     fn mutation_hardening_exact_boundary() {
         // Token A: [10, 15), Token B: [15, 20) - exact boundary
         let input = vec![tok(0, 10, 5, 0, 0), tok(0, 15, 5, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 2, "Tokens with exact boundaries must not overlap");
     }
 
@@ -2280,7 +2226,7 @@ mod tests {
         // Token A: [0, 6), Token B: [5, 10) - overlap by 1 char at position 5
         // A is kept because it comes first and B is not longer (A=6, B=5)
         let input = vec![tok(0, 0, 6, 0, 0), tok(0, 5, 5, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Single char overlap must trigger deduplication");
         assert_eq!(result[0], tok(0, 0, 6, 0, 0), "First token kept (longer)");
     }
@@ -2291,7 +2237,7 @@ mod tests {
     fn mutation_hardening_partial_overlap_length_determines_winner() {
         // Token A: [0, 5) len=5, Token B: [3, 10) len=7 - partial overlap, B longer
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 3, 7, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Partial overlap must keep only one token");
         assert_eq!(result[0], tok(0, 3, 7, 1, 0), "Longer overlapping token must win");
     }
@@ -2302,7 +2248,7 @@ mod tests {
     fn mutation_hardening_equal_length_keeps_first() {
         // Token A: [0, 5) len=5, Token B: [2, 7) len=5 - equal length overlap
         let input = vec![tok(0, 0, 5, 0, 0), tok(0, 2, 5, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Equal length overlap must keep first token");
         assert_eq!(result[0], tok(0, 0, 5, 0, 0), "First token must be kept when lengths equal");
     }
@@ -2338,7 +2284,7 @@ print "ok" foreach @ys;
             tok(0, 0, 100, 0, 0), // Line 0, very long token
             tok(1, 0, 5, 1, 0),   // Line 1, early position
         ];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 2, "Tokens on different lines must never overlap");
         assert_eq!(result[0], tok(0, 0, 100, 0, 0));
         assert_eq!(result[1], tok(1, 0, 5, 1, 0));
@@ -2354,7 +2300,7 @@ print "ok" foreach @ys;
             tok(0, 4, 5, 1, 0), // len=5 (overlaps A)
             tok(0, 8, 4, 2, 0), // len=4 (would overlap B)
         ];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         // A is kept (4 < 0+5, but 5 > 5 is false, so B is skipped)
         // C doesn't overlap A (8 < 0+5 is false), so C is kept
         assert_eq!(result.len(), 2, "First and third tokens kept");
@@ -2370,7 +2316,7 @@ print "ok" foreach @ys;
             tok(0, 5, 0, 0, 0), // Zero-length token [5, 5)
             tok(0, 5, 5, 1, 0), // Normal token at same position [5, 10)
         ];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         // Zero-length token [5,5) doesn't overlap with [5,10) per < check (5 < 5+0 is false)
         assert_eq!(
             result.len(),
@@ -2386,7 +2332,7 @@ print "ok" foreach @ys;
     #[test]
     fn mutation_hardening_multiple_zero_length() {
         let input = vec![tok(0, 5, 0, 0, 0), tok(0, 5, 0, 1, 0), tok(0, 5, 0, 2, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         // Zero-length tokens at same position don't overlap each other (5 < 5+0 is false)
         assert_eq!(result.len(), 3, "Multiple zero-length tokens are all kept");
     }
@@ -2396,7 +2342,7 @@ print "ok" foreach @ys;
     #[test]
     fn mutation_hardening_large_positions() {
         let input = vec![tok(1000, u32::MAX - 100, 50, 0, 0), tok(1000, u32::MAX - 40, 20, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         // Overflow is prevented by saturating operations in the original code
         assert_eq!(result.len(), 2, "Large positions must not cause overflow issues");
     }
@@ -2407,7 +2353,7 @@ print "ok" foreach @ys;
     fn mutation_hardening_sort_order() {
         // Input in reverse order
         let input = vec![tok(2, 10, 5, 0, 0), tok(1, 10, 5, 1, 0), tok(0, 10, 5, 2, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 3, "Non-overlapping tokens must all be preserved");
         // Verify sorted by line
         assert_eq!(result[0].0, 0);
@@ -2421,7 +2367,7 @@ print "ok" foreach @ys;
     fn mutation_hardening_sort_order_same_line() {
         // Input with tokens in reverse order on same line
         let input = vec![tok(0, 30, 5, 0, 0), tok(0, 20, 5, 1, 0), tok(0, 10, 5, 2, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 3, "Non-overlapping tokens must all be preserved");
         // Verify sorted by start position
         assert_eq!(result[0].1, 10);
@@ -2436,7 +2382,7 @@ print "ok" foreach @ys;
         // All tokens overlap at same position, increasing length
         let input =
             vec![tok(0, 0, 3, 0, 0), tok(0, 0, 5, 1, 0), tok(0, 0, 7, 2, 0), tok(0, 0, 9, 3, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Longest token must survive multiple replacements");
         assert_eq!(result[0], tok(0, 0, 9, 3, 0), "Longest token must be the survivor");
     }
@@ -2451,7 +2397,7 @@ print "ok" foreach @ys;
             tok(0, 10, 3, 2, 0), // [10, 13)
             tok(0, 15, 3, 3, 0), // [15, 18)
         ];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result.len(), 4, "All non-overlapping tokens must be preserved");
         assert_eq!(result, input, "Token order and content must be unchanged");
     }
@@ -2462,7 +2408,7 @@ print "ok" foreach @ys;
     fn mutation_hardening_boundary_minus_one() {
         // Token A: [0, 10), Token B: [9, 15) - overlap at position 9
         let input = vec![tok(0, 0, 10, 0, 0), tok(0, 9, 6, 1, 0)];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 1, "Boundary-1 overlap must be detected");
         assert_eq!(result[0], tok(0, 0, 10, 0, 0), "First longer token wins");
     }
@@ -2474,7 +2420,7 @@ print "ok" foreach @ys;
         let input = vec![
             tok(0, 0, 5, 42, 7), // Specific type and modifiers
         ];
-        let result = remove_overlapping_tokens(input.clone());
+        let result = finalized_raw_tokens(input.clone());
         assert_eq!(result[0].3, 42, "Token type must be preserved");
         assert_eq!(result[0].4, 7, "Token modifiers must be preserved");
     }
@@ -2490,7 +2436,7 @@ print "ok" foreach @ys;
             tok(0, 5, 3, 3, 0),
             tok(2, 0, 3, 4, 0),
         ];
-        let result = remove_overlapping_tokens(input);
+        let result = finalized_raw_tokens(input);
         assert_eq!(result.len(), 5);
         // Verify primary sort by line
         assert!(result[0].0 <= result[1].0);
