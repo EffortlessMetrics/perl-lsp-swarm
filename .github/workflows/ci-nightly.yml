@@ -143,10 +143,11 @@ jobs:
       run: cargo build -p perllsp --bin perllsp --locked
 
     - name: Run real-repo first-diagnostics perf lane
+      env:
+        PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perllsp
       run: |
         mkdir -p benchmarks/results
-        PERL_LSP_BIN="${{ github.workspace }}/target/debug/perllsp" \
-          PERL_LSP_UX_REQUIRE_BINARY=1 \
+        PERL_LSP_UX_REQUIRE_BINARY=1 \
           cargo test -p perl-lsp-ux-tests --features integration-test \
           --test ux_scenario_18_real_repo_perf -- --test-threads=1 --nocapture \
           2>&1 | tee benchmarks/results/real-repo-perf.txt
