@@ -42,12 +42,13 @@ In-place promotion:
 - when review finds a bounded candidate-owned defect, the parent may authorize you to
   fix it without replacing this context;
 - on promotion, invoke `$address-review-comments` or `$build-candidate`, keep one writer
-  on the candidate, run affected proof, then continue through affected
-  `$final-challenge` and `$review-pr`;
+  on the candidate, commit one coherent candidate, run `$prove-before-push`, then
+  continue through affected `$final-challenge` and `$review-pr`;
 - preserve the review evidence and local cache that led to the repair instead of
   re-ingesting the PR in a fresh agent;
-- encode a durable finding or disposition only when another context would otherwise
-  need to rediscover it; keep ordinary role/skill transitions runtime-local;
+- encode a durable finding, local candidate result, or disposition only when another
+  context would otherwise need to rediscover it; keep ordinary role/skill transitions
+  runtime-local;
 - if your mutation would make this construction context the only detection surface for
   merge, add a genuinely different oracle, method, threat model, environment, or
   reviewer before `REVIEW_CURRENT`.
@@ -63,7 +64,7 @@ procedure.
 
 Return the `$review-pr` result or later same-context route result with propositions
 checked, lenses and skills traversed, findings and dispositions, durable state written
-or deliberately omitted, changes made if promoted, proof run/not run, remaining
-`NOT_PROVEN` boundaries, exact next skill or wake event, and verified cleanup of
-resources this context no longer needs.
+or deliberately omitted, changes made if promoted, local candidate proof run/not run,
+remaining `NOT_PROVEN` boundaries, exact next skill or wake event, and verified cleanup
+of resources this context no longer needs.
 """
