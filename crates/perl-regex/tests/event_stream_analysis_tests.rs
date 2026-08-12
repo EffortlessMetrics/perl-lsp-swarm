@@ -91,6 +91,33 @@ fn local_x_scope_hides_structure_and_minus_x_restores_literal_hash_behavior()
 }
 
 #[test]
+fn persistent_inline_x_changes_apply_to_the_remaining_pattern()
+-> Result<(), Box<dyn std::error::Error>> {
+    let validator = RegexValidator::new();
+
+    let enable = "(?x)# (?{ hidden }) (a+)+\n(a+)+";
+    let enabled = validator.analyze(enable);
+    assert!(enabled.facts.embedded_code.is_empty());
+    assert_eq!(enabled.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        enabled.facts.nested_quantifiers[0].start,
+        enable.rfind('+').ok_or("missing live quantifier after newline")?
+    );
+
+    let disable = "(?-x)#(?{ live })";
+    let disabled = validator.analyze_with_modifiers(
+        disable,
+        effective(RegexOperator::Match, "x")?,
+    );
+    assert_eq!(disabled.facts.embedded_code.len(), 1);
+    assert_eq!(
+        disabled.facts.embedded_code[0].range.start,
+        disable.find("(?{").ok_or("missing live embedded-code opener")?
+    );
+    Ok(())
+}
+
+#[test]
 fn optional_exact_and_repeating_outer_quantifiers_are_distinct()
 -> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::new();
