@@ -1,0 +1,48 @@
+name: PR 6625 Semantic Review Docs
+
+on:
+  push:
+    branches:
+      - claude/perl-corpus-coverage-rnxsph
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    name: Apply semantic-review provider contract
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: claude/perl-corpus-coverage-rnxsph
+          fetch-depth: 0
+
+      - name: Install Python test runner
+        run: python3 -m pip install --disable-pip-version-check pytest
+
+      - name: Apply bounded patch
+        run: python3 scripts/ci/apply_pr_6625_semantic_review_docs.py
+
+      - name: Verify focused currentness contracts
+        run: |
+          python3 -m unittest scripts/ci/test_check_pr_semantic_review_currentness.py
+          python3 -m pytest tests/test_semantic_review_currentness.py -q
+          bash scripts/tests/test-pre-merge-check.sh
+          git diff --check
+
+      - name: Commit reviewed provider contract
+        run: |
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add \
+            .agents/skills/review-pr/SKILL.md \
+            .claude/skills/review-pr/SKILL.md \
+            docs/agents/REVIEW_CURRENTNESS.md \
+            tests/test_semantic_review_currentness.py
+          git diff --cached --quiet && exit 0
+          git commit -m "fix(review): publish subject-bound review currentness (#6628)"
+          git push origin HEAD:claude/perl-corpus-coverage-rnxsph
