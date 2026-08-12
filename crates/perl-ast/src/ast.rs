@@ -1321,12 +1321,12 @@ impl Node {
         F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
     {
         macro_rules! emit {
-            ($field:expr, $child:expr) => {
+            ($field:expr, $child:expr) => {{
                 observe_pull(Some($field), $child);
                 if let ControlFlow::Break(b) = f(Some($field), $child) {
                     return ControlFlow::Break(b);
                 }
-            };
+            }};
         }
 
         match &self.kind {
