@@ -23,6 +23,9 @@ perl-pod = { workspace = true }
 serde = { workspace = true }
 # serde_json: used for META.json distribution-metadata facts (PR 7). Leaf, allowed.
 serde_json = { workspace = true }
+# Durable TestItem IDs are a serialized cross-consumer authority. Use a
+# collision-resistant digest rather than the repository's compact FNV evidence IDs.
+sha2 = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true
