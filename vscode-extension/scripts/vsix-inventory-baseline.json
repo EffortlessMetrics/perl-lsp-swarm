@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "total_files": 31,
-  "total_bytes": 36524448,
+  "total_bytes": 36528544,
   "files": {
     "README.md": 25290,
     "package.nls.json": 2110,
@@ -30,7 +30,7 @@
     "media/walkthrough/configure-settings.svg": 1935,
     "media/walkthrough/ai-completion.svg": 1624,
     "bin/linux-x64/perllsp": 16998416,
-    "bin/win32-x64/perllsp.exe": 17975296,
+    "bin/win32-x64/perllsp.exe": 17979392,
     "assets/demo-project/main.pl": 203,
     "assets/demo-project/lib/Utils.pm": 485,
     "assets/demo-project/lib/Database.pm": 298

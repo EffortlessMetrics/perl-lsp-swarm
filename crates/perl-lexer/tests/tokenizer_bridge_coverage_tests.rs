@@ -5,15 +5,13 @@
 //! - Token stream creation from various source inputs
 //! - Trivia handling (whitespace, comments, kind_name, as_str)
 //! - Token kind mapping for less-common lexer token types
-//! - Edge cases: empty source, Unicode, very long lines, format_with_trivia
+//! - Edge cases: empty source, Unicode, very long lines, source_with_trivia
 
 use perl_lexer::tokenizer::token_wrapper::PositionTracker;
 use perl_lexer::tokenizer::util::{code_slice, find_data_marker_byte_lexed};
 use perl_parser_core::tokens::token_stream::TokenStream;
 use perl_parser_core::trivia::{Trivia, TriviaLexer, TriviaToken};
-use perl_parser_core::trivia_parser::{
-    TriviaParserContext, TriviaPreservingParser, format_with_trivia,
-};
+use perl_parser_core::trivia_parser::{TriviaPreservingParser, source_with_trivia};
 use perl_tdd_support::must;
 use perl_token::TokenKind;
 
@@ -673,51 +671,49 @@ fn trivia_lexer_interleaved_code_and_comments() -> Result<(), Box<dyn std::error
 }
 
 // ===================================================================
-// 10. TriviaParserContext — additional coverage
+// 10. Canonical trivia parser — additional coverage
 // ===================================================================
 
 #[test]
 fn trivia_context_empty_source_is_eof() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TriviaParserContext::new(String::new());
-    assert!(ctx.is_eof(), "Empty source should be at EOF");
+    let result = TriviaPreservingParser::new(String::new()).parse();
+    assert!(matches!(&result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
+    assert!(result.trivia.is_empty());
     Ok(())
 }
 
 #[test]
 fn trivia_context_non_empty_source_is_not_eof() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = TriviaParserContext::new("42".to_string());
-    assert!(!ctx.is_eof(), "Non-empty source should not be at EOF initially");
+    let result = TriviaPreservingParser::new("42".to_string()).parse();
+    assert!(matches!(&result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
     Ok(())
 }
 
 #[test]
 fn trivia_context_whitespace_only_eof_behavior() -> Result<(), Box<dyn std::error::Error>> {
-    // Whitespace-only source: all tokens are trivia, so the context may be at EOF
-    // or may contain an EOF token with trivia attached
-    let ctx = TriviaParserContext::new("   \n\n  ".to_string());
-    // The key test is that it doesn't crash
-    let _is_eof = ctx.is_eof();
+    let result = TriviaPreservingParser::new("   \n\n  ".to_string()).parse();
+    assert!(matches!(&result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }));
+    assert!(!result.trivia.is_empty());
     Ok(())
 }
 
 #[test]
 fn trivia_context_preserves_leading_whitespace_via_parser() -> Result<(), Box<dyn std::error::Error>>
 {
-    let parser = TriviaPreservingParser::new("   42");
+    let parser = TriviaPreservingParser::new("   42".to_string());
     let result = parser.parse();
 
-    let has_ws = result.leading_trivia.iter().any(|t| matches!(&t.trivia, Trivia::Whitespace(_)));
+    let has_ws = result.trivia.iter().any(|t| matches!(&t.trivia, Trivia::Whitespace(_)));
     assert!(has_ws, "Parser should preserve leading whitespace trivia");
     Ok(())
 }
 
 #[test]
 fn trivia_context_preserves_leading_comment_via_parser() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("# preamble\n42");
+    let parser = TriviaPreservingParser::new("# preamble\n42".to_string());
     let result = parser.parse();
 
-    let has_comment =
-        result.leading_trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_)));
+    let has_comment = result.trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_)));
     assert!(has_comment, "Parser should preserve leading comment trivia");
     Ok(())
 }
@@ -728,12 +724,11 @@ fn trivia_context_preserves_leading_comment_via_parser() -> Result<(), Box<dyn s
 
 #[test]
 fn trivia_parser_empty_source_produces_program_node() -> Result<(), Box<dyn std::error::Error>> {
-    let source = String::new();
-    let parser = TriviaPreservingParser::new(&source);
+    let parser = TriviaPreservingParser::new(String::new());
     let result = parser.parse();
     // Should produce a Program node (even if empty)
     assert!(
-        matches!(&result.node.kind, perl_ast_v2::NodeKind::Program { .. }),
+        matches!(&result.parse.ast.kind, perl_parser_core::NodeKind::Program { .. }),
         "Expected Program node from empty source"
     );
     Ok(())
@@ -741,45 +736,44 @@ fn trivia_parser_empty_source_produces_program_node() -> Result<(), Box<dyn std:
 
 #[test]
 fn trivia_parser_comment_only_preserves_trivia() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("# just a comment\n");
+    let parser = TriviaPreservingParser::new("# just a comment\n".to_string());
     let result = parser.parse();
 
     // Should have comment as trivia
-    let has_comment =
-        result.leading_trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_)));
+    let has_comment = result.trivia.iter().any(|t| matches!(&t.trivia, Trivia::LineComment(_)));
     assert!(has_comment, "Comment-only source should preserve comment as trivia");
     Ok(())
 }
 
 // ===================================================================
-// 12. format_with_trivia
+// 12. source_with_trivia
 // ===================================================================
 
 #[test]
-fn format_with_trivia_includes_leading_trivia() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("# comment\nmy $x;");
+fn source_with_trivia_includes_leading_trivia() -> Result<(), Box<dyn std::error::Error>> {
+    let parser = TriviaPreservingParser::new("# comment\nmy $x;".to_string());
     let result = parser.parse();
-    let formatted = format_with_trivia(&result);
+    let formatted = source_with_trivia(&result);
 
     // Should contain the comment text somewhere in the output
     assert!(
         formatted.contains("# comment"),
-        "format_with_trivia should include leading comment trivia, got: {}",
+        "source_with_trivia should include leading comment trivia, got: {}",
         formatted
     );
     Ok(())
 }
 
 #[test]
-fn format_with_trivia_includes_whitespace_trivia() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("  my $x;");
+fn source_with_trivia_includes_whitespace_trivia() -> Result<(), Box<dyn std::error::Error>> {
+    let parser = TriviaPreservingParser::new("  my $x;".to_string());
     let result = parser.parse();
-    let formatted = format_with_trivia(&result);
+    let formatted = source_with_trivia(&result);
 
     // Should contain the whitespace prefix
     assert!(
         formatted.starts_with("  "),
-        "format_with_trivia should include leading whitespace trivia, got: {:?}",
+        "source_with_trivia should include leading whitespace trivia, got: {:?}",
         formatted
     );
     Ok(())

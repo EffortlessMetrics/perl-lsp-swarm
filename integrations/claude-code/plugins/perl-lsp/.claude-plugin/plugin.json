@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "perl-lsp",
+  "displayName": "Perl LSP",
+  "version": "0.1.0",
+  "description": "Native Perl code intelligence for Claude Code using perllsp",
+  "author": {
+    "name": "EffortlessMetrics",
+    "url": "https://github.com/EffortlessMetrics"
+  },
+  "homepage": "https://github.com/EffortlessMetrics/perl-lsp",
+  "repository": "https://github.com/EffortlessMetrics/perl-lsp",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["perl", "lsp", "code-intelligence", "static-analysis"],
+  "lspServers": "./.lsp.json"
+}
