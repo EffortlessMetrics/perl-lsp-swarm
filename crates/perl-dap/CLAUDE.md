@@ -1,147 +1,125 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with code in this repository.
+This file provides crate-local guidance for work in `crates/perl-dap`.
 
 ## Crate Overview
 
-- **Tier**: 6 (application/executable crate)
-- **Purpose**: Debug Adapter Protocol server for Perl. Provides a native adapter that drives `perl -d` directly, and a `BridgeAdapter` library that proxies DAP messages to Perl::LanguageServer.
-- **Version**: workspace (see root `Cargo.toml` `[workspace.package]` version)
+- **Tier**: application/runtime crate
+- **Purpose**: native Debug Adapter Protocol server for Perl
+- **Shipped product path**: `perl-dap` drives the local Perl interpreter through the native Rust adapter
+- **Optional integration**: external debugger peers such as `Devel::ptkdb` may cooperate through the Perl Debugger Peer Protocol; they are not bundled or required
+- **Legacy reference**: the `Perl::LanguageServer` bridge is deprecated library-only compatibility/conformance code and is not exposed by the shipped CLI
+- **Version**: workspace version from the root `Cargo.toml`
 
 ## Commands
 
 ```bash
-cargo build -p perl-dap               # Build
-cargo build -p perl-dap --release     # Build optimized
-cargo test -p perl-dap                # Run tests
-cargo test -p perl-dap --features test-helpers --all-targets --locked  # Seed-helper targets
-cargo clippy -p perl-dap              # Lint
-cargo doc -p perl-dap --open          # View docs
-./target/release/perl-dap --stdio     # Run native adapter (stdio)
-./target/release/perl-dap --socket --port 13603  # Run native adapter (TCP)
-./target/release/perl-dap --bridge    # Run bridge adapter
-RUST_LOG=debug ./target/release/perl-dap  # Run with debug logging
+cargo build -p perl-dap
+cargo build -p perl-dap --release
+cargo test -p perl-dap
+cargo test -p perl-dap --features test-helpers --all-targets --locked
+cargo clippy -p perl-dap --locked -- -D warnings -A missing_docs
+cargo doc -p perl-dap --no-deps
+
+./target/release/perl-dap --stdio
+./target/release/perl-dap --socket --port 13603
+RUST_LOG=debug ./target/release/perl-dap --stdio
 ```
+
+The shipped CLI must reject `--bridge`. Do not restore that flag or describe
+`Perl::LanguageServer` as a normal runtime dependency.
+
+## Product Boundary
+
+Preserve these invariants:
+
+1. Native `perl-dap` is the default and first-mile debugger path.
+2. A local Perl interpreter is the only external runtime requirement for native sessions.
+3. Workspace parser, lexer, protocol, and adapter support crates are compiled into the binary.
+4. External debugger peers are explicit optional integrations; `perl-dap` remains the DAP server.
+5. Legacy PLS bridge code may be used only for compatibility, migration, or conformance comparisons.
+6. Public guides, crate landing pages, CLI help, and editor defaults must not teach the legacy bridge as product setup.
+
+Canonical policy: `docs/reference/NATIVE_STACK_POLICY.md`.
 
 ## Architecture
 
-### Dependencies
-
-**Internal crates**: `perl-parser` / `perl-parser-core` / `perl-ast` (AST for breakpoint
-validation), `perl-lexer` (completion keywords), `perl-lsp-rs-core` (transport framing,
-platform helpers, feature catalog), `perl-module` (module path resolution).
-
-The former `perl-dap-breakpoint`, `perl-dap-eval`, `perl-dap-stack`, and
-`perl-dap-variables` satellites were absorbed into this crate (Wave H); they are now the
-`breakpoint`, `eval`, `stack`, and `variables` modules and are re-exported from `lib.rs`.
-
-**External crates**: `tokio` (async runtime), `serde`/`serde_json` (protocol
-serialization), `anyhow`/`thiserror` (errors), `clap` (CLI), `tracing` (logging), `regex`
-(debugger output parsing), `ropey` (position mapping), `nix` (Unix signals), `winapi`
-(Windows process checks).
-
-### Key Modules
-
-Several of these are directories with a `mod.rs`, not single files — check `src/` before
-assuming a path.
+### Core runtime
 
 | Module | Key types | Purpose |
-|--------|-----------|---------|
-| `lib.rs` | re-exports | Public surface; see `pub use` block at the bottom |
-| `server/` | `DapServer`, `DapConfig`, `DapMode` | Server entry point; dispatches to Native or Bridge mode |
-| `main.rs` | `Args` (clap) | CLI binary; parses `--stdio`, `--socket`, `--bridge`, `--port`, `--log-level` |
-| `debug_adapter/` | `DebugAdapter`, `DapMessage` | Native adapter, split by concern: `process` (lifecycle + output reader), `execution` (stepping), `frames`, `logpoint` (live handling plus reusable interpolation), `transport`, `dispatch` |
-| `backend/` | `DebugBackend`, `NativePerlDbBackend`, peer bridge/launch | Backend abstraction and the external-peer (ptkdb) path |
-| `peer_protocol/` | framing, message, payload types | Wire protocol for external debugger peers |
-| `bridge_adapter.rs` | `BridgeAdapter` | Spawns Perl::LanguageServer in DAP mode, proxies messages via stdio |
-| `protocol.rs` | `Request`, `Response`, `Event`, `Capabilities`, `SourceBreakpoint`, ... | DAP protocol type definitions (serde-annotated) |
-| `breakpoints.rs` | `BreakpointStore`, `BreakpointRecord`, `BreakpointHitOutcome`, `interpolate_logpoint_message` | Reusable breakpoint storage with REPLACE semantics, hit counting, and logpoint interpolation |
-| `breakpoint/` | `AstBreakpointValidator`, `BreakpointValidator` | AST-based breakpoint line validation and suggestions |
-| `eval/` | `SafeEvaluator` | Expression admission control for `evaluate`/`setExpression` |
-| `stack/` | `PerlStackParser` | Stack trace extraction and frame classification |
-| `variables/` | `VariableParser`, `PerlVariableRenderer` | Debugger variable parsing and DAP rendering |
-| `configuration.rs` | `LaunchConfiguration`, `AttachConfiguration`, `create_launch_json_snippet()` | Launch/attach config structs with validation |
-| `platform/` | `resolve_perl_path()`, `normalize_path()`, `setup_environment()` | Cross-platform path resolution and env setup |
-| `security/` | `SecurityError`, path/expression validation | Path traversal prevention, expression sanitization, timeout caps |
-| `tcp_attach/` | `TcpAttachConfig`, `TcpAttachSession`, `DapEvent` | TCP socket attachment to running Perl debuggers |
-| `inline_values/` | `collect_inline_values()` | Inline value extraction for scalar variables |
-| `feature_catalog.rs` | `has_feature()`, `advertised_features()` | Generated from `features.toml` at build time by `build.rs` |
+|---|---|---|
+| `main.rs` | `Args` | shipped CLI, native stdio/TCP and explicit external-peer options |
+| `server/` | `DapServer`, `DapConfig`, `DapMode` | native server lifecycle; deprecated bridge branch retained for library compatibility |
+| `debug_adapter/` | `DebugAdapter`, `DapMessage` | native request routing, process lifecycle, stepping, frames, variables, evaluate |
+| `protocol.rs` | DAP request/response/event types | DAP wire contracts |
+| `breakpoints.rs` | `BreakpointStore`, `BreakpointRecord` | breakpoint replacement, hit counting, and logpoints |
+| `breakpoint/` | `AstBreakpointValidator`, `BreakpointValidator` | parser-backed breakpoint truth |
+| `platform/` | Perl/path/environment helpers | cross-platform process setup |
+| `security/` | validation types and functions | path, expression, and timeout boundaries |
 
-### Capability advertising
+### Backend-neutral and external-peer seam
 
-`initialize` capabilities are **gated on the feature catalog**, not hardcoded. A
-`supportsX` flag is a promise that the request can succeed, so:
+| Module | Purpose |
+|---|---|
+| `model/` | canonical backend-neutral debugger facts |
+| `backend/` | `DebugBackend`, native backend, external-peer backend, DAP/model translation |
+| `peer_protocol/` | Perl Debugger Peer Protocol framing and messages |
+| `session_plan/` | stable external handoff packet |
+| `ptkdb_bootstrap/` | `.ptkdbrc` bootstrap/fallback rendering |
 
-- adding a capability touches three places, not one: the `features.toml` entry, the
-  catalog-to-DAP mapping in `backend/capabilities.rs::CatalogDapFlags::from_catalog`,
-  and the backend gating in `intersect_dap_capabilities` — a flag that stops at the
-  catalog is advertised but never reaches a backend that can honour it; and
-- a request whose handler always returns `success: false` (currently `restartFrame` and
-  `terminateThreads` — perl5db has no primitive for either) stays `advertised = false`
-  with `maturity = "planned"`.
+The external-peer path is not the deprecated PLS bridge. It keeps `perl-dap` as
+the DAP frontend while an optional debugger engine owns some or all runtime
+control.
 
-`test_initialize_capabilities_mirror_feature_catalog` (in `debug_adapter/mod.rs`) and
-`tests/dap_capability_advertising_tests.rs` enforce both directions.
+### Legacy compatibility
 
-### Feature Flags
+`bridge_adapter.rs` and `DapMode::Bridge` exist only to preserve older library
+integrations and comparison tests. Keep all setup instructions in
+`docs/reference/DAP_LEGACY_BRIDGE_COMPAT.md`. New production code must not select
+this path.
 
-| Feature | Purpose |
-|---------|---------|
-| `dap-phase1` | Phase 1: bridge to Perl::LanguageServer (AC1-AC4) |
-| `dap-phase2` | Phase 2: native adapter features (AC5-AC16) |
-| `dap-phase3` | Phase 3: production hardening (AC17-AC19) |
-| `test-helpers` | Exposes `*_for_test` seeding helpers to integration tests; excluded from production builds |
+## Capability Advertising
 
-## Usage Examples
+A `supportsX` capability is a promise that the selected backend can honour the
+request. Changes normally touch:
 
-```rust
-// Native mode (default)
-use perl_dap::{DapConfig, DapMode, DapServer};
-let config = DapConfig { log_level: "info".into(), mode: DapMode::Native, workspace_root: None };
-let mut server = DapServer::new(config)?;
-server.run()?; // stdio transport
+1. the feature catalog entry;
+2. `backend/capabilities.rs::CatalogDapFlags::from_catalog`;
+3. backend capability intersection/gating;
+4. a positive handler or explicit refusal test.
 
-// Bridge mode
-use perl_dap::BridgeAdapter;
-let mut adapter = BridgeAdapter::new();
-adapter.spawn_pls_dap().await?;
-adapter.proxy_messages().await?;
-adapter.shutdown().await?;
+Do not advertise a capability merely because a request type exists.
 
-// Configuration generation
-use perl_dap::{create_launch_json_snippet, create_attach_json_snippet};
-println!("{}", create_launch_json_snippet());
+## Important Runtime Rules
+
+- The output reader in `debug_adapter/process.rs` is the sole consumer of the debugger control stream.
+- Reader-thread work must not block waiting on output that the same reader must produce.
+- Other threads use framed debugger commands and bounded capture helpers for synchronous queries.
+- Platform-specific process control stays behind `cfg(unix)` / `cfg(windows)`.
+- Regex initialization must degrade safely rather than panic.
+- Breakpoint and source decisions should consume the parser-backed oracle rather than duplicate line heuristics.
+- External-peer capabilities must be negotiated and intersected honestly; unsupported control remains a visible refusal.
+
+## Validation
+
+For native-runtime or public-surface work, start narrow and expand only as needed:
+
+```bash
+cargo fmt --check -p perl-dap
+cargo clippy -p perl-dap --locked -- -D warnings -A missing_docs
+cargo test -p perl-dap --bin perl-dap
+cargo test -p perl-dap --test dap_dependency_tests --features dap-phase3
+cargo test -p perl-dap
+cargo run -p xtask -- check-native-product-surface --strict
 ```
 
-## Important Notes
+For external-peer changes, add the relevant peer protocol, fake-peer conformance,
+and bridge-session targets. A fake peer proves the repository protocol contract;
+it does not by itself prove compatibility with a live external debugger build.
 
-- Use `DebugAdapter` directly to route DAP requests and manage protocol state
-- The output reader thread in `debug_adapter/process.rs` is the **sole** consumer of the
-  debugger control stream. It must never block on a request/response round trip through
-  `recent_output` — it is that buffer's producer. Work that needs debugger values from
-  inside the reader (e.g. logpoint interpolation), queues framed commands and folds the
-  replies in as they stream past; see `debug_adapter/logpoint.rs`
-- Request handlers running on other threads use `send_framed_debugger_commands` +
-  `capture_framed_debugger_output` for synchronous queries
-- Platform-specific code gated with `cfg(unix)` / `cfg(windows)` for signal handling
-- Security module enforces workspace-boundary path checks and expression sanitization
-- All regex patterns use `OnceLock<Result<Regex, regex::Error>>` or `Lazy<Option<Regex>>` for graceful degradation
-- Known-failing baseline. `cargo test --locked --tests -p perl-dap -p perl-lsp-rs
-  -p perl-lsp-rs-core -p perl-parser -p perl-semantic-analyzer -p perl-workspace` (the
-  `unit_routed_full` CI gate) is red on `origin/main` itself, so a red run here is not
-  by itself a regression signal. Verified against a clean `origin/main` worktree on
-  2026-08-02:
-  - 11 in `perl-dap` (issue #1435) — `test_e2e_attach_workflow_stop_on_entry`,
-    `test_e2e_attach_workflow_stopped_event`, `test_variables_request_during_stepping_sequence`,
-    `test_variables_lazy_expansion_indicators`, `test_variables_placeholder_pagination`,
-    `test_scalar_truncation`, `parse_value_array_ref`, `parse_value_code_ref`,
-    `parse_value_hash_ref`, `normalize_path_wsl_short_mnt_path_no_conversion`,
-    `terminate_twice_in_succession_both_succeed_and_emit_events`;
-  - 5 in `perl-lsp-rs` from un-regenerated LSP snapshots (`refactor.inline` →
-    `source.modernize`) — `test_all_capabilities_snapshot`,
-    `test_ga_lock_capabilities_snapshot`, `test_production_capabilities_snapshot`,
-    `test_supported_commands_structure`, `regenerate_snapshots`.
+## Documentation Rules
 
-  Diff your run against that list before concluding anything. Several `perl-lsp-rs`
-  LSP integration tests also hang in sandboxed environments while passing in CI, so an
-  interrupted local run is missing results rather than reporting passes.
+- `crates/perl-dap/README.md` and `docs/tutorials/DAP_USER_GUIDE.md` are native-first product surfaces.
+- `docs/reference/DAP_LEGACY_BRIDGE_COMPAT.md` owns historical PLS bridge details.
+- `docs/reference/EXTERNAL_DEBUGGER_PEER_DECISIONS.md` owns the optional peer-seam boundary.
+- Do not add PLS installation commands, `--bridge`, or bridge-first migration copy to first-mile docs or crate-level Rustdoc.
