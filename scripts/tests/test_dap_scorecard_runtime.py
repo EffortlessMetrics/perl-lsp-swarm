@@ -19,6 +19,7 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 import dap_scorecard_transport as TRANSPORT  # noqa: E402
+import dap_scorecard_probes as PROBES  # noqa: E402
 
 
 class _FakeProcess:
@@ -203,6 +204,48 @@ class DapScorecardRuntimeTests(unittest.TestCase):
 
     def test_valid_timing_and_invocation_receipt_has_no_policy_failures(self) -> None:
         self.assertEqual(MODULE.scorecard_failures(self._valid_scorecard()), [])
+
+
+    def test_deep_pagination_selects_unique_locals_big(self) -> None:
+        expected = {
+            "name": "@big",
+            "variablesReference": 2_000_720_896,
+            "indexedVariables": 500,
+        }
+        scopes = {
+            "Package": [
+                {
+                    "name": "@unrelated",
+                    "variablesReference": 12_001,
+                    "indexedVariables": 200,
+                }
+            ],
+            "Locals": [expected],
+        }
+        self.assertEqual(PROBES._require_lexical_big(scopes), expected)
+
+    def test_deep_pagination_rejects_duplicate_or_short_big(self) -> None:
+        row = {
+            "name": "@big",
+            "variablesReference": 2_000_720_896,
+            "indexedVariables": 500,
+        }
+        with self.assertRaisesRegex(MODULE.ScorecardError, "exactly one"):
+            PROBES._require_lexical_big({"Locals": [row, dict(row)]})
+        short = dict(row)
+        short["indexedVariables"] = 499
+        with self.assertRaisesRegex(MODULE.ScorecardError, "indexedVariables=500"):
+            PROBES._require_lexical_big({"Locals": [short]})
+
+    def test_deep_pagination_requires_exact_names_and_values(self) -> None:
+        page = [
+            {"name": f"[{index}]", "value": str(index + 1)}
+            for index in range(250, 275)
+        ]
+        PROBES._validate_lexical_big_page(page, "after evaluate")
+        page[12] = {"name": "[262]", "value": "999"}
+        with self.assertRaisesRegex(MODULE.ScorecardError, "value='263'"):
+            PROBES._validate_lexical_big_page(page, "after evaluate")
 
 
 if __name__ == "__main__":

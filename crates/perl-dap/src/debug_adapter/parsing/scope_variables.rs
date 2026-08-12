@@ -59,13 +59,14 @@ pub(super) fn sort_and_paginate(
 
 /// Compute a stable child reference integer for a paged variable entry.
 ///
-/// `variables_ref` is the scope reference; `start` + `idx` give the absolute
-/// position (1-based).  Arithmetic uses saturating operations throughout.
+/// Child references use the canonical disjoint-band codec. `start + idx` is
+/// the zero-based absolute child index within the parent scope/evaluation result.
 pub(super) fn compute_child_reference(variables_ref: i32, start: usize, idx: usize) -> i32 {
-    let absolute_index = start.saturating_add(idx).saturating_add(1);
-    variables_ref.saturating_mul(1000).saturating_add(DebugAdapter::i64_to_i32_saturating(
-        i64::try_from(absolute_index).unwrap_or(i64::from(i32::MAX)),
-    ))
+    use crate::debug_adapter::var_ref::VariableReference;
+
+    let absolute_index = start.saturating_add(idx);
+    let index = u32::try_from(absolute_index).unwrap_or(u32::MAX);
+    VariableReference::Child { parent: variables_ref, index }.encode().unwrap_or(0)
 }
 
 /// Render a single variable and, if expandable, its children.
@@ -99,4 +100,19 @@ pub(super) fn render_paged_variable(
     };
 
     (top, cache_entry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::debug_adapter::var_ref::VariableReference;
+
+    #[test]
+    fn child_reference_uses_canonical_codec() {
+        let reference = compute_child_reference(11, 250, 0);
+        assert_eq!(
+            VariableReference::decode(reference),
+            Some(VariableReference::Child { parent: 11, index: 250 })
+        );
+    }
 }

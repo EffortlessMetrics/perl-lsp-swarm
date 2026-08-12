@@ -166,6 +166,49 @@ def _variable_samples(scope_variables: Mapping[str, list[Mapping[str, Any]]]) ->
     return "; ".join(samples) or "<no scope rows>"
 
 
+def _require_lexical_big(
+    scope_variables: Mapping[str, list[Mapping[str, Any]]],
+) -> Mapping[str, Any]:
+    locals_rows = scope_variables.get("Locals", [])
+    matches = [row for row in locals_rows if str(row.get("name", "")) == "@big"]
+    if len(matches) != 1:
+        names = [str(row.get("name", "")) for row in locals_rows]
+        raise ScorecardError(
+            f"expected exactly one Locals @big row, got {len(matches)}; "
+            f"locals={names!r}"
+        )
+    row = matches[0]
+    variables_ref = _positive_int(row.get("variablesReference"))
+    indexed = row.get("indexedVariables")
+    if variables_ref is None:
+        raise ScorecardError("Locals @big omitted a positive variablesReference")
+    if isinstance(indexed, bool) or not isinstance(indexed, int) or indexed != 500:
+        raise ScorecardError(
+            f"Locals @big must report indexedVariables=500, got {indexed!r}"
+        )
+    return row
+
+
+def _validate_lexical_big_page(page: list[Any], phase: str) -> None:
+    if len(page) != 25:
+        raise ScorecardError(
+            f"{phase}: expected 25 @big variables, got {len(page)}"
+        )
+    for offset, raw_row in enumerate(page):
+        row = _require_object(raw_row, f"{phase} @big variable[{offset}]")
+        index = 250 + offset
+        name = str(row.get("name", ""))
+        value = str(row.get("value", ""))
+        expected_name = f"[{index}]"
+        expected_value = str(index + 1)
+        if name != expected_name or value != expected_value:
+            raise ScorecardError(
+                f"{phase}: @big[{index}] expected "
+                f"name={expected_name!r}, value={expected_value!r}; "
+                f"got name={name!r}, value={value!r}"
+            )
+
+
 def probe_session_metrics(
     binary: Path,
     timeout_seconds: float,
@@ -247,6 +290,31 @@ print \"marker=$marker\\n\";
                     ),
                 }
 
+            deep_setup_error: str | None = None
+            indexed_ref = 0
+            indexed_count = 0
+            try:
+                lexical_big = _require_lexical_big(scope_variables)
+                indexed_ref = int(lexical_big["variablesReference"])
+                indexed_count = int(lexical_big["indexedVariables"])
+                before_page = _require_array(
+                    _require_object(
+                        dap.request(
+                            "variables",
+                            {
+                                "variablesReference": indexed_ref,
+                                "start": 250,
+                                "count": 25,
+                            },
+                        ),
+                        "before-evaluate @big variables body",
+                    ).get("variables"),
+                    "before-evaluate @big variables",
+                )
+                _validate_lexical_big_page(before_page, "before evaluate")
+            except ScorecardError as exc:
+                deep_setup_error = str(exc)
+
             try:
                 evaluate = _require_object(
                     dap.request(
@@ -272,29 +340,11 @@ print \"marker=$marker\\n\";
             except ScorecardError as exc:
                 evaluate_metric = metric_failure(str(exc))
 
-            expandable: Mapping[str, Any] | None = None
-            for row in all_variables:
-                variables_ref = _positive_int(row.get("variablesReference"))
-                indexed = row.get("indexedVariables")
-                if (
-                    variables_ref is not None
-                    and isinstance(indexed, int)
-                    and not isinstance(indexed, bool)
-                    and indexed >= 200
-                ):
-                    expandable = row
-                    break
-            if expandable is None:
-                deep_metric = metric_failure(
-                    "stdio package-aware scopes exposed no indexed variable with "
-                    "indexedVariables >= 200; "
-                    f"samples={_variable_samples(scope_variables)}; scope_errors={scope_errors!r}"
-                )
+            if deep_setup_error is not None:
+                deep_metric = metric_failure(deep_setup_error)
             else:
                 try:
-                    indexed_ref = int(expandable["variablesReference"])
-                    indexed_count = int(expandable["indexedVariables"])
-                    page = _require_array(
+                    after_page = _require_array(
                         _require_object(
                             dap.request(
                                 "variables",
@@ -304,28 +354,17 @@ print \"marker=$marker\\n\";
                                     "count": 25,
                                 },
                             ),
-                            "paged variables body",
+                            "after-evaluate @big variables body",
                         ).get("variables"),
-                        "paged variables",
+                        "after-evaluate @big variables",
                     )
-                    if len(page) != 25:
-                        raise ScorecardError(
-                            f"expected 25 paged variables, got {len(page)}"
-                        )
-                    first = str(
-                        _require_object(page[0], "paged variable[0]").get("name", "")
-                    )
-                    last = str(
-                        _require_object(page[-1], "paged variable[-1]").get("name", "")
-                    )
-                    if first != "[250]" or last != "[274]":
-                        raise ScorecardError(
-                            f"unexpected stdio page bounds: first={first!r}, last={last!r}"
-                        )
+                    _validate_lexical_big_page(after_page, "after evaluate")
                     deep_metric = {
                         "status": "PASS",
                         "detail": (
-                            "stdio pagination returned [250]..[274] over "
+                            "stdio Locals @big pagination returned exact values "
+                            "[250]=251 through [274]=275 before and after evaluate; "
+                            f"variablesReference={indexed_ref}; "
                             f"indexedVariables={indexed_count}"
                         ),
                     }
