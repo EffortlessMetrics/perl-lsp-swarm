@@ -73,29 +73,79 @@ enum TokenType {
   TOKEN_ERROR
 };
 
-#define MAX_TSPSTRING_LEN 8
-/* this is a arbitrary string where we only care about the first
- * MAX_TSPSTRING_LEN chars */
+/*
+ * Heredoc delimiters are retained as their exact UTF-8 bytes up to a reviewed
+ * serialized-state envelope. The old representation retained only eight code
+ * points while continuing to count the complete length, so distinct same-length
+ * labels with the same prefix compared equal.
+ */
+#define MAX_TSPSTRING_LEN 64
 typedef struct {
-  int length;
-  int32_t contents[MAX_TSPSTRING_LEN];
+  uint8_t length;
+  bool overflowed;
+  uint8_t contents[MAX_TSPSTRING_LEN];
 } TSPString;
 
-/* we record the length, b/c that's still relevant for our cheapo comparison */
-static void tspstring_push(TSPString *s, int32_t c) {
-  if (s->length++ < MAX_TSPSTRING_LEN) s->contents[s->length - 1] = c;
-}
-
-static bool tspstring_eq(TSPString *s1, TSPString *s2) {
-  if (s1->length != s2->length) return false;
-  int max_len = s1->length < MAX_TSPSTRING_LEN ? s1->length : MAX_TSPSTRING_LEN;
-  for (int i = 0; i < max_len; i++) {
-    if (s1->contents[i] != s2->contents[i]) return false;
+static bool tspstring_push_byte(TSPString *s, uint8_t byte) {
+  if (s->overflowed || s->length >= MAX_TSPSTRING_LEN) {
+    s->overflowed = true;
+    return false;
   }
+  s->contents[s->length++] = byte;
   return true;
 }
 
-static void tspstring_reset(TSPString *s) { s->length = 0; }
+/* Encode one Tree-sitter lookahead code point into the exact UTF-8 source bytes. */
+static void tspstring_push(TSPString *s, int32_t c) {
+  if (s->overflowed) return;
+
+  uint8_t encoded[4];
+  size_t encoded_len = 0;
+  if (c >= 0 && c <= 0x7f) {
+    encoded[0] = (uint8_t)c;
+    encoded_len = 1;
+  } else if (c >= 0 && c <= 0x7ff) {
+    encoded[0] = (uint8_t)(0xc0 | (c >> 6));
+    encoded[1] = (uint8_t)(0x80 | (c & 0x3f));
+    encoded_len = 2;
+  } else if (c >= 0 && c <= 0xffff && !(c >= 0xd800 && c <= 0xdfff)) {
+    encoded[0] = (uint8_t)(0xe0 | (c >> 12));
+    encoded[1] = (uint8_t)(0x80 | ((c >> 6) & 0x3f));
+    encoded[2] = (uint8_t)(0x80 | (c & 0x3f));
+    encoded_len = 3;
+  } else if (c >= 0 && c <= 0x10ffff) {
+    encoded[0] = (uint8_t)(0xf0 | (c >> 18));
+    encoded[1] = (uint8_t)(0x80 | ((c >> 12) & 0x3f));
+    encoded[2] = (uint8_t)(0x80 | ((c >> 6) & 0x3f));
+    encoded[3] = (uint8_t)(0x80 | (c & 0x3f));
+    encoded_len = 4;
+  } else {
+    s->overflowed = true;
+    return;
+  }
+
+  if ((size_t)s->length + encoded_len > MAX_TSPSTRING_LEN) {
+    s->overflowed = true;
+    return;
+  }
+  for (size_t i = 0; i < encoded_len; i++) {
+    if (!tspstring_push_byte(s, encoded[i])) return;
+  }
+}
+
+static bool tspstring_is_complete(const TSPString *s) { return !s->overflowed; }
+
+static bool tspstring_eq(const TSPString *s1, const TSPString *s2) {
+  if (!tspstring_is_complete(s1) || !tspstring_is_complete(s2)) return false;
+  if (s1->length != s2->length) return false;
+  return memcmp(s1->contents, s2->contents, s1->length) == 0;
+}
+
+static void tspstring_reset(TSPString *s) {
+  s->length = 0;
+  s->overflowed = false;
+  memset(s->contents, 0, sizeof(s->contents));
+}
 
 static int32_t close_for_open(int32_t c) {
   switch (c) {
@@ -763,6 +813,12 @@ bool tree_sitter_perl_external_scanner_scan(void *payload, TSLexer *lexer,
           tspstring_push(&delim, c);
           ADVANCE_C;
         }
+        /*
+         * A delimiter beyond the exact serialized-state envelope is unsupported.
+         * Refuse the token so Tree-sitter reports a stable syntax error rather
+         * than silently aliasing it to another same-prefix delimiter.
+         */
+        if (!tspstring_is_complete(&delim)) return false;
         lexerstate_add_heredoc(state, &delim, should_interpolate, should_indent);
         TOKEN(TOKEN_HEREDOC_DELIM);
       }
@@ -793,6 +849,7 @@ bool tree_sitter_perl_external_scanner_scan(void *payload, TSLexer *lexer,
           ADVANCE_C;
         }
       }
+      if (!tspstring_is_complete(&delim)) return false;
       if (delim.length > 0) {
         // gotta eat that delimiter
         ADVANCE_C;
