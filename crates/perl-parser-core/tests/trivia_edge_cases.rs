@@ -21,7 +21,7 @@ This is documentation without a closing =cut
 "#
     .to_string();
 
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     let mut found_pod = false;
 
     while let Some((_token, trivia)) = lexer.next_token_with_trivia() {
@@ -61,7 +61,7 @@ fn test_comment_without_newline_at_eof() {
     // Edge case: Comment at end of file without trailing newline
     let source = "my $x = 1; # comment without newline".to_string();
 
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     let mut found_comment = false;
 
     while let Some((_token, trivia)) = lexer.next_token_with_trivia() {
@@ -97,15 +97,15 @@ fn test_unicode_in_comments() {
     // Edge case: Unicode characters in comments
     let source = "# This comment has Unicode: \u{1F980} 日本語\nmy $x = 1;".to_string();
 
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     let mut found_unicode_comment = false;
 
     while let Some((_token, trivia)) = lexer.next_token_with_trivia() {
         for t in trivia {
-            if let Trivia::LineComment(text) = &t.trivia {
-                if text.contains('\u{1F980}') || text.contains('日') {
-                    found_unicode_comment = true;
-                }
+            if let Trivia::LineComment(text) = &t.trivia
+                && (text.contains('\u{1F980}') || text.contains('日'))
+            {
+                found_unicode_comment = true;
             }
         }
     }
@@ -208,7 +208,7 @@ fn test_hash_in_string_not_comment() {
     // This tests the parser's ability to distinguish context
     let source = "my $x = \"# not a comment\";".to_string();
 
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     let mut comment_found_in_string = false;
 
     // First token should be 'my' with no comment in trivia
@@ -250,7 +250,7 @@ fn test_pod_false_start() {
     // Edge case: Equals sign that looks like POD but isn't
     let source = "my $x = 1;\nmy $result = $x == 42;\n".to_string();
 
-    let mut lexer = TriviaLexer::new(source);
+    let mut lexer = TriviaLexer::new(&source);
     let mut pod_count = 0;
 
     while let Some((_token, trivia)) = lexer.next_token_with_trivia() {
