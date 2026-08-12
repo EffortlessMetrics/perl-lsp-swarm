@@ -124,23 +124,61 @@ jobs:
               policy.write_text(text.replace(marker, entry + marker), encoding='utf-8')
           PY
 
-      - name: Format and verify the closure
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Format closure
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
-          cargo +1.95.0 fmt --all
-          cargo +1.95.0 fmt --all -- --check
-          cargo +1.95.0 check -p perl-lsp-rs-core --all-targets
-          cargo +1.95.0 test -p perl-lsp-rs-core semantic_port --all-targets
-          cargo +1.95.0 run -p xtask -- check-file-policy
+          set -o pipefail
+          cargo +1.95.0 fmt --all 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+          cargo +1.95.0 fmt --all -- --check 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+
+      - name: Compile semantic-port targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 check --locked -p perl-lsp-rs-core --all-targets 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+
+      - name: Test semantic-port contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 test --locked -p perl-lsp-rs-core --all-targets semantic_port 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+
+      - name: Verify file policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 run --locked -p xtask -- check-file-policy 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-closure.log"
+
+      - name: Verify include-path closure
+        shell: bash
+        run: |
+          set -euo pipefail
           if grep -R 'include!(' \
             crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs \
             crates/perl-lsp-rs-core/src/providers/semantic_port/result.rs \
             crates/perl-lsp-rs-core/src/providers/semantic_port/tests.rs; then
-            echo 'semantic-port include! remained after closure' >&2
+            echo 'semantic-port include! remained after closure' | tee -a "$RUNNER_TEMP/semantic-port-closure.log" >&2
             exit 1
           fi
+
+      - name: Upload closure transcript
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: semantic-port-closure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/semantic-port-closure.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Commit exact closure to the PR branch
         shell: bash
