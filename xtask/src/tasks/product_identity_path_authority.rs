@@ -33,14 +33,8 @@ pub(super) fn check(repo_root: &Path) -> Result<()> {
     let contract = load_contract(repo_root)?;
     for (label, relative_path) in [
         ("primary server", contract.server.package_manifest.as_path()),
-        (
-            "server implementation",
-            contract.server.implementation_manifest.as_path(),
-        ),
-        (
-            "debug adapter",
-            contract.debug_adapter.package_manifest.as_path(),
-        ),
+        ("server implementation", contract.server.implementation_manifest.as_path()),
+        ("debug adapter", contract.debug_adapter.package_manifest.as_path()),
     ] {
         reject_symlink_components(repo_root, relative_path, label)?;
     }
@@ -65,10 +59,7 @@ fn reject_symlink_components(repo_root: &Path, relative_path: &Path, label: &str
         };
         current.push(segment);
         let metadata = fs::symlink_metadata(&current).wrap_err_with(|| {
-            format!(
-                "reading {label} manifest path authority component {}",
-                current.display()
-            )
+            format!("reading {label} manifest path authority component {}", current.display())
         })?;
         if metadata.file_type().is_symlink() {
             bail!(
@@ -79,9 +70,7 @@ fn reject_symlink_components(repo_root: &Path, relative_path: &Path, label: &str
         }
     }
     if relative_path.file_name().and_then(|name| name.to_str()) != Some("Cargo.toml") {
-        return Err(eyre!(
-            "{label} manifest authority must end in Cargo.toml: {relative_path:?}"
-        ));
+        return Err(eyre!("{label} manifest authority must end in Cargo.toml: {relative_path:?}"));
     }
     Ok(())
 }
