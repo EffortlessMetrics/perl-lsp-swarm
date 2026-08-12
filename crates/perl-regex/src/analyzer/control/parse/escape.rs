@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ParsedOperand, PatternBoundaryKind, PatternControlDiagnosticCode, PatternControlEffect,
+    PatternControlKind, PatternReferenceSyntax, RawControl, RegexRange, ResolutionRequest,
+    bounded_spelling, delimited_operand, invalid_reference, parse_operand, scan_ascii_digits,
+    scan_signed_digits,
+};
 
 pub(super) fn parse_escape_control(pattern: &str, start: usize) -> Option<RawControl> {
     let bytes = pattern.as_bytes();
