@@ -167,6 +167,22 @@ impl TestItem {
             self.structural_key.as_str(),
         )
     }
+
+    fn discovery_eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.parent_id == other.parent_id
+            && self.order_in_parent == other.order_in_parent
+            && self.source_id == other.source_id
+            && self.structural_key == other.structural_key
+            && self.kind == other.kind
+            && self.name == other.name
+            && self.name_range == other.name_range
+            && self.range == other.range
+            && self.framework == other.framework
+            && self.confidence == other.confidence
+            && self.capabilities == other.capabilities
+            && self.limitations == other.limitations
+    }
 }
 
 /// Deterministic discovery snapshot for one logical source generation.
@@ -297,7 +313,7 @@ impl TestItemSnapshot {
                 item_id: item.id.clone(),
             });
         }
-        if matches!(item.name, TestItemName::Named(ref name) if name.is_empty()) {
+        if matches!(&item.name, TestItemName::Named(name) if name.is_empty()) {
             return Err(TestItemValidationError::EmptyNamedItem {
                 item_id: item.id.clone(),
             });
@@ -367,7 +383,11 @@ impl TestItemSnapshot {
             })
     }
 
-    /// Compare two snapshots by stable item identity.
+    /// Compare semantic discovery facts by stable item identity.
+    ///
+    /// Source generation and digest are snapshot freshness, not item-shape
+    /// changes. They therefore do not churn every item in a comment-only or
+    /// otherwise semantically equivalent newer generation.
     #[must_use]
     pub fn diff(&self, newer: &Self) -> TestItemDelta {
         let old: BTreeMap<&TestItemId, &TestItem> =
@@ -389,7 +409,7 @@ impl TestItemSnapshot {
             .iter()
             .filter_map(|(id, item)| {
                 old.get(id)
-                    .is_some_and(|previous| *previous != *item)
+                    .is_some_and(|previous| !previous.discovery_eq(item))
                     .then(|| (*id).clone())
             })
             .collect();
@@ -421,7 +441,7 @@ pub struct TestItemDelta {
     pub new_generation: u64,
     /// Newly discovered item IDs.
     pub added: Vec<TestItemId>,
-    /// Existing IDs whose facts or capabilities changed.
+    /// Existing IDs whose semantic facts or capabilities changed.
     pub changed: Vec<TestItemId>,
     /// Removed item IDs.
     pub removed: Vec<TestItemId>,
@@ -571,6 +591,7 @@ mod tests {
         let text = source();
         let digest = Digest::of(text);
         let index = Utf8LineIndex::new(text);
+        let source_len = u32::try_from(text.len()).unwrap_or(u32::MAX);
         let file = item(
             &digest,
             generation,
@@ -579,7 +600,7 @@ mod tests {
             TestItemKind::File,
             TestItemName::Named("t/example.t".to_string()),
             "file",
-            index.source_range(0, text.len() as u32),
+            index.source_range(0, source_len),
             None,
         );
         let outer = item(
@@ -590,7 +611,7 @@ mod tests {
             TestItemKind::Subtest,
             TestItemName::Named("outer".to_string()),
             "subtest:0",
-            index.source_range(0, text.len() as u32 - 1),
+            index.source_range(0, 101),
             Some(index.source_range(8, 15)),
         );
         let first = item(
@@ -601,8 +622,8 @@ mod tests {
             TestItemKind::Subtest,
             TestItemName::Named("same".to_string()),
             "subtest:1",
-            index.source_range(30, 69),
-            Some(index.source_range(42, 48)),
+            index.source_range(29, 61),
+            Some(index.source_range(37, 43)),
         );
         let second = item(
             &digest,
@@ -612,14 +633,14 @@ mod tests {
             TestItemKind::Subtest,
             TestItemName::Named("same".to_string()),
             "subtest:2",
-            index.source_range(74, 113),
-            Some(index.source_range(86, 92)),
+            index.source_range(66, 98),
+            Some(index.source_range(74, 80)),
         );
         TestItemSnapshot::new(
             SOURCE_ID.to_string(),
             digest,
             generation,
-            text.len() as u32,
+            source_len,
             vec![second, outer, file, first],
         )
     }
@@ -670,12 +691,9 @@ mod tests {
     }
 
     #[test]
-    fn diff_preserves_stable_ids_and_reports_fact_changes() {
+    fn diff_preserves_stable_ids_across_generations() {
         let old = snapshot(7);
         let mut newer = snapshot(8);
-        for item in &mut newer.items {
-            item.generation = 8;
-        }
         let target = newer
             .items
             .iter_mut()
@@ -687,8 +705,18 @@ mod tests {
         let delta = old.diff(&newer);
         assert!(delta.added.is_empty());
         assert!(delta.removed.is_empty());
-        assert_eq!(delta.changed.len(), newer.items.len());
+        assert_eq!(delta.changed.len(), 1);
         assert_eq!((delta.old_generation, delta.new_generation), (7, 8));
+    }
+
+    #[test]
+    fn equivalent_new_generation_does_not_churn_items() {
+        let old = snapshot(7);
+        let newer = snapshot(8);
+        let delta = old.diff(&newer);
+        assert!(delta.added.is_empty());
+        assert!(delta.changed.is_empty());
+        assert!(delta.removed.is_empty());
     }
 
     #[test]
