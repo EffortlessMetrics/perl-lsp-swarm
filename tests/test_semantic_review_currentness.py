@@ -44,6 +44,10 @@ USEFUL_REVIEW_MARKERS = [
 ]
 
 
+def normalized(path: Path) -> str:
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
 def test_active_review_surfaces_do_not_invoke_exact_head_receipts() -> None:
     violations: list[str] = []
     for path in ACTIVE_REVIEW_SURFACES:
@@ -74,12 +78,13 @@ def test_review_skills_require_useful_durable_records() -> None:
         assert "claim digest" in text
 
 
-def test_roots_define_semantic_review_currentness() -> None:
+def test_roots_route_to_shared_semantic_currentness_contract() -> None:
     for relative in ("AGENTS.md", "CLAUDE.md"):
-        text = (ROOT / relative).read_text(encoding="utf-8")
-        assert "A later commit does not invalidate review" in text
-        assert "merely because the SHA changed" in text
-        assert "Do not post `Review pass (...) at" in text
+        text = normalized(ROOT / relative)
+        assert "docs/agents/REVIEW_CURRENTNESS.md" in text
+        assert "head SHA change alone → no review invalidation" in text
+        assert "merge uses current head only as compare-and-swap protection" in text
+        assert "Missing, partial, stale, contradictory, or instrument-failed evidence is `NOT_PROVEN`" in text
 
 
 def test_merge_skill_keeps_expected_head_race_protection() -> None:
@@ -87,20 +92,23 @@ def test_merge_skill_keeps_expected_head_race_protection() -> None:
         ".agents/skills/merge-reconcile/SKILL.md",
         ".claude/skills/merge-reconcile/SKILL.md",
     ):
-        text = (ROOT / relative).read_text(encoding="utf-8")
+        text = normalized(ROOT / relative)
         assert "--match-head-commit" in text
         assert "compare-and-swap" in text
-        assert "does not make review validity depend on the SHA" in text
+        assert "It does not make review currentness depend on the SHA." in text
+        assert "Refresh only proof, review, and integration dimensions affected by the new commit." in text
 
 
-def test_orchestration_briefs_are_semantic_not_claim_hashed() -> None:
+def test_orchestration_briefs_separate_stable_claim_from_volatile_observation() -> None:
     for relative in (
         ".agents/skills/orchestrate-work/SKILL.md",
         ".claude/skills/orchestrate-work/SKILL.md",
     ):
-        text = (ROOT / relative).read_text(encoding="utf-8")
-        assert "reviewed semantic seams" in text
-        assert "Do not include a claim digest" in text
+        text = normalized(ROOT / relative)
+        assert "Separate the brief's stable part from its observed part." in text
+        assert "Head SHAs, check results, mergeability, and counts" in text
+        assert "Re-derive live protection, rulesets, contexts, and results before mutating." in text
+        assert "claim digest" not in text.lower()
 
 
 def test_pre_merge_preserves_native_disposition_validation() -> None:
