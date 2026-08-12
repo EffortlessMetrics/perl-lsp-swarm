@@ -101,10 +101,10 @@ const ACTIVE_TEXT_SURFACES = [
 ];
 
 const FORBIDDEN_TEXT = [
-  ['mcpServerDefinitionProviders', 'generic MCP provider contribution'],
-  ['perl-lsp.mcp.servers', 'arbitrary MCP command setting'],
-  ['perl-lsp.mcp-servers', 'generic MCP provider identifier'],
-  ['registerMcpSupport', 'generic MCP registration path'],
+  { needle: 'mcpServerDefinitionProviders', description: 'generic MCP provider contribution' },
+  { needle: 'perl-lsp.mcp.servers', description: 'arbitrary MCP command setting' },
+  { needle: 'perl-lsp.mcp-servers', description: 'generic MCP provider identifier' },
+  { needle: 'registerMcpSupport', description: 'generic MCP registration path' },
 ];
 
 function collectFindings(root = repositoryRoot) {
@@ -121,9 +121,9 @@ function collectFindings(root = repositoryRoot) {
       continue;
     }
     const text = fs.readFileSync(file, 'utf8');
-    for (const [needle, description] of FORBIDDEN_TEXT) {
-      if (text.includes(needle)) {
-        findings.push(`${relative}: ${description} (${needle})`);
+    for (const forbidden of FORBIDDEN_TEXT) {
+      if (text.includes(forbidden.needle)) {
+        findings.push(`${relative}: ${forbidden.description} (${forbidden.needle})`);
       }
     }
   }
@@ -185,19 +185,19 @@ test('clean active surfaces pass', () => {
 
 test('provider source and each public command surface are load-bearing', () => {
   const mutations = [
-    ['vscode-extension/src/mcpSupport.ts', 'export const registerMcpSupport = true;'],
-    ['vscode-extension/package.json', '{"mcpServerDefinitionProviders":[]}'],
-    ['vscode-extension/package.json', '{"perl-lsp.mcp.servers":[]}'],
-    ['vscode-extension/src/extension.ts', 'registerMcpSupport(outputChannel);'],
-    ['vscode-extension/README.md', '`perl-lsp.mcp.servers`'],
+    { relative: 'vscode-extension/src/mcpSupport.ts', content: 'export const registerMcpSupport = true;' },
+    { relative: 'vscode-extension/package.json', content: '{"mcpServerDefinitionProviders":[]}' },
+    { relative: 'vscode-extension/package.json', content: '{"perl-lsp.mcp.servers":[]}' },
+    { relative: 'vscode-extension/src/extension.ts', content: 'registerMcpSupport(outputChannel);' },
+    { relative: 'vscode-extension/README.md', content: '`perl-lsp.mcp.servers`' },
   ];
 
-  for (const [relative, content] of mutations) {
+  for (const mutation of mutations) {
     const root = fixture();
-    const file = path.join(root, relative);
+    const file = path.join(root, mutation.relative);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, content, 'utf8');
-    assert.notDeepEqual(collectFindings(root), [], relative);
+    fs.writeFileSync(file, mutation.content, 'utf8');
+    assert.notDeepEqual(collectFindings(root), [], mutation.relative);
   }
 });
 ''',
