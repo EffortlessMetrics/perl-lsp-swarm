@@ -1091,11 +1091,13 @@ jobs:
         run: |
           set -euo pipefail
           rustfmt_bin="$(rustup which --toolchain 1.95.0 rustfmt)"
+          rustc_bin="$(rustup which --toolchain 1.95.0 rustc)"
           python3 scripts/ci/rustfmt_check.py \
             --root . \
             --receipt "$RECEIPT_PATH" \
             --cargo "$(command -v cargo)" \
             --rustfmt "$rustfmt_bin" \
+            --rustc "$rustc_bin" \
             --candidate-sha "$SUBJECT_SHA" \
             --candidate-tree-sha "$SUBJECT_TREE_SHA"
 
@@ -1104,12 +1106,14 @@ jobs:
         run: |
           set -euo pipefail
           rustfmt_bin="$(rustup which --toolchain 1.95.0 rustfmt)"
+          rustc_bin="$(rustup which --toolchain 1.95.0 rustc)"
           python3 scripts/ci/verify_rustfmt_receipt.py \
             --root . \
             --receipt "$RECEIPT_PATH" \
             --producer scripts/ci/rustfmt_check.py \
             --cargo "$(command -v cargo)" \
             --rustfmt "$rustfmt_bin" \
+            --rustc "$rustc_bin" \
             --candidate-sha "$SUBJECT_SHA" \
             --candidate-tree-sha "$SUBJECT_TREE_SHA"
 

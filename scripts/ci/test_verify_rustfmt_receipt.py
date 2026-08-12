@@ -41,7 +41,9 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
         self.sha = self._git("rev-parse", "HEAD").stdout.strip()
         self.tree = self._git("rev-parse", "HEAD^{tree}").stdout.strip()
         self.cargo = self._tool("cargo", "cargo 1.95.0 (fixture)")
-        self.rustfmt = self._tool("rustfmt", "rustfmt 1.95.0-stable (fixture)")
+        self.rustfmt = self._tool("rustfmt", "rustfmt 1.8.0-stable (fixture)")
+        self.rustc_output = "rustc 1.95.0 (fixture 2026-08-01)\nbinary: rustc\ncommit-hash: 0123456789abcdef0123456789abcdef01234567\ncommit-date: 2026-08-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 20.1.0"
+        self.rustc = self._tool("rustc", self.rustc_output)
         self.receipt = Path(self.temp.name, "receipt.json")
         self.payload = self._valid_payload()
         self._write(self.payload)
@@ -56,7 +58,12 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
         suffix = ".cmd" if os.name == "nt" else ""
         path = Path(self.temp.name, name + suffix)
         if os.name == "nt":
-            path.write_text(f"@echo {version}\n", encoding="utf-8")
+            implementation = path.with_suffix(".py")
+            implementation.write_text(
+                "import sys\nprint(" + repr(version) + ")\n",
+                encoding="utf-8",
+            )
+            path.write_text(f'@"{sys.executable}" "{implementation}" %*\n', encoding="utf-8")
         else:
             path.write_text(f"#!/bin/sh\necho '{version}'\n", encoding="utf-8")
             path.chmod(0o755)
@@ -78,7 +85,8 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
                 "rustfmt_toml_sha256": self._digest("rustfmt.toml"),
                 "producer_sha256": self._digest("scripts/ci/rustfmt_check.py"),
                 "cargo_version": "cargo 1.95.0 (fixture)",
-                "rustfmt_version": "rustfmt 1.95.0-stable (fixture)",
+                "rustfmt_version": "rustfmt 1.8.0-stable (fixture)",
+                "rustc_version_verbose": self.rustc_output,
             },
             "workspace": {
                 "manifest_count": 1,
@@ -102,7 +110,7 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
         self.receipt.write_text(json.dumps(payload), encoding="utf-8")
 
     def _args(self, **changes: object) -> Namespace:
-        values = dict(receipt=self.receipt, root=self.root, candidate_sha=self.sha, candidate_tree_sha=self.tree, producer=Path("scripts/ci/rustfmt_check.py"), rustfmt=self.rustfmt, cargo=self.cargo)
+        values = dict(receipt=self.receipt, root=self.root, candidate_sha=self.sha, candidate_tree_sha=self.tree, producer=Path("scripts/ci/rustfmt_check.py"), rustfmt=self.rustfmt, rustc=self.rustc, cargo=self.cargo)
         values.update(changes)
         return Namespace(**values)
 
@@ -138,6 +146,16 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
 
     def test_tool_mismatch_is_rejected(self) -> None:
         self.assert_rejected(lambda value: value["inputs"].update(rustfmt_version="rustfmt 1.94.0"))
+
+    def test_wrong_selected_toolchain_is_rejected(self) -> None:
+        wrong = self._tool("rustc-wrong", "rustc 1.94.0 (fixture)\nrelease: 1.94.0")
+        with self.assertRaisesRegex(verifier.VerificationError, "selected rustc"):
+            verifier.verify(self._args(rustc=wrong))
+        self.payload["inputs"]["rustc_version_verbose"] = "rustc 1.94.0 (fixture)\nrelease: 1.94.0"
+        self._resign(self.payload)
+        self._write(self.payload)
+        with self.assertRaisesRegex(verifier.VerificationError, "pinned release"):
+            verifier.verify(self._args(rustc=wrong))
 
     def test_incomplete_and_failed_runs_are_rejected(self) -> None:
         self.assert_rejected(lambda value: value.update(runs=[]))

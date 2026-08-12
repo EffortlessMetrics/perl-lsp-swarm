@@ -10,11 +10,12 @@ import re
 import stat
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any, Sequence
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-PINNED_RUSTFMT = "1.95.0"
+PINNED_RUST_RELEASE = "1.95.0"
 
 
 class VerificationError(RuntimeError):
@@ -110,10 +111,18 @@ def verify(args: argparse.Namespace) -> None:
 
     cargo_version = run([str(args.cargo), "--version"], root)
     rustfmt_version = run([str(args.rustfmt), "--version"], root)
+    rustc_version = run([str(args.rustc), "-Vv"], root)
     if inputs.get("cargo_version") != cargo_version or inputs.get("rustfmt_version") != rustfmt_version:
         raise VerificationError("selected tool version mismatch")
-    if not re.match(rf"^rustfmt {re.escape(PINNED_RUSTFMT)}(?:[ -]|$)", rustfmt_version):
-        raise VerificationError("rustfmt is not pinned 1.95.0")
+    if inputs.get("rustc_version_verbose") != rustc_version:
+        raise VerificationError("selected rustc version mismatch")
+    release = next((line.removeprefix("release: ") for line in rustc_version.splitlines() if line.startswith("release: ")), None)
+    try:
+        pinned_channel = tomllib.loads((root / "rust-toolchain.toml").read_text(encoding="utf-8"))["toolchain"]["channel"]
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError, KeyError, TypeError) as error:
+        raise VerificationError(f"repository toolchain pin is invalid: {error}") from error
+    if pinned_channel != PINNED_RUST_RELEASE or release != pinned_channel:
+        raise VerificationError("selected Rust toolchain is not pinned release 1.95.0")
 
     workspace = receipt.get("workspace", {})
     manifests = workspace.get("manifests")
@@ -146,6 +155,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--candidate-tree-sha", required=True)
     parser.add_argument("--producer", type=Path, required=True)
     parser.add_argument("--rustfmt", type=Path, required=True)
+    parser.add_argument("--rustc", type=Path, required=True)
     parser.add_argument("--cargo", type=Path, required=True)
     return parser.parse_args(argv)
 

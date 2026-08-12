@@ -660,6 +660,9 @@ def execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
         cargo_version_result = runner.run([str(args.cargo), "--version"], cwd=root, env=env)
         probe_commands.append(command_record(cargo_version_result))
         require_success(cargo_version_result, "cargo version probe")
+        rustc_version_result = runner.run([str(args.rustc), "-Vv"], cwd=root, env=env)
+        probe_commands.append(command_record(rustc_version_result))
+        require_success(rustc_version_result, "rustc version probe")
         metadata_result = runner.run(
             [
                 str(args.cargo),
@@ -717,6 +720,7 @@ def execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
         "producer_sha256": file_digest(Path(__file__).resolve()),
         "cargo_version": cargo_version_result.stdout.strip(),
         "rustfmt_version": rustfmt_version_result.stdout.strip(),
+        "rustc_version_verbose": rustc_version_result.stdout.strip(),
     }
 
     runs: list[dict[str, object]] = []
@@ -871,6 +875,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--receipt", type=Path, default=DEFAULT_RECEIPT)
     parser.add_argument("--cargo", type=Path, default=Path(os.environ.get("CARGO", "cargo")))
     parser.add_argument("--rustfmt", type=Path, default=Path(os.environ.get("RUSTFMT", "rustfmt")))
+    parser.add_argument("--rustc", type=Path, default=Path(os.environ.get("RUSTC", "rustc")))
     parser.add_argument("--candidate-sha")
     parser.add_argument("--candidate-tree-sha")
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)

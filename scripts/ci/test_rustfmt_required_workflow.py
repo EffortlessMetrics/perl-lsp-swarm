@@ -86,6 +86,8 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
         '--candidate-sha "$SUBJECT_SHA"',
         '--candidate-tree-sha "$SUBJECT_TREE_SHA"',
         "rustup which --toolchain 1.95.0 rustfmt",
+        "rustup which --toolchain 1.95.0 rustc",
+        '--rustc "$rustc_bin"',
     ):
         if required_fragment not in run:
             raise AssertionError(f"formatter invocation missing {required_fragment!r}")
@@ -102,6 +104,7 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
         "--producer scripts/ci/rustfmt_check.py",
         '--candidate-sha "$SUBJECT_SHA"',
         '--candidate-tree-sha "$SUBJECT_TREE_SHA"',
+        '--rustc "$rustc_bin"',
     ):
         if required_fragment not in verify_run:
             raise AssertionError(f"receipt verifier missing {required_fragment!r}")
