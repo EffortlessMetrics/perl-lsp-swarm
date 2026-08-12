@@ -1,0 +1,61 @@
+{
+  "schema_version": "perl_lsp.protocol_schema_source.v1",
+  "upstream": {
+    "repository": "microsoft/language-server-protocol",
+    "branch": "gh-pages",
+    "commit": "8d5153933153aed3a488b9b8f46b22ed0f90f552",
+    "lsp_3_17": {
+      "path": "_specifications/lsp/3.17/specification.md",
+      "status": "stable"
+    },
+    "lsp_3_18": {
+      "path": "_specifications/lsp/3.18/specification.md",
+      "status": "under_development"
+    }
+  },
+  "base_protocol": {
+    "jsonrpc": "2.0",
+    "batch_supported": false,
+    "request_id_types": ["integer", "string"],
+    "response_id_types": ["integer", "string", "null"],
+    "content_charset": "utf-8"
+  },
+  "registry": [
+    "client_to_server:notification:$/cancelRequest:3.17",
+    "client_to_server:notification:$/progress:3.17",
+    "client_to_server:notification:exit:3.17",
+    "client_to_server:request:initialize:3.17",
+    "client_to_server:notification:initialized:3.17",
+    "client_to_server:request:shutdown:3.17",
+    "client_to_server:request:textDocument/completion:3.17",
+    "client_to_server:request:textDocument/declaration:3.17",
+    "client_to_server:request:textDocument/definition:3.17",
+    "client_to_server:request:textDocument/diagnostic:3.17",
+    "client_to_server:notification:textDocument/didChange:3.17",
+    "client_to_server:notification:textDocument/didClose:3.17",
+    "client_to_server:notification:textDocument/didOpen:3.17",
+    "client_to_server:notification:textDocument/didSave:3.17",
+    "client_to_server:request:textDocument/formatting:3.17",
+    "client_to_server:request:textDocument/hover:3.17",
+    "client_to_server:request:textDocument/implementation:3.17",
+    "client_to_server:request:textDocument/inlineCompletion:3.18-development",
+    "client_to_server:request:textDocument/rangeFormatting:3.17",
+    "client_to_server:request:textDocument/rangesFormatting:3.18-development",
+    "client_to_server:request:textDocument/references:3.17",
+    "client_to_server:request:textDocument/rename:3.17",
+    "client_to_server:request:textDocument/semanticTokens/full:3.17",
+    "client_to_server:request:textDocument/typeDefinition:3.17",
+    "server_to_client:notification:$/progress:3.17",
+    "server_to_client:request:client/registerCapability:3.17",
+    "server_to_client:request:client/unregisterCapability:3.17",
+    "server_to_client:notification:textDocument/publishDiagnostics:3.17",
+    "server_to_client:notification:window/logMessage:3.17",
+    "server_to_client:request:window/showDocument:3.17",
+    "server_to_client:request:window/showMessageRequest:3.17",
+    "server_to_client:request:window/workDoneProgress/create:3.17",
+    "server_to_client:request:workspace/applyEdit:3.17",
+    "server_to_client:request:workspace/configuration:3.17",
+    "server_to_client:request:workspace/diagnostic/refresh:3.17",
+    "server_to_client:request:workspace/semanticTokens/refresh:3.17"
+  ]
+}
