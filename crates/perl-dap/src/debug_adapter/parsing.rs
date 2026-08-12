@@ -575,6 +575,18 @@ mod tests {
     }
 
     #[test]
+    pub(super) fn framed_evaluate_rejects_expression_only_in_assignment_value() {
+        let lines = vec![r#"$message = \"$result\""#.to_string()];
+        assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
+    }
+
+    #[test]
+    pub(super) fn unframed_evaluate_rejects_correlated_literal_without_request_frame() {
+        let lines = vec!["42".to_string()];
+        assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
+    }
+
+    #[test]
     pub(super) fn unavailable_scope_fallback_is_empty_for_every_scope_kind()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
