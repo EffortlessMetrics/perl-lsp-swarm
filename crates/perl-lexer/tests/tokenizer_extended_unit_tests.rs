@@ -612,7 +612,8 @@ fn ext_trivia_token_new_and_fields() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn ext_trivia_lexer_tabs_as_whitespace() -> Result<(), Box<dyn std::error::Error>> {
-    let mut lexer = TriviaLexer::new("\t\tmy $x;".into());
+    let source = "\t\tmy $x;".to_string();
+    let mut lexer = TriviaLexer::new(&source);
     let (token, trivia) = must_some(lexer.next_token_with_trivia());
     // Leading trivia should capture tab whitespace
     assert!(!trivia.is_empty());
@@ -627,7 +628,7 @@ fn ext_trivia_lexer_tabs_as_whitespace() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn ext_trivia_lexer_multiple_comments() -> Result<(), Box<dyn std::error::Error>> {
     let src = "# line1\n# line2\nmy $x;".to_string();
-    let mut lexer = TriviaLexer::new(src);
+    let mut lexer = TriviaLexer::new(&src);
     let (_, trivia) = must_some(lexer.next_token_with_trivia());
     let comment_count =
         trivia.iter().filter(|t| matches!(t.trivia, Trivia::LineComment(_))).count();
@@ -638,7 +639,7 @@ fn ext_trivia_lexer_multiple_comments() -> Result<(), Box<dyn std::error::Error>
 #[test]
 fn ext_trivia_lexer_newline_between_tokens() -> Result<(), Box<dyn std::error::Error>> {
     let src = "my\n$x".to_string();
-    let mut lexer = TriviaLexer::new(src);
+    let mut lexer = TriviaLexer::new(&src);
     // First token
     let _ = must_some(lexer.next_token_with_trivia());
     // Second token should have newline trivia
@@ -650,7 +651,7 @@ fn ext_trivia_lexer_newline_between_tokens() -> Result<(), Box<dyn std::error::E
 #[test]
 fn ext_trivia_lexer_pod_section() -> Result<(), Box<dyn std::error::Error>> {
     let src = "=pod\nsome docs\n=cut\nmy $x;".to_string();
-    let mut lexer = TriviaLexer::new(src);
+    let mut lexer = TriviaLexer::new(&src);
     let (_, trivia) = must_some(lexer.next_token_with_trivia());
     assert!(trivia.iter().any(|t| matches!(&t.trivia, Trivia::PodComment(_))));
     Ok(())
@@ -659,7 +660,7 @@ fn ext_trivia_lexer_pod_section() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn ext_trivia_lexer_no_trivia_for_plain_code() -> Result<(), Box<dyn std::error::Error>> {
     let src = "42".to_string();
-    let mut lexer = TriviaLexer::new(src);
+    let mut lexer = TriviaLexer::new(&src);
     let (token, trivia) = must_some(lexer.next_token_with_trivia());
     assert!(trivia.is_empty());
     assert!(matches!(token.token_type, perl_lexer::TokenType::Number(_)));
