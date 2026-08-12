@@ -735,12 +735,10 @@ mod tests {
         assert_eq!(loaded.asset_path(asset), Err(CorpusTopologyError::RootNotBound));
 
         let rebound = loaded.with_root(first_root.path()).expect("bind topology root");
-        assert!(
-            rebound
-                .assets
-                .iter()
-                .all(|asset| rebound.asset_path(asset).is_ok_and(|path| path.is_file()))
-        );
+        assert!(rebound
+            .assets
+            .iter()
+            .all(|asset| rebound.asset_path(asset).is_ok_and(|path| path.is_file())));
     }
 
     #[test]

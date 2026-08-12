@@ -1,39 +1,39 @@
 mod topology;
 
 pub use crate::cases::{
-    ComplexDataStructureCase, EdgeCase, EdgeCaseGenerator, complex_data_structure_cases,
-    edge_cases, find_complex_case, get_complex_data_structure_tests, sample_complex_case,
+    complex_data_structure_cases, edge_cases, find_complex_case, get_complex_data_structure_tests,
+    sample_complex_case, ComplexDataStructureCase, EdgeCase, EdgeCaseGenerator,
 };
 pub use crate::codegen::{
-    CodegenOptions, StatementKind, generate_perl_code, generate_perl_code_with_options,
-    generate_perl_code_with_seed, generate_perl_code_with_statements,
+    generate_perl_code, generate_perl_code_with_options, generate_perl_code_with_seed,
+    generate_perl_code_with_statements, CodegenOptions, StatementKind,
 };
-pub use crate::concepts::{ConceptRow, LoadedConcept, load_concept_registry};
+pub use crate::concepts::{load_concept_registry, ConceptRow, LoadedConcept};
 pub use crate::continue_redo::{
-    ContinueRedoCase, cases_by_tag as continue_redo_cases_by_tag, continue_redo_cases,
+    cases_by_tag as continue_redo_cases_by_tag, continue_redo_cases,
     find_case as find_continue_redo_case, invalid_cases as invalid_continue_redo_cases,
-    valid_cases as valid_continue_redo_cases,
+    valid_cases as valid_continue_redo_cases, ContinueRedoCase,
 };
 pub use crate::files::{
-    CORPUS_ROOT_ENV, CorpusFile, CorpusLayer, CorpusPaths, get_all_test_files, get_corpus_files,
-    get_corpus_files_from, get_fuzz_files, get_test_files,
+    get_all_test_files, get_corpus_files, get_corpus_files_from, get_fuzz_files, get_test_files,
+    CorpusFile, CorpusLayer, CorpusPaths, CORPUS_ROOT_ENV,
 };
 pub use crate::format_statements::{
-    FormatStatementCase, FormatStatementGenerator, find_format_case, format_statement_cases,
+    find_format_case, format_statement_cases, FormatStatementCase, FormatStatementGenerator,
 };
 pub use crate::glob_expressions::{
-    GlobExpressionCase, GlobExpressionGenerator, find_glob_case, glob_expression_cases,
+    find_glob_case, glob_expression_cases, GlobExpressionCase, GlobExpressionGenerator,
 };
 pub use crate::gold::*;
 pub use crate::inventory::*;
 pub use crate::loading::{parse_dir, parse_file};
-pub use crate::metadata::{Section, find_by_flag, find_by_tag};
+pub use crate::metadata::{find_by_flag, find_by_tag, Section};
 pub use crate::sidecar::*;
 pub use crate::tie_interface::{
-    TieInterfaceCase, find_tie_case, tie_cases_by_tag, tie_cases_by_tags_all,
-    tie_cases_by_tags_any, tie_interface_cases,
+    find_tie_case, tie_cases_by_tag, tie_cases_by_tags_all, tie_cases_by_tags_any,
+    tie_interface_cases, TieInterfaceCase,
 };
 pub use topology::{
-    AssetRequirement, CORPUS_TOPOLOGY_SCHEMA_VERSION, CorpusAsset, CorpusAssetKind,
-    CorpusAssetLayer, CorpusTopology, CorpusTopologyError,
+    AssetRequirement, CorpusAsset, CorpusAssetKind, CorpusAssetLayer, CorpusTopology,
+    CorpusTopologyError, CORPUS_TOPOLOGY_SCHEMA_VERSION,
 };
