@@ -743,6 +743,7 @@ mod tests {
         assert!(packet.to_human().contains("Artifact identity: partial or not proven"));
     }
 
+    #[test]
     fn workspace_identity_is_honestly_not_proven() {
         let packet = BinaryIdentityPacketV1::server("0.18.0", BinaryIdentityInput::default());
         assert_eq!(packet.build.identity_state, BuildIdentityState::NotProven);

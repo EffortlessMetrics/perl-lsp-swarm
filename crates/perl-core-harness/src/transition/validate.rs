@@ -78,14 +78,8 @@ pub fn validate_run_report(
     }
     validate_file_result_assertions(&report.file_results, "current")?;
     validate_summary_against_file_results(report)?;
-    if let Err(err) = validate_failure_inventory(&report.failures, &report.file_results, "current")
-    {
-        return Err(err);
-    }
-    if let Err(err) = validate_semantic_boundary_identities(&report.semantic_boundaries, "current")
-    {
-        return Err(err);
-    }
+    validate_failure_inventory(&report.failures, &report.file_results, "current")?;
+    validate_semantic_boundary_identities(&report.semantic_boundaries, "current")?;
     Ok(ValidatedRunReport { inner: report.clone() })
 }
 
@@ -141,16 +135,8 @@ pub fn validate_compile_baseline_v2(
             "accepted V2 aggregate file/TAP totals do not reconcile with detailed file_results",
         ));
     }
-    if let Err(err) =
-        validate_failure_inventory(&baseline.expected_failures, &baseline.file_results, "accepted")
-    {
-        return Err(err);
-    }
-    if let Err(err) =
-        validate_semantic_boundary_identities(&baseline.semantic_boundaries, "accepted")
-    {
-        return Err(err);
-    }
+    validate_failure_inventory(&baseline.expected_failures, &baseline.file_results, "accepted")?;
+    validate_semantic_boundary_identities(&baseline.semantic_boundaries, "accepted")?;
     Ok(ValidatedCompileBaselineV2 { inner: baseline.clone() })
 }
 
@@ -185,17 +171,9 @@ pub fn validate_accepted_baseline(
                     "accepted V1 aggregate file/TAP totals do not reconcile with detailed file_results",
                 ));
             }
-            if let Err(err) = validate_failure_inventory(
-                &value.expected_failures,
-                &value.file_results,
-                "accepted",
-            ) {
-                return Err(err);
-            }
+            validate_failure_inventory(&value.expected_failures, &value.file_results, "accepted")?;
             if let Some(boundaries) = &value.semantic_boundaries {
-                if let Err(err) = validate_semantic_boundary_identities(boundaries, "accepted") {
-                    return Err(err);
-                }
+                validate_semantic_boundary_identities(boundaries, "accepted")?;
             }
             Ok(())
         }
