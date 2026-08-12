@@ -38,7 +38,9 @@ L0-L6 HIR side graphs and Tooling PIR are `fixture-backed`; see
 page records first-class `Branch`, `Loop`, and `Return` lowering. The canonical
 [PIR-A lowering](../../crates/perl-parser-core/src/pir/lower.rs) and
 [body fixtures](../../crates/perl-parser-core/tests/pir_a_bodies_test.rs)
-independently prove bounded `LexicalRead` and `StashRead` lowering. Accepted
+show that lowering emits bounded `LexicalRead` and `StashRead` operations and
+that fixtures exercise the read-side path without independently discriminating
+the exact operation kind. Accepted
 PLSP-SPEC-0025 still reserves read-side lowering for later, and the human status
 page does not name it, so this implementation drift is explicit rather than
 attributed to either authority. The fixtures do not establish full Perl
