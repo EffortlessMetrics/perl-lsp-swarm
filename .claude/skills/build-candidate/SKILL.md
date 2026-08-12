@@ -1,6 +1,6 @@
 ---
 name: build-candidate
-description: Implement or complete one coherent candidate, harden its tests, simplify it, and challenge the actual result before publication without discarding the claim lane's review context.
+description: Implement or complete one coherent candidate, harden its tests, simplify it, and challenge the actual result before publication without discarding the review context that found the repair.
 argument-hint: "[issue, branch, or candidate]"
 ---
 
@@ -14,29 +14,36 @@ Before creating another candidate, check only whether an equivalent current PR a
 implements the same claim. Do not inspect sibling lanes, touched-file overlap, or nearby
 symbols as a routine ownership check.
 
-## Lane continuity
+## Context continuity
 
-`build-candidate` is a transition inside the current persistent claim lane, not a reason
-to replace its agent.
+`build-candidate` is a transition inside the current authorized PR context, not a reason
+to replace its subagent.
 
-A lane root that reviewed the PR may become the candidate writer when:
+A persistent claim lane or role-specialized reviewer may become the candidate writer
+when:
 
 - the finding is accepted and candidate-owned;
-- the repair remains inside the lane's claim and non-goals;
+- the repair remains inside the current claim and non-goals;
 - the parent brief grants mutation/publication authority;
 - no other writer is mutating the same candidate.
 
 Keep the same thread, worktree, loaded source context, and accepted evidence. Do not
-return a repair packet solely so a fresh subagent can repeat the review. Focused review
-subagents remain read-only; the durable lane root owns the transition from judgment to
-mutation and back through affected proof and review.
+return a repair packet solely so a fresh subagent can repeat the review. The real
+boundary is authority and same-candidate writer exclusivity, not the role label the
+context held before this skill.
+
+A focused evidence worker remains read-only unless the parent explicitly promotes that
+same context. When a reviewer is promoted, preserve the review evidence that motivated
+the repair and continue back through affected proof and review. Add a genuinely
+different oracle, method, threat model, environment, or reviewer when substantive merge
+independence would otherwise collapse into the construction context.
 
 ## Orchestration affordances
 
-### Lane-root decisions
+### Context decisions
 
-The lane root retains the material claim/non-goals and semantic owner, accepted
-implementation latitude, proof sufficiency, risk/rollback boundary, finding
+The current claim owner retains the material claim/non-goals and semantic owner,
+accepted implementation latitude, proof sufficiency, risk/rollback boundary, finding
 dispositions, material return-to-issue/proof decisions, and candidate sufficiency for PR
 convergence.
 
@@ -56,17 +63,17 @@ useful for:
 
 Give each child settled facts, exact claim/candidate identity, named skill where
 applicable, mutation/read-only authority, falsifiers, proof budget, and return boundary.
-Children return evidence or a bounded patch to the lane root; they do not create a
-second candidate owner.
+Children return evidence or a bounded patch to the current PR context; they do not
+create a second candidate owner.
 
 ### Mutation owner
 
-One writer mutates the candidate branch/worktree at a time. The current persistent claim
-lane is normally that writer after accepting a repair. Read-only reviewers and oracles
-return evidence to it.
+One writer mutates the candidate branch/worktree at a time. The persistent claim lane is
+normally that writer; a dedicated reviewer may be promoted in place when it already
+holds the accepted finding and the parent grants authority.
 
-Do not require an explicit agent reassignment merely because the lane crossed from
-review to implementation. Require only the real authority change: accepted repair,
+Do not require a subagent replacement or cold start merely because the context crossed
+from review to implementation. Require only the real authority change: accepted repair,
 write permission, and no same-candidate writer collision.
 
 ### Join predicate
@@ -94,12 +101,13 @@ not behavioral proof.
 
 ## Flow
 
-1. Reuse the current claim lane, candidate branch/worktree, and loaded context.
+1. Reuse the current authorized PR context, candidate branch/worktree, and loaded
+   evidence.
 2. Invoke `build-from-proof` where implementation is missing.
 3. Invoke `improve-test-suite` against the actual candidate.
 4. Invoke `simplify-candidate`; every changed revision returns through affected proof.
 5. Invoke `review-candidate` against current issue/contract/product authorities.
-6. Repair through this same lane writer and rerun affected proof/review.
+6. Repair through this same writer context and rerun affected proof/review.
 7. Continue according to the result below; do not terminate merely because the
    implementation step completed.
 
@@ -116,12 +124,12 @@ agent, or normal skill transition.
 
 ## Routes
 
-- `CANDIDATE_READY` → continue in this lane to publication/convergence through
-  `finish-pr`; if the PR already exists, continue to affected `final-challenge` and
-  `review-pr`
+- `CANDIDATE_READY` → continue in the current PR context to publication/convergence
+  through `finish-pr`; if the PR already exists, continue to affected `final-challenge`
+  and `review-pr`
 - `CANDIDATE_FINDINGS_OPEN` → repair within this flow, then rerun affected proof and
   `review-candidate`
-- `WEAK_PROOF` → continue in this lane to `prepare-proof`, then resume this flow
+- `WEAK_PROOF` → continue in this context to `prepare-proof`, then resume this flow
 - `MATERIAL_SCOPE_OR_AUTHORITY_CHANGE` → `prepare-issue`; return to the parent only if
   the claim must split or change owner
 - `NO_BUILD_SUBJECT` → return the no-build disposition to the invoking flow for
@@ -132,10 +140,10 @@ agent, or normal skill transition.
 ## What this establishes
 
 A locally coherent publication candidate within the stated claim, produced without
-throwing away the lane's review context.
+throwing away the review context that discovered the repair.
 
 ## What this does not establish
 
 Formal cumulative review, current GitHub checks, review-thread convergence, merge
 authorization, or current-main reconciliation. Those continue through `finish-pr` in
-the same lane.
+the current PR context.
