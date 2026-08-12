@@ -1,415 +1,308 @@
 ---
 name: orchestrate-work
-description: Compile Codex's runtime-local campaign, lane, worker, writer, and review graph for the selected route; join evidence and preserve GitHub as durable state.
+description: Compile Codex's runtime-local campaign, persistent claim-lane, and focused evidence-worker graph for the selected route; join evidence and preserve GitHub as durable state.
 ---
 
 # Orchestrate work
 
 Use this internal Codex operation after selecting a public flow or atomic skill. Run the
-selected route, follow its named normal and material backward edges, and use workers or
-lane roots as the default for substantive independent work.
+selected route and follow its named forward and backward edges. Use persistent claim
+lanes for substantive independent work and focused workers for bounded evidence.
 
-This is not a public stage, durable executor DAG, scheduler, tracked frontier, or source
-of transaction state.
+This is not a public stage, durable executor DAG, scheduler, tracked frontier, lease
+system, or source of transaction state.
 
-## Scope hierarchy
+## Context hierarchy
 
 ### Campaign root
 
 Owns the durable goal, acceptance predicates, claim selection, cross-lane dependencies,
-contradictions, runtime-local frontier, joined evidence, exceptions, and goal
-reconciliation.
+contradictions, proof debt, runtime-local frontier, joined evidence, exceptions, and
+goal reconciliation.
 
-The campaign root orchestrates by default. It maintains a useful review surface,
-consumes and challenges returns, promotes bounded repairs, manages build admission,
-resolves dependencies, and performs integration and closeout decisions. Leaf
-implementation, first-pass deep review, broad archaeology, raw logs, repetitive proof,
-CI diagnosis, and routine cleanup should leave this context unless direct inspection of
-one load-bearing seam is itself the campaign judgment.
+The campaign root orchestrates by default. It selects PRs/claims, dispatches persistent
+lanes, joins results, controls compute admission, resolves dependency and supersession
+questions, and performs merge/close/park decisions. It should not become the routine
+first reviewer, implementer, proof runner, CI diagnostician, or cleanup worker.
 
-A failed child dispatch does not convert the campaign root into the missing worker.
-Reclaim completed agents, join available evidence, refill another useful review, or make
-another campaign decision first. Direct campaign-root leaf work is exceptional and
-bounded.
+A failed child dispatch does not automatically turn the campaign root into the missing
+worker. Reclaim completed lanes, join available evidence, route another decision, or
+dispatch another useful claim first.
 
-### Lane root
+### Persistent claim lane
 
-Owns one coherent claim. It runs `$deliver-pr`, invokes `$orchestrate-work` within that
-claim, keeps one concurrent candidate writer, joins claim-local evidence, publishes
-useful GitHub updates, and returns a typed lane result.
+Owns one coherent acceptance-and-rollback claim, normally one issue or PR. It runs
+`$deliver-pr` and remains the same context while the route moves through review,
+repair, proof, review refresh, live CI, and closeout.
 
-A lane root may perform tiny tightly coupled claim-local work directly. That does not
-make campaign-root leaf execution or routine lane-root implementation the normal path.
+The lane is not a stage-specific reviewer, writer, proof runner, or finisher. Those are
+activities selected by skills inside the lane. Do not close and replace the lane merely
+because `$review-pr` returned `CHANGES_REQUIRED`, `$prepare-proof` returned
+`PROOF_READY`, or `$verify-live-ci` returned a candidate-owned failure.
 
-### Worker, writer, and reviewer
+A claim lane may mutate its candidate when:
 
-- read-only workers answer one bounded question or consume one named `$skill`;
-- one writer mutates the selected candidate branch/worktree at a time;
-- reviewers change the source, oracle, method, threat model, environment, or attention
-  surface and return evidence rather than approval;
-- a child that creates a worktree owns its cleanup after retained work is published or
-  abandoned safely.
+- its current skill result supports the repair;
+- the repair remains inside the accepted claim and non-goals;
+- its brief grants mutation/publication authority;
+- no other writer is mutating the same candidate.
 
-A leaf worker may not widen into lane ownership unless its brief explicitly grants that
-authority.
+It keeps one candidate writer at a time, joins claim-local evidence, publishes useful
+GitHub updates, and returns a typed `$deliver-pr` result only at a real wait, blocker,
+terminal disposition, or external-action boundary.
 
-## Run the specified route
+### Focused worker or review lens
 
-```text
-campaign outcome
-→ `$deliver-goal`
+Answers one bounded question or consumes one named `$skill`. It may change source,
+oracle, method, threat model, environment, or attention surface. It returns evidence,
+falsifiers, contradictions, uncertainty, and references to its invoking lane.
 
-one coherent claim
-→ `$deliver-pr`
+Focused workers do not become claim owners, authorize merge, create rival candidates,
+or force the durable lane to discard context. A child that creates a worktree or process
+group owns cleanup of those resources.
 
-bounded transformation
-→ named atomic `$skill`
-
-bounded factual uncertainty
-→ one focused question inside the invoking skill
-```
-
-A whole-flow assignment creates a lane root:
-
-```text
-Take issue #123 through `$deliver-pr`.
-You are the accountable lane root for this claim. Use GitHub and repository artifacts
-as durable state, invoke `$orchestrate-work` within the claim, keep one concurrent
-candidate writer, follow normal and material backward routes, and return RECONCILED,
-IN_FLIGHT, PARTIAL, SUPERSEDED, BLOCKED, or NOT_PROVEN.
-Do not select unrelated claims or change the parent goal.
-```
-
-When a child receives a named `$skill`, require it to consume that skill rather than
-replace it with an invented lifecycle.
-
-## Runtime shape
+## Normal runtime shapes
 
 | Work | Normal Codex shape |
 | --- | --- |
-| Goal meaning, claim selection, contradictions | Campaign root |
-| Large PR queue or broad review campaign | Broad read-only review pool directed by campaign root |
-| One substantial claim | Whole-flow `$deliver-pr` lane root |
-| Tiny claim-local edit | Lane root or current writer |
-| High-output/bounded exploration | Focused read-only worker or explorer |
-| Candidate/proof mutation | One writer |
-| Substantive review | Lane-root-directed differentiated review subgraph |
-| Distinct claims | Separate lane roots and worktrees when mutation requires them |
-| Unchanged remote wait | No polling agent; campaign continues on independent work |
+| Goal meaning, claim selection, contradictions, integration | Campaign root |
+| One PR or coherent claim | Persistent `$deliver-pr` lane |
+| Broad PR campaign | Several disjoint PR lanes, usually beginning in review |
+| Missing review dimension | Focused read-only worker/lens inside the PR lane |
+| Candidate mutation | The same PR lane acting as its one writer |
+| Focused proof | The same PR lane when admitted, or a bounded evidence worker when a different environment materially helps |
+| CI log/artifact classification | Focused read-only worker returning to the PR lane |
+| Unchanged remote wait | Lane returns `IN_FLIGHT`; campaign advances another claim |
+| Explicit cleanup/admission question | Bounded campaign-ops context |
 
-For a large PR queue, bias toward roughly five or six disjoint read-only review agents
-when the queue and runtime capacity support it. This is a default fan-out, not a fixed
-topology, quota, or required role mix. Review capacity is useful only when the campaign
-root can steer it and join its results.
+For a large PR queue, roughly five or six disjoint PR lanes may be useful when runtime
+capacity supports them. That is a default review fan-out, not a topology, quota, or
+occupancy target. Each lane may continue into repair and proof without being replaced.
 
-Delegate when evidence gain, campaign/lane-context preservation, parallel elapsed-time
-gain, changed source/oracle/tool/environment, recovery value, or avoided CI cost
-exceeds cold-start, briefing, duplicate research, resource contention, join, and
-correlated-failure costs. Direct work is the fallback only when delegation cannot
-produce a useful result at reasonable cost.
+## Lane continuity
 
-Stop adding agents when another result cannot change a decision. Do not stop refilling
-useful review capacity because a writer or hosted check is still running.
-
-## Continuous review pool
-
-Treat review results as a stream, not a batch barrier:
+Treat skill results as route transitions inside the same lane:
 
 ```text
-dispatch useful disjoint reviews
-→ join each typed result as it arrives
-→ promote, merge, close, park, or record a blocker
-→ refill the freed review capacity
-→ continue while actionable independent work remains
+`$review-pr`: CHANGES_REQUIRED
+→ same lane `$address-review-comments` / `$build-candidate`
+→ same lane affected proof
+→ same lane affected `$final-challenge` / `$review-pr`
+
+`$review-pr`: REVIEW_CURRENT
+→ same lane `$verify-live-ci`
+
+`$verify-live-ci`: PRODUCT_OR_TEST_FAILURE
+→ same lane `$build-candidate`
+→ same lane affected proof and review
+
+`$verify-live-ci`: INTEGRATION_READY
+→ same lane `$merge-reconcile` when authorized
 ```
 
-Do not wait for every reviewer before acting on a completed result. Do not repeatedly
-wait on quiet agents when another review can be admitted or another joined result can be
-routed.
+Do not create a review agent, then a repair agent, then a proof agent for the same PR.
+That destroys loaded context and turns ordinary skill routing into orchestration work.
+Use a new worker only when an independent evidence surface can change the decision.
 
-Keep review breadth wider than mutation breadth. Read-only GitHub/source review and
-cheap falsifiers may run broadly. Promote only actionable findings into writers.
-Prefer promoting the reviewer that already understands the claim when its worktree and
-scope remain suitable.
+When a lane returns `IN_FLIGHT`, preserve its wake event. Resume the same thread when the
+runtime retains it. If it cannot be resumed, reconstruct from GitHub and repository
+artifacts without creating a second candidate.
+
+## Continuous campaign flow
+
+Treat lane results as a stream, not a batch barrier:
+
+```text
+dispatch useful disjoint PR lanes
+→ each lane follows `$deliver-pr`
+→ join each typed result as it arrives
+→ merge, close, park, record a blocker, or resume on its next skill
+→ refill only when another independent claim is useful
+```
+
+Do not wait for every lane before acting on a completed result. Do not retain stale,
+duplicate, completed, closed, cancelled, or `Not found` handles to preserve a count. A
+lane changing from review to repair remains one live lane.
 
 ## Capacity admission
 
-Size compute to the host, not logical review capacity. Saturation destroys evidence
-rather than only delaying it: once builds contend, local timings, flake rates, and
-command timeouts stop being trustworthy, and the root begins dispatching diagnostic
-agents into ambiguity it produced itself.
-
-Consume the current local admission result before dispatching a build-heavy writer. Do
-not dispatch when writer capacity is exhausted, heavy-build capacity is exhausted, the
-workspace-wide Cargo token is held, or disk/process state is `NOT_PROVEN`.
-
-Capacity limits are a host profile, not a repository invariant. A workstation, a
-laptop, a remote builder, and a read-only review context have different envelopes.
-Until #3957 provides an admission command, apply the profile recorded in local
-configuration; the initial single-workstation profile is one build-heavy writer and one
-workspace-wide build.
-
-Cap what consumes the host, which is builds—not how many review agents exist. A read-
-only worker reading GitHub and source normally holds no worktree, no build, and no
-locks, so its limit is the attention available to steer and join it. Rationing cheap
-reviewers while build-heavy work runs unbounded caps the wrong thing.
-
-Concurrent writers are likewise not bounded by an arbitrary count. Two writers on two
-claims are safe when both claims are specified and disjoint, and unsafe when they are
-vague, because vague claims overlap and overlapping writers produce rework rather than
-parallelism. The precondition for another writer is a bounded disjoint claim plus host
-admission, not a slot.
-
-Count what the host carries, not what was dispatched. These quantities come apart:
+Cap what consumes the host, not how many contexts exist.
 
 ```text
-logical WIP    active campaign and lane contexts
-review WIP     active read-only reviewers and unanswered questions
-mutation WIP   active writers and candidate worktrees
-compute WIP    live build/test process groups and workspace-wide Cargo tokens
+logical WIP    active campaign and claim contexts
+review WIP     active read-only questions and evidence lenses
+mutation WIP   candidates currently being edited
+compute WIP    live build/test process groups and shared Cargo tokens
 storage WIP    disk floor, target/cache footprint, safe reclaim state
+proof debt     published or local behavioral changes still missing affected proof/review
 ```
 
-A lane that has returned while its process group still drains is `STOPPING`. Its build
-token is not released until the process tree exits and its locks are gone. A claim
-waiting on GitHub may hold no local resource at all.
+Read-only GitHub/source review can be broad. Writers and heavy proof require bounded,
+disjoint claims plus host admission. When proof debt grows, stop starting more mutation
+and keep remaining capacity read-only until proof and merge closure catch up.
 
-- never launch a second writer for the same candidate from silence. Independent review
-  or a disjoint claim may proceed when useful;
-- read-only inspection of GitHub or source requires no worktree; allocate one only for a
-  named checkout/proof need or likely promotion into a writer;
-- when build admission fails, keep cheap review and campaign integration moving rather
-  than treating the whole campaign as blocked;
-- a local timing or flake-rate measurement taken under saturation is `NOT_PROVEN` and
-  must be reported as such rather than as a number.
+A lane that returned while its process group drains is `STOPPING`; its compute resource
+is not released until the process tree exits. A PR waiting on GitHub may hold no local
+resource at all.
 
-## A quiet agent is not a result
+When build admission fails, continue cheap review, evidence joining, and integration
+decisions. A timing or flake measurement taken under saturation is `NOT_PROVEN`.
 
-Only a typed return ends a lane. An idle signal, a terminated process, an exhausted
-budget, or prolonged silence says nothing about the claim.
+## Assignment contract
 
-When a lane goes quiet, inspect the durable artifact only when a decision depends on
-it—PR state, branch, worktree status, or live checks:
+A persistent PR-lane brief normally needs only:
+
+- exact PR/issue and coherent claim;
+- accepted authority and non-goals when not obvious from the durable subject;
+- mutation and publication authority;
+- merge/close/issue-creation authority;
+- worktree permission and local proof budget;
+- known prerequisite, material finding, or hosted wake event.
+
+The lane invokes `$deliver-pr`; the skills own procedure and next-step routing.
+Do not restate the full review, repair, proof, CI, and cleanup manuals in every brief.
+
+A focused worker brief names:
+
+- parent flow/skill and exact durable subject;
+- one bounded question;
+- accepted facts and authority;
+- named `$skill` when known;
+- read/write boundary;
+- realistic falsifiers and sufficient return;
+- stop conditions, uncertainty, and non-goals;
+- cleanup responsibility for resources it creates.
+
+Head SHAs, check results, mergeability, and counts are observations, not leases or
+default stop conditions. Re-read volatile state only when the next decision depends on
+it: before a destructive action or merge, after a rejected push, or when intervening
+content may materially conflict with or supersede the task.
+
+## A quiet lane is not a result
+
+Only a typed return or durable artifact establishes lane state.
 
 ```text
 typed result returned        → join it
-artifact shows the work done → synthesize the typed result from the artifact, record it
-                               as synthesized, then release the lane
-stated wait still current    → leave it; continue independent campaign work
-no artifact and no return    → FAILED_NO_RETURN; claim state is NOT_PROVEN
+artifact shows work complete → synthesize the result, mark it synthesized, release lane
+stated wait still current    → preserve wake event; continue independent campaign work
+no artifact and no return    → FAILED_NO_RETURN; claim remains NOT_PROVEN
 ```
 
-`FAILED_NO_RETURN` is not a finding of abandonment. Silence establishes nothing about
-whether the worker is dead, the process group has stopped, the worktree is clean, a
-remote branch changed, or uncommitted work exists. Read the minimum state needed for
-salvage, wait, stop, or explicit reassignment. Reassignment is never the default
-consequence of silence.
-
-Silence is also not spare capacity and not completion. A lane holding a current wait
-condition is not stalled, and re-tasking it discards work in flight.
+Silence is not spare capacity, abandonment, completion, or permission to start a second
+writer. Inspect only the minimum artifact/process/worktree state needed for salvage,
+wait, stop, or explicit reassignment.
 
 ## Runtime-local frontier
 
-A campaign root may keep this in memory only:
+The campaign root may keep this in memory:
 
 ```text
-claim
+claim / PR
 acceptance predicate
-lane context
-durable issue / PR / merge subject
-current judgment
+lane handle
+current skill and judgment
+candidate/worktree when mutating
+proof debt
 external wait
 next wake event
 ```
 
-Reconstruct it from GitHub/repository artifacts after replacement. Never commit it,
-write it to a tracked file, post agent liveness, or turn it into a portfolio database.
-Revisit an in-flight lane only when its wake event occurs.
+Reconstruct it from GitHub and repository artifacts after replacement. Never commit it,
+post agent liveness, or turn it into a portfolio database.
 
-## Assignment contract
+## Evidence joins and returns
 
-Every brief names:
+Join graph deltas rather than votes. Repeated claims from one source are not independent
+corroboration. Preserve contradictions until direct evidence resolves them.
 
-- parent flow/skill and exact durable subject;
-- accepted authority and established facts;
-- one bounded question or mutation boundary;
-- named provider-native `$skill` when known;
-- campaign-root, lane-root, read-only, writer, or reviewer authority;
-- candidate branch/worktree for mutation when needed;
-- realistic falsifiers and negative controls;
-- sufficient return and stable evidence references;
-- uncertainty, `NOT_PROVEN`, stop/backward routes, and non-goals;
-- cleanup responsibility for any worktree or process group it creates.
+Focused workers return subject, conclusion, direct and contradictory evidence, searched
+scope, affected claim/proof/authority edge, realistic falsifier, recommendation,
+uncertainty, and `NOT_PROVEN` boundary.
 
-Do not ask children to rediscover settled facts or return raw transcripts/private
-reasoning.
+Persistent PR lanes return candidate identity, skills traversed, changes made, proof
+run/not run, findings and dispositions, substantive review result, live integration
+posture, exact next skill or wake event, limitations, typed `$deliver-pr` result, and
+verified cleanup of lane-created resources no longer needed.
 
-Separate the brief's stable part from its observed part. Claim, acceptance, non-goals,
-and authorities are stable. Head SHAs, check results, mergeability, and counts are
-observations, not leases or default stop conditions.
-
-A brief may include an observation basis:
-
-```text
-Observed at dispatch: <pr state, branch, head, then-current checks>.
-Before a destructive action, merge, or after a rejected push, re-read only the volatile
-state needed for that decision.
-If intervening content materially conflicts with or supersedes the task, return
-PREMISE_CHANGED or SUPERSEDED. Otherwise integrate compatible work and continue.
-```
-
-Do not require repeated head equality before routine edits or pushes. Writers use
-ordinary non-force Git. If a push is rejected, fetch and inspect the intervening work.
-A compatible remote commit or head SHA change alone does not end the lane and is not
-`CANDIDATE_MOVED`.
-
-Discover a required-policy set rather than naming a remembered one. Classic branch
-protection and rulesets are independent and additive, so a brief asserting a fixed count
-of required checks states exactly the kind of premise this section exists to prevent.
-
-## Graph-delta returns
-
-Read-only workers return subject identity, conclusion, direct and contradictory
-evidence, authority and searched scope, what is/is not established, the affected
-claim/proof/authority edge, recommended route, `NOT_PROVEN` boundary, and overflow
-references.
-
-Writers return candidate identity, behavior/seams changed, proof run/not run, repaired
-findings, limitations, current GitHub state, typed result, and verified cleanup of
-lane-created worktrees when no longer needed. Reviewers return localized findings with
-severity, affected dimension, evidence, realistic falsifier, uncertainty, and suggested
-disposition.
-
-The root must join evidence as graph deltas rather than votes. Repeated claims from one
-source are not independent corroboration. Preserve contradictions until direct evidence
-resolves them.
-
-Every dispatched agent owes a typed return. Track what was dispatched: a lens that dies
-— exhausted budget, killed process, tooling failure — leaves its dimension
-`NOT_PROVEN`, not examined-and-clean. An unnoticed absent return is indistinguishable
-from a clean one, which is the failure the review method exists to prevent.
-
-Remembering a dead lens does not by itself make merge refusal reliable. Carry the
-dispatch list into the review join as an explicit dimension ledger, so the cumulative
-result rests on enumerated dimensions rather than on whichever reviews returned:
-
-```text
-claim-vs-code     REVIEWED
-proof             REVIEWED
-shutdown safety   NOT_PROVEN   (lens dispatched, no return)
-external oracle   NOT_APPLICABLE
-```
-
-Wiring that ledger into the convergence predicate governing merge is tracked separately
-under #3693. This skill requires only that the dispatch be recorded and the absence be
-visible to the join.
+Every dispatched evidence lens owes a visible result. A dead lens leaves its dimension
+`NOT_PROVEN`, not examined-and-clean.
 
 ## Worktree and process cleanup
 
-Each child owns the local resources it creates.
+Each context owns resources it creates.
 
-- read-only agents should avoid worktrees unless a checkout, local proof, or likely
-  writer promotion requires one;
-- a writer commits and publishes retained work, verifies the worktree is clean, and
-  removes its lane-created worktree when no further local proof is needed;
-- a child that cannot clean up reports the exact path, process, lock, and reason without
-  bypassing execution policy;
-- shared targets/caches, locked or ambiguous worktrees, and resources owned by another
-  agent or tool are preserved;
-- the campaign root verifies cleanup from typed returns and runs broad cleanup only when
-  storage blocks work or the campaign is closing.
+- Read-only workers avoid worktrees unless checkout-local inspection or proof requires
+  one.
+- A persistent PR lane may keep one worktree across review, repair, and proof; do not
+  delete it at every skill boundary.
+- The lane removes its worktree after retained work is safely published or abandoned and
+  no near-term same-lane transition needs the cache.
+- A child that cannot clean up reports exact path, process, lock, reason, and verified
+  state without bypassing execution policy.
+- Preserve shared targets/caches, locked or ambiguous worktrees, and resources owned by
+  another agent or tool.
+- Broad cleanup runs only when storage blocks work or the campaign is closing.
 
 Cleanup is not a standing review lane and should not displace actionable repository
 work.
 
-## Useful GitHub publication filter
+## Useful GitHub publication
 
-Publish when information changes claim, authority, plan, proof obligation, route,
-prerequisite, support, risk, or rollback meaning; prevents useful source-backed evidence
-from being rediscovered; records a localized finding or supported disposition; records
-a real external wait/wake event; or provides a useful cumulative review, merged effect,
-or goal synthesis.
+Publish only when information changes claim, authority, plan, proof obligation, route,
+prerequisite, support, risk, rollback, or closeout meaning; prevents source-backed
+evidence from being rediscovered; records a localized finding/disposition; records a
+real external wait/wake event; or provides a useful cumulative review or merged effect.
 
-Keep agent identity, topology, liveness, retries, temporary task state, provisional
-reasoning, raw logs already referenced elsewhere, unchanged polling, and routine skill
-transitions runtime-local.
-
-Use issues for durable research/rulings/plans/dependencies/goal synthesis; PR bodies or
-comments for candidate-wide route/proof/limitation summaries; inline review for
-localized findings; review replies for dispositions; submitted reviews for cumulative
-judgment; and issue closeout for landed effects and residual claims.
-
-## Traceable route
-
-When another context will benefit and the route is not obvious, publish one compact
-issue/PR declaration:
-
-```text
-Route
-- Goal / parent: <issue or durable outcome>
-- Claim: <one acceptance-and-rollback claim>
-- Entry flow: <public flow>
-- Current useful transition: <named skill or external wait>
-- Why: <material missing judgment>
-- Durable subject: <issue / PR / merged commit>
-- Resume when: <wake event, if any>
-```
-
-Update only when the material route changes. It is a resumability aid, not stage,
-lifecycle, or lease authority.
+Keep agent identity, topology, liveness, retries, ordinary skill transitions, temporary
+state, provisional reasoning, raw logs, and unchanged polling runtime-local.
 
 ## PR review orchestration
 
+Inside one persistent PR lane:
+
 ```text
 lane root
-├── claim-vs-code: each property the PR body asserts, verified against the diff
-├── `$review-tests` for proof discrimination/evidence integrity
-├── `$review-candidate` for implementation, ownership, reachability, complexity,
-│   compatibility, risk, and rollback
-├── bounded production-path trace when component proof may not reach the live system
-├── bounded external oracle when language/protocol/platform/release truth matters
-└── focused security/package/migration/persistence/support lens when applicable
+├── claim-vs-code propositions
+├── `$review-tests` for proof discrimination
+├── `$review-candidate` for implementation/reachability/complexity/risk
+├── production-path trace when needed
+├── external oracle when needed
+└── focused security/package/migration/persistence/support lens when needed
 
-join evidence as each lens returns
-→ lane root verifies load-bearing seams and contradictions
-→ one writer repairs accepted findings through `$address-review-comments`
+join evidence
 → lane root publishes cumulative `$review-pr`
-→ only `REVIEW_CURRENT` enters `$verify-live-ci`
+→ same lane repairs accepted findings
+→ same lane runs affected proof/review
+→ same lane evaluates live CI and closeout
 ```
 
-Do not use a subagent verdict as approval. Different identity without a different
-source, oracle, method, threat model, or attention surface is not meaningful
-independence.
-
-Brief each lens to falsify a named claim rather than assess it. Each returns the angles
-it attempted with outcomes, refuted ones included, so the join can distinguish coverage
-from agreement.
+Different identity without a different source, oracle, method, threat model, environment,
+or attention surface is not meaningful independence. Brief lenses to falsify named
+propositions, not to say whether the PR looks good.
 
 ## Procedure
 
 1. Anchor the durable subject and selected route.
-2. Distinguish campaign, lane, writer, worker, and review scopes.
-3. Compile the smallest useful runtime graph, with broad cheap review and narrow
-   mutation by default.
-4. Send complete briefs with named skills, falsifiers, returns, cleanup ownership, and
-   stop conditions.
-5. Join each result as it arrives, route it, and refill useful review capacity.
-6. Steer, retry, replace, or cancel while evidence can change a decision.
-7. Inspect load-bearing evidence and publish only useful durable facts at their native
-   GitHub boundary.
-8. Continue through the invoking flow's route or return its typed result.
+2. Distinguish campaign, persistent claim-lane, and focused-worker scopes.
+3. Dispatch the smallest useful graph: broad claim contexts, narrow mutation, scarce
+   compute.
+4. Send compact claim-lane briefs and complete focused-worker briefs.
+5. Join each result as it arrives and let the same lane follow its next skill.
+6. Steer, resume, retry, replace, or cancel only while evidence can change a decision.
+7. Inspect load-bearing evidence and publish only durable facts at their native GitHub
+   boundary.
+8. Continue through the invoking flow or return its typed result.
 
 ## What this establishes
 
-A claim-local, provider-native runtime route with explicit campaign/lane/worker scopes,
-complete child briefs, broad review fan-out, one concurrent writer per candidate,
-compute-aware mutation, contradiction-aware evidence joins, agent-owned cleanup, named
-backward routes, and a useful GitHub publication boundary. The invoking flow can
-continue from a typed result without importing raw worker context.
+Persistent claim-local execution with context reuse across skill transitions, focused
+evidence workers, one writer per candidate, compute-aware proof, contradiction-aware
+joins, agent-owned cleanup, and useful GitHub handoffs.
 
 ## What this does not establish
 
-A persistent executor graph, scheduler, tracked frontier, lane lease, fixed agent count,
+A persistent scheduler, tracked frontier, stage-agent taxonomy, fixed agent count,
 provider/model mandate, automatic truth from worker agreement, substantive review by
 itself, integration readiness, or merge authorization.
 
@@ -420,11 +313,12 @@ action, unestablished identity/authority, unresolved material contradiction, or 
 instrumentation that blocks the claim. An unchanged remote wait, failed spawn, head SHA
 change, or unavailable cleanup operation does not stop independent campaign work.
 
-- whole claim → `$deliver-pr`
+- whole claim / one PR → persistent `$deliver-pr` lane
 - durable multi-PR goal → `$deliver-goal`
-- proof challenge → `$review-tests` or `$prepare-proof`
-- candidate challenge → `$review-candidate`
-- cumulative judgment → `$review-pr`
-- finding repair → `$address-review-comments` with one writer
-- current review → `$verify-live-ci`
-- changed authority/scope/claim → `$prepare-issue`
+- proof challenge → `$review-tests` or `$prepare-proof` inside the current lane
+- candidate challenge → `$review-candidate` inside the current lane
+- cumulative judgment → `$review-pr` inside the current lane
+- finding repair → `$address-review-comments` / `$build-candidate` inside the current lane
+- current review → `$verify-live-ci` inside the current lane
+- integration-ready / closeout → `$merge-reconcile` inside the current lane when authorized
+- changed authority/scope/claim → `$prepare-issue`; split to a new lane only when the durable claim actually splits
