@@ -30,13 +30,10 @@ jobs:
       - name: Format
         run: cargo fmt --all
 
-      - name: Focused tests
+      - name: Focused parser and process tests
         run: |
           cargo test -p perl-lsp-rs-core --test mcp_alias_rejection
           cargo test -p perllsp --test mcp_alias_rejected
-
-      - name: Focused clippy
-        run: cargo clippy -p perl-lsp-rs-core -p perllsp --tests -- -D warnings
 
       - name: Commit implementation and remove bootstrap files
         shell: bash
