@@ -22,11 +22,6 @@ const SCAN_ROOTS: &[&str] = &[
     "docs",
     "vscode-extension",
     "crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs",
-    // The installer scripts are install surfaces themselves, not just things
-    // the docs describe: install.ps1 documents its own invocation, and
-    // scripts/install.sh tells MINGW/MSYS/CYGWIN users which Windows command
-    // to run. Both were outside the scan, so a command this validator forbids
-    // in the docs could still be handed to a user by the installers.
     "install.ps1",
     "install.sh",
     "scripts",
@@ -36,26 +31,25 @@ const FORBIDDEN_PATTERNS: &[(&str, &str)] = &[
     ("brew install perl-lsp", "retired Homebrew formula name"),
     ("brew tap effortlesssteven/tap", "retired Homebrew tap"),
     ("brew tap tree-sitter-perl/tap", "retired Homebrew tap"),
-    ("cargo install perl-lsp-rs", "retired crates.io install command"),
-    ("cargo install perl-lsp", "retired crates.io install command"),
-    ("perl-lsp --stdio", "retired binary command"),
-    ("perl-lsp --version", "retired binary command"),
-    ("perl-lsp --health", "retired binary command"),
-    // #5461: the install.ps1 published at perl-lsp/master still derives a
-    // `perl-lsp-<version>-...zip` asset name while releases ship
-    // `perllsp-<version>-...zip`, so piping it into `iex` 404s for every
-    // Windows user. Documenting the piped one-liner hands users a command that
-    // cannot work. Prose that *explains* the breakage is unaffected: only the
-    // executable piped form is forbidden. Remove this entry once #4348 has
-    // promoted the fixed script to the publication repo.
+    ("cargo install perl-lsp-rs", "implementation crate used as install package"),
+    ("cargo install perl-lsp", "different crates.io project used as install package"),
+    ("perl-lsp --stdio", "product name used as executable"),
+    ("perl-lsp --version", "product name used as executable"),
+    ("perl-lsp --health", "product name used as executable"),
+    ("perl-lsp-rs --stdio", "implementation crate used as executable"),
+    ("perl-lsp-rs --version", "implementation crate used as executable"),
+    ("EffortlessMetrics.perl-lsp-rs --", "extension id used as executable"),
     ("install.ps1 | iex", "install.ps1 published at perl-lsp/master 404s; see #5461/#4348"),
 ];
 
 const REQUIRED_PATTERNS: &[(&str, &str)] = &[
     (REQUIRED_HOMEBREW_COMMAND, "owned Homebrew tap install command"),
+    ("cargo install perllsp --locked", "canonical Cargo package command"),
     ("perllsp --stdio", "canonical LSP server command"),
     ("perllsp --version", "canonical version check"),
     ("perllsp --health", "canonical health check"),
+    ("perllsp --identity-json", "canonical support identity command"),
+    ("different project", "crates.io perl-lsp conflict warning"),
     ("perl-lsp.linuxLibc", "VS Code Linux libc selector setting"),
 ];
 
@@ -82,10 +76,6 @@ pub fn run() -> Result<()> {
     check_release_note_choosers(&files, &mut violations);
 
     if violations.is_empty() {
-        // #4649: this validator checks a fixed list of hardcoded forbidden and
-        // required patterns. It cannot detect new install-surface drift; it
-        // only catches regressions of the literals listed below. State that
-        // scope explicitly so "passed" is not mistaken for full coverage.
         println!("{}", success_message(files.len()));
         return Ok(());
     }
@@ -266,9 +256,6 @@ fn global_violation(message: String) -> Violation {
     Violation { location: "install surface".to_string(), message }
 }
 
-/// Build the success message reported when no install-surface violations are
-/// found. Extracted so the #4649 scope caveat ("only hardcoded literals are
-/// checked; new install-surface drift is NOT caught") can be unit-tested.
 fn success_message(files_count: usize) -> String {
     format!(
         "Install surface check passed: {files_count} active files scanned, {forbidden} \
@@ -317,8 +304,6 @@ mod tests {
     #[test]
     fn success_message_states_hardcoded_literal_scope() {
         let msg = success_message(12);
-        // #4649 acceptance: the pass message must explicitly state that only
-        // hardcoded literals are checked and new drift is NOT caught.
         assert!(msg.contains("hardcoded literals"), "msg: {msg}");
         assert!(msg.contains("new install-surface drift is NOT caught"), "msg: {msg}");
         assert!(msg.contains("12 active files scanned"), "msg: {msg}");
@@ -326,20 +311,12 @@ mod tests {
         assert!(msg.contains("required patterns"), "msg: {msg}");
     }
 
-    /// #5461: the piped PowerShell one-liner 404s for every Windows user, so it
-    /// must be caught wherever it is documented as a runnable command. The docs
-    /// that *explain* the breakage (INSTALLATION.md, README.md) legitimately
-    /// name `install.ps1` and must stay clean, or the guard would force the
-    /// honest explanation to be deleted along with the broken command.
     #[test]
     fn piped_install_ps1_is_forbidden_but_explanatory_prose_is_not() {
         let file = SourceFile {
             rel_path: PathBuf::from("docs/how-to/INSTALLATION.md"),
             text: [
-                // Runnable, broken — must be caught.
                 "irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 | iex",
-                // Prose and the -OutFile form that INSTALLATION.md documents as
-                // 404ing — must NOT be caught.
                 "The PowerShell installer script is **not usable yet**: `install.ps1` 404s.",
                 "irm https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.ps1 -OutFile install.ps1",
                 ".\\install.ps1 -Version 0.17.0 -InstallDir C:\\tools\\bin",
@@ -353,23 +330,34 @@ mod tests {
 
         let piped: Vec<_> =
             violations.iter().filter(|v| v.message.contains("install.ps1 | iex")).collect();
-        assert_eq!(
-            piped.len(),
-            1,
-            "exactly the piped one-liner must be flagged, got: {violations:?}"
-        );
-        assert!(
-            piped[0].location.ends_with(":1"),
-            "the flagged line must be the piped command, got: {}",
-            piped[0].location
-        );
+        assert_eq!(piped.len(), 1, "got: {violations:?}");
+        assert!(piped[0].location.ends_with(":1"));
     }
 
-    /// #5477 review finding: the guard reported the tree clean while
-    /// `install.ps1` and `scripts/install.sh` still handed users the forbidden
-    /// command, because neither was in `SCAN_ROOTS` and `.ps1` was not a scan
-    /// candidate. Pin both surfaces so a future scan-root edit cannot silently
-    /// drop the installers back out of coverage.
+    #[test]
+    fn wrong_package_executable_and_extension_commands_are_rejected() {
+        let file = SourceFile {
+            rel_path: PathBuf::from("README.md"),
+            text: [
+                "cargo install perl-lsp",
+                "perl-lsp --stdio",
+                "perl-lsp-rs --version",
+                "EffortlessMetrics.perl-lsp-rs --stdio",
+            ]
+            .join("\n"),
+        };
+        let mut violations = Vec::new();
+        check_forbidden_patterns(&[file], &mut violations);
+        assert_eq!(violations.len(), 4, "got: {violations:?}");
+    }
+
+    #[test]
+    fn historical_identity_mentions_remain_outside_active_scan_scope() {
+        assert!(is_excluded_path(Path::new(
+            "docs/reference/archive/old-infrastructure/install.md"
+        )));
+    }
+
     #[test]
     fn installer_scripts_are_in_scan_scope() -> Result<()> {
         let root = project_root()?;
@@ -377,17 +365,11 @@ mod tests {
         let scanned: Vec<_> = files.iter().map(|f| f.rel_path.as_path()).collect();
 
         for required in ["install.ps1", "install.sh", "scripts/install.sh"] {
-            assert!(
-                scanned.contains(&Path::new(required)),
-                "{required} must be scanned by the install-surface guard"
-            );
+            assert!(scanned.contains(&Path::new(required)), "{required} must be scanned");
         }
         Ok(())
     }
 
-    /// The guard is only worth having if the tree it guards is actually clean.
-    /// A forbidden pattern that already has live violations would fail the real
-    /// `cargo xtask install-surface-check` run, so pin the current tree here.
     #[test]
     fn live_install_surface_has_no_piped_install_ps1() -> Result<()> {
         let root = project_root()?;
