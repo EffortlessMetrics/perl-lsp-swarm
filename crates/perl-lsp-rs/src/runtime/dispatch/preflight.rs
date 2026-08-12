@@ -6,7 +6,7 @@
 // #7098 lands the bounded lifecycle owner at the request-admission boundary.
 // #7100 consumes it for cancellation and supersession policy.
 #[allow(dead_code)]
-#[path = "../request_lifecycle.rs"]
+#[path = "request_lifecycle.rs"]
 pub(super) mod request_lifecycle;
 
 use super::super::{
