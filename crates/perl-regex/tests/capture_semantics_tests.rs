@@ -319,7 +319,9 @@ fn unicode_names_require_utf8_and_keep_unmodeled_continuations_profile_dependent
 #[test]
 fn excluded_regions_do_not_create_capture_declarations()
 -> Result<(), Box<dyn std::error::Error>> {
-    let pattern = r"\Q(?<quoted>x)\E[(?<class>y)](?#(?<comment>z))(?<real>a)";
+    // `(?#...)` ends at the first unescaped `)`. The fake named-group opener is
+    // therefore comment text; a second closing paren would be unmatched source.
+    let pattern = r"\Q(?<quoted>x)\E[(?<class>y)](?#(?<comment>z)(?<real>a)";
     let analysis = RegexAnalyzer::analyze_captures(
         pattern,
         EffectiveModifiers::default(),
