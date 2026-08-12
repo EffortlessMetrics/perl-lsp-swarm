@@ -23,6 +23,23 @@ def main() -> None:
     )
     replace_once(
         quality,
+        '''static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"Running unittests[^\\(]*\\([^\\)]*deps[/\\\\]([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\\.exe)?\\)")
+        .expect("running-test regex is valid")
+});
+''',
+        '''static ANSI_ESCAPE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\x1b\\[[0-9;]*m").expect("ANSI escape regex is valid")
+});
+
+static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"Running unittests[^\\(]*\\([^\\)]*deps[/\\\\]([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\\.exe)?\\)")
+        .expect("running-test regex is valid")
+});
+''',
+    )
+    replace_once(
+        quality,
         "#[derive(Debug, Default, PartialEq, Eq)]\nstruct PerCrateTestCounts {\n    by_crate: BTreeMap<String, usize>,\n    unattributed: usize,\n}\n",
         "#[derive(Debug, Default, PartialEq, Eq)]\npub(super) struct PerCrateTestCounts {\n    pub(super) by_crate: BTreeMap<String, usize>,\n    pub(super) unattributed: usize,\n}\n\nimpl PerCrateTestCounts {\n    pub(super) fn total(&self) -> usize {\n        self.by_crate.values().sum::<usize>() + self.unattributed\n    }\n}\n",
     )
@@ -35,6 +52,24 @@ def main() -> None:
         quality,
         "        Duration::from_mins(3),\n",
         "        // A cold cache-targets=false runner compiles the workspace before listing.\n        // Keep the command bounded, but give the single shared discovery enough headroom.\n        Duration::from_mins(12),\n",
+    )
+    replace_once(
+        quality,
+        '''    for line in output.lines() {
+        if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(line) {
+            current_crate = Some(caps[1].replace('_', "-"));
+            continue;
+        }
+        if TEST_LIST_LINE_RE.is_match(line) {
+''',
+        '''    for line in output.lines() {
+        let plain_line = ANSI_ESCAPE_RE.replace_all(line, "");
+        if let Some(caps) = RUNNING_TEST_BINARY_RE.captures(plain_line.as_ref()) {
+            current_crate = Some(caps[1].replace('_', "-"));
+            continue;
+        }
+        if TEST_LIST_LINE_RE.is_match(plain_line.as_ref()) {
+''',
     )
     replace_once(
         quality,
@@ -112,6 +147,17 @@ def main() -> None:
         quality_tests,
         "#[test]\nfn test_validate_per_crate_test_counts_rejects_zero_discovery() -> Result<()> {\n",
         '''#[test]
+fn test_parse_per_crate_test_counts_strips_cargo_color() {
+    let output = "\x1b[1m\x1b[32m     Running\x1b[0m unittests src/lib.rs \\
+        (target/debug/deps/perl_parser_core-abc123)\n\\
+        parser_smoke: test\n";
+    let counts = parse_per_crate_test_counts(output);
+
+    assert_eq!(counts.by_crate.get("perl-parser-core"), Some(&1));
+    assert_eq!(counts.unattributed, 0);
+}
+
+#[test]
 fn test_per_crate_test_counts_total_includes_unattributed_tests() {
     let counts = PerCrateTestCounts {
         by_crate: BTreeMap::from([
