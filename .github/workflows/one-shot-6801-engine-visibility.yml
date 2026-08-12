@@ -1,0 +1,65 @@
+name: One-shot PR 6801 engine visibility repair
+
+on:
+  push:
+    branches:
+      - codex/6713-slash-ambiguity-edit-current
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    name: Narrow advanced-reuse engine visibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out the PR branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: codex/6713-slash-ambiguity-edit-current
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Apply the bounded visibility repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          engine = Path("crates/perl-parser/src/incremental/incremental_advanced_reuse.rs")
+          text = engine.read_text(encoding="utf-8")
+          replacements = [
+              ("pub struct AdvancedReuseAnalyzer {", "pub(super) struct AdvancedReuseAnalyzer {"),
+              ("    pub analysis_stats: ReuseAnalysisStats,", "    pub(super) analysis_stats: ReuseAnalysisStats,"),
+              ("    pub fn new() -> Self {", "    pub(super) fn new() -> Self {"),
+              ("    pub fn with_config(_config: ReuseConfig) -> Self {", "    pub(super) fn with_config(_config: ReuseConfig) -> Self {"),
+              ("    pub fn analyze_reuse_opportunities(", "    pub(super) fn analyze_reuse_opportunities("),
+              ("    pub fn map_old_position_to_new(&self, old_pos: usize, edits: &EditSet) -> usize {", "    pub(super) fn map_old_position_to_new(&self, old_pos: usize, edits: &EditSet) -> usize {"),
+              ("    pub fn try_register_match(", "    pub(super) fn try_register_match("),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one occurrence of {old!r}, found {count}")
+              text = text.replace(old, new, 1)
+
+          engine.write_text(text, encoding="utf-8")
+          Path(".github/workflows/one-shot-6801-engine-visibility.yml").unlink()
+          PY
+
+          git diff --check
+          test "$(git diff --numstat -- crates/perl-parser/src/incremental/incremental_advanced_reuse.rs | awk '{print $1 + $2}')" -eq 14
+          test ! -e .github/workflows/one-shot-6801-engine-visibility.yml
+
+      - name: Commit the repair and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add crates/perl-parser/src/incremental/incremental_advanced_reuse.rs .github/workflows/one-shot-6801-engine-visibility.yml
+          git commit -m "fix(parser): narrow advanced reuse engine visibility"
+          git push origin HEAD:codex/6713-slash-ambiguity-edit-current
