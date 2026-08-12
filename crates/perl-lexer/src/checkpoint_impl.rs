@@ -1,6 +1,4 @@
-use crate::checkpoint::{
-    Checkpointable, PendingHeredocCheckpoint, QuoteOperatorCheckpoint,
-};
+use crate::checkpoint::{Checkpointable, PendingHeredocCheckpoint, QuoteOperatorCheckpoint};
 use crate::heredoc::HeredocSpec;
 use crate::quote_handler::QuoteOperatorInfo;
 use crate::{LexerCheckpoint, LexerMode, PerlLexer, checkpoint};
@@ -30,6 +28,7 @@ impl Checkpointable for PerlLexer<'_> {
         };
 
         LexerCheckpoint {
+            start_time: self.start_time,
             position: self.position,
             mode: self.mode,
             delimiter_stack: self.delimiter_stack.clone(),
@@ -53,12 +52,10 @@ impl Checkpointable for PerlLexer<'_> {
                 .collect(),
             line_start_offset: self.line_start_offset,
             emit_heredoc_body_tokens: self.emit_heredoc_body_tokens,
-            current_quote_op: self.current_quote_op.as_ref().map(|quote| {
-                QuoteOperatorCheckpoint {
-                    operator: quote.operator.clone(),
-                    delimiter: quote.delimiter,
-                    start_pos: quote.start_pos,
-                }
+            current_quote_op: self.current_quote_op.as_ref().map(|quote| QuoteOperatorCheckpoint {
+                operator: quote.operator.clone(),
+                delimiter: quote.delimiter,
+                start_pos: quote.start_pos,
             }),
             qw_recovery_enabled: self.qw_recovery_enabled,
             eof_emitted: self.eof_emitted,
@@ -67,6 +64,7 @@ impl Checkpointable for PerlLexer<'_> {
     }
 
     fn restore(&mut self, checkpoint: &LexerCheckpoint) {
+        self.start_time = checkpoint.start_time;
         self.position = checkpoint.position;
         self.mode = checkpoint.mode;
         self.delimiter_stack.clone_from(&checkpoint.delimiter_stack);
@@ -90,13 +88,12 @@ impl Checkpointable for PerlLexer<'_> {
             .collect();
         self.line_start_offset = checkpoint.line_start_offset;
         self.emit_heredoc_body_tokens = checkpoint.emit_heredoc_body_tokens;
-        self.current_quote_op = checkpoint.current_quote_op.as_ref().map(|quote| {
-            QuoteOperatorInfo {
+        self.current_quote_op =
+            checkpoint.current_quote_op.as_ref().map(|quote| QuoteOperatorInfo {
                 operator: quote.operator.clone(),
                 delimiter: quote.delimiter,
                 start_pos: quote.start_pos,
-            }
-        });
+            });
         self.qw_recovery_enabled = checkpoint.qw_recovery_enabled;
         self.eof_emitted = checkpoint.eof_emitted;
 
@@ -114,8 +111,8 @@ impl Checkpointable for PerlLexer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checkpoint::CheckpointContext;
     use crate::Position;
+    use crate::checkpoint::CheckpointContext;
 
     type TestResult = std::result::Result<(), String>;
 
@@ -203,18 +200,12 @@ mod tests {
         lexer.paren_depth = 4;
         lexer.current_pos = Position { byte: 32, line: 3, column: 5 };
         lexer.after_newline = false;
-        lexer.pending_heredocs = vec![HeredocSpec {
-            label: Arc::from("END"),
-            body_start: 48,
-            allow_indent: true,
-        }];
+        lexer.pending_heredocs =
+            vec![HeredocSpec { label: Arc::from("END"), body_start: 48, allow_indent: true }];
         lexer.line_start_offset = 24;
         lexer.emit_heredoc_body_tokens = true;
-        lexer.current_quote_op = Some(QuoteOperatorInfo {
-            operator: "s".to_string(),
-            delimiter: '{',
-            start_pos: 28,
-        });
+        lexer.current_quote_op =
+            Some(QuoteOperatorInfo { operator: "s".to_string(), delimiter: '{', start_pos: 28 });
         lexer.qw_recovery_enabled = false;
         lexer.eof_emitted = false;
 
