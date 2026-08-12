@@ -65,8 +65,11 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
         raise AssertionError("formatter subject must bind PR, merge-group, and push commits exactly")
 
     checkout = named_step(job, "Checkout exact formatter subject")
-    if checkout.get("with", {}).get("ref") != "${{ env.SUBJECT_SHA }}":
+    checkout_with = checkout.get("with", {})
+    if checkout_with.get("ref") != "${{ env.SUBJECT_SHA }}":
         raise AssertionError("checkout must use the exact formatter subject")
+    if checkout_with.get("persist-credentials") != "false":
+        raise AssertionError("formatter checkout must not persist workflow credentials")
 
     install = named_step(job, "Install pinned formatter toolchain")
     install_with = install.get("with", {})
