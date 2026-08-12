@@ -516,9 +516,8 @@ impl TestItemSnapshot {
         let removed = old.keys().filter(|id| !new.contains_key(*id)).cloned().collect();
         let changed = new
             .iter()
-            .filter_map(|(id, item)| {
-                old.get(id).is_some_and(|previous| !previous.discovery_eq(item)).then(|| id.clone())
-            })
+            .filter(|(id, item)| old.get(*id).is_some_and(|previous| !previous.discovery_eq(item)))
+            .map(|(id, _)| id.clone())
             .collect();
 
         Ok(TestItemDelta {
