@@ -62,6 +62,21 @@ fn dap_server_creation_bridge() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(not(feature = "legacy-pls-bridge"))]
+#[test]
+fn dap_server_run_rejects_bridge_without_legacy_feature()
+-> Result<(), Box<dyn std::error::Error>> {
+    let config =
+        DapConfig { log_level: "info".to_string(), mode: DapMode::Bridge, workspace_root: None };
+    let mut server = DapServer::new(config)?;
+    let error = server.run().expect_err("default build must reject the legacy PLS bridge");
+    assert!(
+        error.to_string().contains("legacy Perl::LanguageServer bridge support is not enabled"),
+        "unexpected fail-closed message: {error}"
+    );
+    Ok(())
+}
+
 #[test]
 fn dap_server_socket_rejects_bridge_mode() -> Result<(), Box<dyn std::error::Error>> {
     let config =
