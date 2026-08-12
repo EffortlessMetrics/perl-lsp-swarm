@@ -6,6 +6,7 @@ const { test } = require('node:test');
 const {
   bundleTargetForPlatform,
   computeOverallStatus,
+  finalizeSmokeRun,
   shouldRunBehavioralSmoke,
   stageServerForPackage,
   writeJsonAtomic,
@@ -122,4 +123,104 @@ void test('writes a complete receipt through an atomic replacement', () => {
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+function passingReceipt() {
+  return {
+    stages: {
+      package_creation: { status: 'pass' },
+      package_inventory: { status: 'pass', classification: 'pass' },
+      behavioral_smoke: { status: 'pass' },
+    },
+    instrument_failure: null,
+    cleanup_failure: null,
+    overall: 'pass',
+  };
+}
+
+void test('a VSIX deletion failure is persisted and changes the final exit code', () => {
+  const receipt = passingReceipt();
+  let persisted;
+
+  const exitCode = finalizeSmokeRun(
+    '/receipt.json',
+    receipt,
+    '/extension.vsix',
+    () => {},
+    () => {
+      throw new Error('cannot delete VSIX');
+    },
+    (_destination, value) => {
+      value.overall = computeOverallStatus(
+        value.stages,
+        value.instrument_failure,
+        value.cleanup_failure,
+      );
+      persisted = structuredClone(value);
+    },
+  );
+
+  assert.equal(exitCode, 2);
+  assert.equal(persisted.overall, 'not_proven');
+  assert.deepEqual(persisted.cleanup_failure, { vsix_deletion: 'cannot delete VSIX' });
+});
+
+void test('a staged-server restoration failure changes the receipt and exit code', () => {
+  const receipt = passingReceipt();
+  let persisted;
+
+  const exitCode = finalizeSmokeRun(
+    '/receipt.json',
+    receipt,
+    '/extension.vsix',
+    () => {
+      throw new Error('cannot restore server');
+    },
+    () => {},
+    (_destination, value) => {
+      value.overall = computeOverallStatus(
+        value.stages,
+        value.instrument_failure,
+        value.cleanup_failure,
+      );
+      persisted = structuredClone(value);
+    },
+  );
+
+  assert.equal(exitCode, 2);
+  assert.equal(persisted.overall, 'not_proven');
+  assert.deepEqual(persisted.cleanup_failure, {
+    staged_server_restoration: 'cannot restore server',
+  });
+});
+
+void test('independent cleanup failures are accumulated before receipt persistence', () => {
+  const receipt = passingReceipt();
+  let persisted;
+
+  const exitCode = finalizeSmokeRun(
+    '/receipt.json',
+    receipt,
+    '/extension.vsix',
+    () => {
+      throw new Error('restore failed');
+    },
+    () => {
+      throw new Error('delete failed');
+    },
+    (_destination, value) => {
+      value.overall = computeOverallStatus(
+        value.stages,
+        value.instrument_failure,
+        value.cleanup_failure,
+      );
+      persisted = structuredClone(value);
+    },
+  );
+
+  assert.equal(exitCode, 2);
+  assert.deepEqual(persisted.cleanup_failure, {
+    vsix_deletion: 'delete failed',
+    staged_server_restoration: 'restore failed',
+  });
 });

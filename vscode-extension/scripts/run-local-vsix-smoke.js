@@ -149,8 +149,7 @@ function initialReceipt(revision) {
     platform: process.platform,
     architecture: process.arch,
     vscode_version: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'unknown',
-    source_label:
-      (process.env.PERL_LSP_SMOKE_SOURCE_LABEL || '').trim() || 'local-current-source',
+    source_label: (process.env.PERL_LSP_SMOKE_SOURCE_LABEL || '').trim() || 'local-current-source',
     server: {
       source_sha: serverSourceRevision || null,
       path: serverPath ? path.resolve(serverPath) : null,
@@ -299,6 +298,38 @@ function exitCodeFor(overall) {
   return overall === 'failed' ? 1 : 2;
 }
 
+function finalizeSmokeRun(
+  destination,
+  receipt,
+  vsixPath,
+  restoreStagedServer,
+  removeVsix = (target) => fs.rmSync(target, { force: true }),
+  persist = persistReceipt,
+) {
+  const cleanupFailure = {};
+
+  try {
+    removeVsix(vsixPath);
+  } catch (error) {
+    cleanupFailure.vsix_deletion = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Unable to delete staged VSIX: ${cleanupFailure.vsix_deletion}\n`);
+  }
+
+  try {
+    restoreStagedServer();
+  } catch (error) {
+    cleanupFailure.staged_server_restoration =
+      error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `Unable to restore staged VSIX server: ${cleanupFailure.staged_server_restoration}\n`,
+    );
+  }
+
+  receipt.cleanup_failure = Object.keys(cleanupFailure).length > 0 ? cleanupFailure : null;
+  persist(destination, receipt);
+  return exitCodeFor(receipt.overall);
+}
+
 function main() {
   let revision = 'unknown';
   try {
@@ -369,135 +400,129 @@ function main() {
   const vsixPath = path.join(root, `${packageJson.name}-${packageJson.version}.vsix`);
   let restoreStagedServer = () => {};
 
-  try {
-    restoreStagedServer = stageServerForPackage(serverPath);
-    const packageEnv = {
-      ...process.env,
-      PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
-    };
-    const packageResult = runNpm(
-      ['exec', '--offline', '--no', '--', '@vscode/vsce', 'package'],
-      packageEnv,
-    );
-    if (packageResult.error) {
-      receipt.stages.package_creation = {
-        status: 'not_proven',
-        reason: packageResult.error.message,
-        exit_code: null,
-      };
-      receipt.stages.package_inventory = {
-        status: 'not_proven',
-        reason: 'package_creation_not_proven',
-      };
-      receipt.stages.behavioral_smoke = {
-        status: 'not_run',
-        reason: 'package_creation_not_proven',
-      };
-      persistReceipt(destination, receipt);
-      return exitCodeFor(receipt.overall);
-    }
-    if (packageResult.status !== 0) {
-      receipt.stages.package_creation = {
-        status: 'failed',
-        exit_code: packageResult.status ?? null,
-        reason: 'vsce_package_failed',
-      };
-      receipt.stages.package_inventory = {
-        status: 'not_proven',
-        reason: 'package_creation_failed',
-      };
-      receipt.stages.behavioral_smoke = {
-        status: 'not_run',
-        reason: 'package_creation_failed',
-      };
-      persistReceipt(destination, receipt);
-      return exitCodeFor(receipt.overall);
-    }
-    if (!fs.existsSync(vsixPath)) {
-      receipt.stages.package_creation = {
-        status: 'failed',
-        exit_code: 0,
-        reason: `vsce did not produce the expected VSIX: ${vsixPath}`,
-      };
-      receipt.stages.package_inventory = {
-        status: 'not_proven',
-        reason: 'expected_vsix_missing',
-      };
-      receipt.stages.behavioral_smoke = {
-        status: 'not_run',
-        reason: 'expected_vsix_missing',
-      };
-      persistReceipt(destination, receipt);
-      return exitCodeFor(receipt.overall);
-    }
-
-    receipt.vsix = {
-      path: path.relative(repoRoot, vsixPath).replaceAll('\\', '/'),
-      sha256: sha256File(vsixPath),
-    };
-    receipt.stages.package_creation = { status: 'pass', exit_code: 0 };
-    persistReceipt(destination, receipt);
-
-    receipt.stages.package_inventory = runInventoryCheck(packageEnv);
-    persistReceipt(destination, receipt);
-
-    if (shouldRunBehavioralSmoke(receipt.stages)) {
-      const smokeEnv = {
+  const runStageBody = () => {
+    try {
+      restoreStagedServer = stageServerForPackage(serverPath);
+      const packageEnv = {
         ...process.env,
-        PERL_LSP_CURRENT_SOURCE_SHA: revision,
         PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
-        PERL_LSP_FIRST_HOUR_ONLY: '1',
-        PERL_LSP_FIRST_HOUR_RECEIPT: '1',
-        PERL_LSP_FIRST_HOUR_SERVER_PATH: path.resolve(serverPath),
-        PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
-        PERL_LSP_PUBLISHED_VSIX_PATH: vsixPath,
-        PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision,
-        PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
-        PERL_LSP_SMOKE_SOURCE_LABEL:
-          process.env.PERL_LSP_SMOKE_SOURCE_LABEL || 'local-current-source',
-        PERL_LSP_VSIX_SHA256: receipt.vsix.sha256,
       };
-
-      const smokeResult = runNpm(['run', 'test:published'], smokeEnv);
-      if (smokeResult.error) {
-        receipt.stages.behavioral_smoke = {
+      const packageResult = runNpm(
+        ['exec', '--offline', '--no', '--', '@vscode/vsce', 'package'],
+        packageEnv,
+      );
+      if (packageResult.error) {
+        receipt.stages.package_creation = {
           status: 'not_proven',
+          reason: packageResult.error.message,
           exit_code: null,
-          reason: smokeResult.error.message,
         };
-      } else if (smokeResult.status === 0) {
-        receipt.stages.behavioral_smoke = { status: 'pass', exit_code: 0 };
+        receipt.stages.package_inventory = {
+          status: 'not_proven',
+          reason: 'package_creation_not_proven',
+        };
+        receipt.stages.behavioral_smoke = {
+          status: 'not_run',
+          reason: 'package_creation_not_proven',
+        };
+        persistReceipt(destination, receipt);
+        return;
+      }
+      if (packageResult.status !== 0) {
+        receipt.stages.package_creation = {
+          status: 'failed',
+          exit_code: packageResult.status ?? null,
+          reason: 'vsce_package_failed',
+        };
+        receipt.stages.package_inventory = {
+          status: 'not_proven',
+          reason: 'package_creation_failed',
+        };
+        receipt.stages.behavioral_smoke = {
+          status: 'not_run',
+          reason: 'package_creation_failed',
+        };
+        persistReceipt(destination, receipt);
+        return;
+      }
+      if (!fs.existsSync(vsixPath)) {
+        receipt.stages.package_creation = {
+          status: 'failed',
+          exit_code: 0,
+          reason: `vsce did not produce the expected VSIX: ${vsixPath}`,
+        };
+        receipt.stages.package_inventory = {
+          status: 'not_proven',
+          reason: 'expected_vsix_missing',
+        };
+        receipt.stages.behavioral_smoke = {
+          status: 'not_run',
+          reason: 'expected_vsix_missing',
+        };
+        persistReceipt(destination, receipt);
+        return;
+      }
+
+      receipt.vsix = {
+        path: path.relative(repoRoot, vsixPath).replaceAll('\\', '/'),
+        sha256: sha256File(vsixPath),
+      };
+      receipt.stages.package_creation = { status: 'pass', exit_code: 0 };
+      persistReceipt(destination, receipt);
+
+      receipt.stages.package_inventory = runInventoryCheck(packageEnv);
+      persistReceipt(destination, receipt);
+
+      if (shouldRunBehavioralSmoke(receipt.stages)) {
+        const smokeEnv = {
+          ...process.env,
+          PERL_LSP_CURRENT_SOURCE_SHA: revision,
+          PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+          PERL_LSP_FIRST_HOUR_ONLY: '1',
+          PERL_LSP_FIRST_HOUR_RECEIPT: '1',
+          PERL_LSP_FIRST_HOUR_SERVER_PATH: path.resolve(serverPath),
+          PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
+          PERL_LSP_PUBLISHED_VSIX_PATH: vsixPath,
+          PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision,
+          PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
+          PERL_LSP_SMOKE_SOURCE_LABEL:
+            process.env.PERL_LSP_SMOKE_SOURCE_LABEL || 'local-current-source',
+          PERL_LSP_VSIX_SHA256: receipt.vsix.sha256,
+        };
+
+        const smokeResult = runNpm(['run', 'test:published'], smokeEnv);
+        if (smokeResult.error) {
+          receipt.stages.behavioral_smoke = {
+            status: 'not_proven',
+            exit_code: null,
+            reason: smokeResult.error.message,
+          };
+        } else if (smokeResult.status === 0) {
+          receipt.stages.behavioral_smoke = { status: 'pass', exit_code: 0 };
+        } else {
+          receipt.stages.behavioral_smoke = {
+            status: 'failed',
+            exit_code: smokeResult.status ?? null,
+            reason: 'published_extension_smoke_failed',
+          };
+        }
       } else {
         receipt.stages.behavioral_smoke = {
-          status: 'failed',
-          exit_code: smokeResult.status ?? null,
-          reason: 'published_extension_smoke_failed',
+          status: 'not_run',
+          reason:
+            receipt.stages.package_creation.status !== 'pass'
+              ? 'package_creation_not_passed'
+              : `inventory_${receipt.stages.package_inventory.classification || 'not_proven'}`,
         };
       }
-    } else {
-      receipt.stages.behavioral_smoke = {
-        status: 'not_run',
-        reason:
-          receipt.stages.package_creation.status !== 'pass'
-            ? 'package_creation_not_passed'
-            : `inventory_${receipt.stages.package_inventory.classification || 'not_proven'}`,
-      };
-    }
-    persistReceipt(destination, receipt);
-    return exitCodeFor(receipt.overall);
-  } catch (error) {
-    failInstrument(error);
-    return exitCodeFor(receipt.overall);
-  } finally {
-    fs.rmSync(vsixPath, { force: true });
-    try {
-      restoreStagedServer();
-    } catch (error) {
-      receipt.cleanup_failure = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`Unable to restore staged VSIX server: ${receipt.cleanup_failure}\n`);
       persistReceipt(destination, receipt);
+    } catch (error) {
+      failInstrument(error);
     }
-  }
+  };
+
+  runStageBody();
+  return finalizeSmokeRun(destination, receipt, vsixPath, restoreStagedServer);
 }
 
 if (require.main === module) {
@@ -507,6 +532,7 @@ if (require.main === module) {
 module.exports = {
   bundleTargetForPlatform,
   computeOverallStatus,
+  finalizeSmokeRun,
   initialReceipt,
   receiptPath,
   shouldRunBehavioralSmoke,
