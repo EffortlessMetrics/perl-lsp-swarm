@@ -3,96 +3,55 @@ name: Workflow Trigger Lint
 on:
   pull_request:
     branches: [main, master]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main, master]
+
+concurrency:
+  group: workflow-trigger-lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  finish-exact-process:
-    if: github.head_ref == 'test/lsp-real-process-6720'
-    name: Finish exact-process review fixes
+  lint:
+    name: Workflow Trigger Lint
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout exact branch
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          fetch-depth: 5
-          ref: test/lsp-real-process-6720
+          toolchain: stable
 
-      - name: Install pinned Rust toolchain
-        shell: bash
-        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
-
-      - name: Execute reviewed transformer with preserved block indentation
-        shell: python
-        run: |
-          import subprocess
-          import textwrap
-          from pathlib import Path
-
-          carrier = subprocess.run(
-              ["git", "show", "HEAD^:.github/workflows/workflow-trigger-lint.yml"],
-              check=True,
-              capture_output=True,
-              text=True,
-          ).stdout
-          marker = '''      - name: Execute reviewed transformer with syntax-bound insertions
-                  shell: python
-                  run: |
-          '''
-          if marker not in carrier:
-              raise SystemExit("syntax-bound transformer wrapper was not found")
-          section = carrier.split(marker, 1)[1].split("\n      - name:", 1)[0]
-          source = textwrap.dedent(section).lstrip("\n")
-          source = source.replace(
-              '"HEAD^^:.github/workflows/workflow-trigger-lint.yml"',
-              '"HEAD^^^:.github/workflows/workflow-trigger-lint.yml"',
-              1,
-          )
-          source = source.replace(
-              "targets.append((node.lineno, node.end_lineno, label, replacement))",
-              "targets.append((node.lineno, node.end_lineno, node.col_offset, label, replacement))",
-              1,
-          )
-          source = source.replace(
-              "found = {label for _, _, label, _ in targets}",
-              "found = {label for _, _, _, label, _ in targets}",
-              1,
-          )
-          source = source.replace(
-              "for start, end, _, replacement in sorted(targets, reverse=True):\n    lines[start - 1 : end] = replacement.splitlines()",
-              "for start, end, column, _, replacement in sorted(targets, reverse=True):\n    indented = textwrap.indent(replacement, ' ' * column)\n    lines[start - 1 : end] = indented.splitlines()",
-              1,
-          )
-          if "node.col_offset" not in source or "indented = textwrap.indent" not in source:
-              raise SystemExit("transformer indentation patch did not apply")
-          patched = source.encode()
-          path = Path("/tmp/finish_pr6811_wrapper.py")
-          path.write_bytes(patched)
-          compile(patched, str(path), "exec")
-          exec(patched, {"__name__": "__main__"})
-
-      - name: Format and verify focused contracts
+      - name: Run workflow trigger lint
+        id: lint
         shell: bash
         run: |
-          rustup run 1.95.0 rustfmt \
-            --edition 2024 \
-            --config-path . \
-            crates/perl-lsp-rs/tests/support/real_process.rs \
-            crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs
-          cargo test -p perl-lsp-rs --test lsp_stdio_process_contract --locked -- --test-threads=1
-          cargo test -p perl-lsp-rs --test semantic_definition --locked -- --test-threads=1
+          cargo xtask workflow-trigger-lint \
+            --policy .ci/policies/required-checks.toml \
+            --receipt target/receipts/workflow-trigger-lint.json \
+            --format json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
-      - name: Restore carrier workflow and push reviewed result
-        shell: bash
+      - name: Upload receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: workflow-trigger-lint-receipt
+          path: target/receipts/workflow-trigger-lint.json
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
         run: |
-          git show 601104f64bae50892a9cd1fe9ef40cf3e38f481c:.github/workflows/workflow-trigger-lint.yml > .github/workflows/workflow-trigger-lint.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            crates/perl-lsp-rs/tests/support/real_process.rs \
-            crates/perl-lsp-rs/tests/lsp_stdio_process_contract.rs \
-            .github/workflows/workflow-trigger-lint.yml
-          git diff --cached --check
-          git commit -m "test(lsp): enforce strict JSON-RPC framing envelopes"
-          git push origin HEAD:test/lsp-real-process-6720
+          if [ "${{ steps.lint.outputs.exit_code }}" = "0" ]; then
+            echo "## Workflow trigger lint passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Workflow trigger lint found violations" >> "$GITHUB_STEP_SUMMARY"
+            echo "Required-check policy in .ci/policies/required-checks.toml is enforced. Fix violations before merging." >> "$GITHUB_STEP_SUMMARY"
+          fi
