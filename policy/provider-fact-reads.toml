@@ -270,7 +270,7 @@ count = 1
 [[read.source.anchor]]
 kind = "rust_call"
 value = "safe_delete_plan"
-count = 1
+count = 2
 
 [[read]]
 id = "workspace_symbols.index_query"
@@ -288,7 +288,7 @@ replacement_owner = "#6816/#6817"
 path = "crates/perl-lsp-rs/src/runtime/workspace.rs"
 [[read.source.anchor]]
 kind = "rust_fn"
-value = "handle_workspace_symbol"
+value = "handle_workspace_symbols_v2"
 count = 1
 
 [[read]]

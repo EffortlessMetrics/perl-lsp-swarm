@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use color_eyre::eyre::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
