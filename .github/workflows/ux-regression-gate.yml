@@ -130,9 +130,19 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p target/receipts
+          set +e
           just ux-tests 2>&1 | tee target/receipts/ux-regression.log
-          test_status=${PIPESTATUS[0]}
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          test_status="${pipeline_status[0]}"
+          tee_status="${pipeline_status[1]}"
           printf '%s\n' "$test_status" > target/receipts/ux-regression.exit
+          if [ "$tee_status" -ne 0 ]; then
+            printf '%s\n' "$tee_status" > target/receipts/ux-regression.instrumentation.exit
+            printf '::error::UX regression tee failed with status %s\n' "$tee_status" >&2
+            exit "$tee_status"
+          fi
+          printf '0\n' > target/receipts/ux-regression.instrumentation.exit
           exit "$test_status"
 
       - name: Emit structured UX regression receipt
@@ -158,6 +168,11 @@ jobs:
           from pathlib import Path
 
           receipt_path = Path("target/receipts/ux-regression.json")
+          instrumentation_path = Path("target/receipts/ux-regression.instrumentation.exit")
+          if not instrumentation_path.is_file() or instrumentation_path.is_symlink():
+              raise SystemExit("UX receipt instrumentation status is missing or not a regular file")
+          if instrumentation_path.read_text(encoding="utf-8").strip() != "0":
+              raise SystemExit("UX receipt instrumentation failed")
           if not receipt_path.is_file() or receipt_path.is_symlink():
               raise SystemExit("UX receipt is missing or not a regular file")
           receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -181,6 +196,7 @@ jobs:
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
             target/receipts/ux-regression.exit
+            target/receipts/ux-regression.instrumentation.exit
             target/receipts/editor-ux/golden-editor-workload-v3.json
           if-no-files-found: warn
           retention-days: 7
@@ -196,6 +212,7 @@ jobs:
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
             target/receipts/ux-regression.exit
+            target/receipts/ux-regression.instrumentation.exit
           if-no-files-found: warn
           retention-days: 7
 

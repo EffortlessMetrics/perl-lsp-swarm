@@ -5,8 +5,10 @@ on:
     paths:
       - '.github/workflows/**'
       - 'xtask/src/tasks/workflow_policy_lint.rs'
+      - 'xtask/src/tasks/ux_regression_receipt.rs'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
+      - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
       - '.ci/receipts/schemas/workflow-policy.schema.json'
       - 'xtask/tests/fixtures/workflow-policy/**'
   push:
@@ -14,8 +16,10 @@ on:
     paths:
       - '.github/workflows/**'
       - 'xtask/src/tasks/workflow_policy_lint.rs'
+      - 'xtask/src/tasks/ux_regression_receipt.rs'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
+      - 'xtask/tests/ux_regression_gate_workflow_policy.rs'
       - '.ci/receipts/schemas/workflow-policy.schema.json'
       - 'xtask/tests/fixtures/workflow-policy/**'
   workflow_dispatch:
@@ -27,10 +31,21 @@ jobs:
   workflow-policy-lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: stable
+      - name: Verify tested candidate identity
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse 'HEAD^{commit}')" = "$TESTED_SHA"
+      - name: UX receipt workflow policy proof
+        run: cargo test -p xtask --test ux_regression_gate_workflow_policy --locked
       - name: Run workflow policy lint
         # `--check-lane-whitelist` enables the policy/ci-lane-whitelist.toml
         # gate (was opt-in per PR #8154). All currently-flagged workflows
