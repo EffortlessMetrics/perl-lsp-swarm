@@ -478,7 +478,7 @@ fn effective_package_repository<'a>(
     ))
 }
 
-fn cargo_binary_names(
+pub(crate) fn cargo_binary_names(
     repo_root: &Path,
     manifest_path: &Path,
     manifest: &toml::Value,
