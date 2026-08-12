@@ -115,7 +115,7 @@ fn find_fixture<'a>(
 
 fn collect_observed_nodes<'a>(node: &'a Node, source: &'a str) -> Vec<ObservedNode<'a>> {
     let mut nodes = Vec::new();
-    collect_observed_nodes_rec(node, source, &mut nodes, None, 0, None, None);
+    collect_observed_nodes_rec(node, source, &mut nodes, None, 0, None);
     nodes
 }
 
@@ -178,12 +178,10 @@ fn assert_observed_expectation(
                 .operator
                 .as_deref()
                 .is_none_or(|operator| node.operator.as_deref() == Some(operator))
-            && expectation
-                .operator
-                .as_deref()
-                .is_none_or(|operator| node.operator.as_deref() == Some(operator))
             && match expectation.operator.as_deref() {
-                Some(_) => node.parent_operator.as_deref() == expectation.parent_operator.as_deref(),
+                Some(_) => {
+                    node.parent_operator.as_deref() == expectation.parent_operator.as_deref()
+                }
                 None => expectation
                     .parent_operator
                     .as_deref()
