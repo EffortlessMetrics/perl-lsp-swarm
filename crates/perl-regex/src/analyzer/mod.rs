@@ -1,9 +1,9 @@
+#[allow(clippy::too_many_arguments)]
 mod capture;
 mod capture_compat;
 mod hover;
 mod modifier_analysis;
 mod modifiers;
-mod parser;
 
 pub use capture::{
     CaptureAnalysis, CaptureAnalysisStatus, CaptureConfidence, CaptureDeclaration,
