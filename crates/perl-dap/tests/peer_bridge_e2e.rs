@@ -263,12 +263,13 @@ fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::er
         PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("bind");
     let addr = endpoint.addr;
     let token = endpoint.session_token();
+    let credential = endpoint.session_credential();
     let peer = spawn_fake_peer(addr, Some(token.clone()));
     let (stream, _) = listener.accept().expect("accept");
     let backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
         stream,
         Duration::from_secs(5),
-        token,
+        credential,
     )
     .expect("backend");
 
@@ -349,6 +350,7 @@ fn run_external_peer_session_serves_dap_over_a_socket() {
         PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("peer bind");
     let peer_addr = endpoint.addr;
     let peer_token = endpoint.session_token();
+    let peer_credential = endpoint.session_credential();
     let peer = spawn_fake_peer(peer_addr, Some(peer_token.clone()));
 
     let editor_listener = TcpListener::bind(("127.0.0.1", 0)).expect("editor bind");
@@ -360,7 +362,7 @@ fn run_external_peer_session_serves_dap_over_a_socket() {
         let backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
             peer_stream,
             Duration::from_secs(5),
-            peer_token,
+            peer_credential,
         )
         .expect("backend");
         let bridge = DapPeerBridge::new(Box::new(backend));
@@ -425,6 +427,7 @@ fn socket_session_recovers_from_a_leading_malformed_frame() {
         PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("peer bind");
     let peer_addr = endpoint.addr;
     let peer_token = endpoint.session_token();
+    let peer_credential = endpoint.session_credential();
     let peer = spawn_fake_peer(peer_addr, Some(peer_token.clone()));
 
     let editor_listener = TcpListener::bind(("127.0.0.1", 0)).expect("editor bind");
@@ -435,7 +438,7 @@ fn socket_session_recovers_from_a_leading_malformed_frame() {
         let backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
             peer_stream,
             Duration::from_secs(5),
-            peer_token,
+            peer_credential,
         )
         .expect("backend");
         let bridge = DapPeerBridge::new(Box::new(backend));

@@ -290,7 +290,7 @@ fn run_external_peer_listen(spec: &str, editor_port: Option<u16>) -> anyhow::Res
     // The peer must present this token in its `peer/hello` to be accepted; the
     // acceptor rejects any handshake without a match, so the loopback bind is
     // not the sole access control.
-    let expected_token = Some(endpoint.session_token());
+    let expected_token = Some(endpoint.session_credential());
 
     match editor_port {
         Some(port) => {

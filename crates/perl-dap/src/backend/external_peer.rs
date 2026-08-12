@@ -20,6 +20,7 @@
 //! completes or a timeout elapses.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::io::{Read, Write};
 #[cfg(test)]
 use std::net::TcpListener;
@@ -58,6 +59,57 @@ use crate::peer_protocol::{
 
 /// Default time to wait for the peer handshake / a request response.
 pub const DEFAULT_PEER_TIMEOUT: Duration = Duration::from_secs(10);
+
+const SESSION_TOKEN_HEX_LENGTH: usize = 32;
+
+/// A validated per-session bearer credential for an authenticated peer.
+///
+/// Production listen sessions mint this value through
+/// [`PeerListenEndpoint`](super::peer_launch::PeerListenEndpoint). The backend
+/// constructor accepts this opaque boundary rather than an arbitrary string.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PeerSessionToken(String);
+
+impl fmt::Debug for PeerSessionToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<redacted>")
+    }
+}
+
+impl PeerSessionToken {
+    pub(crate) fn minted(value: String) -> Self {
+        debug_assert_eq!(value.len(), SESSION_TOKEN_HEX_LENGTH);
+        debug_assert!(value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        Self(value)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for PeerSessionToken {
+    type Error = BackendError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.len() != SESSION_TOKEN_HEX_LENGTH
+            || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(BackendError::Unsupported(
+                "peer session token must be exactly 32 ASCII hexadecimal characters".to_string(),
+            ));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<&str> for PeerSessionToken {
+    type Error = BackendError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::try_from(value.to_owned())
+    }
+}
 
 /// How a peer connection is established.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,7 +175,7 @@ struct Shared {
     /// the loopback port but lacks the shared secret cannot become the backend.
     /// `None` disables enforcement (e.g. connect mode, where the host dialed a
     /// peer it already trusts and minted no token).
-    expected_token: Option<String>,
+    expected_token: Option<PeerSessionToken>,
 }
 
 impl Shared {
@@ -186,7 +238,7 @@ impl ExternalDebuggerPeerBackend {
     fn from_stream_with_token(
         stream: TcpStream,
         timeout: Duration,
-        expected_token: Option<String>,
+        expected_token: Option<PeerSessionToken>,
     ) -> BackendResult<Self> {
         let write = stream.try_clone().map_err(|e| BackendError::Transport(e.to_string()))?;
         // Periodic read timeout so the reader can observe `closed`.
@@ -242,7 +294,7 @@ impl ExternalDebuggerPeerBackend {
     pub fn from_connected_stream_with_token(
         stream: TcpStream,
         timeout: Duration,
-        expected_token: String,
+        expected_token: PeerSessionToken,
     ) -> BackendResult<Self> {
         Self::from_stream_with_token(stream, timeout, Some(expected_token))
     }
@@ -686,7 +738,7 @@ fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
                 // loopback port alone is not authorization, so a co-resident
                 // process that reached the socket without the shared secret can
                 // never become the mirror backend (and inject stopped/output).
-                Some(h) if !token_matches(shared.expected_token.as_deref(), h.token.as_deref()) => {
+                Some(h) if !token_matches(shared.expected_token.as_ref(), h.token.as_deref()) => {
                     Some(
                         "peer/hello token missing or does not match the host session token"
                             .to_string(),
@@ -791,10 +843,12 @@ fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
 ///   path for connect mode and pre-token peers.
 /// - `expected == Some`: the peer **must** present a token that matches exactly;
 ///   an absent token is a rejection.
-fn token_matches(expected: Option<&str>, presented: Option<&str>) -> bool {
+fn token_matches(expected: Option<&PeerSessionToken>, presented: Option<&str>) -> bool {
     match expected {
         None => true,
-        Some(exp) => presented.is_some_and(|got| constant_time_eq(exp.as_bytes(), got.as_bytes())),
+        Some(exp) => {
+            presented.is_some_and(|got| constant_time_eq(exp.as_str().as_bytes(), got.as_bytes()))
+        }
     }
 }
 
@@ -1207,7 +1261,9 @@ mod tests {
         let token = "0123456789abcdef0123456789abcdef".to_string();
         let caps = PeerReportedCapabilities { can_step: true, ..Default::default() };
         let peer = spawn_fake_peer_token(addr, Some(token.clone()), caps, |_req| None);
-        let mut backend = accept_backend_with_token(listener, DEFAULT_PEER_TIMEOUT, Some(token));
+        let expected_token = PeerSessionToken::try_from(token).expect("valid test token");
+        let mut backend =
+            accept_backend_with_token(listener, DEFAULT_PEER_TIMEOUT, Some(expected_token));
         backend
             .initialize(InitializeBackendParams::default())
             .expect("matching token must complete the handshake");
@@ -1227,7 +1283,10 @@ mod tests {
         let mut backend = accept_backend_with_token(
             listener,
             Duration::from_secs(2),
-            Some("expected-session-token".to_string()),
+            Some(
+                PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
+                    .expect("valid test token"),
+            ),
         );
         let err = backend
             .initialize(InitializeBackendParams::default())
@@ -1253,7 +1312,10 @@ mod tests {
         let mut backend = accept_backend_with_token(
             listener,
             Duration::from_secs(2),
-            Some("right-token-0123456789abcdef0123".to_string()),
+            Some(
+                PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
+                    .expect("valid test token"),
+            ),
         );
         let err = backend
             .initialize(InitializeBackendParams::default())
@@ -1287,13 +1349,25 @@ mod tests {
 
     #[test]
     fn token_matches_enforces_only_when_host_minted_one() {
+        let secret = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef".to_string())
+            .expect("test token has the required shape");
         // No host token => nothing enforced (back-compat connect path).
         assert!(token_matches(None, None));
         assert!(token_matches(None, Some("anything")));
         // Host token => exact match required; absence is a rejection.
-        assert!(token_matches(Some("secret"), Some("secret")));
-        assert!(!token_matches(Some("secret"), Some("guess")));
-        assert!(!token_matches(Some("secret"), None));
+        assert!(token_matches(Some(&secret), Some(secret.as_str())));
+        assert!(!token_matches(Some(&secret), Some("guess")));
+        assert!(!token_matches(Some(&secret), None));
+    }
+
+    #[test]
+    fn peer_session_token_rejects_empty_short_and_non_hex_values() {
+        for value in ["", "0123", "0123456789abcdef0123456789abcdeg"] {
+            assert!(
+                PeerSessionToken::try_from(value).is_err(),
+                "invalid token {value:?} must be rejected before authentication"
+            );
+        }
     }
 
     #[test]
@@ -1528,7 +1602,7 @@ mod tests {
     fn accept_backend_with_token(
         listener: TcpListener,
         timeout: Duration,
-        expected_token: Option<String>,
+        expected_token: Option<PeerSessionToken>,
     ) -> ExternalDebuggerPeerBackend {
         let (stream, _) = listener.accept().expect("accept");
         ExternalDebuggerPeerBackend::from_stream_with_token(stream, timeout, expected_token)
