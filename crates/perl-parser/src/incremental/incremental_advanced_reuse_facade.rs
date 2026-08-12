@@ -105,7 +105,7 @@ fn canonical_node_count(node: &Node) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_parser_core::{ast::NodeKind, SourceLocation};
+    use perl_parser_core::{SourceLocation, ast::NodeKind, edit::Edit, position::Position};
 
     #[test]
     fn public_totals_include_children_of_every_node_kind() {
@@ -138,5 +138,72 @@ mod tests {
 
         assert_eq!(result.total_old_nodes, 3);
         assert_eq!(result.total_new_nodes, 3);
+    }
+
+    #[test]
+    fn public_reuse_map_assigns_each_new_position_once() {
+        let old_tree = Node::new(
+            NodeKind::Program {
+                statements: vec![
+                    Node::new(
+                        NodeKind::Number {
+                            value: "1".to_string(),
+                        },
+                        SourceLocation { start: 1, end: 2 },
+                    ),
+                    Node::new(
+                        NodeKind::Number {
+                            value: "2".to_string(),
+                        },
+                        SourceLocation { start: 10, end: 11 },
+                    ),
+                ],
+            },
+            SourceLocation { start: 0, end: 11 },
+        );
+        let new_tree = Node::new(
+            NodeKind::Program {
+                statements: vec![
+                    Node::new(
+                        NodeKind::Number {
+                            value: "3".to_string(),
+                        },
+                        SourceLocation { start: 1, end: 2 },
+                    ),
+                    Node::new(
+                        NodeKind::Number {
+                            value: "4".to_string(),
+                        },
+                        SourceLocation { start: 10, end: 11 },
+                    ),
+                ],
+            },
+            SourceLocation { start: 0, end: 11 },
+        );
+        let mut edits = EditSet::new();
+        edits.add(Edit::new(
+            0,
+            11,
+            11,
+            Position::new(0, 0, 0),
+            Position::new(11, 0, 11),
+            Position::new(11, 0, 11),
+        ));
+
+        let mut analyzer = AdvancedReuseAnalyzer::new();
+        let result = analyzer.analyze_reuse_opportunities(
+            &old_tree,
+            &new_tree,
+            &edits,
+            &ReuseConfig::default(),
+        );
+        let unique_targets = result
+            .reuse_map
+            .values()
+            .map(|strategy| strategy.target_position)
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(unique_targets.len(), result.reuse_map.len());
+        assert_eq!(result.reused_nodes, result.reuse_map.len());
     }
 }
