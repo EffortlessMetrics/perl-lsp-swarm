@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Changed
+body: Make the historical Perl::LanguageServer DAP bridge a default-off compatibility feature; native perl-dap remains the only default, docs.rs, and release path.
+time: 2026-08-12T03:10:00Z
+custom:
+  PR: "6991"
+  Slug: dap-legacy-pls-default-off
+  Breaking: "yes"
