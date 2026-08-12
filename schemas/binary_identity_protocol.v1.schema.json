@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://effortlessmetrics.github.io/perl-lsp/schemas/binary_identity_protocol.v1.schema.json",
-  "title": "perl-lsp binary identity protocol v1",
+  "title": "perl-lsp binary identity protocol v1 response",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -19,8 +19,8 @@
     "server": { "$ref": "#/$defs/binaryIdentity" },
     "dap": { "$ref": "#/$defs/binaryIdentity" },
     "expected_extension": { "$ref": "#/$defs/extensionIdentity" },
-    "server_instance_id": { "$ref": "#/$defs/boundedIdentity" },
-    "environment_snapshot_id": { "$ref": "#/$defs/boundedIdentity" },
+    "server_instance_id": { "$ref": "#/$defs/boundedToken" },
+    "environment_snapshot_id": { "$ref": "#/$defs/boundedToken" },
     "compatibility": {
       "enum": [
         "exact_match",
@@ -34,58 +34,83 @@
     "reasons": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 32,
+      "maxItems": 64,
       "uniqueItems": true,
-      "items": {
-        "enum": [
-          "server_product_mismatch",
-          "extension_identity_mismatch",
-          "version_mismatch",
-          "target_mismatch",
-          "target_not_proven",
-          "source_revision_mismatch",
-          "source_revision_not_proven",
-          "candidate_mismatch",
-          "candidate_not_proven",
-          "dap_role_mismatch",
-          "dap_identity_absent",
-          "build_identity_partial",
-          "server_instance_stale",
-          "environment_snapshot_stale",
-          "feature_version_unsupported",
-          "exact_identity_match"
-        ]
-      }
+      "items": { "$ref": "#/$defs/reasonToken" }
     },
-    "redacted": { "const": true },
+    "redacted": { "type": "boolean" },
     "limitations": {
       "type": "array",
-      "maxItems": 32,
+      "maxItems": 64,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/boundedString" }
+      "items": { "$ref": "#/$defs/reasonToken" }
     }
   },
   "$defs": {
-    "boundedString": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 512
-    },
-    "boundedIdentity": {
+    "reasonToken": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "pattern": "^[A-Za-z0-9._:@/+\\-]+$"
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "boundedToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:@+\\-]+$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9.+\\-]+$"
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.-]*-[A-Za-z0-9_.-]+$"
+    },
+    "sha40": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{64}$"
+    },
+    "extensionId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+$"
+    },
+    "artifactRole": {
+      "enum": ["managed", "user_supplied", "package_install", "archive", "unknown"]
     },
     "extensionIdentity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "version"],
+      "required": [
+        "publisher",
+        "package_name",
+        "id",
+        "version",
+        "binary_artifact_role",
+        "authority_identity"
+      ],
       "properties": {
-        "id": { "const": "EffortlessMetrics.perl-lsp-rs" },
-        "version": { "$ref": "#/$defs/boundedIdentity" },
-        "candidate_identity": { "$ref": "#/$defs/boundedIdentity" },
-        "target": { "$ref": "#/$defs/boundedIdentity" }
+        "publisher": { "$ref": "#/$defs/boundedToken" },
+        "package_name": { "$ref": "#/$defs/boundedToken" },
+        "id": { "$ref": "#/$defs/extensionId" },
+        "version": { "$ref": "#/$defs/version" },
+        "candidate_identity": { "$ref": "#/$defs/boundedToken" },
+        "target": { "$ref": "#/$defs/target" },
+        "package_sha256": { "$ref": "#/$defs/sha256" },
+        "server_sha256": { "$ref": "#/$defs/sha256" },
+        "dap_sha256": { "$ref": "#/$defs/sha256" },
+        "binary_artifact_role": { "$ref": "#/$defs/artifactRole" },
+        "authority_identity": { "$ref": "#/$defs/boundedToken" }
       }
     },
     "binaryIdentity": {
@@ -100,15 +125,15 @@
         "compatibility"
       ],
       "properties": {
-        "schema_version": { "const": "perl_lsp.binary_identity.v1" },
+        "schema_version": { "type": "string", "minLength": 1, "maxLength": 64 },
         "product": {
           "type": "object",
           "additionalProperties": false,
           "required": ["name", "public_repository", "development_repository"],
           "properties": {
-            "name": { "const": "perl-lsp" },
-            "public_repository": { "const": "EffortlessMetrics/perl-lsp" },
-            "development_repository": { "const": "EffortlessMetrics/perl-lsp-swarm" }
+            "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "public_repository": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "development_repository": { "type": "string", "minLength": 1, "maxLength": 128 }
           }
         },
         "binary": {
@@ -116,10 +141,10 @@
           "additionalProperties": false,
           "required": ["executable", "cargo_package", "role", "version"],
           "properties": {
-            "executable": { "enum": ["perllsp", "perl-dap"] },
-            "cargo_package": { "enum": ["perllsp", "perl-dap"] },
+            "executable": { "$ref": "#/$defs/boundedToken" },
+            "cargo_package": { "$ref": "#/$defs/boundedToken" },
             "role": { "enum": ["server", "dap"] },
-            "version": { "$ref": "#/$defs/boundedIdentity" }
+            "version": { "$ref": "#/$defs/version" }
           }
         },
         "build": {
@@ -127,10 +152,10 @@
           "additionalProperties": false,
           "required": ["identity_state"],
           "properties": {
-            "source_revision": { "$ref": "#/$defs/boundedIdentity" },
-            "source_tree_digest": { "$ref": "#/$defs/boundedIdentity" },
-            "target": { "$ref": "#/$defs/boundedIdentity" },
-            "profile": { "$ref": "#/$defs/boundedIdentity" },
+            "source_revision": { "$ref": "#/$defs/sha40" },
+            "source_tree_digest": { "$ref": "#/$defs/sha256" },
+            "target": { "$ref": "#/$defs/target" },
+            "profile": { "$ref": "#/$defs/boundedToken" },
             "identity_state": { "enum": ["exact", "partial", "not_proven"] }
           }
         },
@@ -139,11 +164,9 @@
           "additionalProperties": false,
           "required": ["role"],
           "properties": {
-            "role": {
-              "enum": ["managed", "user_supplied", "package_install", "archive", "unknown"]
-            },
-            "digest": { "$ref": "#/$defs/boundedIdentity" },
-            "candidate_identity": { "$ref": "#/$defs/boundedIdentity" }
+            "role": { "$ref": "#/$defs/artifactRole" },
+            "digest": { "$ref": "#/$defs/sha256" },
+            "candidate_identity": { "$ref": "#/$defs/boundedToken" }
           }
         },
         "compatibility": {
@@ -151,15 +174,15 @@
           "additionalProperties": false,
           "required": ["expected_product_identity_version", "dap_posture"],
           "properties": {
-            "expected_product_identity_version": { "const": 1 },
-            "dap_posture": { "const": "preview" }
+            "expected_product_identity_version": { "type": "integer", "minimum": 1 },
+            "dap_posture": { "$ref": "#/$defs/boundedToken" }
           }
         },
         "limitations": {
           "type": "array",
-          "maxItems": 32,
+          "maxItems": 64,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/boundedString" }
+          "items": { "$ref": "#/$defs/reasonToken" }
         }
       }
     }
