@@ -12,7 +12,7 @@ mod analysis_contract_tests;
 
 pub use analysis::{
     EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisCompleteness, RegexDiagnostic,
-    RegexDiagnosticClass, RegexDiagnosticCode, RegexFacts, RegexRange,
+    RegexDiagnosticClass, RegexDiagnosticCode, RegexDynamicRegionKind, RegexFacts, RegexRange,
 };
 pub use config::RegexValidationConfig;
 
