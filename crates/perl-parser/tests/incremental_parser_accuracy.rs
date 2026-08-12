@@ -2,7 +2,7 @@
 //! Manifest-backed and ambiguity-boundary incremental parser equivalence checks.
 
 use perl_parser::edit::Edit;
-use perl_parser::incremental_advanced_reuse::ReuseConfig;
+use perl_parser::incremental_advanced_reuse::{ReuseConfig, ReuseType};
 use perl_parser::incremental_v2::IncrementalParserV2;
 use perl_parser::position::Position;
 use perl_parser::{
@@ -225,12 +225,6 @@ fn assert_incremental_edit_matches_fresh(
             )
             .into());
         }
-        if !incremental.used_advanced_reuse() {
-            return Err(format!(
-                "{expectation_id}: edit must take the advanced incremental-reuse path"
-            )
-            .into());
-        }
     }
 
     let fresh_ast = Parser::new(&new_source).parse()?;
@@ -336,7 +330,8 @@ fn pure_deletion_edit_matches_fresh_parse() -> TestResult {
 #[test]
 fn reuse_analysis_is_scoped_to_the_last_parse() -> TestResult {
     let source = concat!("my $before = 1;\n", "my $value = 20;\n", "my $after = 3;\n",);
-    let mut incremental = IncrementalParserV2::new();
+    let config = ReuseConfig { min_confidence: 0.2, ..ReuseConfig::default() };
+    let mut incremental = IncrementalParserV2::with_reuse_config(config);
     incremental.parse(source)?;
     let edited_source = apply_incremental_edit(
         &mut incremental,
@@ -442,6 +437,55 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
             return Err(format!("edited parse lost variable declaration {name}").into());
         }
     }
+    Ok(())
+}
+
+#[test]
+fn selected_advanced_reuse_contains_only_materialized_subtrees() -> TestResult {
+    let config = ReuseConfig { min_confidence: 0.2, ..ReuseConfig::default() };
+    let mut incremental = IncrementalParserV2::with_reuse_config(config);
+    let source = concat!(
+        "my $before = 1;
+",
+        "my $value = 20;
+",
+        "my $after = 3;
+",
+    );
+    incremental.parse(source)?;
+    let edited = apply_incremental_edit(
+        &mut incremental,
+        source,
+        "$value = 20",
+        "$value = 200",
+        "materialized-advanced-reuse",
+    )?;
+    let incremental_ast = incremental.parse(&edited)?;
+    assert_incremental_outcome(
+        &incremental,
+        &incremental_ast,
+        "materialized-advanced-reuse",
+    )?;
+    if !incremental.used_advanced_reuse() {
+        return Err("the low-threshold proof must select materialized advanced reuse".into());
+    }
+    let analysis = incremental
+        .get_last_reuse_analysis()
+        .ok_or("selected advanced reuse must expose its accepted analysis")?;
+    if analysis.reuse_map.is_empty() {
+        return Err("selected advanced reuse must materialize at least one old subtree".into());
+    }
+    if analysis.reuse_map.values().any(|strategy| {
+        !matches!(strategy.reuse_type, ReuseType::Direct | ReuseType::PositionShift)
+    }) {
+        return Err("selected advanced reuse exposed a non-materializable strategy".into());
+    }
+    let fresh_ast = Parser::new(&edited).parse()?;
+    assert_ast_equivalent(
+        &incremental_ast,
+        &fresh_ast,
+        "materialized advanced reuse",
+    )?;
     Ok(())
 }
 

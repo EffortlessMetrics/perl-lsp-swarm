@@ -348,6 +348,7 @@ impl AdvancedReuseAnalyzer {
                 }
 
                 if old_info.structural_hash == new_info.structural_hash
+                    && old_info.content_hash == new_info.content_hash
                     && old_info.children_count == new_info.children_count
                 {
                     let confidence = self.calculate_match_confidence(old_info, new_info);
@@ -626,22 +627,10 @@ impl AdvancedReuseAnalyzer {
         hasher.finish()
     }
 
-    /// Calculate content-based hash for value comparison
+    /// Calculate content-based hash for exact subtree comparison.
     fn calculate_content_hash(&self, node: &Node) -> u64 {
         let mut hasher = DefaultHasher::new();
-
-        match &node.kind {
-            NodeKind::Number { value } => value.hash(&mut hasher),
-            NodeKind::String { value, .. } => value.hash(&mut hasher),
-            NodeKind::VString { value } => value.hash(&mut hasher),
-            NodeKind::Variable { name, .. } => name.hash(&mut hasher),
-            NodeKind::Identifier { name } => name.hash(&mut hasher),
-            _ => {
-                // For non-leaf nodes, hash is based on structure
-                self.calculate_structural_hash(node).hash(&mut hasher);
-            }
-        }
-
+        node.to_sexp().hash(&mut hasher);
         hasher.finish()
     }
 
