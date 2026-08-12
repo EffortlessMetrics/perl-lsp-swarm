@@ -1,0 +1,396 @@
+& self.freshness == SemanticFreshness::Fresh
++            && self.lifecycle != LifecyclePhase::Unknown
++            && request.context.is_exact_ready()
++    }
++}
++
++/// Adapter-construction failure that prevents truthful fact attribution.
++#[non_exhaustive]
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum ProviderAdapterError {
++    /// Snapshot metadata is malformed.
++    InvalidSnapshot(String),
++    /// A shard has no stable source URI.
++    InvalidShardIdentity(FileId),
++    /// Two shards claim the same file identity.
++    DuplicateShardFile(FileId),
++    /// Two shards claim the same canonical source URI.
++    DuplicateShardSourceUri(String),
++    /// One shard repeats an anchor identity.
++    DuplicateAnchor {
++        /// File containing the duplicate identity.
++        file_id: FileId,
++        /// Repeated anchor identity.
++        anchor_id: AnchorId,
++    },
++    /// One shard repeats an entity identity.
++    DuplicateEntity {
++        /// File containing the duplicate identity.
++        file_id: FileId,
++        /// Repeated entity identity.
++        entity_id: EntityId,
++    },
++    /// One shard repeats an occurrence identity.
++    DuplicateOccurrence {
++        /// File containing the duplicate identity.
++        file_id: FileId,
++        /// Repeated occurrence identity.
++        occurrence_id: OccurrenceId,
++    },
++    /// An anchor claims a file other than its containing shard.
++    AnchorFileMismatch {
++        /// File identity owned by the shard.
++        shard_file_id: FileId,
++        /// File identity carried by the anchor.
++        anchor_file_id: FileId,
++        /// Mismatched anchor identity.
++        anchor_id: AnchorId,
++    },
++    /// Two adapted or canonical facts claim the same canonical identity.
++    DuplicateFactId(FactId),
++    /// A canonical collection has no fact-backed source trace.
++    MissingCanonicalEvidence,
++    /// A canonical or adapted envelope fails the provider fact contract.
++    InvalidFact {
++        /// Rejected fact identity.
++        fact_id: FactId,
++        /// Checked contract failure.
++        reason: ProviderQueryContractError,
++    },
++}
++
++impl fmt::Display for ProviderAdapterError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::InvalidSnapshot(reason) => {
++                write!(formatter, "invalid adapter snapshot: {reason}")
++            }
++            Self::InvalidShardIdentity(file_id) => {
++                write!(formatter, "file-fact shard {} has no source URI", file_id.0)
++            }
++            Self::DuplicateShardFile(file_id) => {
++                write!(formatter, "duplicate file-fact shard identity {}", file_id.0)
++            }
++            Self::DuplicateShardSourceUri(uri) => {
++                write!(formatter, "duplicate file-fact shard source URI {uri}")
++            }
++            Self::DuplicateAnchor { file_id, anchor_id } => write!(
++                formatter,
++                "file {} repeats anchor identity {}",
++                file_id.0, anchor_id.0
++            ),
++            Self::DuplicateEntity { file_id, entity_id } => write!(
++                formatter,
++                "file {} repeats entity identity {}",
++                file_id.0, entity_id.0
++            ),
++            Self::DuplicateOccurrence { file_id, occurrence_id } => write!(
++                formatter,
++                "file {} repeats occurrence identity {}",
++                file_id.0, occurrence_id.0
++            ),
++            Self::AnchorFileMismatch {
++                shard_file_id,
++                anchor_file_id,
++                anchor_id,
++            } => write!(
++                formatter,
++                "anchor {} claims file {} inside shard {}",
++                anchor_id.0, anchor_file_id.0, shard_file_id.0
++            ),
++            Self::DuplicateFactId(fact_id) => {
++                write!(formatter, "duplicate adapted fact identity {}", fact_id.0)
++            }
++            Self::MissingCanonicalEvidence => {
++                write!(formatter, "canonical adapter has no fact-backed source evidence")
++            }
++            Self::InvalidFact { fact_id, reason } => {
++                write!(formatter, "adapted fact {} is invalid: {reason}", fact_id.0)
++            }
++        }
++    }
++}
++
++impl Error for ProviderAdapterError {
++    fn source(&self) -> Option<&(dyn Error + 'static)> {
++        match self {
++            Self::InvalidFact { reason, .. } => Some(reason),
++            _ => None,
++        }
++    }
++}
++
++/// One already-canonical envelope plus the only adapter-owned matching metadata.
++///
++/// Canonical entity, file, package, scope, source geometry, producer, lifecycle,
++/// provenance, confidence, freshness, and boundary fields remain inside the
++/// envelope. The adapter may add only source-level symbol aliases and the request
++/// generation to which the producer bound that fact.
++#[non_exhaustive]
++#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++pub struct CanonicalEnvelopeInput {
++    envelope: SemanticFactEnvelope,
++    generation_scope: ProviderFactGenerationScope,
++    symbols: Vec<String>,
++}
++
++impl CanonicalEnvelopeInput {
++    /// Validate and canonicalize one canonical envelope input.
++    pub fn try_new(
++        envelope: SemanticFactEnvelope,
++        generation_scope: ProviderFactGenerationScope,
++        symbols: impl IntoIterator<Item = String>,
++    ) -> Result<Self, ProviderAdapterError> {
++        let fact_id = envelope.fact_id;
++        let mut symbols: Vec<_> = symbols.into_iter().collect();
++        symbols.sort();
++        symbols.dedup();
++        ProviderQueryFact::try_new(
++            ProviderQueryFactRole::Supporting,
++            generation_scope,
++            envelope.clone(),
++            symbols.clone(),
++        )
++        .map_err(|reason| ProviderAdapterError::InvalidFact { fact_id, reason })?;
++        Ok(Self {
++            envelope,
++            generation_scope,
++            symbols,
++        })
++    }
++
++    /// Canonical envelope retained by this input.
++    #[must_use]
++    pub const fn envelope(&self) -> &SemanticFactEnvelope {
++        &self.envelope
++    }
++
++    /// Request generation to which this fact is bound.
++    #[must_use]
++    pub const fn generation_scope(&self) -> ProviderFactGenerationScope {
++        self.generation_scope
++    }
++
++    /// Canonical source-level symbol aliases.
++    #[must_use]
++    pub fn symbols(&self) -> &[String] {
++        &self.symbols
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct AdapterFactRecord {
++    envelope: SemanticFactEnvelope,
++    generation_scope: ProviderFactGenerationScope,
++    symbols: Vec<String>,
++    occurrence_kind: Option<OccurrenceKind>,
++    trace_source: ProviderFactSourceKind,
++    source_hash: Option<String>,
++    model_version: Option<u32>,
++}
++
++impl AdapterFactRecord {
++    fn try_new(
++        envelope: SemanticFactEnvelope,
++        generation_scope: ProviderFactGenerationScope,
++        mut symbols: Vec<String>,
++        occurrence_kind: Option<OccurrenceKind>,
++        trace_source: ProviderFactSourceKind,
++        source_hash: Option<String>,
++        model_version: Option<u32>,
++    ) -> Result<Self, ProviderAdapterError> {
++        symbols.sort();
++        symbols.dedup();
++        let fact_id = envelope.fact_id;
++        ProviderQueryFact::try_new(
++            ProviderQueryFactRole::Supporting,
++            generation_scope,
++            envelope.clone(),
++            symbols.clone(),
++        )
++        .map_err(|reason| ProviderAdapterError::InvalidFact { fact_id, reason })?;
++        Ok(Self {
++            envelope,
++            generation_scope,
++            symbols,
++            occurrence_kind,
++            trace_source,
++            source_hash,
++            model_version,
++        })
++    }
++
++    fn to_query_fact(
++        &self,
++        role: ProviderQueryFactRole,
++    ) -> Result<ProviderQueryFact, ProviderQueryContractError> {
++        ProviderQueryFact::try_new(
++            role,
++            self.generation_scope,
++            self.envelope.clone(),
++            self.symbols.clone(),
++        )
++    }
++
++    fn trace(
++        &self,
++        request: &ProviderQueryRequest,
++        fallback_state: ProviderFallbackState,
++    ) -> Option<ProviderFactTrace> {
++        let SemanticProvenance::Known(provenance) = self.envelope.provenance else {
++            return None;
++        };
++        let SemanticConfidence::Known(confidence) = self.envelope.confidence else {
++            return None;
++        };
++        Some(ProviderFactTrace::new(
++            request.surface,
++            self.trace_source,
++            provenance,
++            confidence,
++            provider_freshness(self.envelope.freshness),
++            fallback_state,
++            self.source_hash.clone(),
++            self.envelope.anchor.anchor_id,
++            self.model_version,
++        ))
++    }
++
++    fn directly_matches(&self, subject: &ProviderQuerySubject) -> bool {
++        match subject {
++            ProviderQuerySubject::Entity(entity_id) => self.envelope.entity_id == Some(*entity_id),
++            ProviderQuerySubject::File(file_id) => self.envelope.anchor.file_id == *file_id,
++            ProviderQuerySubject::Position {
++                file_id,
++                byte_offset,
++            } => {
++                self.envelope.anchor.file_id == *file_id
++                    && range_contains(&self.envelope.anchor, *byte_offset)
++            }
++            ProviderQuerySubject::Package(package) => {
++                self.envelope.package.as_deref() == Some(package.as_str())
++            }
++            ProviderQuerySubject::Symbol(symbol) => {
++                self.symbols.binary_search(symbol).is_ok()
++            }
++            ProviderQuerySubject::Workspace => true,
++        }
++    }
++
++    fn is_current_for(&self, request: &ProviderQueryRequest) -> bool {
++        let expected = match self.generation_scope {
++            ProviderFactGenerationScope::Document => &request.context.document_generation,
++            ProviderFactGenerationScope::Workspace => &request.context.workspace_generation,
++        };
++        generation_is_known(expected)
++            && generation_is_known(&self.envelope.source_generation)
++            && &self.envelope.source_generation == expected
++    }
++
++    fn is_exact_for(&self, request: &ProviderQueryRequest) -> bool {
++        self.is_current_for(request)
++            && self.envelope.status() == SemanticFactStatus::Exact
++            && self.envelope.boundary.is_none()
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
++struct UnavailableTraceSeed {
++    source: ProviderFactSourceKind,
++    provenance: Provenance,
++    confidence: Confidence,
++    freshness: ProviderFactFreshness,
++    source_hash: Option<String>,
++    anchor_id: Option<AnchorId>,
++    model_version: Option<u32>,
++}
++
++impl UnavailableTraceSeed {
++    fn from_record(record: &AdapterFactRecord) -> Option<Self> {
++        let SemanticProvenance::Known(provenance) = record.envelope.provenance else {
++            return None;
++        };
++        let SemanticConfidence::Known(confidence) = record.envelope.confidence else {
++            return None;
++        };
++        Some(Self {
++            source: record.trace_source,
++            provenance,
++            confidence,
++            freshness: provider_freshness(record.envelope.freshness),
++            source_hash: record.source_hash.clone(),
++            anchor_id: record.envelope.anchor.anchor_id,
++            model_version: record.model_version,
++        })
++    }
++
++    fn for_file_source(
++        source: FileFactShardSource,
++        snapshot: &ProviderAdapterSnapshot,
++        source_hash: Option<String>,
++        model_version: Option<u32>,
++    ) -> Self {
++        Self {
++            source: source.trace_source(),
++            provenance: source.unavailable_provenance(),
++            confidence: source.unavailable_confidence(),
++            freshness: provider_freshness(snapshot.freshness),
++            source_hash,
++            anchor_id: None,
++            model_version,
++        }
++    }
++
++    fn trace(&self, request: &ProviderQueryRequest) -> ProviderFactTrace {
++        ProviderFactTrace::new(
++            request.surface,
++            self.source,
++            self.provenance,
++            self.confidence,
++            self.freshness,
++            ProviderFallbackState::Unavailable,
++            self.source_hash.clone(),
++            self.anchor_id,
++            self.model_version,
++        )
++    }
++}
++
++#[derive(Debug, Clone)]
++struct ShardDenominator {
++    source_uri: String,
++    file_id: FileId,
++    content_hash: u64,
++    producer_schema_version: u32,
++    anchors_hash: Option<u64>,
++    entities_hash: Option<u64>,
++    occurrences_hash: Option<u64>,
++    edges_hash: Option<u64>,
++    incomplete_capabilities: BTreeSet<ProviderQueryCapability>,
++}
++
++impl ShardDenominator {
++    fn is_complete_for(&self, capability: ProviderQueryCapability) -> bool {
++        if self.incomplete_capabilities.contains(&capability) {
++            return false;
++        }
++        match capability {
++            ProviderQueryCapability::Declarations => {
++                self.anchors_hash.is_some() && self.entities_hash.is_some()
++            }
++            ProviderQueryCapability::References | ProviderQueryCapability::ScopeBindings => {
++                self.anchors_hash.is_some()
++                    && self.entities_hash.is_some()
++                    && self.occurrences_hash.is_some()
++            }
++            ProviderQueryCapability::Boundaries => {
++                self.anchors_hash.is_some() && self.occurrences_hash.is_some()
++            }
++            ProviderQueryCapability::Visibility | ProviderQueryCapability::Readiness => false,
++        }
++    }
++
++    fn denominator_id(
++        &self,
++        source: FileFactShardSource,
++        capability: P
