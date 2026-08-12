@@ -1,6 +1,6 @@
 #![cfg(feature = "incremental")]
 
-use perl_parser::incremental::{Edit, IncrementalState, apply_edits};
+use perl_parser::incremental::{apply_edits, Edit, IncrementalState};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -198,13 +198,14 @@ fn test_incremental_vs_full_parse_equivalence() -> TestResult {
 fn test_edit_at_statement_boundary() -> TestResult {
     let source = "my $x = 1;\nmy $y = 2;\nmy $z = 3;".to_string();
     let mut state = IncrementalState::new(source);
+    let new_text = "\n# Comment\nmy $w = 0;\n".to_string();
 
     // Edit at semicolon boundary
     let edit = Edit {
         start_byte: 10,   // After first semicolon
         old_end_byte: 11, // Newline
-        new_end_byte: 34,
-        new_text: "\n# Comment\nmy $w = 0;\n".to_string(),
+        new_end_byte: 10 + new_text.len(),
+        new_text,
     };
 
     let result = apply_edits(&mut state, &[edit])?;
