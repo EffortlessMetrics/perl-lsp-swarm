@@ -1,74 +1,73 @@
 use perl_parser_core::{
-    ast_v2::NodeKind as V2NodeKind,
-    // Trivia
-    trivia::{NodeWithTrivia, Trivia, TriviaPreservingParser, TriviaToken},
-    trivia_parser::format_with_trivia,
+    NodeKind, Parser,
+    trivia::{Trivia, TriviaToken},
+    trivia_parser::{TriviaParseOutput, TriviaPreservingParser, source_with_trivia},
 };
 
 #[test]
-fn trivia_whitespace_variant() -> Result<(), Box<dyn std::error::Error>> {
+fn trivia_whitespace_variant() {
     let trivia = Trivia::Whitespace("  ".to_string());
     assert_eq!(trivia.as_str(), "  ");
     assert_eq!(trivia.kind_name(), "whitespace");
-    Ok(())
 }
 
 #[test]
-fn trivia_comment_variant() -> Result<(), Box<dyn std::error::Error>> {
+fn trivia_comment_variant() {
     let trivia = Trivia::LineComment("# hello".to_string());
     assert_eq!(trivia.as_str(), "# hello");
     assert_eq!(trivia.kind_name(), "comment");
-    Ok(())
 }
 
 #[test]
-fn trivia_newline_variant() -> Result<(), Box<dyn std::error::Error>> {
+fn trivia_newline_variant() {
     let trivia = Trivia::Newline;
     assert_eq!(trivia.as_str(), "\n");
     assert_eq!(trivia.kind_name(), "newline");
-    Ok(())
 }
 
 #[test]
-fn trivia_token_construction() -> Result<(), Box<dyn std::error::Error>> {
+fn trivia_token_construction() {
     let range = perl_position_tracking::Range::new(
         perl_position_tracking::Position::new(0, 1, 1),
         perl_position_tracking::Position::new(2, 1, 3),
     );
-    let tt = TriviaToken::new(Trivia::Whitespace("  ".to_string()), range);
-    assert_eq!(tt.trivia.as_str(), "  ");
-    Ok(())
+    let token = TriviaToken::new(Trivia::Whitespace("  ".to_string()), range);
+    assert_eq!(token.trivia.as_str(), "  ");
 }
 
 #[test]
-fn trivia_preserving_parser_returns_node_with_trivia() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = TriviaPreservingParser::new("  # comment\nmy $x;".to_string());
-    let result: NodeWithTrivia = parser.parse();
+fn trivia_preserving_parser_returns_canonical_ast() {
+    let source = "  # comment\nmy $x;".to_string();
+    let result: TriviaParseOutput = TriviaPreservingParser::new(source.clone()).parse();
+    let mut canonical = Parser::new(&source);
+    let canonical_output = canonical.parse_with_recovery();
 
-    // The parser should produce a Program node
-    match &result.node.kind {
-        V2NodeKind::Program { .. } => { /* ok */ }
-        other => return Err(format!("expected Program, got {:?}", other).into()),
-    }
-    Ok(())
+    assert!(matches!(result.parse.ast.kind, NodeKind::Program { .. }));
+    assert_eq!(result.parse.ast.to_sexp(), canonical_output.ast.to_sexp());
+    assert_eq!(result.parse.diagnostics, canonical_output.diagnostics);
+    assert!(result
+        .trivia
+        .iter()
+        .any(|token| matches!(&token.trivia, Trivia::LineComment(text) if text == "# comment")));
 }
 
 #[test]
-fn format_with_trivia_includes_trivia_text() -> Result<(), Box<dyn std::error::Error>> {
-    let range = perl_position_tracking::Range::new(
-        perl_position_tracking::Position::new(0, 1, 1),
-        perl_position_tracking::Position::new(0, 1, 1),
-    );
-    let node = perl_ast_v2::Node::new(
-        perl_ast_v2::NodeIdGenerator::new().next_id(),
-        V2NodeKind::Program { statements: vec![] },
-        range,
-    );
+fn source_projection_returns_exact_valid_perl() {
+    let source = "  # comment\nmy $x;\n".to_string();
+    let result = TriviaPreservingParser::new(source.clone()).parse();
 
-    let leading = vec![TriviaToken::new(Trivia::Whitespace("  ".to_string()), range)];
-    let nwt = NodeWithTrivia { node, leading_trivia: leading, trailing_trivia: vec![] };
+    assert_eq!(source_with_trivia(&result), source);
+    assert!(!source_with_trivia(&result).contains("Program {"));
+}
 
-    let formatted = format_with_trivia(&nwt);
-    assert!(formatted.contains("  "), "should include leading whitespace trivia");
-    Ok(())
+#[test]
+fn unknown_syntax_is_owned_by_canonical_recovery_not_silently_skipped() {
+    let source = "if (".to_string();
+    let result = TriviaPreservingParser::new(source.clone()).parse();
+    let mut canonical = Parser::new(&source);
+    let canonical_output = canonical.parse_with_recovery();
+
+    assert_eq!(result.parse.ast.to_sexp(), canonical_output.ast.to_sexp());
+    assert_eq!(result.parse.diagnostics, canonical_output.diagnostics);
+    assert!(!result.parse.diagnostics.is_empty());
 }
