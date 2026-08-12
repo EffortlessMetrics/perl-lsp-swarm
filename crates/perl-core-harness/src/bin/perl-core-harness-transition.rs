@@ -43,10 +43,27 @@ fn main() -> Result<()> {
 }
 
 fn run_classify(config: &ClassifyConfig) -> Result<()> {
+    reject_output_input_path_collision(config)?;
     let accepted = load_accepted_v2(&config.accepted_baseline)?;
     let current = load_run_report(&config.compile)?;
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     write_classification_receipt(&config.output, &classification)
+}
+
+fn reject_output_input_path_collision(config: &ClassifyConfig) -> Result<()> {
+    // Lean path-string identity only. Symlink/hard-link identity remains deferred.
+    if paths_equal(&config.output, &config.accepted_baseline)
+        || paths_equal(&config.output, &config.compile)
+    {
+        bail!(
+            "output path must not alias --accepted-baseline or --compile; refusing to overwrite evidence"
+        );
+    }
+    Ok(())
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    left == right
 }
 
 fn load_accepted_v2(path: &Path) -> Result<CompileBaselineV2> {
@@ -177,6 +194,19 @@ mod classify_io_observer {
         let err = load_accepted_v2(&path).expect_err("v1 must fail").to_string();
         assert!(err.contains("unsupported accepted baseline schema"));
         assert!(err.contains("compile_baseline.v1"));
+    }
+
+    /// RIPR-named observer for output/input path-string collision rejection.
+    #[test]
+    fn output_path_collision_bail_is_observed() {
+        let err = reject_output_input_path_collision(&ClassifyConfig {
+            accepted_baseline: PathBuf::from("accepted.json"),
+            compile: PathBuf::from("compile.json"),
+            output: PathBuf::from("accepted.json"),
+        })
+        .expect_err("alias must fail")
+        .to_string();
+        assert!(err.contains("output path must not alias"));
     }
 
     /// RIPR-named observer for classify I/O no-change receipt write.

@@ -112,6 +112,17 @@ fn failed_harness_status_is_not_proven() {
 }
 
 #[test]
+fn missing_harness_status_is_not_proven_even_with_pass_to_fail_rows() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 0);
+    current.harness_status = None;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("harness_status"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
 fn forged_summary_blocks_no_change() {
     let accepted = sample_v2_baseline(2, 2);
     let mut current = sample_report(2, 2);

@@ -93,6 +93,36 @@ fn classify_cli_rejects_v1_accepted_baseline() {
 }
 
 #[test]
+fn classify_cli_rejects_output_aliasing_accepted_baseline() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("accepted.json");
+    let compile = dir.path().join("compile.json");
+    write_baseline(&accepted, 1, 1);
+    write_report(&compile, 1, 1);
+    let accepted_path = accepted.to_str().expect("utf8");
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted_path,
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--output",
+            accepted_path,
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("output path must not alias"),
+        "unexpected stderr: {stderr}"
+    );
+    let retained = fs::read_to_string(&accepted).expect("accepted retained");
+    assert!(retained.contains(COMPILE_BASELINE_V2_SCHEMA_VERSION));
+}
+
+#[test]
 fn classify_cli_writes_no_change_receipt_for_exact_v2_match() {
     let dir = tempdir().expect("tempdir");
     let accepted = dir.path().join("accepted.json");
