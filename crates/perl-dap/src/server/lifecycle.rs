@@ -1,13 +1,5 @@
-// The lifecycle dispatcher retains the deprecated bridge mode solely for
-// existing library consumers and conformance comparisons. It must still match
-// the hidden variant in default builds so unsupported selection fails closed.
-#![allow(deprecated)]
-
-#[cfg(feature = "legacy-pls-bridge")]
-use crate::bridge_adapter::BridgeAdapter;
 use crate::debug_adapter::DebugAdapter;
 use crate::server::config::DapConfig;
-use crate::server::mode::DapMode;
 
 /// Marks a failure opening the native DAP TCP listener, before a client session exists.
 ///
@@ -30,10 +22,9 @@ impl perl_parser_core::ErrorClass for DapSocketBindError {
 
 /// Native DAP server lifecycle.
 ///
-/// New callers should use [`DapMode::Native`], which drives the built-in
-/// [`DebugAdapter`] through the local Perl interpreter. The deprecated bridge
-/// mode remains as an inert source-compatibility variant in default builds and
-/// is executable only when the `legacy-pls-bridge` feature is selected.
+/// `DapServer` owns the supported product runtime: the built-in
+/// [`DebugAdapter`] driving the local Perl debugger. Historical proxying to an
+/// alternate DAP implementation is not part of this lifecycle.
 pub struct DapServer {
     /// Server configuration.
     pub config: DapConfig,
@@ -42,16 +33,16 @@ pub struct DapServer {
 }
 
 impl DapServer {
-    /// Create a new DAP server instance.
+    /// Create a new native DAP server instance.
     ///
     /// # Arguments
     ///
-    /// * `config` - Server configuration including operating mode.
+    /// * `config` - Server configuration including logging and workspace context.
     ///
     /// # Errors
     ///
-    /// Currently always succeeds. Construction retains a result boundary for
-    /// configuration and runtime initialization failures.
+    /// Construction retains a result boundary for configuration and runtime
+    /// initialization failures.
     pub fn new(config: DapConfig) -> anyhow::Result<Self> {
         let adapter = DebugAdapter::new();
         // Wire the configured workspace boundary (if any) into the adapter so
@@ -64,36 +55,13 @@ impl DapServer {
         Ok(Self { config, adapter })
     }
 
-    /// Run the DAP server over stdio.
+    /// Run the native DAP server over stdio.
     ///
-    /// [`DapMode::Native`] is the supported product path. Selecting the
-    /// deprecated bridge mode without its explicit compatibility feature fails
-    /// closed rather than spawning an external backend unexpectedly.
+    /// # Errors
+    ///
+    /// Returns an error when the DAP transport or native adapter session fails.
     pub fn run(&mut self) -> anyhow::Result<()> {
-        match self.config.mode {
-            DapMode::Native => self.adapter.run().map_err(Into::into),
-            DapMode::Bridge => {
-                #[cfg(feature = "legacy-pls-bridge")]
-                {
-                    tracing::warn!(
-                        "Starting deprecated Perl::LanguageServer bridge compatibility mode"
-                    );
-                    let rt = tokio::runtime::Runtime::new()?;
-                    return rt.block_on(async {
-                        let mut bridge = BridgeAdapter::new();
-                        bridge.spawn_pls_dap().await?;
-                        bridge.proxy_messages().await?;
-                        bridge.shutdown().await?;
-                        Ok(())
-                    });
-                }
-
-                #[cfg(not(feature = "legacy-pls-bridge"))]
-                anyhow::bail!(
-                    "legacy Perl::LanguageServer bridge support is not enabled; use DapMode::Native"
-                );
-            }
-        }
+        self.adapter.run().map_err(Into::into)
     }
 
     /// Run the native DAP server over TCP socket transport.
@@ -102,12 +70,9 @@ impl DapServer {
     ///
     /// # Errors
     ///
-    /// Returns an error if the deprecated bridge mode is selected, since socket
-    /// transport is supported only by the native adapter.
+    /// Returns an error when the listener cannot bind or the accepted DAP
+    /// session fails.
     pub fn run_socket(&mut self, port: u16) -> anyhow::Result<()> {
-        if self.config.mode == DapMode::Bridge {
-            anyhow::bail!("Socket transport is not supported in legacy bridge mode");
-        }
         self.adapter.run_socket(port)
     }
 }
