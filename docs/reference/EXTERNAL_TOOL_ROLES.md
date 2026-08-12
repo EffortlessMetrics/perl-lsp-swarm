@@ -101,12 +101,34 @@ Validation rejects:
 - any external tool required for native behavior;
 - automatic engine selection;
 - execution on workspace open;
-- an explicit external adapter without the process/trust owner;
-- PLS exposed as a product execution adapter;
-- duplicate canonical identities or aliases.
+- disagreement between a role and its support flag;
+- an external adapter without the process/trust owner;
+- a debugger peer without the peer trust owner;
+- an execution or peer role without explicit user enablement;
+- PLS exposed as product runtime;
+- duplicate or empty canonical identities and aliases.
 
-The registry serializes deterministically for doctor, docs, settings, readiness,
-and package-check consumers.
+The registry serializes deterministically for doctor, docs, settings, and
+readiness consumers.
+
+## Identity aliases are not package patterns
+
+Aliases such as `pls`, `perltidy`, and `ptkdb` exist for exact, case-insensitive
+identity resolution. They are deliberately not exported as package deny-list
+substrings. A raw archive scan for `pls`, for example, would also match unrelated
+filenames and documentation.
+
+Package and release checks must own artifact-specific rules instead:
+
+```text
+exact path or basename
+expected file type
+allowed repository-only location
+published-package inclusion boundary
+```
+
+That keeps detection vocabulary separate from proof that an external executable,
+module, or bundled runtime entered a release artifact.
 
 ## Consumer boundary
 
@@ -116,7 +138,7 @@ Consumers should use the common policy for:
 - whether absence is a health failure;
 - whether auto-detection or selection is permitted;
 - install-help scope;
-- common package-exclusion identities;
+- exact identity resolution;
 - claim ownership.
 
 They must not move domain details into the common registry. For example:
@@ -124,5 +146,6 @@ They must not move domain details into the common registry. For example:
 - `.perltidyrc` option dispositions stay with the formatter compatibility owner;
 - Perl::Critic policy aliases and parameters stay with the critic registry;
 - ptkdb request/event capabilities come from the authenticated session;
+- package payload rules stay with the package/release controller;
 - process identity, trust, environment, and execution stay with the environment
   and process controllers.
