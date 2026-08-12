@@ -122,6 +122,18 @@ function compareInventory(actual, baseline, platform = process.platform, options
   return violations;
 }
 
+function classifyInventoryViolations(violations) {
+  if (violations.length === 0) {
+    return 'pass';
+  }
+  const sizeOnly = violations.every(
+    (violation) =>
+      /^total bytes grew from \d+ to \d+$/.test(violation) ||
+      /^file .+ grew from \d+ to \d+ bytes$/.test(violation),
+  );
+  return sizeOnly ? 'size_only' : 'structural';
+}
+
 function currentSourceBundleFile(platform = process.platform, arch = process.arch) {
   const binaryName = platform === 'win32' ? 'perllsp.exe' : 'perllsp';
   return `bin/${platform}-${arch}/${binaryName}`;
@@ -145,9 +157,16 @@ function main() {
     allowedFiles,
     arch: process.arch,
   });
+  const classification = classifyInventoryViolations(violations);
   process.stdout.write(
     `${JSON.stringify(
-      { ...actual, baseline: BASELINE_PATH, platform: process.platform, violations },
+      {
+        ...actual,
+        baseline: BASELINE_PATH,
+        platform: process.platform,
+        classification,
+        violations,
+      },
       null,
       2,
     )}\n`,
@@ -168,6 +187,8 @@ if (require.main === module) {
 
 module.exports = {
   baselineForPlatform,
+  classifyInventoryViolations,
+  collectPackagedFiles,
   compareInventory,
   currentSourceBundleFile,
   bundleTargetForPackagedFile,
