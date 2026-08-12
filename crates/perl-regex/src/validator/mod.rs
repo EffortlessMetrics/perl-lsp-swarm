@@ -68,30 +68,30 @@ impl RegexValidator {
     }
 
     pub fn detects_code_execution(&self, pattern: &str) -> bool {
-        code_execution::detects_code_execution(pattern)
+        !self.analyze(pattern).facts.embedded_code.is_empty()
     }
 
     pub fn detect_nested_quantifiers(&self, pattern: &str) -> bool {
-        nested_quantifier::detect_nested_quantifiers(pattern)
+        !self.analyze(pattern).facts.nested_quantifiers.is_empty()
     }
 
     pub fn find_code_execution(&self, pattern: &str, start_pos: usize) -> Option<RegexFinding> {
-        code_execution::find_code_execution(pattern, start_pos).map(|finding| {
-            let message = match finding.kind {
-                code_execution::EmbeddedCodeKind::Immediate => {
+        self.analyze(pattern).facts.embedded_code.first().map(|finding| RegexFinding {
+            offset: start_pos.saturating_add(finding.range.start),
+            message: match finding.kind {
+                EmbeddedCodeKind::Immediate => {
                     "Embedded code execution is not allowed in regex patterns"
                 }
-                code_execution::EmbeddedCodeKind::Deferred => {
+                EmbeddedCodeKind::Deferred => {
                     "Deferred embedded code execution is not allowed in regex patterns"
                 }
-            };
-            RegexFinding { offset: finding.offset, message }
+            },
         })
     }
 
     pub fn find_nested_quantifier(&self, pattern: &str, start_pos: usize) -> Option<RegexFinding> {
-        nested_quantifier::find_nested_quantifier(pattern, start_pos).map(|offset| RegexFinding {
-            offset,
+        self.analyze(pattern).facts.nested_quantifiers.first().map(|range| RegexFinding {
+            offset: start_pos.saturating_add(range.start),
             message: "Nested quantifiers may cause catastrophic backtracking",
         })
     }
