@@ -129,6 +129,39 @@ fn forged_summary_blocks_no_change() {
     current.summary.files_passed = 0;
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("summary file/TAP totals"));
+}
+
+#[test]
+fn contradictory_tap_totals_block_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    current.file_results[1].status = RunnerStatus::Pass;
+    current.file_results[1].assertions_passed = 1;
+    // Detailed rows still look like a compensated swap, but aggregate TAP is forged.
+    current.summary.tap_assertions_total = 99;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("summary file/TAP totals"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
+fn accepted_assertion_overflow_blocks_regression() {
+    let mut accepted = sample_v2_baseline(2, 1);
+    accepted.file_results[1].assertions_passed = 2;
+    accepted.file_results[1].assertions_total = 1;
+    accepted.tap_assertions_passed = 2;
+    accepted.tap_assertions_total = 2;
+    let mut current = sample_report(2, 0);
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("assertions_passed"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
 }
 
 #[test]
@@ -163,6 +196,12 @@ fn unexpected_file_classification() -> Classification {
     let mut extra = current.file_results[0].clone();
     extra.path = "unexpected/extra.t".into();
     current.file_results.push(extra);
+    // Keep summary reconciled so subject/membership incomparability is the discriminator.
+    current.summary.files_total = 2;
+    current.summary.files_passed = 2;
+    current.summary.files_failed = 0;
+    current.summary.tap_assertions_total = 2;
+    current.summary.tap_assertions_passed = 2;
     classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)
 }
 
