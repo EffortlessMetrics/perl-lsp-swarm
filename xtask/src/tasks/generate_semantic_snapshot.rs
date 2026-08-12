@@ -30,7 +30,7 @@ use perl_corpus::snapshot::{
 use perl_parser_core::hir::{HirFile, HirKind, lower_ast};
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Public API (called from main.rs)
@@ -128,6 +128,8 @@ fn is_perl_fixture_path(path: &Path) -> bool {
 
 /// Reject output paths that could overwrite or become part of the fixture authority.
 fn validate_output_separation(root: &Path, fixtures: &[PathBuf], output: &Path) -> Result<()> {
+    validate_output_path_syntax(output)?;
+
     let output_metadata = match fs::symlink_metadata(output) {
         Ok(metadata) => Some(metadata),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -162,12 +164,21 @@ fn validate_output_separation(root: &Path, fixtures: &[PathBuf], output: &Path) 
         if let Some(output_metadata) = output_metadata.as_ref() {
             let fixture_metadata = fs::metadata(fixture)
                 .with_context(|| format!("reading fixture metadata {}", fixture.display()))?;
-            if same_file_identity(output_metadata, &fixture_metadata) {
+            if same_file_identity(output_metadata, &fixture_metadata)? {
                 bail!("Snapshot output hard-links fixture: {}", fixture.display());
             }
         }
     }
 
+    Ok(())
+}
+
+fn validate_output_path_syntax(path: &Path) -> Result<()> {
+    for component in path.components() {
+        if matches!(component, Component::CurDir | Component::ParentDir) {
+            bail!("Snapshot output path is not canonical: {}", path.display());
+        }
+    }
     Ok(())
 }
 
@@ -217,14 +228,14 @@ fn normalize_output_path(path: &Path, exists: bool) -> Result<PathBuf> {
 }
 
 #[cfg(unix)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
 
-    left.dev() == right.dev() && left.ino() == right.ino()
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
 }
 
 #[cfg(windows)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> Result<bool> {
     use std::os::windows::fs::MetadataExt as _;
 
     match (
@@ -232,15 +243,15 @@ fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
         (right.volume_serial_number(), right.file_index()),
     ) {
         ((Some(left_volume), Some(left_index)), (Some(right_volume), Some(right_index))) => {
-            left_volume == right_volume && left_index == right_index
+            Ok(left_volume == right_volume && left_index == right_index)
         }
-        _ => false,
+        _ => bail!("Snapshot output file identity is unavailable on Windows"),
     }
 }
 
 #[cfg(not(any(unix, windows)))]
-fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
-    false
+fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> Result<bool> {
+    bail!("Snapshot output file identity is unsupported on target {}", std::env::consts::OS)
 }
 
 /// Run `lower_ast()` over each fixture and compute one `SnapshotEntry` per file.
@@ -612,6 +623,7 @@ mod tests {
         assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
     }
 
+    #[cfg(any(unix, windows))]
     #[test]
     fn output_hard_link_cannot_alias_a_fixture() {
         let temporary = TempDir::new().expect("tempdir");
@@ -625,6 +637,19 @@ mod tests {
             .expect_err("hard-linked output must fail closed");
         assert!(error.to_string().contains("hard-links fixture"), "unexpected error: {error}");
         assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
+    }
+
+    #[test]
+    fn output_rejects_parent_directory_components() {
+        let temporary = TempDir::new().expect("tempdir");
+        let fixture_dir = temporary.path().join("fixtures");
+        write_fixture(&fixture_dir, "source.pl", "1;\n");
+        let output = fixture_dir.join("missing").join("..").join("snapshot.pl");
+
+        let error = generate_snapshot_result(&fixture_dir, &output)
+            .expect_err("parent-directory output must fail closed");
+        assert!(error.to_string().contains("not canonical"), "unexpected error: {error}");
+        assert!(!fixture_dir.join("snapshot.pl").exists());
     }
 
     #[test]
@@ -847,9 +872,11 @@ mod tests {
         let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../crates/perl-corpus/fixtures/snapshot-slice");
 
-        if !fixture_dir.exists() {
-            return;
-        }
+        assert!(
+            fixture_dir.is_dir(),
+            "committed corpus slice is missing or not a directory: {}",
+            fixture_dir.display()
+        );
 
         let fixtures = collect_fixtures(&fixture_dir).expect("collect fixtures");
         assert!(fixtures.len() >= 3, "expected at least 3 slice fixtures, got {}", fixtures.len());
