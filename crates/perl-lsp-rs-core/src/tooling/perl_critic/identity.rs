@@ -830,7 +830,7 @@ impl CriticIdentityRegistry {
 
         for entry in IDENTITIES {
             if let Some(previous_id) = previous
-                && previous_id >= entry.canonical_id
+                && previous_id > entry.canonical_id
             {
                 return Err(CriticIdentityRegistryError::NonDeterministicOrder {
                     previous: previous_id,
