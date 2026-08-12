@@ -452,51 +452,70 @@ impl IncrementalParserV2 {
         (materialized_map, replacements)
     }
 
-    fn find_analyzed_node_at_start(node: &Node, start: usize) -> Option<&Node> {
-        let mut found = (node.location.start == start).then_some(node);
-        let mut inspect = |child: &Node| {
-            if let Some(candidate) = Self::find_analyzed_node_at_start(child, start) {
-                found = Some(candidate);
-            }
-        };
-
+    fn find_analyzed_node_at_start<'a>(node: &'a Node, start: usize) -> Option<&'a Node> {
         match &node.kind {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
-                for statement in statements {
-                    inspect(statement);
+                for statement in statements.iter().rev() {
+                    if let Some(candidate) = Self::find_analyzed_node_at_start(statement, start) {
+                        return Some(candidate);
+                    }
                 }
             }
             NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                inspect(variable);
-                if let Some(initializer) = initializer {
-                    inspect(initializer);
+                if let Some(initializer) = initializer
+                    && let Some(candidate) = Self::find_analyzed_node_at_start(initializer, start)
+                {
+                    return Some(candidate);
+                }
+                if let Some(candidate) = Self::find_analyzed_node_at_start(variable, start) {
+                    return Some(candidate);
                 }
             }
             NodeKind::Binary { left, right, .. } => {
-                inspect(left);
-                inspect(right);
+                if let Some(candidate) = Self::find_analyzed_node_at_start(right, start) {
+                    return Some(candidate);
+                }
+                if let Some(candidate) = Self::find_analyzed_node_at_start(left, start) {
+                    return Some(candidate);
+                }
             }
-            NodeKind::Unary { operand, .. } => inspect(operand),
+            NodeKind::Unary { operand, .. } => {
+                if let Some(candidate) = Self::find_analyzed_node_at_start(operand, start) {
+                    return Some(candidate);
+                }
+            }
             NodeKind::FunctionCall { args, .. } => {
-                for argument in args {
-                    inspect(argument);
+                for argument in args.iter().rev() {
+                    if let Some(candidate) = Self::find_analyzed_node_at_start(argument, start) {
+                        return Some(candidate);
+                    }
                 }
             }
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                inspect(condition);
-                inspect(then_branch);
-                for (condition, branch) in elsif_branches {
-                    inspect(condition);
-                    inspect(branch);
+                if let Some(branch) = else_branch
+                    && let Some(candidate) = Self::find_analyzed_node_at_start(branch, start)
+                {
+                    return Some(candidate);
                 }
-                if let Some(branch) = else_branch {
-                    inspect(branch);
+                for (condition, branch) in elsif_branches.iter().rev() {
+                    if let Some(candidate) = Self::find_analyzed_node_at_start(branch, start) {
+                        return Some(candidate);
+                    }
+                    if let Some(candidate) = Self::find_analyzed_node_at_start(condition, start) {
+                        return Some(candidate);
+                    }
+                }
+                if let Some(candidate) = Self::find_analyzed_node_at_start(then_branch, start) {
+                    return Some(candidate);
+                }
+                if let Some(candidate) = Self::find_analyzed_node_at_start(condition, start) {
+                    return Some(candidate);
                 }
             }
             _ => {}
         }
 
-        found
+        (node.location.start == start).then_some(node)
     }
 
     fn materialize_advanced_reuse_tree(
