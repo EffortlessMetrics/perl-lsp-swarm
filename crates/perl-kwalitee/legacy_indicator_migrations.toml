@@ -1,0 +1,192 @@
+schema_version = 1
+legacy_kind = "perl_kwalitee"
+legacy_schema_version = 1
+domain = "mixed_repository_product_release_readiness"
+status = "compatibility_read_only"
+replacement = "independent_release_readiness_rails"
+
+[[indicator]]
+legacy_id = "manifest.workspace_member_declared"
+destination_rail = "retired"
+action = "retire"
+owner_issue = 7164
+evidence_source = "root Cargo.toml workspace membership"
+reproduce = "cargo metadata --no-deps"
+removal_condition = "ordinary Cargo workspace checks own membership and the ambiguous legacy command is removed"
+note = "Bootstrap self-membership is not release-readiness evidence."
+
+[[indicator]]
+legacy_id = "manifest.publish_policy_clean"
+destination_rail = "release_governance"
+destination_id = "release_governance.publish_policy_clean"
+action = "transfer"
+owner_issue = 7191
+evidence_source = "crate manifest plus workspace publish allowlist"
+reproduce = "cargo xtask publish-manifest-check"
+removal_condition = "the governance rail consumes the canonical publish-policy receipt"
+note = "The proposition remains governance; it must not affect distribution Kwalitee."
+
+[[indicator]]
+legacy_id = "license.declared"
+destination_rail = "release_governance"
+destination_id = "release_governance.license_declared"
+action = "transfer"
+owner_issue = 7191
+evidence_source = "crate/package license metadata"
+reproduce = "cargo xtask publish-manifest-check"
+removal_condition = "the governance rail consumes canonical package metadata evidence"
+note = "Package licensing is governance metadata, not a CPANTS-compatible score row."
+
+[[indicator]]
+legacy_id = "product_surface.native_only"
+destination_rail = "native_product"
+destination_id = "native_product.native_only"
+action = "transfer"
+owner_issue = 7168
+evidence_source = "first-mile product-surface policy"
+reproduce = "cargo xtask check-native-product-surface"
+removal_condition = "native_product_readiness.v1 owns the product-surface proposition"
+note = "This remains a native-product posture check."
+
+[[indicator]]
+legacy_id = "dap.cli_native_only"
+destination_rail = "native_product"
+destination_id = "native_product.dap_cli_native_only"
+action = "transfer"
+owner_issue = 7168
+evidence_source = "shipped perl-dap CLI surface"
+reproduce = "cargo test -p perl-kwalitee dap_cli_native_only"
+removal_condition = "native_product_readiness.v1 owns the DAP product-surface proposition"
+note = "DAP implementation and installed behavior remain separate evidence."
+
+[[indicator]]
+legacy_id = "release.native_binaries_present"
+destination_rail = "release_integrity"
+destination_id = "release_integrity.native_binaries_present"
+action = "replace"
+owner_issue = 4145
+evidence_source = "release artifact inventory"
+reproduce = "cargo xtask release artifact-check --dist <dir>"
+removal_condition = "candidate-bound release-integrity evidence replaces the repository-scoped row"
+note = "The replacement must bind exact archive subjects and hashes."
+
+[[indicator]]
+legacy_id = "release.no_external_tooling"
+destination_rail = "release_integrity"
+destination_id = "release_integrity.no_external_tooling"
+action = "replace"
+owner_issue = 4145
+evidence_source = "release archive member inventory"
+reproduce = "cargo xtask release artifact-check --dist <dir>"
+removal_condition = "candidate-bound release-integrity evidence replaces the repository-scoped row"
+note = "External comparison tools may remain test-only; they are not shipped payloads."
+
+[[indicator]]
+legacy_id = "release.checksums_valid"
+destination_rail = "release_integrity"
+destination_id = "release_integrity.checksums_valid"
+action = "replace"
+owner_issue = 4145
+evidence_source = "release checksum and subject inventory"
+reproduce = "cargo xtask release artifact-check --dist <dir>"
+removal_condition = "candidate-bound release-integrity evidence replaces the repository-scoped row"
+note = "The replacement binds every checksum to the exact intended subject set."
+
+[[indicator]]
+legacy_id = "formatter.native_default"
+destination_rail = "native_product"
+destination_id = "native_product.formatter_native_default"
+action = "transfer"
+owner_issue = 7168
+evidence_source = "native-tooling readiness receipt"
+reproduce = "cargo xtask native-tooling readiness"
+removal_condition = "native_product_readiness.v1 owns formatter default posture"
+note = "Formatter breadth and installed behavior remain separate evidence."
+
+[[indicator]]
+legacy_id = "critic.native_default"
+destination_rail = "native_product"
+destination_id = "native_product.critic_native_default"
+action = "transfer"
+owner_issue = 7168
+evidence_source = "native-tooling readiness receipt"
+reproduce = "cargo xtask native-tooling readiness"
+removal_condition = "native_product_readiness.v1 owns critic default posture"
+note = "Critic rule proof and false-positive evidence remain engineering evidence."
+
+[[indicator]]
+legacy_id = "critic.run_critic_registry_parity"
+destination_rail = "engineering_evidence"
+destination_id = "engineering_evidence.critic_registry_parity"
+action = "narrow"
+owner_issue = 4791
+evidence_source = "runCritic versus native diagnostics parity test"
+reproduce = "cargo test -p perl-lsp-rs --lib execute_command::tests::run_critic_native_matches_pull_diagnostics_registry -- --exact"
+removal_condition = "engineering_evidence.v1 consumes a current same-SHA parity receipt"
+note = "Parity proves one critic integration seam; it is not native-product posture."
+
+[[indicator]]
+legacy_id = "quality.no_new_severe_gaps"
+destination_rail = "engineering_evidence"
+destination_id = "engineering_evidence.no_new_severe_gaps"
+action = "transfer"
+owner_issue = 4791
+evidence_source = "quality-gate RIPR and coverage receipts"
+reproduce = "cargo xtask quality-gate"
+removal_condition = "engineering_evidence.v1 consumes the complete same-SHA quality packet"
+note = "Missing evidence cannot become zero severe gaps."
+
+[[indicator]]
+legacy_id = "docs.status_current"
+destination_rail = "release_governance"
+destination_id = "release_governance.status_current"
+action = "narrow"
+owner_issue = 7191
+evidence_source = "generated status freshness check"
+reproduce = "cargo xtask update-status --check"
+removal_condition = "release governance consumes current generated-status evidence without rerunning it in fan-in"
+note = "Status freshness is governance evidence, not Kwalitee."
+
+[[indicator]]
+legacy_id = "formatter.corpus_idempotent"
+destination_rail = "engineering_evidence"
+destination_id = "engineering_evidence.formatter_corpus_idempotent"
+action = "narrow"
+owner_issue = 4791
+evidence_source = "native formatter corpus receipt"
+reproduce = "cargo xtask native-format corpus"
+removal_condition = "engineering_evidence.v1 consumes the typed corpus result and limitations"
+note = "Safe-baseline proof must remain distinct from useful breadth and installed readiness."
+
+[[indicator]]
+legacy_id = "critic.no_false_positives"
+destination_rail = "engineering_evidence"
+destination_id = "engineering_evidence.critic_no_false_positives"
+action = "narrow"
+owner_issue = 4791
+evidence_source = "native critic false-positive fixture receipt"
+reproduce = "cargo xtask native-critic check --root xtask/tests/fixtures/native-critic/false-positive"
+removal_condition = "engineering_evidence.v1 consumes the typed fixture result and denominator"
+note = "A bounded clean fixture set is not a universal false-positive claim."
+
+[[indicator]]
+legacy_id = "formatter.perltidy_compat_no_external_only"
+destination_rail = "engineering_evidence"
+destination_id = "engineering_evidence.formatter_perltidy_compat"
+action = "narrow"
+owner_issue = 4791
+evidence_source = "native perltidy-compat receipt"
+reproduce = "cargo xtask native-format perltidy-compat --profile .ci/kwalitee/perltidyrc"
+removal_condition = "engineering_evidence.v1 consumes the compatibility result with its profile identity"
+note = "External-tool compatibility cannot compensate for native product gaps."
+
+[[indicator]]
+legacy_id = "critic.perlcritic_compat_no_external_only"
+destination_rail = "engineering_evidence"
+destination_id = "engineering_evidence.critic_perlcritic_compat"
+action = "narrow"
+owner_issue = 4791
+evidence_source = "native perlcritic-compat receipt"
+reproduce = "cargo xtask native-tooling perlcritic-compat --profile .ci/kwalitee/perlcriticrc"
+removal_condition = "engineering_evidence.v1 consumes the compatibility result with its profile identity"
+note = "External-tool compatibility cannot compensate for native product gaps."
