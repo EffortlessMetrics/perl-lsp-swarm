@@ -26,7 +26,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "9dffdbfd06fb67becf6955214fbbe17ce638807a"
 
-      - name: Flatten semantic-port proof modules
+      - name: Flatten and repair semantic-port proof modules
         shell: bash
         run: |
           set -euo pipefail
@@ -95,6 +95,45 @@ jobs:
           if text.count(needle) != 1:
               raise SystemExit('FactId import shape changed')
           model.write_text(text.replace(needle, replacement), encoding='utf-8')
+
+          result = root / 'crates/perl-lsp-rs-core/src/providers/semantic_port/result.rs'
+          text = result.read_text(encoding='utf-8')
+          start_marker = '            ProviderQueryOutcome::Exact => {\n'
+          end_marker = '            ProviderQueryOutcome::Degraded => {\n'
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+          exact_block = '''            ProviderQueryOutcome::Exact => {
+                if value_count == 0 {
+                    if !completeness_present
+                        || self.evidence.completeness != ProviderEvidenceCompleteness::Complete
+                        || self.evidence.completeness_authority.is_none()
+                        || !self.evidence.producers.is_empty()
+                    {
+                        return Err(ProviderQueryContractError::MissingCompletenessGrant);
+                    }
+                } else if completeness_present
+                    || self.evidence.completeness_authority.is_some()
+                {
+                    return Err(ProviderQueryContractError::UnexpectedCompletenessGrant);
+                }
+                if self.evidence.proof_class != ProviderProofClass::ExactRead
+                    || self.evidence.terminal_state != ProviderQueryTerminalState::Completed
+                    || self.evidence.result_path != ProviderResultPath::Primary
+                    || !self.request.context.is_exact_ready()
+                    || !self.evidence.limitations.is_empty()
+                    || self.evidence.boundary.is_some()
+                    || supporting_count != 0
+                    || !all_exact
+                    || !semantic_provenance_is_exact(self.evidence.provenance)
+                    || self.evidence.confidence
+                        != SemanticConfidence::Known(Confidence::High)
+                    || self.evidence.freshness != SemanticFreshness::Fresh
+                {
+                    return invalid(self.outcome);
+                }
+            }
+'''
+          result.write_text(text[:start] + exact_block + text[end:], encoding='utf-8')
 
           policy = root / 'policy/non-rust-allowlist.toml'
           text = policy.read_text(encoding='utf-8')
