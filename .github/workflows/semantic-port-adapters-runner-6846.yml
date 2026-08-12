@@ -15,7 +15,17 @@ jobs:
     env:
       BASE_HEAD: d19c114a7de42488612121fd91264700be0da477
       OLD_CHILD_HEAD: 0e8eb95f3338a9861d3c71034063783a90da87f1
+      PATCH_B64_SHA256: 212878a16a348b08307f1874ce1e58c62ada663bb2cdc2108befb16b289e2e61
+      PATCH_GZ_SHA256: e7ffeef6f8e9aa47d96b9d37ef4a47f7f96e065c714107ba9066fd8fc0833beb
+      PATCH_SHA256: 40b2badbe515f971e8bc4a8cc8054c5a04e0e8ececcd8ef8c573f051ed5ae59b
     steps:
+      - name: Check out repair authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/semantic-port-adapters-runner-6846
+          path: patch-source
+          persist-credentials: false
+
       - name: Check out exact adapter candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -31,7 +41,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Reconstruct current stacked adapter diff
+      - name: Reconstruct and repair current stacked adapter diff
         shell: bash
         run: |
           set -euo pipefail
@@ -74,23 +84,31 @@ jobs:
             crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs \
             crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs
 
+          payload=patch-source/.github/semantic-port-adapters-final-patch.b64
+          printf '%s  %s\n' "$PATCH_B64_SHA256" "$payload" | sha256sum --check --strict
+          base64 --decode "$payload" > "$RUNNER_TEMP/semantic-port-adapters-final.patch.gz"
+          printf '%s  %s\n' \
+            "$PATCH_GZ_SHA256" \
+            "$RUNNER_TEMP/semantic-port-adapters-final.patch.gz" \
+            | sha256sum --check --strict
+          gzip --decompress --stdout "$RUNNER_TEMP/semantic-port-adapters-final.patch.gz" \
+            > "$RUNNER_TEMP/semantic-port-adapters-final.patch"
+          printf '%s  %s\n' \
+            "$PATCH_SHA256" \
+            "$RUNNER_TEMP/semantic-port-adapters-final.patch" \
+            | sha256sum --check --strict
+          git -C work apply --index "$RUNNER_TEMP/semantic-port-adapters-final.patch"
+
           printf '%s\n' \
             .changes/unreleased/product-6846-Added-210342.yaml \
             crates/perl-lsp-rs-core/src/providers/mod.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs \
             crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs \
             crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs \
             | sort > "$RUNNER_TEMP/expected-adapter-paths"
           git -C work diff --cached --name-only | sort > "$RUNNER_TEMP/actual-adapter-paths"
           diff -u "$RUNNER_TEMP/expected-adapter-paths" "$RUNNER_TEMP/actual-adapter-paths"
-
-          printf '%s\n' \
-            $'9\t0\t.changes/unreleased/product-6846-Added-210342.yaml' \
-            $'2\t0\tcrates/perl-lsp-rs-core/src/providers/mod.rs' \
-            $'1313\t0\tcrates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs' \
-            $'415\t0\tcrates/perl-lsp-rs-core/tests/semantic_port_adapters.rs' \
-            | sort > "$RUNNER_TEMP/expected-adapter-numstat"
-          git -C work diff --cached --numstat | sort > "$RUNNER_TEMP/actual-adapter-numstat"
-          diff -u "$RUNNER_TEMP/expected-adapter-numstat" "$RUNNER_TEMP/actual-adapter-numstat"
           git -C work diff --cached --check
 
       - name: Install Rust 1.95
@@ -106,11 +124,13 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo +1.95.0 fmt --all 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
-          unexpected_paths="$(git status --short | awk '{print $2}' | grep -Ev '^(.changes/unreleased/product-6846-Added-210342.yaml|crates/perl-lsp-rs-core/src/providers/mod.rs|crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs|crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs)$' || true)"
+          unexpected_paths="$(git status --short | awk '{print $2}' | grep -Ev '^(.changes/unreleased/product-6846-Added-210342.yaml|crates/perl-lsp-rs-core/src/providers/mod.rs|crates/perl-lsp-rs-core/src/providers/semantic_port.rs|crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs|crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs|crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs)$' || true)"
           test -z "$unexpected_paths"
           git add \
             .changes/unreleased/product-6846-Added-210342.yaml \
             crates/perl-lsp-rs-core/src/providers/mod.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs \
             crates/perl-lsp-rs-core/src/providers/semantic_port_adapters.rs \
             crates/perl-lsp-rs-core/tests/semantic_port_adapters.rs
           test -z "$(git diff --name-only)"
@@ -123,7 +143,8 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo +1.95.0 check --locked -p perl-lsp-rs-core --all-targets 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+          cargo +1.95.0 check --locked -p perl-lsp-rs-core --all-targets \
+            2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
 
       - name: Lint adapter targets
         shell: bash
@@ -131,7 +152,8 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo +1.95.0 clippy --locked -p perl-lsp-rs-core --all-targets -- -D warnings 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+          cargo +1.95.0 clippy --locked -p perl-lsp-rs-core --all-targets -- -D warnings \
+            2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
 
       - name: Test adapter public contract
         shell: bash
@@ -139,8 +161,10 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo +1.95.0 test --locked -p perl-lsp-rs-core --test semantic_port_adapters 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
-          cargo +1.95.0 test --locked -p perl-lsp-rs-core --all-targets semantic_port 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+          cargo +1.95.0 test --locked -p perl-lsp-rs-core --test semantic_port_adapters \
+            2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+          cargo +1.95.0 test --locked -p perl-lsp-rs-core --all-targets semantic_port \
+            2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
 
       - name: Verify adapter file policy
         shell: bash
@@ -148,7 +172,8 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo +1.95.0 run --locked -p xtask -- check-file-policy 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
+          cargo +1.95.0 run --locked -p xtask -- check-file-policy \
+            2>&1 | tee -a "$RUNNER_TEMP/semantic-port-adapters.log"
 
       - name: Upload adapter transcript
         if: always()
@@ -171,6 +196,9 @@ jobs:
           git commit -m "feat(semantic-port): adapt current fact producers"
           test "$(git rev-parse HEAD^)" = "$BASE_HEAD"
           test -z "$(git status --porcelain)"
+          git diff-tree --no-commit-id --name-only -r HEAD | sort \
+            > "$RUNNER_TEMP/published-adapter-paths"
+          diff -u "$RUNNER_TEMP/expected-adapter-paths" "$RUNNER_TEMP/published-adapter-paths"
           git push \
             --force-with-lease=refs/heads/agent/semantic-provider-adapters-6817:$OLD_CHILD_HEAD \
             origin HEAD:agent/semantic-provider-adapters-6817
