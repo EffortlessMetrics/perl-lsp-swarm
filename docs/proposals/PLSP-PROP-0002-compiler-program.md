@@ -47,9 +47,10 @@ links to those sources instead of duplicating their tables.
 - [Compiler facts](../project/status/compiler_facts.md) records Tooling PIR as
   `fixture-backed`, including first-class `Branch`, `Loop`, and `Return`
   lowering. Current [PIR-A lowering](../../crates/perl-parser-core/src/pir/lower.rs)
-  and [body fixtures](../../crates/perl-parser-core/tests/pir_a_bodies_test.rs)
-  independently prove bounded `LexicalRead` and `StashRead` lowering, which the
-  human status page does not yet record.
+  emits bounded read-side operations, while the current
+  [body fixtures](../../crates/perl-parser-core/tests/pir_a_bodies_test.rs)
+  exercise that path without independently discriminating exact `LexicalRead`
+  from `StashRead`; the human status page does not yet record this narrower fact.
 - [Provider cutover status](../project/status/provider_cutover.md) owns current
   provider state, support boundaries, and receipts. The former umbrella
   [#8197](https://github.com/EffortlessMetrics/perl-lsp/issues/8197) is completed
