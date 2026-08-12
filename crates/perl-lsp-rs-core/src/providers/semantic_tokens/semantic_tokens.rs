@@ -1504,15 +1504,18 @@ where
         return Ok(false);
     }
 
-    match node.try_for_each_child_with_field(|_, child| {
-        #[cfg(test)]
-        CONTROLLED_CHILD_EDGES_ENUMERATED.with(|count| count.set(count.get().saturating_add(1)));
-        match walk_ast_full_controlled(child, traversal, visitor) {
+    match node.try_for_each_child_with_field_observed(
+        |_, _| {
+            #[cfg(test)]
+            CONTROLLED_CHILD_EDGES_ENUMERATED
+                .with(|count| count.set(count.get().saturating_add(1)));
+        },
+        |_, child| match walk_ast_full_controlled(child, traversal, visitor) {
             Ok(true) => ControlFlow::Continue(()),
             Ok(false) => ControlFlow::Break(Ok(false)),
             Err(stop) => ControlFlow::Break(Err(stop)),
-        }
-    }) {
+        },
+    ) {
         ControlFlow::Continue(()) => Ok(true),
         ControlFlow::Break(result) => result,
     }
@@ -1530,15 +1533,18 @@ where
     if !visitor(node, traversal)? {
         return Ok(false);
     }
-    match node.try_for_each_child_with_field(|_, child| {
-        #[cfg(test)]
-        CONTROLLED_CHILD_EDGES_ENUMERATED.with(|count| count.set(count.get().saturating_add(1)));
-        match walk_ast_full_controlled_with_state(child, traversal, visitor) {
+    match node.try_for_each_child_with_field_observed(
+        |_, _| {
+            #[cfg(test)]
+            CONTROLLED_CHILD_EDGES_ENUMERATED
+                .with(|count| count.set(count.get().saturating_add(1)));
+        },
+        |_, child| match walk_ast_full_controlled_with_state(child, traversal, visitor) {
             Ok(true) => ControlFlow::Continue(()),
             Ok(false) => ControlFlow::Break(Ok(false)),
             Err(stop) => ControlFlow::Break(Err(stop)),
-        }
-    }) {
+        },
+    ) {
         ControlFlow::Continue(()) => Ok(true),
         ControlFlow::Break(result) => result,
     }
