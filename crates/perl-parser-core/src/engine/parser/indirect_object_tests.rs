@@ -100,6 +100,26 @@ mod tests {
     }
 
     #[test]
+    fn test_require_call_span_covers_string_argument() {
+        let source = "require 'relative/file.pl';";
+        let stmt = first_statement(source);
+        let statement_end = stmt.location.end;
+        let expression = match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => expression,
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        };
+        assert_eq!(statement_end, source.len() - 1);
+        match expression.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "require");
+                assert_eq!(args.len(), 1);
+                assert_eq!(expression.location.end, source.len() - 1);
+            }
+            other => panic!("Expected FunctionCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
         let source = "my_custom_method $obj ($title // 'Untitled'), $options->{limit};";
         let stmt = first_statement(source);
