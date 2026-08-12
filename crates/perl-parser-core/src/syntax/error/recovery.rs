@@ -21,6 +21,99 @@ use perl_ast_v2::Node;
 use perl_lexer::TokenType;
 use perl_position_tracking::Range;
 
+/// Parser-owned source anchor for a diagnostic.
+///
+/// Downstream consumers should use this semantic accessor instead of matching
+/// public [`super::ParseError`] variants to reconstruct location fields. The
+/// parser can then add variants without forcing old consumers to guess that an
+/// unknown error belongs at byte zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParseDiagnosticAnchor {
+    /// The parser owns one exact byte offset in the source.
+    Exact(usize),
+    /// The diagnostic belongs at the current end of the source.
+    EndOfInput,
+    /// The diagnostic has no defensible source anchor.
+    NoSource,
+}
+
+/// A [`ParseDiagnosticAnchor`] resolved against one concrete source length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResolvedParseDiagnosticAnchor {
+    /// Exact in-bounds byte offset.
+    Exact(usize),
+    /// End-of-input anchor, resolved to the supplied source length.
+    EndOfInput(usize),
+    /// No source location is available.
+    NoSource,
+    /// The parser reported an exact offset outside the supplied source.
+    InvalidOffset {
+        /// Parser-reported offset.
+        reported: usize,
+        /// Concrete source length used for validation.
+        source_len: usize,
+    },
+}
+
+impl ParseDiagnosticAnchor {
+    /// Resolve this semantic anchor against a concrete source length.
+    ///
+    /// Exact offsets are never silently clamped. An out-of-range offset remains
+    /// a typed [`ResolvedParseDiagnosticAnchor::InvalidOffset`] so a consumer
+    /// cannot convert parser corruption into a plausible source location.
+    #[must_use]
+    pub const fn resolve(self, source_len: usize) -> ResolvedParseDiagnosticAnchor {
+        match self {
+            Self::Exact(offset) if offset <= source_len => {
+                ResolvedParseDiagnosticAnchor::Exact(offset)
+            }
+            Self::Exact(reported) => {
+                ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len }
+            }
+            Self::EndOfInput => ResolvedParseDiagnosticAnchor::EndOfInput(source_len),
+            Self::NoSource => ResolvedParseDiagnosticAnchor::NoSource,
+        }
+    }
+}
+
+impl super::ParseError {
+    /// Return the parser-owned source anchor for this error.
+    ///
+    /// This match is intentionally exhaustive inside `perl-parser-core`. Adding
+    /// a new [`super::ParseError`] variant therefore requires the parser owner to
+    /// decide its source semantics before the crate compiles. Downstream crates
+    /// can remain forward-compatible without a wildcard that invents byte zero.
+    #[must_use]
+    pub const fn diagnostic_anchor(&self) -> ParseDiagnosticAnchor {
+        match self {
+            Self::UnexpectedEof => ParseDiagnosticAnchor::EndOfInput,
+            Self::UnexpectedToken { location, .. }
+            | Self::SyntaxError { location, .. }
+            | Self::Advisory { location, .. }
+            | Self::Recovered { location, .. } => ParseDiagnosticAnchor::Exact(*location),
+            Self::LexerError { .. }
+            | Self::RecursionLimit
+            | Self::InvalidNumber { .. }
+            | Self::InvalidString
+            | Self::UnclosedDelimiter { .. }
+            | Self::InvalidRegex { .. }
+            | Self::NestingTooDeep { .. }
+            | Self::Cancelled => ParseDiagnosticAnchor::NoSource,
+        }
+    }
+
+    /// Resolve the parser-owned diagnostic anchor for one concrete source.
+    #[must_use]
+    pub const fn resolved_diagnostic_anchor(
+        &self,
+        source_len: usize,
+    ) -> ResolvedParseDiagnosticAnchor {
+        self.diagnostic_anchor().resolve(source_len)
+    }
+}
+
 /// Error information with recovery context for comprehensive Perl parsing error handling.
 ///
 /// This structure encapsulates all information needed for intelligent error recovery
@@ -171,4 +264,70 @@ pub trait StatementRecovery {
 
     /// Parse block with recovery
     fn parse_block_with_recovery(&mut self) -> Node;
+}
+
+#[cfg(test)]
+mod diagnostic_anchor_tests {
+    use super::{ParseDiagnosticAnchor, ResolvedParseDiagnosticAnchor};
+    use crate::syntax::error::{ParseError, RecoveryKind, RecoverySite};
+
+    #[test]
+    fn exact_current_variants_keep_their_parser_owned_offsets() {
+        let cases = [
+            ParseError::UnexpectedToken {
+                expected: "expression".into(),
+                found: ";".into(),
+                location: 11,
+            },
+            ParseError::SyntaxError { message: "invalid".into(), location: 12 },
+            ParseError::Advisory { message: "warning".into(), location: 13 },
+            ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                location: 14,
+            },
+        ];
+
+        assert_eq!(cases[0].diagnostic_anchor(), ParseDiagnosticAnchor::Exact(11));
+        assert_eq!(cases[1].diagnostic_anchor(), ParseDiagnosticAnchor::Exact(12));
+        assert_eq!(cases[2].diagnostic_anchor(), ParseDiagnosticAnchor::Exact(13));
+        assert_eq!(cases[3].diagnostic_anchor(), ParseDiagnosticAnchor::Exact(14));
+    }
+
+    #[test]
+    fn eof_and_no_source_are_not_byte_zero_aliases() {
+        assert_eq!(ParseError::UnexpectedEof.diagnostic_anchor(), ParseDiagnosticAnchor::EndOfInput);
+
+        let no_source = [
+            ParseError::LexerError { message: "bad byte".into() },
+            ParseError::RecursionLimit,
+            ParseError::InvalidNumber { literal: "1x".into() },
+            ParseError::InvalidString,
+            ParseError::UnclosedDelimiter { delimiter: ')' },
+            ParseError::InvalidRegex { message: "bad regex".into() },
+            ParseError::NestingTooDeep { depth: 5, max_depth: 4 },
+            ParseError::Cancelled,
+        ];
+        for error in no_source {
+            assert_eq!(error.diagnostic_anchor(), ParseDiagnosticAnchor::NoSource);
+            assert_ne!(error.resolved_diagnostic_anchor(100), ResolvedParseDiagnosticAnchor::Exact(0));
+        }
+    }
+
+    #[test]
+    fn resolution_preserves_eof_and_rejects_out_of_bounds_offsets() {
+        assert_eq!(
+            ParseError::UnexpectedEof.resolved_diagnostic_anchor(42),
+            ResolvedParseDiagnosticAnchor::EndOfInput(42)
+        );
+        let error = ParseError::syntax("outside", 43);
+        assert_eq!(
+            error.resolved_diagnostic_anchor(42),
+            ResolvedParseDiagnosticAnchor::InvalidOffset { reported: 43, source_len: 42 }
+        );
+        assert_eq!(
+            ParseError::syntax("inside", 42).resolved_diagnostic_anchor(42),
+            ResolvedParseDiagnosticAnchor::Exact(42)
+        );
+    }
 }
