@@ -50,6 +50,17 @@ fn g_angle_name_is_rejected_instead_of_becoming_a_perl_backreference() {
 }
 
 #[test]
+fn positive_relative_g_reference_is_rejected() {
+    let analysis = analyze(r"(a)\g{+1}(b)");
+
+    assert_eq!(analysis.facts.len(), 1);
+    assert_eq!(analysis.facts[0].kind.as_str(), "unsupported");
+    assert!(analysis.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == PatternControlDiagnosticCode::InvalidReference
+    }));
+}
+
+#[test]
 fn missing_plain_numeric_escape_remains_ambiguous_with_octal() {
     let analysis = analyze(r"\1");
 
