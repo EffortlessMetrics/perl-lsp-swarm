@@ -349,6 +349,33 @@ mod classify_config_observer {
         assert_eq!(config.series, Some(PathBuf::from("series.json")));
     }
 
+    /// RIPR observer for `Options::optional` empty-recorded-value error path.
+    #[test]
+    fn optional_empty_recorded_value_error_is_observed() {
+        let mut values = BTreeMap::new();
+        values.insert("--series".to_string(), VecDeque::new());
+        let mut options = Options { values };
+        let err = options
+            .optional("--series")
+            .expect_err("empty recorded optional must fail")
+            .to_string();
+        assert_eq!(err, "option --series was recorded without a value");
+    }
+
+    /// RIPR observer for `Options::optional` duplicate-value rejection.
+    #[test]
+    fn optional_duplicate_value_error_is_observed() {
+        let mut values = BTreeMap::new();
+        let mut recorded = VecDeque::new();
+        recorded.push_back("a.json".to_string());
+        recorded.push_back("b.json".to_string());
+        values.insert("--series".to_string(), recorded);
+        let mut options = Options { values };
+        let err =
+            options.optional("--series").expect_err("duplicate optional must fail").to_string();
+        assert_eq!(err, "option --series may be supplied only once");
+    }
+
     #[test]
     fn duplicate_option_is_rejected() {
         let err = Options::parse(
@@ -481,6 +508,26 @@ mod classify_io_observer {
         assert_eq!(err.contains("--series"), true);
     }
 
+    /// RIPR boundary discriminator for unsupported series schema rejection.
+    #[test]
+    fn load_series_manifest_schema_boundary_discriminator() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("series.json");
+        let schema = "perl_core_harness.comparison_series.not_v1";
+        assert_eq!(schema != SERIES_MANIFEST_SCHEMA_VERSION, true);
+        fs::write(&path, format!(r#"{{"schema_version":"{schema}"}}"#)).expect("write");
+        let err = load_series_manifest(&path)
+            .expect_err("unsupported series schema must fail")
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "unsupported series manifest schema: {schema}; classify I/O accepts {} only",
+                SERIES_MANIFEST_SCHEMA_VERSION
+            )
+        );
+    }
+
     /// RIPR boundary discriminator for accepted.series_id != series.series_id.
     #[test]
     fn bind_series_series_id_boundary_discriminator() {
@@ -490,7 +537,7 @@ mod classify_io_observer {
         let err = bind_series_identity(&series, &accepted, &current)
             .expect_err("series_id mismatch must fail")
             .to_string();
-        assert_eq!(err.contains("series_id mismatch"), true);
+        assert_eq!(err, "accepted baseline is not bound to series series: series_id mismatch");
     }
 
     /// RIPR boundary discriminator for accepted.manifest_hash != series.manifest_hash.
@@ -502,7 +549,7 @@ mod classify_io_observer {
         let err = bind_series_identity(&series, &accepted, &current)
             .expect_err("manifest_hash mismatch must fail")
             .to_string();
-        assert_eq!(err.contains("manifest_hash mismatch"), true);
+        assert_eq!(err, "accepted baseline is not bound to series series: manifest_hash mismatch");
     }
 
     /// RIPR boundary discriminator for accepted.file_membership != normalized_manifest.
@@ -514,7 +561,10 @@ mod classify_io_observer {
         let err = bind_series_identity(&series, &accepted, &current)
             .expect_err("accepted membership mismatch must fail")
             .to_string();
-        assert_eq!(err.contains("file_membership does not match normalized_manifest"), true);
+        assert_eq!(
+            err,
+            "accepted baseline is not bound to series series: file_membership does not match normalized_manifest"
+        );
     }
 
     /// RIPR boundary discriminator for current membership != normalized_manifest.
@@ -529,7 +579,10 @@ mod classify_io_observer {
         let err = bind_series_identity(&series, &accepted, &current)
             .expect_err("current membership mismatch must fail")
             .to_string();
-        assert_eq!(err.contains("file_results membership differs from normalized_manifest"), true);
+        assert_eq!(
+            err,
+            "compile observation is not bound to series series: file_results membership differs from normalized_manifest"
+        );
     }
 
     fn series_bind_fixture() -> (SeriesManifest, CompileBaselineV2, RunReport) {
