@@ -30,7 +30,7 @@
 
 **Command**:
 ```bash
-rtk gh run list --branch master --limit 5
+gh run list --branch master --limit 5
 ```
 
 **Expected output**: All 5 runs show `completed / success`. The `ci.yml` workflow must be among them.
