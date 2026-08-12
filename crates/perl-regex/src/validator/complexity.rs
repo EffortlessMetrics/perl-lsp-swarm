@@ -15,6 +15,7 @@ enum GroupType {
 pub(crate) fn find_complexity_diagnostics(
     pattern: &str,
     config: &RegexValidationConfig,
+    excluded_ranges: &[RegexRange],
 ) -> Vec<RegexDiagnostic> {
     let bytes = pattern.as_bytes();
     let mut i = 0;
@@ -27,6 +28,10 @@ pub(crate) fn find_complexity_diagnostics(
     let mut diagnostics = Vec::new();
 
     while i < bytes.len() {
+        if let Some(excluded) = excluded_ranges.iter().find(|range| range.contains(i)) {
+            i = excluded.end;
+            continue;
+        }
         match bytes[i] {
             b'\\' => {
                 if let Some(end) = quoted_literal_end(bytes, i) {
@@ -76,6 +81,7 @@ pub(crate) fn find_complexity_diagnostics(
                 }
             }
             b'(' => {
+                let group_offset = i;
                 let mut group = GroupType::Normal;
                 if i + 1 < bytes.len() && bytes[i + 1] == b'?' {
                     i += 2;
@@ -93,7 +99,6 @@ pub(crate) fn find_complexity_diagnostics(
                     i += 1;
                 }
 
-                let group_offset = i.saturating_sub(1);
                 match group {
                     GroupType::Lookbehind => {
                         let depth = stack
@@ -114,13 +119,9 @@ pub(crate) fn find_complexity_diagnostics(
                     GroupType::BranchReset { .. } => {
                         let depth = stack
                             .iter()
-                            .filter(|candidate| {
-                                matches!(candidate, GroupType::BranchReset { .. })
-                            })
+                            .filter(|candidate| matches!(candidate, GroupType::BranchReset { .. }))
                             .count();
-                        if depth >= config.max_nesting
-                            && !emitted_branch_reset_nesting_limit
-                        {
+                        if depth >= config.max_nesting && !emitted_branch_reset_nesting_limit {
                             diagnostics.extend(policy_diagnostic(
                                 RegexDiagnosticCode::BranchResetNestingLimit,
                                 group_offset,

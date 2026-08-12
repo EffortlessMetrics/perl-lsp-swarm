@@ -1,5 +1,7 @@
 use crate::syntax::cursor::quoted_literal_end;
 
+use super::analysis::RegexRange;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GroupFrame {
     has_backtracking_quantifier: bool,
@@ -13,7 +15,7 @@ enum LastAtom {
     Group { has_backtracking_quantifier: bool, is_atomic: bool },
 }
 
-pub(crate) fn find_nested_quantifiers(pattern: &str) -> Vec<usize> {
+pub(crate) fn find_nested_quantifiers(pattern: &str, excluded_ranges: &[RegexRange]) -> Vec<usize> {
     let bytes = pattern.as_bytes();
     let mut i = 0;
     let mut group_stack = Vec::new();
@@ -21,6 +23,11 @@ pub(crate) fn find_nested_quantifiers(pattern: &str) -> Vec<usize> {
     let mut findings = Vec::new();
 
     while i < bytes.len() {
+        if let Some(excluded) = excluded_ranges.iter().find(|range| range.contains(i)) {
+            i = excluded.end;
+            last_atom = LastAtom::Other;
+            continue;
+        }
         match bytes[i] {
             b'\\' => {
                 if let Some(end) = quoted_literal_end(bytes, i) {

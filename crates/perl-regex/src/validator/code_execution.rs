@@ -9,6 +9,7 @@ pub(crate) enum EmbeddedCodeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EmbeddedCodeFinding {
     pub(crate) offset: usize,
+    pub(crate) end: usize,
     pub(crate) kind: EmbeddedCodeKind,
 }
 
@@ -25,20 +26,64 @@ pub(crate) fn find_code_executions(pattern: &str) -> Vec<EmbeddedCodeFinding> {
             continue;
         }
         if ch == b'(' && cursor.peek(1) == Some(b'?') {
-            if cursor.peek(2) == Some(b'{') {
-                findings.push(EmbeddedCodeFinding {
-                    offset: cursor.position(),
-                    kind: EmbeddedCodeKind::Immediate,
-                });
+            let kind = if cursor.peek(2) == Some(b'{') {
+                Some(EmbeddedCodeKind::Immediate)
             } else if cursor.peek(2) == Some(b'?') && cursor.peek(3) == Some(b'{') {
-                findings.push(EmbeddedCodeFinding {
-                    offset: cursor.position(),
-                    kind: EmbeddedCodeKind::Deferred,
-                });
+                Some(EmbeddedCodeKind::Deferred)
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                let offset = cursor.position();
+                let end = embedded_region_end(pattern.as_bytes(), offset, kind);
+                findings.push(EmbeddedCodeFinding { offset, end, kind });
+                cursor.advance_to(end);
+                continue;
             }
         }
         cursor.bump();
     }
 
     findings
+}
+
+fn embedded_region_end(bytes: &[u8], start: usize, kind: EmbeddedCodeKind) -> usize {
+    let prefix_len = match kind {
+        EmbeddedCodeKind::Immediate => 3,
+        EmbeddedCodeKind::Deferred => 4,
+    };
+    let mut i = start.saturating_add(prefix_len).min(bytes.len());
+    let mut brace_depth = 1usize;
+    let mut quote = None;
+    let mut escaped = false;
+
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == b'\\' {
+                escaped = true;
+            } else if ch == delimiter {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        match ch {
+            b'\'' | b'"' => quote = Some(ch),
+            b'{' => brace_depth = brace_depth.saturating_add(1),
+            b'}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                if brace_depth == 0 {
+                    return i.saturating_add(2).min(bytes.len());
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    bytes.len()
 }

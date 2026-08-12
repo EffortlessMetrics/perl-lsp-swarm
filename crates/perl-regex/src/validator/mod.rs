@@ -5,6 +5,7 @@ mod batch;
 mod code_execution;
 mod complexity;
 mod config;
+mod interpolation;
 mod nested_quantifier;
 
 #[cfg(test)]
@@ -12,7 +13,8 @@ mod analysis_contract_tests;
 
 pub use analysis::{
     EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisCompleteness, RegexDiagnostic,
-    RegexDiagnosticClass, RegexDiagnosticCode, RegexDynamicRegionKind, RegexFacts, RegexRange,
+    RegexDiagnosticClass, RegexDiagnosticCode, RegexDynamicRegionFact, RegexDynamicRegionKind,
+    RegexFacts, RegexRange,
 };
 pub use config::RegexValidationConfig;
 
