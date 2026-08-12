@@ -40,11 +40,12 @@ fn profile_parse_empty_string_is_none() {
 }
 
 #[test]
-fn profile_parse_is_case_sensitive() {
-    // Case sensitivity is part of the contract; receipts compare stable
-    // lowercase tokens, so a mixed-case input is intentionally rejected.
-    assert!(NativeCriticProfile::parse("Strict").is_none());
-    assert!(NativeCriticProfile::parse("RECOMMENDED").is_none());
+fn profile_parse_normalizes_case_and_surrounding_whitespace() {
+    assert_eq!(NativeCriticProfile::parse("Strict"), Some(NativeCriticProfile::Strict));
+    assert_eq!(
+        NativeCriticProfile::parse(" RECOMMENDED "),
+        Some(NativeCriticProfile::Recommended)
+    );
 }
 
 #[test]
