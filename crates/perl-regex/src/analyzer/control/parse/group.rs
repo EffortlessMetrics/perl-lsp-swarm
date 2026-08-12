@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ParsedOperand, PatternBoundaryKind, PatternControlDiagnosticCode, PatternControlEffect,
+    PatternControlKind, PatternReferenceSyntax, RawControl, RegexRange, ResolutionRequest,
+    bounded_spelling, find_byte, invalid_reference, parse_operand, scan_signed_digits,
+    simple_control,
+};
 
 pub(super) fn parse_special_group_control(pattern: &str, start: usize) -> Option<RawControl> {
     let bytes = pattern.as_bytes();
