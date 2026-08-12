@@ -162,6 +162,18 @@ jobs:
               continue
             fi
 
+            terminal_receipt="$profile_dir/terminal-admission.json"
+            if ! cargo +1.97.0 run --locked -p perl-core-harness \
+              --bin perl-core-harness-terminal-admission -- \
+              --report "$profile_dir/parse.json" \
+              --report "$profile_dir/compile.json" \
+              --output "$terminal_receipt"; then
+              # Legacy missing/nonzero status is NOT_PROVEN even when file and
+              # assertion counts are green. Preserve the typed receipt and stop.
+              overall_status=1
+              continue
+            fi
+
             boundaries="$profile_dir/semantic-boundaries.json"
             reproduction="$profile_dir/reproduction.json"
             candidate="target/perl-core/baselines/${profile}-compile-candidate.json"
@@ -272,6 +284,7 @@ jobs:
           for profile in ("base", "comp", "run"):
               series_path = Path(f"target/perl-core/series/{profile}.json")
               smoke_path = Path(f"target/perl-core/smoke/{profile}/smoke.json")
+              terminal_path = Path(f"target/perl-core/smoke/{profile}/terminal-admission.json")
               bundle_indexes = list(Path("target/perl-core/bundles").glob(f"perl-5.42.2-{profile}-*/index.json"))
               print(f"### `{profile}`")
               if series_path.exists():
@@ -288,6 +301,11 @@ jobs:
                   print(f"- compile: `{smoke.get('compile_files_passed')}/{smoke.get('compile_files_total')}`")
               else:
                   print("- smoke receipt: not written")
+              if terminal_path.exists():
+                  terminal = json.loads(terminal_path.read_text())
+                  print(f"- terminal admission: `{terminal['verdict']}`")
+              else:
+                  print("- terminal admission: not written")
               print(f"- bundle index: `{bundle_indexes[0] if bundle_indexes else 'not written'}`")
               print()
           PY
