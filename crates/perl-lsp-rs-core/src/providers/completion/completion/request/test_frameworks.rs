@@ -10,9 +10,8 @@ use std::sync::LazyLock;
 const TEST_MORE_DETAIL: &str = "Test::More";
 const TEST2_DETAIL: &str = "Test2 imported symbol";
 
-static COMMON_TEST_NAMES: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
-    Test2Facts::from_source("use Test2::V0;\n").imported_symbols
-});
+static COMMON_TEST_NAMES: LazyLock<BTreeSet<String>> =
+    LazyLock::new(|| Test2Facts::from_source("use Test2::V0;\n").imported_symbols);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScopedUse {
@@ -45,10 +44,8 @@ pub(super) fn reconcile(
         // ordinary completion result rather than fabricating import facts.
         return;
     };
-    let package_uses: Vec<&ScopedUse> = scoped_uses
-        .iter()
-        .filter(|import| import.package == context.current_package)
-        .collect();
+    let package_uses: Vec<&ScopedUse> =
+        scoped_uses.iter().filter(|import| import.package == context.current_package).collect();
 
     let uses_test_more = package_uses.iter().any(|import| {
         import.module == "Test::More"
@@ -181,10 +178,7 @@ fn looks_like_indirect_method_context(context: &CompletionContext, source: &str)
     }
 
     receiver.starts_with('$')
-        || receiver
-            .chars()
-            .next()
-            .is_some_and(|character| character.is_ascii_uppercase())
+        || receiver.chars().next().is_some_and(|character| character.is_ascii_uppercase())
 }
 
 fn collect_scoped_uses(source: &str) -> Option<Vec<ScopedUse>> {
@@ -192,12 +186,7 @@ fn collect_scoped_uses(source: &str) -> Option<Vec<ScopedUse>> {
     let ast = parser.parse().ok()?;
     let mut imports = Vec::new();
     let mut current_package = "main".to_string();
-    walk_scoped_uses(
-        &ast,
-        source,
-        &mut current_package,
-        &mut imports,
-    );
+    walk_scoped_uses(&ast, source, &mut current_package, &mut imports);
     Some(imports)
 }
 
@@ -222,26 +211,16 @@ fn walk_scoped_uses(
             *current_package = saved_package;
             return;
         }
-        NodeKind::Package {
-            name,
-            block: Some(block),
-            ..
-        } => {
+        NodeKind::Package { name, block: Some(block), .. } => {
             let mut block_package = name.clone();
             walk_scoped_uses(block, source, &mut block_package, imports);
             return;
         }
-        NodeKind::Package {
-            name,
-            block: None,
-            ..
-        } => {
+        NodeKind::Package { name, block: None, .. } => {
             *current_package = name.clone();
             return;
         }
-        NodeKind::Use { module, args, .. }
-            if module == "Test::More" || is_test2_module(module) =>
-        {
+        NodeKind::Use { module, args, .. } if module == "Test::More" || is_test2_module(module) => {
             imports.push(ScopedUse {
                 package: current_package.clone(),
                 module: module.clone(),
@@ -258,15 +237,9 @@ fn walk_scoped_uses(
 }
 
 fn source_use_statement(node: &Node, source: &str, module: &str, args: &[String]) -> String {
-    let raw = source
-        .get(node.location.start..node.location.end)
-        .unwrap_or_default()
-        .trim();
+    let raw = source.get(node.location.start..node.location.end).unwrap_or_default().trim();
     let raw = raw.strip_suffix(';').unwrap_or(raw).trim();
-    if raw
-        .strip_prefix("use")
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-    {
+    if raw.strip_prefix("use").is_some_and(|rest| rest.starts_with(char::is_whitespace)) {
         return raw.to_string();
     }
 
@@ -294,9 +267,7 @@ mod tests {
     use perl_tdd_support::must;
 
     fn complete(source_with_cursor: &str, filepath: Option<&str>) -> Vec<CompletionItem> {
-        let position = source_with_cursor
-            .find('|')
-            .unwrap_or(source_with_cursor.len());
+        let position = source_with_cursor.find('|').unwrap_or(source_with_cursor.len());
         let source = source_with_cursor.replacen('|', "", 1);
         let mut parser = Parser::new(source.as_str());
         let ast = must(parser.parse());
@@ -334,10 +305,7 @@ mod tests {
 
     #[test]
     fn test2_alias_completes_unique_local_prefix() {
-        let items = complete(
-            "use Test2::V0 ok => {-as => 'my_ok'};\nmy_|",
-            Some("t/example.t"),
-        );
+        let items = complete("use Test2::V0 ok => {-as => 'my_ok'};\nmy_|", Some("t/example.t"));
         let labels = labels(&items);
         assert!(labels.contains(&"my_ok"));
         assert!(!labels.contains(&"ok"));
@@ -351,37 +319,27 @@ mod tests {
 
     #[test]
     fn standalone_compare_completes_in_a_non_test_file() {
-        let items = complete(
-            "use Test2::Tools::Compare;\nli|",
-            Some("lib/Example.pm"),
-        );
+        let items = complete("use Test2::Tools::Compare;\nli|", Some("lib/Example.pm"));
         assert!(labels(&items).contains(&"like"));
     }
 
     #[test]
     fn imports_do_not_leak_across_package_boundaries() {
-        let items = complete(
-            "package One;\nuse Test2::V0;\npackage Two;\ni|",
-            Some("lib/Example.pm"),
-        );
+        let items =
+            complete("package One;\nuse Test2::V0;\npackage Two;\ni|", Some("lib/Example.pm"));
         assert!(!labels(&items).contains(&"is"));
     }
 
     #[test]
     fn block_package_first_import_is_discovered() {
-        let items = complete(
-            "package Foo {\n    use Test2::V0;\n    i|\n}\n",
-            Some("lib/Example.pm"),
-        );
+        let items =
+            complete("package Foo {\n    use Test2::V0;\n    i|\n}\n", Some("lib/Example.pm"));
         assert!(labels(&items).contains(&"is"));
     }
 
     #[test]
     fn quote_like_fixture_text_does_not_create_an_import() {
-        let items = complete(
-            "my $fixture = q{x; use Test2::V0;};\neq_|",
-            Some("lib/Example.pm"),
-        );
+        let items = complete("my $fixture = q{x; use Test2::V0;};\neq_|", Some("lib/Example.pm"));
         assert!(!labels(&items).contains(&"eq_array"));
     }
 
@@ -405,10 +363,7 @@ mod tests {
 
     #[test]
     fn string_path_flow_cannot_gain_test2_items() {
-        let items = complete(
-            "use Test2::V0;\nmy $path = 'is|';\n",
-            Some("t/example.t"),
-        );
+        let items = complete("use Test2::V0;\nmy $path = 'is|';\n", Some("t/example.t"));
         assert!(!labels(&items).contains(&"is"));
     }
 }
