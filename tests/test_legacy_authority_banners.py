@@ -36,10 +36,14 @@ EXPECTED = {
 }
 
 
+def registry_rows() -> dict[str, dict[str, object]]:
+    registry = tomllib.loads(REGISTRY.read_text(encoding="utf-8"))
+    return {row["path"]: row for row in registry["documents"]}
+
+
 class LegacyAuthorityBannerTests(unittest.TestCase):
     def test_local_banners_match_registry(self) -> None:
-        registry = tomllib.loads(REGISTRY.read_text(encoding="utf-8"))
-        by_path = {row["path"]: row for row in registry["documents"]}
+        by_path = registry_rows()
 
         for path, (status, successor) in EXPECTED.items():
             with self.subTest(path=path):
@@ -69,13 +73,14 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
         self.assertNotIn("**Status**: Accepted", adr)
         self.assertIn("**Status**: Superseded", adr)
 
-    def test_banner_set_is_closed(self) -> None:
-        migration_source = (
-            ROOT / "scripts/migrate-legacy-authority-banners.py"
-        ).read_text(encoding="utf-8")
+    def test_banner_set_matches_every_legacy_registry_row(self) -> None:
+        legacy_paths = {
+            path
+            for path, row in registry_rows().items()
+            if row["status"] in {"historical", "superseded"}
+        }
 
-        for path in EXPECTED:
-            self.assertIn(path, migration_source)
+        self.assertEqual(set(EXPECTED), legacy_paths)
         self.assertEqual(len(EXPECTED), 9)
 
 
