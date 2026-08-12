@@ -58,6 +58,13 @@ def require_sha(value: object, label: str) -> str:
     return value
 
 
+def require_nonempty_string(row: dict[str, object], key: str, label: str) -> str:
+    value = row.get(key)
+    if not isinstance(value, str) or not value:
+        raise VerificationError(f"{label} must be a nonempty string")
+    return value
+
+
 def verify(args: argparse.Namespace) -> None:
     root = args.root.resolve(strict=True)
     if args.receipt.is_symlink():
@@ -142,14 +149,44 @@ def verify(args: argparse.Namespace) -> None:
         raise VerificationError("workspace manifests, targets, and runs must contain objects")
     if workspace.get("manifest_count") != len(manifests) or workspace.get("target_count") != len(targets):
         raise VerificationError("workspace counts are incoherent")
-    manifest_names = [row.get("manifest") for row in manifests]
-    run_names = [row.get("manifest") for row in runs]
+    manifest_names = [
+        require_nonempty_string(row, "manifest", "workspace manifest identity")
+        for row in manifests
+    ]
+    manifest_packages = [
+        require_nonempty_string(row, "package", "workspace manifest package")
+        for row in manifests
+    ]
+    run_names = [
+        require_nonempty_string(row, "manifest", "formatter run manifest identity")
+        for row in runs
+    ]
+    run_packages = [
+        require_nonempty_string(row, "package", "formatter run package")
+        for row in runs
+    ]
     if len(set(manifest_names)) != len(manifests):
         raise VerificationError("workspace manifests must be unique and coherent")
-    target_sources = [row.get("source") for row in targets]
+    target_sources = [
+        require_nonempty_string(row, "source", "workspace target source")
+        for row in targets
+    ]
+    for row in targets:
+        require_nonempty_string(row, "package", "workspace target package")
+        require_nonempty_string(row, "name", "workspace target name")
+        require_nonempty_string(row, "manifest", "workspace target manifest")
+        kinds = row.get("kind")
+        if not isinstance(kinds, list) or not kinds or any(
+            not isinstance(kind, str) or not kind for kind in kinds
+        ):
+            raise VerificationError("workspace target kind must contain nonempty strings")
     if len(set(target_sources)) != len(targets):
         raise VerificationError("workspace targets must be unique and coherent")
-    if run_names != manifest_names or any(row.get("status") != "pass" for row in runs):
+    if (
+        run_names != manifest_names
+        or run_packages != manifest_packages
+        or any(row.get("status") != "pass" for row in runs)
+    ):
         raise VerificationError("each manifest must have exactly one successful run")
     if receipt.get("findings") != [] or receipt.get("instrument_failures") != []:
         raise VerificationError("passing receipt contains findings or instrument failures")

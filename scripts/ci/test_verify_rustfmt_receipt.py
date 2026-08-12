@@ -92,7 +92,15 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
                 "manifest_count": 1,
                 "target_count": 1,
                 "manifests": [{"manifest": "pkg/Cargo.toml", "package": "pkg"}],
-                "targets": [{"source": "pkg/src/lib.rs", "package": "pkg"}],
+                "targets": [
+                    {
+                        "package": "pkg",
+                        "name": "pkg",
+                        "kind": ["lib"],
+                        "source": "pkg/src/lib.rs",
+                        "manifest": "pkg/Cargo.toml",
+                    }
+                ],
             },
             "runs": [{"manifest": "pkg/Cargo.toml", "package": "pkg", "status": "pass"}],
             "findings": [],
@@ -170,6 +178,27 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
         self.assert_rejected(lambda value: value.update(runs=[]))
         self.payload = self._valid_payload()
         self.assert_rejected(lambda value: value["runs"][0].update(status="instrument_failure"))
+
+    def test_malformed_nested_identities_are_rejected(self) -> None:
+        mutations = (
+            lambda value: (
+                value["workspace"]["manifests"][0].update(manifest=None),
+                value["runs"][0].update(manifest=None),
+            ),
+            lambda value: value["workspace"]["manifests"][0].update(package=""),
+            lambda value: value["runs"][0].update(package=[]),
+            lambda value: value["workspace"]["targets"][0].update(source={}),
+            lambda value: value["workspace"]["targets"][0].update(package=None),
+            lambda value: value["workspace"]["targets"][0].update(name=""),
+            lambda value: value["workspace"]["targets"][0].update(manifest=[]),
+            lambda value: value["workspace"]["targets"][0].update(kind=None),
+            lambda value: value["workspace"]["targets"][0].update(kind=[]),
+            lambda value: value["workspace"]["targets"][0].update(kind=[{}]),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self.payload = self._valid_payload()
+                self.assert_rejected(mutation)
 
     def test_incoherent_counts_findings_and_truncation_are_rejected(self) -> None:
         self.assert_rejected(lambda value: value["workspace"].update(manifest_count=2))
