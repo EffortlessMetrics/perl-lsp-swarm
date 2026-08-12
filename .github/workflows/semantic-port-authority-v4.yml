@@ -1,0 +1,160 @@
+name: Semantic port authority improvement 6844 v4
+
+on:
+  push:
+    branches:
+      - agent/semantic-port-closure-runner-6844
+
+permissions:
+  contents: write
+
+jobs:
+  improve-authority:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out reviewed PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/semantic-provider-port-6816
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify reviewed source head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "bb02e319f44a1508ff08a529a393d01ed5b42b8d"
+
+      - name: Bind exact-empty authority to the request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs')
+          text = path.read_text(encoding='utf-8')
+          replacements = [
+              (
+                  "pub struct ProviderCompletenessAuthorityReceipt {\n    capability: ProviderQueryCapability,\n    project_identity: ProviderIdentity,",
+                  "pub struct ProviderCompletenessAuthorityReceipt {\n    capability: ProviderQueryCapability,\n    query_kind: ProviderQueryKind,\n    subject: ProviderQuerySubject,\n    project_identity: ProviderIdentity,",
+              ),
+              (
+                  "            authority: ProviderCompletenessAuthorityReceipt {\n                capability,\n                project_identity: request.context.project_identity.clone(),",
+                  "            authority: ProviderCompletenessAuthorityReceipt {\n                capability,\n                query_kind: request.kind.clone(),\n                subject: request.subject.clone(),\n                project_identity: request.context.project_identity.clone(),",
+              ),
+              (
+                  "        self.authority.capability == ProviderQueryCapability::from_query(&request.kind)\n            && self.authority.project_identity == request.context.project_identity",
+                  "        self.authority.capability == ProviderQueryCapability::from_query(&request.kind)\n            && self.authority.query_kind == request.kind\n            && self.authority.subject == request.subject\n            && self.authority.project_identity == request.context.project_identity",
+              ),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected one authority marker, found {text.count(old)}: {old!r}')
+              text = text.replace(old, new)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          if ! grep -q 'exact_empty_authority_rejects_subject_and_query_shape_replay' \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/tests.rs; then
+            cat >> crates/perl-lsp-rs-core/src/providers/semantic_port/tests.rs <<'RS'
+
+          #[test]
+          fn exact_empty_authority_rejects_subject_and_query_shape_replay(
+          ) -> Result<(), Box<dyn Error>> {
+              let source = request(
+                  ProviderQueryKind::Declaration,
+                  ProviderQuerySubject::File(FileId(1)),
+              );
+              let grant = verified_grant(&source)?;
+              let other_file = request(
+                  ProviderQueryKind::Declaration,
+                  ProviderQuerySubject::File(FileId(2)),
+              );
+              let replay = execute(
+                  &other_file,
+                  ProviderQueryResultDraft::new(
+                      ProviderQueryOutcome::Exact,
+                      Vec::new(),
+                      Some(grant),
+                      primary(SemanticReasonCode::ExactSource),
+                  ),
+                  &NoopProviderQueryControl,
+              );
+              assert_eq!(
+                  replay.err(),
+                  Some(ProviderQueryContractError::InvalidCompletenessGrant)
+              );
+
+              let references_without_declaration = request(
+                  ProviderQueryKind::References {
+                      include_declaration: false,
+                  },
+                  ProviderQuerySubject::File(FileId(1)),
+              );
+              let reference_grant = verified_grant(&references_without_declaration)?;
+              let references_with_declaration = request(
+                  ProviderQueryKind::References {
+                      include_declaration: true,
+                  },
+                  ProviderQuerySubject::File(FileId(1)),
+              );
+              let shape_replay = execute(
+                  &references_with_declaration,
+                  ProviderQueryResultDraft::new(
+                      ProviderQueryOutcome::Exact,
+                      Vec::new(),
+                      Some(reference_grant),
+                      primary(SemanticReasonCode::ExactSource),
+                  ),
+                  &NoopProviderQueryControl,
+              );
+              assert_eq!(
+                  shape_replay.err(),
+                  Some(ProviderQueryContractError::InvalidCompletenessGrant)
+              );
+              Ok(())
+          }
+          RS
+          fi
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Verify improvement
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo +1.95.0 fmt --all 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-authority.log"
+          cargo +1.95.0 fmt --all -- --check 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-authority.log"
+          cargo +1.95.0 check --locked -p perl-lsp-rs-core --all-targets 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-authority.log"
+          cargo +1.95.0 test --locked -p perl-lsp-rs-core --all-targets semantic_port 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-authority.log"
+          cargo +1.95.0 run --locked -p xtask -- check-file-policy 2>&1 | tee -a "$RUNNER_TEMP/semantic-port-authority.log"
+
+      - name: Upload improvement transcript
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: semantic-port-authority-v4-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/semantic-port-authority.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Commit improvement to the PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/model.rs \
+            crates/perl-lsp-rs-core/src/providers/semantic_port/tests.rs
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git commit -m "fix(semantic-port): bind completeness authority"
+          git push origin HEAD:agent/semantic-provider-port-6816
