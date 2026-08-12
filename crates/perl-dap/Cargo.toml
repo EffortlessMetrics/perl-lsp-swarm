@@ -91,13 +91,16 @@ nix = { version = "0.31.3", features = ["signal"] }  # For SIGINT handling (AC9)
 winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "handleapi"] }  # For read-only process existence checks (AC9, #3028)
 
 [features]
-default = ["dap-phase1", "dap-phase2", "dap-phase3"]
-# DAP implementation phases (TDD scaffold tests)
-dap-phase1 = []  # AC1-AC4: Bridge to Perl::LanguageServer
+# The shipped/default package is the native adapter. The historical PLS bridge
+# is retained only for explicit compatibility and conformance runs.
+default = ["dap-phase2", "dap-phase3"]
+legacy-pls-bridge = []
+# Compatibility alias for existing test/integration callers. Do not add this to defaults.
+dap-phase1 = ["legacy-pls-bridge"]
 dap-phase2 = []  # AC5-AC16: Native adapter, integration tests, performance, security
 dap-phase3 = []  # AC17-AC19: Non-regression, dependency management, packaging
 # Gates test-seed helpers (push_recent_output_line_for_test, seed_*_for_test) so they
-# are excluded from production builds.  Integration tests that use them must be run
+# are excluded from production builds. Integration tests that use them must be run
 # with --features test-helpers (or have required-features = ["test-helpers"] in Cargo.toml).
 test-helpers = []
 
@@ -105,7 +108,8 @@ test-helpers = []
 [[test]]
 name = "bridge_adapter_unit_tests"
 path = "tests/bridge_adapter_unit_tests.rs"
-# Unit tests for BridgeAdapter lifecycle (bridge_adapter.rs)
+required-features = ["legacy-pls-bridge"]
+# Deprecated BridgeAdapter compatibility lifecycle tests
 
 [[test]]
 name = "protocol_edge_case_tests"
@@ -115,7 +119,8 @@ path = "tests/protocol_edge_case_tests.rs"
 [[test]]
 name = "bridge_integration_tests"
 path = "tests/bridge_integration_tests.rs"
-# AC1-AC4: Bridge to Perl::LanguageServer DAP
+required-features = ["legacy-pls-bridge"]
+# Deprecated PLS bridge conformance tests
 
 [[test]]
 name = "dap_adapter_tests"
@@ -429,7 +434,8 @@ path = "benches/dap_benchmarks.rs"
 harness = false
 
 [package.metadata.docs.rs]
-all-features = true
+no-default-features = true
+features = ["dap-phase2", "dap-phase3"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
