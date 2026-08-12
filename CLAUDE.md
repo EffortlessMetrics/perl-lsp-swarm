@@ -69,7 +69,7 @@ independent claims, the parent context is a campaign manager by default.
 The parent owns:
 
 - claim and PR selection;
-- compact lane briefing and differentiated evidence questions;
+- compact context briefing and differentiated evidence questions;
 - evidence joins and contradiction resolution;
 - mutation and proof admission;
 - proof-debt control;
@@ -86,27 +86,44 @@ A failed dispatch is not by itself permission to absorb the task. First join com
 returns, close completed subagents, reclaim useful capacity, route another decision, or
 continue integration work already supported by evidence.
 
-## Persistent claim lanes, not stage agents
+## Persistent contexts, role specialization, and skills
 
-The normal child context is one persistent lane agent per PR or coherent claim. That
-lane runs `deliver-pr` and keeps its thread, loaded source context, and worktree across
-review, repair, proof, review refresh, live CI, and closeout.
+The normal claim owner is one persistent lane agent per PR or coherent claim. It runs
+`deliver-pr` and keeps its thread, loaded source context, and worktree across review,
+repair, proof, review refresh, live CI, and closeout.
 
-Do not create separate review, repair, proof, CI, and finish subagents for the same PR.
-A skill result changes what the existing lane does next; it does not require a cold
-start.
+Agent context, role, and skill are separate:
 
-A lane that finds a bounded candidate-owned defect may fix it itself when its brief
-grants mutation/publication authority and no other writer owns the candidate. Focused
-review subagents remain read-only and return evidence to the lane root.
+- **context** preserves the PR, claim, source map, evidence, and worktree;
+- **role** biases attention and default authority, such as claim owner or independent
+  reviewer;
+- **skill** supplies the executable procedure and typed next route for the current
+  judgment.
+
+Do not create a new subagent merely because the next skill changes. Equally, do not
+forbid role-specialized subagents when they improve evidence. A dedicated review context
+may retain one PR across `review-pr`, `review-candidate`, `review-tests`, external-oracle
+work, and re-review without re-ingesting the candidate for every angle.
+
+A claim lane or dedicated reviewer that finds a bounded candidate-owned defect may fix
+it in the same context when the parent grants mutation/publication authority and no
+other writer owns the candidate. The repair still returns through affected proof and
+review. If that reviewer becomes the writer, final review must retain a genuinely
+different oracle, method, threat model, environment, or review context where
+substantive independence requires it.
+
+Use a new context when it creates real independence, reaches a different environment,
+owns a split claim or prerequisite, or reduces high-output evidence. Do not spawn one
+subagent per skill or review lens merely to repeat the same PR ingestion.
 
 The parent brief should usually contain only:
 
 - PR/claim and accepted non-goals when not obvious from GitHub;
+- desired context or specialist role when it matters;
 - mutation/publication authority;
 - merge/close/issue-creation authority;
 - worktree permission and local proof budget;
-- known prerequisite, finding, or hosted wake event.
+- known prerequisite, finding, review dimension, or hosted wake event.
 
 The repository skills own the procedure and next-step routing. Do not restate every
 review, repair, proof, CI, and cleanup rule in each dispatch.
@@ -118,23 +135,25 @@ cross-claim scheduler.
 
 ## Breadth, not subagent occupancy
 
-For a large PR queue, roughly five or six disjoint claim lanes may be useful when the
+For a large PR queue, roughly five or six disjoint PR contexts may be useful when the
 runtime and queue support them. That is a default review fan-out, not a topology, quota,
 role mix, or occupancy target.
 
-Keep only lanes whose next result can change a decision. Do not keep stale handles,
-duplicate waits, low-value work, or already-completed lanes alive to preserve a number.
+Keep only contexts whose next result can change a decision. Do not keep stale handles,
+duplicate waits, low-value work, or already-completed contexts alive to preserve a
+number.
 
-The live lane set must be deduplicated and current:
+The live context set must be deduplicated and current:
 
 - remove completed, closed, cancelled, or missing handles immediately;
-- a lane moving from review to repair remains one lane and one handle;
+- a context moving from review to repair remains one context and one handle;
+- a reviewer consuming another review skill remains the same reviewer;
 - wait only on the current live set;
-- refill capacity only when another independent claim is useful;
+- refill capacity only when another independent claim or evidence direction is useful;
 - do not terminate bounded work merely to refresh the pool display.
 
 Consume each return as it arrives. Do not wait for the whole batch before merging,
-closing, parking, recording a blocker, or resuming a lane on its next skill.
+closing, parking, recording a blocker, or resuming a context on its next skill.
 
 ## Context hierarchy
 
@@ -147,7 +166,7 @@ goal reconciliation.
 The campaign root keeps claim discovery broad, mutation bounded, proof moving, and
 converged candidates closing. Leaf implementation, first-pass deep review, broad
 archaeology, raw logs, repetitive proof, CI diagnosis, and routine cleanup belong in
-persistent claim lanes, subagents, context forks, or bounded Ultracode workflows.
+persistent claim contexts, subagents, context forks, or bounded Ultracode workflows.
 
 ### Persistent claim lane
 
@@ -164,7 +183,19 @@ A lane returns to the campaign root at a real remote wait, terminal disposition,
 prerequisite, durable hazard, external-action boundary, or precise `NOT_PROVEN`
 boundary.
 
-### Focused worker or review lens
+### Role-specialized context
+
+Owns one PR plus one durable attention bias, such as independent substantive review. It
+may consume several related skills and lenses without being replaced. A review context
+may inspect claim-vs-code, proof discrimination, production reachability, external
+truth, compatibility, risk, and rollback sequentially in the same loaded context.
+
+A specialist does not automatically become claim owner or merge authority. It may be
+promoted in place to bounded mutation when the parent grants authority and the
+same-candidate writer boundary remains clear. Its evidence returns to the claim lane or
+campaign root for cumulative judgment.
+
+### Focused evidence worker or lens
 
 Answers one bounded question or consumes one named skill. It returns findings,
 falsifiers, contradictions, uncertainty, and references—not approval or merge
@@ -180,18 +211,18 @@ Use `orchestrate-work` after selecting a public flow or substantive atomic skill
 
 ```text
 multi-PR campaign
-→ dispatch useful disjoint claim lanes
-→ each lane follows `deliver-pr`
+→ dispatch useful disjoint claim lanes and role-specialized review contexts
+→ each context follows repository skills without stage-driven replacement
 → join each result as it arrives
-→ let the same lane follow its next skill
 → admit mutation and focused proof separately from review breadth
 → merge, close, park, or record a named blocker
-→ refill only when another independent claim is useful
+→ refill only when another independent claim or evidence direction is useful
 ```
 
-Keep review breadth wider than mutation breadth. Claim lanes may begin with review, then
-continue into candidate mutation without being replaced. Writers and heavy proof are
-admitted by claim independence, proof debt, and host capacity—not by a fixed count.
+Keep review breadth wider than mutation breadth. Claim lanes and dedicated reviewers may
+begin with review, consume several review skills, then continue into authorized
+candidate mutation without being replaced. Writers and heavy proof are admitted by
+claim independence, proof debt, and host capacity—not by a fixed count.
 
 Default to subagents when they preserve campaign context, compress high-output
 evidence, change source/oracle/tool/environment/threat model, reduce elapsed time,
@@ -202,31 +233,36 @@ Do not poll unchanged remote state or wait serially for an entire batch.
 
 ## Skill-directed continuity
 
-Skills must route the same lane according to their typed result.
+Skills route the current context according to their typed result.
 
 ```text
 `review-pr`: CHANGES_REQUIRED
-→ same lane `address-review-comments` / `build-candidate`
-→ same lane affected proof
-→ same lane affected `final-challenge` / `review-pr`
+→ current authorized context `address-review-comments` / `build-candidate`
+→ affected proof
+→ affected `final-challenge` / `review-pr`
 
 `review-pr`: REVIEW_CURRENT
-→ same lane `verify-live-ci`
+→ claim lane `verify-live-ci`
 
 `verify-live-ci`: PRODUCT_OR_TEST_FAILURE
-→ same lane `build-candidate`
-→ same lane affected proof and review
+→ claim lane or authorized reviewer `build-candidate`
+→ affected proof and review
 
 `verify-live-ci`: INTEGRATION_READY
-→ same lane `merge-reconcile` when authorized
+→ claim lane `merge-reconcile` when authorized
 ```
 
 Use each skill's routes or valid exits. Do not return an intermediate review packet
-merely so another subagent can rediscover the PR. Split to a new lane only when the
-durable claim itself splits or a separate prerequisite becomes a new owned claim.
+merely so another subagent can rediscover the PR. Do not spawn a new reviewer for every
+review angle when one reviewer can reliably consume the required skills in the same
+context.
+
+Split to a new context only when the durable claim splits, a separate prerequisite gains
+an owner, or a genuinely independent evidence source, oracle, threat model, environment,
+or attention surface can change the decision.
 
 When GitHub owns the next transition, return `IN_FLIGHT` with the exact wake event. Resume
-the same lane when the runtime retains it; otherwise reconstruct from GitHub and
+the same context when the runtime retains it; otherwise reconstruct from GitHub and
 repository artifacts without creating a rival candidate.
 
 ## Proof and convergence control
@@ -239,7 +275,7 @@ Maintain a useful proof path:
 
 - when behavioral repairs need proof and the host permits it, keep focused proof moving;
 - use the smallest command that can falsify the changed seam;
-- do not start many heavy Cargo jobs merely because many lanes exist;
+- do not start many heavy Cargo jobs merely because many contexts exist;
 - when proof debt accumulates, stop starting more mutation and keep remaining capacity
   on review/evidence/integration work;
 - a published repair with missing affected proof remains `PR_IN_FLIGHT / NOT_PROVEN`
@@ -264,11 +300,11 @@ For substantive PRs the native route is:
 `finish-pr`
 → `address-review-comments`
 → `final-challenge`
-→ differentiated `orchestrate-work` lenses
+→ differentiated `orchestrate-work` lenses, optionally in one persistent reviewer
 → cumulative `review-pr`
 → REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN |
   BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE
-→ same lane follows the result
+→ current context follows the result
 → only REVIEW_CURRENT enters `verify-live-ci`
 → INTEGRATION_READY | PR_IN_FLIGHT | MERGE_BLOCKED | NOT_PROVEN
 → `merge-reconcile`
@@ -278,6 +314,11 @@ Review is not diff reading, green CI, mergeability, zero threads, bot approval, 
 subagent verdict. It must proportionately challenge proof discrimination, production
 reachability, external truth, claim honesty, semantic authority, compatibility, risk,
 and rollback.
+
+One dedicated reviewer may examine several angles by consuming several review skills in
+its shared PR context. Separate reviewer contexts are warranted when their independence
+comes from a different source, oracle, method, threat model, environment, or attention
+surface—not merely a different subagent identity or stage label.
 
 The construction context must not be the only detection surface supporting a
 substantive merge. Independence comes from changed evidence, oracle, method, threat
@@ -289,7 +330,7 @@ review happened.
 ## Worktrees, Git, and currentness
 
 A worktree and branch are the writer's operational context, not an exact-head lease.
-Do not repeatedly reauthenticate an unchanged lane with `ls-remote`, PR metadata, or
+Do not repeatedly reauthenticate an unchanged context with `ls-remote`, PR metadata, or
 expected-SHA checks.
 
 Commit and push normally without force. If Git rejects a non-fast-forward push, fetch
@@ -357,9 +398,10 @@ Otherwise detect, explain, repair, delegate, and continue independent campaign w
 - never use `git stash` in worktrees; use scoped restore or a WIP commit;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
-- a persistent claim lane may retain its worktree across review, repair, and proof;
+- a persistent claim lane or reviewer may retain its worktree across review, repair, and
+  proof when the same context will continue;
 - the child that creates a worktree cleans it after retained work is safely published
-  or abandoned and no near-term same-lane transition needs the cache;
+  or abandoned and no near-term same-context transition needs the cache;
 - parent contexts verify cleanup from typed returns and perform broad cleanup only when
   storage blocks work or the campaign is closing;
 - preserve shared targets/caches, locked or ambiguous worktrees, and state owned by
