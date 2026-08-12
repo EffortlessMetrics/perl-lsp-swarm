@@ -1,0 +1,196 @@
+name: Bootstrap issue 6947 implementation
+
+on:
+  push:
+    branches:
+      - agent/remove-false-mcp-alias
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bootstrap-6947-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Remove the false MCP alias and add regression tests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          launcher = Path("crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs")
+          text = launcher.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  '#[arg(long, visible_alias = "mcp", default_value_t = false, conflicts_with = "socket")]',
+                  '#[arg(long, default_value_t = false, conflicts_with = "socket")]',
+              ),
+              (
+                  '''    /// A parse failure other than an unknown option — an argument conflict, an
+    /// invalid value, or a missing value.
+''',
+                  '''    /// The retired `--mcp` spelling was used for the LSP stdio transport.
+    McpAliasRejected,
+    /// A parse failure other than an unknown option — an argument conflict, an
+    /// invalid value, or a missing value.
+''',
+              ),
+              (
+                  '''            },
+            Self::ParserDiagnostic { rendered } => write!(f, "{rendered}"),
+''',
+                  '''            },
+            Self::McpAliasRejected => write!(
+                f,
+                "`--mcp` is not an LSP transport alias.\\nUse `perllsp --stdio` for LSP.\\nUse `perllsp mcp --stdio` only when the native MCP adapter is available."
+            ),
+            Self::ParserDiagnostic { rendered } => write!(f, "{rendered}"),
+''',
+              ),
+              (
+                  '''            Self::UnknownOption { .. }
+            | Self::ParserDiagnostic { .. }
+''',
+                  '''            Self::UnknownOption { .. }
+            | Self::McpAliasRejected
+            | Self::ParserDiagnostic { .. }
+''',
+              ),
+              (
+                  '''        let token = args[index].to_string_lossy();
+
+        if token == "--port" {
+''',
+                  '''        let token = args[index].to_string_lossy();
+
+        if token == "--mcp" || token.starts_with("--mcp=") {
+            return Err(LaunchParseError::McpAliasRejected);
+        }
+
+        if token == "--port" {
+''',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one launcher replacement, found {count}: {old[:80]!r}")
+              text = text.replace(old, new, 1)
+
+          launcher.write_text(text, encoding="utf-8")
+
+          core_test = Path("crates/perl-lsp-rs-core/tests/mcp_alias_rejection.rs")
+          core_test.parent.mkdir(parents=True, exist_ok=True)
+          core_test.write_text(
+              '''use clap::CommandFactory;
+use perl_lsp_rs_core::runtime::{
+    LaunchAction, LaunchParseError, LspArgs, TransportMode, parse_args,
+};
+
+#[test]
+fn default_and_explicit_stdio_remain_lsp_transport() {
+    for argv in [["perllsp"].as_slice(), ["perllsp", "--stdio"].as_slice()] {
+        let plan = parse_args(argv.iter().copied()).expect("LSP stdio invocation should parse");
+        assert_eq!(plan.action, LaunchAction::Run);
+        assert_eq!(plan.config.transport, TransportMode::Stdio);
+    }
+}
+
+#[test]
+fn retired_mcp_alias_is_rejected_with_protocol_guidance() {
+    let error = parse_args(["perllsp", "--mcp"]).expect_err("--mcp must not launch LSP");
+    assert!(matches!(&error, LaunchParseError::McpAliasRejected));
+    assert_eq!(
+        error.to_string(),
+        "`--mcp` is not an LSP transport alias.\\nUse `perllsp --stdio` for LSP.\\nUse `perllsp mcp --stdio` only when the native MCP adapter is available."
+    );
+}
+
+#[test]
+fn mcp_assignment_spelling_is_rejected_too() {
+    let error = parse_args(["perllsp", "--mcp=true"])
+        .expect_err("an assignment spelling must not bypass protocol rejection");
+    assert!(matches!(&error, LaunchParseError::McpAliasRejected));
+}
+
+#[test]
+fn help_does_not_advertise_an_mcp_transport_alias() {
+    let help = LspArgs::command().render_long_help().to_string();
+    assert!(!help.contains("--mcp"), "unexpected MCP alias in help: {help}");
+}
+
+#[test]
+fn positional_mcp_cannot_become_an_lsp_run_plan() {
+    assert!(parse_args(["perllsp", "mcp"]).is_err());
+}
+''',
+              encoding="utf-8",
+          )
+
+          process_test = Path("crates/perllsp/tests/mcp_alias_rejected.rs")
+          process_test.parent.mkdir(parents=True, exist_ok=True)
+          process_test.write_text(
+              '''use std::process::Command;
+
+#[test]
+fn retired_mcp_alias_exits_without_starting_lsp() {
+    let output = Command::new(env!("CARGO_BIN_EXE_perllsp"))
+        .arg("--mcp")
+        .output()
+        .expect("perllsp should execute");
+
+    assert!(!output.status.success(), "--mcp unexpectedly succeeded");
+    assert!(output.stdout.is_empty(), "protocol stdout was not empty: {:?}", output.stdout);
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(stderr.contains("`--mcp` is not an LSP transport alias."), "{stderr}");
+    assert!(stderr.contains("Use `perllsp --stdio` for LSP."), "{stderr}");
+    assert!(
+        stderr.contains("Use `perllsp mcp --stdio` only when the native MCP adapter is available."),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Content-Length"), "LSP framing leaked into rejection: {stderr}");
+}
+''',
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Focused tests
+        run: |
+          cargo test -p perl-lsp-rs-core --test mcp_alias_rejection
+          cargo test -p perllsp --test mcp_alias_rejected
+
+      - name: Focused clippy
+        run: cargo clippy -p perl-lsp-rs-core -p perllsp --tests -- -D warnings
+
+      - name: Commit implementation and remove bootstrap workflow
+        shell: bash
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git rm -- .github/workflows/bootstrap-6947.yml
+          git add -- \
+            crates/perl-lsp-rs-core/src/runtime/launcher/mod.rs \
+            crates/perl-lsp-rs-core/tests/mcp_alias_rejection.rs \
+            crates/perllsp/tests/mcp_alias_rejected.rs
+          git diff --cached --check
+          git commit -m "fix(protocol): retire false --mcp alias (#6947)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
