@@ -738,6 +738,22 @@ mod tests {
     }
 
     #[test]
+    fn explicit_unknown_artifact_role_is_honestly_not_proven() {
+        let packet = BinaryIdentityPacketV1::server(
+            "0.18.0",
+            BinaryIdentityInput {
+                artifact_role: Some(ArtifactRole::Unknown),
+                artifact_digest: Some(digest('a')),
+                candidate_identity: Some("rc1".to_owned()),
+                ..BinaryIdentityInput::default()
+            },
+        );
+        assert_eq!(packet.artifact.role, ArtifactRole::Unknown);
+        assert!(packet.limitations.iter().any(|v| v == "artifact_role_not_proven"));
+        assert!(packet.to_human().contains("Artifact identity: partial or not proven"));
+    }
+
+    #[test]
     fn workspace_identity_is_honestly_not_proven() {
         let packet = BinaryIdentityPacketV1::server("0.18.0", BinaryIdentityInput::default());
         assert_eq!(packet.build.identity_state, BuildIdentityState::NotProven);

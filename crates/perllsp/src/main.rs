@@ -17,7 +17,7 @@ fn main() -> std::process::ExitCode {
                 }
             },
         };
-        if writeln!(std::io::stdout(), "{rendered}").is_err() {
+        if write!(std::io::stdout(), "{rendered}").is_err() {
             return std::process::ExitCode::FAILURE;
         }
         return std::process::ExitCode::SUCCESS;

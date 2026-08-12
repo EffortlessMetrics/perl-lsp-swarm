@@ -1118,6 +1118,22 @@ enum Commands {
     /// Run version-sync checks from `perl-ci-hygiene`.
     CheckVersionSync,
 
+    /// Classify an exact-SHA publication-drift observation.
+    #[command(name = "publication-drift")]
+    PublicationDrift {
+        /// Comparison observation JSON.
+        #[arg(long)]
+        input: PathBuf,
+
+        /// Repository root used to resolve the authority manifest.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/publication-drift.json")]
+        out: PathBuf,
+    },
+
     /// Sync active release narrative docs from workspace version and publish count.
     SyncReleaseDocs {
         /// Write synced files (omit to run a dry check).
@@ -4345,6 +4361,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
         }
         Commands::CheckVersionSync => check_version_sync::run(),
+        Commands::PublicationDrift { input, repo_root, out } => {
+            xtask::publication_drift::run_with_paths(input, repo_root, out)
+        }
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
         Commands::CheckFromRaw => ci_policy::check_from_raw(),
         Commands::CheckMemoryLifecyclePolicy => ci_policy::check_memory_lifecycle(),

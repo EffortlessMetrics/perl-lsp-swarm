@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -408,7 +409,7 @@ def prepare_identity(args: argparse.Namespace) -> ReleaseBuildIdentity:
     identity.validate()
     write_atomic(args.output, canonical_json_bytes(identity.as_dict()))
     if args.github_env is not None:
-        append_github_env(args.github_env, identity)
+        append_github_env(args.github_env, identity, runner=runner)
     return identity
 
 
@@ -444,18 +445,33 @@ def identity_environment(identity: ReleaseBuildIdentity) -> dict[str, str]:
     }
 
 
+def cross_container_opts(identity: ReleaseBuildIdentity) -> str:
+    """Return the closed Cross container environment passthrough contract."""
+    arguments: list[str] = []
+    for key, value in identity_environment(identity).items():
+        arguments.extend(("-e", f"{key}={value}"))
+    return shlex.join(arguments)
+
+
 def build_environment(identity: ReleaseBuildIdentity) -> dict[str, str]:
     env = dict(os.environ)
     env.update(identity_environment(identity))
     return env
 
 
-def append_github_env(path: Path, identity: ReleaseBuildIdentity) -> None:
+def append_github_env(
+    path: Path,
+    identity: ReleaseBuildIdentity,
+    *,
+    runner: str | None = None,
+) -> None:
     """Append validated single-line build inputs for later workflow steps."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         for key, value in identity_environment(identity).items():
             handle.write(f"{key}={value}\n")
+        if runner == "cross":
+            handle.write(f"CROSS_CONTAINER_OPTS={cross_container_opts(identity)}\n")
 
 
 def binary_path(root: Path, identity: ReleaseBuildIdentity, executable: str) -> Path:

@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("release_build_identity.py")
+REPO_ROOT = MODULE_PATH.parent.parent
 SPEC = importlib.util.spec_from_file_location(
     "release_build_identity", MODULE_PATH
 )
@@ -295,6 +296,54 @@ development_repository = "EffortlessMetrics/perl-lsp-swarm"
         ]
         self.assertEqual(first.splitlines(), expected_lines)
         self.assertEqual(second.splitlines(), expected_lines + expected_lines)
+
+    def test_cross_container_passthrough_is_closed_and_validated(self) -> None:
+        identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())
+        options = subject.cross_container_opts(identity)
+        expected = []
+        for key, value in subject.identity_environment(identity).items():
+            expected.extend(("-e", f"{key}={value}"))
+        self.assertEqual(options, subject.shlex.join(expected))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "github.env"
+            subject.append_github_env(path, identity, runner="cross")
+            self.assertEqual(
+                path.read_text(encoding="utf-8").splitlines()[-1],
+                f"CROSS_CONTAINER_OPTS={options}",
+            )
+
+    def test_release_workflow_declares_all_three_cross_rows(self) -> None:
+        workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(workflow.count("use_cross: true"), 3)
+        self.assertIn('--runner "$BUILD_CMD"', workflow)
+        self.assertIn('--github-env "$GITHUB_ENV"', workflow)
+
+    def test_partial_packet_is_not_proven_and_never_accepted(self) -> None:
+        identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())
+        packet = valid_packet("perllsp", "perllsp", "server")
+        packet["build"] = {
+            **packet["build"],
+            "source_revision": None,
+            "source_tree_digest": None,
+            "target": None,
+            "identity_state": "not_proven",
+        }
+        packet["limitations"] = [
+            "source_revision_not_embedded",
+            "source_tree_digest_not_embedded",
+            "target_triple_not_embedded",
+        ]
+        with self.assertRaisesRegex(subject.BuildIdentityError, "build identity mismatch"):
+            subject.validate_packet(
+                packet,
+                identity=identity,
+                executable="perllsp",
+                package="perllsp",
+                role="server",
+            )
 
     def test_verify_receipt_names_external_build_execution(self) -> None:
         identity = subject.ReleaseBuildIdentity.from_mapping(valid_mapping())

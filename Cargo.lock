@@ -1547,6 +1547,7 @@ dependencies = [
  "anyhow",
  "clap",
  "criterion",
+ "getrandom 0.3.4",
  "nix",
  "perl-ast",
  "perl-lexer",
@@ -3991,6 +3992,7 @@ dependencies = [
  "tree-sitter-perl-c",
  "tree-sitter-perl-rs",
  "walkdir",
+ "winapi",
 ]
 
 [[package]]
