@@ -109,6 +109,7 @@ use perl_parser_core::ast::{Node, NodeKind};
 use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
+use std::ops::ControlFlow;
 use std::sync::LazyLock;
 
 /// Undelta-encoded semantic token `(line, character, length, type, modifiers)`.
@@ -527,6 +528,7 @@ fn tokenize_json_body(
             cursor = cursor.saturating_add(current.len_utf8());
         }
         if body.as_bytes().get(cursor) != Some(&b':') {
+            cursor = key_start_offset.saturating_add(1);
             continue;
         }
         // Preserve the historical regex geometry: whitespace before the colon
@@ -632,8 +634,9 @@ fn find_bytes_at_controlled(
 ///
 /// Cancellation is polled before every lexer step and every AST node. A work
 /// unit is also charged for every interpolation part and substring candidate,
-/// heredoc character, raw-token copy, heapsort comparison or swap, overlap
-/// candidate, and encoded token. Cancellation is checked before the budget, so
+/// heredoc character, declaration-index insertion or lookup, raw-token copy,
+/// heapsort comparison or swap, overlap candidate, and encoded token.
+/// Cancellation is checked before the budget, so
 /// simultaneous cancellation and exhaustion reports `Cancelled`. A zero budget
 /// admits no work. Once either stop is observed, no further work is performed;
 /// overshoot is zero work units. The only opaque interval is one lexer call,
@@ -1069,268 +1072,292 @@ pub fn collect_semantic_tokens_controlled(
         const_fast_enabled,
         readonly_enabled,
         &mut traversal,
-    ))
-    .into_iter()
-    .map(|((start, end), is_readonly)| (start, end, is_readonly))
-    .collect::<Vec<_>>();
+    ));
 
     // 2a-ii) Collect assignment LHS spans to apply the "modification" modifier (bit 7)
     let assignment_spans = controlled_value!(assignment_lhs_spans(ast, &mut traversal));
 
     // 2b) AST overlays: package/sub/variable with precise spans where available
-    controlled_value!(walk_ast_full_controlled(ast, &mut traversal, &mut |node| {
-        // For nodes with name_span, use the precise span for better highlighting
-        match &node.kind {
-            NodeKind::Package { name_span, .. } => {
-                let (sl, sc) = to_pos16(name_span.start);
-                let (el, ec) = to_pos16(name_span.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((
-                        sl,
-                        sc,
-                        len,
-                        kind_idx(&leg, "namespace"),
-                        1, /*declaration*/
-                    ));
+    controlled_value!(walk_ast_full_controlled_with_state(
+        ast,
+        &mut traversal,
+        &mut |node, traversal| {
+            // For nodes with name_span, use the precise span for better highlighting
+            match &node.kind {
+                NodeKind::Package { name_span, .. } => {
+                    let (sl, sc) = to_pos16(name_span.start);
+                    let (el, ec) = to_pos16(name_span.end);
+                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
+                    if len > 0 {
+                        ast_tokens.push((
+                            sl,
+                            sc,
+                            len,
+                            kind_idx(&leg, "namespace"),
+                            1, /*declaration*/
+                        ));
+                    }
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::Subroutine { name: Some(_), name_span: Some(span), .. } => {
-                let (sl, sc) = to_pos16(span.start);
-                let (el, ec) = to_pos16(span.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((
-                        sl,
-                        sc,
-                        len,
-                        kind_idx(&leg, "function"),
-                        1 | 2, /*declaration|definition*/
-                    ));
+                NodeKind::Subroutine { name: Some(_), name_span: Some(span), .. } => {
+                    let (sl, sc) = to_pos16(span.start);
+                    let (el, ec) = to_pos16(span.end);
+                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
+                    if len > 0 {
+                        ast_tokens.push((
+                            sl,
+                            sc,
+                            len,
+                            kind_idx(&leg, "function"),
+                            1 | 2, /*declaration|definition*/
+                        ));
+                    }
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::Subroutine { name: Some(_), .. } => {
-                let (sl, sc) = to_pos16(node.location.start);
-                let (el, ec) = to_pos16(node.location.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((
-                        sl,
-                        sc,
-                        len,
-                        kind_idx(&leg, "function"),
-                        1, /*declaration*/
-                    ));
+                NodeKind::Subroutine { name: Some(_), .. } => {
+                    let (sl, sc) = to_pos16(node.location.start);
+                    let (el, ec) = to_pos16(node.location.end);
+                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
+                    if len > 0 {
+                        ast_tokens.push((
+                            sl,
+                            sc,
+                            len,
+                            kind_idx(&leg, "function"),
+                            1, /*declaration*/
+                        ));
+                    }
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::Method { name, .. } => {
-                let (start, end) = method_declaration_name_offsets(
-                    text,
-                    node.location.start,
-                    node.location.end,
-                    name,
-                )
-                .unwrap_or((node.location.start, node.location.end));
-                let (sl, sc) = to_pos16(start);
-                let (el, ec) = to_pos16(end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((
-                        sl,
-                        sc,
-                        len,
-                        kind_idx(&leg, "method"),
-                        1 | 2, /*declaration|definition*/
-                    ));
-                }
-                return true;
-            }
-            NodeKind::Class { .. } => {
-                let (sl, sc) = to_pos16(node.location.start);
-                let (el, ec) = to_pos16(node.location.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((sl, sc, len, kind_idx(&leg, "class"), 1 /*declaration*/));
-                }
-                return true;
-            }
-            NodeKind::PhaseBlock { phase_span: Some(span), .. } => {
-                let (sl, sc) = to_pos16(span.start);
-                let (el, ec) = to_pos16(span.end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((sl, sc, len, kind_idx(&leg, "macro"), 0));
-                }
-                return true;
-            }
-            NodeKind::LabeledStatement { label, .. } => {
-                let Some(fallback_end) = node.location.start.checked_add(label.len()) else {
-                    return true;
-                };
-                let (start, end) =
-                    statement_label_offsets(text, node.location.start, node.location.end, label)
-                        .unwrap_or((node.location.start, fallback_end));
-                let (sl, sc) = to_pos16(start);
-                let (el, ec) = to_pos16(end);
-                let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-                if len > 0 {
-                    ast_tokens.push((sl, sc, len, kind_idx(&leg, "label"), 1 /*declaration*/));
-                }
-                return true;
-            }
-            NodeKind::LoopControl { op, label: Some(label) } => {
-                if let Some((start, end)) = loop_control_label_offsets(
-                    text,
-                    node.location.start,
-                    node.location.end,
-                    op,
-                    label,
-                ) {
+                NodeKind::Method { name, .. } => {
+                    let (start, end) = method_declaration_name_offsets(
+                        text,
+                        node.location.start,
+                        node.location.end,
+                        name,
+                    )
+                    .unwrap_or((node.location.start, node.location.end));
                     let (sl, sc) = to_pos16(start);
                     let (el, ec) = to_pos16(end);
                     let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
                     if len > 0 {
-                        ast_tokens.push((sl, sc, len, kind_idx(&leg, "label"), 0));
+                        ast_tokens.push((
+                            sl,
+                            sc,
+                            len,
+                            kind_idx(&leg, "method"),
+                            1 | 2, /*declaration|definition*/
+                        ));
                     }
+                    return Ok(true);
                 }
-                return true;
-            }
-            NodeKind::MethodCall { object, method, args } => {
-                // Emit a narrow token for just the method name, not the entire
-                // expression. Whitespace/newlines may separate the receiver from
-                // `->method` (perldoc perlop), so scan forward for the span rather
-                // than assuming `->` abuts the receiver at object.location.end + 2.
-                if let Some((method_name_start, method_name_end)) =
-                    method_call_name_offsets(text, object.location.end, method)
-                {
-                    let (sl, sc) = to_pos16(method_name_start);
-                    let (el, ec) = to_pos16(method_name_end);
+                NodeKind::Class { .. } => {
+                    let (sl, sc) = to_pos16(node.location.start);
+                    let (el, ec) = to_pos16(node.location.end);
                     let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
                     if len > 0 {
-                        ast_tokens.push((sl, sc, len, kind_idx(&leg, "method"), 0));
+                        ast_tokens.push((
+                            sl,
+                            sc,
+                            len,
+                            kind_idx(&leg, "class"),
+                            1, /*declaration*/
+                        ));
                     }
+                    return Ok(true);
                 }
-                // If this is a SQL-bearing DBI method, classify the first string arg as sql_string.
-                let is_sql_method = matches!(
-                    method.as_str(),
-                    "prepare"
-                        | "do"
-                        | "query"
-                        | "selectrow_array"
-                        | "selectrow_arrayref"
-                        | "selectrow_hashref"
-                        | "selectall_arrayref"
-                        | "selectall_hashref"
-                        | "fetchall_arrayref"
-                        | "fetchall_hashref"
-                        | "fetchrow_arrayref"
-                        | "fetchrow_hashref"
-                        | "execute"
-                );
-                if is_sql_method
-                    && let Some(first_arg) = args.first()
-                    && matches!(first_arg.kind, NodeKind::String { .. })
-                {
-                    let (asl, asc) = to_pos16(first_arg.location.start);
-                    let (ael, aec) = to_pos16(first_arg.location.end);
-                    let alen = if asl == ael { aec.saturating_sub(asc) } else { 0 };
-                    if alen > 0 {
-                        ast_tokens.push((asl, asc, alen, kind_idx(&leg, "sql_string"), 0));
+                NodeKind::PhaseBlock { phase_span: Some(span), .. } => {
+                    let (sl, sc) = to_pos16(span.start);
+                    let (el, ec) = to_pos16(span.end);
+                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
+                    if len > 0 {
+                        ast_tokens.push((sl, sc, len, kind_idx(&leg, "macro"), 0));
                     }
+                    return Ok(true);
                 }
-                return true;
-            }
-            _ => {}
-        }
-
-        let (s, e) = (node.location.start, node.location.end);
-        let (sl, sc) = to_pos16(s);
-        let (el, ec) = to_pos16(e);
-        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
-
-        let (kind, mods): (&str, u32) = match &node.kind {
-            NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
-                if matches!(&node.kind, NodeKind::FunctionCall { .. })
-                    && ((const_fast_enabled && name == "const")
-                        || (readonly_enabled && name == "Readonly"))
-                {
-                    return true;
+                NodeKind::LabeledStatement { label, .. } => {
+                    let Some(fallback_end) = node.location.start.checked_add(label.len()) else {
+                        return Ok(true);
+                    };
+                    let (start, end) = statement_label_offsets(
+                        text,
+                        node.location.start,
+                        node.location.end,
+                        label,
+                    )
+                    .unwrap_or((node.location.start, fallback_end));
+                    let (sl, sc) = to_pos16(start);
+                    let (el, ec) = to_pos16(end);
+                    let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
+                    if len > 0 {
+                        ast_tokens.push((
+                            sl,
+                            sc,
+                            len,
+                            kind_idx(&leg, "label"),
+                            1, /*declaration*/
+                        ));
+                    }
+                    return Ok(true);
                 }
-                // Skip builtins that should remain as keywords from the lexer pass,
-                // and synthetic names produced for coderef/deref calls (these don't
-                // start at node.location.start — painting them produces garbage).
-                match name.as_str() {
-                    "eval" | "do" | "use" | "no" | "return" | "my" | "our" | "local" | "state"
-                    | "next" | "last" | "redo" | "goto" => return true,
-                    // Synthetic FunctionCall names from postfix.rs (coderef invocation)
-                    // and variables.rs (deref).  The name is not a real identifier at
-                    // node.location.start, so narrowing to name.len() bytes paints
-                    // garbage on the receiver.
-                    "->()" | "&{}" | "$" => return true,
-                    _ => {
-                        // Narrow the token to just the function name, not the entire
-                        // call expression.  Previously the token spanned the whole call
-                        // (name + args), which caused the arguments to inherit the
-                        // function color and dropped inner string/number/variable tokens
-                        // via overlap removal.  (#5077)
-                        //
-                        // For AmperCall the source is `&name(...)` — the name starts
-                        // one byte after the node start (past the `&`).
-                        let is_amper = matches!(&node.kind, NodeKind::AmperCall { .. });
-                        let name_start = if is_amper { s + 1 } else { s };
-                        let name_end = name_start + name.len();
-                        let (nsl, nsc) = to_pos16(name_start);
-                        let (nel, nec) = to_pos16(name_end);
-                        if nsl == nel {
-                            let nlen = nec.saturating_sub(nsc);
-                            if nlen > 0 {
-                                ast_tokens.push((nsl, nsc, nlen, kind_idx(&leg, "function"), 0));
-                            }
+                NodeKind::LoopControl { op, label: Some(label) } => {
+                    if let Some((start, end)) = loop_control_label_offsets(
+                        text,
+                        node.location.start,
+                        node.location.end,
+                        op,
+                        label,
+                    ) {
+                        let (sl, sc) = to_pos16(start);
+                        let (el, ec) = to_pos16(end);
+                        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
+                        if len > 0 {
+                            ast_tokens.push((sl, sc, len, kind_idx(&leg, "label"), 0));
                         }
-                        return true; // already emitted with narrowed range
+                    }
+                    return Ok(true);
+                }
+                NodeKind::MethodCall { object, method, args } => {
+                    // Emit a narrow token for just the method name, not the entire
+                    // expression. Whitespace/newlines may separate the receiver from
+                    // `->method` (perldoc perlop), so scan forward for the span rather
+                    // than assuming `->` abuts the receiver at object.location.end + 2.
+                    if let Some((method_name_start, method_name_end)) =
+                        method_call_name_offsets(text, object.location.end, method)
+                    {
+                        let (sl, sc) = to_pos16(method_name_start);
+                        let (el, ec) = to_pos16(method_name_end);
+                        let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
+                        if len > 0 {
+                            ast_tokens.push((sl, sc, len, kind_idx(&leg, "method"), 0));
+                        }
+                    }
+                    // If this is a SQL-bearing DBI method, classify the first string arg as sql_string.
+                    let is_sql_method = matches!(
+                        method.as_str(),
+                        "prepare"
+                            | "do"
+                            | "query"
+                            | "selectrow_array"
+                            | "selectrow_arrayref"
+                            | "selectrow_hashref"
+                            | "selectall_arrayref"
+                            | "selectall_hashref"
+                            | "fetchall_arrayref"
+                            | "fetchall_hashref"
+                            | "fetchrow_arrayref"
+                            | "fetchrow_hashref"
+                            | "execute"
+                    );
+                    if is_sql_method
+                        && let Some(first_arg) = args.first()
+                        && matches!(first_arg.kind, NodeKind::String { .. })
+                    {
+                        let (asl, asc) = to_pos16(first_arg.location.start);
+                        let (ael, aec) = to_pos16(first_arg.location.end);
+                        let alen = if asl == ael { aec.saturating_sub(asc) } else { 0 };
+                        if alen > 0 {
+                            ast_tokens.push((asl, asc, alen, kind_idx(&leg, "sql_string"), 0));
+                        }
+                    }
+                    return Ok(true);
+                }
+                _ => {}
+            }
+
+            let (s, e) = (node.location.start, node.location.end);
+            let (sl, sc) = to_pos16(s);
+            let (el, ec) = to_pos16(e);
+            let len = if sl == el { ec.saturating_sub(sc) } else { 0 };
+
+            let (kind, mods): (&str, u32) = match &node.kind {
+                NodeKind::FunctionCall { name, .. } | NodeKind::AmperCall { name, .. } => {
+                    if matches!(&node.kind, NodeKind::FunctionCall { .. })
+                        && ((const_fast_enabled && name == "const")
+                            || (readonly_enabled && name == "Readonly"))
+                    {
+                        return Ok(true);
+                    }
+                    // Skip builtins that should remain as keywords from the lexer pass,
+                    // and synthetic names produced for coderef/deref calls (these don't
+                    // start at node.location.start — painting them produces garbage).
+                    match name.as_str() {
+                        "eval" | "do" | "use" | "no" | "return" | "my" | "our" | "local"
+                        | "state" | "next" | "last" | "redo" | "goto" => return Ok(true),
+                        // Synthetic FunctionCall names from postfix.rs (coderef invocation)
+                        // and variables.rs (deref).  The name is not a real identifier at
+                        // node.location.start, so narrowing to name.len() bytes paints
+                        // garbage on the receiver.
+                        "->()" | "&{}" | "$" => return Ok(true),
+                        _ => {
+                            // Narrow the token to just the function name, not the entire
+                            // call expression.  Previously the token spanned the whole call
+                            // (name + args), which caused the arguments to inherit the
+                            // function color and dropped inner string/number/variable tokens
+                            // via overlap removal.  (#5077)
+                            //
+                            // For AmperCall the source is `&name(...)` — the name starts
+                            // one byte after the node start (past the `&`).
+                            let is_amper = matches!(&node.kind, NodeKind::AmperCall { .. });
+                            let name_start = if is_amper { s + 1 } else { s };
+                            let name_end = name_start + name.len();
+                            let (nsl, nsc) = to_pos16(name_start);
+                            let (nel, nec) = to_pos16(name_end);
+                            if nsl == nel {
+                                let nlen = nec.saturating_sub(nsc);
+                                if nlen > 0 {
+                                    ast_tokens.push((
+                                        nsl,
+                                        nsc,
+                                        nlen,
+                                        kind_idx(&leg, "function"),
+                                        0,
+                                    ));
+                                }
+                            }
+                            return Ok(true); // already emitted with narrowed range
+                        }
                     }
                 }
-            }
-            NodeKind::Variable { sigil, name } => {
-                let (vs, ve) = (node.location.start, node.location.end);
-                let decl_info = decl_spans.iter().find(|(ds, de, _)| *ds <= vs && ve <= *de);
-                let full_name = format!("{sigil}{name}");
-                let special_mod = if is_special_variable(&full_name) { 512 } else { 0 }; // defaultLibrary bit 9
-                let sigil_mod: u32 = match sigil.as_str() {
-                    "$" => 1024, // scalarVariable bit 10
-                    "@" => 2048, // arrayVariable  bit 11
-                    "%" => 4096, // hashVariable   bit 12
-                    _ => 0,      // "&" (code ref), "*" (glob), others
-                };
-                let mods = match decl_info {
-                    // `Const::Fast` / `Readonly` produce true read-only variables,
-                    // so emit `declaration | readonly` (bits 0 | 2) (#4968).
-                    Some((_, _, true)) => 1 | 4 | special_mod | sigil_mod,
-                    // `my`, `state`, `local`, and `our` create ordinary mutable
-                    // lexical/package variables — `our` is an alias, not immutable
-                    // — so the `readonly` modifier (bit 2) must not be applied
-                    // (#4968). Use `declaration` only.
-                    Some((_, _, false)) => 1 | special_mod | sigil_mod,
-                    None => {
-                        // Apply "modification" modifier (bit 7 = 128) when the variable is
-                        // the direct LHS of an assignment expression ($x = ...).
-                        let mod_bit = if assignment_spans.contains(&(vs, ve)) { 128 } else { 0 };
-                        special_mod | sigil_mod | mod_bit
-                    }
-                };
-                ("variable", mods)
-            }
-            _ => return true,
-        };
+                NodeKind::Variable { sigil, name } => {
+                    let (vs, ve) = (node.location.start, node.location.end);
+                    let decl_info = declaration_flag(&decl_spans, (vs, ve), traversal)?;
+                    let full_name = format!("{sigil}{name}");
+                    let special_mod = if is_special_variable(&full_name) { 512 } else { 0 }; // defaultLibrary bit 9
+                    let sigil_mod: u32 = match sigil.as_str() {
+                        "$" => 1024, // scalarVariable bit 10
+                        "@" => 2048, // arrayVariable  bit 11
+                        "%" => 4096, // hashVariable   bit 12
+                        _ => 0,      // "&" (code ref), "*" (glob), others
+                    };
+                    let mods = match decl_info {
+                        // `Const::Fast` / `Readonly` produce true read-only variables,
+                        // so emit `declaration | readonly` (bits 0 | 2) (#4968).
+                        Some(true) => 1 | 4 | special_mod | sigil_mod,
+                        // `my`, `state`, `local`, and `our` create ordinary mutable
+                        // lexical/package variables — `our` is an alias, not immutable
+                        // — so the `readonly` modifier (bit 2) must not be applied
+                        // (#4968). Use `declaration` only.
+                        Some(false) => 1 | special_mod | sigil_mod,
+                        None => {
+                            // Apply "modification" modifier (bit 7 = 128) when the variable is
+                            // the direct LHS of an assignment expression ($x = ...).
+                            let mod_bit =
+                                if assignment_spans.contains(&(vs, ve)) { 128 } else { 0 };
+                            special_mod | sigil_mod | mod_bit
+                        }
+                    };
+                    ("variable", mods)
+                }
+                _ => return Ok(true),
+            };
 
-        if len > 0 {
-            ast_tokens.push((sl, sc, len, kind_idx(&leg, kind), mods));
-        }
-        true
-    }));
+            if len > 0 {
+                ast_tokens.push((sl, sc, len, kind_idx(&leg, kind), mods));
+            }
+            Ok(true)
+        },
+    ));
 
     let tokens =
         controlled_value!(finalize_tokens_controlled(&ast_tokens, &lexer_tokens, &mut traversal,));
@@ -1471,13 +1498,40 @@ where
         return Ok(false);
     }
 
-    for child in node.children() {
-        if !walk_ast_full_controlled(child, traversal, visitor)? {
-            return Ok(false);
+    match node.try_for_each_child_with_field(|_, child| {
+        match walk_ast_full_controlled(child, traversal, visitor) {
+            Ok(true) => ControlFlow::Continue(()),
+            Ok(false) => ControlFlow::Break(Ok(false)),
+            Err(stop) => ControlFlow::Break(Err(stop)),
         }
+    }) {
+        ControlFlow::Continue(()) => Ok(true),
+        ControlFlow::Break(result) => result,
     }
+}
 
-    Ok(true)
+fn walk_ast_full_controlled_with_state<F>(
+    node: &Node,
+    traversal: &mut TraversalState<'_, '_>,
+    visitor: &mut F,
+) -> Result<bool, TraversalStop>
+where
+    F: FnMut(&Node, &mut TraversalState<'_, '_>) -> Result<bool, TraversalStop>,
+{
+    traversal.admit_work()?;
+    if !visitor(node, traversal)? {
+        return Ok(false);
+    }
+    match node.try_for_each_child_with_field(|_, child| {
+        match walk_ast_full_controlled_with_state(child, traversal, visitor) {
+            Ok(true) => ControlFlow::Continue(()),
+            Ok(false) => ControlFlow::Break(Ok(false)),
+            Err(stop) => ControlFlow::Break(Err(stop)),
+        }
+    }) {
+        ControlFlow::Continue(()) => Ok(true),
+        ControlFlow::Break(result) => result,
+    }
 }
 
 fn declaration_readonly_flags(
@@ -1488,7 +1542,7 @@ fn declaration_readonly_flags(
 ) -> Result<FxHashMap<(usize, usize), bool>, TraversalStop> {
     let mut flags = FxHashMap::default();
 
-    walk_ast_full_controlled(ast, traversal, &mut |node| {
+    walk_ast_full_controlled_with_state(ast, traversal, &mut |node, traversal| {
         match &node.kind {
             NodeKind::VariableDeclaration { declarator, variable, .. } => {
                 // `our` creates a package-variable alias in lexical scope; it
@@ -1496,6 +1550,7 @@ fn declaration_readonly_flags(
                 // `Readonly` produce true readonly semantics (#4968).
                 let is_readonly = false;
                 let _ = declarator;
+                traversal.admit_work()?;
                 flags
                     .entry((variable.location.start, variable.location.end))
                     .and_modify(|flag| *flag |= is_readonly)
@@ -1505,6 +1560,7 @@ fn declaration_readonly_flags(
                 let is_readonly = false;
                 let _ = declarator;
                 for variable in variables {
+                    traversal.admit_work()?;
                     flags
                         .entry((variable.location.start, variable.location.end))
                         .and_modify(|flag| *flag |= is_readonly)
@@ -1512,17 +1568,26 @@ fn declaration_readonly_flags(
                 }
             }
             NodeKind::FunctionCall { name, args } if const_fast_enabled && name == "const" => {
-                mark_const_fast_decl_flags(args, &mut flags);
+                mark_const_fast_decl_flags(args, &mut flags, traversal)?;
             }
             NodeKind::FunctionCall { name, args } if readonly_enabled && name == "Readonly" => {
-                mark_readonly_decl_flags(args, &mut flags);
+                mark_readonly_decl_flags(args, &mut flags, traversal)?;
             }
             _ => {}
         }
-        true
+        Ok(true)
     })?;
 
     Ok(flags)
+}
+
+fn declaration_flag(
+    flags: &FxHashMap<(usize, usize), bool>,
+    span: (usize, usize),
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<Option<bool>, TraversalStop> {
+    traversal.admit_work()?;
+    Ok(flags.get(&span).copied())
 }
 
 fn assignment_lhs_spans(
@@ -1569,36 +1634,50 @@ fn ast_uses_readonly(
     Ok(enabled)
 }
 
-fn mark_const_fast_decl_flags(args: &[Node], flags: &mut FxHashMap<(usize, usize), bool>) {
+fn mark_const_fast_decl_flags(
+    args: &[Node],
+    flags: &mut FxHashMap<(usize, usize), bool>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     for arg in args {
+        traversal.admit_work()?;
         match &arg.kind {
             NodeKind::VariableDeclaration { variable, .. } => {
                 flags.insert((variable.location.start, variable.location.end), true);
             }
             NodeKind::VariableListDeclaration { variables, .. } => {
                 for variable in variables {
+                    traversal.admit_work()?;
                     flags.insert((variable.location.start, variable.location.end), true);
                 }
             }
             _ => {}
         }
     }
+    Ok(())
 }
 
-fn mark_readonly_decl_flags(args: &[Node], flags: &mut FxHashMap<(usize, usize), bool>) {
+fn mark_readonly_decl_flags(
+    args: &[Node],
+    flags: &mut FxHashMap<(usize, usize), bool>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
     for arg in args {
+        traversal.admit_work()?;
         match &arg.kind {
             NodeKind::VariableDeclaration { variable, .. } => {
                 flags.insert((variable.location.start, variable.location.end), true);
             }
             NodeKind::VariableListDeclaration { variables, .. } => {
                 for variable in variables {
+                    traversal.admit_work()?;
                     flags.insert((variable.location.start, variable.location.end), true);
                 }
             }
             _ => {}
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1863,6 +1942,18 @@ mod tests {
         .map_err(|_| "unexpected JSON traversal stop")?;
         assert_eq!(json_tokens, vec![tok(0, 0, 8, 22, 0), tok(0, 13, 6, 22, 0)]);
 
+        let mut recovered_tokens = Vec::new();
+        tokenize_json_body(
+            "\"unterminated\n{\"valid\": 1}",
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut recovered_tokens,
+            &mut traversal,
+        )
+        .map_err(|_| "unexpected malformed JSON traversal stop")?;
+        assert_eq!(recovered_tokens, vec![tok(0, 15, 7, 22, 0)]);
+
         let mut sql_tokens = Vec::new();
         tokenize_sql_body(
             "éSELECT SELECTé select notselect",
@@ -1875,6 +1966,80 @@ mod tests {
         .map_err(|_| "unexpected SQL traversal stop")?;
         assert_eq!(sql_tokens, vec![tok(0, 18, 6, 21, 0)]);
         Ok(())
+    }
+
+    #[test]
+    fn ast_child_enumeration_stops_before_eager_sibling_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = (0..512).map(|index| format!("{index};\n")).collect::<String>();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(1));
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut visited = 0usize;
+
+        let result = walk_ast_full_controlled(&ast, &mut traversal, &mut |_| {
+            visited = visited.saturating_add(1);
+            true
+        });
+
+        assert_eq!(result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(traversal.work_done, 1);
+        assert_eq!(visited, 1, "only the admitted root may reach the visitor");
+        Ok(())
+    }
+
+    #[test]
+    fn ast_child_enumeration_observes_cancellation_before_next_sibling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = (0..512).map(|index| format!("{index};\n")).collect::<String>();
+        let mut parser = Parser::new(&source);
+        let ast = parser.parse()?;
+        let polls = AtomicUsize::new(0);
+        let cancellation = || polls.fetch_add(1, Ordering::Relaxed) >= 1;
+        let control = SemanticTokensTraversalControl::new(&cancellation, None);
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut visited = 0usize;
+
+        let result = walk_ast_full_controlled(&ast, &mut traversal, &mut |_| {
+            visited = visited.saturating_add(1);
+            true
+        });
+
+        assert_eq!(result, Err(TraversalStop::Cancelled));
+        assert_eq!(traversal.work_done, 1);
+        assert_eq!(visited, 1, "cancellation must stop before visiting a sibling");
+        assert_eq!(polls.load(Ordering::Relaxed), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn declaration_lookup_consumes_one_exact_work_unit() {
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(0));
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut flags = FxHashMap::default();
+        flags.insert((4, 6), true);
+
+        let result = declaration_flag(&flags, (4, 6), &mut traversal);
+
+        assert_eq!(result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(traversal.work_done, 0);
+    }
+
+    #[test]
+    fn declaration_lookup_observes_cancellation_before_hash_work() {
+        let cancelled = || true;
+        let control = SemanticTokensTraversalControl::new(&cancelled, None);
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut flags = FxHashMap::default();
+        flags.insert((4, 6), true);
+
+        let result = declaration_flag(&flags, (4, 6), &mut traversal);
+
+        assert_eq!(result, Err(TraversalStop::Cancelled));
+        assert_eq!(traversal.work_done, 0);
     }
 
     #[test]
