@@ -18,6 +18,24 @@ successor = ""
 notes = "Claude provider route map."
 
 [[documents]]
+path = "docs/agents/AUTHORITY_STATUS.md"
+status = "current"
+successor = ""
+notes = "Human-readable document-status authority delegated by both root provider routes."
+
+[[documents]]
+path = "docs/agents/authority_status.toml"
+status = "current"
+successor = ""
+notes = "Machine-readable document-status registry and migration inventory."
+
+[[documents]]
+path = "docs/agents/README.md"
+status = "current"
+successor = ""
+notes = "Front door for current cross-provider method and authority status."
+
+[[documents]]
 path = "docs/agents/DEVELOPMENT_METHOD.md"
 status = "current"
 successor = ""
