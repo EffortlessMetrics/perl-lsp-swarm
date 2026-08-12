@@ -23,17 +23,12 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source
-        .get(node.location.start..node.location.end)
-        .map(str::to_owned)
+    source.get(node.location.start..node.location.end).map(str::to_owned)
 }
 
 fn subtree_contains(node: &Node, predicate: &impl Fn(&NodeKind) -> bool) -> bool {
     predicate(&node.kind)
-        || node
-            .children()
-            .into_iter()
-            .any(|child| subtree_contains(child, predicate))
+        || node.children().into_iter().any(|child| subtree_contains(child, predicate))
 }
 
 #[test]
@@ -51,19 +46,12 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
     let mut classes = Vec::new();
 
     walk(&ast, &mut |node| {
-        let NodeKind::Class {
-            name,
-            name_span,
-            parents,
-            body,
-        } = &node.kind
-        else {
+        let NodeKind::Class { name, name_span, parents, body } = &node.kind else {
             return;
         };
 
-        let name_text = name_span
-            .and_then(|span| source.get(span.start..span.end))
-            .map(str::to_owned);
+        let name_text =
+            name_span.and_then(|span| source.get(span.start..span.end)).map(str::to_owned);
         let header_tail = name_span
             .and_then(|span| source.get(span.end..body.location.start))
             .map(str::trim)
@@ -84,12 +72,9 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
         let mut members = Vec::new();
         for member in statements {
             match &member.kind {
-                NodeKind::VariableDeclaration {
-                    declarator,
-                    variable,
-                    attributes,
-                    initializer,
-                } if declarator == "field" => {
+                NodeKind::VariableDeclaration { declarator, variable, attributes, initializer }
+                    if declarator == "field" =>
+                {
                     members.push((
                         "field".to_string(),
                         source_text(source, member),
@@ -107,13 +92,9 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                         }),
                     ));
                 }
-                NodeKind::Method {
-                    name,
-                    name_span,
-                    signature,
-                    attributes,
-                    body,
-                } if name == "get" => {
+                NodeKind::Method { name, name_span, signature, attributes, body }
+                    if name == "get" =>
+                {
                     let signature_shape = signature.as_deref().map(|signature| {
                         let NodeKind::Signature { parameters } = &signature.kind else {
                             return (source_text(source, signature), 0, false, false);
@@ -143,23 +124,14 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                         attributes.clone(),
                         Some(format!("{signature_shape:?}")),
                         signature_shape
-                            == Some((
-                                Some("($fallback = 0)".to_string()),
-                                1,
-                                true,
-                                true,
-                            ))
+                            == Some((Some("($fallback = 0)".to_string()), 1, true, true))
                             && source_text(source, body).as_deref()
                                 == Some("{ return $value // $fallback; }"),
                     ));
                 }
-                NodeKind::Method {
-                    name,
-                    name_span,
-                    signature,
-                    attributes,
-                    body,
-                } if name == "ADJUST" => {
+                NodeKind::Method { name, name_span, signature, attributes, body }
+                    if name == "ADJUST" =>
+                {
                     members.push((
                         "adjust".to_string(),
                         source_text(source, member),
@@ -167,14 +139,11 @@ fn class_owns_exact_field_method_and_adjust_members() -> Result<(), String> {
                             .and_then(|span| source.get(span.start..span.end))
                             .map(str::to_owned),
                         attributes.clone(),
-                        signature
-                            .as_deref()
-                            .and_then(|value| source_text(source, value)),
+                        signature.as_deref().and_then(|value| source_text(source, value)),
                         name_span.is_none()
                             && signature.is_none()
                             && attributes.is_empty()
-                            && source_text(source, body).as_deref()
-                                == Some("{ $value = 2; }"),
+                            && source_text(source, body).as_deref() == Some("{ $value = 2; }"),
                     ));
                 }
                 _ => members.push((
