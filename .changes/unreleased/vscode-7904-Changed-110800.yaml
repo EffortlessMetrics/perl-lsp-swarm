@@ -1,0 +1,9 @@
+project: vscode
+component: Developer experience
+kind: Changed
+body: Report Issue now copies a typed redacted public-beta support packet while keeping unavailable live state explicitly not proven.
+time: 2026-08-13T11:08:00Z
+custom:
+  PR: 7904
+  Slug: vscode-report-issue-support-packet
+  Breaking: "no"
