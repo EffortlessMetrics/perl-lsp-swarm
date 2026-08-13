@@ -228,6 +228,8 @@ pub struct TypeInferenceEngine {
     accessor_return_facts: HashMap<(String, String), TypeFact>,
     /// Narrow source-backed method return facts keyed by `(package, method)`.
     method_return_facts: HashMap<(String, String), TypeFact>,
+    /// Explicit result types collected for each active subroutine inference frame.
+    return_type_stack: Vec<Vec<PerlType>>,
     /// Type aliases from use statements
     _type_aliases: HashMap<String, PerlType>,
 }
@@ -247,6 +249,7 @@ impl TypeInferenceEngine {
             builtins: HashMap::new(),
             accessor_return_facts: HashMap::new(),
             method_return_facts: HashMap::new(),
+            return_type_stack: Vec::new(),
             _type_aliases: HashMap::new(),
         };
 
@@ -323,6 +326,7 @@ impl TypeInferenceEngine {
 
     /// Infer types for an AST
     pub fn infer(&mut self, ast: &Node) -> Result<PerlType, Vec<TypeConstraint>> {
+        self.return_type_stack.clear();
         self.refresh_accessor_return_facts(ast);
         self.refresh_method_return_facts(ast);
 
@@ -600,24 +604,14 @@ impl TypeInferenceEngine {
                 // Default to accepting any parameters for now
                 let param_types = vec![Any];
 
-                // Infer return type from body
-                // In Perl, the return value is the value of the last statement
-                // or explicit return statement.
-                // Our `infer_node` for Block already returns the type of the last statement.
-                // We should also scan for `Return` nodes, but for now we just use the block result
-                // which handles the implicit return of the last statement.
-                // Note: explicit returns inside control flow (if/else) are tricky to unify without
-                // a full control flow graph, but `infer_node` recurses so it should pick up types.
-                // Wait, `infer_node` for `Program`/`Block` returns the type of the *last* statement.
-                // It does NOT unify types from intermediate `return` statements.
-
-                // For better accuracy, we should probably scan the body for `Return` nodes?
-                // But `infer_node(body)` calls `infer_node` recursively.
-                // If we want to support explicit returns not at the end, we need to handle `Return` node
-                // to return a special type or track returns in `TypeInferenceEngine`.
-
-                // For now, let's trust `infer_node(body)` to return the implicit return type of the block.
-                let return_type = self.infer_node(body, &mut sub_env)?;
+                // Collect explicit results during the existing sequential inference pass. A frame per
+                // active subroutine keeps nested subroutine results isolated while preserving the
+                // environment visible at each result site.
+                self.return_type_stack.push(Vec::new());
+                let implicit_return = self.infer_node(body, &mut sub_env);
+                let mut return_types = self.return_type_stack.pop().unwrap_or_default();
+                return_types.push(implicit_return?);
+                let return_type = Self::unify_return_types(&return_types);
 
                 let sub_type = Subroutine { params: param_types, returns: vec![return_type] };
 
@@ -670,12 +664,20 @@ impl TypeInferenceEngine {
                 }
             }
 
+            NodeKind::StatementModifier { statement, condition, .. } => {
+                let _condition_type = self.infer_node(condition, env)?;
+                self.infer_node(statement, env)
+            }
+
             NodeKind::Return { value } => {
-                if let Some(val) = value {
-                    self.infer_node(val, env)
-                } else {
-                    Ok(Void)
+                let return_type =
+                    if let Some(val) = value { self.infer_node(val, env)? } else { Void };
+
+                if let Some(return_types) = self.return_type_stack.last_mut() {
+                    return_types.push(return_type.clone());
                 }
+
+                Ok(return_type)
             }
 
             NodeKind::Block { statements } => {
@@ -1184,6 +1186,56 @@ impl TypeInferenceEngine {
             // Too many types, use Any
             Any
         }
+    }
+
+    /// Unify explicit and implicit subroutine result types without applying Perl's
+    /// broad scalar-coercion compatibility rules. Distinct result shapes remain
+    /// visible to downstream hover and completion consumers.
+    fn unify_return_types(types: &[PerlType]) -> PerlType {
+        use PerlType::*;
+        use ScalarType::*;
+
+        fn push_unique(flattened: &mut Vec<PerlType>, ty: &PerlType) {
+            if let PerlType::Union(members) = ty {
+                for member in members {
+                    push_unique(flattened, member);
+                }
+            } else if !flattened.contains(ty) {
+                flattened.push(ty.clone());
+            }
+        }
+
+        let mut flattened = Vec::new();
+        for ty in types {
+            push_unique(&mut flattened, ty);
+        }
+
+        if flattened.iter().any(|ty| matches!(ty, Any)) {
+            return Any;
+        }
+
+        if flattened.is_empty() {
+            return Void;
+        }
+
+        if flattened.len() == 1 {
+            return flattened.pop().unwrap_or(Void);
+        }
+
+        if flattened.iter().all(|ty| matches!(ty, Scalar(Integer) | Scalar(Float))) {
+            if flattened.iter().any(|ty| matches!(ty, Scalar(Float))) {
+                return Scalar(Float);
+            }
+            return Scalar(Integer);
+        }
+
+        if flattened.iter().all(|ty| matches!(ty, Scalar(_)))
+            && flattened.iter().any(|ty| matches!(ty, Scalar(Mixed)))
+        {
+            return Scalar(Mixed);
+        }
+
+        if flattened.len() <= 3 { Union(flattened) } else { Any }
     }
 
     /// Check if two types are compatible
