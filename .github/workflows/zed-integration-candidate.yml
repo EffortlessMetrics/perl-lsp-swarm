@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.ci/fixtures/zed-perl-upstream/**'
+      - '.ci/schemas/zed-*.json'
       - '.github/workflows/zed-integration-candidate.yml'
       - '.kiro/steering/product.md'
       - 'book/src/reference/editor-setup-canonical.md'
@@ -11,15 +12,16 @@ on:
       - 'docs/EDITORS/ZED_SETUP.md'
       - 'docs/how-to/EDITOR_SETUP.md'
       - 'docs/how-to/TROUBLESHOOTING.md'
-      - 'docs/integrations/ZED_UPSTREAM_SUBMISSION.md'
+      - 'docs/integrations/ZED_*.md'
       - 'docs/reference/FAQ.md'
-      - 'scripts/apply-zed-perl-upstream.sh'
-      - 'scripts/check-zed-upstream-candidate.sh'
-      - 'xtask/tests/zed_support_claims.rs'
+      - 'scripts/apply-zed-*.sh'
+      - 'scripts/check-zed-*.sh'
+      - 'xtask/tests/zed_*.rs'
   push:
     branches: [main]
     paths:
       - '.ci/fixtures/zed-perl-upstream/**'
+      - '.ci/schemas/zed-*.json'
       - '.github/workflows/zed-integration-candidate.yml'
       - '.kiro/steering/product.md'
       - 'book/src/reference/editor-setup-canonical.md'
@@ -27,11 +29,11 @@ on:
       - 'docs/EDITORS/ZED_SETUP.md'
       - 'docs/how-to/EDITOR_SETUP.md'
       - 'docs/how-to/TROUBLESHOOTING.md'
-      - 'docs/integrations/ZED_UPSTREAM_SUBMISSION.md'
+      - 'docs/integrations/ZED_*.md'
       - 'docs/reference/FAQ.md'
-      - 'scripts/apply-zed-perl-upstream.sh'
-      - 'scripts/check-zed-upstream-candidate.sh'
-      - 'xtask/tests/zed_support_claims.rs'
+      - 'scripts/apply-zed-*.sh'
+      - 'scripts/check-zed-*.sh'
+      - 'xtask/tests/zed_*.rs'
   workflow_dispatch:
 
 permissions:
@@ -45,7 +47,7 @@ jobs:
   candidate:
     name: Build staged Zed extension candidate
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -58,9 +60,6 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
           targets: wasm32-wasip2
-
-      - name: Check staged identities and claims
-        run: bash scripts/check-zed-upstream-candidate.sh
 
       - name: Generate isolated candidate lockfile
         run: cargo generate-lockfile --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
@@ -77,5 +76,5 @@ jobs:
       - name: Build Zed WASM extension
         run: cargo build --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked --target wasm32-wasip2 --release
 
-      - name: Run repository claim guards
-        run: cargo test -p xtask --test zed_support_claims --locked
+      - name: Run all present Zed programme contracts
+        run: bash scripts/check-zed-programme-contracts.sh
