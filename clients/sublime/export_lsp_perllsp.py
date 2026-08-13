@@ -4,35 +4,19 @@ import argparse
 import zipfile
 from pathlib import Path
 
+from package_source import load_manifest, validate_source_tree
+
 ROOT = Path(__file__).resolve().parent
 PACKAGE = ROOT / "LSP-perllsp"
-INCLUDED = [
-    ".python-version",
-    "Default.sublime-commands",
-    "LICENSE-APACHE",
-    "LICENSE-MIT",
-    "LSP-perllsp.sublime-settings",
-    "Perl.sublime-project.example",
-    "README.md",
-    "command_surface.py",
-    "dap_support.py",
-    "debugger_adapter.py",
-    "messages.json",
-    "messages/install.txt",
-    "plugin.py",
-    "release.py",
-    "server-manifest.json",
-    "sublime-package.json",
-]
 
 
 def build(output: Path) -> None:
-    missing = [path for path in INCLUDED if not (PACKAGE / path).is_file()]
-    if missing:
-        raise SystemExit(f"missing package files: {missing}")
+    manifest = load_manifest()
+    validate_source_tree(manifest, PACKAGE)
+    included = tuple(manifest["package_files"])
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for relative in sorted(INCLUDED):
+        for relative in included:
             data = (PACKAGE / relative).read_bytes()
             info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
             info.external_attr = 0o644 << 16
