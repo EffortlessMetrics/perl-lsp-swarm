@@ -1,0 +1,48 @@
+name: Agent notebook rustfmt
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/agent-notebook-rustfmt.yml'
+      - 'crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs'
+
+permissions:
+  contents: write
+
+jobs:
+  rustfmt:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 1
+
+      - name: Install exact Rust toolchain
+        shell: bash
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+
+      - name: Format notebook tests
+        shell: bash
+        run: rustup run 1.95.0 rustfmt --edition 2024 crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs
+
+      - name: Commit exact formatting
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          path=crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs
+          if git diff --quiet -- "$path"; then
+            echo "Notebook tests are already formatted."
+            exit 0
+          fi
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add -- "$path"
+          git commit -m 'style(lsp): apply rustfmt to notebook tests'
+          git push origin "HEAD:${HEAD_REF}"
