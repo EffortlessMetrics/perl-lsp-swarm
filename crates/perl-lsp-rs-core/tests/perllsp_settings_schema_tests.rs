@@ -1,6 +1,4 @@
-use perl_lsp_rs_core::config::{
-    FormatterMode, Perl5LibPrecedence, ServerConfig, WorkspaceConfig,
-};
+use perl_lsp_rs_core::config::{FormatterMode, Perl5LibPrecedence, ServerConfig, WorkspaceConfig};
 use perl_lsp_rs_core::runtime::LspLimits;
 use serde_json::{Value, json};
 use std::{error::Error, time::Duration};
