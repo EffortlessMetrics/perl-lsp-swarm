@@ -125,10 +125,7 @@ describe('bounded prove process execution', () => {
   test('enforces the combined stdout/stderr byte ceiling across both streams', async () => {
     const result = await runBoundedProcess(
       process.execPath,
-      [
-        '-e',
-        'process.stdout.write("a".repeat(80)); process.stderr.write("b".repeat(80));',
-      ],
+      ['-e', 'process.stdout.write("a".repeat(80)); process.stderr.write("b".repeat(80));'],
       {
         shell: false,
         timeoutMs: 5_000,
@@ -172,10 +169,7 @@ describe('bounded prove process execution', () => {
     const started = Date.now();
     const result = await runBoundedProcess(
       process.execPath,
-      [
-        '-e',
-        'process.on("SIGTERM", () => {}); setTimeout(() => {}, 5000);',
-      ],
+      ['-e', 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 5000);'],
       {
         shell: false,
         timeoutMs: 100,
@@ -231,10 +225,7 @@ describe('bounded prove process execution', () => {
     const started = Date.now();
     const result = await runBoundedProcess(
       process.execPath,
-      [
-        '-e',
-        'process.on("SIGTERM", () => {}); setTimeout(() => {}, 5000);',
-      ],
+      ['-e', 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 5000);'],
       {
         shell: false,
         timeoutMs: 50,
