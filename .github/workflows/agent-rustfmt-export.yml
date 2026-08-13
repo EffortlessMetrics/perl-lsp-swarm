@@ -1,9 +1,15 @@
 name: Agent rustfmt export
 
 on:
-  push:
+  pull_request:
     branches:
-      - test/7777-editor-client-compat
+      - main
+    paths:
+      - '.github/workflows/agent-rustfmt-export.yml'
+      - 'xtask/tests/editor_client_compat_contract.rs'
+      - 'xtask/tests/support/agent_client_compat.rs'
+      - 'xtask/tests/support/client_compat_fixture.rs'
+      - 'xtask/tests/support/editor_client_compat.rs'
 
 permissions:
   contents: read
