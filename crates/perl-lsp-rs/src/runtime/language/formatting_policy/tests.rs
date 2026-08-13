@@ -43,6 +43,57 @@ fn initialize(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn handle_formatting_policy_call_presence_observer() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server);
+    server.config.lock().perltidy_enabled = false;
+    let uri = "file:///call-presence-formatting.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+
+    let result = server.handle_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+
+    assert_eq!(
+        result,
+        Some(json!([])),
+        "input that reaches call self.admit(Surface::Document, &params)"
+    );
+    assert_eq!(
+        receipt(&server)?["decision"],
+        "blocked",
+        "input that reaches call Some(&snapshot)"
+    );
+    assert_eq!(
+        receipt(&server)?["actual_engine"],
+        "disabled",
+        "input that reaches call CodeFormatter::with_config_and_mode(\n            snapshot.config.perltidy.clone(),\n            snapshot.config.mode,\n        )"
+    );
+    assert_eq!(
+        receipt(&server)?["reason"],
+        "formatter_disabled",
+        "input that reaches call snapshot.config.perltidy.clone()"
+    );
+    assert!(
+        receipt(&server)?["source_generation"].is_u64(),
+        "input that reaches call Some(snapshot.generation)"
+    );
+    assert!(
+        receipt(&server)?["source_id_hash"].is_string(),
+        "input that reaches call Some(snapshot.uri.clone())"
+    );
+    assert!(
+        receipt(&server)?["source_id_hash"].is_string(),
+        "input that reaches call snapshot.uri.clone()"
+    );
+    Ok(())
+}
+
+#[test]
 fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server);
