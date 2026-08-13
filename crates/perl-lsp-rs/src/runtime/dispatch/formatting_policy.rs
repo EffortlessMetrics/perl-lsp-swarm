@@ -98,4 +98,68 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn handle_formatting_policy_call_presence_observer_routed_unadvertised()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.initialize_requested.store(true, std::sync::atomic::Ordering::Release);
+        server.advertised_features.lock().formatting = false;
+        server.advertised_feature_ids.lock().clear();
+
+        let id = JsonRpcId::Integer(301).to_value();
+        let request = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: JsonRpcId::from_value(&id),
+            method: "textDocument/formatting".to_string(),
+            params: None,
+        };
+        let routed = route(&server, &request, Some(id), true)
+            .ok_or("formatting must be intercepted after initialize")?;
+        let RoutedResponse::Handler { result, .. } = routed else {
+            return Err("expected handler response".into());
+        };
+        let error = result.err().ok_or("expected method-not-advertised")?;
+        assert_eq!(
+            error.code, -32601,
+            "input that reaches call self.ensure_surface_advertised(Surface::Document)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn handle_formatting_policy_call_presence_observer_routed_missing_params()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.initialize_requested.store(true, std::sync::atomic::Ordering::Release);
+        server.advertised_features.lock().formatting = true;
+        server
+            .advertised_feature_ids
+            .lock()
+            .push(perl_lsp_rs_core::features::ids::LSP_FORMATTING);
+
+        let id = JsonRpcId::Integer(302).to_value();
+        let request = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: JsonRpcId::from_value(&id),
+            method: "textDocument/formatting".to_string(),
+            params: None,
+        };
+        let routed = route(&server, &request, Some(id), true)
+            .ok_or("formatting must be intercepted after initialize")?;
+        let RoutedResponse::Handler { result, .. } = routed else {
+            return Err("expected handler response".into());
+        };
+        let error = result.err().ok_or("expected invalid params")?;
+        assert_eq!(error.code, -32602);
+        assert!(
+            error.message.contains("Missing formatting parameters"),
+            "input that reaches call params.ok_or_else(|| invalid_params(\"Missing formatting parameters\"))"
+        );
+        assert!(
+            error.message.contains("Missing formatting parameters"),
+            "input that reaches call invalid_params(\"Missing formatting parameters\")"
+        );
+        Ok(())
+    }
 }

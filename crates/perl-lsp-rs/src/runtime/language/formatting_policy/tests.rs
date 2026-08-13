@@ -67,6 +67,46 @@ fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn handle_formatting_policy_call_presence_observer_ensure_surface_advertised()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    server.advertised_features.lock().formatting = false;
+    server.advertised_feature_ids.lock().clear();
+    // Reach the advertise gate without params so missing-params cannot mask it.
+    let error = server
+        .handle_formatting_policy(None, Some(&JsonRpcId::Integer(301).to_value()))
+        .err()
+        .ok_or("expected method-not-advertised")?;
+    assert_eq!(
+        error.code, -32601,
+        "input that reaches call self.ensure_surface_advertised(Surface::Document)"
+    );
+    Ok(())
+}
+
+#[test]
+fn handle_formatting_policy_call_presence_observer_missing_params()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server);
+
+    let error = server
+        .handle_formatting_policy(None, Some(&JsonRpcId::Integer(302).to_value()))
+        .err()
+        .ok_or("expected invalid params")?;
+    assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+    assert!(
+        error.message.contains("Missing formatting parameters"),
+        "input that reaches call params.ok_or_else(|| invalid_params(\"Missing formatting parameters\"))"
+    );
+    assert!(
+        error.message.contains("Missing formatting parameters"),
+        "input that reaches call invalid_params(\"Missing formatting parameters\")"
+    );
+    Ok(())
+}
+
+#[test]
 fn jsonrpc_unadvertised_formatting_hits_surface_gate_before_params()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
@@ -83,7 +123,7 @@ fn jsonrpc_unadvertised_formatting_hits_surface_gate_before_params()
     let code = response.error.as_ref().map(|error| error.code).unwrap_or(0);
     assert_eq!(
         code, -32601,
-        "JSON-RPC formatting must hit ensure_surface_advertised before param validation"
+        "input that reaches call self.ensure_surface_advertised(Surface::Document)"
     );
     Ok(())
 }
@@ -101,8 +141,7 @@ fn jsonrpc_advertised_formatting_rejects_missing_params() -> Result<(), Box<dyn 
     assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
     assert!(
         error.message.contains("Missing formatting parameters"),
-        "JSON-RPC missing-params path must name the formatting contract, got {}",
-        error.message
+        "input that reaches call params.ok_or_else(|| invalid_params(\"Missing formatting parameters\"))"
     );
     Ok(())
 }
