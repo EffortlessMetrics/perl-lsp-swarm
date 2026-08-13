@@ -1,3 +1,12 @@
+#![expect(
+    clippy::print_stderr,
+    reason = "Claude integration lifecycle renders intentional user-facing diagnostics"
+)]
+#![expect(
+    clippy::print_stdout,
+    reason = "Claude integration lifecycle renders intentional user-facing status and JSON"
+)]
+
 //! Claude Code integration lifecycle owned by the public `perllsp` product.
 //!
 //! Claude-specific process/marketplace mechanics stay behind [`ClaudeRunner`]
@@ -128,7 +137,7 @@ impl IntegrationStatus {
             "distribution_source": "first_party_effortlessmetrics",
             "host": {
                 "state": self.host.state.as_str(),
-                "version": self.host.version,
+                "version": self.host.version.as_deref(),
             },
             "server": {
                 "binary": "perllsp",
@@ -146,10 +155,10 @@ impl IntegrationStatus {
                 "id": PLUGIN_ID,
                 "state": self.plugin.state.as_str(),
                 "enabled": self.plugin.enabled,
-                "version": self.plugin.version,
+                "version": self.plugin.version.as_deref(),
             },
             "ownership": {
-                "active_provider": Value::Null,
+                "active_provider": null,
                 "competing_providers": [],
                 "observation": "not_exposed_by_noninteractive_plugin_list",
             },
@@ -157,8 +166,8 @@ impl IntegrationStatus {
                 "expected_root_contract": "${CLAUDE_PROJECT_DIR}",
             },
             "verdict": self.verdict.as_str(),
-            "reasons": self.reasons,
-            "next_actions": self.next_actions,
+            "reasons": &self.reasons,
+            "next_actions": &self.next_actions,
         })
     }
 }
@@ -242,15 +251,7 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, &'static str> {
             "uninstall" | "remove" | "rm" => set_action(&mut action, Action::Uninstall)?,
             "--json" => json_output = true,
             "--help" | "-h" => set_action(&mut action, Action::Help)?,
-            "--scope" | "user" => {
-                // User scope is the only admitted lifecycle scope in v1. The
-                // token pair is accepted for script readability; project/local
-                // scopes would mutate repository state and need their own proof.
-            }
-            "project" | "local" | "managed" => {
-                return Err("perllsp claude currently supports user scope only");
-            }
-            _ => return Err("unknown perllsp claude argument"),
+            _ => return Err("unknown perllsp claude argument; user scope is the only admitted lifecycle scope"),
         }
     }
 
@@ -368,7 +369,13 @@ fn run_update<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visible: 
 
 fn run_uninstall<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visible: bool) -> u8 {
     let initial = collect_status(runner, path_visible);
-    if initial.host.state != HostState::Present {
+    if initial.host.state != HostState::Present
+        || initial.marketplace.source_matches_expected == Some(false)
+        || matches!(
+            initial.marketplace.state,
+            ResourceState::Unsupported | ResourceState::Error
+        )
+    {
         render_status(&initial, json_output);
         return initial.verdict.exit_code();
     }
@@ -394,12 +401,18 @@ fn run_uninstall<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visibl
 }
 
 fn mutation_preconditions_met(status: &IntegrationStatus) -> bool {
+    let marketplace_source_safe = match status.marketplace.state {
+        ResourceState::Absent => true,
+        ResourceState::Present => status.marketplace.source_matches_expected == Some(true),
+        ResourceState::Unsupported | ResourceState::Error => false,
+    };
+
     status.host.state == HostState::Present
-        && status.marketplace.state != ResourceState::Unsupported
-        && status.marketplace.state != ResourceState::Error
-        && status.plugin.state != ResourceState::Unsupported
-        && status.plugin.state != ResourceState::Error
-        && status.marketplace.source_matches_expected != Some(false)
+        && marketplace_source_safe
+        && !matches!(
+            status.plugin.state,
+            ResourceState::Unsupported | ResourceState::Error
+        )
 }
 
 fn run_mutation<R: ClaudeRunner>(runner: &mut R, args: &[&str]) -> bool {
@@ -525,9 +538,7 @@ fn parse_marketplace_list(raw: &str) -> Option<MarketplaceStatus> {
         };
         recognized += 1;
         if identity.eq_ignore_ascii_case(MARKETPLACE_NAME) {
-            let source_matches_expected = object
-                .get("source")
-                .map(value_contains_expected_repo);
+            let source_matches_expected = object.get("source").map(value_contains_expected_repo);
             return Some(MarketplaceStatus {
                 state: ResourceState::Present,
                 source_matches_expected,
@@ -595,7 +606,7 @@ fn collection_is_empty(value: &Value, key: &str) -> bool {
     match value {
         Value::Array(values) => values.is_empty(),
         Value::Object(object) => {
-            object.get(key).and_then(Value::as_array).is_some_and(Vec::is_empty)
+            object.get(key).and_then(Value::as_array).is_some_and(|values| values.is_empty())
         }
         _ => false,
     }
@@ -713,6 +724,10 @@ fn finish_status(
 
     dedup_stable(&mut next_actions);
 
+    let unknown_observed_state = (marketplace.source_matches_expected.is_none()
+        && marketplace.state == ResourceState::Present)
+        || (plugin.enabled.is_none() && plugin.state == ResourceState::Present);
+
     let verdict = if host.state == HostState::Error
         || marketplace.state == ResourceState::Error
         || plugin.state == ResourceState::Error
@@ -722,10 +737,7 @@ fn finish_status(
         || plugin.state == ResourceState::Unsupported
     {
         Verdict::Unsupported
-    } else if marketplace.source_matches_expected.is_none()
-        && marketplace.state == ResourceState::Present
-        || plugin.enabled.is_none() && plugin.state == ResourceState::Present
-    {
+    } else if unknown_observed_state {
         Verdict::Degraded
     } else if reasons.is_empty() {
         Verdict::Ready
@@ -867,7 +879,7 @@ mod tests {
     impl FakeRunner {
         fn new(responses: Vec<(Vec<String>, io::Result<CommandResult>)>) -> Self {
             Self {
-                responses: responses.into(),
+                responses: responses.into_iter().collect(),
             }
         }
     }
