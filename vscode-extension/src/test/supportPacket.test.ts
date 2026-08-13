@@ -1,4 +1,6 @@
 import {
+  type SupportAtom,
+  type SupportDigest,
   type SupportPacketV1,
   formatSupportPacketHuman,
   serializeSupportPacketJson,
@@ -46,9 +48,9 @@ function packet(): SupportPacketV1 {
     perl_dap: {
       state: 'known_absent',
       role: 'unknown',
-      version: supportState('known_absent'),
-      target: supportState('known_absent'),
-      digest: supportState('known_absent'),
+      version: supportState<SupportAtom>('known_absent'),
+      target: supportState<SupportAtom>('known_absent'),
+      digest: supportState<SupportDigest>('known_absent'),
       compatibility: 'missing',
     },
     lifecycle: {
@@ -128,8 +130,8 @@ describe('support packet', () => {
 
   test('keeps unknown and not-proven evidence explicit', () => {
     const value = packet();
-    value.product.version = supportState('not_proven');
-    value.host.editor_version = supportState('unknown');
+    value.product.version = supportState<SupportAtom>('not_proven');
+    value.host.editor_version = supportState<SupportAtom>('unknown');
 
     expect(validateSupportPacket(value)).toEqual([]);
     expect(formatSupportPacketHuman(value)).toContain('Product: perl-lsp not_proven');
