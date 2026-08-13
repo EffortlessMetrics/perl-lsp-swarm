@@ -53,36 +53,35 @@ jobs:
           persist-credentials: true
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Apply exact Zed command environment type repair
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Apply and commit exact workspace rustfmt output
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         shell: bash
         env:
           HEAD_BRANCH: ${{ github.head_ref }}
         run: |
-          source='.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
-          python3 - "$source" <<'PY'
-          from pathlib import Path
-          import sys
-
-          path = Path(sys.argv[1])
-          text = path.read_text(encoding='utf-8')
-          before = text
-          text = text.replace('use std::collections::HashMap;\n', '', 1)
-          text = text.replace(
-              '    env: HashMap<String, String>,\n',
-              '    env: Vec<(String, String)>,\n',
-              1,
-          )
-          if text == before:
-              raise SystemExit('error: expected environment type repair did not apply')
-          path.write_text(text, encoding='utf-8')
-          PY
+          cargo fmt --all
+          mapfile -t changed < <(git diff --name-only -- '*.rs')
+          if [[ ${#changed[@]} -eq 0 ]]; then
+            exit 0
+          fi
+          for path in "${changed[@]}"; do
+            case "$path" in
+              xtask/tests/zed_support_claims.rs|.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs) ;;
+              *) echo "error: rustfmt changed unexpected file $path" >&2; exit 1 ;;
+            esac
+          done
           git diff --check
           git config user.name 'EffortlessSteven'
           git config user.email 'git@effortlesssteven.com'
-          git add "$source"
-          git commit -m 'fix(zed): use extension API command environment type'
+          git add -- "${changed[@]}"
+          git commit -m 'style(zed): apply workspace rustfmt'
           git push origin "HEAD:$HEAD_BRANCH"
 
-      - name: Stop after bounded repair
+      - name: Stop after bounded formatting repair
         run: exit 0
