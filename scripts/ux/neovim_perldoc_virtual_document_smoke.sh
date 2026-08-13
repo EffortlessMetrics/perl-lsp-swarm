@@ -7,9 +7,14 @@
 
 set -euo pipefail
 
+invocation_cwd=$(pwd)
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 perllsp_bin=${PERLLSP:-${1:-"${repo_root}/target/release/perllsp"}}
 nvim_bin=${NEOVIM:-nvim}
+
+if [[ "${perllsp_bin}" != /* ]]; then
+  perllsp_bin="${invocation_cwd}/${perllsp_bin}"
+fi
 
 if ! command -v "${nvim_bin}" >/dev/null 2>&1; then
   echo "NOT_PROVEN: nvim not found (set NEOVIM=/path/to/nvim)" >&2
