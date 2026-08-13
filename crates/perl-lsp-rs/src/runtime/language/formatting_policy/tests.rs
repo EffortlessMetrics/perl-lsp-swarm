@@ -67,6 +67,40 @@ fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn unadvertised_document_formatting_observes_surface_gate_before_params()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    server.advertised_features.lock().formatting = false;
+    server.advertised_feature_ids.lock().clear();
+
+    let error = server
+        .handle_formatting_policy(None, None)
+        .err()
+        .ok_or("expected method-not-advertised")?;
+    assert_eq!(error.code, -32601);
+    Ok(())
+}
+
+#[test]
+fn advertised_document_formatting_observes_missing_params_invalidation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server);
+
+    let error = server
+        .handle_formatting_policy(None, None)
+        .err()
+        .ok_or("expected invalid params")?;
+    assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
+    assert!(
+        error.message.contains("Missing formatting parameters"),
+        "missing-params path must name the formatting parameter contract, got {}",
+        error.message
+    );
+    Ok(())
+}
+
+#[test]
 fn cancellation_records_a_typed_receipt() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server);
