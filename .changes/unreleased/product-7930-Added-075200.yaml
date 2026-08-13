@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "Claude Code plugin publication now has a deterministic complete-package identity and version/tree ratchet so changed installable plugin bytes require an explicit plugin-version advance without coupling the plugin version to the `perllsp` release number."
+time: 2026-08-13T11:52:00Z
+custom:
+  PR: "7930"
+  Slug: claude-plugin-package-governance
+  Breaking: "no"
