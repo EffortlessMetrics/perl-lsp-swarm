@@ -93,6 +93,31 @@
             "timeout": { "type": "integer", "minimum": 0, "default": 60000 }
           }
         },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Resource and result limits consumed by the LSP runtime.",
+          "properties": {
+            "workspaceSymbolCap": { "type": "integer", "minimum": 0, "default": 200 },
+            "referencesCap": { "type": "integer", "minimum": 0, "default": 500 },
+            "completionCap": { "type": "integer", "minimum": 0, "default": 100 },
+            "documentSymbolCap": { "type": "integer", "minimum": 0, "default": 500 },
+            "codeLensCap": { "type": "integer", "minimum": 0, "default": 100 },
+            "diagnosticsPerFileCap": { "type": "integer", "minimum": 0, "default": 200 },
+            "inlayHintsCap": { "type": "integer", "minimum": 0, "default": 500 },
+            "astCacheMaxEntries": { "type": "integer", "minimum": 0, "default": 100 },
+            "astCacheTtlSecs": { "type": "integer", "minimum": 0, "default": 300 },
+            "symbolCacheMaxEntries": { "type": "integer", "minimum": 0, "default": 1000 },
+            "maxIndexedFiles": { "type": "integer", "minimum": 0, "default": 10000 },
+            "maxTotalSymbols": { "type": "integer", "minimum": 0, "default": 500000 },
+            "maxFileSizeBytes": { "type": "integer", "minimum": 0, "default": 1048576 },
+            "workspaceScanDeadlineMs": { "type": "integer", "minimum": 0, "default": 30000 },
+            "referenceSearchDeadlineMs": { "type": "integer", "minimum": 0, "default": 2000 },
+            "memoryWarningThresholdBytes": { "type": "integer", "minimum": 0 },
+            "memoryCriticalThresholdBytes": { "type": "integer", "minimum": 0 },
+            "astCacheMaxMemoryBytes": { "type": "integer", "minimum": 0 }
+          }
+        },
         "telemetry": {
           "type": "object",
           "additionalProperties": false,
