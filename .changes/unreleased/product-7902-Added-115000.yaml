@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added a checked Zed settings contract that keeps binary path, arguments, and environment separate from the canonical perl.* workspace configuration route while retaining precedence and live-update behavior as not proven pending actual-host evidence."
+time: 2026-08-13T11:50:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-settings-contract
+  Breaking: "no"
