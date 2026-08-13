@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::Result;
@@ -97,12 +97,56 @@ pub(super) fn run_cmd(root: &Path, args: &[&str], timeout: Duration) -> String {
     combined
 }
 
+#[cfg(unix)]
+fn configure_merged_command(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_merged_command(_command: &mut Command) {}
+
+/// Terminate the direct child and the descendants it created.
+///
+/// Unix commands run in a dedicated process group, so signalling the negative
+/// child PID reaches the whole group. Windows uses `taskkill /T` to terminate
+/// the process tree rooted at the child PID. `Child::kill` remains a direct
+/// fallback if the platform tree command is unavailable or races with exit.
+fn terminate_merged_process_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let process_group = format!("-{}", child.id());
+        let _ = Command::new("kill")
+            .args(["-TERM", &process_group])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = Command::new("kill")
+            .args(["-KILL", &process_group])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let pid = child.id().to_string();
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid, "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+}
+
 /// Like `run_cmd` but merges stderr into stdout in one temporary file.
 ///
 /// Essential for `cargo test -- --list`: cargo writes crate headers to stderr and test
 /// names to stdout, so separate pipes lose the ordering needed for crate attribution.
-/// The command is spawned directly and the file is read without joining pipe readers;
-/// after a timeout, descendants that inherited the file cannot extend the bound.
+/// The command is spawned directly and the file is read without joining pipe readers.
+/// Timeout and poll-failure paths terminate the command's process tree; the read is
+/// limited to the file length observed after reap so surviving handles cannot extend it.
 pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> String {
     let Some((&program, rest)) = args.split_first() else {
         return String::new();
@@ -120,12 +164,14 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
         eprintln!("[update-status] failed to clone merged-output file");
         return String::new();
     };
-    let child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(rest)
         .current_dir(root)
         .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn();
+        .stderr(Stdio::from(stderr));
+    configure_merged_command(&mut command);
+    let child = command.spawn();
     let Ok(mut child) = child else {
         eprintln!("[update-status] failed to start `{}`", args.join(" "));
         return String::new();
@@ -142,14 +188,14 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
                     "[update-status] command timed out after {timeout:?}: {}",
                     args.join(" ")
                 );
-                let _ = child.kill();
+                terminate_merged_process_tree(&mut child);
                 break child.wait().ok();
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
             Err(err) => {
                 observation_failed = true;
                 eprintln!("[update-status] failed to poll `{}`: {err}", args.join(" "));
-                let _ = child.kill();
+                terminate_merged_process_tree(&mut child);
                 break child.wait().ok();
             }
         }
@@ -158,13 +204,21 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
         observation_failed,
         status.as_ref().map(|status| status.success()),
     ) {
+        if let Some(status) = status {
+            eprintln!("[update-status] command exited with {status}: {}", args.join(" "));
+        }
         return String::new();
     }
+
+    let Ok(output_len) = merged.metadata().map(|metadata| metadata.len()) else {
+        return String::new();
+    };
     if merged.seek(SeekFrom::Start(0)).is_err() {
         return String::new();
     }
     let mut output = String::new();
-    if merged.read_to_string(&mut output).is_err() {
+    let mut snapshot = (&mut merged).take(output_len);
+    if snapshot.read_to_string(&mut output).is_err() {
         return String::new();
     }
     output
@@ -175,44 +229,7 @@ fn merged_output_is_acceptable(observation_failed: bool, status_success: Option<
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn run_cmd_merged_discards_failed_command_output() -> color_eyre::eyre::Result<()> {
-        let output = run_cmd_merged(
-            Path::new("."),
-            &["rustc", "--definitely-invalid-update-status-option"],
-            Duration::from_secs(10),
-        );
-        assert_eq!(
-            output, "",
-            "failed merged command output must not be treated as valid discovery data"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn run_cmd_merged_rejects_successful_reap_after_terminal_observation_failure() {
-        assert!(
-            !merged_output_is_acceptable(true, Some(true)),
-            "timeout or poll failure must remain terminal when kill races or fails and reap succeeds"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn run_cmd_merged_timeout_does_not_wait_for_inherited_output_handles() {
-        let started_at = Instant::now();
-        let output = run_cmd_merged(
-            Path::new("."),
-            &["sh", "-c", "sleep 5 & wait"],
-            Duration::from_millis(100),
-        );
-        assert_eq!(output, "");
-        assert!(started_at.elapsed() < Duration::from_secs(2));
-    }
-}
+mod tests;
 
 pub(super) fn run_subsystem<T>(
     name: &str,
