@@ -108,8 +108,10 @@ def main() -> int:
         "perlnavigator",
         "perl-ls",
     ]
+    # Token match: avoid false positives such as darwin_arm64 containing win_arm64.
     for value in forbidden:
-        if value in text:
+        pattern = rf"(?<![A-Za-z0-9_]){re.escape(value)}(?![A-Za-z0-9_])"
+        if re.search(pattern, text):
             fail(f"unsupported or wrong-product value present: {value}")
 
     print(
