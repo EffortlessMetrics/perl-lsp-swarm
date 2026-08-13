@@ -1,0 +1,22 @@
+{
+  "language": "perl",
+  "entry": {
+    "command": "perllsp",
+    "description": "Perl language server from EffortlessMetrics/perl-lsp",
+    "url": "https://github.com/EffortlessMetrics/perl-lsp",
+    "requires": [],
+    "root_uri_patterns": [
+      ".perl-lsp.toml",
+      "Makefile.PL",
+      "Build.PL",
+      "cpanfile",
+      "dist.ini",
+      ".git"
+    ]
+  },
+  "upstream_basis": {
+    "repository": "mattn/vim-lsp-settings",
+    "commit": "b0c9bacfe98ff6bc4c5f6b0fffdc085d252387e0"
+  },
+  "claim_boundary": "candidate_upstream_patch_only_not_shipped"
+}
