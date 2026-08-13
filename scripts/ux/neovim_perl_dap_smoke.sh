@@ -7,11 +7,12 @@
 #   NEOVIM        nvim executable override (defaults to nvim)
 #
 # This script does not install nvim-dap or publish/debug-package artifacts. A
-# missing client checkout or adapter binary is NOT_PROVEN; protocol/runtime
-# failures after both subjects are selected are hard failures.
+# missing/inexact client checkout or adapter binary is NOT_PROVEN; protocol/
+# runtime failures after both subjects are selected are hard failures.
 
 set -euo pipefail
 
+invocation_cwd=$(pwd)
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 perl_dap_bin=${PERL_DAP:-${1:-}}
 nvim_dap_rtp=${NVIM_DAP_RTP:-${2:-}}
@@ -21,10 +22,26 @@ if [[ -z "${perl_dap_bin}" || -z "${nvim_dap_rtp}" ]]; then
   echo "NOT_PROVEN: PERL_DAP and NVIM_DAP_RTP are required" >&2
   exit 1
 fi
+if [[ "${perl_dap_bin}" != /* ]]; then
+  perl_dap_bin="${invocation_cwd}/${perl_dap_bin}"
+fi
+if [[ "${nvim_dap_rtp}" != /* ]]; then
+  nvim_dap_rtp="${invocation_cwd}/${nvim_dap_rtp}"
+fi
 if ! command -v "${nvim_bin}" >/dev/null 2>&1; then
   echo "NOT_PROVEN: nvim not found" >&2
   exit 1
 fi
+# The receipt executes Lua through `nvim -l`; reject older hosts before the
+# actual test so an unsupported client is NOT_PROVEN rather than a cryptic run.
+probe_lua=$(mktemp)
+printf '%s\n' 'return' >"${probe_lua}"
+if ! "${nvim_bin}" --headless -u NONE -l "${probe_lua}" >/dev/null 2>&1; then
+  rm -f "${probe_lua}"
+  echo "NOT_PROVEN: nvim does not support the required '-l' Lua entrypoint" >&2
+  exit 1
+fi
+rm -f "${probe_lua}"
 if [[ ! -x "${perl_dap_bin}" ]]; then
   echo "NOT_PROVEN: perl-dap not executable at ${perl_dap_bin}" >&2
   exit 1
@@ -38,11 +55,25 @@ repo_root=$(cd "${repo_root}" && pwd)
 perl_dap_bin=$(cd "$(dirname "${perl_dap_bin}")" && pwd)/$(basename "${perl_dap_bin}")
 nvim_dap_rtp=$(cd "${nvim_dap_rtp}" && pwd)
 
-if git -C "${nvim_dap_rtp}" rev-parse HEAD >/dev/null 2>&1; then
-  nvim_dap_identity=$(git -C "${nvim_dap_rtp}" rev-parse HEAD)
-else
-  nvim_dap_identity="unversioned:${nvim_dap_rtp}"
+# Bind the receipt to the exact plugin tree actually put on runtimepath. Git's
+# upward repository discovery is not enough: the supplied directory itself must
+# be the repository root and it must be clean, including untracked files.
+if ! nvim_dap_git_root=$(git -C "${nvim_dap_rtp}" rev-parse --show-toplevel 2>/dev/null); then
+  echo "NOT_PROVEN: NVIM_DAP_RTP must be an exact Git checkout" >&2
+  exit 1
 fi
+nvim_dap_git_root=$(cd "${nvim_dap_git_root}" && pwd)
+if [[ "${nvim_dap_git_root}" != "${nvim_dap_rtp}" ]]; then
+  echo "NOT_PROVEN: NVIM_DAP_RTP is nested inside another Git repository" >&2
+  echo "runtime path: ${nvim_dap_rtp}" >&2
+  echo "git root:     ${nvim_dap_git_root}" >&2
+  exit 1
+fi
+if [[ -n "$(git -C "${nvim_dap_rtp}" status --porcelain --untracked-files=all)" ]]; then
+  echo "NOT_PROVEN: nvim-dap checkout is dirty; receipt identity would not match executed source" >&2
+  exit 1
+fi
+nvim_dap_identity=$(git -C "${nvim_dap_rtp}" rev-parse HEAD)
 
 fixture_root=$(mktemp -d)
 trap 'rm -rf "${fixture_root}"' EXIT
