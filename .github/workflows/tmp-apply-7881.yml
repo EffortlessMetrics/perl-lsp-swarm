@@ -1,4 +1,4 @@
-name: Temporary inspect indexed mapper patch 7881
+name: Temporary inspect indexed mapper chunks 7881
 
 on:
   push:
@@ -9,31 +9,23 @@ permissions:
   contents: read
 
 jobs:
-  inspect-patch:
+  inspect-chunks:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      - name: Reconstruct and inspect patch
+      - name: Record chunk integrity
         shell: bash
         run: |
-          cat .github/tmp/7881/part* > indexed-7881.patch.b64
-          sha256sum indexed-7881.patch.b64 > patch-integrity.txt
-          base64 --decode indexed-7881.patch.b64 > indexed-7881.patch
-          sha256sum indexed-7881.patch >> patch-integrity.txt
-          git apply --check indexed-7881.patch > apply-check.txt 2>&1 || true
-          cat apply-check.txt
+          sha256sum .github/tmp/7881/part* > part-integrity.txt
+          wc -c .github/tmp/7881/part* >> part-integrity.txt
 
-      - name: Upload patch diagnostics
+      - name: Upload chunk diagnostics
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
-          name: indexed-patch-diagnostics-7881-${{ github.sha }}
-          path: |
-            indexed-7881.patch.b64
-            indexed-7881.patch
-            patch-integrity.txt
-            apply-check.txt
+          name: indexed-chunk-diagnostics-7881-${{ github.sha }}
+          path: part-integrity.txt
           if-no-files-found: error
           retention-days: 1
