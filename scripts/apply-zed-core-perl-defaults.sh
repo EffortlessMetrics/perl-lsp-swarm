@@ -13,7 +13,10 @@ if [[ $# -ne 1 ]]; then
 fi
 
 checkout="$1"
-[[ -d "$checkout/.git" ]] || { echo "error: not a Git checkout" >&2; exit 1; }
+if [[ ! -d "$checkout/.git" && ! -f "$checkout/.git" ]]; then
+  echo "error: not a Git checkout" >&2
+  exit 1
+fi
 [[ -z "$(git -C "$checkout" status --porcelain)" ]] || { echo "error: checkout must be clean" >&2; exit 1; }
 [[ "$(git -C "$checkout" rev-parse HEAD)" == "$expected_head" ]] || { echo "error: wrong Zed base" >&2; exit 1; }
 [[ "$(git -C "$checkout" hash-object "$target")" == "$expected_blob" ]] || { echo "error: default settings blob drifted" >&2; exit 1; }

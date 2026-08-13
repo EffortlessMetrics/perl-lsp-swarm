@@ -83,5 +83,7 @@ fn apply_script_fails_closed_on_external_subject_drift() -> Result<(), Box<dyn E
     assert!(script.contains("status --porcelain"));
     assert!(script.contains("apply --check"));
     assert!(script.contains("diff --check"));
+    // Linked worktrees use a `.git` file; accept both directory and gitfile forms.
+    assert!(script.contains("-f \"$checkout/.git\""));
     Ok(())
 }
