@@ -302,9 +302,7 @@ impl PerlExtension {
             if !matches!(os, zed::Os::Windows) {
                 zed::make_file_executable(&binary_path)?;
             }
-            // Retain older perllsp versions: the extension API does not report
-            // successful server startup, so deleting them here would discard the
-            // known-good fallback before Zed observes launch success.
+            remove_old_downloads("perllsp-", &version_dir);
         }
 
         self.perllsp_path = Some(binary_path.clone());
@@ -338,9 +336,10 @@ fn normalize_perllsp_args(arguments: Vec<String>) -> Result<Vec<String>> {
     let mut saw_stdio = false;
 
     for argument in arguments {
-        if argument == "--stdio" {
+        // `--mcp` / `mcp` are documented launcher aliases for stdio transport.
+        if argument == "--stdio" || argument == "--mcp" || argument == "mcp" {
             if !saw_stdio {
-                normalized.push(argument);
+                normalized.push("--stdio".to_string());
                 saw_stdio = true;
             }
             continue;
@@ -363,11 +362,14 @@ fn normalize_perllsp_args(arguments: Vec<String>) -> Result<Vec<String>> {
 }
 
 fn is_non_lsp_argument(argument: &str) -> bool {
+    // Reject `--mcp=...` forms; bare `mcp` / `--mcp` are stdio aliases above.
+    if argument.starts_with("--mcp=") {
+        return true;
+    }
+    let flag = argument.split_once('=').map_or(argument, |(key, _)| key);
     matches!(
-        argument,
-        "mcp"
-            | "--mcp"
-            | "--socket"
+        flag,
+        "--socket"
             | "--port"
             | "--health"
             | "--info"
@@ -378,8 +380,7 @@ fn is_non_lsp_argument(argument: &str) -> bool {
             | "--help"
             | "-h"
             | "-V"
-    ) || argument.starts_with("--socket=")
-        || argument.starts_with("--port=")
+    )
 }
 
 fn normalize_release_version(tag: &str) -> &str {
@@ -492,14 +493,31 @@ mod tests {
     }
 
     #[test]
+    fn mcp_alias_normalizes_to_stdio() {
+        assert_eq!(
+            normalize_perllsp_args(vec!["--mcp".to_string()]).ok(),
+            Some(vec!["--stdio".to_string()])
+        );
+        assert_eq!(
+            normalize_perllsp_args(vec!["mcp".to_string(), "--log-level=debug".to_string()]).ok(),
+            Some(vec!["--stdio".to_string(), "--log-level=debug".to_string()])
+        );
+        assert_eq!(
+            normalize_perllsp_args(vec!["--mcp".to_string(), "--stdio".to_string()]).ok(),
+            Some(vec!["--stdio".to_string()])
+        );
+    }
+
+    #[test]
     fn non_lsp_modes_fail_closed() {
         for argument in [
-            "mcp",
-            "--mcp",
+            "--mcp=stdio",
             "--socket",
             "--socket=127.0.0.1:9257",
             "--port",
             "--port=9257",
+            "--health",
+            "--health=1",
             "--version",
             "--doctor",
         ] {

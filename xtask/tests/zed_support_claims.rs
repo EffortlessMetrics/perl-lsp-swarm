@@ -67,15 +67,39 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
     let troubleshooting = read(&root, "docs/how-to/TROUBLESHOOTING.md")?;
     let steering = read(&root, ".kiro/steering/product.md")?;
 
-    assert!(readme.contains("Zed integration: planned / not proven"));
-    assert!(!readme.contains("Helix, Zed, Sublime"));
-    assert!(faq.contains("Zed is **planned / not proven**"));
-    assert!(zed.contains("**Status: planned / not proven.**"));
-    assert!(zed.contains("does **not** register `perllsp`"));
-    assert!(editor_setup.contains("Planned / not proven"));
+    assert!(
+        readme.contains("Zed integration: planned / not proven"),
+        "README must keep the Zed planned/not-proven boundary"
+    );
+    assert!(
+        !readme.contains("Helix, Zed, Sublime"),
+        "README must not list Zed among proven editors"
+    );
+    assert!(
+        faq.contains("Zed is **planned / not proven**"),
+        "FAQ must keep the Zed planned/not-proven boundary"
+    );
+    assert!(
+        zed.contains("**Status: planned / not proven.**"),
+        "Zed setup guide must keep planned/not-proven status"
+    );
+    assert!(
+        zed.contains("does **not** register `perllsp`"),
+        "Zed setup guide must not claim public perllsp registration"
+    );
+    assert!(
+        editor_setup.contains("Planned / not proven"),
+        "combined editor setup must keep Zed planned/not-proven"
+    );
     assert_eq!(book_setup, editor_setup, "mdBook projection drifted from canonical editor setup");
-    assert!(troubleshooting.contains("public Perl extension does not register `perllsp`"));
-    assert!(steering.contains("Zed integration: planned / not proven"));
+    assert!(
+        troubleshooting.contains("public Perl extension does not register `perllsp`"),
+        "troubleshooting must keep the public-extension boundary"
+    );
+    assert!(
+        steering.contains("Zed integration: planned / not proven"),
+        "agent steering must keep the Zed planned/not-proven boundary"
+    );
 
     let combined_zed = markdown_section(&editor_setup, "### Zed", "### ")?;
     let troubleshooting_zed =

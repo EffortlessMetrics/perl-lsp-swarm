@@ -193,7 +193,7 @@ Same as above — include editor name, version, and the exact LSP operation that
 
 ### Is perl-lsp open source?
 
-Yes. perl-lsp is dual-licensed under [MIT](../../LICENSE-MIT) and [Apache-2.0](../../LICENSE-APACHE). Contributions are welcome — see [CONTRIBUTING.](docs/CONTRIBUTING.md).
+Yes. perl-lsp is dual-licensed under [MIT](../../LICENSE-MIT) and [Apache-2.0](../../LICENSE-APACHE). Contributions are welcome — see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ### What is the release cadence?
 

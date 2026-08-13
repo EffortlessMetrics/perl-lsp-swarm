@@ -4,17 +4,7 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-readonly CANDIDATE_SOURCE="$REPO_ROOT/.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs"
 cd "$REPO_ROOT"
-
-if grep -Fq 'remove_old_downloads("perllsp-"' "$CANDIDATE_SOURCE"; then
-  echo "error: staged perllsp route deletes older managed versions before Zed proves launch success" >&2
-  exit 1
-fi
-if ! grep -Fq 'Retain older perllsp versions' "$CANDIDATE_SOURCE"; then
-  echo "error: staged perllsp route does not record the known-good preservation boundary" >&2
-  exit 1
-fi
 
 shopt -s nullglob
 

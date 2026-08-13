@@ -29,7 +29,7 @@ if [[ ! -f "$MANIFEST" ]]; then
     exit 2
 fi
 
-readarray -t packet < <(
+if ! packet_raw="$(
     python3 - "$MANIFEST" <<'PY'
 import sys
 import tomllib
@@ -43,11 +43,19 @@ print(manifest["upstream_base"])
 for path in manifest["copied_files"]:
     print(path)
 PY
-)
+)"; then
+    printf 'error: failed to parse submission manifest: %s\n' "$MANIFEST" >&2
+    exit 2
+fi
+mapfile -t packet <<<"$packet_raw"
+
+if [[ ${#packet[@]} -lt 2 ]]; then
+    printf 'error: manifest produced no copied files: %s\n' "$MANIFEST" >&2
+    exit 2
+fi
 
 readonly EXPECTED_BASE="${packet[0]}"
 readonly CURRENT_HEAD="$(git -C "$TARGET" rev-parse HEAD)"
-
 if [[ "$CURRENT_HEAD" != "$EXPECTED_BASE" ]]; then
     printf 'error: target HEAD is %s; expected exact prepared base %s\n' \
         "$CURRENT_HEAD" "$EXPECTED_BASE" >&2

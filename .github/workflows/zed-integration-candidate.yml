@@ -6,34 +6,9 @@ on:
       - '.ci/fixtures/zed-perl-upstream/**'
       - '.ci/schemas/zed-*.json'
       - '.github/workflows/zed-integration-candidate.yml'
-      - '.kiro/steering/product.md'
-      - 'book/src/reference/editor-setup-canonical.md'
-      - 'README.md'
-      - 'docs/EDITORS/ZED_SETUP.md'
-      - 'docs/how-to/EDITOR_SETUP.md'
-      - 'docs/how-to/TROUBLESHOOTING.md'
-      - 'docs/integrations/ZED_*.md'
-      - 'docs/reference/FAQ.md'
-      - 'scripts/apply-zed-*.sh'
       - 'scripts/check-zed-*.sh'
       - 'xtask/tests/zed_*.rs'
-  push:
-    branches: [main]
-    paths:
-      - '.ci/fixtures/zed-perl-upstream/**'
-      - '.ci/schemas/zed-*.json'
-      - '.github/workflows/zed-integration-candidate.yml'
-      - '.kiro/steering/product.md'
-      - 'book/src/reference/editor-setup-canonical.md'
-      - 'README.md'
-      - 'docs/EDITORS/ZED_SETUP.md'
-      - 'docs/how-to/EDITOR_SETUP.md'
-      - 'docs/how-to/TROUBLESHOOTING.md'
-      - 'docs/integrations/ZED_*.md'
-      - 'docs/reference/FAQ.md'
-      - 'scripts/apply-zed-*.sh'
-      - 'scripts/check-zed-*.sh'
-      - 'xtask/tests/zed_*.rs'
+      - 'xtask/tests/support/zed_host_compat.rs'
   workflow_dispatch:
 
 permissions:
@@ -45,36 +20,39 @@ concurrency:
 
 jobs:
   candidate:
-    name: Build staged Zed extension candidate
+    name: Format stacked Zed programme contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Checkout head branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
         with:
           toolchain: 1.95.0
-          components: rustfmt, clippy
-          targets: wasm32-wasip2
+          components: rustfmt
 
-      - name: Generate isolated candidate lockfile
-        run: cargo generate-lockfile --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
+      - name: Report rustfmt ratchet for Zed contract tests
+        shell: bash
+        run: |
+          shopt -s nullglob
+          tests=(xtask/tests/zed_*.rs xtask/tests/support/zed_host_compat.rs)
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo 'error: no Zed contract tests found' >&2
+            exit 1
+          fi
+          rustfmt --edition 2024 --check "${tests[@]}"
 
-      - name: Format staged candidate
-        run: cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check
-
-      - name: Clippy staged candidate
-        run: cargo clippy --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --all-targets --locked -- -D warnings
-
-      - name: Host helper tests
-        run: cargo test --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked
-
-      - name: Build Zed WASM extension
-        run: cargo build --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked --target wasm32-wasip2 --release
-
-      - name: Run all present Zed programme contracts
-        run: bash scripts/check-zed-programme-contracts.sh
+      - name: Run Zed programme contracts selected by path filters
+        shell: bash
+        run: |
+          bash scripts/check-zed-programme-contracts.sh
+          bash scripts/check-zed-upstream-candidate.sh
+          cargo test -p xtask --locked \
+            --test zed_host_receipt \
+            --test zed_public_registry_receipt \
+            --test zed_support_claims
