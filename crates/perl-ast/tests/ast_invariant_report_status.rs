@@ -1,10 +1,7 @@
 use perl_ast::{AstInvariantOptions, Node, NodeKind, SourceLocation, validate_ast};
 
 fn number(start: usize, end: usize) -> Node {
-    Node::new(
-        NodeKind::Number { value: "1".to_string() },
-        SourceLocation { start, end },
-    )
+    Node::new(NodeKind::Number { value: "1".to_string() }, SourceLocation { start, end })
 }
 
 #[test]
@@ -19,11 +16,8 @@ fn report_status_keeps_findings_and_completeness_independent() {
     assert!(invalid.is_complete());
     assert!(!invalid.is_valid());
 
-    let incomplete = validate_ast(
-        "1",
-        &number(1, 0),
-        AstInvariantOptions::default().with_max_findings(0),
-    );
+    let incomplete =
+        validate_ast("1", &number(1, 0), AstInvariantOptions::default().with_max_findings(0));
     assert!(!incomplete.has_findings());
     assert!(!incomplete.is_complete());
     assert!(!incomplete.is_valid());

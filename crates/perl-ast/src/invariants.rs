@@ -194,11 +194,7 @@ fn child_path(parent: &str, field: Option<FieldId>, index: usize, child: &Node) 
 /// both depth and node count are bounded, so deep or wide adversarial trees
 /// cannot overflow the call stack or allocate an unbounded child list.
 #[must_use]
-pub fn validate_ast(
-    source: &str,
-    root: &Node,
-    options: AstInvariantOptions,
-) -> AstInvariantReport {
+pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> AstInvariantReport {
     let mut report = AstInvariantReport {
         findings: Vec::new(),
         nodes_visited: 0,
