@@ -75,10 +75,7 @@ export class VscodeClientMeasurementRecorder {
     this.originMs = originMs;
   }
 
-  public markPhase(
-    phase: ClientMeasurementPhase,
-    observedAtMs: number = performance.now(),
-  ): void {
+  public markPhase(phase: ClientMeasurementPhase, observedAtMs: number = performance.now()): void {
     if (this.phaseOffsets.has(phase) || this.unavailablePhases.has(phase)) {
       return;
     }
