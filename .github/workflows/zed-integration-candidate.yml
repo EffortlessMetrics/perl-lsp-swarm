@@ -35,7 +35,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: zed-integration-candidate-${{ github.ref }}
@@ -50,8 +50,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: true
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
@@ -59,29 +58,28 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt
 
-      - name: Apply and commit exact workspace rustfmt output
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      - name: Report workspace rustfmt change set
         shell: bash
-        env:
-          HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           cargo fmt --all
           mapfile -t changed < <(git diff --name-only -- '*.rs')
           if [[ ${#changed[@]} -eq 0 ]]; then
+            echo '::notice title=workspace rustfmt::no Rust changes required'
             exit 0
           fi
           for path in "${changed[@]}"; do
-            case "$path" in
-              xtask/tests/zed_support_claims.rs|.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs) ;;
-              *) echo "error: rustfmt changed unexpected file $path" >&2; exit 1 ;;
-            esac
+            echo "::error file=$path,title=workspace rustfmt changed file::$path"
           done
-          git diff --check
-          git config user.name 'EffortlessSteven'
-          git config user.email 'git@effortlesssteven.com'
-          git add -- "${changed[@]}"
-          git commit -m 'style(zed): apply workspace rustfmt'
-          git push origin "HEAD:$HEAD_BRANCH"
-
-      - name: Stop after bounded formatting repair
-        run: exit 0
+          diff="$(git diff -- '*.rs')"
+          chunk=0
+          while [[ -n "$diff" ]]; do
+            piece="${diff:0:2800}"
+            diff="${diff:2800}"
+            escaped="${piece//'%'/'%25'}"
+            escaped="${escaped//$'\r'/'%0D'}"
+            escaped="${escaped//$'\n'/'%0A'}"
+            printf -v title 'workspace rustfmt diff %03d' "$chunk"
+            echo "::error title=$title::$escaped"
+            chunk=$((chunk + 1))
+          done
+          exit 1
