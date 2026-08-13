@@ -123,7 +123,9 @@ export class VscodeClientMeasurementRecorder {
       return { phase, availability: 'not_proven', offset_ms: null };
     });
 
-    const resources = [...this.resources.values()].sort((left, right) => left.id.localeCompare(right.id));
+    const resources = [...this.resources.values()].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
 
     return {
       schema_version: 'vscode_client_measurement.v1',
