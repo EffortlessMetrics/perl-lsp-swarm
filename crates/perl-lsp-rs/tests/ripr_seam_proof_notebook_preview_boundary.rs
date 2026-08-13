@@ -2,17 +2,9 @@
 
 use perl_lsp::{JsonRpcId, JsonRpcRequest, LspServer};
 use perl_lsp_rs_core::features::policy::FeatureProfile;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-fn ensure(condition: bool, message: impl Into<String>) -> TestResult {
-    if condition {
-        Ok(())
-    } else {
-        Err(message.into().into())
-    }
-}
 
 fn message(id: Option<i64>, method: &str, params: Option<Value>) -> JsonRpcRequest {
     JsonRpcRequest {
@@ -57,10 +49,11 @@ fn notebook_open() -> Value {
 fn supported_profiles_omit_notebook_capabilities() -> TestResult {
     for profile in [FeatureProfile::Production, FeatureProfile::GaLock] {
         let capabilities = initialize(&LspServer::new_with_feature_profile(profile))?;
-        ensure(
+        assert!(
             capabilities.get("notebookDocumentSync").is_none(),
-            format!("{} advertised notebookDocumentSync", profile.as_str()),
-        )?;
+            "{} advertised notebookDocumentSync",
+            profile.as_str()
+        );
     }
     Ok(())
 }
@@ -77,7 +70,8 @@ fn all_advertises_only_the_intentional_selector_and_save_contract() -> TestResul
         }],
         "save": true
     });
-    ensure(actual == &expected, format!("unexpected notebook selector: {actual}"))
+    assert_eq!(actual, &expected, "unexpected notebook selector: {actual}");
+    Ok(())
 }
 
 #[test]
@@ -87,16 +81,13 @@ fn disabled_notebook_notification_has_no_json_rpc_response() -> TestResult {
         let _ = initialize(&server)?;
         let response =
             server.handle_request(message(None, "notebookDocument/didOpen", Some(notebook_open())));
-        ensure(
-            response.is_none(),
-            format!("{} emitted a response to a notification", profile.as_str()),
-        )?;
+        assert!(response.is_none(), "{} emitted a response to a notification", profile.as_str());
 
         let request_response = server
             .handle_request(message(Some(2), "notebookDocument/didOpen", Some(notebook_open())))
             .ok_or("request-shaped disabled route produced no response")?;
         let error = request_response.error.ok_or("disabled route unexpectedly succeeded")?;
-        ensure(error.code == -32601, format!("unexpected disabled disposition: {error:?}"))?;
+        assert_eq!(error.code, -32601, "unexpected disabled disposition: {error:?}");
     }
     Ok(())
 }
@@ -105,10 +96,11 @@ fn disabled_notebook_notification_has_no_json_rpc_response() -> TestResult {
 fn all_notification_reaches_the_preview_handler_without_response() -> TestResult {
     let server = LspServer::new_with_feature_profile(FeatureProfile::All);
     let _ = initialize(&server)?;
-    ensure(
+    assert!(
         server
             .handle_request(message(None, "notebookDocument/didOpen", Some(notebook_open())))
             .is_none(),
-        "preview notification produced a JSON-RPC response",
-    )
+        "preview notification produced a JSON-RPC response"
+    );
+    Ok(())
 }
