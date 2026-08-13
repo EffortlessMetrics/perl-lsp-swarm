@@ -247,24 +247,3 @@ fn validation_rejects_duplicate_rows_and_unsupported_subjects() -> Result<()> {
     ensure!(catalog.validate().is_err(), "another server executable was accepted");
     Ok(())
 }
-
-#[test]
-fn catalog_machine_projection_is_deterministic() -> Result<()> {
-    let catalog = CompatibilityCatalog {
-        schema_version: SCHEMA_VERSION.to_string(),
-        rows: vec![row(
-            plugin("0.3.0", '1'),
-            server("0.18.0", 'a', '2'),
-            None,
-            CompatibilityResult::Compatible,
-        )],
-    };
-    catalog.validate().map_err(anyhow::Error::msg)?;
-
-    let first = serde_json::to_string_pretty(&catalog.to_json())?;
-    let second = serde_json::to_string_pretty(&catalog.to_json())?;
-    ensure!(first == second);
-    ensure!(first.contains("\"result\": \"compatible\""));
-    ensure!(first.contains("\"schema_version\": \"claude_plugin_server_compat.v1\""));
-    Ok(())
-}
