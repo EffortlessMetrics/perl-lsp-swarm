@@ -7,7 +7,9 @@ packet="$repo_root/.ci/fixtures/zed-perl-upstream/submission"
 python3 - "$packet" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -15,13 +17,24 @@ from pathlib import Path
 packet = Path(sys.argv[1])
 with (packet / "manifest.toml").open("rb") as handle:
     manifest = tomllib.load(handle)
-with (packet / "changed-files.v1.json").open(encoding="utf-8") as handle:
+changed_path = packet / "changed-files.v1.json"
+with changed_path.open(encoding="utf-8") as handle:
     changed = json.load(handle)
 body = (packet / "pr-body.md").read_text(encoding="utf-8")
 
-if manifest.get("schema_version") != "zed-perllsp-upstream-submission.v1":
-    raise SystemExit("error: unexpected submission manifest schema")
-if manifest.get("status") == "ready" or manifest.get("ready") is True:
+GIT_OID = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+STATUS = manifest.get("status")
+READY_FLAG = manifest.get("ready")
+
+if (STATUS == "ready") != (READY_FLAG is True):
+    raise SystemExit(
+        "error: readiness fields disagree "
+        f"(status={STATUS!r}, ready={READY_FLAG!r}); "
+        "require status='ready' with ready=true, or blocked with ready=false"
+    )
+
+if STATUS == "ready" and READY_FLAG is True:
     required = [
         ("candidate", "proposed_version"),
         ("candidate", "candidate_commit"),
@@ -39,6 +52,37 @@ if manifest.get("status") == "ready" or manifest.get("ready") is True:
     missing = [f"{section}.{key}" for section, key in required if not manifest.get(section, {}).get(key)]
     if missing:
         raise SystemExit(f"error: ready packet lacks {missing}")
+
+    candidate = manifest["candidate"]
+    if not GIT_OID.fullmatch(str(candidate["candidate_commit"])):
+        raise SystemExit("error: ready packet candidate.candidate_commit must be a 40-char lowercase git oid")
+    for key in ("patch_sha256", "changed_files_sha256"):
+        if not SHA256.fullmatch(str(candidate[key])):
+            raise SystemExit(f"error: ready packet candidate.{key} must be a 64-char lowercase sha256")
+    for section, key in (
+        ("contracts", "settings_contract_sha256"),
+        ("contracts", "managed_assets_contract_sha256"),
+        ("contracts", "defaults_packet_sha256"),
+        ("contracts", "actual_host_receipt_sha256"),
+        ("evidence", "actual_extension_wasm_sha256"),
+        ("evidence", "actual_perllsp_sha256"),
+    ):
+        value = manifest[section][key]
+        if not SHA256.fullmatch(str(value)):
+            raise SystemExit(f"error: ready packet {section}.{key} must be a 64-char lowercase sha256")
+
+    recomputed = hashlib.sha256(changed_path.read_bytes()).hexdigest()
+    if candidate["changed_files_sha256"] != recomputed:
+        raise SystemExit(
+            "error: ready packet candidate.changed_files_sha256 does not match "
+            f"recomputed digest {recomputed}"
+        )
+    if changed.get("status") != "frozen_for_submission":
+        raise SystemExit(
+            "error: ready packet requires changed-files map status frozen_for_submission "
+            f"(got {changed.get('status')!r})"
+        )
+
     for key in [
         "actual_host_result",
         "managed_download_result",
@@ -51,11 +95,14 @@ if manifest.get("status") == "ready" or manifest.get("ready") is True:
         raise SystemExit("error: ready packet has unresolved submission order")
     if "[BLOCKED:" in body:
         raise SystemExit("error: ready packet retains blocked PR-body markers")
-else:
-    if manifest.get("status") != "blocked_pending_fan_in" or manifest.get("ready") is not False:
-        raise SystemExit("error: non-ready packet must be explicitly blocked")
+elif STATUS == "blocked_pending_fan_in" and READY_FLAG is False:
     if not manifest.get("blockers") or "[BLOCKED:" not in body:
         raise SystemExit("error: blocked packet must expose blockers in manifest and PR body")
+else:
+    raise SystemExit(
+        "error: packet must be explicitly blocked_pending_fan_in with ready=false "
+        "or ready with ready=true"
+    )
 
 paths = [entry.get("path") for entry in changed.get("files", [])]
 expected = {
