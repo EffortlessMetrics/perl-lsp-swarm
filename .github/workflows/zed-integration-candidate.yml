@@ -65,22 +65,10 @@ jobs:
       - name: Generate isolated candidate lockfile
         run: cargo generate-lockfile --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
 
-      - name: Format
-        shell: bash
-        run: |
-          if cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check; then
-            exit 0
-          fi
+      - name: Format staged candidate
+        run: cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check
 
-          cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
-          diff="$(git diff -- .ci/fixtures/zed-perl-upstream/zed-perl)"
-          escaped="${diff//'%'/'%25'}"
-          escaped="${escaped//$'\r'/'%0D'}"
-          escaped="${escaped//$'\n'/'%0A'}"
-          echo "::error title=rustfmt diff::$escaped"
-          exit 1
-
-      - name: Clippy
+      - name: Clippy staged candidate
         run: cargo clippy --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --all-targets --locked -- -D warnings
 
       - name: Host helper tests
