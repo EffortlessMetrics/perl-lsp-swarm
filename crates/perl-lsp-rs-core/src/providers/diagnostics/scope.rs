@@ -711,33 +711,33 @@ mod tests {
     // ── Helper ──
 
     fn undeclared_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-        ScopeIssue {
-            kind: IssueKind::UndeclaredVariable,
-            variable_name: name.to_string(),
-            line: 1,
+        ScopeIssue::new(
+            IssueKind::UndeclaredVariable,
+            name,
+            1,
             range,
-            description: format!("Variable '{}' not declared", name),
-        }
+            format!("Variable '{}' not declared", name),
+        )
     }
 
     fn unused_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-        ScopeIssue {
-            kind: IssueKind::UnusedVariable,
-            variable_name: name.to_string(),
-            line: 1,
+        ScopeIssue::new(
+            IssueKind::UnusedVariable,
+            name,
+            1,
             range,
-            description: format!("Variable '{}' unused", name),
-        }
+            format!("Variable '{}' unused", name),
+        )
     }
 
     fn bareword_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-        ScopeIssue {
-            kind: IssueKind::UnquotedBareword,
-            variable_name: name.to_string(),
-            line: 1,
+        ScopeIssue::new(
+            IssueKind::UnquotedBareword,
+            name,
+            1,
             range,
-            description: format!("Bareword '{}' not allowed under 'use strict'", name),
-        }
+            format!("Bareword '{}' not allowed under 'use strict'", name),
+        )
     }
 
     /// Stub that returns `Some` from `dynamic_callable_may_be_visible_at`
