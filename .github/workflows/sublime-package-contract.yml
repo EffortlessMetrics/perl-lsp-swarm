@@ -32,12 +32,14 @@ jobs:
           python-version: "3.8"
       - name: Run helper-package contract tests
         run: python -m unittest discover -s clients/sublime/LSP-perllsp/tests -p 'test_*.py'
-      - name: Validate package metadata and source manifest
+      - name: Validate package metadata, compatibility, and source manifest
         run: |
           python -m json.tool clients/sublime/LSP-perllsp/LSP-perllsp.sublime-settings >/dev/null
           python -m json.tool clients/sublime/LSP-perllsp/server-manifest.json >/dev/null
+          python -m json.tool clients/sublime/LSP-perllsp/compatibility.v1.json >/dev/null
           python -m json.tool clients/sublime/LSP-perllsp/sublime-package.json >/dev/null
           python -m json.tool clients/sublime/package-source.v1.json >/dev/null
+          python clients/sublime/LSP-perllsp/compatibility.py check
           python clients/sublime/package_source.py check
       - name: Prove deterministic source export
         run: |
