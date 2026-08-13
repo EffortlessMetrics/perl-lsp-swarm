@@ -64,7 +64,12 @@ function validateResourceSpec(spec: ActivationResourceSpec): void {
 async function cleanResources(
   resources: OwnedActivationResource[],
   retainSupportAfterFailure: boolean,
-): Promise<Pick<ActivationCleanupReceipt, 'cleaned_resources' | 'retained_support_resources' | 'cleanup_failures'>> {
+): Promise<
+  Pick<
+    ActivationCleanupReceipt,
+    'cleaned_resources' | 'retained_support_resources' | 'cleanup_failures'
+  >
+> {
   const cleanedResources: string[] = [];
   const retainedSupportResources: string[] = [];
   const cleanupFailures: ActivationCleanupFailure[] = [];
@@ -143,7 +148,9 @@ export class ActivationTransaction {
     return this.committedRuntime;
   }
 
-  public async rollback(options: { retain_support_surfaces?: boolean } = {}): Promise<ActivationCleanupReceipt> {
+  public async rollback(
+    options: { retain_support_surfaces?: boolean } = {},
+  ): Promise<ActivationCleanupReceipt> {
     if (this.state === 'activation_failed') {
       return {
         attempt_id: this.attempt_id,
@@ -163,10 +170,7 @@ export class ActivationTransaction {
       throw new Error(`cannot rollback activation while state=${this.state}`);
     }
 
-    const cleanup = await cleanResources(
-      this.resources,
-      options.retain_support_surfaces === true,
-    );
+    const cleanup = await cleanResources(this.resources, options.retain_support_surfaces === true);
     this.state = 'activation_failed';
     return {
       attempt_id: this.attempt_id,
