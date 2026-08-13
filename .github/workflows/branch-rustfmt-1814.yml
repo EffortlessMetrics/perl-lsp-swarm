@@ -1,0 +1,41 @@
+name: Branch rustfmt bootstrap 1814
+
+on:
+  push:
+    branches:
+      - agent/strict-position-authority-1814
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  rustfmt:
+    if: github.event.head_commit.message == 'ci: bootstrap branch rustfmt (#1814)'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: agent/strict-position-authority-1814
+
+      - name: Set up repository Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+          cache: false
+
+      - name: Format and remove bootstrap workflow
+        shell: bash
+        run: |
+          cargo fmt --all
+          rm -- .github/workflows/branch-rustfmt-1814.yml
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'style(position): apply rustfmt (#1814)'
+          git push origin HEAD:agent/strict-position-authority-1814
