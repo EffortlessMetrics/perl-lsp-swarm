@@ -35,7 +35,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: zed-integration-candidate-${{ github.ref }}
@@ -50,7 +50,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: false
+          persist-credentials: true
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
@@ -65,26 +66,26 @@ jobs:
       - name: Generate isolated candidate lockfile
         run: cargo generate-lockfile --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
 
-      - name: Format
+      - name: Apply and commit exact rustfmt output
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         shell: bash
+        env:
+          HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           manifest='.ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml'
           source='.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
-          if cargo fmt --manifest-path "$manifest" -- --check; then
+          cargo fmt --manifest-path "$manifest"
+          if git diff --quiet -- "$source"; then
             exit 0
           fi
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add "$source"
+          git commit -m 'style(zed): apply rustfmt to staged extension'
+          git push origin "HEAD:$HEAD_BRANCH"
 
-          cargo fmt --manifest-path "$manifest"
-          encoded="$(base64 -w0 "$source")"
-          chunk=0
-          while [[ -n "$encoded" ]]; do
-            piece="${encoded:0:5000}"
-            encoded="${encoded:5000}"
-            printf -v title 'rustfmt source chunk %03d' "$chunk"
-            echo "::error title=$title::$piece"
-            chunk=$((chunk + 1))
-          done
-          exit 1
+      - name: Format
+        run: cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check
 
       - name: Clippy
         run: cargo clippy --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --all-targets --locked -- -D warnings
