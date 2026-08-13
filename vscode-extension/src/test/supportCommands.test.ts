@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
-import { formatIssueDiagnosticInfo, reportIssueCommand } from '../supportCommands';
+import {
+  buildBasicSupportPacket,
+  formatIssueDiagnosticInfo,
+  reportIssueCommand,
+} from '../supportCommands';
+import { formatSupportPacketHuman, validateSupportPacket } from '../supportPacket';
 
 function dependencies() {
   return {
@@ -61,7 +66,7 @@ describe('support command implementations', () => {
     ).toContain('Server: perllsp unavailable');
   });
 
-  test('keeps every interpolated field on one bounded printable line', () => {
+  test('keeps every interpolated legacy diagnostic field on one bounded printable line', () => {
     const packet = formatIssueDiagnosticInfo({
       serverVersion: 'perllsp 0.17.0\u2028Extension: forged',
       extensionVersion: '0.17.0\nProduct: forged',
@@ -87,7 +92,7 @@ describe('support command implementations', () => {
     expect(packet).not.toContain('\u0000');
   });
 
-  test('truncates oversized diagnostic fields to the bounded one-line form', () => {
+  test('truncates oversized legacy diagnostic fields to the bounded one-line form', () => {
     const packet = formatIssueDiagnosticInfo({
       serverVersion: 'perllsp 0.17.0',
       extensionVersion: '0.17.0',
@@ -101,7 +106,44 @@ describe('support command implementations', () => {
     expect(packet).toContain(`${'x'.repeat(197)}...: 1.128.1`);
   });
 
-  test('opens the issue form with current diagnostic context', async () => {
+  test('builds a valid basic packet without inventing unavailable live state', () => {
+    const packet = buildBasicSupportPacket({
+      serverVersion: 'perllsp 0.17.0',
+      extensionVersion: '0.17.0',
+      editorVersion: '1.128.1',
+      platform: 'win32',
+      arch: 'x64',
+      editorName: 'Visual Studio Code',
+    });
+
+    expect(validateSupportPacket(packet)).toEqual([]);
+    expect(packet.perllsp.version).toEqual(
+      expect.objectContaining({ state: 'known', value: '0.17.0' }),
+    );
+    expect(packet.extension.artifact_digest.state).toBe('not_proven');
+    expect(packet.lifecycle.generation.state).toBe('not_proven');
+    expect(packet.configuration.user_present.state).toBe('not_proven');
+    expect(packet.product.version.state).toBe('not_proven');
+  });
+
+  test('marks a non-perllsp compatibility binary as action required without copying its path', () => {
+    const packet = buildBasicSupportPacket({
+      serverVersion: 'perl-lsp 0.17.0',
+      extensionVersion: '0.17.0',
+      editorVersion: '1.128.1',
+      platform: 'linux',
+      arch: 'x64',
+    });
+
+    expect(packet.perllsp).toMatchObject({
+      state: 'known',
+      role: 'ambient',
+      compatibility: 'action_required',
+    });
+    expect(packet.perllsp.version.state).toBe('unknown');
+  });
+
+  test('opens the issue form without embedding the packet in the URL', async () => {
     const deps = dependencies();
     (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Open Issue Form');
 
@@ -113,39 +155,51 @@ describe('support command implementations', () => {
         toString: expect.any(Function),
       }),
     );
-    expect((vscode.env.openExternal as jest.Mock).mock.calls[0]?.[0].toString()).toContain(
-      'https://github.com/EffortlessMetrics/perl-lsp/issues/new',
-    );
+    const url = (vscode.env.openExternal as jest.Mock).mock.calls[0]?.[0].toString();
+    expect(url).toContain('https://github.com/EffortlessMetrics/perl-lsp/issues/new');
+    expect(url).not.toContain('Support%20packet');
+    expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled();
   });
 
-  test('copies canonical diagnostic context and then opens the issue form', async () => {
+  test('copies the typed support packet and then opens the issue form', async () => {
     const deps = dependencies();
-    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
-      'Copy Diagnostic Info',
-    );
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Copy Support Packet');
 
     await reportIssueCommand(deps);
 
+    const expectedPacket = buildBasicSupportPacket({
+      serverVersion: 'perllsp 0.17.0',
+      extensionVersion: '0.17.0',
+      editorVersion: '1.128.1',
+      platform: 'win32',
+      arch: 'x64',
+      editorName: 'Visual Studio Code',
+    });
     expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith(
-      'Product: perl-lsp\n' +
-        'Server: perllsp 0.17.0\n' +
-        'Extension: EffortlessMetrics.perl-lsp-rs 0.17.0\n' +
-        'Visual Studio Code: 1.128.1\n' +
-        'Platform: win32/x64',
+      formatSupportPacketHuman(expectedPacket),
     );
     expect(vscode.env.openExternal).toHaveBeenCalledTimes(1);
   });
 
   test('continues to the issue form when clipboard access fails', async () => {
     const deps = dependencies();
-    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
-      'Copy Diagnostic Info',
-    );
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Copy Support Packet');
     (vscode.env.clipboard.writeText as jest.Mock).mockRejectedValueOnce(
       new Error('clipboard unavailable'),
     );
 
     await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
     expect(vscode.env.openExternal).toHaveBeenCalledTimes(1);
+  });
+
+  test('server-version probe failure degrades to bounded missing evidence', async () => {
+    const deps = dependencies();
+    deps.getServerVersion.mockRejectedValueOnce(new Error('probe failed'));
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Copy Support Packet');
+
+    await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
+    const copied = (vscode.env.clipboard.writeText as jest.Mock).mock.calls[0]?.[0] as string;
+    expect(copied).toContain('perllsp: unknown known_absent missing');
+    expect(copied).not.toContain('probe failed');
   });
 });
