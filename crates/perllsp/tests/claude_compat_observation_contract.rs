@@ -35,9 +35,13 @@ fn incomplete_runtime_subjects_are_not_proven() -> Result<()> {
     catalog.validate().map_err(anyhow::Error::msg)?;
 
     for decision in [
-        catalog.decision_for_observation(None, None, None),
-        catalog.decision_for_observation(Some(&plugin()), None, None),
-        catalog.decision_for_observation(None, Some(&server()), None),
+        catalog.decision_for_observation(None, None, None).map_err(anyhow::Error::msg)?,
+        catalog
+            .decision_for_observation(Some(&plugin()), None, None)
+            .map_err(anyhow::Error::msg)?,
+        catalog
+            .decision_for_observation(None, Some(&server()), None)
+            .map_err(anyhow::Error::msg)?,
     ] {
         ensure!(decision.result == CompatibilityResult::NotProven);
         ensure!(decision.reason == CompatibilityReason::SubjectIdentityIncomplete);
@@ -52,7 +56,9 @@ fn complete_runtime_subjects_still_use_exact_catalog_lookup() -> Result<()> {
     let catalog = embedded_catalog();
     let plugin = plugin();
     let server = server();
-    let decision = catalog.decision_for_observation(Some(&plugin), Some(&server), None);
+    let decision = catalog
+        .decision_for_observation(Some(&plugin), Some(&server), None)
+        .map_err(anyhow::Error::msg)?;
 
     ensure!(decision.result == CompatibilityResult::NotProven);
     ensure!(decision.reason == CompatibilityReason::ExactPairNotEstablished);

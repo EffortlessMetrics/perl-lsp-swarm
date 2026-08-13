@@ -195,26 +195,42 @@ impl CompatibilityCatalog {
     }
 
     /// Resolve an exact observed subject pair without inferring a version range.
+    ///
+    /// The catalog is validated before lookup. Invalid catalogs fail closed as an error and
+    /// never return `Compatible`/`Incompatible` from untrusted row data. When both a
+    /// host-independent row and an exact-host row match, the exact-host row wins.
     pub fn decision_for(
         &self,
         plugin: &PluginSubject,
         server: &ServerSubject,
         host: Option<&HostSubject>,
-    ) -> CompatibilityDecision {
-        let matching = self.rows.iter().find(|row| {
-            row.plugin == *plugin
-                && row.server == *server
-                && match row.host.as_ref() {
-                    Some(expected) => host.is_some_and(|observed| observed == expected),
-                    None => true,
-                }
-        });
+    ) -> Result<CompatibilityDecision, String> {
+        self.validate()?;
+
+        let mut matching: Option<&CompatibilityRow> = None;
+        for row in &self.rows {
+            if row.plugin != *plugin || row.server != *server {
+                continue;
+            }
+            let host_matches = match row.host.as_ref() {
+                Some(expected) => host.is_some_and(|observed| observed == expected),
+                None => true,
+            };
+            if !host_matches {
+                continue;
+            }
+            matching = Some(match matching {
+                None => row,
+                Some(current) if current.host.is_none() && row.host.is_some() => row,
+                Some(current) => current,
+            });
+        }
 
         let Some(row) = matching else {
-            return not_proven_decision(
+            return Ok(not_proven_decision(
                 CompatibilityReason::ExactPairNotEstablished,
                 "exact plugin/server pair is not established by current compatibility evidence",
-            );
+            ));
         };
 
         let reason = match row.result {
@@ -222,12 +238,12 @@ impl CompatibilityCatalog {
             CompatibilityResult::Incompatible => CompatibilityReason::ExactKnownBad,
             CompatibilityResult::NotProven => CompatibilityReason::ExplicitNotProven,
         };
-        CompatibilityDecision {
+        Ok(CompatibilityDecision {
             result: row.result,
             reason,
             evidence_refs: row.evidence_refs.clone(),
             limitations: row.limitations.clone(),
-        }
+        })
     }
 
     /// Resolve a runtime observation that may not yet contain exact plugin/server identity.
@@ -239,13 +255,13 @@ impl CompatibilityCatalog {
         plugin: Option<&PluginSubject>,
         server: Option<&ServerSubject>,
         host: Option<&HostSubject>,
-    ) -> CompatibilityDecision {
+    ) -> Result<CompatibilityDecision, String> {
         match (plugin, server) {
             (Some(plugin), Some(server)) => self.decision_for(plugin, server, host),
-            _ => not_proven_decision(
+            _ => Ok(not_proven_decision(
                 CompatibilityReason::SubjectIdentityIncomplete,
                 "exact plugin/server compatibility subject is incomplete in this observation",
-            ),
+            )),
         }
     }
 
@@ -276,10 +292,7 @@ impl CompatibilityDecision {
 /// The catalog intentionally starts empty. Actual compatible/incompatible rows are added only by
 /// reviewed evidence-producing work; unknown pairs therefore remain `not_proven` by construction.
 pub fn embedded_catalog() -> CompatibilityCatalog {
-    CompatibilityCatalog {
-        schema_version: SCHEMA_VERSION.to_string(),
-        rows: Vec::new(),
-    }
+    CompatibilityCatalog { schema_version: SCHEMA_VERSION.to_string(), rows: Vec::new() }
 }
 
 fn not_proven_decision(reason: CompatibilityReason, limitation: &str) -> CompatibilityDecision {
@@ -372,7 +385,5 @@ fn validate_sha256(value: &str, field: &str) -> Result<(), String> {
 
 fn is_lower_hex(value: &str, len: usize) -> bool {
     value.len() == len
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        && value.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
