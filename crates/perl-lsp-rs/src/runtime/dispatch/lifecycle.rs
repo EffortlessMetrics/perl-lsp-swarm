@@ -38,6 +38,12 @@ impl LspServer {
             tracing::warn!(error = %e, "Failed to send pending startup logMessage");
         }
 
+        // Client-scoped configuration is a server -> client request. It must
+        // start only after the initialize response has been committed and the
+        // explicit or compatibility initialization path reaches this common,
+        // idempotent completion seam (#7708).
+        self.request_workspace_configuration_for_folders();
+
         // File watcher dynamic registration is intentionally separate from
         // feature-specific dynamic registrations such as inline completion.
         self.register_file_watchers_if_needed();
@@ -105,8 +111,11 @@ impl LspServer {
             });
         }
 
-        // Clear any pending cancelled requests on shutdown
+        // Clear request-local lifecycle state on shutdown. A client may shut
+        // down while a post-initialize configuration pull is pending; the late
+        // response must not remain eligible to mutate configuration (#7708).
         self.cancelled.lock().clear();
+        self.pending_workspace_configuration_requests.lock().clear();
         Ok(Some(json!(null)))
     }
 
