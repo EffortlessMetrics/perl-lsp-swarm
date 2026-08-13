@@ -183,7 +183,10 @@ export class CrashRecoveryArbiter {
     }
   }
 
-  private addObservationSource(episode: RecoveryEpisodeState, source: CrashObservationSource): void {
+  private addObservationSource(
+    episode: RecoveryEpisodeState,
+    source: CrashObservationSource,
+  ): void {
     if (source === 'process_exit') {
       episode.process_exit_observed = true;
     } else {
