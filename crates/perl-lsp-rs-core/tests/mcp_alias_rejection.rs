@@ -1,6 +1,4 @@
-use perl_lsp_rs_core::runtime::{
-    LaunchAction, LaunchParseError, TransportMode, parse_args,
-};
+use perl_lsp_rs_core::runtime::{LaunchAction, LaunchParseError, TransportMode, parse_args};
 
 #[test]
 fn default_and_explicit_stdio_remain_lsp_transport() {
