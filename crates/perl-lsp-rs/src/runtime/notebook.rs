@@ -647,7 +647,6 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_lsp_rs_core::governance::FeatureProfile;
     use serde_json::json;
 
     #[test]
@@ -697,7 +696,7 @@ mod tests {
 
     #[test]
     fn notebook_did_open_registers_cells_and_documents() -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
+        let server = LspServer::new();
         let notebook_uri = "file:///open-test.ipynb";
         let cell_uri = "file:///open-test.ipynb#cell1";
 
@@ -742,7 +741,7 @@ mod tests {
     #[test]
     fn notebook_structure_change_updates_cell_mapping_and_execution_summary()
     -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
+        let server = LspServer::new();
         let notebook_uri = "file:///change-test.ipynb";
         let cell1_uri = "file:///change-test.ipynb#cell1";
         let cell2_uri = "file:///change-test.ipynb#cell2";
