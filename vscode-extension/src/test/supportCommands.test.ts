@@ -163,7 +163,9 @@ describe('support command implementations', () => {
 
   test('copies the typed support packet and then opens the issue form', async () => {
     const deps = dependencies();
-    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Copy Support Packet');
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+      'Copy Support Packet',
+    );
 
     await reportIssueCommand(deps);
 
@@ -183,7 +185,9 @@ describe('support command implementations', () => {
 
   test('continues to the issue form when clipboard access fails', async () => {
     const deps = dependencies();
-    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Copy Support Packet');
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+      'Copy Support Packet',
+    );
     (vscode.env.clipboard.writeText as jest.Mock).mockRejectedValueOnce(
       new Error('clipboard unavailable'),
     );
@@ -195,7 +199,9 @@ describe('support command implementations', () => {
   test('server-version probe failure degrades to bounded missing evidence', async () => {
     const deps = dependencies();
     deps.getServerVersion.mockRejectedValueOnce(new Error('probe failed'));
-    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce('Copy Support Packet');
+    (vscode.window.showInformationMessage as jest.Mock).mockResolvedValueOnce(
+      'Copy Support Packet',
+    );
 
     await expect(reportIssueCommand(deps)).resolves.toBeUndefined();
     const copied = (vscode.env.clipboard.writeText as jest.Mock).mock.calls[0]?.[0] as string;
