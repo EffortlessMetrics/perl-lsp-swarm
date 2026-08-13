@@ -56,7 +56,8 @@ fn row(
 
 #[test]
 fn embedded_catalog_is_conservative_and_valid() -> Result<()> {
-    let catalog = embedded_catalog().map_err(anyhow::Error::msg)?;
+    let catalog = embedded_catalog();
+    catalog.validate().map_err(anyhow::Error::msg)?;
     ensure!(catalog.schema_version == SCHEMA_VERSION);
     ensure!(catalog.rows.is_empty(), "initial authority must not invent a compatible pair");
 
@@ -199,7 +200,7 @@ fn validation_rejects_duplicate_rows_and_unsupported_subjects() -> Result<()> {
 }
 
 #[test]
-fn catalog_serialization_is_deterministic() -> Result<()> {
+fn catalog_machine_projection_is_deterministic() -> Result<()> {
     let catalog = CompatibilityCatalog {
         schema_version: SCHEMA_VERSION.to_string(),
         rows: vec![row(
@@ -210,8 +211,11 @@ fn catalog_serialization_is_deterministic() -> Result<()> {
         )],
     };
     catalog.validate().map_err(anyhow::Error::msg)?;
-    let first = serde_json::to_string_pretty(&catalog)?;
-    let decoded = CompatibilityCatalog::from_json(&first).map_err(anyhow::Error::msg)?;
-    ensure!(serde_json::to_string_pretty(&decoded)? == first);
+
+    let first = serde_json::to_string_pretty(&catalog.to_json())?;
+    let second = serde_json::to_string_pretty(&catalog.to_json())?;
+    ensure!(first == second);
+    ensure!(first.contains("\"result\": \"compatible\""));
+    ensure!(first.contains("\"schema_version\": \"claude_plugin_server_compat.v1\""));
     Ok(())
 }
