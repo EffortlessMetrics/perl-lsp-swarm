@@ -215,7 +215,10 @@ mod tests {
                 message.get("method").and_then(Value::as_str) == Some("workspace/configuration")
             })
             .ok_or_else(|| format!("expected workspace/configuration request: {messages:?}"))?;
-        assert_eq!(request.get("id").and_then(Value::as_i64), Some(i64::from(request_id.as_i32())));
+        assert_eq!(
+            request.get("id").and_then(Value::as_i64),
+            Some(i64::from(request_id.as_i32()))
+        );
         Ok(())
     }
 
