@@ -128,7 +128,7 @@ pub struct BddFeatureRow {
     pub spec: &'static str,
     /// Feature area grouping (e.g., `text_document`, `workspace`).
     pub area: &'static str,
-    /// Maturity level: `ga`, `beta`, `alpha`, or `planned`.
+    /// Maturity level: `experimental`, `preview`, `ga`, `planned`, or `production`.
     pub maturity: &'static str,
     /// Whether this feature is advertised to clients.
     pub advertised: bool,
@@ -343,16 +343,19 @@ mod tests {
     }
 
     #[test]
-    fn all_features_have_valid_maturity() {
-        let valid_maturities = ["ga", "beta", "alpha", "planned"];
+    fn all_features_have_valid_maturity() -> Result<(), String> {
+        // Keep this vocabulary aligned with `feature_catalog::Maturity` rather
+        // than accepting arbitrary labels that weaken catalog validation.
+        let valid_maturities = ["experimental", "preview", "ga", "planned", "production"];
         for feature in all_features() {
-            assert!(
-                valid_maturities.contains(&feature.maturity),
-                "feature '{}' has unexpected maturity '{}'",
-                feature.id,
-                feature.maturity
-            );
+            if !valid_maturities.contains(&feature.maturity) {
+                return Err(format!(
+                    "feature '{}' has unexpected maturity '{}'",
+                    feature.id, feature.maturity
+                ));
+            }
         }
+        Ok(())
     }
 
     #[test]
