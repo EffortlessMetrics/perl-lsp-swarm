@@ -4,10 +4,7 @@ on:
   pull_request:
     paths:
       - '.ci/fixtures/zed-perl-upstream/**'
-      - '.ci/schemas/zed-*.json'
       - '.github/workflows/zed-integration-candidate.yml'
-      - 'scripts/check-zed-*.sh'
-      - 'xtask/tests/zed_*.rs'
   workflow_dispatch:
 
 permissions:
@@ -19,50 +16,45 @@ concurrency:
 
 jobs:
   candidate:
-    name: Format stacked Zed programme contracts
+    name: Preserve known-good managed perllsp versions
+    if: github.head_ref == 'agent/zed-integration-readiness'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Checkout head branch
+      - name: Checkout candidate branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: true
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
-        with:
-          toolchain: 1.95.0
-          components: rustfmt
-
-      - name: Apply exact rustfmt output to Zed contract tests
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      - name: Remove eager perllsp cleanup
         shell: bash
         env:
           HEAD_BRANCH: ${{ github.head_ref }}
         run: |
-          shopt -s nullglob
-          tests=(xtask/tests/zed_*.rs)
-          if [[ ${#tests[@]} -eq 0 ]]; then
-            echo 'error: no Zed contract tests found' >&2
-            exit 1
-          fi
-          rustfmt --edition 2024 "${tests[@]}"
-          mapfile -t changed < <(git diff --name-only -- 'xtask/tests/zed_*.rs')
-          if [[ ${#changed[@]} -eq 0 ]]; then
-            exit 0
-          fi
-          mapfile -t unexpected < <(git diff --name-only | grep -v '^xtask/tests/zed_.*\.rs$' || true)
-          if [[ ${#unexpected[@]} -ne 0 ]]; then
-            printf 'error: formatter changed unexpected files:\n%s\n' "${unexpected[*]}" >&2
-            exit 1
-          fi
+          source='.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
+          python3 - "$source" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding='utf-8')
+          old = '            remove_old_downloads("perllsp-", &version_dir);\n'
+          new = (
+              '            // Retain older perllsp versions: the extension API does not report\n'
+              '            // successful server startup, so deleting them here would discard the\n'
+              '            // known-good fallback before Zed observes launch success.\n'
+          )
+          if text.count(old) != 1:
+              raise SystemExit('error: expected one eager perllsp cleanup call')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
           git diff --check
           git config user.name 'EffortlessSteven'
           git config user.email 'git@effortlesssteven.com'
-          git add -- "${changed[@]}"
-          git commit -m 'style(zed): apply rustfmt to programme contracts'
+          git add "$source"
+          git commit -m 'fix(zed): preserve known-good managed perllsp versions'
           git push origin "HEAD:$HEAD_BRANCH"
 
-      - name: Stop after bounded formatting pass
+      - name: Stop after bounded safety repair
         run: exit 0
