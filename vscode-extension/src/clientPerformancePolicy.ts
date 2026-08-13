@@ -111,7 +111,8 @@ export function validateClientMetricRatchet(
 
   if (
     evidence.current_candidate.availability === 'observed' &&
-    (evidence.current_candidate.value === null || !Number.isFinite(evidence.current_candidate.value))
+    (evidence.current_candidate.value === null ||
+      !Number.isFinite(evidence.current_candidate.value))
   ) {
     errors.push('observed current metric must carry a finite value');
   }
@@ -134,7 +135,9 @@ export function evaluateClientMetricRatchet(
     return {
       metric_id: ratchet.metric_id,
       policy: ratchet.policy,
-      status: validation.includes('previous-public and current-candidate metric subjects are not comparable')
+      status: validation.includes(
+        'previous-public and current-candidate metric subjects are not comparable',
+      )
         ? 'invalid_subject'
         : 'not_proven',
       reasons: validation,
@@ -153,7 +156,9 @@ export function evaluateClientMetricRatchet(
 
   const reasons: string[] = [];
   if (ratchet.absolute_ceiling !== null && current.value > ratchet.absolute_ceiling) {
-    reasons.push(`current value ${current.value} exceeds absolute ceiling ${ratchet.absolute_ceiling}`);
+    reasons.push(
+      `current value ${current.value} exceeds absolute ceiling ${ratchet.absolute_ceiling}`,
+    );
   }
 
   if (
