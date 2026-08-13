@@ -63,6 +63,8 @@ jobs:
           fi
           printf 'PERLLSP_SUBLIME_RECEIPT=%s\n' \
             "$GITHUB_WORKSPACE/target/sublime-host/$RUNNER_OS.json" >> "$GITHUB_ENV"
+          printf 'PERLLSP_SUBLIME_COMMAND_RECEIPT=%s\n' \
+            "$GITHUB_WORKSPACE/target/sublime-host/$RUNNER_OS-commands.json" >> "$GITHUB_ENV"
           mkdir -p "$GITHUB_WORKSPACE/target/sublime-host"
 
       - name: Reject sublimelsp/LSP tag drift from the reviewed commit
@@ -209,11 +211,13 @@ jobs:
             throw "perllsp remained alive after Sublime/UnitTesting shutdown"
           }
 
-      - name: Validate the exact-source receipt
+      - name: Validate the exact-source receipts
         shell: bash
-        run: python clients/sublime/validate_sublime_host_receipt.py "$PERLLSP_SUBLIME_RECEIPT"
+        run: |
+          python clients/sublime/validate_sublime_host_receipt.py "$PERLLSP_SUBLIME_RECEIPT"
+          python clients/sublime/validate_sublime_command_receipt.py "$PERLLSP_SUBLIME_COMMAND_RECEIPT"
 
-      - name: Publish the host receipt
+      - name: Publish the host receipts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: sublime-real-host-${{ runner.os }}

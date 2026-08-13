@@ -1,0 +1,72 @@
+{
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/clients/sublime/sublime-command-receipt.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "assertions": {
+      "additionalProperties": false,
+      "properties": {
+        "active_view_session_selection": { "const": true },
+        "advertised_command_gate": { "const": true },
+        "bounded_structured_result": { "const": true },
+        "no_destructive_binding": { "const": true },
+        "workspace_execute_command": { "const": true }
+      },
+      "required": [
+        "active_view_session_selection",
+        "advertised_command_gate",
+        "workspace_execute_command",
+        "bounded_structured_result",
+        "no_destructive_binding"
+      ],
+      "type": "object"
+    },
+    "command": {
+      "additionalProperties": false,
+      "properties": {
+        "action": { "const": "workspace_trust_report" },
+        "id": { "const": "perl.workspaceTrustReport" },
+        "result_surface": { "const": "output.perllsp" },
+        "session": { "const": "LSP-perllsp" }
+      },
+      "required": ["action", "id", "session", "result_surface"],
+      "type": "object"
+    },
+    "host": {
+      "additionalProperties": false,
+      "properties": {
+        "arch": { "enum": ["x64", "arm64"] },
+        "name": { "const": "Sublime Text" },
+        "platform": { "enum": ["linux", "osx", "windows"] },
+        "version": { "pattern": "^[0-9]+$", "type": "string" }
+      },
+      "required": ["name", "version", "platform", "arch"],
+      "type": "object"
+    },
+    "lsp_package": {
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "const": "cc9f5201d9f053d9ab67aa0ea575b494fd133803" },
+        "repository": { "const": "sublimelsp/LSP" }
+      },
+      "required": ["repository", "ref"],
+      "type": "object"
+    },
+    "recorded_at": { "format": "date-time", "type": "string" },
+    "schema_version": { "const": 1 },
+    "source_sha": { "pattern": "^[0-9a-f]{40}$", "type": "string" },
+    "stage": { "const": "exact_source_local" }
+  },
+  "required": [
+    "schema_version",
+    "stage",
+    "source_sha",
+    "recorded_at",
+    "host",
+    "lsp_package",
+    "command",
+    "assertions"
+  ],
+  "title": "Sublime exact-source command receipt",
+  "type": "object"
+}
