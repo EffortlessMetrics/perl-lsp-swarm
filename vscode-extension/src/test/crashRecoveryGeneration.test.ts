@@ -101,8 +101,6 @@ describe('crash recovery generation proof', () => {
 
     readiness.beginGeneration();
 
-    await expect(pending).rejects.toThrow(
-      'Active-document readiness was superseded by a restart.',
-    );
+    await expect(pending).rejects.toThrow('Active-document readiness was superseded by a restart.');
   });
 });
