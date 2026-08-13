@@ -622,7 +622,29 @@ impl<'a> Parser<'a> {
 
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
                 let var = self.parse_variable_list_item()?;
-                variables.push(var);
+
+                // Per-variable attributes (`my ($x :shared, $y)`) must work in
+                // declaration-as-argument forms too (`Readonly my (...)`,
+                // `const my (...)`), matching statement-form list declarations.
+                let var_attributes = if self.peek_kind() == Some(TokenKind::Colon) {
+                    self.parse_variable_attributes()?
+                } else {
+                    Vec::new()
+                };
+                let var_with_attrs = if var_attributes.is_empty() {
+                    var
+                } else {
+                    let start = var.location.start;
+                    let end = self.previous_position();
+                    Node::new(
+                        NodeKind::VariableWithAttributes {
+                            variable: Box::new(var),
+                            attributes: var_attributes,
+                        },
+                        SourceLocation { start, end },
+                    )
+                };
+                variables.push(var_with_attrs);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
                     self.consume_token()?; // consume comma
