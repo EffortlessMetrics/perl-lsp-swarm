@@ -16,7 +16,7 @@ schema_version = 1
 policy = "non-rust-allowlist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-05-07"
+updated = "2026-08-13"
 
 [defaults]
 rust_is_default = true
@@ -1040,3 +1040,26 @@ covered_by = [
 broad_glob_reason = ".config/ holds per-tool XDG-style config as a tree."
 created = "2026-05-07"
 review_after = "2026-08-07"
+
+
+# =============================================================================
+# Sublime Text helper package
+# =============================================================================
+
+[[allow]]
+id = "non-rust-sublime-helper"
+glob = "clients/sublime/**"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Sublime Text LSP helper package, deterministic export tooling, package settings, release manifest, and focused Python contract tests."
+covered_by = [
+  "Sublime package contract",
+  "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "The helper is a Package Control-style tree of Python, JSON settings/schema, messages, licenses, tests, and deterministic export tooling that must ship and be reviewed together."
+created = "2026-08-13"
+review_after = "2026-11-13"

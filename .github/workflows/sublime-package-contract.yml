@@ -1,0 +1,48 @@
+name: Sublime package contract
+
+on:
+  pull_request:
+    paths:
+      - "clients/sublime/**"
+      - "policy/non-rust-allowlist.toml"
+      - ".github/workflows/sublime-package-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "clients/sublime/**"
+      - "policy/non-rust-allowlist.toml"
+      - ".github/workflows/sublime-package-contract.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sublime-package-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-contract:
+    name: Sublime package contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+      - name: Run helper-package contract tests
+        run: python -m unittest discover -s clients/sublime/LSP-perllsp/tests -p 'test_*.py'
+      - name: Validate package metadata
+        run: |
+          python -m json.tool clients/sublime/LSP-perllsp/LSP-perllsp.sublime-settings >/dev/null
+          python -m json.tool clients/sublime/LSP-perllsp/server-manifest.json >/dev/null
+          python -m json.tool clients/sublime/LSP-perllsp/sublime-package.json >/dev/null
+      - name: Prove deterministic package export
+        run: |
+          mkdir -p target/sublime
+          python clients/sublime/export_lsp_perllsp.py --output target/sublime/LSP-perllsp-a.sublime-package
+          python clients/sublime/export_lsp_perllsp.py --output target/sublime/LSP-perllsp-b.sublime-package
+          cmp target/sublime/LSP-perllsp-a.sublime-package target/sublime/LSP-perllsp-b.sublime-package
+          sha256sum target/sublime/LSP-perllsp-a.sublime-package
+      - name: Check non-Rust file policy
+        run: cargo xtask check-file-policy
