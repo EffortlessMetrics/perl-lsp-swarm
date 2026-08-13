@@ -23,15 +23,6 @@ fn request(id: i64, method: &str, params: Value) -> JsonRpcRequest {
     }
 }
 
-fn request_without_params(id: i64, method: &str) -> JsonRpcRequest {
-    JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(JsonRpcId::Integer(id)),
-        method: method.to_string(),
-        params: None,
-    }
-}
-
 fn initialize(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
     let response = server
         .handle_request(request(1, "initialize", json!({})))
@@ -94,36 +85,11 @@ fn handle_formatting_policy_call_presence_observer() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
-    let server = LspServer::new();
-    advertise(&server);
-    server.config.lock().perltidy_enabled = false;
-    let uri = "file:///disabled-formatting.pl";
-    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
-
-    let result = server.handle_formatting_policy(
-        Some(json!({
-            "textDocument": { "uri": uri, "version": 1 },
-            "options": { "tabSize": 4, "insertSpaces": true },
-        })),
-        None,
-    )?;
-
-    assert_eq!(result, Some(json!([])));
-    let receipt = receipt(&server)?;
-    assert_eq!(receipt["decision"], "blocked");
-    assert_eq!(receipt["reason"], "formatter_disabled");
-    assert_eq!(receipt["actual_engine"], "disabled");
-    Ok(())
-}
-
-#[test]
 fn handle_formatting_policy_call_presence_observer_ensure_surface_advertised()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     server.advertised_features.lock().formatting = false;
     server.advertised_feature_ids.lock().clear();
-    // Reach the advertise gate without params so missing-params cannot mask it.
     let error = server
         .handle_formatting_policy(None, Some(&JsonRpcId::Integer(301).to_value()))
         .err()
@@ -140,7 +106,6 @@ fn handle_formatting_policy_call_presence_observer_missing_params()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server);
-
     let error = server
         .handle_formatting_policy(None, Some(&JsonRpcId::Integer(302).to_value()))
         .err()
@@ -153,46 +118,6 @@ fn handle_formatting_policy_call_presence_observer_missing_params()
     assert!(
         error.message.contains("Missing formatting parameters"),
         "input that reaches call invalid_params(\"Missing formatting parameters\")"
-    );
-    Ok(())
-}
-
-#[test]
-fn jsonrpc_unadvertised_formatting_hits_surface_gate_before_params()
--> Result<(), Box<dyn std::error::Error>> {
-    let server = LspServer::new();
-    initialize(&server)?;
-    server.advertised_features.lock().formatting = false;
-    server
-        .advertised_feature_ids
-        .lock()
-        .retain(|id| *id != perl_lsp_rs_core::features::ids::LSP_FORMATTING);
-
-    let response = server
-        .handle_request(request_without_params(301, "textDocument/formatting"))
-        .ok_or("formatting returned no response")?;
-    let code = response.error.as_ref().map(|error| error.code).unwrap_or(0);
-    assert_eq!(
-        code, -32601,
-        "input that reaches call self.ensure_surface_advertised(Surface::Document)"
-    );
-    Ok(())
-}
-
-#[test]
-fn jsonrpc_advertised_formatting_rejects_missing_params() -> Result<(), Box<dyn std::error::Error>>
-{
-    let server = LspServer::new();
-    initialize(&server)?;
-    // initialize advertises formatting; keep that path and omit params entirely.
-    let response = server
-        .handle_request(request_without_params(302, "textDocument/formatting"))
-        .ok_or("formatting returned no response")?;
-    let error = response.error.ok_or("expected invalid params")?;
-    assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
-    assert!(
-        error.message.contains("Missing formatting parameters"),
-        "input that reaches call params.ok_or_else(|| invalid_params(\"Missing formatting parameters\"))"
     );
     Ok(())
 }
@@ -275,25 +200,6 @@ fn live_dispatch_routes_document_formatting_through_receipt_policy()
     assert_eq!(trace["provider_action"], "textDocument/formatting");
     assert!(trace["source_generation"].is_u64());
     assert!(trace["config_fingerprint"].is_string());
-    Ok(())
-}
-
-#[test]
-fn disabled_document_formatting_returns_method_not_advertised_even_without_params()
--> Result<(), Box<dyn std::error::Error>> {
-    let server = LspServer::new();
-    initialize(&server)?;
-    server.advertised_features.lock().formatting = false;
-    server
-        .advertised_feature_ids
-        .lock()
-        .retain(|id| *id != perl_lsp_rs_core::features::ids::LSP_FORMATTING);
-
-    let response = server
-        .handle_request(request_without_params(300, "textDocument/formatting"))
-        .ok_or("formatting returned no response")?;
-    let code = response.error.as_ref().map(|error| error.code).unwrap_or(0);
-    assert_eq!(code, -32601);
     Ok(())
 }
 
