@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -76,8 +77,9 @@ def parse_steps(path: Path) -> list[dict]:
             if stripped == "steps:":
                 steps_indent = indent
             continue
-        if indent == steps_indent + 2 and stripped.startswith("- name:"):
-            step = {"name": scalar(stripped.removeprefix("- name:"))}
+        if indent == steps_indent + 2 and stripped.startswith("- ") and ":" in stripped:
+            key, value = stripped.removeprefix("- ").split(":", 1)
+            step = {key: scalar(value)}
             found.append(step)
             step_indent = indent
             section = None
@@ -241,6 +243,20 @@ class CodecovTestResultsWorkflowTests(unittest.TestCase):
             }
         )
         self.assert_rejected()
+
+    def test_rejects_unnamed_deprecated_action_step(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        marker = "    steps:\n"
+        mutant = source.replace(
+            marker,
+            marker + "      - uses: codecov/test-results-action@old\n",
+            1,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ci.yml"
+            path.write_text(mutant, encoding="utf-8")
+            self.workflows[".github/workflows/ci.yml"]["steps"] = parse_steps(path)
+            self.assert_rejected()
 
 
 if __name__ == "__main__":
