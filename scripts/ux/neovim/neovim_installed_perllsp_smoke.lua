@@ -59,6 +59,63 @@ local function completion_items(result)
   return type(result) == 'table' and result or {}
 end
 
+local function diagnostic_fingerprint(bufnr)
+  local normalized = {}
+  for _, diagnostic in ipairs(vim.diagnostic.get(bufnr)) do
+    normalized[#normalized + 1] = {
+      lnum = diagnostic.lnum,
+      col = diagnostic.col,
+      end_lnum = diagnostic.end_lnum,
+      end_col = diagnostic.end_col,
+      severity = diagnostic.severity,
+      message = diagnostic.message,
+      source = diagnostic.source,
+      code = diagnostic.code,
+    }
+  end
+  table.sort(normalized, function(a, b)
+    local ak = ('%08d:%08d:%s'):format(a.lnum or 0, a.col or 0, a.message or '')
+    local bk = ('%08d:%08d:%s'):format(b.lnum or 0, b.col or 0, b.message or '')
+    return ak < bk
+  end)
+  return vim.json.encode(normalized)
+end
+
+local function nonblank(value)
+  return type(value) == 'string' and value:match('%S') ~= nil
+end
+
+local function hover_has_content(hover)
+  if type(hover) ~= 'table' then
+    return false
+  end
+
+  local contents = hover.contents
+  if nonblank(contents) then
+    return true
+  end
+  if type(contents) ~= 'table' then
+    return false
+  end
+
+  if nonblank(contents.value) then
+    return true
+  end
+
+  for _, item in ipairs(contents) do
+    if nonblank(item) then
+      return true
+    end
+    if type(item) == 'table' then
+      if nonblank(item.value) or nonblank(item.language) then
+        return true
+      end
+    end
+  end
+
+  return false
+end
+
 local repo_root = normalize(required_env('REPO_ROOT'))
 local fixture_root = normalize(required_env('FIXTURE_ROOT'))
 local perllsp = normalize(required_env('PERLLSP'))
@@ -98,11 +155,12 @@ wait_until(8000, function()
   return #vim.diagnostic.get(bufnr) > 0
 end, 'initial diagnostics')
 local initial_diagnostics = #vim.diagnostic.get(bufnr)
+local initial_diagnostic_fingerprint = diagnostic_fingerprint(bufnr)
 
 -- Repair the malformed declaration through an actual Neovim buffer edit. The
--- default server may also emit native critic diagnostics, so the fail-honest
--- oracle is that the malformed generation's diagnostic set is replaced/reduced,
--- not that every possible product diagnostic becomes empty.
+-- new generation may legitimately contain the same or more native-critic/
+-- semantic findings, so currentness is a changed diagnostic fingerprint rather
+-- than a lower aggregate count.
 local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 for index, line in ipairs(lines) do
   if line:find('my $broken =', 1, true) then
@@ -112,8 +170,8 @@ end
 vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
 wait_until(8000, function()
-  return #vim.diagnostic.get(bufnr) < initial_diagnostics
-end, 'malformed-generation diagnostics to be replaced after edit')
+  return diagnostic_fingerprint(bufnr) ~= initial_diagnostic_fingerprint
+end, 'malformed-generation diagnostics to be superseded after edit')
 local diagnostics_after_fix = #vim.diagnostic.get(bufnr)
 
 local completion_line, completion_col = completion_position(bufnr)
@@ -132,6 +190,7 @@ local hover = request(client, bufnr, 'textDocument/hover', {
   textDocument = { uri = vim.uri_from_bufnr(bufnr) },
   position = { line = 6, character = 5 },
 })
+local hover_nonempty = hover_has_content(hover)
 
 -- Exercise an edit-producing provider through actual Neovim. No-change is a
 -- legitimate formatting outcome; when edits are returned, apply them using
@@ -166,9 +225,10 @@ local receipt = {
   root = selected_root,
   initial_diagnostics = initial_diagnostics,
   diagnostics_after_fix = diagnostics_after_fix,
+  diagnostics_changed_after_fix = true,
   completion_candidates = #completion,
   post_edit_completion_candidates = #second_completion,
-  hover_nonempty = hover ~= nil and hover ~= vim.NIL,
+  hover_nonempty = hover_nonempty,
   formatting_edits = #format_edits,
   result = 'pass',
 }
