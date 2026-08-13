@@ -1684,9 +1684,7 @@ fn mark_readonly_declaration_operand(
         }
         // `Readonly my $x => EXPR` / `const my $x = EXPR`: only the LHS operand
         // is frozen by the wrapper call.
-        NodeKind::Binary { left, .. } => {
-            mark_readonly_declaration_operand(left, flags, traversal)
-        }
+        NodeKind::Binary { left, .. } => mark_readonly_declaration_operand(left, flags, traversal),
         NodeKind::Assignment { lhs, .. } => {
             mark_readonly_declaration_operand(lhs, flags, traversal)
         }
