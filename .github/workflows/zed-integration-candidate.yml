@@ -66,7 +66,20 @@ jobs:
         run: cargo generate-lockfile --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
 
       - name: Format
-        run: cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check
+        shell: bash
+        run: |
+          if cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check; then
+            exit 0
+          fi
+
+          cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
+          {
+            echo '### rustfmt diff'
+            echo '```diff'
+            git diff -- .ci/fixtures/zed-perl-upstream/zed-perl
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Clippy
         run: cargo clippy --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --all-targets --locked -- -D warnings
