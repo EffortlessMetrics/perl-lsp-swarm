@@ -1,3 +1,5 @@
+mod claude;
+
 use perllsp::protocol::product_identity::{
     BinaryIdentityPacketV1, IdentityOutputFormat, requested_identity_output,
 };
@@ -21,6 +23,10 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
         return std::process::ExitCode::SUCCESS;
+    }
+
+    if let Some(code) = claude::try_run(&args) {
+        return std::process::ExitCode::from(code);
     }
 
     std::process::ExitCode::from(perllsp::run_cli(args) as u8)
