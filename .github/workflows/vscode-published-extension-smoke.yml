@@ -27,6 +27,10 @@ on:
         description: 'Frozen source SHA for a bound installed-acceptance receipt.'
         required: false
         type: string
+      candidate_artifact_manifest:
+        description: 'JSON manifest with candidate_id, frozen_product_sha, artifact_set_id, vsix_sha256, and bundled_server_sha256.'
+        required: false
+        type: string
   schedule:
     - cron: '0 14 * * 1'
 
@@ -57,6 +61,7 @@ jobs:
       PERL_LSP_PUBLISHED_EXTENSION_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
       PERL_LSP_CANDIDATE_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_id || '' }}
       PERL_LSP_ARTIFACT_SET_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_set_id || '' }}
+      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_artifact_manifest || '' }}
 
     steps:
       - name: Checkout
@@ -78,8 +83,37 @@ jobs:
         env:
           PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1'
           PERL_LSP_SMOKE_SOURCE_LABEL: packaged-bundle
-          PERL_LSP_CURRENT_SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.frozen_product_sha || github.sha }}
+          PERL_LSP_CURRENT_SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.frozen_product_sha || '' }}
         run: xvfb-run -a npm run test:published
+
+      - name: Assemble and validate installed acceptance fan-in
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.candidate_id != '' && inputs.artifact_set_id != '' && inputs.frozen_product_sha != '' && inputs.candidate_artifact_manifest != ''
+        working-directory: .
+        env:
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          FROZEN_PRODUCT_SHA: ${{ inputs.frozen_product_sha }}
+          ARTIFACT_SET_ID: ${{ inputs.artifact_set_id }}
+        run: |
+          mkdir -p target/receipts/vscode-smoke/child_receipts
+          node vscode-extension/scripts/assemble-installed-acceptance.js \
+            --prepare-parent \
+            --template fixtures/experience/public_beta/ready.json \
+            --output target/receipts/vscode-smoke/public_beta_experience.json \
+            --candidate-id "$CANDIDATE_ID" \
+            --frozen-product-sha "$FROZEN_PRODUCT_SHA" \
+            --artifact-set-id "$ARTIFACT_SET_ID"
+          cp fixtures/experience/public_beta/child_receipts/*.json target/receipts/vscode-smoke/child_receipts/
+          node vscode-extension/scripts/assemble-installed-acceptance.js \
+            --parent target/receipts/vscode-smoke/public_beta_experience.json \
+            --source target/receipts/vscode-smoke/packaged-bundle/linux/packaged_bundle_journey_receipt.json \
+            --verified target/receipts/vscode-smoke/packaged-bundle/linux/verified_child_receipt.json \
+            --output target/receipts/vscode-smoke/public_beta_experience.json \
+            --candidate-id "$CANDIDATE_ID" \
+            --frozen-product-sha "$FROZEN_PRODUCT_SHA" \
+            --artifact-set-id "$ARTIFACT_SET_ID"
+          cargo run -p xtask --example public_beta_experience -- \
+            --receipt target/receipts/vscode-smoke/public_beta_experience.json \
+            --allow-not-proven
 
       - name: Upload published smoke artifacts
         if: always()

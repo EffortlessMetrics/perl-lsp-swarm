@@ -54,10 +54,16 @@ function configureInstalledAcceptanceReceipt(
   const candidateId = envValue('PERL_LSP_CANDIDATE_ID');
   const artifactSetId = envValue('PERL_LSP_ARTIFACT_SET_ID');
   const frozenProductSha = envValue('PERL_LSP_CURRENT_SOURCE_SHA');
-  const candidateIdentityPresent = Boolean(candidateId || artifactSetId);
-  if (candidateIdentityPresent && (!candidateId || !artifactSetId || !frozenProductSha)) {
+  const artifactManifest = envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST');
+  const candidateIdentityPresent = Boolean(
+    candidateId || artifactSetId || frozenProductSha || artifactManifest,
+  );
+  if (
+    candidateIdentityPresent &&
+    (!candidateId || !artifactSetId || !frozenProductSha || !artifactManifest)
+  ) {
     throw new Error(
-      'Candidate-bound packaged smoke requires PERL_LSP_CANDIDATE_ID, PERL_LSP_CURRENT_SOURCE_SHA, and PERL_LSP_ARTIFACT_SET_ID together.',
+      'Candidate-bound packaged smoke requires candidate ID, frozen product SHA, artifact-set ID, and artifact manifest together.',
     );
   }
   if (candidateIdentityPresent) {

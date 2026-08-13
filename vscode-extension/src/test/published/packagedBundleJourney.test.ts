@@ -19,6 +19,17 @@ interface VerifiedChildArtifact {
   source_receipt_sha256: string;
 }
 
+interface CandidateArtifactManifest {
+  candidate_id: string;
+  frozen_product_sha: string;
+  artifact_set_id: string;
+  vsix_sha256: string;
+  bundled_server_sha256: string;
+}
+
+const SOURCE_CLAIM_BOUNDARY =
+  'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.';
+
 function platformLabel(): string {
   switch (process.platform) {
     case 'win32':
@@ -37,7 +48,11 @@ function receiptsDir(): string {
     process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ??
     path.resolve(__dirname, '..', '..', '..', '..', 'target', 'receipts', 'vscode-smoke');
   const label = process.env.PERL_LSP_SMOKE_SOURCE_LABEL ?? 'packaged-bundle';
-  assert.match(label, /^[A-Za-z0-9_-]+$/, 'smoke receipt label must be a single safe path component');
+  assert.match(
+    label,
+    /^[A-Za-z0-9_-]+$/,
+    'smoke receipt label must be a single safe path component',
+  );
   const directory = path.join(root, label, platformLabel());
   fs.mkdirSync(directory, { recursive: true });
   return directory;
@@ -45,6 +60,66 @@ function receiptsDir(): string {
 
 function sha256(filePath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function requireCandidateArtifactManifest(
+  observedVsixSha256: string | undefined,
+  observedBundledServerSha256: string,
+): CandidateArtifactManifest | undefined {
+  const serialized = process.env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST?.trim();
+  const candidateId = process.env.PERL_LSP_CANDIDATE_ID?.trim();
+  const frozenProductSha = process.env.PERL_LSP_CURRENT_SOURCE_SHA?.trim();
+  const artifactSetId = process.env.PERL_LSP_ARTIFACT_SET_ID?.trim();
+  const candidateBound = Boolean(serialized || candidateId || frozenProductSha || artifactSetId);
+  if (!candidateBound) {
+    return undefined;
+  }
+  assert.ok(serialized, 'candidate-bound packaged smoke requires an artifact manifest');
+  let manifest: CandidateArtifactManifest;
+  try {
+    manifest = JSON.parse(serialized) as CandidateArtifactManifest;
+  } catch (error: unknown) {
+    throw new Error(
+      `candidate artifact manifest must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const [field, value] of Object.entries(manifest)) {
+    assert.equal(typeof value, 'string', `candidate artifact manifest ${field} must be a string`);
+    assert.ok(value.trim(), `candidate artifact manifest ${field} is required`);
+  }
+  assert.equal(
+    manifest.candidate_id,
+    candidateId,
+    'candidate artifact manifest candidate mismatch',
+  );
+  assert.equal(
+    manifest.frozen_product_sha,
+    frozenProductSha,
+    'candidate artifact manifest frozen SHA mismatch',
+  );
+  assert.equal(
+    manifest.artifact_set_id,
+    artifactSetId,
+    'candidate artifact manifest artifact-set mismatch',
+  );
+  assert.match(manifest.vsix_sha256, /^[0-9a-f]{64}$/i, 'manifest VSIX SHA-256 is invalid');
+  assert.match(
+    manifest.bundled_server_sha256,
+    /^[0-9a-f]{64}$/i,
+    'manifest bundled-server SHA-256 is invalid',
+  );
+  assert.ok(observedVsixSha256, 'candidate-bound smoke could not observe a VSIX SHA-256');
+  assert.equal(
+    manifest.vsix_sha256,
+    observedVsixSha256,
+    'observed VSIX identity differs from manifest',
+  );
+  assert.equal(
+    manifest.bundled_server_sha256,
+    observedBundledServerSha256,
+    'observed bundled-server identity differs from manifest',
+  );
+  return manifest;
 }
 
 function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: string): void {
@@ -65,6 +140,19 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: st
     ? receipt.known_limitations.filter((value): value is string => typeof value === 'string')
     : [];
   const outcome = receipt.outcome;
+  const artifactHashes = receipt.artifact_hashes;
+  assert.ok(
+    artifactHashes && typeof artifactHashes === 'object',
+    'packaged artifact hashes are required',
+  );
+  const vsixSha256 = (artifactHashes as Record<string, unknown>).vsix_sha256;
+  const bundledServerSha256 = (artifactHashes as Record<string, unknown>).bundled_server_sha256;
+  assert.match(vsixSha256 as string, /^[0-9a-f]{64}$/i, 'observed VSIX SHA-256 is required');
+  assert.match(
+    bundledServerSha256 as string,
+    /^[0-9a-f]{64}$/i,
+    'observed bundled-server SHA-256 is required',
+  );
   const mandatoryEvidenceIsMissing = knownLimitations.some(
     (limitation) =>
       limitation === 'DAP preview is not exercised by this slice.' ||
@@ -87,8 +175,7 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: st
     frozen_product_sha: frozenProductSha,
     artifact_set_id: artifactSetId,
     status,
-    claim_boundary:
-      'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.',
+    claim_boundary: SOURCE_CLAIM_BOUNDARY,
     limitation:
       knownLimitations.length > 0
         ? knownLimitations.join(' ')
@@ -382,6 +469,7 @@ suite('Packaged VSIX bundled-server journey', function () {
           version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
           startup_source: metrics.binary_resolution_source ?? null,
         },
+        claim_boundary: SOURCE_CLAIM_BOUNDARY,
         startup: metrics,
         vsix_identity: {
           extension_id: extension.id,
@@ -417,6 +505,13 @@ suite('Packaged VSIX bundled-server journey', function () {
         diagnostics: { count: diagnostics.length },
         shutdown: 'pending',
       };
+
+      requireCandidateArtifactManifest(
+        typeof receipt.artifact_hashes === 'object' && receipt.artifact_hashes !== null
+          ? ((receipt.artifact_hashes as Record<string, unknown>).vsix_sha256 as string | undefined)
+          : undefined,
+        (receipt.artifact_hashes as Record<string, unknown>).bundled_server_sha256 as string,
+      );
 
       if (activation?.stop) {
         try {
