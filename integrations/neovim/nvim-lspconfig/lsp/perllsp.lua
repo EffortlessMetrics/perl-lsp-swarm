@@ -4,6 +4,11 @@
 ---
 --- Native Rust language server for Perl 5.
 ---
+--- Requires Neovim 0.11.3 or later. The nested `root_markers` form below uses
+--- equal-priority Perl project markers with `.git` as the lower-priority
+--- fallback; that nested form is the maintained contract and is not dual-
+--- patched for older Neovim releases.
+---
 --- Install `perllsp`, then enable this configuration with:
 ---
 --- ```lua

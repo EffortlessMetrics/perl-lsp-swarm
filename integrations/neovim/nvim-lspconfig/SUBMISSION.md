@@ -6,6 +6,12 @@ Local behavior authority: `scripts/ux/neovim/perllsp.lua`
 
 The staged file in this directory is preparation evidence only. Do **not** represent it as upstream availability until the external PR is merged and a consumable upstream ref/release contains it.
 
+## Maintained Neovim floor
+
+This packet targets **Neovim 0.11.3+ only**. The nested equal-priority
+`root_markers` form is intentional and is not dual-patched for older Neovim
+releases. That matches the maintained built-in LSP floor for `perllsp`.
+
 ## Submission gates
 
 Before opening the external PR, record all of:
@@ -13,9 +19,14 @@ Before opening the external PR, record all of:
 - #7743 passes for the exact proposed command/filetype/root contract;
 - #7124 supplies the deep actual-Neovim lifecycle receipt for the candidate `perllsp`;
 - #7716 supplies the supported-floor/current-stable compatibility rows;
-- one current nvim-lspconfig new-config admission path is satisfied (normally the upstream project's popularity/adoption criterion or accepted alternative evidence);
+- current nvim-lspconfig new-config admission criteria are both addressed:
+  - popularity/adoption evidence for `perllsp` (or an accepted alternative), and
+  - evidence that Perl has an active language user base;
 - the public `EffortlessMetrics/perl-lsp` README/install route and `perllsp --stdio` identity are current;
 - the staged file still passes `check_nvim_lspconfig_candidate.lua` against the canonical local fixture.
+
+Do not invent or claim those admission proofs in this packet; attach them when
+the external PR is opened.
 
 ## External PR procedure
 
