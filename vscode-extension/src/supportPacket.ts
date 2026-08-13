@@ -98,13 +98,13 @@ const MAX_LIST_LENGTH = 32;
 const SAFE_ATOM = /^[A-Za-z0-9][A-Za-z0-9 ._:+@#()\[\]-]*$/;
 const HEX_DIGEST = /^(?:sha256:)?[0-9a-fA-F]{64}$/;
 const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/;
-
-function firstLine(value: string): string {
-  return value.split(/\r\n|[\n\r\u2028\u2029]/, 1)[0]?.trim() ?? '';
-}
+const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
 
 export function supportAtom(value: string): SupportAtom {
-  const normalized = firstLine(value);
+  if (LINE_BREAK.test(value)) {
+    throw new Error('support atom must be single-line');
+  }
+  const normalized = value.trim();
   if (normalized.length === 0 || normalized.length > MAX_ATOM_LENGTH) {
     throw new Error('support atom must be non-empty and bounded');
   }
@@ -123,7 +123,10 @@ export function supportAtom(value: string): SupportAtom {
 }
 
 export function supportDigest(value: string): SupportDigest {
-  const normalized = firstLine(value);
+  if (LINE_BREAK.test(value)) {
+    throw new Error('support digest must be single-line');
+  }
+  const normalized = value.trim();
   if (!HEX_DIGEST.test(normalized)) {
     throw new Error('support digest must be an exact sha256 digest');
   }
