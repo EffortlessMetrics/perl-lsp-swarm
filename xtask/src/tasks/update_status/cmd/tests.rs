@@ -66,9 +66,10 @@ fn run_cmd_merged_timeout_kills_descendant_process_group() -> Result<()> {
         "process-tree timeout exceeded its bounded return window"
     );
     let pid_text = std::fs::read_to_string(&pid_file)?;
-    let pid = pid_text.trim().parse::<u32>().map_err(|error| {
-        color_eyre::eyre::eyre!("invalid descendant PID {pid_text:?}: {error}")
-    })?;
+    let pid = pid_text
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| color_eyre::eyre::eyre!("invalid descendant PID {pid_text:?}: {error}"))?;
     color_eyre::eyre::ensure!(
         wait_for_unix_process_exit(pid, Duration::from_secs(2)),
         "descendant process {pid} survived process-group termination"
@@ -101,13 +102,7 @@ fn run_cmd_merged_timeout_kills_descendant_process_tree() -> Result<()> {
 
     let output = run_cmd_merged(
         Path::new("."),
-        &[
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &script,
-        ],
+        &["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", &script],
         Duration::from_secs(3),
     );
 
@@ -117,9 +112,10 @@ fn run_cmd_merged_timeout_kills_descendant_process_tree() -> Result<()> {
         "process-tree timeout exceeded its bounded return window"
     );
     let pid_text = std::fs::read_to_string(&pid_file)?;
-    let pid = pid_text.trim().parse::<u32>().map_err(|error| {
-        color_eyre::eyre::eyre!("invalid descendant PID {pid_text:?}: {error}")
-    })?;
+    let pid = pid_text
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| color_eyre::eyre::eyre!("invalid descendant PID {pid_text:?}: {error}"))?;
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline && windows_process_is_alive(pid)? {
         std::thread::sleep(Duration::from_millis(50));

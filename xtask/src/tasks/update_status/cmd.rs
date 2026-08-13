@@ -165,11 +165,7 @@ pub(super) fn run_cmd_merged(root: &Path, args: &[&str], timeout: Duration) -> S
         return String::new();
     };
     let mut command = Command::new(program);
-    command
-        .args(rest)
-        .current_dir(root)
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
+    command.args(rest).current_dir(root).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
     configure_merged_command(&mut command);
     let child = command.spawn();
     let Ok(mut child) = child else {

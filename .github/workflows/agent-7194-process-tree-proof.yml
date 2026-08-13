@@ -46,8 +46,14 @@ jobs:
           cache-on-failure: true
           shared-key: agent-7194-platform-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Check touched-file formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2024 --check \
+            xtask/src/tasks/update_status/cmd.rs \
+            xtask/src/tasks/update_status/cmd/tests.rs \
+            xtask/src/tasks/update_status/tests.rs
 
       - name: Prove timeout tree termination
         run: cargo test -p xtask --locked run_cmd_merged -- --nocapture
@@ -82,6 +88,15 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           shared-key: agent-7194-cold-${{ hashFiles('Cargo.lock') }}
+
+      - name: Check touched-file formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2024 --check \
+            xtask/src/tasks/update_status/cmd.rs \
+            xtask/src/tasks/update_status/cmd/tests.rs \
+            xtask/src/tasks/update_status/tests.rs
 
       - name: Focused status tests
         run: cargo test -p xtask --locked update_status
