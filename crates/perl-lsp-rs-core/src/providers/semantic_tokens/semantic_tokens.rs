@@ -515,11 +515,11 @@ fn tokenize_json_body(
             cursor = cursor.saturating_add(current_len);
         }
         let Some(_closing_quote_end) = key_end_offset else {
-            // An unterminated candidate may have consumed later source that
-            // contains a valid key. Resume just after this candidate's opening
-            // quote so the outer scan can recover those later key spans.
-            cursor = key_start_offset.saturating_add(1);
-            continue;
+            // No unescaped closing quote remains in the suffix. Resetting to
+            // open+1 would only rescan the same escaped-quote suffix (O(n^2) on
+            // bodies like `"\"\"...`) and cannot recover a later JSON key,
+            // which itself requires an unescaped quote delimiter.
+            break;
         };
         while cursor < body.len() {
             traversal.admit_work()?;
@@ -1945,6 +1945,37 @@ mod tests {
         )
         .map_err(|_| "unexpected malformed JSON traversal stop")?;
         assert_eq!(recovered_tokens, vec![tok(0, 15, 7, 22, 0)]);
+
+        // Discriminator for the unterminated-reset seam: a long run of
+        // backslash-escaped quotes with no unescaped closer must stay linear.
+        // Resume-at-open+1 would re-scan the remaining suffix from each escape
+        // quote and push work_done into O(n^2).
+        let escaped_quote_runs = 128usize;
+        let mut escaped_bomb = String::from('"');
+        for _ in 0..escaped_quote_runs {
+            escaped_bomb.push_str("\\\"");
+        }
+        let never_cancelled = || false;
+        let bomb_control = SemanticTokensTraversalControl::new(&never_cancelled, None);
+        let mut bomb_traversal = TraversalState { control: &bomb_control, work_done: 0 };
+        let mut bomb_tokens = Vec::new();
+        tokenize_json_body(
+            &escaped_bomb,
+            0,
+            &|offset| (0, offset as u32),
+            &legend(),
+            &mut bomb_tokens,
+            &mut bomb_traversal,
+        )
+        .map_err(|_| "unexpected escaped-quote bomb traversal stop")?;
+        assert!(bomb_tokens.is_empty(), "unterminated escaped quotes emit no keys");
+        let linear_ceiling = escaped_quote_runs.saturating_mul(4).saturating_add(8);
+        assert!(
+            bomb_traversal.work_done <= linear_ceiling,
+            "unterminated escaped-quote scan must stay linear: work_done={} ceiling={}",
+            bomb_traversal.work_done,
+            linear_ceiling
+        );
 
         let mut sql_tokens = Vec::new();
         tokenize_sql_body(
