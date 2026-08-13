@@ -61,17 +61,19 @@ local receipt = {
   roots = {},
 }
 
--- Record the actual native Neovim filetype denominator. The base Perl files
--- are hard assertions; ambiguous/adjacent families are retained as evidence
--- without manufacturing a support claim from their suffix alone.
+-- Record the actual native Neovim filetype denominator. Only the stable core
+-- source forms are hard assertions here. Test/CGI/legacy and adjacent families
+-- are deliberately evidence-only so #7743/#7716 can promote them from the
+-- actual supported-host result rather than baking our expectation into the
+-- probe itself.
 local filetype_cases = {
   { 'sample.pl', true },
   { 'Sample.pm', true },
   { 'app.psgi', true },
-  { 'basic.t', true },
-  { 'legacy.PL', true },
-  { 'handler.cgi', true },
-  { 'handler.fcgi', true },
+  { 'basic.t', false },
+  { 'legacy.PL', false },
+  { 'handler.cgi', false },
+  { 'handler.fcgi', false },
   { 'cpanfile', false },
   { 'bin/tool', false },
   { 'Doc.pod', false },
@@ -83,7 +85,10 @@ for _, case in ipairs(filetype_cases) do
   local relative, require_perl = case[1], case[2]
   local path = fixture_root .. '/filetypes/' .. relative
   local filetype = detect_filetype(path)
-  receipt.filetypes[relative] = filetype
+  receipt.filetypes[relative] = {
+    detected = filetype,
+    required_for_base_contract = require_perl,
+  }
   if require_perl and filetype ~= 'perl' then
     error(('expected native Neovim filetype=perl for %s, got %q'):format(relative, filetype))
   end
