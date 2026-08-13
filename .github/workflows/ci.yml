@@ -1053,3 +1053,75 @@ jobs:
             target/memory/receipts/pr-smoke-doc-churn.receipt.json
           if-no-files-found: warn
           retention-days: 14
+
+  # Standalone, candidate-bound formatter result for protected integration.
+  # Keep the existing advisory `fmt` meta-shard during the parity window tracked
+  # by #7087; this independently visible context is the ruleset promotion target.
+  rust-formatting:
+    name: Rust formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+      RECEIPT_PATH: target/receipts/rustfmt/rustfmt-check.json
+    steps:
+      - name: Checkout exact formatter subject
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ env.SUBJECT_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned formatter toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Bind formatter evidence to the checked-out tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD^{commit})"
+          test "$actual_sha" = "$SUBJECT_SHA"
+          echo "SUBJECT_TREE_SHA=$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
+
+      - name: Run candidate-bound rustfmt check
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt_bin="$(rustup which --toolchain 1.95.0 rustfmt)"
+          rustc_bin="$(rustup which --toolchain 1.95.0 rustc)"
+          python3 scripts/ci/rustfmt_check.py \
+            --root . \
+            --receipt "$RECEIPT_PATH" \
+            --cargo "$(command -v cargo)" \
+            --rustfmt "$rustfmt_bin" \
+            --rustc "$rustc_bin" \
+            --candidate-sha "$SUBJECT_SHA" \
+            --candidate-tree-sha "$SUBJECT_TREE_SHA"
+
+      - name: Verify candidate-bound rustfmt receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt_bin="$(rustup which --toolchain 1.95.0 rustfmt)"
+          rustc_bin="$(rustup which --toolchain 1.95.0 rustc)"
+          python3 scripts/ci/verify_rustfmt_receipt.py \
+            --root . \
+            --receipt "$RECEIPT_PATH" \
+            --producer scripts/ci/rustfmt_check.py \
+            --cargo "$(command -v cargo)" \
+            --rustfmt "$rustfmt_bin" \
+            --rustc "$rustc_bin" \
+            --candidate-sha "$SUBJECT_SHA" \
+            --candidate-tree-sha "$SUBJECT_TREE_SHA"
+
+      - name: Upload candidate-bound rustfmt receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: rustfmt-check-${{ env.SUBJECT_SHA }}
+          path: ${{ env.RECEIPT_PATH }}
+          if-no-files-found: error
+          retention-days: 7

@@ -2179,3 +2179,24 @@ created = "2026-07-17"
 review_after = "2026-08-17"
 expires = "2026-09-30"
 removal_criteria = "RIPR can trace the exact-head receipt/check runner through its focused contract oracles, or targeted mutation replaces this advisory static path."
+
+# -----------------------------------------------------------------------------
+# Formatting policy handlers (#7082 slice 2): advertise-gate / missing-params /
+# admit / CodeFormatter call sites are covered by named call_presence observers
+# colocated in handlers.rs plus live JSON-RPC dispatch tests, but RIPR 0.9.x
+# still reports weakly_gripped call_presence (unchanged_tests=true across
+# multiple observer iterations). Same static-tracing limit class as
+# ripr-suppress-type-hierarchy-cancellation-routing / EffortlessMetrics/ripr#1429.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-formatting-policy-handler-call-presence"
+kind = "call_presence_static_tracing_limit"
+paths = ["crates/perl-lsp-rs/src/runtime/language/formatting_policy/handlers.rs"]
+classification = ["weakly_gripped", "reachable_unrevealed", "call_presence", "static_unknown", "infection_unknown", "propagation_unknown"]
+owner = "lsp-lane"
+issue = "#7082"
+reason = "PR #7554 (#7082 slice 2) wires textDocument/formatting through handle_formatting_policy. Focused observers colocated in handlers.rs (handle_formatting_policy_call_presence_observer, _ensure_surface_advertised, _missing_params) assert the exact ripr candidate strings for ensure_surface_advertised, params.ok_or_else/invalid_params, admit, CodeFormatter::with_config_and_mode, and snapshot URI/generation bindings; live_dispatch_routes_document_formatting_through_receipt_policy and live_stale_request_returns_content_modified_not_successful_empty exercise the JSON-RPC dispatcher path. RIPR 0.9.x still reports weakly_gripped call_presence / reachable_unrevealed on those call sites with unchanged_tests=true because the static tracer cannot connect assertion messages and Result error codes through the handler. Narrow single-file suppression; remove when ripr#1429 can grip colocated call_presence observers or targeted mutation replaces this path."
+created = "2026-08-13"
+review_after = "2026-09-13"
+expires = "2026-10-31"
+removal_criteria = "RIPR grips the colocated handle_formatting_policy_call_presence_observer* tests against handlers.rs call sites, or targeted mutation replaces this advisory static path."

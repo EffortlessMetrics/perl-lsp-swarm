@@ -172,7 +172,7 @@ fn looks_like_indirect_method_context(context: &CompletionContext, source: &str)
     let Some(tail) = source.get(word_end..) else {
         return false;
     };
-    let receiver = tail.trim_start_matches(|character| matches!(character, ' ' | '\t'));
+    let receiver = tail.trim_start_matches([' ', '\t']);
     if receiver.len() == tail.len() {
         return false;
     }
