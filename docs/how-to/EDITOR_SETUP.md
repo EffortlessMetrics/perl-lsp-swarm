@@ -3,9 +3,10 @@
 Use this page after choosing an install path.
 
 For VS Code-compatible editors, the extension can download `perllsp`
-automatically. For generic LSP clients, install `perllsp` first and make sure
-it is visible on your `PATH`. If you still need the binary, start with
-[INSTALLATION.md](INSTALLATION.md).
+automatically. Generic LSP clients need an exact `perllsp` binary available to
+the client, either because you installed it yourself or because the integration
+has a separately proven managed-install path. If you still need the binary,
+start with [INSTALLATION.md](INSTALLATION.md).
 
 The verified GitHub `v0.17.0` assets are public beta. Marketplace and package-
 manager versions remain pending or not proven by that receipt; verify `perllsp --version` and
@@ -16,11 +17,11 @@ If the server starts but the editor does not behave correctly, see
 
 ## What Every Editor Needs
 
-- `perllsp` available on `PATH`
+- an exact `perllsp` binary the integration can resolve or install through a proven route
 - a workspace root that contains your Perl files
 - a command that starts the server with stdio, usually `perllsp --stdio`
 
-Verify the install before debugging editor settings:
+For an external/PATH-selected installation, verify it before debugging editor settings:
 
 ```bash
 perllsp --version
@@ -34,7 +35,7 @@ perllsp --health
 | VS Code | install the extension or point it at `perllsp --stdio` | [docs/EDITORS/VS_CODE_SETUP.md](../EDITORS/VS_CODE_SETUP.md) |
 | Cursor | install the VS Code-compatible extension and configure it with the `perl-lsp.*` settings namespace | [docs/EDITORS/CURSOR_SETUP.md](../EDITORS/CURSOR_SETUP.md) |
 | Trae (ByteDance) | install the VS Code-compatible extension or set command to `perllsp --stdio` | [docs/EDITORS/TRAE_SETUP.md](../EDITORS/TRAE_SETUP.md) |
-| IntelliJ IDEA / JetBrains IDEs | install or update LSP4IJ and use the upstream `perl-lsp` server entry | [docs/EDITORS/INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) |
+| IntelliJ IDEA / LSP4IJ | use LSP4IJ 0.20.0+ and keep the exact template/binary stage explicit; released built-in, imported corrected, and managed-install states are independent | [docs/EDITORS/INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) |
 | Neovim | define a custom `perllsp` config with `vim.lsp.config()` and enable via `vim.lsp.enable()` (legacy `nvim-lspconfig` supported for older Neovim) | [docs/EDITORS/NEOVIM_SETUP.md](../EDITORS/NEOVIM_SETUP.md) |
 | Vim | use `vim-lsp` with `perllsp --stdio` | [docs/EDITORS/VIM_SETUP.md](../EDITORS/VIM_SETUP.md) |
 | coc.nvim | configure `languageserver.perl-lsp` in `coc-settings.json` to launch `perllsp --stdio`; works in Neovim and Vim when the buffer filetype is `perl` | [docs/EDITORS/COC_NEOVIM_SETUP.md](../EDITORS/COC_NEOVIM_SETUP.md) |
@@ -243,26 +244,41 @@ Create or update `opencode.json` and register a custom LSP server with
 `"command": ["perllsp", "--stdio"]` and Perl extensions like `.pl`, `.pm`,
 and `.t`. See [docs/EDITORS/OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) for a full example.
 
-### IntelliJ IDEA
+### IntelliJ IDEA / LSP4IJ
 
-Install or update the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij)
-plugin and use the upstream `perl-lsp` server entry when your LSP4IJ version
-includes it. Set the `perllsp` binary path only if LSP4IJ asks for it or the
-binary is not on the IDE `PATH`.
+Use LSP4IJ 0.20.0+ and keep the integration subject explicit:
 
-Use the legacy Raw Command fallback only when your LSP4IJ build does not yet
-include the upstream entry, when you are testing a local `perllsp` build, or
-when you need temporary custom launch flags:
-[docs/EDITORS/INTELLIJ_IDEA_LEGACY_RAW_COMMAND.md](../EDITORS/INTELLIJ_IDEA_LEGACY_RAW_COMMAND.md).
+```text
+released built-in Perl template
+locally imported corrected template
+future corrected built-in template
+```
 
-See [docs/EDITORS/INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md)
-for the full workflow, initialization options, and troubleshooting.
+The binary subject is independent:
 
-LSP4IJ-shaped clients use standard LSP 3.18 inline completion:
-`textDocument.inlineCompletion.dynamicRegistration` selects dynamic
-registration for `textDocument/inlineCompletion`; static clients receive
-top-level `inlineCompletionProvider`. `experimental.inlineCompletionProvider`
-is not used.
+```text
+external/PATH-selected perllsp
+LSP4IJ-managed public artifact
+local exact-source candidate
+```
+
+A built-in template that finds an existing PATH binary does not prove the
+LSP4IJ-managed installer path. See
+[docs/EDITORS/INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) for the
+full evidence and installation boundaries.
+
+For shared project behavior, prefer `.perl-lsp.toml`. Corrected LSP4IJ client
+settings use sparse server-native `perl.*` overrides; VS Code `perl-lsp.*`
+settings are not the generic server schema. Reserve `initializationOptions` for
+values that actually require initialize/reinitialize timing.
+
+Use the [legacy Raw Command fallback](../EDITORS/INTELLIJ_IDEA_LEGACY_RAW_COMMAND.md)
+for local/unreleased candidates, temporary custom launch flags, or a LSP4IJ
+build where the relevant template route is unavailable.
+
+Protocol-profile evidence can prove capability negotiation such as standard
+`textDocument/inlineCompletion`; user-facing feature support requires the
+matching actual IntelliJ/LSP4IJ host cell from #7719/#7122.
 
 ## Diagnostics Mode (Push vs Pull)
 
@@ -286,14 +302,17 @@ push.
   regardless of capability advertisement, because OpenCode's agent feedback
   loop relies on push. See
   [OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) Troubleshooting.
-- **JetBrains (LSP4IJ):** dynamic file-watcher registration is force-disabled
-  because LSP4IJ's registration flow is unreliable. See
-  [INTELLIJ_IDEA_SETUP.md](../EDITORS/INTELLIJ_IDEA_SETUP.md) Troubleshooting.
+- **LSP4IJ:** the server has historical JetBrains-family watched-file
+  compatibility debt. #7710 owns retiring or exactly bounding that workaround
+  from the supported LSP4IJ capability profile; #7719 owns the real-host
+  create/change/delete result. Do not treat broad product-name suppression as
+  a permanent LSP4IJ limitation.
 
 ## When Setup Fails
 
-- If the server is not found, re-run `perllsp --version` in a shell and fix
-  `PATH` first.
+- For an external/PATH-selected binary, verify the exact `perllsp --version`
+  and resolved path. For a client-managed route, verify the actual installed
+  artifact instead of assuming PATH ownership.
 - If the server starts but the editor stays idle, check the editor's LSP log
   and confirm the workspace root is correct.
 - If completions or diagnostics are missing, move to
