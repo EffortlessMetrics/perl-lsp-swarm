@@ -128,7 +128,7 @@ fn driver_paths_cannot_escape_the_isolated_profile() -> Result<(), Box<dyn Error
     assert!(sandbox.write_driver("../escape.el", "").is_err());
     assert!(sandbox.write_driver("./escape.el", "").is_err());
     assert!(sandbox.write_driver("escape.txt", "").is_err());
-    assert!(sandbox.write_driver("clients/eglot.el", "(message \"ok\")").is_ok());
+    assert!(sandbox.write_driver("eglot.el", "(message \"ok\")").is_ok());
     Ok(())
 }
 
