@@ -660,9 +660,12 @@ impl LspServer {
 }
 
 #[cfg(test)]
+#[path = "notebook_preview_tests.rs"]
+mod preview_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use perl_lsp_rs_core::features::policy::FeatureProfile;
     use serde_json::json;
 
     #[test]
@@ -711,100 +714,10 @@ mod tests {
     }
 
     #[test]
-    fn supported_profiles_reject_notebook_routes_without_mutation()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for profile in [FeatureProfile::Production, FeatureProfile::GaLock] {
-            let server = LspServer::new_with_feature_profile(profile);
-            let notebook_uri = "file:///disabled.ipynb";
-            let cell_uri = "file:///disabled.ipynb#cell1";
-            let open = Some(json!({
-                "notebookDocument": {
-                    "uri": notebook_uri,
-                    "notebookType": "jupyter-notebook",
-                    "version": 1,
-                    "cells": [{"kind": 2, "document": cell_uri}]
-                },
-                "cellTextDocuments": [{
-                    "uri": cell_uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "sub must_not_exist {}"
-                }]
-            }));
-
-            let routes = [
-                server.handle_notebook_did_open(open),
-                server.handle_notebook_did_change(Some(json!({
-                    "notebookDocument": {"uri": notebook_uri, "version": 2},
-                    "change": {}
-                }))),
-                server.handle_notebook_did_save(Some(json!({
-                    "notebookDocument": {"uri": notebook_uri}
-                }))),
-                server.handle_notebook_did_close(Some(json!({
-                    "notebookDocument": {"uri": notebook_uri},
-                    "cellTextDocuments": [{"uri": cell_uri}]
-                }))),
-            ];
-
-            for result in routes {
-                let error = result.err().ok_or("disabled notebook route unexpectedly succeeded")?;
-                if error.code != -32601 {
-                    return Err(format!("disabled notebook route returned {}", error.code).into());
-                }
-            }
-            if server.notebook_store.get_notebook(notebook_uri).is_some()
-                || server.notebook_store.get_notebook_for_cell(cell_uri).is_some()
-                || server.documents_guard().contains_key(cell_uri)
-            {
-                return Err(
-                    format!("{} notebook route mutated retained state", profile.as_str()).into()
-                );
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn preview_does_not_grant_perl_authority_to_unselected_cells()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
-        let notebook_uri = "file:///mixed.ipynb";
-        let perl_uri = "file:///mixed.ipynb#perl";
-        let python_uri = "file:///mixed.ipynb#python";
-        let missing_uri = "file:///mixed.ipynb#missing";
-
-        server.handle_notebook_did_open(Some(json!({
-            "notebookDocument": {
-                "uri": notebook_uri,
-                "notebookType": "jupyter-notebook",
-                "version": 1,
-                "cells": [
-                    {"kind": 2, "document": perl_uri},
-                    {"kind": 2, "document": python_uri},
-                    {"kind": 2, "document": missing_uri}
-                ]
-            },
-            "cellTextDocuments": [
-                {"uri": perl_uri, "languageId": "perl", "version": 1, "text": "sub perl_cell {}"},
-                {"uri": python_uri, "languageId": "python", "version": 1, "text": "def python_cell(): pass"},
-                {"uri": missing_uri, "version": 1, "text": "sub missing_language {}"}
-            ]
-        })))?;
-
-        let documents = server.documents_guard();
-        if !documents.contains_key(perl_uri)
-            || documents.contains_key(python_uri)
-            || documents.contains_key(missing_uri)
-        {
-            return Err("preview document authority exceeded the exact Perl selector".into());
-        }
-        Ok(())
-    }
-
-    #[test]
     fn notebook_did_open_registers_cells_and_documents() -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
+        let server = LspServer::new_with_feature_profile(
+            perl_lsp_rs_core::features::policy::FeatureProfile::All,
+        );
         let notebook_uri = "file:///open-test.ipynb";
         let cell_uri = "file:///open-test.ipynb#cell1";
 
@@ -849,7 +762,9 @@ mod tests {
     #[test]
     fn notebook_structure_change_updates_cell_mapping_and_execution_summary()
     -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
+        let server = LspServer::new_with_feature_profile(
+            perl_lsp_rs_core::features::policy::FeatureProfile::All,
+        );
         let notebook_uri = "file:///change-test.ipynb";
         let cell1_uri = "file:///change-test.ipynb#cell1";
         let cell2_uri = "file:///change-test.ipynb#cell2";

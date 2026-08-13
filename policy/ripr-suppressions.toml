@@ -2200,3 +2200,33 @@ created = "2026-08-13"
 review_after = "2026-09-13"
 expires = "2026-10-31"
 removal_criteria = "RIPR grips the colocated handle_formatting_policy_call_presence_observer* tests against handlers.rs call sites, or targeted mutation replaces this advisory static path."
+
+# -----------------------------------------------------------------------------
+# Notebook preview proof files (#7128 / PR #7311): ripr#1428 test-receipt
+# calibration. The exact pre-repair raw receipt (run 31670472755, artifact
+# 9170149097) reported 80 findings, all in test-only code: 73
+# reachable_unrevealed and 7 weakly_exposed. By path: 55 in
+# feature_profile_regressions.rs, 12 in lsp_notebook_preview_boundary.rs, 4 in
+# lsp_3_17_notebook_tests.rs, and 2 in newly added inline tests that have been
+# moved into the dedicated cfg(test)-only notebook_preview_tests.rs module.
+# Families are test-fixture field construction, ensure/Result call and return
+# plumbing, `?` error propagation, and terminal Ok(()) markers. Production
+# notebook.rs, feature policy, flags, and contracts remain unsuppressed.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-notebook-preview-test-receipts"
+kind = "test_receipt_surface"
+paths = [
+  "crates/perl-lsp-rs-core/tests/feature_profile_regressions.rs",
+  "crates/perl-lsp-rs/tests/lsp_notebook_preview_boundary.rs",
+  "crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs",
+  "crates/perl-lsp-rs/src/runtime/notebook_preview_tests.rs",
+]
+classification = ["reachable_unrevealed", "weakly_exposed", "field_construction", "call_deletion", "return_value", "error_path"]
+owner = "lsp-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #7311 adds executable notebook preview proof under the repository's mandated Result-style test convention. The pre-repair exact-head RIPR artifact (run 31670472755, artifact 9170149097) reports 80 findings, all inside test-only proof code: 55 feature-profile fixture/ensure/Result seams, 12 preview-boundary JSON/Result seams, 4 LSP 3.17 Result propagation seams, and 2 Result error-path seams in newly added inline tests now isolated in the cfg(test)-only notebook_preview_tests.rs module. These are ripr#1428 test-harness false positives, not production behavior: focused tests prove supported profiles reject all notebook routes without mutation; unsupported notebook types return exact InvalidParams without mutation; didOpen and didChange grant DocumentStore analysis authority only to Perl cells while retaining language-agnostic notebook structure; and All alone advertises the exact Jupyter/Perl selector. The classification list documents intent but the current matcher is path-only, so the paths are deliberately limited to these four exact test files. Production notebook.rs, feature policy, flags, and contracts remain visible and unsuppressed."
+created = "2026-08-13"
+review_after = "2026-09-13"
+expires = "2026-11-13"
+removal_criteria = "RIPR distinguishes cfg(test)/integration-test Result and fixture plumbing from production seams (ripr#1428), or a line/AST-aware test-surface calibration replaces path matching."
