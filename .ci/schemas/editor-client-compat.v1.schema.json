@@ -1,0 +1,379 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp-swarm/main/.ci/schemas/editor-client-compat.v1.schema.json",
+  "title": "editor_client_compat.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observed_at",
+    "stage",
+    "repository",
+    "candidate_sha",
+    "platform",
+    "host",
+    "integration",
+    "server",
+    "workspace_fixture",
+    "capabilities",
+    "diagnostics",
+    "journey",
+    "process_cleanup",
+    "result",
+    "limitations",
+    "artifacts",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema_version": { "const": "editor_client_compat.v1" },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    },
+    "stage": {
+      "enum": [
+        "exact_source_local",
+        "release_candidate",
+        "public_artifact"
+      ]
+    },
+    "repository": { "type": "string", "minLength": 1 },
+    "candidate_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "platform": { "$ref": "#/$defs/platform" },
+    "host": { "$ref": "#/$defs/host" },
+    "integration": { "$ref": "#/$defs/integration" },
+    "server": { "$ref": "#/$defs/server" },
+    "workspace_fixture": { "$ref": "#/$defs/workspaceFixture" },
+    "capabilities": { "$ref": "#/$defs/capabilities" },
+    "diagnostics": { "$ref": "#/$defs/diagnostics" },
+    "journey": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/journeyCell" }
+    },
+    "process_cleanup": {
+      "enum": ["pass", "fail", "not_proven"]
+    },
+    "result": {
+      "enum": ["pass", "fail", "partial", "not_proven", "unsupported"]
+    },
+    "failure_class": {
+      "enum": [
+        "product",
+        "host_client",
+        "fixture",
+        "protocol",
+        "instrument",
+        "environment",
+        "cleanup"
+      ]
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "artifacts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "claim_boundary": { "type": "string", "minLength": 1 }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "result": { "enum": ["fail", "not_proven"] }
+        },
+        "required": ["result"]
+      },
+      "then": { "required": ["failure_class"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "enum": ["fail", "partial", "not_proven", "unsupported"]
+          }
+        },
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "limitations": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "result": { "const": "pass" } },
+        "required": ["result"]
+      },
+      "then": {
+        "not": { "required": ["failure_class"] },
+        "properties": {
+          "process_cleanup": { "const": "pass" },
+          "journey": {
+            "items": {
+              "allOf": [
+                { "$ref": "#/$defs/journeyCell" },
+                {
+                  "properties": {
+                    "result": { "enum": ["pass", "unsupported"] }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "safeIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![~/])(?![A-Za-z]:/)(?!.*://)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "reasonToken": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "os_version", "arch"],
+      "properties": {
+        "os": { "$ref": "#/$defs/safeIdentity" },
+        "os_version": { "$ref": "#/$defs/safeIdentity" },
+        "arch": { "$ref": "#/$defs/safeIdentity" }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "client_id",
+        "product",
+        "version",
+        "source_state",
+        "source_ref",
+        "executable_sha256"
+      ],
+      "properties": {
+        "client_id": { "$ref": "#/$defs/reasonToken" },
+        "product": { "$ref": "#/$defs/safeIdentity" },
+        "version": { "$ref": "#/$defs/safeIdentity" },
+        "source_state": {
+          "enum": ["bundled", "released", "upstream_source"]
+        },
+        "source_ref": { "$ref": "#/$defs/safeIdentity" },
+        "executable_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "registration_state",
+        "configuration_sha256",
+        "driver_sha256"
+      ],
+      "properties": {
+        "mode": {
+          "enum": ["generic_lsp", "native_editor_extension"]
+        },
+        "registration_state": {
+          "enum": [
+            "manual",
+            "upstream_source",
+            "accepted_unreleased",
+            "builtin_released"
+          ]
+        },
+        "configuration_sha256": { "$ref": "#/$defs/sha256" },
+        "driver_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executable",
+        "version",
+        "build_revision",
+        "artifact_sha256",
+        "protocol_version",
+        "launch_command"
+      ],
+      "properties": {
+        "executable": { "const": "perllsp" },
+        "version": { "$ref": "#/$defs/safeIdentity" },
+        "build_revision": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|not_proven)$"
+        },
+        "artifact_sha256": { "$ref": "#/$defs/sha256" },
+        "protocol_version": { "$ref": "#/$defs/safeIdentity" },
+        "launch_command": {
+          "type": "array",
+          "prefixItems": [
+            { "const": "perllsp" },
+            { "const": "--stdio" }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "workspaceFixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "digest",
+        "expectation_set_id",
+        "expectation_set_digest"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/reasonToken" },
+        "digest": { "$ref": "#/$defs/sha256" },
+        "expectation_set_id": { "$ref": "#/$defs/reasonToken" },
+        "expectation_set_digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "initialize_snapshot_sha256",
+        "position_encodings_offered",
+        "position_encoding_basis"
+      ],
+      "properties": {
+        "initialize_snapshot_sha256": { "$ref": "#/$defs/sha256" },
+        "position_encodings_offered": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/reasonToken" }
+        },
+        "position_encoding_basis": {
+          "enum": ["offered", "protocol_default", "not_proven"]
+        },
+        "position_encoding_selected": { "$ref": "#/$defs/reasonToken" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "position_encoding_basis": { "const": "offered" }
+            },
+            "required": ["position_encoding_basis"]
+          },
+          "then": { "required": ["position_encoding_selected"] }
+        },
+        {
+          "if": {
+            "properties": {
+              "position_encoding_basis": { "const": "protocol_default" }
+            },
+            "required": ["position_encoding_basis"]
+          },
+          "then": {
+            "required": ["position_encoding_selected"],
+            "properties": {
+              "position_encodings_offered": { "maxItems": 0 },
+              "position_encoding_selected": { "const": "utf-16" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "position_encoding_basis": { "const": "not_proven" }
+            },
+            "required": ["position_encoding_basis"]
+          },
+          "then": {
+            "not": { "required": ["position_encoding_selected"] }
+          }
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["advertised_mode", "observed_messages"],
+      "properties": {
+        "advertised_mode": {
+          "enum": ["push", "pull", "both", "none", "malformed", "not_proven"]
+        },
+        "observed_messages": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/reasonToken" }
+        }
+      }
+    },
+    "journeyCell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "result", "evidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/reasonToken" },
+        "result": {
+          "enum": ["pass", "fail", "partial", "not_proven", "unsupported"]
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/safeIdentity" }
+        },
+        "limitation": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "result": {
+                "enum": ["partial", "not_proven", "unsupported"]
+              }
+            },
+            "required": ["result"]
+          },
+          "then": { "required": ["limitation"] }
+        }
+      ]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "sha256"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "client_log",
+            "server_stderr",
+            "driver_output",
+            "capability_snapshot",
+            "process_ledger",
+            "failure_diagnostics",
+            "other"
+          ]
+        },
+        "id": { "$ref": "#/$defs/safeIdentity" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
