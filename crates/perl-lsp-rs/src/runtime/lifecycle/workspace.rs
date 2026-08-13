@@ -250,10 +250,11 @@ impl LspServer {
             }
         }
 
-        // Pull client-scoped workspace settings (if supported) and merge them
-        // as the highest-precedence layer over TOML-derived folder config.
+        // Client-scoped `workspace/configuration` is deliberately deferred to
+        // the post-initialize lifecycle. During `initialize` only local project
+        // and initialization-option state may be applied; server→client requests
+        // are not legal until after InitializeResult has been returned (#7708).
         drop(folders);
-        self.request_workspace_configuration_for_folders();
     }
 
     /// In single-file mode, try to discover `.perl-lsp.toml` from the
@@ -1107,7 +1108,7 @@ include_paths = ["stale_lib"]
 
         let temp = tempfile::tempdir().expect("failed to create temp dir");
         let folder = temp.path().join("folder");
-        std::fs::create_dir_all(&folder).expect("failed to create folder");
+        std::fs::create_dir_all(&folder).expect("failed to create temp dir");
         let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
 
         server.workspace_folders.lock().push(
