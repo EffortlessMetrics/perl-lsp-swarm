@@ -35,7 +35,9 @@ can consume. It does not prove that LSP4IJ selected the managed installer path
 or that `perl-dap` works through an actual IntelliJ debugger session.
 
 - #7876 owns the exact managed-installer/platform selection contract and the
-  external/PATH-versus-managed evidence split.
+  external/PATH-versus-managed evidence split, including reconciliation of any
+  release-topology target mismatch before a new platform is presented as a
+  complete managed downstream row.
 - #7877 owns actual debugger initialize/launch/breakpoint/stack/scopes/variables/
   step/cleanup behavior.
 - [`INTELLIJ_DAP_SETUP.md`](../EDITORS/INTELLIJ_DAP_SETUP.md) documents the
@@ -49,7 +51,6 @@ Expected release artifacts (`perllsp-<version>-<triple><ext>`):
 | Platform | Archive |
 |---|---|
 | Windows x64 | `perllsp-<version>-x86_64-pc-windows-msvc.zip` |
-| Windows arm64 | `perllsp-<version>-aarch64-pc-windows-msvc.zip` |
 | Linux x64 (glibc) | `perllsp-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux arm64 (glibc) | `perllsp-<version>-aarch64-unknown-linux-gnu.tar.gz` |
 | Linux x64 (musl) | `perllsp-<version>-x86_64-unknown-linux-musl.tar.gz` |
