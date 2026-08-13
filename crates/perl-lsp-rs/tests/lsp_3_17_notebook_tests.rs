@@ -11,20 +11,16 @@ use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn ensure(condition: bool, message: &'static str) -> TestResult {
-    if condition { Ok(()) } else { Err(message.into()) }
-}
-
 // ==================== NOTEBOOK SUPPORT (3.17) ====================
 
 #[test]
 fn test_notebook_document_3_17() -> TestResult {
     let mut harness = LspHarness::new_with_feature_profile(FeatureProfile::All);
     let init = harness.initialize(None)?;
-    ensure(
-        init["capabilities"]["notebookDocumentSync"].is_object(),
+    assert!(
+init["capabilities"]["notebookDocumentSync"].is_object(),
         "notebookDocumentSync capability should be advertised",
-    )?;
+    );
 
     // didOpen notebook
     harness.notify(
@@ -61,10 +57,10 @@ fn test_notebook_document_3_17() -> TestResult {
         }),
     )?;
     let cell1_symbols = cell1_symbols.as_array().ok_or("cell1 symbols should be an array")?;
-    ensure(
-        cell1_symbols.iter().any(|symbol| symbol["name"].as_str() == Some("from_notebook_cell")),
+    assert!(
+cell1_symbols.iter().any(|symbol| symbol["name"].as_str() == Some("from_notebook_cell")),
         "Expected symbol from_notebook_cell in notebook cell document symbols",
-    )?;
+    );
 
     // didChange notebook
     harness.notify(
@@ -110,10 +106,10 @@ fn test_notebook_document_3_17() -> TestResult {
         }),
     )?;
     let cell2_symbols = cell2_symbols.as_array().ok_or("cell2 symbols should be an array")?;
-    ensure(
-        cell2_symbols.iter().any(|symbol| symbol["name"].as_str() == Some("second_notebook_cell")),
+    assert!(
+cell2_symbols.iter().any(|symbol| symbol["name"].as_str() == Some("second_notebook_cell")),
         "Expected symbol second_notebook_cell in newly opened notebook cell",
-    )?;
+    );
 
     // didSave notebook
     harness.notify(
@@ -145,10 +141,10 @@ fn test_notebook_document_3_17() -> TestResult {
 fn test_notebook_execution_summary_3_17() -> TestResult {
     let mut harness = LspHarness::new_with_feature_profile(FeatureProfile::All);
     let init = harness.initialize(None)?;
-    ensure(
-        init["capabilities"]["notebookDocumentSync"].is_object(),
+    assert!(
+init["capabilities"]["notebookDocumentSync"].is_object(),
         "notebookDocumentSync capability should be advertised",
-    )?;
+    );
 
     // didOpen notebook with a single cell
     harness.notify(
