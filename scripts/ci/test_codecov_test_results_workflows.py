@@ -6,12 +6,11 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-import yaml
-
 
 ROOT = Path(__file__).resolve().parents[2]
 ACTION = "codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac"
 TOKEN = "${{ secrets.CODECOV_TOKEN }}"
+CONTRACT_WORKFLOW = ROOT / ".github/workflows/workflow-contracts-advisory.yml"
 
 EXPECTED = {
     "Upload PR-fast test results to Codecov": {
@@ -45,20 +44,67 @@ EXPECTED = {
 }
 
 
+def scalar(value: str) -> str:
+    value = value.split(" #", 1)[0].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def parse_steps(path: Path) -> list[dict]:
+    """Parse step-level scalar structure without a third-party YAML dependency."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    found: list[dict] = []
+    steps_indent: int | None = None
+    step: dict | None = None
+    step_indent = -1
+    section: str | None = None
+
+    for line in lines:
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if not stripped or stripped.startswith("#"):
+            continue
+        if steps_indent is None:
+            if stripped == "steps:":
+                steps_indent = indent
+            continue
+        if indent <= steps_indent:
+            steps_indent = None
+            step = None
+            section = None
+            if stripped == "steps:":
+                steps_indent = indent
+            continue
+        if indent == steps_indent + 2 and stripped.startswith("- name:"):
+            step = {"name": scalar(stripped.removeprefix("- name:"))}
+            found.append(step)
+            step_indent = indent
+            section = None
+            continue
+        if step is None or indent <= step_indent:
+            continue
+        if indent == step_indent + 2 and ":" in stripped:
+            key, value = stripped.split(":", 1)
+            if key in {"with", "env"} and not value.strip():
+                step[key] = {}
+                section = key
+            else:
+                step[key] = scalar(value)
+                section = None
+            continue
+        if section and indent == step_indent + 4 and ":" in stripped:
+            key, value = stripped.split(":", 1)
+            step[section][key] = scalar(value)
+    return found
+
+
 def load_workflows() -> dict[str, dict]:
-    return {
-        path: yaml.load((ROOT / path).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-        for path in {entry["file"] for entry in EXPECTED.values()}
-    }
+    return {path: {"steps": parse_steps(ROOT / path)} for path in {entry["file"] for entry in EXPECTED.values()}}
 
 
 def raw_steps(workflow: dict) -> list[dict]:
-    found = []
-    for job in workflow.get("jobs", {}).values():
-        for step in job.get("steps", []):
-            if isinstance(step, dict):
-                found.append(step)
-    return found
+    return workflow["steps"]
 
 
 def validate(workflows: dict[str, dict]) -> None:
@@ -124,6 +170,11 @@ class CodecovTestResultsWorkflowTests(unittest.TestCase):
     def test_current_workflows_match_contract(self) -> None:
         validate(self.workflows)
 
+    def test_advisory_workflow_invokes_this_contract(self) -> None:
+        text = CONTRACT_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('      - "scripts/ci/test_codecov_test_results_workflows.py"', text)
+        self.assertIn("python3 -m unittest scripts.ci.test_codecov_test_results_workflows", text)
+
     def test_rejects_old_or_wrong_action(self) -> None:
         self.mutate("Upload PR-fast test results to Codecov", "uses", "codecov/test-results-action@old")
         self.assert_rejected()
@@ -160,8 +211,7 @@ class CodecovTestResultsWorkflowTests(unittest.TestCase):
 
     def test_rejects_decoy_test_results_step(self) -> None:
         workflow = self.workflows[".github/workflows/ci.yml"]
-        job = next(iter(workflow["jobs"].values()))
-        job["steps"].append(
+        workflow["steps"].append(
             {
                 "name": "Decoy Codecov result upload",
                 "uses": ACTION,
@@ -172,8 +222,7 @@ class CodecovTestResultsWorkflowTests(unittest.TestCase):
 
     def test_rejects_fifth_deprecated_step_without_report_type(self) -> None:
         workflow = self.workflows[".github/workflows/ci.yml"]
-        job = next(iter(workflow["jobs"].values()))
-        job["steps"].append(
+        workflow["steps"].append(
             {
                 "name": "Deprecated decoy upload",
                 "uses": "codecov/test-results-action@old",
@@ -184,8 +233,7 @@ class CodecovTestResultsWorkflowTests(unittest.TestCase):
 
     def test_rejects_same_name_deprecated_duplicate(self) -> None:
         workflow = self.workflows[".github/workflows/ci.yml"]
-        job = next(iter(workflow["jobs"].values()))
-        job["steps"].append(
+        workflow["steps"].append(
             {
                 "name": "Upload PR-fast test results to Codecov",
                 "uses": "codecov/test-results-action@old",
