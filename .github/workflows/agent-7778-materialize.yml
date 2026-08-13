@@ -1,0 +1,57 @@
+name: Agent materialize Emacs runner
+
+on:
+  pull_request:
+    branches:
+      - test/7777-editor-client-compat
+    paths:
+      - '.github/workflows/agent-7778-materialize.yml'
+      - '.agent-upload/7778/**'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 1
+
+      - name: Decode checked sources
+        shell: bash
+        run: |
+          mkdir -p xtask/tests/support xtask/tests scripts/test
+          cat .agent-upload/7778/runner.part* | base64 -d > xtask/tests/support/emacs_host_runner.rs
+          cat .agent-upload/7778/contract.part* | base64 -d > xtask/tests/emacs_host_runner_contract.rs
+          cat .agent-upload/7778/driver.part* | base64 -d > scripts/test/emacs-host-driver.el
+
+      - name: Format exact xtask targets
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          rustup run 1.95.0 cargo fmt --manifest-path xtask/Cargo.toml
+          git diff --check
+
+      - name: Commit materialized stack layer
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          rm -rf .agent-upload/7778
+          rm -f .github/workflows/agent-7778-materialize.yml
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add -A -- \
+            .agent-upload/7778 \
+            .github/workflows/agent-7778-materialize.yml \
+            scripts/test/emacs-host-driver.el \
+            xtask/tests/support/emacs_host_runner.rs \
+            xtask/tests/emacs_host_runner_contract.rs
+          git commit -m 'test(emacs): add hermetic actual-host runner (#7778)'
+          git push origin "HEAD:${HEAD_REF}"
