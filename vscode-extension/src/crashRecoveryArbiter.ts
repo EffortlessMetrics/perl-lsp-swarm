@@ -5,10 +5,7 @@ export type RecoveryDecisionDisposition =
   | 'deduped_existing_episode'
   | 'deduped_previous_episode'
   | 'crash_budget_exhausted';
-export type RecoveryTerminalDisposition =
-  | 'recovered'
-  | 'recovery_failed'
-  | 'cancelled';
+export type RecoveryTerminalDisposition = 'recovered' | 'recovery_failed' | 'cancelled';
 export type NonCrashLifecycleAction =
   | 'user_restart'
   | 'extension_deactivation'
@@ -186,10 +183,7 @@ export class CrashRecoveryArbiter {
     }
   }
 
-  private addObservationSource(
-    episode: RecoveryEpisodeState,
-    source: CrashObservationSource,
-  ): void {
+  private addObservationSource(episode: RecoveryEpisodeState, source: CrashObservationSource): void {
     if (source === 'process_exit') {
       episode.process_exit_observed = true;
     } else {
@@ -209,10 +203,7 @@ export class CrashRecoveryArbiter {
   }
 
   private validateObservation(observation: CrashFailureObservation): void {
-    if (
-      !Number.isInteger(observation.failed_generation) ||
-      observation.failed_generation < 0
-    ) {
+    if (!Number.isInteger(observation.failed_generation) || observation.failed_generation < 0) {
       throw new Error('failed_generation must be a non-negative integer');
     }
     if (observation.process_identity.trim().length === 0) {
