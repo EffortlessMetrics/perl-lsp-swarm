@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Added
+body: Added an actual-Vim UX measurement substrate for bounded vim-lsp completion and editing configurations.
+time: 2026-08-13T10:17:17Z
+custom:
+  PR: "7824"
+  Slug: vim-interactive-ux-measurement
+  Breaking: "no"
