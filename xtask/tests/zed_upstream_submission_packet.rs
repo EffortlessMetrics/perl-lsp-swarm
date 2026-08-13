@@ -14,18 +14,14 @@ fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
 #[test]
 fn submission_packet_is_explicitly_blocked() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let text = fs::read_to_string(
-        root.join(".ci/fixtures/zed-perl-upstream/submission/manifest.toml"),
-    )?;
+    let text =
+        fs::read_to_string(root.join(".ci/fixtures/zed-perl-upstream/submission/manifest.toml"))?;
     let manifest: toml::Value = toml::from_str(&text)?;
     assert_eq!(
         manifest.get("status").and_then(toml::Value::as_str),
         Some("blocked_pending_fan_in")
     );
-    assert_eq!(
-        manifest.get("ready").and_then(toml::Value::as_bool),
-        Some(false)
-    );
+    assert_eq!(manifest.get("ready").and_then(toml::Value::as_bool), Some(false));
     assert_eq!(
         manifest
             .get("submission")
@@ -45,9 +41,8 @@ fn submission_packet_is_explicitly_blocked() -> Result<(), Box<dyn Error>> {
 #[test]
 fn upstream_pr_body_cannot_masquerade_as_ready() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let body = fs::read_to_string(
-        root.join(".ci/fixtures/zed-perl-upstream/submission/pr-body.md"),
-    )?;
+    let body =
+        fs::read_to_string(root.join(".ci/fixtures/zed-perl-upstream/submission/pr-body.md"))?;
     assert!(body.contains("[BLOCKED:"));
     assert!(body.contains("perlnavigator-server -> Perl Navigator"));
     assert!(body.contains("perl-lsp             -> tree-sitter-perl/perl-tree-sitter-lsp"));
