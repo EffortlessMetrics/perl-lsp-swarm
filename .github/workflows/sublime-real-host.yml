@@ -1,0 +1,107 @@
+name: Sublime real-host exact-source
+
+on:
+  pull_request:
+    paths:
+      - "clients/sublime/**"
+      - "crates/perl-lsp-rs/**"
+      - "crates/perllsp/**"
+      - "crates/perl-lsp-rs-core/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/sublime-real-host.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sublime-real-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  host-journey:
+    name: Sublime host / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      PERLLSP_SUBLIME_FIXTURE: ${{ github.workspace }}/clients/sublime/host-fixture
+      PERLLSP_SUBLIME_RECEIPT: ${{ github.workspace }}/target/sublime-host/${{ runner.os }}.json
+      PERLLSP_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PERLLSP_LSP_REF: cc9f5201d9f053d9ab67aa0ea575b494fd133803
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the exact current-source server candidate
+        run: cargo build --locked --release -p perllsp
+
+      - name: Bind the current-source binary identity
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            printf 'PERLLSP_TEST_BINARY=%s\n' "$GITHUB_WORKSPACE/target/release/perllsp.exe" >> "$GITHUB_ENV"
+          else
+            printf 'PERLLSP_TEST_BINARY=%s\n' "$GITHUB_WORKSPACE/target/release/perllsp" >> "$GITHUB_ENV"
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/target/sublime-host"
+
+      - name: Stage the exact helper-package source
+        shell: bash
+        run: |
+          rm -rf target/LSP-perllsp-package
+          mkdir -p target/LSP-perllsp-package
+          cp -R clients/sublime/LSP-perllsp/. target/LSP-perllsp-package/
+          git -C target/LSP-perllsp-package init -q
+          git -C target/LSP-perllsp-package remote add origin \
+            https://github.com/EffortlessMetrics/perl-lsp-swarm.git
+
+      - name: Install Sublime Text, UnitTesting, and exact LSP 2.13.0 source
+        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164
+        with:
+          package-name: LSP-perllsp
+          package-path: target/LSP-perllsp-package
+          sublime-text-version: 4
+          install-package-control: false
+          extra-packages: |
+            LSP:sublimelsp/LSP@cc9f5201d9f053d9ab67aa0ea575b494fd133803
+
+      - name: Run the real Sublime interoperability journey
+        uses: SublimeText/UnitTesting/actions/run-tests@b8abedefd5fbc0f64a8c6082506ebd1e24203164
+        with:
+          package-name: LSP-perllsp
+          coverage: false
+
+      - name: Reject an orphaned perllsp process
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "perllsp remained alive after Sublime/UnitTesting shutdown" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
+      - name: Reject an orphaned perllsp process
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $processes = Get-Process perllsp -ErrorAction SilentlyContinue
+          if ($processes) {
+            $processes | Format-Table -AutoSize | Out-String | Write-Error
+            throw "perllsp remained alive after Sublime/UnitTesting shutdown"
+          }
+
+      - name: Validate the exact-source receipt
+        run: python clients/sublime/validate_sublime_host_receipt.py "${{ env.PERLLSP_SUBLIME_RECEIPT }}"
+
+      - name: Publish the host receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: sublime-real-host-${{ runner.os }}
+          path: ${{ env.PERLLSP_SUBLIME_RECEIPT }}
+          if-no-files-found: error
+          retention-days: 30
