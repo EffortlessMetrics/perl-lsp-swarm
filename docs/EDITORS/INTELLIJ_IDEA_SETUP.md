@@ -78,7 +78,7 @@ Use the released built-in Perl entry only with the state that your installed LSP
 
 The currently reviewed upstream Perl material and the repository-owned corrected candidate are intentionally tracked as different subjects. In particular, generic server configuration belongs under canonical `perl.*` settings; VS Code extension settings under `perl-lsp.*` are not a generic LSP settings authority.
 
-For verification of the corrected integration before an upstream release, import the repository-owned LSP4IJ template produced by the LSP4IJ integration lane and bind it to the exact candidate under test.
+The repository-owned corrected LSP4IJ template import route is **not available yet**. `docs/EDITORS/lsp4ij-perl-lsp.json` is a legacy manual descriptor, not that template. Until the importable corrected template lands under #7875, treat this verification route as unavailable and use [Legacy Raw Command Setup](INTELLIJ_IDEA_LEGACY_RAW_COMMAND.md) for local exact-source binding instead.
 
 Use [Legacy Raw Command Setup](INTELLIJ_IDEA_LEGACY_RAW_COMMAND.md) only for development, custom launch flags, or a LSP4IJ build where the relevant template route is unavailable.
 
