@@ -1,4 +1,9 @@
-export type SupportEvidenceState = 'known' | 'known_absent' | 'unsupported' | 'unknown' | 'not_proven';
+export type SupportEvidenceState =
+  | 'known'
+  | 'known_absent'
+  | 'unsupported'
+  | 'unknown'
+  | 'not_proven';
 export type SupportHostKind = 'local' | 'remote' | 'unknown';
 export type SupportWorkspaceMode = 'single_root' | 'multi_root' | 'none' | 'unknown';
 export type SupportTrustDisposition = 'trusted_supported' | 'untrusted_unsupported' | 'unknown';
@@ -189,7 +194,11 @@ export function validateSupportPacket(packet: SupportPacketV1): string[] {
     packet.configuration.workspace_present,
     errors,
   );
-  validateEvidenceValue('configuration.folder_present', packet.configuration.folder_present, errors);
+  validateEvidenceValue(
+    'configuration.folder_present',
+    packet.configuration.folder_present,
+    errors,
+  );
   validateEvidenceValue(
     'configuration.project_config_present',
     packet.configuration.project_config_present,
