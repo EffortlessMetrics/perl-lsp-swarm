@@ -35,7 +35,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: zed-integration-candidate-${{ github.ref }}
@@ -50,8 +50,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: true
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
@@ -65,24 +64,6 @@ jobs:
 
       - name: Generate isolated candidate lockfile
         run: cargo generate-lockfile --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
-
-      - name: Apply and commit exact rustfmt output
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        shell: bash
-        env:
-          HEAD_BRANCH: ${{ github.head_ref }}
-        run: |
-          manifest='.ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml'
-          source='.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
-          cargo fmt --manifest-path "$manifest"
-          if git diff --quiet -- "$source"; then
-            exit 0
-          fi
-          git config user.name 'EffortlessSteven'
-          git config user.email 'git@effortlesssteven.com'
-          git add "$source"
-          git commit -m 'style(zed): apply rustfmt to staged extension'
-          git push origin "HEAD:$HEAD_BRANCH"
 
       - name: Format
         run: cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check
