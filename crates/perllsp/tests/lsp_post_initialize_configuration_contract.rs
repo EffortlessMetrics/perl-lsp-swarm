@@ -68,12 +68,11 @@ fn assert_initialize_response(response: &Value, id: &Value) -> Result<()> {
 }
 
 fn respond_to_workspace_configuration(
-    client: &mut RealProcessClient, request: &Value,
+    client: &mut RealProcessClient,
+    request: &Value,
 ) -> Result<()> {
-    let request_id = request
-        .get("id")
-        .cloned()
-        .context("workspace/configuration request missing id")?;
+    let request_id =
+        request.get("id").cloned().context("workspace/configuration request missing id")?;
     let items = request
         .pointer("/params/items")
         .and_then(Value::as_array)
