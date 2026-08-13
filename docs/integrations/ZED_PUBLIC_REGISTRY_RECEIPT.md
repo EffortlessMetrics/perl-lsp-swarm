@@ -50,7 +50,7 @@ arbitrary package-manager or user installation.
 
 ## Promotion boundary
 
-After a passing run, #7122 may promote only the exact Zed version, platform,
+After a passing run, #7912 may promote only the exact Zed version, platform,
 extension version, `perllsp` release/target, install route, activation families,
 configuration behavior, and journey cells observed. Other platforms, versions,
 methods, routes, and DAP remain unproven or unsupported.
