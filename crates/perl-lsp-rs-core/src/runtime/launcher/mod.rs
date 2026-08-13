@@ -1377,8 +1377,14 @@ mod tests {
 
         for shell in ["bash", "zsh", "fish", "powershell"] {
             let script = must_some(super::shell_completion(shell));
-            assert!(!script.contains("--mcp"), "{shell} completion advertises retired alias: {script}");
-            assert!(!script.contains("-l mcp"), "{shell} completion advertises retired alias: {script}");
+            assert!(
+                !script.contains("--mcp"),
+                "{shell} completion advertises retired alias: {script}"
+            );
+            assert!(
+                !script.contains("-l mcp"),
+                "{shell} completion advertises retired alias: {script}"
+            );
         }
 
         let error = parse_args(["perl-lsp", "--mcp"]).expect_err("retired alias must be rejected");
