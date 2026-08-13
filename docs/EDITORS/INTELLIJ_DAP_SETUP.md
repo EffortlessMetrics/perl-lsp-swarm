@@ -167,14 +167,12 @@ Never reuse launch evidence as attach proof.
 
 For each debugger feature, the supported cell is the intersection of:
 
-```text
-LSP4IJ exposes the action
+- LSP4IJ exposes the action
 - perl-dap advertises/supports it
 - selected backend/runtime supports it
 - the actual [#7877](https://github.com/EffortlessMetrics/perl-lsp/issues/7877) session passes
-```
 
-A visible IntelliJ action does not override `perl-dap` capability truth from #6688.
+A visible IntelliJ action does not override `perl-dap` capability truth from [#6688](https://github.com/EffortlessMetrics/perl-lsp/issues/6688).
 
 ## Cleanup
 
