@@ -1,0 +1,65 @@
+schema_version = "zed-perllsp-upstream-submission.v1"
+status = "blocked_pending_fan_in"
+ready = false
+issue = 7909
+programme = 7759
+
+[target]
+repository = "tree-sitter-perl/zed-perl"
+branch = "master"
+captured_base_commit = "eb27a19e69fed8a041b706b23a1f42fbafb29fd8"
+captured_manifest_version = "0.4.0"
+captured_extension_api = "0.7.0"
+extension_id = "perl"
+license = "MIT"
+
+[candidate]
+source_root = ".ci/fixtures/zed-perl-upstream/zed-perl"
+apply_script = "scripts/apply-zed-perl-upstream.sh"
+check_script = "scripts/check-zed-upstream-candidate.sh"
+proposed_version = ""
+candidate_commit = ""
+patch_sha256 = ""
+changed_files_sha256 = ""
+
+[contracts]
+truth_issue = 7898
+extension_issue = 7901
+settings_issue = 7902
+managed_assets_issue = 7903
+defaults_issue = 7908
+actual_host_issue = 7907
+settings_contract_sha256 = ""
+managed_assets_contract_sha256 = ""
+defaults_packet_sha256 = ""
+actual_host_receipt_sha256 = ""
+
+[evidence]
+actual_zed_version = ""
+actual_zed_platform = ""
+actual_extension_wasm_sha256 = ""
+actual_perllsp_sha256 = ""
+actual_host_result = "not_run"
+managed_download_result = "not_run"
+settings_round_trip_result = "not_run"
+default_compatibility_result = "not_run"
+
+[submission]
+pr_title = "feat: add EffortlessMetrics perllsp as a separate Perl server"
+pr_body = ".ci/fixtures/zed-perl-upstream/submission/pr-body.md"
+changed_files = ".ci/fixtures/zed-perl-upstream/submission/changed-files.v1.json"
+maintainer_test_instructions = "docs/integrations/ZED_UPSTREAM_SUBMISSION.md"
+companion_zed_defaults_issue = 7908
+submission_order = "unresolved_pending_actual_host"
+
+blockers = [
+  "refresh upstream base, version, API, grammar, and license immediately before freeze",
+  "merge the command and dispatch hardening from #7901",
+  "bind the canonical settings contract and actual workspace/configuration receipt from #7902",
+  "bind every included managed target to executable public-asset evidence from #7903",
+  "record one green current-stable exact-source Zed host receipt from #7907",
+  "resolve the Zed-core defaults compatibility and submission order from #7908",
+  "select a valid next extension version and calculate final patch and changed-file digests"
+]
+
+claim_boundary = "This manifest is a blocked fan-in scaffold. It cannot authorize or represent an upstream-ready submission until every exact subject, digest, receipt, result, and ordering field is populated and the status is promoted by the packet validator."
