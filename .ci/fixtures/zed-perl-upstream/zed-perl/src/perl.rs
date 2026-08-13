@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 
-use zed_extension_api::{self as zed, LanguageServerId, Result, settings::LspSettings};
+use zed_extension_api::{self as zed, settings::LspSettings, LanguageServerId, Result};
 
 const SERVER_PATH: &str = "node_modules/.bin/perlnavigator";
 const PACKAGE_NAME: &str = "perlnavigator-server";
@@ -116,11 +116,7 @@ impl PerlExtension {
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
         let command = self.perl_lsp_binary(language_server_id, worktree)?;
-        Ok(zed::Command {
-            command,
-            args: Vec::new(),
-            env: Default::default(),
-        })
+        Ok(zed::Command { command, args: Vec::new(), env: Default::default() })
     }
 
     fn perl_lsp_binary(
@@ -165,10 +161,7 @@ impl PerlExtension {
 
         let release = zed::latest_github_release(
             PERL_LSP_REPO,
-            zed::GithubReleaseOptions {
-                require_assets: true,
-                pre_release: false,
-            },
+            zed::GithubReleaseOptions { require_assets: true, pre_release: false },
         )?;
 
         let (os, arch) = zed::current_platform();
@@ -190,15 +183,9 @@ impl PerlExtension {
             _ => ("tar.gz", zed::DownloadedFileType::GzipTar, "perl-lsp"),
         };
         let asset_name = format!("perl-lsp-{target}.{archive_ext}");
-        let asset = release
-            .assets
-            .iter()
-            .find(|asset| asset.name == asset_name)
-            .ok_or_else(|| {
-                format!(
-                    "no asset named `{asset_name}` in perl-lsp release {}",
-                    release.version
-                )
+        let asset =
+            release.assets.iter().find(|asset| asset.name == asset_name).ok_or_else(|| {
+                format!("no asset named `{asset_name}` in perl-lsp release {}", release.version)
             })?;
 
         let version_dir = format!("perl-lsp-{}", release.version);
@@ -225,11 +212,7 @@ impl PerlExtension {
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
         let command = self.perllsp_binary(language_server_id, worktree)?;
-        Ok(zed::Command {
-            command,
-            args: vec!["--stdio".to_string()],
-            env: Default::default(),
-        })
+        Ok(zed::Command { command, args: vec!["--stdio".to_string()], env: Default::default() })
     }
 
     fn perllsp_binary(
@@ -258,10 +241,7 @@ impl PerlExtension {
 
         let release = zed::latest_github_release(
             PERLLSP_REPO,
-            zed::GithubReleaseOptions {
-                require_assets: true,
-                pre_release: false,
-            },
+            zed::GithubReleaseOptions { require_assets: true, pre_release: false },
         )?;
         let version = normalize_release_version(&release.version);
         let (os, arch) = zed::current_platform();
@@ -271,11 +251,8 @@ impl PerlExtension {
             _ => ("tar.gz", zed::DownloadedFileType::GzipTar),
         };
         let asset_name = perllsp_asset_name(version, target, archive_ext);
-        let asset = release
-            .assets
-            .iter()
-            .find(|asset| asset.name == asset_name)
-            .ok_or_else(|| {
+        let asset =
+            release.assets.iter().find(|asset| asset.name == asset_name).ok_or_else(|| {
                 format!(
                     "no asset named `{asset_name}` in EffortlessMetrics perllsp release {}",
                     release.version
@@ -296,8 +273,9 @@ impl PerlExtension {
                 language_server_id,
                 &zed::LanguageServerInstallationStatus::Downloading,
             );
-            zed::download_file(&asset.download_url, &version_dir, file_type)
-                .map_err(|error| format!("failed to download EffortlessMetrics perllsp: {error}"))?;
+            zed::download_file(&asset.download_url, &version_dir, file_type).map_err(|error| {
+                format!("failed to download EffortlessMetrics perllsp: {error}")
+            })?;
 
             if !fs::metadata(&binary_path).is_ok_and(|metadata| metadata.is_file()) {
                 return Err(format!(
@@ -341,12 +319,7 @@ fn perllsp_asset_name(version: &str, target: &str, archive_ext: &str) -> String 
     format!("perllsp-{version}-{target}.{archive_ext}")
 }
 
-fn perllsp_binary_path(
-    version_dir: &str,
-    version: &str,
-    target: &str,
-    os: zed::Os,
-) -> String {
+fn perllsp_binary_path(version_dir: &str, version: &str, target: &str, os: zed::Os) -> String {
     match os {
         zed::Os::Windows => format!("{version_dir}/perllsp.exe"),
         _ => format!("{version_dir}/perllsp-{version}-{target}/perllsp"),
@@ -368,11 +341,7 @@ fn remove_old_downloads(prefix: &str, current_dir: &str) {
 
 impl zed::Extension for PerlExtension {
     fn new() -> Self {
-        Self {
-            did_find_server: false,
-            perl_lsp_path: None,
-            perllsp_path: None,
-        }
+        Self { did_find_server: false, perl_lsp_path: None, perllsp_path: None }
     }
 
     fn language_server_command(
@@ -416,10 +385,7 @@ mod tests {
             classify_server_id(PERL_LSP_SERVER_ID).ok(),
             Some(ServerKind::TreeSitterPerlLsp)
         );
-        assert_eq!(
-            classify_server_id(PERLLSP_SERVER_ID).ok(),
-            Some(ServerKind::EffortlessPerllsp)
-        );
+        assert_eq!(classify_server_id(PERLLSP_SERVER_ID).ok(), Some(ServerKind::EffortlessPerllsp));
         assert!(classify_server_id("unknown-perl-server").is_err());
     }
 
