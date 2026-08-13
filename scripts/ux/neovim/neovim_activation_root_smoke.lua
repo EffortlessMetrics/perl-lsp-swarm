@@ -101,16 +101,45 @@ config.cmd = { perllsp, '--stdio' }
 vim.lsp.config('perllsp', config)
 vim.lsp.enable('perllsp')
 
+-- Every configured root marker gets a winning actual-host case. The first two
+-- also prove the priority rules: equal-priority Perl markers choose the nearest
+-- project, while `.git` remains the lower-priority fallback.
 local root_cases = {
   {
-    name = 'nearest-perl-marker',
+    name = 'makefile-pl-nearest-perl-marker',
+    marker = 'Makefile.PL',
     file = fixture_root .. '/outer/sub/lib/Nearest.pm',
     expected = fixture_root .. '/outer/sub',
   },
   {
-    name = 'perl-marker-before-git-fallback',
+    name = 'cpanfile-before-git-fallback',
+    marker = 'cpanfile',
     file = fixture_root .. '/gitroot/app/lib/App.pm',
     expected = fixture_root .. '/gitroot/app',
+  },
+  {
+    name = 'dot-perl-lsp-toml',
+    marker = '.perl-lsp.toml',
+    file = fixture_root .. '/marker-dot/lib/DotConfig.pm',
+    expected = fixture_root .. '/marker-dot',
+  },
+  {
+    name = 'build-pl',
+    marker = 'Build.PL',
+    file = fixture_root .. '/marker-build/lib/BuildRoot.pm',
+    expected = fixture_root .. '/marker-build',
+  },
+  {
+    name = 'dist-ini',
+    marker = 'dist.ini',
+    file = fixture_root .. '/marker-dist/lib/DistRoot.pm',
+    expected = fixture_root .. '/marker-dist',
+  },
+  {
+    name = 'git-only-fallback',
+    marker = '.git',
+    file = fixture_root .. '/git-only/lib/GitOnly.pm',
+    expected = fixture_root .. '/git-only',
   },
 }
 
@@ -128,6 +157,7 @@ for _, case in ipairs(root_cases) do
   local actual_root = client.root_dir and normalize(client.root_dir) or ''
   local expected_root = normalize(case.expected)
   receipt.roots[case.name] = {
+    marker = case.marker,
     expected = expected_root,
     actual = actual_root,
     client_id = client.id,
@@ -135,8 +165,9 @@ for _, case in ipairs(root_cases) do
 
   if actual_root ~= expected_root then
     error(
-      ('root case %s selected %q; expected nearest project root %q'):format(
+      ('root case %s (%s) selected %q; expected %q'):format(
         case.name,
+        case.marker,
         actual_root,
         expected_root
       )
