@@ -3,7 +3,7 @@
 //! Compatibility is deliberately independent from release-number equality. The initial
 //! contract recognizes only exact reviewed rows; an unlisted pair remains `not_proven`.
 
-use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 /// Machine-readable compatibility schema implemented by this module.
@@ -13,14 +13,8 @@ pub const PLUGIN_SLUG: &str = "perl-lsp-rs";
 /// Durable language-server executable identity.
 pub const SERVER_EXECUTABLE: &str = "perllsp";
 
-const EMBEDDED_CATALOG_JSON: &str = r#"{
-  "schema_version": "claude_plugin_server_compat.v1",
-  "rows": []
-}"#;
-
 /// Compatibility disposition for one exact plugin/server subject pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompatibilityResult {
     /// Direct evidence establishes the pair as compatible for the row's stated scope.
     Compatible,
@@ -30,9 +24,19 @@ pub enum CompatibilityResult {
     NotProven,
 }
 
+impl CompatibilityResult {
+    /// Stable machine-readable spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Compatible => "compatible",
+            Self::Incompatible => "incompatible",
+            Self::NotProven => "not_proven",
+        }
+    }
+}
+
 /// Stable reason describing how a compatibility decision was reached.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompatibilityReason {
     /// An exact reviewed compatible row matched the observed subjects.
     ExactEvidence,
@@ -44,8 +48,20 @@ pub enum CompatibilityReason {
     ExactPairNotEstablished,
 }
 
+impl CompatibilityReason {
+    /// Stable machine-readable spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactEvidence => "exact_evidence",
+            Self::ExactKnownBad => "exact_known_bad",
+            Self::ExplicitNotProven => "explicit_not_proven",
+            Self::ExactPairNotEstablished => "exact_pair_not_established",
+        }
+    }
+}
+
 /// Exact installable Claude plugin identity used as a compatibility subject.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PluginSubject {
     /// Claude plugin slug. Must be `perl-lsp-rs` for this contract.
     pub slug: String,
@@ -60,7 +76,7 @@ pub struct PluginSubject {
 }
 
 /// Exact `perllsp` binary identity used as a compatibility subject.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ServerSubject {
     /// Executable identity. Must be `perllsp` for this contract.
     pub executable: String,
@@ -77,69 +93,54 @@ pub struct ServerSubject {
 }
 
 /// Optional host-coupled identity for compatibility rows that depend on Claude behavior.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct HostSubject {
     /// Exact Claude Code version or reviewed host identity token.
     pub claude_code_version: String,
     /// Optional integration-control schema version when compatibility classification is coupled to it.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub control_plane_schema: Option<String>,
 }
 
 /// One exact evidence-backed compatibility row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompatibilityRow {
     /// Plugin subject.
     pub plugin: PluginSubject,
     /// Server subject.
     pub server: ServerSubject,
     /// Optional host contract. `None` means the row is not host-version-coupled.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<HostSubject>,
     /// Compatibility disposition.
     pub result: CompatibilityResult,
     /// Durable evidence references establishing this row.
-    #[serde(default)]
     pub evidence_refs: Vec<String>,
     /// Explicit limitations or unresolved boundaries.
-    #[serde(default)]
     pub limitations: Vec<String>,
 }
 
 /// Versioned collection of exact compatibility rows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompatibilityCatalog {
     /// Schema identity. Must equal [`SCHEMA_VERSION`].
     pub schema_version: String,
     /// Exact compatibility rows.
-    #[serde(default)]
     pub rows: Vec<CompatibilityRow>,
 }
 
 /// Result returned to runtime/setup consumers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompatibilityDecision {
     /// Compatibility disposition.
     pub result: CompatibilityResult,
     /// Stable reason for the disposition.
     pub reason: CompatibilityReason,
     /// Evidence references from an exact row, if one matched.
-    #[serde(default)]
     pub evidence_refs: Vec<String>,
     /// Limitations from an exact row, if one matched.
-    #[serde(default)]
     pub limitations: Vec<String>,
 }
 
 impl CompatibilityCatalog {
-    /// Parse and validate a catalog from JSON.
-    pub fn from_json(input: &str) -> Result<Self, String> {
-        let catalog: Self = serde_json::from_str(input)
-            .map_err(|error| format!("invalid {SCHEMA_VERSION} JSON: {error}"))?;
-        catalog.validate()?;
-        Ok(catalog)
-    }
-
     /// Validate catalog identity, exact subjects, evidence requirements, and duplicate rows.
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != SCHEMA_VERSION {
@@ -170,7 +171,9 @@ impl CompatibilityCatalog {
             match row.result {
                 CompatibilityResult::Compatible | CompatibilityResult::Incompatible => {
                     if row.evidence_refs.is_empty() {
-                        return Err("compatible/incompatible rows require direct evidence_refs".to_string());
+                        return Err(
+                            "compatible/incompatible rows require direct evidence_refs".to_string()
+                        );
                     }
                 }
                 CompatibilityResult::NotProven => {
@@ -228,14 +231,77 @@ impl CompatibilityCatalog {
             limitations: row.limitations.clone(),
         }
     }
+
+    /// Deterministic machine-readable projection for receipts, support joins, and diagnostics.
+    pub fn to_json(&self) -> Value {
+        let rows = self.rows.iter().map(row_to_json).collect::<Vec<_>>();
+        json!({
+            "schema_version": self.schema_version,
+            "rows": rows,
+        })
+    }
+}
+
+impl CompatibilityDecision {
+    /// Deterministic machine-readable decision consumed by setup/status surfaces.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "result": self.result.as_str(),
+            "reason": self.reason.as_str(),
+            "evidence_refs": self.evidence_refs,
+            "limitations": self.limitations,
+        })
+    }
 }
 
 /// Load the conservative compatibility catalog compiled into the `perllsp` package.
 ///
 /// The catalog intentionally starts empty. Actual compatible/incompatible rows are added only by
 /// reviewed evidence-producing work; unknown pairs therefore remain `not_proven` by construction.
-pub fn embedded_catalog() -> Result<CompatibilityCatalog, String> {
-    CompatibilityCatalog::from_json(EMBEDDED_CATALOG_JSON)
+pub fn embedded_catalog() -> CompatibilityCatalog {
+    CompatibilityCatalog {
+        schema_version: SCHEMA_VERSION.to_string(),
+        rows: Vec::new(),
+    }
+}
+
+fn row_to_json(row: &CompatibilityRow) -> Value {
+    json!({
+        "plugin": plugin_to_json(&row.plugin),
+        "server": server_to_json(&row.server),
+        "host": row.host.as_ref().map(host_to_json),
+        "result": row.result.as_str(),
+        "evidence_refs": row.evidence_refs,
+        "limitations": row.limitations,
+    })
+}
+
+fn plugin_to_json(plugin: &PluginSubject) -> Value {
+    json!({
+        "slug": plugin.slug,
+        "version": plugin.version,
+        "tree_digest": plugin.tree_digest,
+        "package_digest": plugin.package_digest,
+        "contract_digest": plugin.contract_digest,
+    })
+}
+
+fn server_to_json(server: &ServerSubject) -> Value {
+    json!({
+        "executable": server.executable,
+        "version": server.version,
+        "build_revision": server.build_revision,
+        "artifact_sha256": server.artifact_sha256,
+        "platform": server.platform,
+        "arch": server.arch,
+    })
+}
+
+fn host_to_json(host: &HostSubject) -> Value {
+    json!({
+        "claude_code_version": host.claude_code_version,
+        "control_plane_schema": host.control_plane_schema,
+    })
 }
 
 fn validate_plugin(plugin: &PluginSubject) -> Result<(), String> {
