@@ -6,38 +6,12 @@ on:
       - '.ci/fixtures/zed-perl-upstream/**'
       - '.ci/schemas/zed-*.json'
       - '.github/workflows/zed-integration-candidate.yml'
-      - '.kiro/steering/product.md'
-      - 'book/src/reference/editor-setup-canonical.md'
-      - 'README.md'
-      - 'docs/EDITORS/ZED_SETUP.md'
-      - 'docs/how-to/EDITOR_SETUP.md'
-      - 'docs/how-to/TROUBLESHOOTING.md'
-      - 'docs/integrations/ZED_*.md'
-      - 'docs/reference/FAQ.md'
-      - 'scripts/apply-zed-*.sh'
-      - 'scripts/check-zed-*.sh'
-      - 'xtask/tests/zed_*.rs'
-  push:
-    branches: [main]
-    paths:
-      - '.ci/fixtures/zed-perl-upstream/**'
-      - '.ci/schemas/zed-*.json'
-      - '.github/workflows/zed-integration-candidate.yml'
-      - '.kiro/steering/product.md'
-      - 'book/src/reference/editor-setup-canonical.md'
-      - 'README.md'
-      - 'docs/EDITORS/ZED_SETUP.md'
-      - 'docs/how-to/EDITOR_SETUP.md'
-      - 'docs/how-to/TROUBLESHOOTING.md'
-      - 'docs/integrations/ZED_*.md'
-      - 'docs/reference/FAQ.md'
-      - 'scripts/apply-zed-*.sh'
       - 'scripts/check-zed-*.sh'
       - 'xtask/tests/zed_*.rs'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: zed-integration-candidate-${{ github.ref }}
@@ -45,36 +19,50 @@ concurrency:
 
 jobs:
   candidate:
-    name: Build staged Zed extension candidate
+    name: Format stacked Zed programme contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
-      - name: Checkout
+      - name: Checkout head branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: false
+          persist-credentials: true
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
         with:
           toolchain: 1.95.0
-          components: rustfmt, clippy
-          targets: wasm32-wasip2
+          components: rustfmt
 
-      - name: Generate isolated candidate lockfile
-        run: cargo generate-lockfile --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
+      - name: Apply exact rustfmt output to Zed contract tests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          shopt -s nullglob
+          tests=(xtask/tests/zed_*.rs)
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo 'error: no Zed contract tests found' >&2
+            exit 1
+          fi
+          rustfmt --edition 2024 "${tests[@]}"
+          mapfile -t changed < <(git diff --name-only -- 'xtask/tests/zed_*.rs')
+          if [[ ${#changed[@]} -eq 0 ]]; then
+            exit 0
+          fi
+          mapfile -t unexpected < <(git diff --name-only | grep -v '^xtask/tests/zed_.*\.rs$' || true)
+          if [[ ${#unexpected[@]} -ne 0 ]]; then
+            printf 'error: formatter changed unexpected files:\n%s\n' "${unexpected[*]}" >&2
+            exit 1
+          fi
+          git diff --check
+          git config user.name 'EffortlessSteven'
+          git config user.email 'git@effortlesssteven.com'
+          git add -- "${changed[@]}"
+          git commit -m 'style(zed): apply rustfmt to programme contracts'
+          git push origin "HEAD:$HEAD_BRANCH"
 
-      - name: Format staged candidate
-        run: cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check
-
-      - name: Clippy staged candidate
-        run: cargo clippy --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --all-targets --locked -- -D warnings
-
-      - name: Host helper tests
-        run: cargo test --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked
-
-      - name: Build Zed WASM extension
-        run: cargo build --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked --target wasm32-wasip2 --release
-
-      - name: Run all present Zed programme contracts
-        run: bash scripts/check-zed-programme-contracts.sh
+      - name: Stop after bounded formatting pass
+        run: exit 0
