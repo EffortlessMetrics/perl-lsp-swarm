@@ -3,14 +3,12 @@ mod editor_client_compat;
 
 use anyhow::{Context, Result, ensure};
 use editor_client_compat::{
-    ArtifactKind, CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID,
-    CapabilityIdentity, CleanupResult, ClientSourceState, DiagnosticMode,
-    DiagnosticsIdentity, EditorClientCompatReceipt, EvidenceArtifact,
-    EvidenceStage, FailureClass, HostIdentity, IntegrationIdentity,
-    IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity,
+    ArtifactKind, CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity,
+    CleanupResult, ClientSourceState, DiagnosticMode, DiagnosticsIdentity,
+    EditorClientCompatReceipt, EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity,
+    IntegrationIdentity, IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity,
     PositionEncodingBasis, RegistrationState, SCHEMA_VERSION, ServerIdentity,
-    WorkspaceFixtureIdentity, canonical_expectation_set_digest,
-    fixture_digest,
+    WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -27,8 +25,7 @@ fn repository_root() -> Result<PathBuf> {
 }
 
 fn fixture_root() -> Result<PathBuf> {
-    Ok(repository_root()?
-        .join("crates/perl-lsp-ux-tests/fixtures/agent-client-compat"))
+    Ok(repository_root()?.join("crates/perl-lsp-ux-tests/fixtures/agent-client-compat"))
 }
 
 fn sha256(fill: char) -> String {
@@ -135,8 +132,7 @@ fn valid_receipt() -> Result<EditorClientCompatReceipt> {
         failure_class: None,
         limitations: Vec::new(),
         artifacts: required_artifacts(),
-        claim_boundary: "Exact-source Eglot generic-LSP fixture cells only."
-            .to_string(),
+        claim_boundary: "Exact-source Eglot generic-LSP fixture cells only.".to_string(),
     })
 }
 
@@ -147,10 +143,7 @@ fn editor_client_receipt_round_trips_and_validates() -> Result<()> {
 
     let encoded = serde_json::to_string_pretty(&receipt)?;
     let decoded: EditorClientCompatReceipt = serde_json::from_str(&encoded)?;
-    ensure!(
-        decoded == receipt,
-        "serialized receipt did not round-trip exactly"
-    );
+    ensure!(decoded == receipt, "serialized receipt did not round-trip exactly");
     ensure!(
         serde_json::to_string_pretty(&decoded)? == encoded,
         "receipt serialization was not deterministic"
@@ -161,25 +154,19 @@ fn editor_client_receipt_round_trips_and_validates() -> Result<()> {
         value.get("limitations").is_some_and(Value::is_array),
         "limitations must serialize when empty"
     );
-    ensure!(
-        value.get("artifacts").is_some_and(Value::is_array),
-        "artifacts must always serialize"
-    );
+    ensure!(value.get("artifacts").is_some_and(Value::is_array), "artifacts must always serialize");
     Ok(())
 }
 
 #[test]
-fn evidence_registration_source_and_diagnostic_boundaries_serialize_distinctly(
-) -> Result<()> {
+fn evidence_registration_source_and_diagnostic_boundaries_serialize_distinctly() -> Result<()> {
     let stages = [
         EvidenceStage::ExactSourceLocal,
         EvidenceStage::ReleaseCandidate,
         EvidenceStage::PublicArtifact,
     ];
-    let stage_json = stages
-        .iter()
-        .map(serde_json::to_value)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let stage_json =
+        stages.iter().map(serde_json::to_value).collect::<std::result::Result<Vec<_>, _>>()?;
     ensure!(
         stage_json
             == vec![
@@ -238,10 +225,8 @@ fn evidence_registration_source_and_diagnostic_boundaries_serialize_distinctly(
         DiagnosticMode::Malformed,
         DiagnosticMode::NotProven,
     ];
-    let diagnostic_json = diagnostics
-        .iter()
-        .map(serde_json::to_value)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let diagnostic_json =
+        diagnostics.iter().map(serde_json::to_value).collect::<std::result::Result<Vec<_>, _>>()?;
     ensure!(
         diagnostic_json
             == vec![
@@ -280,18 +265,12 @@ fn evidence_registration_source_and_diagnostic_boundaries_serialize_distinctly(
 fn protocol_default_utf16_is_distinct_from_an_offered_encoding() -> Result<()> {
     let mut receipt = valid_receipt()?;
     receipt.capabilities.position_encodings_offered.clear();
-    receipt.capabilities.position_encoding_basis =
-        PositionEncodingBasis::ProtocolDefault;
-    receipt.capabilities.position_encoding_selected =
-        Some("utf-16".to_string());
+    receipt.capabilities.position_encoding_basis = PositionEncodingBasis::ProtocolDefault;
+    receipt.capabilities.position_encoding_selected = Some("utf-16".to_string());
     receipt.validate()?;
 
-    receipt.capabilities.position_encoding_selected =
-        Some("utf-8".to_string());
-    ensure!(
-        receipt.validate().is_err(),
-        "protocol-default basis accepted a non-UTF-16 selection"
-    );
+    receipt.capabilities.position_encoding_selected = Some("utf-8".to_string());
+    ensure!(receipt.validate().is_err(), "protocol-default basis accepted a non-UTF-16 selection");
     Ok(())
 }
 
@@ -299,39 +278,25 @@ fn protocol_default_utf16_is_distinct_from_an_offered_encoding() -> Result<()> {
 fn validation_rejects_false_actual_host_and_wrong_subject_shapes() -> Result<()> {
     let mut wrong_executable = valid_receipt()?;
     wrong_executable.server.executable = "perl-lsp".to_string();
-    ensure!(
-        wrong_executable.validate().is_err(),
-        "non-canonical server executable was accepted"
-    );
+    ensure!(wrong_executable.validate().is_err(), "non-canonical server executable was accepted");
 
     let mut wrong_launch = valid_receipt()?;
     wrong_launch.server.launch_command = vec!["perllsp".to_string()];
-    ensure!(
-        wrong_launch.validate().is_err(),
-        "incomplete launch command was accepted"
-    );
+    ensure!(wrong_launch.validate().is_err(), "incomplete launch command was accepted");
 
     let mut selected_not_offered = valid_receipt()?;
-    selected_not_offered.capabilities.position_encoding_selected =
-        Some("utf-8".to_string());
+    selected_not_offered.capabilities.position_encoding_selected = Some("utf-8".to_string());
     ensure!(
         selected_not_offered.validate().is_err(),
         "selected encoding absent from client offer was accepted"
     );
 
     let mut duplicate_encoding = valid_receipt()?;
-    duplicate_encoding
-        .capabilities
-        .position_encodings_offered
-        .push("utf-16".to_string());
-    ensure!(
-        duplicate_encoding.validate().is_err(),
-        "duplicate offered encoding was accepted"
-    );
+    duplicate_encoding.capabilities.position_encodings_offered.push("utf-16".to_string());
+    ensure!(duplicate_encoding.validate().is_err(), "duplicate offered encoding was accepted");
 
     let mut diagnostic_not_proven = valid_receipt()?;
-    diagnostic_not_proven.diagnostics.advertised_mode =
-        DiagnosticMode::NotProven;
+    diagnostic_not_proven.diagnostics.advertised_mode = DiagnosticMode::NotProven;
     diagnostic_not_proven.diagnostics.observed_messages.clear();
     ensure!(
         diagnostic_not_proven.validate().is_err(),
@@ -347,15 +312,10 @@ fn validation_rejects_false_actual_host_and_wrong_subject_shapes() -> Result<()>
 
     let mut cleanup_not_proven = valid_receipt()?;
     cleanup_not_proven.process_cleanup = CleanupResult::NotProven;
-    ensure!(
-        cleanup_not_proven.validate().is_err(),
-        "passing receipt omitted proven cleanup"
-    );
+    ensure!(cleanup_not_proven.validate().is_err(), "passing receipt omitted proven cleanup");
 
     let mut missing_artifact = valid_receipt()?;
-    missing_artifact
-        .artifacts
-        .retain(|artifact| artifact.kind != ArtifactKind::ServerStderr);
+    missing_artifact.artifacts.retain(|artifact| artifact.kind != ArtifactKind::ServerStderr);
     ensure!(
         missing_artifact.validate().is_err(),
         "passing actual-host receipt omitted server stderr"
@@ -366,29 +326,16 @@ fn validation_rejects_false_actual_host_and_wrong_subject_shapes() -> Result<()>
 #[test]
 fn validation_rejects_false_green_cells_and_unsafe_artifact_identity() -> Result<()> {
     let mut duplicate_cell = valid_receipt()?;
-    let first = duplicate_cell
-        .journey
-        .first()
-        .context("valid receipt has no journey cell")?
-        .clone();
+    let first =
+        duplicate_cell.journey.first().context("valid receipt has no journey cell")?.clone();
     duplicate_cell.journey.push(first);
-    ensure!(
-        duplicate_cell.validate().is_err(),
-        "duplicate journey id was accepted"
-    );
+    ensure!(duplicate_cell.validate().is_err(), "duplicate journey id was accepted");
 
     let mut false_green = valid_receipt()?;
-    let first = false_green
-        .journey
-        .first_mut()
-        .context("valid receipt has no journey cell")?;
+    let first = false_green.journey.first_mut().context("valid receipt has no journey cell")?;
     first.result = ObservationResult::NotProven;
-    first.limitation =
-        Some("host did not expose the requested action".to_string());
-    ensure!(
-        false_green.validate().is_err(),
-        "passing receipt accepted a not-proven journey cell"
-    );
+    first.limitation = Some("host did not expose the requested action".to_string());
+    ensure!(false_green.validate().is_err(), "passing receipt accepted a not-proven journey cell");
 
     let mut unsupported_without_limitation = valid_receipt()?;
     let first = unsupported_without_limitation
@@ -402,35 +349,23 @@ fn validation_rejects_false_green_cells_and_unsafe_artifact_identity() -> Result
     );
 
     let mut absolute_artifact = valid_receipt()?;
-    absolute_artifact.artifacts[0].id =
-        "/home/user/emacs-events.log".to_string();
-    ensure!(
-        absolute_artifact.validate().is_err(),
-        "Unix absolute artifact identity was accepted"
-    );
+    absolute_artifact.artifacts[0].id = "/home/user/emacs-events.log".to_string();
+    ensure!(absolute_artifact.validate().is_err(), "Unix absolute artifact identity was accepted");
 
     let mut drive_artifact = valid_receipt()?;
-    drive_artifact.artifacts[0].id =
-        "C:/Users/alice/emacs-events.log".to_string();
+    drive_artifact.artifacts[0].id = "C:/Users/alice/emacs-events.log".to_string();
     ensure!(
         drive_artifact.validate().is_err(),
         "Windows drive-qualified artifact identity was accepted"
     );
 
     let mut uri_artifact = valid_receipt()?;
-    uri_artifact.artifacts[0].id =
-        "file:///home/alice/emacs-events.log".to_string();
-    ensure!(
-        uri_artifact.validate().is_err(),
-        "URI-qualified artifact identity was accepted"
-    );
+    uri_artifact.artifacts[0].id = "file:///home/alice/emacs-events.log".to_string();
+    ensure!(uri_artifact.validate().is_err(), "URI-qualified artifact identity was accepted");
 
     let mut private_source = valid_receipt()?;
     private_source.host.source_ref = "../../private/checkout".to_string();
-    ensure!(
-        private_source.validate().is_err(),
-        "parent-traversing client source ref was accepted"
-    );
+    ensure!(private_source.validate().is_err(), "parent-traversing client source ref was accepted");
     Ok(())
 }
 
@@ -438,17 +373,12 @@ fn validation_rejects_false_green_cells_and_unsafe_artifact_identity() -> Result
 fn non_passing_receipts_require_failure_class_and_limitations() -> Result<()> {
     let mut failed_without_class = valid_receipt()?;
     failed_without_class.result = ObservationResult::Fail;
-    failed_without_class.limitations =
-        vec!["actual host returned a terminal failure".to_string()];
-    ensure!(
-        failed_without_class.validate().is_err(),
-        "failed receipt omitted failure_class"
-    );
+    failed_without_class.limitations = vec!["actual host returned a terminal failure".to_string()];
+    ensure!(failed_without_class.validate().is_err(), "failed receipt omitted failure_class");
 
     let mut not_proven_without_limitation = valid_receipt()?;
     not_proven_without_limitation.result = ObservationResult::NotProven;
-    not_proven_without_limitation.failure_class =
-        Some(FailureClass::Instrument);
+    not_proven_without_limitation.failure_class = Some(FailureClass::Instrument);
     ensure!(
         not_proven_without_limitation.validate().is_err(),
         "not-proven receipt omitted its limitation"
@@ -458,8 +388,7 @@ fn non_passing_receipts_require_failure_class_and_limitations() -> Result<()> {
     cleanup_failure.result = ObservationResult::Fail;
     cleanup_failure.failure_class = Some(FailureClass::Cleanup);
     cleanup_failure.process_cleanup = CleanupResult::Fail;
-    cleanup_failure.limitations =
-        vec!["candidate process remained alive".to_string()];
+    cleanup_failure.limitations = vec!["candidate process remained alive".to_string()];
     cleanup_failure.validate()?;
     Ok(())
 }
@@ -470,9 +399,7 @@ fn subject_invalidation_is_identity_based_not_age_based() -> Result<()> {
     let mut current = previous.clone();
     current.observed_at = "2026-09-01T00:00:00Z".to_string();
     ensure!(
-        previous
-            .subject_invalidations_against(&current)
-            .is_empty(),
+        previous.subject_invalidations_against(&current).is_empty(),
         "observation age invalidated an unchanged subject"
     );
 
@@ -480,17 +407,13 @@ fn subject_invalidation_is_identity_based_not_age_based() -> Result<()> {
     current.candidate_sha = "b".repeat(40);
     current.platform.arch = "aarch64".to_string();
     current.host.version = "31.2".to_string();
-    current.integration.registration_state =
-        RegistrationState::BuiltinReleased;
+    current.integration.registration_state = RegistrationState::BuiltinReleased;
     current.integration.configuration_sha256 = sha256('a');
     current.integration.driver_sha256 = sha256('b');
     current.server.artifact_sha256 = sha256('c');
     current.server.protocol_version = "3.18".to_string();
-    current.server.launch_command = vec![
-        "perllsp".to_string(),
-        "--stdio".to_string(),
-        "--bad".to_string(),
-    ];
+    current.server.launch_command =
+        vec!["perllsp".to_string(), "--stdio".to_string(), "--bad".to_string()];
     current.workspace_fixture.digest = sha256('d');
     current.capabilities.initialize_snapshot_sha256 = sha256('e');
     current.diagnostics.advertised_mode = DiagnosticMode::Both;
@@ -522,15 +445,11 @@ fn subject_invalidation_is_identity_based_not_age_based() -> Result<()> {
 }
 
 #[test]
-fn shared_fixture_and_expectation_set_are_deterministic_and_source_bound(
-) -> Result<()> {
+fn shared_fixture_and_expectation_set_are_deterministic_and_source_bound() -> Result<()> {
     let root = fixture_root()?;
     let fixture_first = fixture_digest(&root)?;
     let fixture_second = fixture_digest(&root)?;
-    ensure!(
-        fixture_first == fixture_second,
-        "canonical fixture digest was not deterministic"
-    );
+    ensure!(fixture_first == fixture_second, "canonical fixture digest was not deterministic");
 
     let expectation_first = canonical_expectation_set_digest()?;
     let expectation_second = canonical_expectation_set_digest()?;
@@ -539,23 +458,16 @@ fn shared_fixture_and_expectation_set_are_deterministic_and_source_bound(
         "expectation-set digest was not deterministic"
     );
     ensure!(
-        expectation_first.starts_with("sha256:")
-            && expectation_first.len() == "sha256:".len() + 64,
+        expectation_first.starts_with("sha256:") && expectation_first.len() == "sha256:".len() + 64,
         "expectation-set digest had the wrong identity shape"
     );
 
-    let expectations = CANONICAL_EXPECTATION_IDS
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
+    let expectations = CANONICAL_EXPECTATION_IDS.iter().copied().collect::<BTreeSet<_>>();
     ensure!(
         expectations.len() == CANONICAL_EXPECTATION_IDS.len(),
         "canonical expectation ids contain duplicates"
     );
-    ensure!(
-        expectations.contains("definition.widget_new"),
-        "definition expectation is missing"
-    );
+    ensure!(expectations.contains("definition.widget_new"), "definition expectation is missing");
     ensure!(
         expectations.contains("workspace.partial_not_ready"),
         "workspace readiness expectation is missing"
@@ -565,10 +477,7 @@ fn shared_fixture_and_expectation_set_are_deterministic_and_source_bound(
     copy_fixture(&root, copy.path())?;
     let before = fixture_digest(copy.path())?;
     fs::write(copy.path().join("app.pl"), b"# mutated\n")?;
-    ensure!(
-        fixture_digest(copy.path())? != before,
-        "fixture digest ignored changed file bytes"
-    );
+    ensure!(fixture_digest(copy.path())? != before, "fixture digest ignored changed file bytes");
 
     let files = WalkFixture::new(&root)?.files;
     ensure!(
@@ -586,26 +495,16 @@ fn shared_fixture_and_expectation_set_are_deterministic_and_source_bound(
 
 #[test]
 fn checked_in_schema_names_the_same_contract_and_subject_boundaries() -> Result<()> {
-    let schema_path = repository_root()?
-        .join(".ci/schemas/editor-client-compat.v1.schema.json");
-    let schema: Value =
-        serde_json::from_str(&fs::read_to_string(schema_path)?)?;
+    let schema_path = repository_root()?.join(".ci/schemas/editor-client-compat.v1.schema.json");
+    let schema: Value = serde_json::from_str(&fs::read_to_string(schema_path)?)?;
 
+    ensure!(schema["title"] == SCHEMA_VERSION, "schema title drifted from Rust contract");
     ensure!(
-        schema["title"] == SCHEMA_VERSION,
-        "schema title drifted from Rust contract"
-    );
-    ensure!(
-        schema["properties"]["schema_version"]["const"]
-            == SCHEMA_VERSION,
+        schema["properties"]["schema_version"]["const"] == SCHEMA_VERSION,
         "schema version const drifted from Rust contract"
     );
 
-    for expected in [
-        "exact_source_local",
-        "release_candidate",
-        "public_artifact",
-    ] {
+    for expected in ["exact_source_local", "release_candidate", "public_artifact"] {
         ensure!(
             schema["properties"]["stage"]["enum"]
                 .as_array()
@@ -615,15 +514,9 @@ fn checked_in_schema_names_the_same_contract_and_subject_boundaries() -> Result<
             "missing evidence stage {expected}"
         );
     }
-    for expected in [
-        "manual",
-        "upstream_source",
-        "accepted_unreleased",
-        "builtin_released",
-    ] {
+    for expected in ["manual", "upstream_source", "accepted_unreleased", "builtin_released"] {
         ensure!(
-            schema["$defs"]["integration"]["properties"]
-                ["registration_state"]["enum"]
+            schema["$defs"]["integration"]["properties"]["registration_state"]["enum"]
                 .as_array()
                 .context("registration enum missing")?
                 .iter()
@@ -633,13 +526,8 @@ fn checked_in_schema_names_the_same_contract_and_subject_boundaries() -> Result<
     }
 
     let serialized = serde_json::to_value(valid_receipt()?)?;
-    for required in schema["required"]
-        .as_array()
-        .context("top-level required list missing")?
-    {
-        let name = required
-            .as_str()
-            .context("required property name is not a string")?;
+    for required in schema["required"].as_array().context("top-level required list missing")? {
+        let name = required.as_str().context("required property name is not a string")?;
         ensure!(
             serialized.get(name).is_some(),
             "valid receipt omitted schema-required property {name}"
@@ -658,13 +546,7 @@ impl WalkFixture {
         for entry in WalkDir::new(root) {
             let entry = entry?;
             if entry.file_type().is_file() {
-                files.insert(
-                    entry
-                        .path()
-                        .strip_prefix(root)?
-                        .to_string_lossy()
-                        .replace('\\', "/"),
-                );
+                files.insert(entry.path().strip_prefix(root)?.to_string_lossy().replace('\\', "/"));
             }
         }
         Ok(Self { files })

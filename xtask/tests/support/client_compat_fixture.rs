@@ -101,9 +101,7 @@ fn digest_identity(hasher: Sha256) -> Result<String> {
 fn is_reason_token(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'_' | b'.' | b'-')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'.' | b'-')
         })
         && value.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
 }

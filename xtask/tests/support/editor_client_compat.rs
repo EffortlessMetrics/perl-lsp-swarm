@@ -210,10 +210,7 @@ pub struct EditorClientCompatReceipt {
 
 impl EditorClientCompatReceipt {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.schema_version == SCHEMA_VERSION,
-            "unexpected schema_version"
-        );
+        ensure!(self.schema_version == SCHEMA_VERSION, "unexpected schema_version");
         chrono::DateTime::parse_from_rfc3339(&self.observed_at)
             .context("observed_at must be an RFC 3339 date-time")?;
         validate_safe_identity(&self.repository, "repository")?;
@@ -233,19 +230,13 @@ impl EditorClientCompatReceipt {
         validate_safe_identity(&self.host.product, "host.product")?;
         validate_safe_identity(&self.host.version, "host.version")?;
         validate_safe_identity(&self.host.source_ref, "host.source_ref")?;
-        validate_sha256(
-            &self.host.executable_sha256,
-            "host.executable_sha256",
-        )?;
+        validate_sha256(&self.host.executable_sha256, "host.executable_sha256")?;
 
         validate_sha256(
             &self.integration.configuration_sha256,
             "integration.configuration_sha256",
         )?;
-        validate_sha256(
-            &self.integration.driver_sha256,
-            "integration.driver_sha256",
-        )?;
+        validate_sha256(&self.integration.driver_sha256, "integration.driver_sha256")?;
 
         ensure!(
             self.server.executable == "perllsp",
@@ -258,10 +249,7 @@ impl EditorClientCompatReceipt {
             "server.build_revision must be 40 lowercase hex chars or not_proven"
         );
         validate_sha256(&self.server.artifact_sha256, "server.artifact_sha256")?;
-        validate_safe_identity(
-            &self.server.protocol_version,
-            "server.protocol_version",
-        )?;
+        validate_safe_identity(&self.server.protocol_version, "server.protocol_version")?;
         ensure!(
             matches!(
                 self.server.launch_command.as_slice(),
@@ -274,10 +262,7 @@ impl EditorClientCompatReceipt {
             is_reason_token(&self.workspace_fixture.id),
             "workspace_fixture.id must be a stable reason token"
         );
-        validate_sha256(
-            &self.workspace_fixture.digest,
-            "workspace_fixture.digest",
-        )?;
+        validate_sha256(&self.workspace_fixture.digest, "workspace_fixture.digest")?;
         ensure!(
             is_reason_token(&self.workspace_fixture.expectation_set_id),
             "workspace_fixture.expectation_set_id must be a stable reason token"
@@ -320,8 +305,7 @@ impl EditorClientCompatReceipt {
                     "protocol-default position encoding requires an absent client offer"
                 );
                 ensure!(
-                    self.capabilities.position_encoding_selected.as_deref()
-                        == Some("utf-16"),
+                    self.capabilities.position_encoding_selected.as_deref() == Some("utf-16"),
                     "protocol-default position encoding must select utf-16"
                 );
             }
@@ -345,10 +329,7 @@ impl EditorClientCompatReceipt {
             );
         }
 
-        ensure!(
-            !self.journey.is_empty(),
-            "at least one journey cell is required"
-        );
+        ensure!(!self.journey.is_empty(), "at least one journey cell is required");
         let mut seen_cells = BTreeSet::new();
         for cell in &self.journey {
             ensure!(
@@ -356,11 +337,7 @@ impl EditorClientCompatReceipt {
                 "journey cell id must be a stable reason token: {}",
                 cell.id
             );
-            ensure!(
-                seen_cells.insert(cell.id.as_str()),
-                "duplicate journey cell id: {}",
-                cell.id
-            );
+            ensure!(seen_cells.insert(cell.id.as_str()), "duplicate journey cell id: {}", cell.id);
             for evidence in &cell.evidence {
                 validate_safe_identity(evidence, "journey evidence")?;
             }
@@ -371,9 +348,7 @@ impl EditorClientCompatReceipt {
                     | ObservationResult::Unsupported
             ) {
                 ensure!(
-                    cell.limitation
-                        .as_deref()
-                        .is_some_and(|value| !value.trim().is_empty()),
+                    cell.limitation.as_deref().is_some_and(|value| !value.trim().is_empty()),
                     "partial/not_proven/unsupported cell {} requires a limitation",
                     cell.id
                 );
@@ -394,17 +369,13 @@ impl EditorClientCompatReceipt {
         }
 
         if self.result == ObservationResult::Pass {
-            ensure!(
-                self.failure_class.is_none(),
-                "passing receipt cannot carry a failure_class"
-            );
+            ensure!(self.failure_class.is_none(), "passing receipt cannot carry a failure_class");
             ensure!(
                 self.process_cleanup == CleanupResult::Pass,
                 "passing receipt requires proven process cleanup"
             );
             ensure!(
-                self.capabilities.position_encoding_basis
-                    != PositionEncodingBasis::NotProven,
+                self.capabilities.position_encoding_basis != PositionEncodingBasis::NotProven,
                 "passing receipt requires a proven position encoding basis"
             );
             ensure!(
@@ -441,20 +412,12 @@ impl EditorClientCompatReceipt {
             }
         }
 
-        if matches!(
-            self.result,
-            ObservationResult::Fail | ObservationResult::NotProven
-        ) {
-            ensure!(
-                self.failure_class.is_some(),
-                "fail/not_proven receipt requires failure_class"
-            );
+        if matches!(self.result, ObservationResult::Fail | ObservationResult::NotProven) {
+            ensure!(self.failure_class.is_some(), "fail/not_proven receipt requires failure_class");
         }
         if self.result != ObservationResult::Pass {
             ensure!(
-                self.limitations
-                    .iter()
-                    .any(|value| !value.trim().is_empty()),
+                self.limitations.iter().any(|value| !value.trim().is_empty()),
                 "non-passing receipt requires at least one limitation"
             );
         }
@@ -466,22 +429,13 @@ impl EditorClientCompatReceipt {
         }
 
         for limitation in &self.limitations {
-            ensure!(
-                !limitation.trim().is_empty(),
-                "limitations cannot contain empty strings"
-            );
+            ensure!(!limitation.trim().is_empty(), "limitations cannot contain empty strings");
         }
-        ensure!(
-            !self.claim_boundary.trim().is_empty(),
-            "claim_boundary is required"
-        );
+        ensure!(!self.claim_boundary.trim().is_empty(), "claim_boundary is required");
         Ok(())
     }
 
-    pub fn subject_invalidations_against(
-        &self,
-        current: &Self,
-    ) -> BTreeSet<&'static str> {
+    pub fn subject_invalidations_against(&self, current: &Self) -> BTreeSet<&'static str> {
         let mut changed = BTreeSet::new();
         if self.stage != current.stage {
             changed.insert("evidence_stage");
@@ -501,14 +455,10 @@ impl EditorClientCompatReceipt {
         if self.integration.mode != current.integration.mode {
             changed.insert("integration_mode");
         }
-        if self.integration.registration_state
-            != current.integration.registration_state
-        {
+        if self.integration.registration_state != current.integration.registration_state {
             changed.insert("registration");
         }
-        if self.integration.configuration_sha256
-            != current.integration.configuration_sha256
-        {
+        if self.integration.configuration_sha256 != current.integration.configuration_sha256 {
             changed.insert("configuration");
         }
         if self.integration.driver_sha256 != current.integration.driver_sha256 {
@@ -550,32 +500,17 @@ fn validate_sha256(value: &str, field: &str) -> Result<()> {
     let Some(hex) = value.strip_prefix("sha256:") else {
         bail!("{field} must use sha256:<64 lowercase hex> identity");
     };
-    ensure!(
-        is_lower_hex(hex, 64),
-        "{field} must use sha256:<64 lowercase hex> identity"
-    );
+    ensure!(is_lower_hex(hex, 64), "{field} must use sha256:<64 lowercase hex> identity");
     Ok(())
 }
 
 fn validate_safe_identity(value: &str, field: &str) -> Result<()> {
     let value = value.trim();
     ensure!(!value.is_empty(), "{field} cannot be empty");
-    ensure!(
-        !value.starts_with('/'),
-        "{field} must not expose an absolute path"
-    );
-    ensure!(
-        !value.starts_with('~'),
-        "{field} must not expose a home-relative path"
-    );
-    ensure!(
-        !value.contains('\\'),
-        "{field} must use normalized separators"
-    );
-    ensure!(
-        !value.contains("://"),
-        "{field} must not expose a URI-qualified path"
-    );
+    ensure!(!value.starts_with('/'), "{field} must not expose an absolute path");
+    ensure!(!value.starts_with('~'), "{field} must not expose a home-relative path");
+    ensure!(!value.contains('\\'), "{field} must use normalized separators");
+    ensure!(!value.contains("://"), "{field} must not expose a URI-qualified path");
     ensure!(
         !(value.len() >= 3
             && value.as_bytes()[0].is_ascii_alphabetic()
@@ -591,21 +526,13 @@ fn validate_safe_identity(value: &str, field: &str) -> Result<()> {
 }
 
 fn is_lower_hex(value: &str, len: usize) -> bool {
-    value.len() == len
-        && value
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    value.len() == len && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn is_reason_token(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'_' | b'.' | b'-')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'.' | b'-')
         })
-        && value
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_alphanumeric)
+        && value.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
 }
