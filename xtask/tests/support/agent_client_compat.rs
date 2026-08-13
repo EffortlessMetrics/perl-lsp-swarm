@@ -1,28 +1,13 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
-use std::fs;
-use std::path::Path;
-use walkdir::WalkDir;
+
+#[path = "client_compat_fixture.rs"]
+mod client_compat_fixture;
+
+pub use client_compat_fixture::{CANONICAL_EXPECTATION_IDS, fixture_digest};
 
 pub const SCHEMA_VERSION: &str = "agent_client_compat.v1";
-
-pub const CANONICAL_EXPECTATION_IDS: &[&str] = &[
-    "code_action_preview.syntax",
-    "definition.widget_new",
-    "diagnostic.syntax",
-    "document_symbols.widget",
-    "edit_requery.widget_greet",
-    "hover.widget_name",
-    "lifecycle.shutdown",
-    "references.widget_greet",
-    "rename_preview.greet",
-    "unicode.utf16",
-    "workspace.partial_not_ready",
-    "workspace_symbols.widget",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -310,52 +295,6 @@ impl AgentClientCompatReceipt {
         }
         changed
     }
-}
-
-pub fn fixture_digest(root: &Path) -> Result<String> {
-    ensure!(root.is_dir(), "fixture root is not a directory: {}", root.display());
-    let mut files = Vec::new();
-    for entry in WalkDir::new(root) {
-        let entry = entry.with_context(|| format!("walking fixture root {}", root.display()))?;
-        if entry.file_type().is_symlink() {
-            bail!("fixture must not contain symlink: {}", entry.path().display());
-        }
-        if entry.file_type().is_file() {
-            let relative_path =
-                entry.path().strip_prefix(root).with_context(|| "fixture path escaped root")?;
-            let mut components = Vec::new();
-            for component in relative_path.components() {
-                let component = component.as_os_str().to_str().with_context(|| {
-                    format!("fixture path is not valid UTF-8: {}", entry.path().display())
-                })?;
-                ensure!(
-                    !component.contains('\\'),
-                    "fixture path component must not contain a backslash"
-                );
-                components.push(component);
-            }
-            let relative = components.join("/");
-            files.push((relative, entry.path().to_path_buf()));
-        }
-    }
-    ensure!(!files.is_empty(), "fixture root contains no files: {}", root.display());
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let mut hasher = Sha256::new();
-    for (relative, path) in files {
-        let bytes =
-            fs::read(&path).with_context(|| format!("reading fixture file {}", path.display()))?;
-        hasher.update(relative.as_bytes());
-        hasher.update([0]);
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
-    }
-    let mut identity = String::with_capacity("sha256:".len() + 64);
-    identity.push_str("sha256:");
-    for byte in hasher.finalize() {
-        write!(&mut identity, "{byte:02x}")?;
-    }
-    Ok(identity)
 }
 
 fn validate_sha256(value: &str, field: &str) -> Result<()> {
