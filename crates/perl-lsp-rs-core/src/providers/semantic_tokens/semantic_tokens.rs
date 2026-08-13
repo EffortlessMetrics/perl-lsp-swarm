@@ -515,7 +515,11 @@ fn tokenize_json_body(
             cursor = cursor.saturating_add(current_len);
         }
         let Some(_closing_quote_end) = key_end_offset else {
-            break;
+            // An unterminated candidate may have consumed later source that
+            // contains a valid key. Resume just after this candidate's opening
+            // quote so the outer scan can recover those later key spans.
+            cursor = key_start_offset.saturating_add(1);
+            continue;
         };
         while cursor < body.len() {
             traversal.admit_work()?;
