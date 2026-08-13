@@ -1,0 +1,151 @@
+name: Helix Actual Host
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/helix-actual-host.yml'
+      - 'contracts/actual_host_receipt.v1.schema.json'
+      - 'docs/examples/helix/languages.toml'
+      - 'scripts/helix_actual_host.py'
+      - 'tests/fixtures/helix_actual_host/**'
+      - 'crates/perllsp/**'
+      - 'crates/perl-lsp-rs/**'
+      - 'xtask/src/actual_host_receipt.rs'
+      - 'xtask/src/bin/validate-actual-host-receipt.rs'
+  workflow_dispatch:
+  schedule:
+    - cron: '37 6 * * 2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helix-actual-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  HELIX_VERSION: '25.07.1'
+  HELIX_ASSET_SHA256: 'ce23fa8d395e633e3e54c052012f11965d91d8d5c2bfa659685f50430b4f8175'
+  RUST_BACKTRACE: '1'
+
+jobs:
+  released-stable-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux xz-utils
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+
+      - name: Build exact perllsp candidate
+        run: cargo +1.95.0 build -p perllsp --locked
+
+      - name: Install official Helix 25.07.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_dir="$GITHUB_WORKSPACE/target/helix-actual-host"
+          mkdir -p "$run_dir/helix"
+          archive="$run_dir/helix-${HELIX_VERSION}-x86_64-linux.tar.xz"
+          curl --fail --location --retry 4 \
+            "https://github.com/helix-editor/helix/releases/download/${HELIX_VERSION}/helix-${HELIX_VERSION}-x86_64-linux.tar.xz" \
+            --output "$archive"
+          printf '%s  %s\n' "$HELIX_ASSET_SHA256" "$archive" | sha256sum --check --strict
+          tar -xJf "$archive" -C "$run_dir/helix"
+          hx_path="$(find "$run_dir/helix" -type f -name hx -perm -u+x | head -n1)"
+          runtime_path="$(find "$run_dir/helix" -type d -name runtime | head -n1)"
+          test -x "$hx_path"
+          test -d "$runtime_path"
+          echo "HX_PATH=$hx_path" >> "$GITHUB_ENV"
+          echo "HELIX_RUNTIME=$runtime_path" >> "$GITHUB_ENV"
+          "$hx_path" --version
+
+      - name: Prepare isolated Helix subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_dir="$GITHUB_WORKSPACE/target/helix-actual-host"
+          home="$run_dir/home"
+          config_home="$home/.config"
+          data_home="$home/.local/share"
+          cache_home="$home/.cache"
+          workspace="$run_dir/workspace"
+          artifacts="$run_dir/artifacts"
+          mkdir -p "$config_home/helix" "$data_home" "$cache_home" "$workspace" "$artifacts" "$run_dir/bin"
+          cp docs/examples/helix/languages.toml "$config_home/helix/languages.toml"
+          cat > "$config_home/helix/config.toml" <<'TOML'
+          theme = "base16_default"
+
+          [editor]
+          auto-save = true
+          idle-timeout = 50
+
+          [editor.lsp]
+          display-messages = true
+          display-inlay-hints = true
+          TOML
+          cp -R tests/fixtures/helix_actual_host/. "$workspace/"
+          exact_perllsp="$GITHUB_WORKSPACE/target/debug/perllsp"
+          server_stderr="$artifacts/server.stderr.log"
+          cat > "$run_dir/bin/perllsp" <<EOF
+          #!/usr/bin/env bash
+          exec "$exact_perllsp" "\$@" 2>>"$server_stderr"
+          EOF
+          chmod +x "$run_dir/bin/perllsp"
+          helix_log="$artifacts/helix.log"
+          launch="$run_dir/launch-helix.sh"
+          cat > "$launch" <<EOF
+          #!/usr/bin/env bash
+          export HOME="$home"
+          export XDG_CONFIG_HOME="$config_home"
+          export XDG_DATA_HOME="$data_home"
+          export XDG_CACHE_HOME="$cache_home"
+          export HELIX_RUNTIME="$HELIX_RUNTIME"
+          export PATH="$run_dir/bin:/usr/bin:/bin"
+          export RUST_LOG="helix_lsp=trace,helix_term=debug"
+          exec "$HX_PATH" -vvv --log "$helix_log" --config "$config_home/helix/config.toml" --working-dir "$workspace" +5 main.pl
+          EOF
+          chmod +x "$launch"
+          echo "HELIX_RUN_DIR=$run_dir" >> "$GITHUB_ENV"
+          echo "HELIX_WORKSPACE=$workspace" >> "$GITHUB_ENV"
+          echo "HELIX_ARTIFACTS=$artifacts" >> "$GITHUB_ENV"
+          echo "HELIX_LOG=$helix_log" >> "$GITHUB_ENV"
+          echo "SERVER_STDERR=$server_stderr" >> "$GITHUB_ENV"
+          echo "HELIX_LAUNCH=$launch" >> "$GITHUB_ENV"
+          echo "HELIX_LANGUAGES_FIXTURE=$GITHUB_WORKSPACE/docs/examples/helix/languages.toml" >> "$GITHUB_ENV"
+          echo "EXACT_PERLLSP=$exact_perllsp" >> "$GITHUB_ENV"
+
+      - name: Run official Helix actual-host journey
+        env:
+          TERM: xterm-256color
+        run: |
+          python3 scripts/helix_actual_host.py \
+            --hx "$HX_PATH" \
+            --perllsp "$EXACT_PERLLSP" \
+            --launch-script "$HELIX_LAUNCH" \
+            --workspace "$HELIX_WORKSPACE" \
+            --helix-log "$HELIX_LOG" \
+            --server-stderr "$SERVER_STDERR" \
+            --artifacts "$HELIX_ARTIFACTS" \
+            --receipt "$HELIX_RUN_DIR/receipt.json"
+
+      - name: Validate actual-host receipt
+        run: |
+          cargo +1.95.0 run -p xtask --bin validate-actual-host-receipt -- \
+            "$HELIX_RUN_DIR/receipt.json"
+
+      - name: Upload receipt and bounded evidence
+        if: always()
+        uses: ./.github/actions/upload-receipt
+        with:
+          receipt-path: target/helix-actual-host/receipt.json
+          logs-path: target/helix-actual-host/artifacts
+          artifacts-path: target/helix-actual-host/artifacts
+          artifact-name: helix-25.07.1-actual-host-${{ github.sha }}
+          retention-days: '14'
+          generate-summary: 'false'
