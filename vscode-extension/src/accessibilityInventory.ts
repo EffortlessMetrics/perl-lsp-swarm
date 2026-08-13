@@ -16,10 +16,7 @@ export type AccessibilityEvidenceClass =
   | 'manual_theme_review_required'
   | 'not_proven';
 
-export type AccessibilityThemePolicy =
-  | 'native'
-  | 'vscode_theme_variables'
-  | 'not_applicable';
+export type AccessibilityThemePolicy = 'native' | 'vscode_theme_variables' | 'not_applicable';
 export type AccessibilityZoomPolicy = 'native' | 'reflow_required' | 'not_applicable';
 
 export interface AccessibilitySurface {
@@ -191,9 +188,7 @@ export function validateAccessibilityInventory(inventory: AccessibilityInventory
       errors.push(`surface state cannot be color/icon only: ${surface.surface_id}`);
     }
     if (!surface.native_accessibility_inherited && surface.accessible_name_source === null) {
-      errors.push(
-        `custom surface must name its accessibility semantic source: ${surface.surface_id}`,
-      );
+      errors.push(`custom surface must name its accessibility semantic source: ${surface.surface_id}`);
     }
     if (surface.control_kind === 'webview') {
       if (surface.theme_policy !== 'vscode_theme_variables') {
