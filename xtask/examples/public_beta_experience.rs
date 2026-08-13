@@ -933,6 +933,64 @@ mod tests {
     }
 
     #[test]
+    fn installed_acceptance_missing_source_receipt_fails_closed() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.installed_acceptance.source_artifact_path =
+            Some("sources/packaged_bundle_journey_receipt.json".to_string());
+        receipt.child_receipts.installed_acceptance.source_sha256 = Some("a".repeat(64));
+        let artifact_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        assert!(validate_child_artifacts(&receipt, &artifact_root).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_source_path_cannot_escape_receipt_root() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.installed_acceptance.source_artifact_path =
+            Some("../packaged_bundle_journey_receipt.json".to_string());
+        receipt.child_receipts.installed_acceptance.source_sha256 = Some("a".repeat(64));
+        assert!(validate(&receipt).is_err());
+
+        receipt.child_receipts.installed_acceptance.source_artifact_path =
+            Some("C:/outside/packaged_bundle_journey_receipt.json".to_string());
+        assert!(validate(&receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_verified_status_must_match_fan_in() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        let directory = tempdir()?;
+        let mut installed_digest = None;
+        for (name, child) in receipt.child_receipts.iter() {
+            let source_path = fixture_root.join(&child.artifact_path);
+            let target_path = directory.path().join(&child.artifact_path);
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut bytes = fs::read(source_path)?;
+            if name == "installed_acceptance" {
+                let mut artifact: serde_json::Value = serde_json::from_slice(&bytes)?;
+                artifact["status"] = serde_json::Value::String("not_proven".to_string());
+                bytes = serde_json::to_vec_pretty(&artifact)?;
+                installed_digest = Some(super::sha256_hex(&bytes));
+            }
+            fs::write(target_path, bytes)?;
+        }
+        receipt.child_receipts.installed_acceptance.sha256 = installed_digest
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing installed artifact"))?;
+
+        assert!(validate_child_artifacts(&receipt, directory.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn release_topology_envelope_digest_is_not_the_subject_digest() -> Result<()> {
         let mut receipt =
             fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;

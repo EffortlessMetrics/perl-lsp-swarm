@@ -15,6 +15,18 @@ on:
         options:
           - marketplace
           - open-vsx
+      candidate_id:
+        description: 'Candidate identity for a bound installed-acceptance receipt.'
+        required: false
+        type: string
+      artifact_set_id:
+        description: 'Artifact-set identity for a bound installed-acceptance receipt.'
+        required: false
+        type: string
+      frozen_product_sha:
+        description: 'Frozen source SHA for a bound installed-acceptance receipt.'
+        required: false
+        type: string
   schedule:
     - cron: '0 14 * * 1'
 
@@ -43,6 +55,8 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       PERL_LSP_PUBLISHED_EXTENSION_SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.source || 'marketplace' }}
       PERL_LSP_PUBLISHED_EXTENSION_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+      PERL_LSP_CANDIDATE_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_id || '' }}
+      PERL_LSP_ARTIFACT_SET_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_set_id || '' }}
 
     steps:
       - name: Checkout
@@ -64,7 +78,7 @@ jobs:
         env:
           PERL_LSP_PACKAGED_BUNDLE_SMOKE: '1'
           PERL_LSP_SMOKE_SOURCE_LABEL: packaged-bundle
-          PERL_LSP_CURRENT_SOURCE_SHA: ${{ github.sha }}
+          PERL_LSP_CURRENT_SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.frozen_product_sha || github.sha }}
         run: xvfb-run -a npm run test:published
 
       - name: Upload published smoke artifacts

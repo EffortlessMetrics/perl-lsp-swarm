@@ -22,6 +22,55 @@ function envValue(name: string): string {
   return process.env[name]?.trim() ?? '';
 }
 
+function smokePlatformLabel(): string {
+  switch (process.platform) {
+    case 'win32':
+      return 'windows';
+    case 'darwin':
+      return 'macos';
+    case 'linux':
+      return 'linux';
+    default:
+      return process.platform;
+  }
+}
+
+function smokeReceiptLabel(): string {
+  const label = envValue('PERL_LSP_SMOKE_SOURCE_LABEL') || 'packaged-bundle';
+  if (!/^[A-Za-z0-9_-]+$/.test(label)) {
+    throw new Error(`Smoke receipt label must be a single safe path component, got ${label}`);
+  }
+  return label;
+}
+
+function configureInstalledAcceptanceReceipt(
+  extensionTestsEnv: NodeJS.ProcessEnv,
+  receiptsRoot: string,
+): void {
+  if (process.env.PERL_LSP_PACKAGED_BUNDLE_SMOKE !== '1') {
+    return;
+  }
+
+  const candidateId = envValue('PERL_LSP_CANDIDATE_ID');
+  const artifactSetId = envValue('PERL_LSP_ARTIFACT_SET_ID');
+  const frozenProductSha = envValue('PERL_LSP_CURRENT_SOURCE_SHA');
+  const candidateIdentityPresent = Boolean(candidateId || artifactSetId);
+  if (candidateIdentityPresent && (!candidateId || !artifactSetId || !frozenProductSha)) {
+    throw new Error(
+      'Candidate-bound packaged smoke requires PERL_LSP_CANDIDATE_ID, PERL_LSP_CURRENT_SOURCE_SHA, and PERL_LSP_ARTIFACT_SET_ID together.',
+    );
+  }
+  if (candidateIdentityPresent) {
+    const label = smokeReceiptLabel();
+    extensionTestsEnv.PERL_LSP_VERIFIED_OUTPUT = path.join(
+      receiptsRoot,
+      label,
+      smokePlatformLabel(),
+      'verified_child_receipt.json',
+    );
+  }
+}
+
 function toolchainNpmVersion(): string {
   const npmUserAgent = process.env.npm_config_user_agent ?? '';
   const configuredVersion = /(?:^|\s)npm\/([^\s]+)/.exec(npmUserAgent)?.[1];
@@ -311,6 +360,7 @@ async function main(): Promise<void> {
       PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
       PERL_LSP_VSCODE_VERSION: vscodeVersion,
     };
+    configureInstalledAcceptanceReceipt(extensionTestsEnv, receiptsRoot);
     if (vsixSha256 === undefined) {
       delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;
     } else {

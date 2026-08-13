@@ -16,6 +16,7 @@ interface VerifiedChildArtifact {
   status: 'pass' | 'limited' | 'blocked' | 'not_proven';
   claim_boundary: string;
   limitation: string | null;
+  source_receipt_sha256: string;
 }
 
 function platformLabel(): string {
@@ -36,6 +37,7 @@ function receiptsDir(): string {
     process.env.PERL_LSP_SMOKE_RECEIPTS_DIR ??
     path.resolve(__dirname, '..', '..', '..', '..', 'target', 'receipts', 'vscode-smoke');
   const label = process.env.PERL_LSP_SMOKE_SOURCE_LABEL ?? 'packaged-bundle';
+  assert.match(label, /^[A-Za-z0-9_-]+$/, 'smoke receipt label must be a single safe path component');
   const directory = path.join(root, label, platformLabel());
   fs.mkdirSync(directory, { recursive: true });
   return directory;
@@ -45,7 +47,7 @@ function sha256(filePath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
-function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
+function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: string): void {
   const outputPath = process.env.PERL_LSP_VERIFIED_OUTPUT;
   if (!outputPath) {
     return;
@@ -93,6 +95,7 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
         : status === 'blocked'
           ? 'The packaged journey reported one or more product blockers.'
           : null,
+    source_receipt_sha256: sha256(sourceReceiptPath),
   };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(artifact, null, 2));
@@ -464,11 +467,9 @@ suite('Packaged VSIX bundled-server journey', function () {
       receipt.outcome = productBlockers.length > 0 ? 'failed' : 'not_proven';
       receipt.product_blockers = productBlockers;
 
-      fs.writeFileSync(
-        path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
-        JSON.stringify(receipt, null, 2),
-      );
-      writeVerifiedChildArtifact(receipt);
+      const sourceReceiptPath = path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json');
+      fs.writeFileSync(sourceReceiptPath, JSON.stringify(receipt, null, 2));
+      writeVerifiedChildArtifact(receipt, sourceReceiptPath);
 
       assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
       assert.equal(metrics.binary_resolution_status, 'ok', JSON.stringify(metrics));
