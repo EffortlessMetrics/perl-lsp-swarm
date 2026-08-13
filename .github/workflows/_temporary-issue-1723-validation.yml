@@ -1,0 +1,77 @@
+name: Temporary validation for issue 1723
+
+on:
+  push:
+    branches:
+      - agent/issue-1723-staging
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact staging subject
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt,clippy
+
+      - name: Apply bounded source transform
+        run: python .ci/issue-1723/apply.py
+
+      - name: Format and verify candidate scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git add -N crates/perl-semantic-analyzer/src/analysis/type_inference.rs
+          git diff --check
+          git diff --name-only > /tmp/issue-1723-paths.txt
+          grep -Fxq 'crates/perl-semantic-analyzer/src/analysis/type_inference.rs' /tmp/issue-1723-paths.txt
+          if grep -Ev '^(crates/perl-semantic-analyzer/src/analysis/type_inference.rs|crates/perl-semantic-analyzer/tests/return_type_unification.rs)$' /tmp/issue-1723-paths.txt; then
+            echo 'unexpected formatted path' >&2
+            exit 1
+          fi
+
+      - name: Run target tests and lint
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p target/issue-1723-receipt
+          status=0
+
+          cargo test -p perl-semantic-analyzer --test return_type_unification --locked \
+            2>&1 | tee target/issue-1723-receipt/target-test.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then status="$rc"; fi
+
+          cargo test -p perl-semantic-analyzer --lib test_function_return_type --locked \
+            2>&1 | tee target/issue-1723-receipt/existing-test.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then status="$rc"; fi
+
+          cargo clippy -p perl-semantic-analyzer --lib --test return_type_unification -- -D warnings \
+            2>&1 | tee target/issue-1723-receipt/clippy.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then status="$rc"; fi
+
+          exit "$status"
+
+      - name: Upload validation receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: issue-1723-validation
+          path: |
+            crates/perl-semantic-analyzer/src/analysis/type_inference.rs
+            crates/perl-semantic-analyzer/tests/return_type_unification.rs
+            target/issue-1723-receipt
+            /tmp/issue-1723-paths.txt
+          if-no-files-found: warn
