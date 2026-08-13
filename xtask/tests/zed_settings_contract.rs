@@ -61,45 +61,22 @@ fn validate_example(contract: &Value) -> Result<(), String> {
 #[test]
 fn zed_settings_keep_process_and_server_authority_separate() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let contract = read_json(
-        &root,
-        ".ci/fixtures/zed-perl-upstream/settings-contract.v1.json",
-    )?;
+    let contract = read_json(&root, ".ci/fixtures/zed-perl-upstream/settings-contract.v1.json")?;
 
-    assert_eq!(
-        string(&contract, "/schema_version")?,
-        "zed_perllsp_settings_contract.v1"
-    );
+    assert_eq!(string(&contract, "/schema_version")?, "zed_perllsp_settings_contract.v1");
     assert_eq!(string(&contract, "/server_id")?, "perllsp");
-    assert_eq!(
-        string(&contract, "/process_configuration/zed_path")?,
-        "lsp.perllsp.binary"
-    );
+    assert_eq!(string(&contract, "/process_configuration/zed_path")?, "lsp.perllsp.binary");
     assert_eq!(
         contract
             .pointer("/process_configuration/forwarded_to_workspace_configuration")
             .and_then(Value::as_bool),
         Some(false)
     );
+    assert_eq!(string(&contract, "/server_configuration/zed_path")?, "lsp.perllsp.settings.perl");
+    assert_eq!(string(&contract, "/server_configuration/wire_root")?, "perl");
+    assert_eq!(string(&contract, "/server_configuration/workspace_configuration_section")?, "perl");
     assert_eq!(
-        string(&contract, "/server_configuration/zed_path")?,
-        "lsp.perllsp.settings.perl"
-    );
-    assert_eq!(
-        string(&contract, "/server_configuration/wire_root")?,
-        "perl"
-    );
-    assert_eq!(
-        string(
-            &contract,
-            "/server_configuration/workspace_configuration_section"
-        )?,
-        "perl"
-    );
-    assert_eq!(
-        contract
-            .pointer("/initialization_options/default_route")
-            .and_then(Value::as_bool),
+        contract.pointer("/initialization_options/default_route").and_then(Value::as_bool),
         Some(false)
     );
     validate_example(&contract).map_err(io::Error::other)?;
@@ -110,10 +87,7 @@ fn zed_settings_keep_process_and_server_authority_separate() -> Result<(), Box<d
 #[test]
 fn extension_forwards_only_the_settings_object() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let source = read(
-        &root,
-        ".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs",
-    )?;
+    let source = read(&root, ".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs")?;
 
     assert!(source.contains("fn language_server_workspace_configuration"));
     assert!(source.contains("LspSettings::for_worktree(language_server_id.as_ref(), worktree)"));
@@ -127,10 +101,7 @@ fn extension_forwards_only_the_settings_object() -> Result<(), Box<dyn Error>> {
 #[test]
 fn behavior_cells_remain_not_proven() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let contract = read_json(
-        &root,
-        ".ci/fixtures/zed-perl-upstream/settings-contract.v1.json",
-    )?;
+    let contract = read_json(&root, ".ci/fixtures/zed-perl-upstream/settings-contract.v1.json")?;
 
     for cell in [
         "workspace_configuration_request_response",
@@ -146,10 +117,7 @@ fn behavior_cells_remain_not_proven() -> Result<(), Box<dyn Error>> {
         string(&contract, "/precedence/status")?,
         "pending_canonical_authority_and_actual_zed_receipt"
     );
-    assert_eq!(
-        string(&contract, "/live_update/status")?,
-        "not_proven"
-    );
+    assert_eq!(string(&contract, "/live_update/status")?, "not_proven");
 
     Ok(())
 }
@@ -157,10 +125,7 @@ fn behavior_cells_remain_not_proven() -> Result<(), Box<dyn Error>> {
 #[test]
 fn mutation_controls_reject_flattened_or_process_mixed_examples() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let contract = read_json(
-        &root,
-        ".ci/fixtures/zed-perl-upstream/settings-contract.v1.json",
-    )?;
+    let contract = read_json(&root, ".ci/fixtures/zed-perl-upstream/settings-contract.v1.json")?;
 
     let mut flattened = contract.clone();
     let perl = flattened["example"]["lsp"]["perllsp"]["settings"]
