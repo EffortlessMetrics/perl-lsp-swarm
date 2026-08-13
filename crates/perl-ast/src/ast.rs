@@ -1298,11 +1298,11 @@ impl Node {
     /// `None` identifies an intentionally unnamed child. Repeated children in
     /// list-like fields use the same [`FieldId`] for each element.
     #[inline]
-    pub fn try_for_each_child_with_field<'a, F, B>(&'a self, mut f: F) -> ControlFlow<B>
+    pub fn try_for_each_child_with_field<'a, F, B>(&'a self, f: F) -> ControlFlow<B>
     where
         F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
     {
-        self.try_for_each_child_with_field_observed(|_, _| {}, |field, child| f(field, child))
+        self.try_for_each_child_with_field_observed(|_, _| {}, f)
     }
 
     /// Visit direct children with short-circuiting while observing each source pull.
