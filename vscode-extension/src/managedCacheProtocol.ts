@@ -10,6 +10,8 @@ export type ManagedLeaseDisposition =
   | 'timed_out'
   | 'instrument_failed';
 export type ManagedOwnerLiveness = 'alive' | 'definitely_gone' | 'unknown';
+export type ManagedCoreVerification = 'verified' | 'not_proven';
+export type ManagedDapVerification = 'verified' | 'not_present' | 'not_proven';
 
 export interface ManagedCandidateSubject {
   release: string;
@@ -25,10 +27,10 @@ export interface ManagedCandidateManifest {
   candidate_id: string;
   subject: ManagedCandidateSubject;
   verification: {
-    perllsp: 'verified';
-    perl_dap: 'verified' | 'not_present';
-    topology: 'verified';
-    provenance: 'verified' | 'not_proven';
+    perllsp: ManagedCoreVerification;
+    perl_dap: ManagedDapVerification;
+    topology: ManagedCoreVerification;
+    provenance: ManagedCoreVerification;
   };
 }
 
@@ -82,7 +84,7 @@ export function managedCandidateId(subject: ManagedCandidateSubject): string {
 
 export function buildManagedCandidateManifest(
   subject: ManagedCandidateSubject,
-  provenance: 'verified' | 'not_proven' = 'verified',
+  provenance: ManagedCoreVerification = 'verified',
 ): ManagedCandidateManifest {
   return {
     schema_version: 'managed_candidate_manifest.v1',
@@ -143,7 +145,10 @@ export function validateManagedMutationAttempt(attempt: ManagedMutationAttempt):
   if (!attempt.candidate_id.startsWith('candidate-')) {
     errors.push('candidate_id must use canonical candidate identity');
   }
-  if (attempt.owner_process_hint !== null && (!Number.isInteger(attempt.owner_process_hint) || attempt.owner_process_hint <= 0)) {
+  if (
+    attempt.owner_process_hint !== null &&
+    (!Number.isInteger(attempt.owner_process_hint) || attempt.owner_process_hint <= 0)
+  ) {
     errors.push('owner_process_hint must be a positive integer when present');
   }
   return errors;
