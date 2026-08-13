@@ -188,14 +188,18 @@ export function validateAccessibilityInventory(inventory: AccessibilityInventory
       errors.push(`surface state cannot be color/icon only: ${surface.surface_id}`);
     }
     if (!surface.native_accessibility_inherited && surface.accessible_name_source === null) {
-      errors.push(`custom surface must name its accessibility semantic source: ${surface.surface_id}`);
+      errors.push(
+        `custom surface must name its accessibility semantic source: ${surface.surface_id}`,
+      );
     }
     if (surface.control_kind === 'webview') {
       if (surface.theme_policy !== 'vscode_theme_variables') {
         errors.push(`custom webview must use VS Code theme variables: ${surface.surface_id}`);
       }
       if (surface.zoom_policy !== 'reflow_required') {
-        errors.push(`custom webview must declare zoom/reflow responsibility: ${surface.surface_id}`);
+        errors.push(
+          `custom webview must declare zoom/reflow responsibility: ${surface.surface_id}`,
+        );
       }
       if (surface.evidence === 'native_inherited') {
         errors.push(
