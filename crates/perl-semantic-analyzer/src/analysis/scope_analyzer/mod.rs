@@ -115,6 +115,25 @@ pub struct ScopeIssue {
     pub description: String,
 }
 
+impl ScopeIssue {
+    /// Creates a scope issue while keeping construction stable for downstream crates.
+    pub fn new(
+        kind: IssueKind,
+        variable_name: impl Into<String>,
+        line: usize,
+        range: (usize, usize),
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            variable_name: variable_name.into(),
+            line,
+            range,
+            description: description.into(),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Variable {
     declaration_offset: usize,
