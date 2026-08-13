@@ -75,7 +75,9 @@ export function validateManagedCurrentSelection(
     errors.push(error instanceof Error ? error.message : String(error));
   }
 
-  const selected = candidates.find((entry) => entry.manifest.candidate_id === selection.candidate_id);
+  const selected = candidates.find(
+    (entry) => entry.manifest.candidate_id === selection.candidate_id,
+  );
   if (!selected) {
     errors.push('current selection references an unknown candidate manifest');
     return errors;
@@ -181,7 +183,9 @@ export function mayGarbageCollectManagedCandidate(
   );
 }
 
-export function candidateBytesMayChangeAfterPublication(entry: ManagedCandidateCatalogEntry): false {
+export function candidateBytesMayChangeAfterPublication(
+  entry: ManagedCandidateCatalogEntry,
+): false {
   // The type intentionally requires immutable=true. This function exists as a
   // load-bearing review/test seam: published candidate bytes are never updated
   // in place; a new artifact creates a new candidate identity instead.
