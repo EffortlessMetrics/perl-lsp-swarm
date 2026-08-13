@@ -51,6 +51,25 @@ fn validate_pass(receipt: &Value) -> Result<(), String> {
     if receipt.get("result").and_then(Value::as_str) != Some("pass") {
         return Err("receipt is not a pass candidate".to_string());
     }
+
+    let stage = receipt
+        .get("evidence_stage")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing evidence stage".to_string())?;
+    let install_route = receipt
+        .pointer("/extension/install_route")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing extension install route".to_string())?;
+    match (stage, install_route) {
+        ("exact_source_dev_extension", "dev_extension")
+        | ("public_registry_install", "official_registry") => {}
+        _ => {
+            return Err(format!(
+                "evidence stage `{stage}` cannot use install route `{install_route}`"
+            ));
+        }
+    }
+
     if receipt.pointer("/zed/product").and_then(Value::as_str) != Some("Zed")
         || !nonempty_string(receipt, "/zed/version")
         || !nonempty_string(receipt, "/zed/channel")
@@ -179,7 +198,10 @@ fn false_green_mutations_are_rejected() -> Result<(), Box<dyn Error>> {
     let mut cross_stage = empty_pass;
     cross_stage["evidence_stage"] = Value::String("public_registry_install".to_string());
     cross_stage["extension"]["install_route"] = Value::String("dev_extension".to_string());
-    assert!(validate_pass(&cross_stage).is_err());
+    assert!(
+        validate_pass(&cross_stage)
+            .is_err_and(|message| message.contains("cannot use install route"))
+    );
 
     Ok(())
 }
