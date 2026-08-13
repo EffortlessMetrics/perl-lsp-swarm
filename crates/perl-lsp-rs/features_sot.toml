@@ -441,7 +441,7 @@ area = "notebook"
 maturity = "preview"
 advertised = false
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs"]
+tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs", "crates/perl-lsp-rs/tests/lsp_notebook_preview_boundary.rs"]
 description = "Preview implementation evidence only. Limited to in-process lifecycle/store tests; transactional versioning, mixed-language lifecycle, save semantics, cleanup, and real Jupyter/VS Code receipts remain unproven. Promotion owners: #7130 and #7132; this row is not GA evidence for #7032."
 
 [[feature]]
@@ -451,7 +451,7 @@ area = "notebook"
 maturity = "preview"
 advertised = false
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs"]
+tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs", "crates/perl-lsp-rs/tests/lsp_notebook_preview_boundary.rs"]
 description = "Preview metadata tracking only; the LSP server does not execute cells and no editor lifecycle receipt exists. Promotion owners: #7130 and #7132; this row is not GA evidence for #7032."
 
 # Debug Features (DAP)
