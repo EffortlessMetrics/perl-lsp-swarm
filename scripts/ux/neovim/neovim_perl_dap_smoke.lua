@@ -83,6 +83,10 @@ wait_until(12000, function()
   return events.initialized and events.stopped
 end, 'nvim-dap initialization and breakpoint stop')
 
+if stopped_reason ~= 'breakpoint' then
+  error(('expected breakpoint stop, got reason %q'):format(stopped_reason))
+end
+
 local session = dap.session()
 if not session then
   error('nvim-dap session disappeared before inspection')
@@ -101,6 +105,14 @@ wait_until(5000, function()
 end, 'stack/scopes/real variables')
 
 local frame = assert(session.current_frame, 'nvim-dap did not retain a current frame')
+local frame_source = frame.source and frame.source.path and normalize(frame.source.path) or ''
+if frame.line ~= breakpoint_line then
+  error(('breakpoint stop landed at line %s, expected %d'):format(tostring(frame.line), breakpoint_line))
+end
+if frame_source ~= normalize(program) then
+  error(('breakpoint stop landed in %q, expected %q'):format(frame_source, normalize(program)))
+end
+
 local variable_count = 0
 local observed_value
 for _, scope in ipairs(frame.scopes or {}) do
@@ -131,9 +143,19 @@ wait_until(5000, function()
   return evaluate_done
 end, 'bounded evaluate response')
 
--- #2301 owns the final evaluate claim. Record an explicit bounded outcome here;
--- do not fabricate success when the adapter returns an error.
-local evaluate_state = evaluate_error and 'bounded_error' or 'pass'
+-- #2301 owns the final evaluate claim. A protocol error or a success-shaped
+-- response without an actual result is a bounded error here, never a pass.
+local evaluate_state
+local evaluate_error_text
+if evaluate_error then
+  evaluate_state = 'bounded_error'
+  evaluate_error_text = tostring(evaluate_error)
+elseif type(evaluate_result) ~= 'string' or evaluate_result == '' then
+  evaluate_state = 'bounded_error'
+  evaluate_error_text = 'evaluate response missing non-empty result'
+else
+  evaluate_state = 'pass'
+end
 
 dap.continue()
 wait_until(10000, function()
@@ -179,14 +201,14 @@ local receipt = {
     id = frame.id,
     name = frame.name,
     line = frame.line,
-    source = frame.source and frame.source.path or nil,
+    source = frame_source,
   },
   variable_count = variable_count,
   observed_value = observed_value,
   evaluate = {
     state = evaluate_state,
     result = evaluate_result,
-    error = evaluate_error and tostring(evaluate_error) or nil,
+    error = evaluate_error_text,
   },
   result = 'pass',
 }
