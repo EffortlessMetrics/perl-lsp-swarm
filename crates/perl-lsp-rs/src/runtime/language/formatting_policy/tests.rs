@@ -1,8 +1,8 @@
 use super::*;
 use crate::protocol::{JsonRpcId, JsonRpcRequest};
 
-fn advertise(server: &LspServer, surface: Surface) {
-    server.advertised_feature_ids.lock().push(surface.feature_id());
+fn advertise(server: &LspServer) {
+    server.advertised_feature_ids.lock().push(Surface::Document.feature_id());
 }
 
 fn receipt(server: &LspServer) -> Result<Value, Box<dyn std::error::Error>> {
@@ -45,7 +45,7 @@ fn initialize(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
-    advertise(&server, Surface::Document);
+    advertise(&server);
     server.config.lock().perltidy_enabled = false;
     let uri = "file:///disabled-formatting.pl";
     server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
@@ -69,7 +69,7 @@ fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn cancellation_records_a_typed_receipt() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
-    advertise(&server, Surface::Document);
+    advertise(&server);
     let uri = "file:///cancelled-formatting.pl";
     server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
     let params = json!({
@@ -97,7 +97,7 @@ fn cancellation_records_a_typed_receipt() -> Result<(), Box<dyn std::error::Erro
 #[test]
 fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
-    advertise(&server, Surface::Document);
+    advertise(&server);
     let uri = "file:///stale-formatting.pl";
     server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
     let params = json!({
@@ -118,109 +118,51 @@ fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
+fn live_dispatch_routes_document_formatting_through_receipt_policy()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
-    let document_uri = "file:///live-formatting.pl";
-    let on_type_uri = "file:///live-on-type.pl";
-    server.test_apply_did_open(document_uri, "my$x=1;\n", 1)?;
-    server.test_apply_did_open(on_type_uri, "if ($ok) {\n\n", 1)?;
+    let uri = "file:///live-formatting.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
 
-    let cases = [
-        (
+    let response = server
+        .handle_request(request(
+            100,
             "textDocument/formatting",
             json!({
-                "textDocument": { "uri": document_uri, "version": 1 },
+                "textDocument": { "uri": uri, "version": 1 },
                 "options": { "tabSize": 4, "insertSpaces": true }
             }),
-        ),
-        (
-            "textDocument/rangeFormatting",
-            json!({
-                "textDocument": { "uri": document_uri, "version": 1 },
-                "range": {
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 7 }
-                },
-                "options": { "tabSize": 4, "insertSpaces": true }
-            }),
-        ),
-        (
-            "textDocument/rangesFormatting",
-            json!({
-                "textDocument": { "uri": document_uri, "version": 1 },
-                "ranges": [{
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 7 }
-                }],
-                "options": { "tabSize": 4, "insertSpaces": true }
-            }),
-        ),
-        (
-            "textDocument/onTypeFormatting",
-            json!({
-                "textDocument": { "uri": on_type_uri, "version": 1 },
-                "position": { "line": 1, "character": 0 },
-                "ch": "\n",
-                "options": { "tabSize": 4, "insertSpaces": true }
-            }),
-        ),
-    ];
-
-    for (offset, (method, params)) in cases.into_iter().enumerate() {
-        let response = server
-            .handle_request(request(100 + offset as i64, method, params))
-            .ok_or_else(|| format!("{method} returned no response"))?;
-        if let Some(error) = response.error {
-            return Err(format!("{method} failed: {error:?}").into());
-        }
-        assert!(response.result.is_some(), "{method} must return an edit array");
-        let trace = receipt(&server)?;
-        assert_eq!(trace["provider"], PROVIDER);
-        assert_eq!(trace["provider_action"], method);
-        assert!(trace["source_generation"].is_u64());
-        assert!(trace["config_fingerprint"].is_string());
+        ))
+        .ok_or("formatting returned no response")?;
+    if let Some(error) = response.error {
+        return Err(format!("formatting failed: {error:?}").into());
     }
-
+    assert!(response.result.is_some());
+    let trace = receipt(&server)?;
+    assert_eq!(trace["provider"], PROVIDER);
+    assert_eq!(trace["provider_action"], "textDocument/formatting");
+    assert!(trace["source_generation"].is_u64());
+    assert!(trace["config_fingerprint"].is_string());
     Ok(())
 }
 
 #[test]
-fn disabled_formatting_surfaces_return_method_not_advertised_even_without_params()
+fn disabled_document_formatting_returns_method_not_advertised_even_without_params()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
-    {
-        let mut features = server.advertised_features.lock();
-        features.formatting = false;
-        features.range_formatting = false;
-    }
-    server.advertised_feature_ids.lock().retain(|id| {
-        *id != perl_lsp_rs_core::features::ids::LSP_FORMATTING
-            && *id != perl_lsp_rs_core::features::ids::LSP_RANGE_FORMATTING
-            && *id != perl_lsp_rs_core::features::ids::LSP_RANGES_FORMATTING
-            && *id != perl_lsp_rs_core::features::ids::LSP_ON_TYPE_FORMATTING
-    });
+    server.advertised_features.lock().formatting = false;
+    server
+        .advertised_feature_ids
+        .lock()
+        .retain(|id| *id != perl_lsp_rs_core::features::ids::LSP_FORMATTING);
 
-    for (offset, method) in [
-        "textDocument/formatting",
-        "textDocument/rangeFormatting",
-        "textDocument/rangesFormatting",
-        "textDocument/onTypeFormatting",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let response = server
-            .handle_request(request_without_params(300 + offset as i64, method))
-            .ok_or_else(|| format!("{method} returned no response"))?;
-        let code = response.error.as_ref().map(|error| error.code).unwrap_or(0);
-        assert_eq!(
-            code, -32601,
-            "{method} with missing params must still return method-not-advertised (-32601), got {code}"
-        );
-    }
+    let response = server
+        .handle_request(request_without_params(300, "textDocument/formatting"))
+        .ok_or("formatting returned no response")?;
+    let code = response.error.as_ref().map(|error| error.code).unwrap_or(0);
+    assert_eq!(code, -32601);
     Ok(())
 }
 
@@ -243,7 +185,7 @@ fn live_stale_request_returns_content_modified_not_successful_empty()
         ))
         .ok_or("formatting returned no response")?;
 
-    assert!(response.result.is_none(), "stale formatting must not return a result");
+    assert!(response.result.is_none());
     let error = response.error.ok_or("expected ContentModified")?;
     assert_eq!(error.code, CONTENT_MODIFIED);
     assert_eq!(receipt(&server)?["reason"], "stale_source");
