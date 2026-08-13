@@ -1,0 +1,140 @@
+{
+  "schema": "helix_initialize_profile.v1",
+  "subject": {
+    "cohort": "released_stable",
+    "version": "25.07.1",
+    "source_ref": "25.07.1",
+    "source_sha": "a05c151bb6e8e9c65ec390b0ae2afe7a5efd619b",
+    "client_info_version": "25.07.1 (a05c151b)",
+    "diagnostic_transport": "push",
+    "workspace_trust": "absent"
+  },
+  "provenance": {
+    "kind": "source_derived_exact",
+    "source_path": "helix-lsp/src/client.rs",
+    "snippets_enabled": true,
+    "normalized_fields": ["processId", "rootPath", "rootUri", "workspaceFolders"]
+  },
+  "initialize_params": {
+    "processId": null,
+    "clientInfo": {
+      "name": "helix",
+      "version": "25.07.1 (a05c151b)"
+    },
+    "rootPath": "/__WORKSPACE__",
+    "rootUri": "file:///__WORKSPACE__",
+    "workspaceFolders": [
+      {
+        "uri": "file:///__WORKSPACE__",
+        "name": "fixture"
+      }
+    ],
+    "initializationOptions": {},
+    "capabilities": {
+      "workspace": {
+        "configuration": true,
+        "didChangeConfiguration": {
+          "dynamicRegistration": false
+        },
+        "workspaceFolders": true,
+        "applyEdit": true,
+        "symbol": {
+          "dynamicRegistration": false
+        },
+        "executeCommand": {
+          "dynamicRegistration": false
+        },
+        "inlayHint": {
+          "refreshSupport": false
+        },
+        "workspaceEdit": {
+          "documentChanges": true,
+          "resourceOperations": ["create", "rename", "delete"],
+          "failureHandling": "abort",
+          "normalizesLineEndings": false
+        },
+        "didChangeWatchedFiles": {
+          "dynamicRegistration": true,
+          "relativePatternSupport": false
+        },
+        "fileOperations": {
+          "willRename": true,
+          "didRename": true
+        }
+      },
+      "textDocument": {
+        "completion": {
+          "completionItem": {
+            "snippetSupport": true,
+            "resolveSupport": {
+              "properties": ["documentation", "detail", "additionalTextEdits"]
+            },
+            "insertReplaceSupport": true,
+            "deprecatedSupport": true,
+            "tagSupport": {
+              "valueSet": [1]
+            }
+          },
+          "completionItemKind": {}
+        },
+        "hover": {
+          "contentFormat": ["markdown"]
+        },
+        "signatureHelp": {
+          "signatureInformation": {
+            "documentationFormat": ["markdown"],
+            "parameterInformation": {
+              "labelOffsetSupport": true
+            },
+            "activeParameterSupport": true
+          }
+        },
+        "rename": {
+          "dynamicRegistration": false,
+          "prepareSupport": true,
+          "honorsChangeAnnotations": false
+        },
+        "formatting": {
+          "dynamicRegistration": false
+        },
+        "codeAction": {
+          "codeActionLiteralSupport": {
+            "codeActionKind": {
+              "valueSet": [
+                "",
+                "quickfix",
+                "refactor",
+                "refactor.extract",
+                "refactor.inline",
+                "refactor.rewrite",
+                "source",
+                "source.organizeImports"
+              ]
+            }
+          },
+          "isPreferredSupport": true,
+          "disabledSupport": true,
+          "dataSupport": true,
+          "resolveSupport": {
+            "properties": ["edit", "command"]
+          }
+        },
+        "publishDiagnostics": {
+          "versionSupport": true,
+          "tagSupport": {
+            "valueSet": [1, 2]
+          }
+        },
+        "inlayHint": {
+          "dynamicRegistration": false
+        }
+      },
+      "window": {
+        "workDoneProgress": true
+      },
+      "general": {
+        "positionEncodings": ["utf-8", "utf-32", "utf-16"]
+      }
+    }
+  }
+}
