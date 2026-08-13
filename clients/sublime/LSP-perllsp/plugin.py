@@ -23,6 +23,7 @@ from .command_surface import (
     navigation_target,
     prepare_invocation,
 )
+from .compatibility import CompatibilityError, assert_managed_install_allowed
 from .debugger_adapter import register_debugger_adapter
 from .release import install_server
 
@@ -77,6 +78,10 @@ class PerllspPlugin(LspPlugin):
             raise PluginStartError("LSP-perllsp server_path must be a non-empty string")
 
         if configured_path == "auto":
+            try:
+                assert_managed_install_allowed()
+            except CompatibilityError as error:
+                raise PluginStartError(str(error)) from error
             with _INSTALL_LOCK:
                 server_path = install_server(
                     cls.plugin_storage_path,
