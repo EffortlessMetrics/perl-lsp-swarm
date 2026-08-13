@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Performance
+body: Added an evidence-backed VS Code client baseline and ratchet policy that keeps noisy or missing measurements non-blocking.
+time: 2026-08-13T11:19:00Z
+custom:
+  PR: 7921
+  Slug: vscode-client-performance-ratchets
+  Breaking: "no"
