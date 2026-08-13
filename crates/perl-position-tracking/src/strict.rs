@@ -303,10 +303,7 @@ fn line_bounds(source: &str, target_line: u32) -> Option<LineBounds> {
 
         let content_end = index;
         let separator_end = if index < bytes.len() {
-            if bytes[index] == b'\r'
-                && index + 1 < bytes.len()
-                && bytes[index + 1] == b'\n'
-            {
+            if bytes[index] == b'\r' && index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
                 index + 2
             } else {
                 index + 1
@@ -346,10 +343,7 @@ fn lookup_byte_line(source: &str, target_byte: usize) -> ByteLineLookup {
 
         let content_end = index;
         let separator_end = if index < bytes.len() {
-            if bytes[index] == b'\r'
-                && index + 1 < bytes.len()
-                && bytes[index + 1] == b'\n'
-            {
+            if bytes[index] == b'\r' && index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
                 index + 2
             } else {
                 index + 1
@@ -443,11 +437,7 @@ pub fn wire_position_to_byte(
     encoding: PositionEncoding,
 ) -> PositionMapping {
     let Some(bounds) = line_bounds(source, position.line) else {
-        return invalid_wire_mapping(
-            position,
-            encoding,
-            PositionMappingDisposition::InvalidLine,
-        );
+        return invalid_wire_mapping(position, encoding, PositionMappingDisposition::InvalidLine);
     };
     let Some(line_text) = source.get(bounds.start..bounds.content_end) else {
         return invalid_wire_mapping(
@@ -497,14 +487,7 @@ pub fn wire_position_to_byte(
         PositionMappingDisposition::LineEndNormalized
     };
     let normalized = WirePosition { line: position.line, character: code_units };
-    mapped_wire_position(
-        source,
-        position,
-        normalized,
-        bounds.content_end,
-        encoding,
-        disposition,
-    )
+    mapped_wire_position(source, position, normalized, bounds.content_end, encoding, disposition)
 }
 
 /// Convert one LSP wire range to exact source byte and character ranges.
@@ -661,10 +644,7 @@ mod tests {
     fn encoding_names_are_protocol_exact() {
         assert_eq!(PositionEncoding::Utf8.as_lsp_name(), "utf-8");
         assert_eq!(PositionEncoding::Utf16.as_lsp_name(), "utf-16");
-        assert_eq!(
-            PositionEncoding::from_lsp_name("utf-8"),
-            Some(PositionEncoding::Utf8)
-        );
+        assert_eq!(PositionEncoding::from_lsp_name("utf-8"), Some(PositionEncoding::Utf8));
         assert_eq!(PositionEncoding::from_lsp_name("utf-32"), None);
     }
 
@@ -676,10 +656,7 @@ mod tests {
             PositionEncoding::Utf16,
         );
 
-        assert_eq!(
-            mapping.disposition(),
-            PositionMappingDisposition::InvalidCodeUnitBoundary
-        );
+        assert_eq!(mapping.disposition(), PositionMappingDisposition::InvalidCodeUnitBoundary);
         assert_eq!(mapping.byte_offset(), None);
     }
 
@@ -691,10 +668,7 @@ mod tests {
             PositionEncoding::Utf8,
         );
 
-        assert_eq!(
-            mapping.disposition(),
-            PositionMappingDisposition::InvalidCodeUnitBoundary
-        );
+        assert_eq!(mapping.disposition(), PositionMappingDisposition::InvalidCodeUnitBoundary);
         assert_eq!(mapping.byte_offset(), None);
     }
 
@@ -706,10 +680,7 @@ mod tests {
             PositionEncoding::Utf16,
         );
 
-        assert_eq!(
-            mapping.disposition(),
-            PositionMappingDisposition::LineEndNormalized
-        );
+        assert_eq!(mapping.disposition(), PositionMappingDisposition::LineEndNormalized);
         assert_eq!(mapping.normalized(), Some(WirePosition { line: 0, character: 3 }));
         assert_eq!(mapping.byte_offset(), Some(3));
     }
@@ -754,10 +725,7 @@ mod tests {
     fn outgoing_position_inside_crlf_is_invalid() {
         let mapping = byte_to_wire_position("abc\r\ndef", 4, PositionEncoding::Utf16);
 
-        assert_eq!(
-            mapping.disposition(),
-            PositionMappingDisposition::InvalidNewlineBoundary
-        );
+        assert_eq!(mapping.disposition(), PositionMappingDisposition::InvalidNewlineBoundary);
         assert_eq!(mapping.wire_position(), None);
     }
 
@@ -791,10 +759,7 @@ mod tests {
             PositionEncoding::Utf16,
         );
 
-        assert_eq!(
-            mapping.disposition(),
-            PositionMappingDisposition::InvalidRangeOrder
-        );
+        assert_eq!(mapping.disposition(), PositionMappingDisposition::InvalidRangeOrder);
         assert_eq!(mapping.byte_range(), None);
     }
 
