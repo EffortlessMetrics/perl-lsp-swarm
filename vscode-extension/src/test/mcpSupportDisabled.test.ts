@@ -1,7 +1,4 @@
-import {
-  GENERIC_MCP_PASSTHROUGH_ENABLED,
-  registerMcpSupport,
-} from '../mcpSupport';
+import { GENERIC_MCP_PASSTHROUGH_ENABLED, registerMcpSupport } from '../mcpSupport';
 
 describe('generic MCP passthrough removal', () => {
   test('keeps the historical arbitrary-command surface disabled', () => {
