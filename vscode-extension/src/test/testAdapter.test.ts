@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import type { ChildProcess } from 'child_process';
 import { parseSubtestResults, parseTapOutput, runBoundedProcess } from '../testAdapter';
 
 describe('test adapter TAP parsing', () => {
@@ -190,7 +191,7 @@ describe('bounded prove process execution', () => {
   }, 30_000);
 
   test('surfaces termination_failed when forced kill never yields close', async () => {
-    const live: Array<ReturnType<typeof import('child_process').spawn>> = [];
+    const live: ChildProcess[] = [];
     try {
       const result = await runBoundedProcess(
         process.execPath,
