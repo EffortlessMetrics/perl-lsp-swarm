@@ -1,0 +1,51 @@
+name: Agent apply Sublime capability profile
+
+on:
+  push:
+    branches:
+      - agent/sublime-capability-profile
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[agent-generated]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: agent/sublime-capability-profile
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Apply scoped source changes
+        run: python3 .github/agent/apply_sublime_profile.py
+
+      - name: Format and inspect
+        run: |
+          cargo fmt --all
+          git diff --check
+
+      - name: Remove one-shot agent files
+        run: |
+          rm -f .github/agent/apply_sublime_profile.py
+          rm -f .github/workflows/agent-sublime-capability-profile.yml
+          rmdir .github/agent 2>/dev/null || true
+
+      - name: Commit generated implementation
+        run: |
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "test(lsp): add Sublime capability profile (#7682) [agent-generated]"
+          git push origin HEAD:agent/sublime-capability-profile
