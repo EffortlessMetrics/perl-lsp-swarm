@@ -69,7 +69,28 @@ jobs:
         run: cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check
 
       - name: Clippy
-        run: cargo clippy --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --all-targets --locked -- -D warnings
+        shell: bash
+        run: |
+          set +e
+          output="$(cargo clippy --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --all-targets --locked -- -D warnings 2>&1)"
+          status=$?
+          set -e
+          if [[ $status -eq 0 ]]; then
+            printf '%s\n' "$output"
+            exit 0
+          fi
+          chunk=0
+          while [[ -n "$output" ]]; do
+            piece="${output:0:2800}"
+            output="${output:2800}"
+            escaped="${piece//'%'/'%25'}"
+            escaped="${escaped//$'\r'/'%0D'}"
+            escaped="${escaped//$'\n'/'%0A'}"
+            printf -v title 'clippy diagnostics %03d' "$chunk"
+            echo "::error title=$title::$escaped"
+            chunk=$((chunk + 1))
+          done
+          exit "$status"
 
       - name: Host helper tests
         run: cargo test --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked
