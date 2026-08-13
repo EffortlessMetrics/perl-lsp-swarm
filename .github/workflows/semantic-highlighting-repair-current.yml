@@ -125,8 +125,10 @@ jobs:
 
       - name: Format and test Rust semantic disposition
         run: |
-          cargo fmt --all
-          cargo fmt --all -- --check
+          rustfmt +1.95.0 --edition 2024 \
+            crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs
+          rustfmt +1.95.0 --edition 2024 --check \
+            crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs
           cargo test -p perl-lsp-rs-core semantic_keyword_disposition --lib --locked
 
       - name: Build exact server and prove packaged full/range parity
