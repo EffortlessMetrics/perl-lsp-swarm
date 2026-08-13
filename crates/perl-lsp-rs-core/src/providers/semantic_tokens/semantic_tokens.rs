@@ -1652,20 +1652,42 @@ fn mark_readonly_declaration_flags(
     traversal: &mut TraversalState<'_, '_>,
 ) -> Result<(), TraversalStop> {
     for arg in args {
-        traversal.admit_work()?;
-        match &arg.kind {
-            NodeKind::VariableDeclaration { variable, .. } => {
-                mark_declaration_target_flags(variable, true, flags, traversal)?;
-            }
-            NodeKind::VariableListDeclaration { variables, .. } => {
-                for variable in variables {
-                    mark_declaration_target_flags(variable, true, flags, traversal)?;
-                }
-            }
-            _ => {}
-        }
+        mark_readonly_declaration_operand(arg, flags, traversal)?;
     }
     Ok(())
+}
+
+/// Mark only the `Readonly` / `const` declaration operand.
+///
+/// Walk transparent wrappers around that operand (`=>` / assignment LHS), but do
+/// not descend into initializer / RHS subtrees — nested declarations there are
+/// unrelated locals and must stay non-readonly.
+fn mark_readonly_declaration_operand(
+    node: &Node,
+    flags: &mut FxHashMap<(usize, usize), bool>,
+    traversal: &mut TraversalState<'_, '_>,
+) -> Result<(), TraversalStop> {
+    traversal.admit_work()?;
+    match &node.kind {
+        NodeKind::VariableDeclaration { variable, .. } => {
+            mark_declaration_target_flags(variable, true, flags, traversal)
+        }
+        NodeKind::VariableListDeclaration { variables, .. } => {
+            for variable in variables {
+                mark_declaration_target_flags(variable, true, flags, traversal)?;
+            }
+            Ok(())
+        }
+        // `Readonly my $x => EXPR` / `const my $x = EXPR`: only the LHS operand
+        // is frozen by the wrapper call.
+        NodeKind::Binary { left, .. } => {
+            mark_readonly_declaration_operand(left, flags, traversal)
+        }
+        NodeKind::Assignment { lhs, .. } => {
+            mark_readonly_declaration_operand(lhs, flags, traversal)
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -3025,11 +3047,6 @@ print "ok" foreach @ys;
                 "nested_fast",
                 1029,
             ),
-            (
-                "use Readonly;\nReadonly my ($tagged_ro :shared, $plain_ro) => (1, 2);\n",
-                "tagged_ro",
-                1029,
-            ),
         ] {
             assert_eq!(
                 first_var_mods(source, name),
@@ -3037,5 +3054,39 @@ print "ok" foreach @ys;
                 "wrapped declaration `${name}` must preserve its frozen modifiers"
             );
         }
+
+        let readonly_source =
+            "use Readonly;\nReadonly my ($tagged_ro :shared, $plain_ro) => (1, 2);\n";
+        assert_eq!(
+            first_var_mods(readonly_source, "tagged_ro"),
+            1029,
+            "wrapped Readonly declaration must emit the attributed variable with frozen modifiers"
+        );
+        assert_eq!(
+            first_var_mods(readonly_source, "plain_ro"),
+            1029,
+            "wrapped Readonly declaration must emit every variable with frozen modifiers"
+        );
+
+        // Nested locals inside the Readonly/const initializer must not inherit
+        // the frozen modifier from the outer wrapped declaration.
+        let nested_local_source =
+            "use Readonly;\nReadonly my $outer => do { my $tmp = 1; $tmp };\n";
+        assert_eq!(
+            first_var_mods(nested_local_source, "outer"),
+            1029,
+            "outer Readonly declaration operand must stay frozen"
+        );
+        let tmp_mods = first_var_mods(nested_local_source, "tmp");
+        assert_eq!(
+            tmp_mods & READONLY_BIT,
+            0,
+            "nested local inside Readonly RHS must not inherit readonly, got mods={tmp_mods}"
+        );
+        assert_eq!(
+            tmp_mods & DECLARATION_BIT,
+            DECLARATION_BIT,
+            "nested local inside Readonly RHS must still be a declaration, got mods={tmp_mods}"
+        );
     }
 }
