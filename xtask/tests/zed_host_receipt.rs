@@ -19,29 +19,19 @@ fn read_json(root: &Path, relative: &str) -> Result<Value, Box<dyn Error>> {
 }
 
 fn nonempty_string(value: &Value, pointer: &str) -> bool {
-    value
-        .pointer(pointer)
-        .and_then(Value::as_str)
-        .is_some_and(|text| !text.trim().is_empty())
+    value.pointer(pointer).and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty())
 }
 
 fn exact_sha256(value: &Value, pointer: &str) -> bool {
-    value
-        .pointer(pointer)
-        .and_then(Value::as_str)
-        .is_some_and(|text| {
-            text.len() == "sha256:".len() + 64
-                && text.starts_with("sha256:")
-                && text["sha256:".len()..]
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit())
-        })
+    value.pointer(pointer).and_then(Value::as_str).is_some_and(|text| {
+        text.len() == "sha256:".len() + 64
+            && text.starts_with("sha256:")
+            && text["sha256:".len()..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
 }
 
 fn cell_result<'a>(receipt: &'a Value, group: &str, cell: &str) -> Option<&'a str> {
-    receipt
-        .pointer(&format!("/{group}/{cell}/result"))
-        .and_then(Value::as_str)
+    receipt.pointer(&format!("/{group}/{cell}/result")).and_then(Value::as_str)
 }
 
 fn validate_pass(receipt: &Value) -> Result<(), String> {
@@ -96,9 +86,7 @@ fn validate_pass(receipt: &Value) -> Result<(), String> {
         return Err("exact perllsp process identity is missing".to_string());
     }
     if receipt.pointer("/profile/clean_profile").and_then(Value::as_bool) != Some(true)
-        || receipt
-            .pointer("/profile/other_perl_servers_disabled")
-            .and_then(Value::as_bool)
+        || receipt.pointer("/profile/other_perl_servers_disabled").and_then(Value::as_bool)
             != Some(true)
     {
         return Err("clean-profile provider isolation is missing".to_string());
@@ -109,9 +97,7 @@ fn validate_pass(receipt: &Value) -> Result<(), String> {
     {
         return Err("workspace fixture identity is missing".to_string());
     }
-    if receipt
-        .pointer("/configuration/workspace_configuration_observed")
-        .and_then(Value::as_bool)
+    if receipt.pointer("/configuration/workspace_configuration_observed").and_then(Value::as_bool)
         != Some(true)
     {
         return Err("workspace/configuration was not observed".to_string());
@@ -157,10 +143,8 @@ fn validate_pass(receipt: &Value) -> Result<(), String> {
 fn schema_and_template_are_valid_json_and_fail_closed() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let schema = read_json(&root, ".ci/schemas/zed-host-compat.v1.schema.json")?;
-    let template = read_json(
-        &root,
-        ".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json",
-    )?;
+    let template =
+        read_json(&root, ".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json")?;
 
     assert_eq!(
         schema.get("title").and_then(Value::as_str),
@@ -178,10 +162,8 @@ fn schema_and_template_are_valid_json_and_fail_closed() -> Result<(), Box<dyn Er
 #[test]
 fn false_green_mutations_are_rejected() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let template = read_json(
-        &root,
-        ".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json",
-    )?;
+    let template =
+        read_json(&root, ".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json")?;
 
     let mut empty_pass = template.clone();
     empty_pass["result"] = Value::String("pass".to_string());
