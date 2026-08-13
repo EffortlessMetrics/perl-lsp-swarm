@@ -1652,18 +1652,20 @@ fn mark_readonly_declaration_flags(
     traversal: &mut TraversalState<'_, '_>,
 ) -> Result<(), TraversalStop> {
     for arg in args {
-        traversal.admit_work()?;
-        match &arg.kind {
-            NodeKind::VariableDeclaration { variable, .. } => {
-                mark_declaration_target_flags(variable, true, flags, traversal)?;
-            }
-            NodeKind::VariableListDeclaration { variables, .. } => {
-                for variable in variables {
+        walk_ast_full_controlled_with_state(arg, traversal, &mut |node, traversal| {
+            match &node.kind {
+                NodeKind::VariableDeclaration { variable, .. } => {
                     mark_declaration_target_flags(variable, true, flags, traversal)?;
                 }
+                NodeKind::VariableListDeclaration { variables, .. } => {
+                    for variable in variables {
+                        mark_declaration_target_flags(variable, true, flags, traversal)?;
+                    }
+                }
+                _ => {}
             }
-            _ => {}
-        }
+            Ok(true)
+        })?;
     }
     Ok(())
 }
@@ -3025,11 +3027,6 @@ print "ok" foreach @ys;
                 "nested_fast",
                 1029,
             ),
-            (
-                "use Readonly;\nReadonly my ($tagged_ro :shared, $plain_ro) => (1, 2);\n",
-                "tagged_ro",
-                1029,
-            ),
         ] {
             assert_eq!(
                 first_var_mods(source, name),
@@ -3037,5 +3034,18 @@ print "ok" foreach @ys;
                 "wrapped declaration `${name}` must preserve its frozen modifiers"
             );
         }
+
+        let readonly_source =
+            "use Readonly;\nReadonly my ($tagged_ro :shared, $plain_ro) => (1, 2);\n";
+        assert_eq!(
+            first_var_mods(readonly_source, "tagged_ro"),
+            1029,
+            "wrapped Readonly declaration must emit the attributed variable with frozen modifiers"
+        );
+        assert_eq!(
+            first_var_mods(readonly_source, "plain_ro"),
+            1029,
+            "wrapped Readonly declaration must emit every variable with frozen modifiers"
+        );
     }
 }
