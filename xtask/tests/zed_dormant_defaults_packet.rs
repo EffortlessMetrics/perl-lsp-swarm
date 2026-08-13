@@ -16,9 +16,8 @@ fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
 #[test]
 fn defaults_packet_preserves_provider_identity_and_order() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let manifest_text = fs::read_to_string(
-        root.join(".ci/fixtures/zed-perl-upstream/zed-core/manifest.toml"),
-    )?;
+    let manifest_text =
+        fs::read_to_string(root.join(".ci/fixtures/zed-perl-upstream/zed-core/manifest.toml"))?;
     let manifest: toml::Value = toml::from_str(&manifest_text)?;
     let ordering: Vec<&str> = manifest
         .get("ordering")
@@ -27,10 +26,7 @@ fn defaults_packet_preserves_provider_identity_and_order() -> Result<(), Box<dyn
         .iter()
         .filter_map(toml::Value::as_str)
         .collect();
-    assert_eq!(
-        ordering,
-        vec!["perlnavigator-server", "!perl-lsp", "!perllsp", "..."]
-    );
+    assert_eq!(ordering, vec!["perlnavigator-server", "!perl-lsp", "!perllsp", "..."]);
     assert_eq!(
         manifest.get("base_commit").and_then(toml::Value::as_str),
         Some("7733b9922665f103abda7c6a3fde6b9dfdc8eba9")
@@ -55,9 +51,7 @@ fn defaults_packet_preserves_provider_identity_and_order() -> Result<(), Box<dyn
 fn compatibility_and_submission_order_remain_unproven() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let text = fs::read_to_string(
-        root.join(
-            ".ci/fixtures/zed-perl-upstream/zed-core/compatibility-matrix.v1.json",
-        ),
+        root.join(".ci/fixtures/zed-perl-upstream/zed-core/compatibility-matrix.v1.json"),
     )?;
     let matrix: Value = serde_json::from_str(&text)?;
     let rows = matrix
@@ -66,13 +60,10 @@ fn compatibility_and_submission_order_remain_unproven() -> Result<(), Box<dyn Er
         .ok_or_else(|| io::Error::other("missing compatibility rows"))?;
     assert_eq!(rows.len(), 4);
     assert!(
-        rows.iter()
-            .all(|row| row.get("observed").and_then(Value::as_str) == Some("not_proven"))
+        rows.iter().all(|row| row.get("observed").and_then(Value::as_str) == Some("not_proven"))
     );
     assert_eq!(
-        matrix
-            .pointer("/submission_order/status")
-            .and_then(Value::as_str),
+        matrix.pointer("/submission_order/status").and_then(Value::as_str),
         Some("unresolved_pending_actual_host")
     );
 
