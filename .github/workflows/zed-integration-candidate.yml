@@ -73,12 +73,11 @@ jobs:
           fi
 
           cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
-          {
-            echo '### rustfmt diff'
-            echo '```diff'
-            git diff -- .ci/fixtures/zed-perl-upstream/zed-perl
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          diff="$(git diff -- .ci/fixtures/zed-perl-upstream/zed-perl)"
+          escaped="${diff//'%'/'%25'}"
+          escaped="${escaped//$'\r'/'%0D'}"
+          escaped="${escaped//$'\n'/'%0A'}"
+          echo "::error title=rustfmt diff::$escaped"
           exit 1
 
       - name: Clippy
