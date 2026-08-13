@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added a fail-closed Zed managed-download projection that binds each offered perllsp target to the canonical release topology and exact v0.17.0 public asset metadata while retaining extraction, execution, and actual-host cells as not proven."
+time: 2026-08-13T11:45:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-managed-download-contract
+  Breaking: "no"
