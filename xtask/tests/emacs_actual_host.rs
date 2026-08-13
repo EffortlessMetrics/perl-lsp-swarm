@@ -1,7 +1,6 @@
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
 use tempfile::TempDir;
 use xtask::emacs_actual_host::{
     ActualHostRunPlan, BarrierLedger, CandidateIdentity, CleanupObservation, ClientIdentity,
@@ -123,6 +122,7 @@ fn command_uses_only_checked_driver_exact_subject_and_isolated_state() -> Result
     let expected_candidate = plan.candidate.path.clone();
     let expected_driver = plan.driver.clone();
     let runner = HermeticEmacsRunner::new(plan)?;
+    let expected_home = runner.root().join("home");
     let command = runner.command()?;
     let args = command.get_args().collect::<Vec<_>>();
 
@@ -138,7 +138,7 @@ fn command_uses_only_checked_driver_exact_subject_and_isolated_state() -> Result
             .and_then(|(_, value)| value)
     };
     assert_eq!(env_value("PERLLSP_ACTUAL_HOST_SUBJECT"), Some(expected_candidate.as_os_str()));
-    assert_eq!(env_value("HOME"), Some(runner.root().join("home").as_os_str()));
+    assert_eq!(env_value("HOME"), Some(expected_home.as_os_str()));
     assert_eq!(runner.isolated_paths().len(), 8);
     assert!(env_value("PATH").is_some());
     Ok(())
@@ -176,6 +176,6 @@ fn runner_artifacts_stay_inside_run_root() -> Result<(), Box<dyn Error>> {
     let runner = HermeticEmacsRunner::new(plan)?;
     assert!(runner.artifacts().starts_with(runner.root()));
     assert_eq!(runner.artifacts().file_name(), Some(OsStr::new("artifacts")));
-    assert!(Path::new(runner.artifacts()).is_dir());
+    assert!(runner.artifacts().is_dir());
     Ok(())
 }
