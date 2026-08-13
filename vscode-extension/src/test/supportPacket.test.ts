@@ -76,10 +76,10 @@ function packet(): SupportPacketV1 {
       ],
     },
     configuration: {
-      user_present: true,
-      workspace_present: true,
-      folder_present: false,
-      project_config_present: true,
+      user_present: supportKnown(true),
+      workspace_present: supportKnown(true),
+      folder_present: supportKnown(false),
+      project_config_present: supportKnown(true),
       formatter_mode: supportAtom('native'),
       critic_mode: supportAtom('native'),
       migration: {
@@ -110,6 +110,7 @@ describe('support packet', () => {
     const human = formatSupportPacketHuman(value);
     expect(human).toContain('Support packet: perl_lsp_support_packet.v1');
     expect(human).toContain('perllsp: managed 0.18.0 ready_exact');
+    expect(human).toContain('Config sources: user=true workspace=true folder=false project=true');
     expect(human).toContain('Migration: inert');
   });
 
@@ -132,10 +133,12 @@ describe('support packet', () => {
     const value = packet();
     value.product.version = supportState<SupportAtom>('not_proven');
     value.host.editor_version = supportState<SupportAtom>('unknown');
+    value.configuration.user_present = supportState<boolean>('not_proven');
 
     expect(validateSupportPacket(value)).toEqual([]);
     expect(formatSupportPacketHuman(value)).toContain('Product: perl-lsp not_proven');
     expect(formatSupportPacketHuman(value)).toContain('Editor: Visual Studio Code unknown');
+    expect(formatSupportPacketHuman(value)).toContain('Config sources: user=not_proven');
   });
 
   test('rejects values attached to non-known evidence', () => {
@@ -144,9 +147,16 @@ describe('support packet', () => {
       state: 'unknown',
       value: supportAtom('0.18.0'),
     };
+    value.configuration.user_present = {
+      state: 'unknown',
+      value: true,
+    };
 
-    expect(validateSupportPacket(value)).toContain(
-      'product.version carries a value without known evidence',
+    expect(validateSupportPacket(value)).toEqual(
+      expect.arrayContaining([
+        'product.version carries a value without known evidence',
+        'configuration.user_present carries a value without known evidence',
+      ]),
     );
     expect(() => serializeSupportPacketJson(value)).toThrow('invalid support packet');
   });
