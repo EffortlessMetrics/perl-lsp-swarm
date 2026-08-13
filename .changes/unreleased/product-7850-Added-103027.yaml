@@ -1,0 +1,9 @@
+project: product
+component: Editor integration
+kind: Added
+body: Added a bounded actual-Vim evaluation harness for the optional yegappan/lsp client path.
+time: 2026-08-13T10:30:27Z
+custom:
+  PR: "7850"
+  Slug: vim-yegappan-lsp-evaluation
+  Breaking: "no"
