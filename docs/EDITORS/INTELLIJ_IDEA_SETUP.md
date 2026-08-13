@@ -283,7 +283,7 @@ Confirm the old `perllsp` process exited before evaluating the new run. Orphan c
 
 The presence of a Perl DAP template in LSP4IJ is a distribution/configuration fact, not proof that `perl-dap` works through the IntelliJ debugger integration.
 
-LSP and DAP evidence are independent. See [IntelliJ / LSP4IJ `perl-dap` Setup and Evidence Boundary](INTELLIJ_DAP_SETUP.md) for the debugger subject model, launch journey, attach boundary, feature cells, and troubleshooting. Actual debugger support still requires #7877/#7122 evidence.
+LSP and DAP evidence are independent. See [IntelliJ / LSP4IJ `perl-dap` Setup and Evidence Boundary](INTELLIJ_DAP_SETUP.md) for the debugger subject model, launch journey, attach boundary, feature cells, and troubleshooting. Actual debugger support still requires [#7877](https://github.com/EffortlessMetrics/perl-lsp/issues/7877)/[#7122](https://github.com/EffortlessMetrics/perl-lsp/issues/7122) evidence.
 
 ## See also
 

@@ -2,7 +2,7 @@
 
 LSP4IJ carries a generic Debug Adapter Protocol integration and Perl DAP material. That is **distribution/configuration evidence only**. It does not prove that `perl-dap` launches, binds breakpoints, exposes variables, steps correctly, or shuts down cleanly through an IntelliJ-platform IDE.
 
-> **Current support boundary:** LSP and DAP are separate subjects. `perllsp` working through LSP4IJ does not prove `perl-dap`. Actual debugger support is promoted only from the exact-host receipt tracked by #7877 and the support registry in #7122.
+> **Current support boundary:** LSP and DAP are separate subjects. `perllsp` working through LSP4IJ does not prove `perl-dap`. Actual debugger support is promoted only from the exact-host receipt tracked by [#7877](https://github.com/EffortlessMetrics/perl-lsp/issues/7877) and the support registry in [#7122](https://github.com/EffortlessMetrics/perl-lsp/issues/7122).
 
 ## Subject identity
 
@@ -34,7 +34,7 @@ Keep these stages separate:
 
 Selecting a built-in template is not proof that the managed downloader ran.
 
-Platform, architecture, Linux libc disposition, release-asset identity, and checksum-manifest limitations come from the LSP4IJ installer contract in #7876.
+Platform, architecture, Linux libc disposition, release-asset identity, and checksum-manifest limitations come from the LSP4IJ installer contract in [#7876](https://github.com/EffortlessMetrics/perl-lsp/issues/7876).
 
 ## Adapter identity
 
@@ -100,7 +100,7 @@ environment only where the template safely exposes it
 source/path assumptions
 ```
 
-Until #7877 produces a passing exact-host launch receipt, treat launch-field examples as candidate configuration rather than a public support guarantee.
+Until [#7877](https://github.com/EffortlessMetrics/perl-lsp/issues/7877) produces a passing exact-host launch receipt, treat launch-field examples as candidate configuration rather than a public support guarantee.
 
 ## Breakpoint cells
 
@@ -169,9 +169,9 @@ For each debugger feature, the supported cell is the intersection of:
 
 ```text
 LSP4IJ exposes the action
-∩ perl-dap advertises/supports it
-∩ selected backend/runtime supports it
-∩ the actual #7877 session passes
+- perl-dap advertises/supports it
+- selected backend/runtime supports it
+- the actual [#7877](https://github.com/EffortlessMetrics/perl-lsp/issues/7877) session passes
 ```
 
 A visible IntelliJ action does not override `perl-dap` capability truth from #6688.
@@ -290,6 +290,6 @@ Repository automation may prepare that upstream delta, but external submission r
 - [Installation](../how-to/INSTALLATION.md)
 - [Troubleshooting](../how-to/TROUBLESHOOTING.md)
 - DAP capability truth: #6688
-- actual LSP4IJ debugger receipt: #7877
-- installer/topology contract: #7876
-- support registry: #7122
+- actual LSP4IJ debugger receipt: [#7877](https://github.com/EffortlessMetrics/perl-lsp/issues/7877)
+- installer/topology contract: [#7876](https://github.com/EffortlessMetrics/perl-lsp/issues/7876)
+- support registry: [#7122](https://github.com/EffortlessMetrics/perl-lsp/issues/7122)
