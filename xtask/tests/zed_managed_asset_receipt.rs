@@ -113,6 +113,7 @@ fn implementation_binds_bytes_archive_process_and_cross_build_boundaries(
 
     let github = read("scripts/zed_assets/github_io.py")?;
     let archive = read("scripts/zed_assets/archive.py")?;
+    let framing = read("scripts/zed_assets/framing.py")?;
     let process = read("scripts/zed_assets/process.py")?;
     let producer = read("scripts/zed_assets/producer.py")?;
     let validation = read("scripts/zed_assets/validation.py")?;
@@ -129,9 +130,9 @@ fn implementation_binds_bytes_archive_process_and_cross_build_boundaries(
     assert!(!archive.contains("extractall("));
     assert!(archive.contains("unexpected code-intelligence executable"));
 
+    assert!(framing.contains("Content-Length"));
     assert!(process.contains("[str(binary), \"--version\"]"));
     assert!(process.contains("[str(binary), \"--stdio\"]"));
-    assert!(process.contains("Content-Length"));
     assert!(process.contains("process inventory grew after shutdown"));
     assert!(validation.contains("actual_zed"));
     assert!(validation.contains("public_registry"));
