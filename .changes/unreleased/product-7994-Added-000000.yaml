@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added a real-Zed managed public-artifact route contract that binds exact public asset and development-extension host receipts, proves empty-cache selection and restart reuse, and requires nine failed-candidate scenarios to preserve known-good state without provider fallback."
+time: 2026-08-14T00:00:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-managed-route-recovery
+  Breaking: "no"
