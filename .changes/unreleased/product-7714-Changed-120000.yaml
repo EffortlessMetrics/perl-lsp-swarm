@@ -1,0 +1,12 @@
+project: product
+component: Editor integration
+kind: Changed
+body: >-
+  Add a receipt-backed actual-host journey for official Helix 25.07.1 that
+  exercises the exact perllsp candidate through activation, push diagnostics,
+  completion, definition, edit freshness, formatting, and clean shutdown.
+time: 2026-08-13T12:00:00Z
+custom:
+  PR: "7714"
+  Slug: helix-released-actual-host
+  Breaking: "no"
