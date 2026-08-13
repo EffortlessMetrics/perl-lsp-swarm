@@ -40,6 +40,11 @@ mkdir -p \
   "${fixture_root}/outer/sub/lib" \
   "${fixture_root}/gitroot/.git" \
   "${fixture_root}/gitroot/app/lib" \
+  "${fixture_root}/marker-dot/lib" \
+  "${fixture_root}/marker-build/lib" \
+  "${fixture_root}/marker-dist/lib" \
+  "${fixture_root}/git-only/.git" \
+  "${fixture_root}/git-only/lib" \
   "${fixture_root}/nomarker"
 
 cat >"${fixture_root}/filetypes/sample.pl" <<'EOF'
@@ -118,6 +123,43 @@ requires 'strict';
 EOF
 cat >"${fixture_root}/gitroot/app/lib/App.pm" <<'EOF'
 package App;
+use strict;
+1;
+EOF
+
+# Winning case for .perl-lsp.toml itself.
+touch "${fixture_root}/marker-dot/.perl-lsp.toml"
+cat >"${fixture_root}/marker-dot/lib/DotConfig.pm" <<'EOF'
+package DotConfig;
+use strict;
+1;
+EOF
+
+# Winning case for Build.PL.
+cat >"${fixture_root}/marker-build/Build.PL" <<'EOF'
+use Module::Build;
+Module::Build->new(module_name => 'BuildRoot')->create_build_script;
+EOF
+cat >"${fixture_root}/marker-build/lib/BuildRoot.pm" <<'EOF'
+package BuildRoot;
+use strict;
+1;
+EOF
+
+# Winning case for dist.ini.
+cat >"${fixture_root}/marker-dist/dist.ini" <<'EOF'
+name = DistRoot
+version = 0.001
+EOF
+cat >"${fixture_root}/marker-dist/lib/DistRoot.pm" <<'EOF'
+package DistRoot;
+use strict;
+1;
+EOF
+
+# .git is the fallback only when no nearer Perl project marker exists.
+cat >"${fixture_root}/git-only/lib/GitOnly.pm" <<'EOF'
+package GitOnly;
 use strict;
 1;
 EOF
