@@ -1,7 +1,4 @@
-import {
-  type ActivationPhase,
-  ActivationTransaction,
-} from '../activationTransaction';
+import { type ActivationPhase, ActivationTransaction } from '../activationTransaction';
 
 const PHASES: ActivationPhase[] = [
   'base',
@@ -28,9 +25,7 @@ function registerThroughPhase(
       id,
       phase,
       resource_class:
-        phase === 'support'
-          ? 'support_surface_allowed_after_failure'
-          : 'mandatory_for_activation',
+        phase === 'support' ? 'support_surface_allowed_after_failure' : 'mandatory_for_activation',
       cleanup: () => {
         cleanupOrder.push(id);
       },
