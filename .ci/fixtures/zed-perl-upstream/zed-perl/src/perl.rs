@@ -361,8 +361,9 @@ fn normalize_perllsp_args(arguments: Vec<String>) -> Result<Vec<String>> {
 }
 
 fn is_non_lsp_argument(argument: &str) -> bool {
+    let flag = argument.split_once('=').map_or(argument, |(key, _)| key);
     matches!(
-        argument,
+        flag,
         "mcp"
             | "--mcp"
             | "--socket"
@@ -376,8 +377,7 @@ fn is_non_lsp_argument(argument: &str) -> bool {
             | "--help"
             | "-h"
             | "-V"
-    ) || argument.starts_with("--socket=")
-        || argument.starts_with("--port=")
+    )
 }
 
 fn normalize_release_version(tag: &str) -> &str {
@@ -494,10 +494,13 @@ mod tests {
         for argument in [
             "mcp",
             "--mcp",
+            "--mcp=stdio",
             "--socket",
             "--socket=127.0.0.1:9257",
             "--port",
             "--port=9257",
+            "--health",
+            "--health=1",
             "--version",
             "--doctor",
         ] {

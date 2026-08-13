@@ -54,7 +54,7 @@ fn synthetic_published_subject(template: &Value) -> Value {
         Value::String("cccccccccccccccccccccccccccccccccccccccc".to_string());
     subject["zed_defaults"]["released_build"] = Value::String("zed-build-test".to_string());
     subject["perllsp_asset"]["release"] = Value::String("v0.0.0-test".to_string());
-    subject["perllsp_asset"]["target"] = Value::String("x86_64-unknown-linux-gnu".to_string());
+    subject["perllsp_asset"]["target"] = Value::String("x86_64-unknown-linux-musl".to_string());
     subject["perllsp_asset"]["asset_name"] = Value::String("perllsp".to_string());
     subject["perllsp_asset"]["asset_url"] =
         Value::String("https://example.test/perllsp".to_string());
@@ -98,17 +98,26 @@ fn synthetic_public_pass(template: &Value, subject: &Value, subject_sha256: &str
     receipt["configuration"]["workspace_configuration_observed"] = Value::Bool(true);
     receipt["configuration"]["precedence_observed"] = Value::String("observed".to_string());
     receipt["configuration"]["live_update_observed"] = Value::String("observed".to_string());
-    receipt["activation"]["pod"] =
-        serde_json::json!({"result": "pass", "evidence": "pod-language"});
+    for cell in ["pl", "pm", "t", "PL", "psgi", "cgi", "fcgi", "shebang", "pod"] {
+        receipt["activation"][cell] =
+            serde_json::json!({"result": "pass", "evidence": format!("{cell}-evidence")});
+    }
     for cell in [
         "manifest_discovery",
         "perl_attachment",
         "initialize",
         "workspace_root",
         "diagnostics",
+        "completion",
         "hover",
         "definition",
         "references",
+        "document_symbols",
+        "workspace_symbols",
+        "safe_edit_or_refusal",
+        "unicode_positions",
+        "mixed_newlines",
+        "semantic_tokens",
         "post_edit_freshness",
         "restart",
         "shutdown",
@@ -134,21 +143,42 @@ fn public_template_uses_the_official_registry_stage() -> Result<(), Box<dyn Erro
         read_json(&root, ".ci/fixtures/zed-perl-upstream/receipts/public-registry-template.json")?;
     assert_eq!(
         receipt.get("evidence_stage").and_then(Value::as_str),
-        Some("public_registry_install")
+        Some("public_registry_install"),
+        "public template must use the official-registry evidence stage"
     );
-    assert_eq!(receipt.get("result").and_then(Value::as_str), Some("not_run"));
+    assert_eq!(
+        receipt.get("result").and_then(Value::as_str),
+        Some("not_run"),
+        "public template must remain not_run"
+    );
     assert_eq!(
         receipt.pointer("/extension/install_route").and_then(Value::as_str),
-        Some("official_registry")
+        Some("official_registry"),
+        "public template must use official_registry install route"
     );
-    assert_eq!(receipt.pointer("/perllsp/server_id").and_then(Value::as_str), Some("perllsp"));
-    assert_eq!(receipt.pointer("/perllsp/arguments"), Some(&serde_json::json!(["--stdio"])));
+    assert_eq!(
+        receipt.pointer("/perllsp/server_id").and_then(Value::as_str),
+        Some("perllsp"),
+        "public template must bind the perllsp server id"
+    );
+    assert_eq!(
+        receipt.pointer("/perllsp/arguments"),
+        Some(&serde_json::json!(["--stdio"])),
+        "public template must require stdio-only arguments"
+    );
     assert_eq!(
         receipt.pointer("/public_subject/relative_path").and_then(Value::as_str),
-        Some(PUBLIC_SUBJECT_RELATIVE_PATH)
+        Some(PUBLIC_SUBJECT_RELATIVE_PATH),
+        "public template must bind the canonical public subject path"
     );
-    assert!(receipt.pointer("/public_subject/sha256").is_some());
-    assert!(receipt.pointer("/public_subject/sha256").and_then(Value::as_str).is_none());
+    assert!(
+        receipt.pointer("/public_subject/sha256").is_some(),
+        "public template must declare the public_subject.sha256 field"
+    );
+    assert!(
+        receipt.pointer("/public_subject/sha256").and_then(Value::as_str).is_none(),
+        "public template digest must remain null until a published subject exists"
+    );
     Ok(())
 }
 
@@ -200,12 +230,26 @@ fn managed_and_path_routes_remain_distinct() -> Result<(), Box<dyn Error>> {
     };
     assert_eq!(
         subject.pointer("/promotion/managed_download_row").and_then(Value::as_str),
-        Some("not_proven")
+        Some("not_proven"),
+        "managed-download promotion must stay not_proven until a live receipt exists"
     );
-    assert_eq!(subject.pointer("/promotion/path_row").and_then(Value::as_str), Some("not_proven"));
-    assert!(subject.pointer("/perllsp_asset/asset_sha256").is_some());
-    assert!(subject.pointer("/clean_profile/path_override_absent").is_some());
-    assert!(exact_sha256(&serde_json::json!({"digest": content_sha256(&bytes)}), "/digest"));
+    assert_eq!(
+        subject.pointer("/promotion/path_row").and_then(Value::as_str),
+        Some("not_proven"),
+        "path-override promotion must stay not_proven until a live receipt exists"
+    );
+    assert!(
+        subject.pointer("/perllsp_asset/asset_sha256").is_some(),
+        "subject must reserve the managed-download asset digest field"
+    );
+    assert!(
+        subject.pointer("/clean_profile/path_override_absent").is_some(),
+        "subject must reserve the clean-profile path-override field"
+    );
+    assert!(
+        exact_sha256(&serde_json::json!({"digest": content_sha256(&bytes)}), "/digest"),
+        "subject bytes must hash to a content-addressed sha256 digest"
+    );
     Ok(())
 }
 
@@ -238,31 +282,31 @@ fn public_pass_requires_managed_download_and_clean_prior_state() -> Result<(), B
     let subject_bytes = serde_json::to_vec_pretty(&subject)?;
     let subject_sha = content_sha256(subject_bytes.as_slice());
     let mut receipt = synthetic_public_pass(&template, &subject, &subject_sha);
-    let bound = Some((&subject, subject_sha.as_str()));
+    let bound = Some(subject_bytes.as_slice());
 
     receipt["perllsp"]["resolution_route"] = Value::String("binary_override".to_string());
     assert_eq!(
-        validate_pass(&receipt, bound).unwrap_err(),
+        validate_pass(&receipt, bound).expect_err("binary override"),
         "public registry pass requires perllsp resolution_route=managed_download"
     );
 
     receipt["perllsp"]["resolution_route"] = Value::String("worktree_path".to_string());
     assert_eq!(
-        validate_pass(&receipt, bound).unwrap_err(),
+        validate_pass(&receipt, bound).expect_err("worktree path"),
         "public registry pass requires perllsp resolution_route=managed_download"
     );
 
     receipt["perllsp"]["resolution_route"] = Value::String("managed_download".to_string());
     receipt["profile"]["prior_extension_absent"] = Value::Bool(false);
     assert_eq!(
-        validate_pass(&receipt, bound).unwrap_err(),
+        validate_pass(&receipt, bound).expect_err("prior extension present"),
         "public registry pass requires a clean profile without prior extension or managed cache"
     );
 
     receipt["profile"]["prior_extension_absent"] = Value::Bool(true);
     receipt["profile"]["prior_managed_cache_absent"] = Value::Null;
     assert_eq!(
-        validate_pass(&receipt, bound).unwrap_err(),
+        validate_pass(&receipt, bound).expect_err("prior cache null"),
         "public registry pass requires a clean profile without prior extension or managed cache"
     );
     Ok(())
@@ -280,19 +324,20 @@ fn public_pass_binds_content_addressed_subject() -> Result<(), Box<dyn Error>> {
     let mut receipt = synthetic_public_pass(&template, &subject, &subject_sha);
 
     assert_eq!(
-        validate_pass(&receipt, None).unwrap_err(),
+        validate_pass(&receipt, None).expect_err("missing subject"),
         "public registry pass requires the bound public subject"
     );
 
     let blocked = subject_template.clone();
+    let blocked_bytes = serde_json::to_vec_pretty(&blocked)?;
     assert_eq!(
-        validate_pass(&receipt, Some((&blocked, subject_sha.as_str()))).unwrap_err(),
+        validate_pass(&receipt, Some(blocked_bytes.as_slice())).expect_err("blocked subject"),
         "public subject is not published"
     );
 
     receipt["public_subject"]["sha256"] = Value::String(sha256_fill('0'));
     assert_eq!(
-        validate_pass(&receipt, Some((&subject, subject_sha.as_str()))).unwrap_err(),
+        validate_pass(&receipt, Some(subject_bytes.as_slice())).expect_err("mismatched digest"),
         "public_subject.sha256 does not match the bound subject bytes"
     );
 
@@ -300,11 +345,15 @@ fn public_pass_binds_content_addressed_subject() -> Result<(), Box<dyn Error>> {
     receipt["extension"]["candidate_commit"] =
         Value::String("0123456789012345678901234567890123456789".to_string());
     assert_eq!(
-        validate_pass(&receipt, Some((&subject, subject_sha.as_str()))).unwrap_err(),
+        validate_pass(&receipt, Some(subject_bytes.as_slice())).expect_err("mismatched commit"),
         "public receipt identities disagree with the bound public subject"
     );
 
     receipt["extension"]["candidate_commit"] = subject["extension"]["commit"].clone();
-    assert_eq!(validate_pass(&receipt, Some((&subject, subject_sha.as_str()))), Ok(()));
+    assert_eq!(
+        validate_pass(&receipt, Some(subject_bytes.as_slice())),
+        Ok(()),
+        "matching published subject bytes must validate"
+    );
     Ok(())
 }

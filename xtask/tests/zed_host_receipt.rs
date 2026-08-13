@@ -31,14 +31,23 @@ fn schema_and_template_are_valid_json_and_fail_closed() -> Result<(), Box<dyn Er
 
     assert_eq!(
         schema.get("title").and_then(Value::as_str),
-        Some("Zed perllsp host compatibility receipt")
+        Some("Zed perllsp host compatibility receipt"),
+        "schema title must identify the Zed host receipt"
     );
-    assert_eq!(template.get("result").and_then(Value::as_str), Some("not_run"));
+    assert_eq!(
+        template.get("result").and_then(Value::as_str),
+        Some("not_run"),
+        "exact-source template must remain not_run"
+    );
     assert_eq!(
         template.get("evidence_stage").and_then(Value::as_str),
-        Some("exact_source_dev_extension")
+        Some("exact_source_dev_extension"),
+        "exact-source template must use the development-extension stage"
     );
-    assert!(validate_pass(&template, None).is_err());
+    assert!(
+        validate_pass(&template, None).is_err(),
+        "not_run template must fail closed under validate_pass"
+    );
     Ok(())
 }
 
@@ -50,19 +59,22 @@ fn false_green_mutations_are_rejected() -> Result<(), Box<dyn Error>> {
 
     let mut empty_pass = template.clone();
     empty_pass["result"] = Value::String("pass".to_string());
-    assert_eq!(validate_pass(&empty_pass, None).unwrap_err(), "exact Zed host identity is missing");
+    assert_eq!(
+        validate_pass(&empty_pass, None).expect_err("empty pass"),
+        "exact Zed host identity is missing"
+    );
 
     let mut wrong_provider = empty_pass.clone();
     wrong_provider["perllsp"]["server_id"] = Value::String("perl-lsp".to_string());
     assert_eq!(
-        validate_pass(&wrong_provider, None).unwrap_err(),
+        validate_pass(&wrong_provider, None).expect_err("wrong provider"),
         "exact perllsp process identity is missing"
     );
 
     let mut wrong_transport = empty_pass.clone();
     wrong_transport["perllsp"]["arguments"] = serde_json::json!(["mcp", "--stdio"]);
     assert_eq!(
-        validate_pass(&wrong_transport, None).unwrap_err(),
+        validate_pass(&wrong_transport, None).expect_err("wrong transport"),
         "exact perllsp process identity is missing"
     );
 
@@ -70,7 +82,7 @@ fn false_green_mutations_are_rejected() -> Result<(), Box<dyn Error>> {
     cross_stage["evidence_stage"] = Value::String("public_registry_install".to_string());
     cross_stage["extension"]["install_route"] = Value::String("dev_extension".to_string());
     assert_eq!(
-        validate_pass(&cross_stage, None).unwrap_err(),
+        validate_pass(&cross_stage, None).expect_err("cross stage"),
         "evidence stage `public_registry_install` cannot use install route `dev_extension`"
     );
 

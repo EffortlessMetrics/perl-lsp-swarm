@@ -80,7 +80,7 @@ feat: add EffortlessMetrics perllsp as a separate Perl server
 
 **Body**
 
-```markdown
+````markdown
 ## Summary
 
 Add `perllsp` (`EffortlessMetrics/perl-lsp`) as a third, separately identified
@@ -128,7 +128,7 @@ silently launching Perl Navigator.
 A separate narrow Zed-defaults change keeps both alternative Perl servers
 disabled until the user selects one, avoiding unsolicited startup failures or
 multiple competing servers.
-```
+````
 
 ## Required Zed defaults follow-up
 

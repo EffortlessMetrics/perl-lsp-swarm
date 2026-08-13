@@ -8,10 +8,11 @@ on:
       - '.github/workflows/zed-integration-candidate.yml'
       - 'scripts/check-zed-*.sh'
       - 'xtask/tests/zed_*.rs'
+      - 'xtask/tests/support/zed_host_compat.rs'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: zed-integration-candidate-${{ github.ref }}
@@ -21,12 +22,12 @@ jobs:
   candidate:
     name: Format stacked Zed programme contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout head branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: true
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust
@@ -35,34 +36,23 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt
 
-      - name: Apply exact rustfmt output to Zed contract tests
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      - name: Report rustfmt ratchet for Zed contract tests
         shell: bash
-        env:
-          HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           shopt -s nullglob
-          tests=(xtask/tests/zed_*.rs)
+          tests=(xtask/tests/zed_*.rs xtask/tests/support/zed_host_compat.rs)
           if [[ ${#tests[@]} -eq 0 ]]; then
             echo 'error: no Zed contract tests found' >&2
             exit 1
           fi
-          rustfmt --edition 2024 "${tests[@]}"
-          mapfile -t changed < <(git diff --name-only -- 'xtask/tests/zed_*.rs')
-          if [[ ${#changed[@]} -eq 0 ]]; then
-            exit 0
-          fi
-          mapfile -t unexpected < <(git diff --name-only | grep -v '^xtask/tests/zed_.*\.rs$' || true)
-          if [[ ${#unexpected[@]} -ne 0 ]]; then
-            printf 'error: formatter changed unexpected files:\n%s\n' "${unexpected[*]}" >&2
-            exit 1
-          fi
-          git diff --check
-          git config user.name 'EffortlessSteven'
-          git config user.email 'git@effortlesssteven.com'
-          git add -- "${changed[@]}"
-          git commit -m 'style(zed): apply rustfmt to programme contracts'
-          git push origin "HEAD:$HEAD_BRANCH"
+          rustfmt --edition 2024 --check "${tests[@]}"
 
-      - name: Stop after bounded formatting pass
-        run: exit 0
+      - name: Run Zed programme contracts selected by path filters
+        shell: bash
+        run: |
+          bash scripts/check-zed-programme-contracts.sh
+          bash scripts/check-zed-upstream-candidate.sh
+          cargo test -p xtask --locked \
+            --test zed_host_receipt \
+            --test zed_public_registry_receipt \
+            --test zed_support_claims

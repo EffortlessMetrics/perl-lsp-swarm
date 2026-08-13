@@ -10,16 +10,56 @@ use sha2::{Digest, Sha256};
 pub const PUBLIC_SUBJECT_RELATIVE_PATH: &str =
     ".ci/fixtures/zed-perl-upstream/receipts/public-registry-subject.v1.json";
 
+const EXACT_SOURCE_REQUIRED_JOURNEY: &[&str] = &[
+    "manifest_discovery",
+    "perl_attachment",
+    "initialize",
+    "workspace_root",
+    "diagnostics",
+    "hover",
+    "definition",
+    "references",
+    "post_edit_freshness",
+    "restart",
+    "shutdown",
+];
+
+const PUBLIC_REQUIRED_JOURNEY: &[&str] = &[
+    "manifest_discovery",
+    "perl_attachment",
+    "initialize",
+    "workspace_root",
+    "diagnostics",
+    "completion",
+    "hover",
+    "definition",
+    "references",
+    "document_symbols",
+    "workspace_symbols",
+    "safe_edit_or_refusal",
+    "unicode_positions",
+    "mixed_newlines",
+    "semantic_tokens",
+    "post_edit_freshness",
+    "restart",
+    "shutdown",
+];
+
+const PUBLIC_REQUIRED_ACTIVATION: &[&str] =
+    &["pl", "pm", "t", "PL", "psgi", "cgi", "fcgi", "shebang", "pod"];
+
 pub fn nonempty_string(value: &Value, pointer: &str) -> bool {
     value.pointer(pointer).and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty())
 }
 
 pub fn exact_sha256(value: &Value, pointer: &str) -> bool {
-    value.pointer(pointer).and_then(Value::as_str).is_some_and(|text| {
-        text.len() == "sha256:".len() + 64
-            && text.starts_with("sha256:")
-            && text["sha256:".len()..].bytes().all(|byte| byte.is_ascii_hexdigit())
-    })
+    value.pointer(pointer).and_then(Value::as_str).is_some_and(is_sha256_digest)
+}
+
+fn is_sha256_digest(text: &str) -> bool {
+    text.len() == "sha256:".len() + 64
+        && text.starts_with("sha256:")
+        && text["sha256:".len()..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub fn content_sha256(bytes: &[u8]) -> String {
@@ -48,14 +88,22 @@ fn same_string(left: &Value, left_pointer: &str, right: &Value, right_pointer: &
     }
 }
 
+fn require_cells(receipt: &Value, group: &str, cells: &[&str]) -> Result<(), String> {
+    for cell in cells {
+        if cell_result(receipt, group, cell) != Some("pass")
+            || !nonempty_string(receipt, &format!("/{group}/{cell}/evidence"))
+        {
+            return Err(format!("required {group} cell `{cell}` is not proven"));
+        }
+    }
+    Ok(())
+}
+
 /// Validate a pass candidate.
 ///
-/// Public-registry passes must supply the bound subject together with the
-/// content digest of the exact subject bytes being claimed.
-pub fn validate_pass(
-    receipt: &Value,
-    public_subject: Option<(&Value, &str)>,
-) -> Result<(), String> {
+/// Public-registry passes must supply the exact published subject bytes. The
+/// validator hashes those bytes itself and compares against the receipt binding.
+pub fn validate_pass(receipt: &Value, public_subject_bytes: Option<&[u8]>) -> Result<(), String> {
     if receipt.get("schema_version").and_then(Value::as_str) != Some("zed_host_compat.v1") {
         return Err("wrong receipt schema".to_string());
     }
@@ -124,31 +172,19 @@ pub fn validate_pass(
         return Err("workspace/configuration was not observed".to_string());
     }
 
-    for cell in [
-        "manifest_discovery",
-        "perl_attachment",
-        "initialize",
-        "workspace_root",
-        "diagnostics",
-        "hover",
-        "definition",
-        "references",
-        "post_edit_freshness",
-        "restart",
-        "shutdown",
-    ] {
-        if cell_result(receipt, "journey", cell) != Some("pass")
-            || !nonempty_string(receipt, &format!("/journey/{cell}/evidence"))
+    if stage == "public_registry_install" {
+        require_cells(receipt, "journey", PUBLIC_REQUIRED_JOURNEY)?;
+        require_cells(receipt, "activation", PUBLIC_REQUIRED_ACTIVATION)?;
+        validate_public_registry_pass(receipt, public_subject_bytes)?;
+    } else {
+        require_cells(receipt, "journey", EXACT_SOURCE_REQUIRED_JOURNEY)?;
+        if cell_result(receipt, "activation", "pod") != Some("pass")
+            || !nonempty_string(receipt, "/activation/pod/evidence")
         {
-            return Err(format!("required journey cell `{cell}` is not proven"));
+            return Err("POD separation is not proven".to_string());
         }
     }
 
-    if cell_result(receipt, "activation", "pod") != Some("pass")
-        || !nonempty_string(receipt, "/activation/pod/evidence")
-    {
-        return Err("POD separation is not proven".to_string());
-    }
     if !nonempty_string(receipt, "/artifacts/zed_log")
         || !nonempty_string(receipt, "/artifacts/language_server_log")
         || !nonempty_string(receipt, "/artifacts/process_inventory")
@@ -157,16 +193,12 @@ pub fn validate_pass(
         return Err("bounded redacted evidence artifacts are missing".to_string());
     }
 
-    if stage == "public_registry_install" {
-        validate_public_registry_pass(receipt, public_subject)?;
-    }
-
     Ok(())
 }
 
 fn validate_public_registry_pass(
     receipt: &Value,
-    public_subject: Option<(&Value, &str)>,
+    public_subject_bytes: Option<&[u8]>,
 ) -> Result<(), String> {
     if receipt.pointer("/perllsp/resolution_route").and_then(Value::as_str)
         != Some("managed_download")
@@ -185,8 +217,11 @@ fn validate_public_registry_pass(
         );
     }
 
-    let (subject, subject_sha256) = public_subject
+    let subject_bytes = public_subject_bytes
         .ok_or_else(|| "public registry pass requires the bound public subject".to_string())?;
+    let subject_sha256 = content_sha256(subject_bytes);
+    let subject: Value = serde_json::from_slice(subject_bytes)
+        .map_err(|error| format!("public subject parse failed: {error}"))?;
     if subject.get("schema_version").and_then(Value::as_str)
         != Some("zed_public_registry_subject.v1")
     {
@@ -207,29 +242,46 @@ fn validate_public_registry_pass(
         receipt.pointer("/public_subject/sha256").and_then(Value::as_str).ok_or_else(|| {
             "public receipt missing content-addressed public_subject.sha256".to_string()
         })?;
-    if !exact_sha256(receipt, "/public_subject/sha256") {
+    if !is_sha256_digest(bound_sha) {
         return Err("public receipt missing content-addressed public_subject.sha256".to_string());
     }
     if bound_sha != subject_sha256 {
         return Err("public_subject.sha256 does not match the bound subject bytes".to_string());
     }
 
-    if !same_string(receipt, "/extension/candidate_commit", subject, "/extension/commit")
+    if !same_string(receipt, "/extension/candidate_commit", &subject, "/extension/commit")
         || !same_string(
             receipt,
             "/extension/manifest_version",
-            subject,
+            &subject,
             "/extension/manifest_version",
         )
-        || !same_string(receipt, "/perllsp/binary_sha256", subject, "/perllsp_asset/asset_sha256")
-        || !same_string(receipt, "/zed/build", subject, "/zed_defaults/released_build")
-        || !nonempty_string(subject, "/registry/repository_commit")
-        || !nonempty_string(subject, "/registry/extension_version")
-        || !nonempty_string(subject, "/perllsp_asset/release")
-        || !nonempty_string(subject, "/perllsp_asset/target")
-        || !nonempty_string(subject, "/perllsp_asset/asset_url")
+        || !same_string(receipt, "/perllsp/binary_sha256", &subject, "/perllsp_asset/asset_sha256")
+        || !same_string(receipt, "/zed/build", &subject, "/zed_defaults/released_build")
+        || !nonempty_string(&subject, "/registry/repository_commit")
+        || !nonempty_string(&subject, "/registry/extension_version")
+        || !nonempty_string(&subject, "/perllsp_asset/release")
+        || !nonempty_string(&subject, "/perllsp_asset/target")
+        || !nonempty_string(&subject, "/perllsp_asset/asset_url")
     {
         return Err("public receipt identities disagree with the bound public subject".to_string());
+    }
+
+    let managed = [
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+    ];
+    let target = subject
+        .pointer("/perllsp_asset/target")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "public subject missing perllsp_asset.target".to_string())?;
+    if !managed.contains(&target) {
+        return Err(format!(
+            "public subject target `{target}` is outside the managed Zed download contract"
+        ));
     }
 
     Ok(())
