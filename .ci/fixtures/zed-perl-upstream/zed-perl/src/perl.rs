@@ -302,7 +302,9 @@ impl PerlExtension {
             if !matches!(os, zed::Os::Windows) {
                 zed::make_file_executable(&binary_path)?;
             }
-            remove_old_downloads("perllsp-", &version_dir);
+            // Retain older perllsp versions: the extension API does not report
+            // successful server startup, so deleting them here would discard the
+            // known-good fallback before Zed observes launch success.
         }
 
         self.perllsp_path = Some(binary_path.clone());
