@@ -336,9 +336,10 @@ fn normalize_perllsp_args(arguments: Vec<String>) -> Result<Vec<String>> {
     let mut saw_stdio = false;
 
     for argument in arguments {
-        if argument == "--stdio" {
+        // `--mcp` / `mcp` are documented launcher aliases for stdio transport.
+        if argument == "--stdio" || argument == "--mcp" || argument == "mcp" {
             if !saw_stdio {
-                normalized.push(argument);
+                normalized.push("--stdio".to_string());
                 saw_stdio = true;
             }
             continue;
@@ -361,12 +362,9 @@ fn normalize_perllsp_args(arguments: Vec<String>) -> Result<Vec<String>> {
 }
 
 fn is_non_lsp_argument(argument: &str) -> bool {
-    let flag = argument.split_once('=').map_or(argument, |(key, _)| key);
     matches!(
-        flag,
-        "mcp"
-            | "--mcp"
-            | "--socket"
+        argument,
+        "--socket"
             | "--port"
             | "--health"
             | "--info"
@@ -377,7 +375,8 @@ fn is_non_lsp_argument(argument: &str) -> bool {
             | "--help"
             | "-h"
             | "-V"
-    )
+    ) || argument.starts_with("--socket=")
+        || argument.starts_with("--port=")
 }
 
 fn normalize_release_version(tag: &str) -> &str {
@@ -490,10 +489,24 @@ mod tests {
     }
 
     #[test]
+    fn mcp_alias_normalizes_to_stdio() {
+        assert_eq!(
+            normalize_perllsp_args(vec!["--mcp".to_string()]).ok(),
+            Some(vec!["--stdio".to_string()])
+        );
+        assert_eq!(
+            normalize_perllsp_args(vec!["mcp".to_string(), "--log-level=debug".to_string()]).ok(),
+            Some(vec!["--stdio".to_string(), "--log-level=debug".to_string()])
+        );
+        assert_eq!(
+            normalize_perllsp_args(vec!["--mcp".to_string(), "--stdio".to_string()]).ok(),
+            Some(vec!["--stdio".to_string()])
+        );
+    }
+
+    #[test]
     fn non_lsp_modes_fail_closed() {
         for argument in [
-            "mcp",
-            "--mcp",
             "--mcp=stdio",
             "--socket",
             "--socket=127.0.0.1:9257",
