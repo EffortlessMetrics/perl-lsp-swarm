@@ -38,6 +38,12 @@ impl LspServer {
             tracing::warn!(error = %e, "Failed to send pending startup logMessage");
         }
 
+        // `workspace/configuration` is a server→client request and cannot be
+        // emitted while the initialize request is still being handled. Local
+        // initializationOptions / .perl-lsp.toml state is already available;
+        // pull the client-scoped layer only after initialize has completed.
+        self.request_workspace_configuration_for_folders();
+
         // File watcher dynamic registration is intentionally separate from
         // feature-specific dynamic registrations such as inline completion.
         self.register_file_watchers_if_needed();
