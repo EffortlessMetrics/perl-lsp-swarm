@@ -46,6 +46,8 @@ pub enum CompatibilityReason {
     ExplicitNotProven,
     /// No exact reviewed row covers the observed subjects.
     ExactPairNotEstablished,
+    /// Runtime/setup observation lacks the exact identity needed to query the authority.
+    SubjectIdentityIncomplete,
 }
 
 impl CompatibilityReason {
@@ -56,6 +58,7 @@ impl CompatibilityReason {
             Self::ExactKnownBad => "exact_known_bad",
             Self::ExplicitNotProven => "explicit_not_proven",
             Self::ExactPairNotEstablished => "exact_pair_not_established",
+            Self::SubjectIdentityIncomplete => "subject_identity_incomplete",
         }
     }
 }
@@ -208,15 +211,10 @@ impl CompatibilityCatalog {
         });
 
         let Some(row) = matching else {
-            return CompatibilityDecision {
-                result: CompatibilityResult::NotProven,
-                reason: CompatibilityReason::ExactPairNotEstablished,
-                evidence_refs: Vec::new(),
-                limitations: vec![
-                    "exact plugin/server pair is not established by current compatibility evidence"
-                        .to_string(),
-                ],
-            };
+            return not_proven_decision(
+                CompatibilityReason::ExactPairNotEstablished,
+                "exact plugin/server pair is not established by current compatibility evidence",
+            );
         };
 
         let reason = match row.result {
@@ -229,6 +227,25 @@ impl CompatibilityCatalog {
             reason,
             evidence_refs: row.evidence_refs.clone(),
             limitations: row.limitations.clone(),
+        }
+    }
+
+    /// Resolve a runtime observation that may not yet contain exact plugin/server identity.
+    ///
+    /// Missing load-bearing identity is deliberately `not_proven`; consumers must never invent
+    /// hashes, compare release numbers, or treat structural setup as compatibility evidence.
+    pub fn decision_for_observation(
+        &self,
+        plugin: Option<&PluginSubject>,
+        server: Option<&ServerSubject>,
+        host: Option<&HostSubject>,
+    ) -> CompatibilityDecision {
+        match (plugin, server) {
+            (Some(plugin), Some(server)) => self.decision_for(plugin, server, host),
+            _ => not_proven_decision(
+                CompatibilityReason::SubjectIdentityIncomplete,
+                "exact plugin/server compatibility subject is incomplete in this observation",
+            ),
         }
     }
 
@@ -262,6 +279,15 @@ pub fn embedded_catalog() -> CompatibilityCatalog {
     CompatibilityCatalog {
         schema_version: SCHEMA_VERSION.to_string(),
         rows: Vec::new(),
+    }
+}
+
+fn not_proven_decision(reason: CompatibilityReason, limitation: &str) -> CompatibilityDecision {
+    CompatibilityDecision {
+        result: CompatibilityResult::NotProven,
+        reason,
+        evidence_refs: Vec::new(),
+        limitations: vec![limitation.to_string()],
     }
 }
 
