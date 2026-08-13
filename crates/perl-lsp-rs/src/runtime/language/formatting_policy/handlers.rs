@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    actual_engine_for_mode, cancellation_token, CodeFormatter, FormatContext, JsonRpcError,
+    JsonRpcId, LspServer, RequestCleanupGuard, Surface, Value, invalid_params,
+};
 
 impl LspServer {
     /// Run document formatting through the shared runtime policy.
@@ -38,7 +41,8 @@ impl LspServer {
 
 #[cfg(test)]
 mod call_presence_tests {
-    use super::*;
+    use super::{LspServer, Surface, Value, JsonRpcId};
+    use super::super::{json, PROVIDER};
 
     fn advertise(server: &LspServer) {
         server.advertised_feature_ids.lock().push(Surface::Document.feature_id());
