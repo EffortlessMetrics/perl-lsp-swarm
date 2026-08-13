@@ -49,4 +49,3 @@ pub mod tooling;
 pub mod transport;
 /// URI parsing and conversion helpers used by protocol-facing components.
 pub mod uri;
-
