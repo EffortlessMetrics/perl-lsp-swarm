@@ -42,7 +42,11 @@ fn defaults_packet_preserves_provider_identity_and_order() -> Result<(), Box<dyn
     let exact =
         "\"language_servers\": [\"perlnavigator-server\", \"!perl-lsp\", \"!perllsp\", \"...\"]";
     assert_eq!(patch.matches(exact).count(), 1);
+    assert!(patch.contains("\"!perl-lsp\""));
+    assert!(patch.contains("\"!perllsp\""));
     assert!(!patch.contains("!perlnavigator-server"));
+    assert_eq!(patch.matches("\"perl-lsp\"").count(), 0);
+    assert_eq!(patch.matches("\"perllsp\"").count(), 0);
 
     Ok(())
 }

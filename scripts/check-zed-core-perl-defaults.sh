@@ -32,8 +32,12 @@ if manifest.get("target_blob") != "a03ad8874243f167e86deba8f975268eb384d20f":
 needle = '"language_servers": ["perlnavigator-server", "!perl-lsp", "!perllsp", "..."]'
 if patch.count(needle) != 1:
     raise SystemExit("error: patch must contain the exact server order once")
-if '"perl-lsp"' not in patch or '"perllsp"' not in patch:
-    raise SystemExit("error: independent alternative IDs are missing")
+if '"!perl-lsp"' not in patch or '"!perllsp"' not in patch:
+    raise SystemExit("error: independent dormant alternative IDs are missing")
+if '"perl-lsp"' in patch.replace('"!perl-lsp"', "") or '"perllsp"' in patch.replace(
+    '"!perllsp"', ""
+):
+    raise SystemExit("error: alternatives must stay dormant (!prefixed), not enabled")
 if '"!perlnavigator-server"' in patch:
     raise SystemExit("error: candidate must not disable the current default provider")
 
