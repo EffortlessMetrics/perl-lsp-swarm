@@ -4,6 +4,10 @@ members = [
     "crates/perl-ast",
     "crates/perl-ast-v2",
     "crates/perl-token",
+    # perl-source-identity: canonical source_identity.v1 core types (#7652).
+    # Tier 1 leaf — no parser/workspace/LSP/DAP deps. Dependency contract
+    # asserted in tests/dependency_contract.rs.
+    "crates/perl-source-identity",
     "crates/perl-pragma",
     "crates/perl-regex",
     "crates/perl-lexer",
@@ -229,6 +233,8 @@ homepage = "https://github.com/EffortlessMetrics/perl-lsp"
 perl-ast-v2 = { path = "crates/perl-ast-v2", version = "0.17.0" }
 # Tier 1: Leaf crates (no internal dependencies)
 perl-token = { path = "crates/perl-token", version = "0.17.0" }
+# perl-source-identity: source_identity.v1 core types (#7652). No internal deps.
+perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0" }
 perl-regex = { path = "crates/perl-regex", version = "0.17.0" }
 perl-pragma = { path = "crates/perl-pragma", version = "0.17.0" }
 perl-lexer = { path = "crates/perl-lexer", version = "0.17.0" }
