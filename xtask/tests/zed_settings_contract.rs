@@ -28,6 +28,36 @@ fn string<'a>(value: &'a Value, pointer: &str) -> Result<&'a str, Box<dyn Error>
         .ok_or_else(|| io::Error::other(format!("missing string at `{pointer}`")).into())
 }
 
+fn validate_example(contract: &Value) -> Result<(), String> {
+    let server = contract
+        .pointer("/example/lsp/perllsp")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "missing lsp.perllsp example".to_string())?;
+    let binary = server
+        .get("binary")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "process configuration must remain under binary".to_string())?;
+    if binary.contains_key("settings") || binary.contains_key("perl") {
+        return Err("server configuration leaked into binary settings".to_string());
+    }
+
+    let settings = server
+        .get("settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "missing server settings object".to_string())?;
+    if !settings.contains_key("perl") {
+        return Err("server settings must retain the canonical perl root".to_string());
+    }
+    if settings.contains_key("binary") || settings.contains_key("path") {
+        return Err("process configuration leaked into workspace settings".to_string());
+    }
+    if contract.pointer("/example/initialization_options").is_some() {
+        return Err("initialization_options must not become the default route".to_string());
+    }
+
+    Ok(())
+}
+
 #[test]
 fn zed_settings_keep_process_and_server_authority_separate() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
@@ -72,26 +102,7 @@ fn zed_settings_keep_process_and_server_authority_separate() -> Result<(), Box<d
             .and_then(Value::as_bool),
         Some(false)
     );
-
-    let example = contract
-        .pointer("/example/lsp/perllsp")
-        .and_then(Value::as_object)
-        .ok_or_else(|| io::Error::other("missing canonical Zed example"))?;
-    assert!(example.contains_key("binary"));
-    assert!(example.contains_key("settings"));
-    assert!(
-        example
-            .get("settings")
-            .and_then(|value| value.get("perl"))
-            .is_some()
-    );
-    assert!(
-        example
-            .get("settings")
-            .and_then(|value| value.get("binary"))
-            .is_none()
-    );
-    assert!(contract.pointer("/example/initialization_options").is_none());
+    validate_example(&contract).map_err(io::Error::other)?;
 
     Ok(())
 }
@@ -157,20 +168,18 @@ fn mutation_controls_reject_flattened_or_process_mixed_examples() -> Result<(), 
         .ok_or_else(|| io::Error::other("missing perl settings"))?
         .take();
     flattened["example"]["lsp"]["perllsp"]["settings"] = perl;
-    assert!(
-        flattened
-            .pointer("/example/lsp/perllsp/settings/perl")
-            .is_none()
-    );
+    assert!(validate_example(&flattened).is_err());
 
-    let mut process_mixed = contract;
+    let mut process_mixed = contract.clone();
     process_mixed["example"]["lsp"]["perllsp"]["settings"]["binary"] =
         serde_json::json!({"path": "/wrong/place"});
-    assert!(
-        process_mixed
-            .pointer("/example/lsp/perllsp/settings/binary")
-            .is_some()
-    );
+    assert!(validate_example(&process_mixed).is_err());
+
+    let mut init_default = contract;
+    init_default["example"]["initialization_options"] = serde_json::json!({
+        "perl": {"workspace": {"includePaths": ["lib"]}}
+    });
+    assert!(validate_example(&init_default).is_err());
 
     Ok(())
 }
