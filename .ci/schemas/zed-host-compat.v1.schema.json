@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/.ci/schemas/zed-host-compat.v1.schema.json",
+  "title": "Zed perllsp host compatibility receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_stage",
+    "result",
+    "observed_at",
+    "zed",
+    "extension",
+    "perllsp",
+    "platform",
+    "profile",
+    "workspace",
+    "configuration",
+    "activation",
+    "journey",
+    "artifacts",
+    "limitations",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema_version": {"const": "zed_host_compat.v1"},
+    "evidence_stage": {
+      "enum": ["exact_source_dev_extension", "public_registry_install"]
+    },
+    "result": {
+      "enum": ["not_run", "pass", "fail", "instrument_failed"]
+    },
+    "observed_at": {"type": ["string", "null"], "format": "date-time"},
+    "zed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "version", "channel", "build"],
+      "properties": {
+        "product": {"const": "Zed"},
+        "version": {"type": ["string", "null"]},
+        "channel": {"type": ["string", "null"]},
+        "build": {"type": ["string", "null"]}
+      }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "base_commit", "candidate_commit", "manifest_version", "wasm_sha256", "install_route"],
+      "properties": {
+        "repository": {"const": "tree-sitter-perl/zed-perl"},
+        "base_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "candidate_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "manifest_version": {"type": ["string", "null"]},
+        "wasm_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "install_route": {"enum": ["dev_extension", "official_registry", null]}
+      }
+    },
+    "perllsp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server_id", "command", "arguments", "version", "build_commit", "binary_sha256", "resolution_route"],
+      "properties": {
+        "server_id": {"const": "perllsp"},
+        "command": {"type": ["string", "null"]},
+        "arguments": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "version": {"type": ["string", "null"]},
+        "build_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "binary_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "resolution_route": {"enum": ["binary_override", "worktree_path", "managed_download", null]}
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "version", "architecture"],
+      "properties": {
+        "os": {"enum": ["macos", "linux", "windows", null]},
+        "version": {"type": ["string", "null"]},
+        "architecture": {"enum": ["x86_64", "aarch64", null]}
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clean_profile", "prior_extension_absent", "prior_managed_cache_absent", "other_perl_servers_disabled"],
+      "properties": {
+        "clean_profile": {"type": ["boolean", "null"]},
+        "prior_extension_absent": {"type": ["boolean", "null"]},
+        "prior_managed_cache_absent": {"type": ["boolean", "null"]},
+        "other_perl_servers_disabled": {"type": ["boolean", "null"]}
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_id", "fixture_sha256", "root_identity"],
+      "properties": {
+        "fixture_id": {"type": ["string", "null"]},
+        "fixture_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "root_identity": {"type": ["string", "null"]}
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["settings_sha256", "server_order", "workspace_configuration_observed", "precedence_observed", "live_update_observed"],
+      "properties": {
+        "settings_sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "server_order": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "workspace_configuration_observed": {"type": ["boolean", "null"]},
+        "precedence_observed": {"type": ["string", "null"]},
+        "live_update_observed": {"type": ["string", "null"]}
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pl", "pm", "t", "PL", "psgi", "cgi", "fcgi", "shebang", "pod"],
+      "properties": {
+        "pl": {"$ref": "#/$defs/cell"},
+        "pm": {"$ref": "#/$defs/cell"},
+        "t": {"$ref": "#/$defs/cell"},
+        "PL": {"$ref": "#/$defs/cell"},
+        "psgi": {"$ref": "#/$defs/cell"},
+        "cgi": {"$ref": "#/$defs/cell"},
+        "fcgi": {"$ref": "#/$defs/cell"},
+        "shebang": {"$ref": "#/$defs/cell"},
+        "pod": {"$ref": "#/$defs/cell"}
+      }
+    },
+    "journey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_discovery",
+        "perl_attachment",
+        "initialize",
+        "workspace_root",
+        "diagnostics",
+        "completion",
+        "hover",
+        "definition",
+        "references",
+        "document_symbols",
+        "workspace_symbols",
+        "safe_edit_or_refusal",
+        "unicode_positions",
+        "mixed_newlines",
+        "semantic_tokens",
+        "post_edit_freshness",
+        "restart",
+        "shutdown"
+      ],
+      "properties": {
+        "manifest_discovery": {"$ref": "#/$defs/cell"},
+        "perl_attachment": {"$ref": "#/$defs/cell"},
+        "initialize": {"$ref": "#/$defs/cell"},
+        "workspace_root": {"$ref": "#/$defs/cell"},
+        "diagnostics": {"$ref": "#/$defs/cell"},
+        "completion": {"$ref": "#/$defs/cell"},
+        "hover": {"$ref": "#/$defs/cell"},
+        "definition": {"$ref": "#/$defs/cell"},
+        "references": {"$ref": "#/$defs/cell"},
+        "document_symbols": {"$ref": "#/$defs/cell"},
+        "workspace_symbols": {"$ref": "#/$defs/cell"},
+        "safe_edit_or_refusal": {"$ref": "#/$defs/cell"},
+        "unicode_positions": {"$ref": "#/$defs/cell"},
+        "mixed_newlines": {"$ref": "#/$defs/cell"},
+        "semantic_tokens": {"$ref": "#/$defs/cell"},
+        "post_edit_freshness": {"$ref": "#/$defs/cell"},
+        "restart": {"$ref": "#/$defs/cell"},
+        "shutdown": {"$ref": "#/$defs/cell"}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["zed_log", "language_server_log", "process_inventory", "redacted"],
+      "properties": {
+        "zed_log": {"type": ["string", "null"]},
+        "language_server_log": {"type": ["string", "null"]},
+        "process_inventory": {"type": ["string", "null"]},
+        "redacted": {"type": ["boolean", "null"]}
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "claim_boundary": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "evidence"],
+      "properties": {
+        "result": {
+          "enum": ["pass", "fail", "not_proven", "unsupported", "legitimate_empty", "instrument_failed"]
+        },
+        "evidence": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"result": {"const": "pass"}}},
+      "then": {
+        "properties": {
+          "observed_at": {"type": "string"},
+          "zed": {
+            "properties": {
+              "version": {"type": "string"},
+              "channel": {"type": "string"},
+              "build": {"type": "string"}
+            }
+          },
+          "extension": {
+            "properties": {
+              "base_commit": {"type": "string"},
+              "candidate_commit": {"type": "string"},
+              "manifest_version": {"type": "string"},
+              "wasm_sha256": {"type": "string"},
+              "install_route": {"type": "string"}
+            }
+          },
+          "perllsp": {
+            "properties": {
+              "command": {"type": "string"},
+              "arguments": {"const": ["--stdio"]},
+              "version": {"type": "string"},
+              "build_commit": {"type": "string"},
+              "binary_sha256": {"type": "string"},
+              "resolution_route": {"type": "string"}
+            }
+          },
+          "profile": {
+            "properties": {
+              "clean_profile": {"const": true},
+              "other_perl_servers_disabled": {"const": true}
+            }
+          },
+          "artifacts": {
+            "properties": {
+              "zed_log": {"type": "string"},
+              "language_server_log": {"type": "string"},
+              "process_inventory": {"type": "string"},
+              "redacted": {"const": true}
+            }
+          }
+        }
+      }
+    }
+  ]
+}
