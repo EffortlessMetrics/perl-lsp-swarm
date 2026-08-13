@@ -55,7 +55,7 @@ faq = read(root / "docs" / "reference" / "FAQ.md")
 setup = read(root / "docs" / "EDITORS" / "ZED_SETUP.md")
 combined_setup = read(root / "docs" / "how-to" / "EDITOR_SETUP.md")
 book_setup = read(root / "book" / "src" / "reference" / "editor-setup-canonical.md")
-troubleshooting = read(root / "docs" / "how-to" / "TROUBLESHOOTING.md")
+troubleshooting = read(root / "docs"" / "how-to" / "TROUBLESHOOTING.md")
 steering = read(root / ".kiro" / "steering" / "product.md")
 
 servers = extension.get("language_servers", {})
@@ -72,8 +72,24 @@ require(
     "candidate source must download from EffortlessMetrics/perl-lsp",
 )
 require(
-    'args: vec!["--stdio".to_string()]' in source,
-    "candidate source must launch perllsp with explicit --stdio",
+    "normalize_perllsp_args" in source and 'normalized.push("--stdio".to_string())' in source,
+    "candidate source must normalize to exactly one explicit --stdio argument",
+)
+require(
+    "is_non_lsp_argument" in source and '"mcp"' in source and '"--socket"' in source,
+    "candidate source must reject non-LSP transport and MCP routes",
+)
+require(
+    "LspSettings::for_worktree(PERLLSP_SERVER_ID, worktree)" in source,
+    "candidate source must consume standard perllsp binary settings",
+)
+require(
+    "worktree.shell_env()" in source and "shell_env.extend(overrides)" in source,
+    "candidate source must use the worktree shell environment with explicit overrides",
+)
+require(
+    '"lsp.perllsp.binary.path must not be empty"' in source,
+    "candidate source must fail closed on an empty explicit binary override",
 )
 require(
     "unknown Perl language server id" in source,
@@ -122,6 +138,7 @@ require("Planned / not proven" in combined_setup, "combined editor table must bo
 require(book_setup == combined_setup, "committed mdBook editor projection must match the canonical guide")
 require("public Perl extension does not register `perllsp`" in troubleshooting, "troubleshooting boundary is missing")
 require("Zed integration: planned / not proven" in steering, "agent steering still overclaims Zed")
+
 
 def markdown_section(text: str, heading: str, next_heading_prefix: str) -> str:
     marker = f"{heading}\n"
