@@ -40,6 +40,8 @@ impl LspServer {
                 Some(IndexState::Ready { .. }) => "ready",
                 Some(IndexState::Degraded { .. }) => "degraded",
                 None => "none",
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "unknown",
             }
         }
 
