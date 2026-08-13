@@ -55,7 +55,7 @@ faq = read(root / "docs" / "reference" / "FAQ.md")
 setup = read(root / "docs" / "EDITORS" / "ZED_SETUP.md")
 combined_setup = read(root / "docs" / "how-to" / "EDITOR_SETUP.md")
 book_setup = read(root / "book" / "src" / "reference" / "editor-setup-canonical.md")
-troubleshooting = read(root / "docs"" / "how-to" / "TROUBLESHOOTING.md")
+troubleshooting = read(root / "docs" / "how-to" / "TROUBLESHOOTING.md")
 steering = read(root / ".kiro" / "steering" / "product.md")
 
 servers = extension.get("language_servers", {})
