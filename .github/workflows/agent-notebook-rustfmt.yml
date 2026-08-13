@@ -27,18 +27,18 @@ jobs:
         shell: bash
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
-      - name: Format notebook tests
+      - name: Format perl-lsp-rs through Cargo
         shell: bash
-        run: rustup run 1.95.0 rustfmt --edition 2024 crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs
+        run: rustup run 1.95.0 cargo fmt --manifest-path crates/perl-lsp-rs/Cargo.toml
 
-      - name: Commit exact formatting
+      - name: Commit exact notebook formatting
         shell: bash
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           path=crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs
           if git diff --quiet -- "$path"; then
-            echo "Notebook tests are already formatted."
+            echo "Notebook tests are already formatted under the Cargo target."
             exit 0
           fi
           git config user.name EffortlessSteven
