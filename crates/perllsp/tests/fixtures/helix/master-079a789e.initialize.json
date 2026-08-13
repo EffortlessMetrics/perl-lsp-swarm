@@ -1,0 +1,177 @@
+{
+  "schema": "helix_initialize_profile.v1",
+  "subject": {
+    "cohort": "current_master",
+    "version": "25.07.1+079a789e",
+    "source_ref": "079a789e8cb08ead67f19e1971a1b7438b37354b",
+    "source_sha": "079a789e8cb08ead67f19e1971a1b7438b37354b",
+    "client_info_version": "25.07.1 (079a789e)",
+    "diagnostic_transport": "pull",
+    "workspace_trust": "present"
+  },
+  "provenance": {
+    "kind": "source_derived_exact",
+    "source_path": "helix-lsp/src/client.rs",
+    "snippets_enabled": true,
+    "normalized_fields": ["processId", "rootPath", "rootUri", "workspaceFolders"]
+  },
+  "initialize_params": {
+    "processId": null,
+    "clientInfo": {
+      "name": "helix",
+      "version": "25.07.1 (079a789e)"
+    },
+    "rootPath": "/__WORKSPACE__",
+    "rootUri": "file:///__WORKSPACE__",
+    "workspaceFolders": [
+      {
+        "uri": "file:///__WORKSPACE__",
+        "name": "fixture"
+      }
+    ],
+    "initializationOptions": {},
+    "capabilities": {
+      "workspace": {
+        "configuration": true,
+        "didChangeConfiguration": {
+          "dynamicRegistration": false
+        },
+        "workspaceFolders": true,
+        "applyEdit": true,
+        "symbol": {
+          "dynamicRegistration": false,
+          "symbolKind": {
+            "valueSet": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+          }
+        },
+        "executeCommand": {
+          "dynamicRegistration": false
+        },
+        "inlayHint": {
+          "refreshSupport": false
+        },
+        "workspaceEdit": {
+          "documentChanges": true,
+          "resourceOperations": ["create", "rename", "delete"],
+          "failureHandling": "abort",
+          "normalizesLineEndings": false
+        },
+        "didChangeWatchedFiles": {
+          "dynamicRegistration": true,
+          "relativePatternSupport": true
+        },
+        "fileOperations": {
+          "willCreate": true,
+          "didCreate": true,
+          "willRename": true,
+          "didRename": true,
+          "willDelete": true,
+          "didDelete": true
+        },
+        "diagnostics": {
+          "refreshSupport": true
+        }
+      },
+      "textDocument": {
+        "completion": {
+          "completionItem": {
+            "snippetSupport": true,
+            "resolveSupport": {
+              "properties": ["documentation", "detail", "additionalTextEdits"]
+            },
+            "insertReplaceSupport": true,
+            "deprecatedSupport": true,
+            "tagSupport": {
+              "valueSet": [1]
+            }
+          },
+          "completionItemKind": {}
+        },
+        "hover": {
+          "contentFormat": ["markdown"]
+        },
+        "signatureHelp": {
+          "signatureInformation": {
+            "documentationFormat": ["markdown"],
+            "parameterInformation": {
+              "labelOffsetSupport": true
+            },
+            "activeParameterSupport": true
+          }
+        },
+        "rename": {
+          "dynamicRegistration": false,
+          "prepareSupport": true,
+          "honorsChangeAnnotations": false
+        },
+        "formatting": {
+          "dynamicRegistration": false
+        },
+        "codeAction": {
+          "codeActionLiteralSupport": {
+            "codeActionKind": {
+              "valueSet": [
+                "",
+                "quickfix",
+                "refactor",
+                "refactor.extract",
+                "refactor.inline",
+                "refactor.rewrite",
+                "source",
+                "source.organizeImports",
+                "source.fixAll"
+              ]
+            }
+          },
+          "isPreferredSupport": true,
+          "disabledSupport": true,
+          "dataSupport": true,
+          "resolveSupport": {
+            "properties": ["edit", "command"]
+          }
+        },
+        "diagnostic": {
+          "dynamicRegistration": false,
+          "relatedDocumentSupport": true
+        },
+        "publishDiagnostics": {
+          "versionSupport": true,
+          "tagSupport": {
+            "valueSet": [1, 2]
+          }
+        },
+        "inlayHint": {
+          "dynamicRegistration": false
+        },
+        "documentLink": {
+          "dynamicRegistration": false,
+          "tooltipSupport": false
+        },
+        "callHierarchy": {
+          "dynamicRegistration": false
+        },
+        "documentSymbol": {
+          "dynamicRegistration": false,
+          "symbolKind": {
+            "valueSet": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+          },
+          "hierarchicalDocumentSymbolSupport": false
+        }
+      },
+      "window": {
+        "showMessage": {
+          "messageActionItem": {
+            "additionalPropertiesSupport": true
+          }
+        },
+        "workDoneProgress": true,
+        "showDocument": {
+          "support": true
+        }
+      },
+      "general": {
+        "positionEncodings": ["utf-8", "utf-32", "utf-16"]
+      }
+    }
+  }
+}
