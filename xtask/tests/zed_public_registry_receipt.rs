@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use zed_host_compat::{content_sha256, exact_sha256, validate_pass, PUBLIC_SUBJECT_RELATIVE_PATH};
+use zed_host_compat::{PUBLIC_SUBJECT_RELATIVE_PATH, content_sha256, exact_sha256, validate_pass};
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
