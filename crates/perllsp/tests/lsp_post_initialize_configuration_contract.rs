@@ -67,7 +67,10 @@ fn assert_initialize_response(response: &Value, id: &Value) -> Result<()> {
     Ok(())
 }
 
-fn respond_to_workspace_configuration(client: &mut RealProcessClient, request: &Value) -> Result<()> {
+fn respond_to_workspace_configuration(
+    client: &mut RealProcessClient,
+    request: &Value,
+) -> Result<()> {
     let request_id = request
         .get("id")
         .cloned()
