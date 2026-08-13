@@ -1,0 +1,12 @@
+project: product
+component: Language server
+kind: Fixed
+body: >-
+  Defer client workspace-configuration pulls until the shared post-initialize
+  lifecycle seam so strict LSP clients never receive a server request before
+  the InitializeResult response.
+time: 2026-08-13T10:59:00Z
+custom:
+  PR: "7708"
+  Slug: post-initialize-configuration
+  Breaking: "no"
