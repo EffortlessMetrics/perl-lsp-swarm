@@ -1,4 +1,4 @@
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
@@ -6,11 +6,11 @@ use xtask::claude_plugin_governance::{
     CLAUDE_PLUGIN_SLUG, PluginPackageIdentity, inspect_plugin_package, validate_package_transition,
 };
 
-fn repository_root() -> PathBuf {
+fn repository_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("xtask must live below the repository root")
-        .to_path_buf()
+        .map(Path::to_path_buf)
+        .context("xtask must live below the repository root")
 }
 
 fn identity(version: &str, tree: &str) -> PluginPackageIdentity {
@@ -44,7 +44,7 @@ fn write_fixture(root: &Path, version: &str, extra: Option<(&str, &str)>) -> Res
 
 #[test]
 fn current_plugin_has_deterministic_complete_tree_identity() -> Result<()> {
-    let root = repository_root().join("integrations/claude-code/plugins/perl-lsp-rs");
+    let root = repository_root()?.join("integrations/claude-code/plugins/perl-lsp-rs");
     let first = inspect_plugin_package(&root)?;
     let second = inspect_plugin_package(&root)?;
 
