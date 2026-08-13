@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "host": "vim",
+    "client": "prabirshrestha/vim-lsp",
+    "integration_mode": "generic_lsp",
+    "language_id": "perl",
+    "command": ["perllsp", "--stdio"]
+  },
+  "root": {
+    "markers": [
+      ".perl-lsp.toml",
+      "Makefile.PL",
+      "Build.PL",
+      "cpanfile",
+      "dist.ini",
+      ".git"
+    ],
+    "selection": "nearest_parent_marker",
+    "no_marker": "cwd_fallback",
+    "workspace_folders": "optional_experimental"
+  },
+  "filetypes": [
+    {"case": "pl", "path": "sample.pl", "expect": "perl", "source": "native_vim"},
+    {"case": "PL", "path": "sample.PL", "expect": "perl", "source": "native_vim_case_sensitive"},
+    {"case": "pm_perl", "path": "Sample.pm", "expect": "perl", "source": "native_vim_discriminator"},
+    {"case": "pm_xpm", "path": "Image.pm", "expect": "xpm", "source": "native_vim_discriminator", "negative_control": true},
+    {"case": "t_perl", "path": "sample.t", "expect": "perl", "source": "native_vim_discriminator"},
+    {"case": "t_tads", "path": "game.t", "expect": "tads", "source": "native_vim_discriminator", "negative_control": true},
+    {"case": "psgi", "path": "app.psgi", "expect": "perl", "source": "native_vim"},
+    {"case": "cgi", "path": "app.cgi", "expect": "observe", "source": "native_vim", "manual_override": "not_authorized_by_extension_alone"},
+    {"case": "fcgi", "path": "app.fcgi", "expect": "observe", "source": "native_vim", "manual_override": "not_authorized_by_extension_alone"},
+    {"case": "cpanfile", "path": "cpanfile", "expect": "observe", "source": "native_vim"},
+    {"case": "bin_shebang", "path": "bin/tool", "expect": "observe", "source": "native_vim"},
+    {"case": "script_shebang", "path": "script/tool", "expect": "observe", "source": "native_vim"},
+    {"case": "pod", "path": "notes.pod", "expect": "observe", "semantic_support": "independent"},
+    {"case": "xs", "path": "Native.xs", "expect": "observe", "semantic_support": "independent"},
+    {"case": "ep", "path": "view.ep", "expect": "observe", "semantic_support": "independent"},
+    {"case": "tt", "path": "view.tt", "expect": "observe", "semantic_support": "independent"},
+    {"case": "tt2", "path": "view.tt2", "expect": "observe", "semantic_support": "independent"},
+    {"case": "mason", "path": "view.mason", "expect": "observe", "semantic_support": "independent"}
+  ],
+  "claim_rules": {
+    "native_detection_before_override": true,
+    "activation_is_not_semantic_support": true,
+    "blanket_t_override_forbidden": true,
+    "extension_only_cgi_override_forbidden_without_receipt": true,
+    "same_contract_required_by": ["#7691", "#7766", "#7696", "#7712"]
+  }
+}
