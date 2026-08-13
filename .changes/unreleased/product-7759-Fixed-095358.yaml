@@ -4,6 +4,6 @@ kind: Fixed
 body: "Downgraded Zed from an unearned support claim to planned/not proven, removed instructions that repointed the independent `perl-lsp` Zed server ID to `perllsp`, and added a checked submission packet for a distinct `perllsp` extension route with exact product identity, managed-release targets, semantic-token defaults, fail-closed dispatch, and copy-ready upstream instructions."
 time: 2026-08-13T09:53:58Z
 custom:
-  PR: "7759"
+  PR: "7847"
   Slug: zed-integration-readiness
   Breaking: "no"
