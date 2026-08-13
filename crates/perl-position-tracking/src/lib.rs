@@ -8,6 +8,9 @@
 //! - [`WirePosition`]/[`WireRange`]: LSP protocol-compatible position types
 //! - [`wire_position_to_byte`]: Strict UTF-8/UTF-16 wire-coordinate conversion
 //!
+//! The strict free functions are correctness primitives for isolated conversions.
+//! Repeated editor-path mapping should consume them through an indexed adapter.
+//!
 //! # Example
 //!
 //! ```
