@@ -74,7 +74,10 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
     assert!(zed.contains("**Status: planned / not proven.**"));
     assert!(zed.contains("does **not** register `perllsp`"));
     assert!(editor_setup.contains("Planned / not proven"));
-    assert_eq!(book_setup, editor_setup, "mdBook projection drifted from canonical editor setup");
+    assert_eq!(
+        book_setup, editor_setup,
+        "mdBook projection drifted from canonical editor setup"
+    );
     assert!(troubleshooting.contains("public Perl extension does not register `perllsp`"));
     assert!(steering.contains("Zed integration: planned / not proven"));
 
@@ -87,7 +90,10 @@ fn active_zed_claims_are_fail_closed() -> Result<(), Box<dyn Error>> {
     for (path, text) in [
         ("docs/EDITORS/ZED_SETUP.md", zed.as_str()),
         ("docs/how-to/EDITOR_SETUP.md", combined_zed),
-        ("docs/how-to/TROUBLESHOOTING.md", troubleshooting_zed),
+        (
+            "docs/how-to/TROUBLESHOOTING.md",
+            troubleshooting_zed,
+        ),
     ] {
         assert!(
             !text.contains("\"perl-lsp\": {"),
@@ -125,18 +131,30 @@ fn submission_package_preserves_product_identities() -> Result<(), Box<dyn Error
         "const PERL_LSP_REPO: &str = \"tree-sitter-perl/perl-tree-sitter-lsp\";"
     ));
     assert!(source.contains("unknown Perl language server id"));
-    assert!(source.contains("args: vec![\"--stdio\".to_string()]"));
+    assert!(source.contains("normalize_perllsp_args"));
+    assert!(source.contains("worktree.shell_env()"));
+    assert!(source.contains("LspSettings::for_worktree(PERLLSP_SERVER_ID, worktree)"));
+    assert!(source.contains("lsp.perllsp.binary.path must not be empty"));
+    assert!(source.contains("unsupported perllsp argument"));
 
     let language = toml_value(
         &root,
         ".ci/fixtures/zed-perl-upstream/zed-perl/languages/perl/config.toml",
     )?;
-    let suffixes: BTreeSet<String> =
-        string_array(&language, "path_suffixes")?.into_iter().collect();
+    let suffixes: BTreeSet<String> = string_array(&language, "path_suffixes")?
+        .into_iter()
+        .collect();
     for required in ["pl", "PL", "pm", "t", "psgi", "cgi", "fcgi"] {
-        assert!(suffixes.contains(required), "missing Perl suffix `{required}`");
+        assert!(
+            suffixes.contains(required),
+            "missing Perl suffix `{required}`"
+        );
     }
-    assert!(!suffixes.iter().any(|suffix| suffix.eq_ignore_ascii_case("pod")));
+    assert!(
+        !suffixes
+            .iter()
+            .any(|suffix| suffix.eq_ignore_ascii_case("pod"))
+    );
 
     let semantic_rules = json_value(
         &root,
@@ -146,7 +164,10 @@ fn submission_package_preserves_product_identities() -> Result<(), Box<dyn Error
         .as_array()
         .ok_or_else(|| io::Error::other("semantic token rules are not an array"))?
         .iter()
-        .filter_map(|rule| rule.get("token_type").and_then(serde_json::Value::as_str))
+        .filter_map(|rule| {
+            rule.get("token_type")
+                .and_then(serde_json::Value::as_str)
+        })
         .collect();
     assert_eq!(
         rule_types,
@@ -160,8 +181,9 @@ fn submission_package_preserves_product_identities() -> Result<(), Box<dyn Error
 fn managed_targets_exist_in_release_contract() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let manifest = toml_value(&root, ".ci/fixtures/zed-perl-upstream/manifest.toml")?;
-    let managed: BTreeSet<String> =
-        string_array(&manifest, "managed_targets")?.into_iter().collect();
+    let managed: BTreeSet<String> = string_array(&manifest, "managed_targets")?
+        .into_iter()
+        .collect();
     let unsupported: BTreeSet<String> = string_array(&manifest, "unsupported_managed_targets")?
         .into_iter()
         .collect();
@@ -172,12 +194,19 @@ fn managed_targets_exist_in_release_contract() -> Result<(), Box<dyn Error>> {
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| io::Error::other("release contract targets are missing"))?
         .iter()
-        .filter_map(|entry| entry.get("triple").and_then(serde_json::Value::as_str))
+        .filter_map(|entry| {
+            entry
+                .get("triple")
+                .and_then(serde_json::Value::as_str)
+        })
         .map(str::to_string)
         .collect();
 
     let missing: Vec<_> = managed.difference(&released).cloned().collect();
-    assert!(missing.is_empty(), "managed Zed targets lack release artifacts: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "managed Zed targets lack release artifacts: {missing:?}"
+    );
     assert!(unsupported.contains("aarch64-pc-windows-msvc"));
 
     Ok(())
