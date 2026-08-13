@@ -30,7 +30,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fmt --all
+          rustfmt --edition 2024 \
+            crates/perl-semantic-analyzer/src/analysis/type_inference.rs \
+            crates/perl-semantic-analyzer/tests/return_type_unification.rs
           git add -N crates/perl-semantic-analyzer/src/analysis/type_inference.rs
           git diff --check
           git diff --name-only > /tmp/issue-1723-paths.txt
