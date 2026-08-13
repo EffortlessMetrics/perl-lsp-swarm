@@ -1,0 +1,9 @@
+project: product
+component: Editor integration
+kind: Added
+body: Staged and added a pre-submit verifier for a perllsp vim-lsp-settings upstream integration.
+time: 2026-08-13T10:19:48Z
+custom:
+  PR: "7827"
+  Slug: vim-lsp-settings-upstream-prep
+  Breaking: "no"
