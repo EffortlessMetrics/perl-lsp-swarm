@@ -1,16 +1,22 @@
 use std::process::Command;
 
+fn run_perllsp(args: &[&str]) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_perllsp")).args(args).output()?;
+    Ok(output)
+}
+
 #[test]
-fn retired_mcp_alias_exits_without_starting_lsp() {
-    let output = Command::new(env!("CARGO_BIN_EXE_perllsp"))
-        .arg("--mcp")
-        .output()
-        .expect("perllsp should execute");
+fn retired_mcp_alias_exits_without_starting_lsp() -> Result<(), Box<dyn std::error::Error>> {
+    let output = run_perllsp(&["--mcp"])?;
 
-    assert!(!output.status.success(), "--mcp unexpectedly succeeded");
-    assert!(output.stdout.is_empty(), "protocol stdout was not empty: {:?}", output.stdout);
+    if output.status.success() {
+        return Err("--mcp unexpectedly succeeded".into());
+    }
+    if !output.stdout.is_empty() {
+        return Err(format!("protocol stdout was not empty: {:?}", output.stdout).into());
+    }
 
-    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.contains("`--mcp` is not an LSP transport alias."), "{stderr}");
     assert!(stderr.contains("Use `perllsp --stdio` for LSP."), "{stderr}");
     assert!(
@@ -18,4 +24,5 @@ fn retired_mcp_alias_exits_without_starting_lsp() {
         "{stderr}"
     );
     assert!(!stderr.contains("Content-Length"), "LSP framing leaked into rejection: {stderr}");
+    Ok(())
 }

@@ -1291,12 +1291,13 @@ mod tests {
         RuntimeTuning, TransportMode, parse_args,
     };
     use perl_parser_core::{ErrorCategory, ErrorClass};
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must, must_err, must_some};
 
     #[test]
     fn launch_parse_errors_are_user_errors_for_every_variant() {
         let errors = [
             LaunchParseError::UnknownOption { option: "--wat".into(), suggestion: None },
+            LaunchParseError::McpAliasRejected,
             LaunchParseError::ParserDiagnostic { rendered: "conflict".into() },
             LaunchParseError::MissingValue { option: "--port".into() },
             LaunchParseError::InvalidFeatureProfile { raw_profile: "bad".into() },
@@ -1363,7 +1364,7 @@ mod tests {
 
     #[test]
     fn parse_mcp_alias_is_rejected() {
-        let error = parse_args(["perl-lsp", "--mcp"]).expect_err("retired alias must be rejected");
+        let error = must_err(parse_args(["perl-lsp", "--mcp"]));
         assert!(matches!(error, LaunchParseError::McpAliasRejected));
     }
 
@@ -1386,7 +1387,7 @@ mod tests {
             );
         }
 
-        let error = parse_args(["perl-lsp", "--mcp"]).expect_err("retired alias must be rejected");
+        let error = must_err(parse_args(["perl-lsp", "--mcp"]));
         assert!(matches!(error, LaunchParseError::McpAliasRejected));
     }
 

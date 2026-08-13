@@ -1,9 +1,10 @@
 use perl_lsp_rs_core::runtime::{LaunchAction, LaunchParseError, TransportMode, parse_args};
+use perl_tdd_support::{must, must_err};
 
 #[test]
 fn default_and_explicit_stdio_remain_lsp_transport() {
     for argv in [["perllsp"].as_slice(), ["perllsp", "--stdio"].as_slice()] {
-        let plan = parse_args(argv.iter().copied()).expect("LSP stdio invocation should parse");
+        let plan = must(parse_args(argv.iter().copied()));
         assert_eq!(plan.action, LaunchAction::Run);
         assert_eq!(plan.config.transport, TransportMode::Stdio);
     }
@@ -11,7 +12,7 @@ fn default_and_explicit_stdio_remain_lsp_transport() {
 
 #[test]
 fn retired_mcp_alias_is_rejected_with_protocol_guidance() {
-    let error = parse_args(["perllsp", "--mcp"]).expect_err("--mcp must not launch LSP");
+    let error = must_err(parse_args(["perllsp", "--mcp"]));
     assert!(matches!(&error, LaunchParseError::McpAliasRejected));
     assert_eq!(
         error.to_string(),
@@ -21,8 +22,7 @@ fn retired_mcp_alias_is_rejected_with_protocol_guidance() {
 
 #[test]
 fn mcp_assignment_spelling_is_rejected_too() {
-    let error = parse_args(["perllsp", "--mcp=true"])
-        .expect_err("an assignment spelling must not bypass protocol rejection");
+    let error = must_err(parse_args(["perllsp", "--mcp=true"]));
     assert!(matches!(&error, LaunchParseError::McpAliasRejected));
 }
 
