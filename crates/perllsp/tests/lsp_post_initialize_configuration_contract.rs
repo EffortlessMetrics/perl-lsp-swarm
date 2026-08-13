@@ -67,10 +67,7 @@ fn assert_initialize_response(response: &Value, id: &Value) -> Result<()> {
     Ok(())
 }
 
-fn respond_to_workspace_configuration(
-    client: &mut RealProcessClient,
-    request: &Value,
-) -> Result<()> {
+fn respond_to_workspace_configuration(client: &mut RealProcessClient, request: &Value) -> Result<()> {
     let request_id = request
         .get("id")
         .cloned()
@@ -116,10 +113,8 @@ fn workspace_configuration_is_emitted_only_after_initialized() -> Result<()> {
     // Retain the initialize response after reading every earlier frame. If the
     // server sent workspace/configuration first, the strict client buffered it
     // and the next lookup returns it immediately.
-    let response =
-        client.receive_response_and_retain(&initialize_id, PROCESS_TIMEOUT)?;
-    let premature =
-        client.receive_server_request("workspace/configuration", ABSENCE_TIMEOUT);
+    let response = client.receive_response_and_retain(&initialize_id, PROCESS_TIMEOUT)?;
+    let premature = client.receive_server_request("workspace/configuration", ABSENCE_TIMEOUT);
     ensure!(
         premature.is_err(),
         "workspace/configuration escaped before InitializeResult: {premature:?}"
@@ -157,8 +152,7 @@ fn client_without_workspace_configuration_support_receives_no_request() -> Resul
     assert_initialize_response(&response, &initialize_id)?;
     client.notify("initialized", json!({}))?;
 
-    let configuration =
-        client.receive_server_request("workspace/configuration", ABSENCE_TIMEOUT);
+    let configuration = client.receive_server_request("workspace/configuration", ABSENCE_TIMEOUT);
     ensure!(
         configuration.is_err(),
         "unsupported client received workspace/configuration: {configuration:?}"
@@ -179,10 +173,8 @@ fn compatibility_initialization_starts_the_deferred_pull_after_initialize_respon
 
     let mut client = RealProcessClient::spawn_exact()?;
     client.send_raw_bytes(&RealProcessClient::encode_message(&initialize))?;
-    let response =
-        client.receive_response_and_retain(&initialize_id, PROCESS_TIMEOUT)?;
-    let premature =
-        client.receive_server_request("workspace/configuration", ABSENCE_TIMEOUT);
+    let response = client.receive_response_and_retain(&initialize_id, PROCESS_TIMEOUT)?;
+    let premature = client.receive_server_request("workspace/configuration", ABSENCE_TIMEOUT);
     ensure!(
         premature.is_err(),
         "compatibility client saw configuration before initialize response: {premature:?}"
