@@ -6,7 +6,10 @@ import {
   validateClientMetricRatchet,
 } from '../clientPerformancePolicy';
 
-function observation(value: number | null, availability: 'observed' | 'not_proven' = 'observed'): ClientMetricObservation {
+function observation(
+  value: number | null,
+  availability: 'observed' | 'not_proven' = 'observed',
+): ClientMetricObservation {
   return {
     metric_id: 'pretrigger_network_requests',
     subject: {
@@ -39,7 +42,8 @@ function ratchet(): ClientMetricRatchet {
     absolute_ceiling: 0,
     relative_regression_ratio: null,
     rationale: 'No network request is justified before a supported activation need.',
-    intentional_update_procedure: 'Update only with a reviewed activation/network contract and new baseline evidence.',
+    intentional_update_procedure:
+      'Update only with a reviewed activation/network contract and new baseline evidence.',
   };
 }
 
