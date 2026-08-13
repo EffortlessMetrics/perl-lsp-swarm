@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "host": "vim",
+    "client": "puremourning/vimspector",
+    "protocol": "debug_adapter_protocol",
+    "adapter": "perl-dap",
+    "transport": "stdio"
+  },
+  "upstream_basis": {
+    "repository": "puremourning/vimspector",
+    "commit": "34099d18d8957bb3db5f396c8ca993ffb246a437"
+  },
+  "required_host_features": ["python3"],
+  "required_cells": [
+    "adapter_launch",
+    "initialize_launch",
+    "verified_breakpoint",
+    "stopped_source_line",
+    "stack_trace_visible",
+    "variables_visible",
+    "step_over",
+    "continue_to_end",
+    "clean_shutdown"
+  ],
+  "optional_cells": ["evaluate_watch", "attach"],
+  "evidence_stages": ["exact_source_local", "public_artifact"],
+  "claim_rules": {
+    "lsp_receipt_cannot_satisfy_dap": true,
+    "local_binary_cannot_satisfy_public_artifact": true,
+    "configured_breakpoint_without_stopped_event_is_failure": true,
+    "adapter_response_not_consumed_by_vim_is_not_host_proof": true,
+    "attach_does_not_inherit_launch": true
+  }
+}
