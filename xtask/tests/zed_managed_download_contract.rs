@@ -38,17 +38,12 @@ fn safe_relative_path(path: &str) -> bool {
     let path = Path::new(path);
     !path.is_absolute()
         && path.components().all(|component| {
-            !matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
+            !matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_))
         })
 }
 
 fn validate_contract(contract: &Value, release_targets: &BTreeSet<String>) -> Result<(), String> {
-    if contract
-        .pointer("/schema_version")
-        .and_then(Value::as_str)
+    if contract.pointer("/schema_version").and_then(Value::as_str)
         != Some("zed_perllsp_managed_downloads.v1")
     {
         return Err("unexpected schema version".to_string());
@@ -103,9 +98,7 @@ fn validate_contract(contract: &Value, release_targets: &BTreeSet<String>) -> Re
         managed += 1;
 
         if !release_targets.contains(target) {
-            return Err(format!(
-                "managed target `{target}` is absent from release topology"
-            ));
+            return Err(format!("managed target `{target}` is absent from release topology"));
         }
 
         let archive_type = row
@@ -128,9 +121,7 @@ fn validate_contract(contract: &Value, release_targets: &BTreeSet<String>) -> Re
             .ok_or_else(|| format!("target `{target}` lacks public asset digest"))?;
         if digest.len() != "sha256:".len() + 64
             || !digest.starts_with("sha256:")
-            || !digest["sha256:".len()..]
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
+            || !digest["sha256:".len()..].bytes().all(|byte| byte.is_ascii_hexdigit())
         {
             return Err(format!("target `{target}` has an invalid SHA-256 digest"));
         }
@@ -147,23 +138,17 @@ fn validate_contract(contract: &Value, release_targets: &BTreeSet<String>) -> Re
             return Err(format!("target `{target}` contains an unsafe path"));
         }
         if member.contains("perl-lsp") || installed.contains("perl-lsp") {
-            return Err(format!(
-                "target `{target}` references another or retired executable"
-            ));
+            return Err(format!("target `{target}` references another or retired executable"));
         }
         if archive_type == "zip" && member != "perllsp.exe" {
             return Err("Windows archive must retain root-level perllsp.exe".to_string());
         }
-        if archive_type == "tar.gz"
-            && member != format!("perllsp-{version}-{target}/perllsp")
-        {
+        if archive_type == "tar.gz" && member != format!("perllsp-{version}-{target}/perllsp") {
             return Err(format!("Unix target `{target}` has wrong member layout"));
         }
 
         if row.get("host_execution").and_then(Value::as_str) != Some("not_proven") {
-            return Err(format!(
-                "metadata-only target `{target}` must not claim host execution"
-            ));
+            return Err(format!("metadata-only target `{target}` must not claim host execution"));
         }
     }
 
@@ -195,10 +180,7 @@ fn validate_contract(contract: &Value, release_targets: &BTreeSet<String>) -> Re
 #[test]
 fn managed_download_projection_matches_release_authority() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let contract = read_json(
-        &root,
-        ".ci/fixtures/zed-perl-upstream/managed-downloads.v1.json",
-    )?;
+    let contract = read_json(&root, ".ci/fixtures/zed-perl-upstream/managed-downloads.v1.json")?;
     let release = read_json(&root, "docs/reference/downstream-dap-integrations.json")?;
     let release_targets: BTreeSet<String> = array(&release, "/targets")?
         .iter()
@@ -217,23 +199,16 @@ fn managed_download_projection_matches_release_authority() -> Result<(), Box<dyn
 #[test]
 fn candidate_target_helpers_are_bound_to_the_projection() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let contract = read_json(
-        &root,
-        ".ci/fixtures/zed-perl-upstream/managed-downloads.v1.json",
-    )?;
-    let source = fs::read_to_string(
-        root.join(".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs"),
-    )?;
+    let contract = read_json(&root, ".ci/fixtures/zed-perl-upstream/managed-downloads.v1.json")?;
+    let source =
+        fs::read_to_string(root.join(".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs"))?;
 
     for row in array(&contract, "/targets")? {
         let target = row
             .get("target")
             .and_then(Value::as_str)
             .ok_or_else(|| io::Error::other("target row lacks target"))?;
-        assert!(
-            source.contains(target),
-            "candidate source has no disposition for `{target}`"
-        );
+        assert!(source.contains(target), "candidate source has no disposition for `{target}`");
     }
     assert!(source.contains("perllsp_asset_name"));
     assert!(source.contains("perllsp_binary_path"));
@@ -243,10 +218,7 @@ fn candidate_target_helpers_are_bound_to_the_projection() -> Result<(), Box<dyn 
 #[test]
 fn mutation_controls_reject_false_managed_claims() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let contract = read_json(
-        &root,
-        ".ci/fixtures/zed-perl-upstream/managed-downloads.v1.json",
-    )?;
+    let contract = read_json(&root, ".ci/fixtures/zed-perl-upstream/managed-downloads.v1.json")?;
     let release = read_json(&root, "docs/reference/downstream-dap-integrations.json")?;
     let release_targets: BTreeSet<String> = array(&release, "/targets")?
         .iter()
