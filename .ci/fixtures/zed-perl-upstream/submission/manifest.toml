@@ -4,6 +4,18 @@ ready = false
 issue = 7909
 programme = 7759
 
+blockers = [
+  "refresh upstream base, version, API, grammar, and license immediately before freeze",
+  "merge the command and dispatch hardening from #7901",
+  "bind the canonical settings contract and actual workspace/configuration receipt from #7902",
+  "bind every included managed target to executable public-asset evidence from #7903",
+  "record one green current-stable exact-source Zed host receipt from #7907",
+  "resolve the Zed-core defaults compatibility and submission order from #7908",
+  "select a valid next extension version and calculate final patch and changed-file digests"
+]
+
+claim_boundary = "This manifest is a blocked fan-in scaffold. It cannot authorize or represent an upstream-ready submission until every exact subject, digest, receipt, result, and ordering field is populated and the status is promoted by the packet validator."
+
 [target]
 repository = "tree-sitter-perl/zed-perl"
 branch = "master"
@@ -51,15 +63,3 @@ changed_files = ".ci/fixtures/zed-perl-upstream/submission/changed-files.v1.json
 maintainer_test_instructions = "docs/integrations/ZED_UPSTREAM_SUBMISSION.md"
 companion_zed_defaults_issue = 7908
 submission_order = "unresolved_pending_actual_host"
-
-blockers = [
-  "refresh upstream base, version, API, grammar, and license immediately before freeze",
-  "merge the command and dispatch hardening from #7901",
-  "bind the canonical settings contract and actual workspace/configuration receipt from #7902",
-  "bind every included managed target to executable public-asset evidence from #7903",
-  "record one green current-stable exact-source Zed host receipt from #7907",
-  "resolve the Zed-core defaults compatibility and submission order from #7908",
-  "select a valid next extension version and calculate final patch and changed-file digests"
-]
-
-claim_boundary = "This manifest is a blocked fan-in scaffold. It cannot authorize or represent an upstream-ready submission until every exact subject, digest, receipt, result, and ordering field is populated and the status is promoted by the packet validator."
