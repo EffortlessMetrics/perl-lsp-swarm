@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Changed
+body: Added immutable managed candidate selection, host binding, and fail-safe garbage-collection policy for shared caches.
+time: 2026-08-13T11:17:00Z
+custom:
+  PR: 7919
+  Slug: vscode-managed-candidate-selection
+  Breaking: "no"
