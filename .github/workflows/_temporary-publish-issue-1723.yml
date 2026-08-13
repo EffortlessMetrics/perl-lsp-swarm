@@ -1,0 +1,44 @@
+name: Publish validated issue 1723 files
+
+on:
+  push:
+    branches:
+      - agent/issue-1723-staging
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Download immutable successful validation artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 31753071874 --name issue-1723-validation --dir /tmp/validated
+
+      - name: Publish only the two validated files from current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git switch --detach origin/main
+          cp /tmp/validated/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-analyzer/src/analysis/type_inference.rs \
+            crates/perl-semantic-analyzer/src/analysis/type_inference.rs
+          cp /tmp/validated/home/runner/work/perl-lsp-swarm/perl-lsp-swarm/crates/perl-semantic-analyzer/tests/return_type_unification.rs \
+            crates/perl-semantic-analyzer/tests/return_type_unification.rs
+          git add \
+            crates/perl-semantic-analyzer/src/analysis/type_inference.rs \
+            crates/perl-semantic-analyzer/tests/return_type_unification.rs
+          git diff --cached --check
+          test "$(git diff --cached --name-only | wc -l)" -eq 2
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git commit -m 'fix(type-inference): unify subroutine result paths (#1723)'
+          git push origin HEAD:refs/heads/agent/issue-1723-candidate
