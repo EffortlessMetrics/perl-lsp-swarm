@@ -124,11 +124,7 @@ impl PerlExtension {
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
         let command = self.perl_lsp_binary(language_server_id, worktree)?;
-        Ok(zed::Command {
-            command,
-            args: Vec::new(),
-            env: Default::default(),
-        })
+        Ok(zed::Command { command, args: Vec::new(), env: Default::default() })
     }
 
     fn perl_lsp_binary(
@@ -173,10 +169,7 @@ impl PerlExtension {
 
         let release = zed::latest_github_release(
             PERL_LSP_REPO,
-            zed::GithubReleaseOptions {
-                require_assets: true,
-                pre_release: false,
-            },
+            zed::GithubReleaseOptions { require_assets: true, pre_release: false },
         )?;
 
         let (os, arch) = zed::current_platform();
@@ -198,15 +191,9 @@ impl PerlExtension {
             _ => ("tar.gz", zed::DownloadedFileType::GzipTar, "perl-lsp"),
         };
         let asset_name = format!("perl-lsp-{target}.{archive_ext}");
-        let asset = release
-            .assets
-            .iter()
-            .find(|asset| asset.name == asset_name)
-            .ok_or_else(|| {
-                format!(
-                    "no asset named `{asset_name}` in perl-lsp release {}",
-                    release.version
-                )
+        let asset =
+            release.assets.iter().find(|asset| asset.name == asset_name).ok_or_else(|| {
+                format!("no asset named `{asset_name}` in perl-lsp release {}", release.version)
             })?;
 
         let version_dir = format!("perl-lsp-{}", release.version);
@@ -242,11 +229,7 @@ impl PerlExtension {
         };
         let args = normalize_perllsp_args(command_settings.arguments)?;
 
-        Ok(zed::Command {
-            command,
-            args,
-            env: command_settings.env,
-        })
+        Ok(zed::Command { command, args, env: command_settings.env })
     }
 
     fn perllsp_binary(
@@ -275,10 +258,7 @@ impl PerlExtension {
 
         let release = zed::latest_github_release(
             PERLLSP_REPO,
-            zed::GithubReleaseOptions {
-                require_assets: true,
-                pre_release: false,
-            },
+            zed::GithubReleaseOptions { require_assets: true, pre_release: false },
         )?;
         let version = normalize_release_version(&release.version);
         let (os, arch) = zed::current_platform();
@@ -288,11 +268,8 @@ impl PerlExtension {
             _ => ("tar.gz", zed::DownloadedFileType::GzipTar),
         };
         let asset_name = perllsp_asset_name(version, target, archive_ext);
-        let asset = release
-            .assets
-            .iter()
-            .find(|asset| asset.name == asset_name)
-            .ok_or_else(|| {
+        let asset =
+            release.assets.iter().find(|asset| asset.name == asset_name).ok_or_else(|| {
                 format!(
                     "no asset named `{asset_name}` in EffortlessMetrics perllsp release {}",
                     release.version
@@ -341,11 +318,7 @@ fn perllsp_command_settings(worktree: &zed::Worktree) -> Result<PerllspCommandSe
         .and_then(|settings| settings.binary);
 
     let Some(binary) = binary else {
-        return Ok(PerllspCommandSettings {
-            path: None,
-            arguments: Vec::new(),
-            env: shell_env,
-        });
+        return Ok(PerllspCommandSettings { path: None, arguments: Vec::new(), env: shell_env });
     };
 
     if let Some(overrides) = binary.env {
@@ -455,11 +428,7 @@ fn remove_old_downloads(prefix: &str, current_dir: &str) {
 
 impl zed::Extension for PerlExtension {
     fn new() -> Self {
-        Self {
-            did_find_server: false,
-            perl_lsp_path: None,
-            perllsp_path: None,
-        }
+        Self { did_find_server: false, perl_lsp_path: None, perllsp_path: None }
     }
 
     fn language_server_command(
@@ -469,9 +438,7 @@ impl zed::Extension for PerlExtension {
     ) -> Result<zed::Command> {
         match classify_server_id(language_server_id.as_ref())? {
             ServerKind::PerlNavigator => self.perlnavigator_command(language_server_id, worktree),
-            ServerKind::TreeSitterPerlLsp => {
-                self.perl_lsp_command(language_server_id, worktree)
-            }
+            ServerKind::TreeSitterPerlLsp => self.perl_lsp_command(language_server_id, worktree),
             ServerKind::EffortlessPerllsp => self.perllsp_command(language_server_id, worktree),
         }
     }
@@ -505,19 +472,13 @@ mod tests {
             classify_server_id(PERL_LSP_SERVER_ID).ok(),
             Some(ServerKind::TreeSitterPerlLsp)
         );
-        assert_eq!(
-            classify_server_id(PERLLSP_SERVER_ID).ok(),
-            Some(ServerKind::EffortlessPerllsp)
-        );
+        assert_eq!(classify_server_id(PERLLSP_SERVER_ID).ok(), Some(ServerKind::EffortlessPerllsp));
         assert!(classify_server_id("unknown-perl-server").is_err());
     }
 
     #[test]
     fn stdio_arguments_are_added_once() {
-        assert_eq!(
-            normalize_perllsp_args(Vec::new()).ok(),
-            Some(vec!["--stdio".to_string()])
-        );
+        assert_eq!(normalize_perllsp_args(Vec::new()).ok(), Some(vec!["--stdio".to_string()]));
         assert_eq!(
             normalize_perllsp_args(vec![
                 "--stdio".to_string(),
@@ -525,10 +486,7 @@ mod tests {
                 "--log-level=debug".to_string(),
             ])
             .ok(),
-            Some(vec![
-                "--stdio".to_string(),
-                "--log-level=debug".to_string(),
-            ])
+            Some(vec!["--stdio".to_string(), "--log-level=debug".to_string(),])
         );
     }
 
