@@ -17,6 +17,11 @@
                   "default": "auto",
                   "markdownDescription": "Use `auto` for the package's pinned, verified perllsp build, or set an explicit user-owned executable path for development. Project settings cannot replace the launch executable."
                 },
+                "dap_path": {
+                  "type": "string",
+                  "default": "auto",
+                  "markdownDescription": "Use `auto` to resolve `perl-dap` beside an explicit `server_path` or from `PATH`, or set an explicit user-owned executable. The current managed perllsp release does not include a verified perl-dap artifact, and project debugger configurations cannot replace this executable."
+                },
                 "env": {
                   "type": "object",
                   "default": {},
