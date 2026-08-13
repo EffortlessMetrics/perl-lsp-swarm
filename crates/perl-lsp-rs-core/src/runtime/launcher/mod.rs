@@ -1074,7 +1074,6 @@ _perl-lsp "$@"
 "#;
 
 const FISH_COMPLETION: &str = r#"complete -c perl-lsp -l stdio -d 'Use stdio for communication (default)'
-complete -c perl-lsp -l mcp -d 'Alias for stdio mode (MCP clients)'
 complete -c perl-lsp -l socket -d 'Use TCP socket for communication'
 complete -c perl-lsp -l port -x -d 'Port to listen on'
 complete -c perl-lsp -l log -d 'Enable logging to stderr'
