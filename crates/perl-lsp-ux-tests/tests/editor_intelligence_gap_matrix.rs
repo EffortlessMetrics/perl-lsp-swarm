@@ -52,7 +52,11 @@ struct Row<'a> {
 impl<'a> Row<'a> {
     fn parse(line: &'a str) -> Result<Self> {
         let fields = line.split('|').collect::<Vec<_>>();
-        anyhow::ensure!(fields.len() == 14, "row has {} fields", fields.len());
+        anyhow::ensure!(
+            fields.len() == 14,
+            "row has {} fields",
+            fields.len()
+        );
         let editable = match fields[9] {
             "true" => true,
             "false" => false,
@@ -96,9 +100,15 @@ fn editor_intelligence_gap_matrix_is_owned_and_discriminating() -> Result<()> {
         .map(Row::parse)
         .collect::<Result<Vec<_>>>()?;
 
-    anyhow::ensure!(header["schema_version"] == 1, "unexpected schema version");
+    anyhow::ensure!(
+        header["schema_version"] == 1,
+        "unexpected schema version"
+    );
     anyhow::ensure!(header["controller_issue"] == 7429, "controller drift");
-    anyhow::ensure!(header["measurement_issue"] == 7430, "measurement issue drift");
+    anyhow::ensure!(
+        header["measurement_issue"] == 7430,
+        "measurement issue drift"
+    );
     anyhow::ensure!(
         header["row_count"].as_u64() == Some(rows.len() as u64),
         "row count drift"
@@ -111,7 +121,11 @@ fn editor_intelligence_gap_matrix_is_owned_and_discriminating() -> Result<()> {
     for row in rows {
         anyhow::ensure!(ids.insert(row.id), "duplicate row `{}`", row.id);
         anyhow::ensure!(row.owner > 0, "unowned row `{}`", row.id);
-        anyhow::ensure!(CASES.contains(row.marker), "missing marker `{}`", row.marker);
+        anyhow::ensure!(
+            CASES.contains(row.marker),
+            "missing marker `{}`",
+            row.marker
+        );
         anyhow::ensure!(
             CASES.contains(row.control),
             "missing negative control `{}`",
