@@ -7,8 +7,21 @@ use crate::protocol::methods::WORKSPACE_APPLY_EDIT;
 
 #[allow(dead_code)]
 impl LspServer {
-    /// Send a server-to-client request with no parameters (for refresh requests)
+    /// Send a server-to-client request.
+    ///
+    /// LSP permits only a narrow notification set before the initialize response;
+    /// server-originated requests are not legal until initialization completes.
+    /// Keep that lifecycle guard at the common request seam so a new call site
+    /// cannot accidentally write a request while `initialize` is still being
+    /// handled (#7708).
     pub(crate) fn send_request(&self, method: &str, params: Value) -> io::Result<ServerRequestId> {
+        if !self.initialized.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("server request `{method}` is deferred until initialization completes"),
+            ));
+        }
+
         let id = self.next_server_request_id();
         self.outbound_sink().send_request(id, method, params)?;
         Ok(id)
@@ -168,8 +181,48 @@ mod tests {
     }
 
     #[test]
+    fn server_request_before_initialized_is_rejected_without_output() -> TestResult {
+        let (server, output) = server_with_output_capture();
+
+        let error = server
+            .send_request("workspace/configuration", json!({"items": []}))
+            .expect_err("pre-initialization server request must be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(
+            error.to_string().contains("initialization completes"),
+            "rejection should name the lifecycle boundary: {error}"
+        );
+        assert!(
+            output.messages()?.is_empty(),
+            "no server request frame may escape before initialization"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn server_request_after_initialized_is_emitted() -> TestResult {
+        let (server, output) = server_with_output_capture();
+        server.initialized.store(true, Ordering::Release);
+
+        let request_id =
+            server.send_request("workspace/configuration", json!({"items": []}))?;
+
+        let messages = output.messages()?;
+        let request = messages
+            .iter()
+            .find(|message| {
+                message.get("method").and_then(Value::as_str) == Some("workspace/configuration")
+            })
+            .ok_or_else(|| format!("expected workspace/configuration request: {messages:?}"))?;
+        assert_eq!(request.get("id").and_then(Value::as_i64), Some(i64::from(request_id.as_i32())));
+        Ok(())
+    }
+
+    #[test]
     fn request_apply_workspace_edit_with_metadata_call_presence_observer() -> TestResult {
         let (server, output) = server_with_output_capture();
+        server.initialized.store(true, Ordering::Release);
         {
             let mut caps = server.client_capabilities.lock();
             caps.workspace_apply_edit_support = true;
@@ -221,6 +274,7 @@ mod tests {
     #[test]
     fn request_apply_workspace_edit_with_metadata_boundary_discriminator() -> TestResult {
         let (server, output) = server_with_output_capture();
+        server.initialized.store(true, Ordering::Release);
         server.client_capabilities.lock().workspace_apply_edit_support = true;
         let request_id = server.request_apply_workspace_edit_with_metadata(
             "Safe delete reset",
@@ -238,6 +292,7 @@ mod tests {
         );
 
         let (server, output) = server_with_output_capture();
+        server.initialized.store(true, Ordering::Release);
         server.client_capabilities.lock().workspace_edit_metadata_support = true;
         let request_id = server.request_apply_workspace_edit_with_metadata(
             "Safe delete reset",
@@ -259,6 +314,7 @@ mod tests {
     #[test]
     fn request_apply_workspace_edit_with_metadata_return_value_discriminator() -> TestResult {
         let (server, _) = server_with_output_capture();
+        server.initialized.store(true, Ordering::Release);
         let request_id = server.request_apply_workspace_edit_with_metadata(
             "Safe delete reset",
             "Review source-backed safe-delete edit for reset before applying.",
