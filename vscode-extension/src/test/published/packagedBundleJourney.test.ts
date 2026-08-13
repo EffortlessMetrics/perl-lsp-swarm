@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { parsePackagedServerVersionStdout } from '../../packagedServerVersion';
 import { runBoundedProcess } from '../../testAdapter';
 
 type ReceiptValue = Record<string, unknown>;
@@ -76,14 +77,17 @@ async function bundledServerVersion(binaryPath: string): Promise<BundledServerVe
     timeoutMs: VERSION_PROBE_TIMEOUT_MS,
     maxOutputBytes: VERSION_PROBE_OUTPUT_MAX_BYTES,
     terminationGraceMs: 500,
+    terminationWatchdogMs: 5_000,
     windowsHide: true,
   });
+  const terminationConfirmed =
+    result.outcome !== 'spawn_error' && result.outcome !== 'termination_failed';
   const base = {
     stdout: result.stdout,
     stderr: result.stderr,
     outcome: result.outcome,
     output_truncated: result.outcome === 'output_limit',
-    termination_confirmed: result.outcome !== 'spawn_error',
+    termination_confirmed: terminationConfirmed,
   };
   if (result.outcome !== 'completed') {
     return {
@@ -96,24 +100,12 @@ async function bundledServerVersion(binaryPath: string): Promise<BundledServerVe
   }
   const completedBase = { ...base, outcome: 'completed' as const };
   try {
-    const firstLine = result.stdout.split(/\r?\n/, 1)[0]?.trim() ?? '';
-    const match =
-      /^(?:perllsp|perl-lsp)\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\s|$)/.exec(
-        firstLine,
-      );
-    if (!match) {
-      return {
-        status: 'error',
-        ...completedBase,
-        message: 'bundled server --version did not contain a semantic version',
-      };
-    }
-    const version = match[1];
+    const version = parsePackagedServerVersionStdout(result.stdout);
     if (!version) {
       return {
         status: 'error',
         ...completedBase,
-        message: 'bundled server --version contained an empty semantic version capture',
+        message: 'bundled server --version did not contain a semantic version',
       };
     }
     return {
