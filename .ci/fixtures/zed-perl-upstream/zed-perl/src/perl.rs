@@ -362,8 +362,13 @@ fn normalize_perllsp_args(arguments: Vec<String>) -> Result<Vec<String>> {
 }
 
 fn is_non_lsp_argument(argument: &str) -> bool {
+    // Reject `--mcp=...` forms; bare `mcp` / `--mcp` are stdio aliases above.
+    if argument.starts_with("--mcp=") {
+        return true;
+    }
+    let flag = argument.split_once('=').map_or(argument, |(key, _)| key);
     matches!(
-        argument,
+        flag,
         "--socket"
             | "--port"
             | "--health"
@@ -375,8 +380,7 @@ fn is_non_lsp_argument(argument: &str) -> bool {
             | "--help"
             | "-h"
             | "-V"
-    ) || argument.starts_with("--socket=")
-        || argument.starts_with("--port=")
+    )
 }
 
 fn normalize_release_version(tag: &str) -> &str {

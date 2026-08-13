@@ -68,7 +68,9 @@ else:
     blockers = manifest.get("blockers") or submission.get("blockers")
     if not blockers or "[BLOCKED:" not in body:
         raise SystemExit("error: blocked packet does not expose its blockers")
-    if extension.get("new_commit") or extension.get("new_version"):
+    if extension.get("new_commit") or extension.get("new_version") or extension.get(
+        "upstream_branch_containing_commit"
+    ):
         raise SystemExit("error: blocked packet must not invent a merged upstream identity")
 
 print("Zed registry update packet checks passed.")
