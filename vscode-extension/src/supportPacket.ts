@@ -77,10 +77,10 @@ export interface SupportPacketV1 {
     families: SupportProtocolFamily[];
   };
   configuration: {
-    user_present: boolean;
-    workspace_present: boolean;
-    folder_present: boolean;
-    project_config_present: boolean;
+    user_present: SupportValue<boolean>;
+    workspace_present: SupportValue<boolean>;
+    folder_present: SupportValue<boolean>;
+    project_config_present: SupportValue<boolean>;
     formatter_mode: SupportAtom;
     critic_mode: SupportAtom;
     migration: SupportMigrationSummary;
@@ -141,6 +141,15 @@ export function supportState<T>(state: Exclude<SupportEvidenceState, 'known'>): 
   return { state, value: null };
 }
 
+function validateEvidenceValue<T>(name: string, value: SupportValue<T>, errors: string[]): void {
+  if (value.state === 'known' && value.value === null) {
+    errors.push(`${name} is known but has no value`);
+  }
+  if (value.state !== 'known' && value.value !== null) {
+    errors.push(`${name} carries a value without known evidence`);
+  }
+}
+
 export function validateSupportPacket(packet: SupportPacketV1): string[] {
   const errors: string[] = [];
 
@@ -158,12 +167,7 @@ export function validateSupportPacket(packet: SupportPacketV1): string[] {
     ['host.editor_version', packet.host.editor_version],
     ['lifecycle.generation', packet.lifecycle.generation],
   ] as const) {
-    if (value.state === 'known' && value.value === null) {
-      errors.push(`${name} is known but has no value`);
-    }
-    if (value.state !== 'known' && value.value !== null) {
-      errors.push(`${name} carries a value without known evidence`);
-    }
+    validateEvidenceValue(name, value, errors);
   }
 
   for (const [name, value] of [
@@ -178,6 +182,19 @@ export function validateSupportPacket(packet: SupportPacketV1): string[] {
       errors.push(`${name} carries a digest without known evidence`);
     }
   }
+
+  validateEvidenceValue('configuration.user_present', packet.configuration.user_present, errors);
+  validateEvidenceValue(
+    'configuration.workspace_present',
+    packet.configuration.workspace_present,
+    errors,
+  );
+  validateEvidenceValue('configuration.folder_present', packet.configuration.folder_present, errors);
+  validateEvidenceValue(
+    'configuration.project_config_present',
+    packet.configuration.project_config_present,
+    errors,
+  );
 
   return errors;
 }
@@ -234,6 +251,7 @@ export function formatSupportPacketHuman(packet: SupportPacketV1): string {
     `Crash: ${normalized.lifecycle.crash_disposition}`,
     `Activation: ${normalized.lifecycle.activation_disposition}`,
     `Managed install: ${normalized.lifecycle.managed_install_disposition}`,
+    `Config sources: user=${supportValueText(normalized.configuration.user_present)} workspace=${supportValueText(normalized.configuration.workspace_present)} folder=${supportValueText(normalized.configuration.folder_present)} project=${supportValueText(normalized.configuration.project_config_present)}`,
     `Migration: ${normalized.configuration.migration.status}`,
     `Startup reason: ${normalized.failure.startup_reason}`,
     `Network reason: ${normalized.failure.network_reason}`,
