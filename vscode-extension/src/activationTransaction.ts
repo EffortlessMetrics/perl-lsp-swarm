@@ -111,6 +111,7 @@ export class ActivationTransaction {
   private state: ActivationAttemptState = 'activating';
   private readonly resources: OwnedActivationResource[] = [];
   private committedRuntime: CommittedActivation | null = null;
+  private rollbackReceipt: ActivationCleanupReceipt | null = null;
 
   public constructor(public readonly attempt_id: string) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(attempt_id)) {
@@ -151,20 +152,8 @@ export class ActivationTransaction {
   public async rollback(
     options: { retain_support_surfaces?: boolean } = {},
   ): Promise<ActivationCleanupReceipt> {
-    if (this.state === 'activation_failed') {
-      return {
-        attempt_id: this.attempt_id,
-        terminal_state: 'activation_failed',
-        cleaned_resources: [],
-        retained_support_resources: this.resources
-          .filter(
-            (resource) =>
-              !resource.cleaned &&
-              resource.resource_class === 'support_surface_allowed_after_failure',
-          )
-          .map((resource) => resource.id),
-        cleanup_failures: [],
-      };
+    if (this.rollbackReceipt !== null) {
+      return this.rollbackReceipt;
     }
     if (this.state !== 'activating') {
       throw new Error(`cannot rollback activation while state=${this.state}`);
@@ -172,11 +161,12 @@ export class ActivationTransaction {
 
     const cleanup = await cleanResources(this.resources, options.retain_support_surfaces === true);
     this.state = 'activation_failed';
-    return {
+    this.rollbackReceipt = {
       attempt_id: this.attempt_id,
       terminal_state: 'activation_failed',
       ...cleanup,
     };
+    return this.rollbackReceipt;
   }
 
   public activeRuntime(): CommittedActivation | null {

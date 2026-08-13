@@ -77,6 +77,9 @@ describe('ActivationTransaction', () => {
         reason: 'cleanup exploded',
       },
     ]);
+
+    const second = await transaction.rollback();
+    expect(second).toBe(receipt);
   });
 
   test('may deliberately retain only approved support surfaces after failure', async () => {
