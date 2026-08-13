@@ -47,6 +47,19 @@ local function request_virtual_content(client, uri, bufnr)
   return result.text, nil
 end
 
+local function current_virtual_snapshot(source_bufnr)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local text = table.concat(lines, '\n')
+  return {
+    bufnr = bufnr,
+    name = name,
+    text = text,
+    populated = bufnr ~= source_bufnr and text:lower():find('strict', 1, true) ~= nil,
+  }
+end
+
 local repo_root = normalize(required_env('REPO_ROOT'))
 local fixture_root = normalize(required_env('FIXTURE_ROOT'))
 local perllsp = normalize(required_env('PERLLSP'))
@@ -90,21 +103,28 @@ local advertised_support = client_caps.workspace
   or false
 
 -- Probe stock-Neovim URI opening without registering a compatibility BufReadCmd
--- or other repository-owned shim. On unsupported hosts this may fail or create
--- an ordinary empty file buffer; both are an upstream dependency, not a pass.
+-- or other repository-owned shim. Native content handlers may populate the
+-- buffer asynchronously after :edit returns, so a supported client gets a
+-- bounded observation window before the result is classified.
 local open_ok, open_error = pcall(vim.cmd, 'edit perldoc://strict')
-local virtual_bufnr = vim.api.nvim_get_current_buf()
-local virtual_name = vim.api.nvim_buf_get_name(virtual_bufnr)
-local virtual_lines = vim.api.nvim_buf_get_lines(virtual_bufnr, 0, -1, false)
-local virtual_text = table.concat(virtual_lines, '\n')
-local native_populated = open_ok
-  and virtual_bufnr ~= source_bufnr
-  and virtual_text:lower():find('strict', 1, true) ~= nil
+local snapshot = current_virtual_snapshot(source_bufnr)
+if open_ok and advertised_support and not snapshot.populated then
+  vim.wait(5000, function()
+    snapshot = current_virtual_snapshot(source_bufnr)
+    return snapshot.populated
+  end, 20)
+end
+local native_populated = open_ok and snapshot.populated
 
 local state
 if advertised_support then
+  if not open_ok then
+    error(('Neovim advertises textDocumentContent support but opening perldoc URI failed: %s'):format(
+      tostring(open_error)
+    ))
+  end
   if not native_populated then
-    error('Neovim advertises textDocumentContent support but perldoc://strict did not populate')
+    error('Neovim advertises textDocumentContent support but perldoc://strict did not populate within 5s')
   end
   state = 'pass'
 else
@@ -123,7 +143,7 @@ local receipt = {
     advertises_text_document_content = advertised_support,
     edit_ok = open_ok,
     edit_error = open_ok and vim.NIL or tostring(open_error),
-    virtual_buffer_name = virtual_name,
+    virtual_buffer_name = snapshot.name,
     native_populated = native_populated,
     refresh = 'not_exercised',
   },
