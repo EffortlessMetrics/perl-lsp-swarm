@@ -41,6 +41,7 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             | IssueKind::UninitializedVariable
             | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
+            _ => DiagnosticSeverity::Error, // Forward-compatible fallback (#2898)
         };
 
         let code = match issue.kind {
@@ -62,6 +63,7 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             // keeps both `say` diagnostics under one consistent code.
             IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
             IssueKind::UnresolvedQualifiedCall => DiagnosticCode::UnresolvedQualifiedCall,
+            _ => DiagnosticCode::ParseError, // Forward-compatible fallback (#2898)
         };
 
         let related_info = build_scope_related_info(&issue);
@@ -233,6 +235,7 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             | IssueKind::UninitializedVariable
             | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
+            _ => DiagnosticSeverity::Error, // Forward-compatible fallback (#2898)
         };
 
         let code = match issue.kind {
@@ -254,6 +257,7 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             // keeps both `say` diagnostics under one consistent code.
             IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
             IssueKind::UnresolvedQualifiedCall => DiagnosticCode::UnresolvedQualifiedCall,
+            _ => DiagnosticCode::ParseError, // Forward-compatible fallback (#2898)
         };
 
         let mut related_info = build_scope_related_info(&issue);
@@ -477,6 +481,7 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
                 message: format!("💡 Define sub '{}' in its package or correct the call", issue.variable_name),
             },
         ],
+        _ => Vec::new(), // Forward-compatible fallback (#2898)
     }
 }
 

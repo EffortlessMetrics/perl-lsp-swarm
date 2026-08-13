@@ -65,9 +65,11 @@ use std::ops::Range;
 use std::rc::Rc;
 
 /// Category of scope-related issue detected during analysis.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub enum IssueKind {
     /// A variable declared in an inner scope shadows one in an outer scope.
+    #[default]
     VariableShadowing,
     /// A declared variable is never read.
     UnusedVariable,
@@ -98,7 +100,8 @@ pub enum IssueKind {
 }
 
 /// A single scope-analysis finding with location and human-readable description.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ScopeIssue {
     /// The category of scope problem detected.
     pub kind: IssueKind,
