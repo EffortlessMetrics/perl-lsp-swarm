@@ -1,0 +1,131 @@
+{
+  "schema_version": "zed_default_order_receipt.v1",
+  "result": "not_run",
+  "observed_at": null,
+  "contract": {
+    "relative_path": ".ci/fixtures/zed-perl-upstream/default-order.v1.json",
+    "sha256": null
+  },
+  "matrix": [
+    {
+      "id": "current_defaults_public_extension",
+      "result": "not_proven",
+      "zed_identity_sha256": null,
+      "defaults_sha256": null,
+      "extension_sha256": null,
+      "profile_sha256": null,
+      "process_inventory_sha256": null,
+      "clean_profile_quiet": null,
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "evidence": null
+    },
+    {
+      "id": "candidate_defaults_public_extension",
+      "result": "not_proven",
+      "zed_identity_sha256": null,
+      "defaults_sha256": null,
+      "extension_sha256": null,
+      "profile_sha256": null,
+      "process_inventory_sha256": null,
+      "clean_profile_quiet": null,
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "evidence": null
+    },
+    {
+      "id": "current_defaults_candidate_extension",
+      "result": "not_proven",
+      "zed_identity_sha256": null,
+      "defaults_sha256": null,
+      "extension_sha256": null,
+      "profile_sha256": null,
+      "process_inventory_sha256": null,
+      "clean_profile_quiet": null,
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "evidence": null
+    },
+    {
+      "id": "candidate_defaults_candidate_extension",
+      "result": "not_proven",
+      "zed_identity_sha256": null,
+      "defaults_sha256": null,
+      "extension_sha256": null,
+      "profile_sha256": null,
+      "process_inventory_sha256": null,
+      "clean_profile_quiet": null,
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "evidence": null
+    }
+  ],
+  "selection_cases": [
+    {
+      "id": "default_only",
+      "result": "not_proven",
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "command": null,
+      "evidence": null
+    },
+    {
+      "id": "select_perllsp",
+      "result": "not_proven",
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "command": null,
+      "evidence": null
+    },
+    {
+      "id": "select_perl_lsp",
+      "result": "not_proven",
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "command": null,
+      "evidence": null
+    },
+    {
+      "id": "deliberate_multi_server",
+      "result": "not_proven",
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "command": null,
+      "evidence": null
+    },
+    {
+      "id": "missing_selected_server",
+      "result": "not_proven",
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "command": null,
+      "evidence": null
+    },
+    {
+      "id": "ellipsis_preserves_user_registration",
+      "result": "not_proven",
+      "started_server_ids": [],
+      "failed_server_ids": [],
+      "command": null,
+      "evidence": null
+    }
+  ],
+  "ruling": {
+    "result": "not_proven",
+    "value": null,
+    "unsafe_interval_avoided": null,
+    "maintainer_sequence": [],
+    "invalidation": [],
+    "evidence": null
+  },
+  "limitations": [
+    "Template only. No defaults and extension compatibility matrix has run.",
+    "A publication-order ruling cannot be selected from static source alone."
+  ],
+  "claim_boundary": {
+    "host_compatibility": "not_run",
+    "publication_order": "unresolved",
+    "full_zed_support": "not_proven",
+    "public_registry": "not_proven"
+  }
+}
