@@ -210,15 +210,7 @@ impl EnvironmentInput {
                 explanation_code.as_str(),
             ],
         ));
-        Self {
-            id,
-            semantic_key,
-            authority,
-            state,
-            source_id,
-            value_fingerprint,
-            explanation_code,
-        }
+        Self { id, semantic_key, authority, state, source_id, value_fingerprint, explanation_code }
     }
 }
 
@@ -869,10 +861,7 @@ impl std::fmt::Display for EnvironmentBuildError {
                 write!(formatter, "{owner} references missing environment input {input_id}")
             }
             Self::InactiveSelectedInterpreter { input_id, state } => {
-                write!(
-                    formatter,
-                    "selected interpreter input {input_id} is not active: {state:?}"
-                )
+                write!(formatter, "selected interpreter input {input_id} is not active: {state:?}")
             }
             Self::AmbientInputAccepted { input_id } => {
                 write!(
@@ -998,10 +987,7 @@ impl ProjectEnvironmentSnapshotBuilder {
 
         validate_paths("include_entry", self.include_entries.iter().map(|item| &item.path))?;
         validate_paths("project_root", self.project_roots.iter().map(|item| &item.path))?;
-        validate_paths(
-            "tool_candidate",
-            self.tool_candidates.iter().map(|item| &item.executable),
-        )?;
+        validate_paths("tool_candidate", self.tool_candidates.iter().map(|item| &item.executable))?;
 
         validate_references(
             &input_decisions,
@@ -1122,9 +1108,7 @@ fn validate_inputs(inputs: &[EnvironmentInput]) -> Result<(), EnvironmentBuildEr
         if input.authority == EnvironmentInputAuthority::Ambient
             && input.state == EnvironmentInputState::Accepted
         {
-            return Err(EnvironmentBuildError::AmbientInputAccepted {
-                input_id: input.id.clone(),
-            });
+            return Err(EnvironmentBuildError::AmbientInputAccepted { input_id: input.id.clone() });
         }
         for (field, value) in [
             ("semantic_key", input.semantic_key.as_str()),
@@ -1219,16 +1203,10 @@ fn validate_paths<'a>(
 ) -> Result<(), EnvironmentBuildError> {
     for path in paths {
         if path.normalized.is_empty() {
-            return Err(EnvironmentBuildError::EmptyPathField {
-                owner,
-                field: "normalized",
-            });
+            return Err(EnvironmentBuildError::EmptyPathField { owner, field: "normalized" });
         }
         if path.public_id.is_empty() {
-            return Err(EnvironmentBuildError::EmptyPathField {
-                owner,
-                field: "public_id",
-            });
+            return Err(EnvironmentBuildError::EmptyPathField { owner, field: "public_id" });
         }
     }
     Ok(())
@@ -1245,8 +1223,7 @@ fn candidate_precedence<'a>(
     let state = decision.map(|value| value.0);
     let authority = decision.map(|value| value.1);
     let active_rank = if state.is_some_and(EnvironmentInputState::is_active) { 0 } else { 1 };
-    let authority_rank =
-        authority.map_or(u8::MAX, EnvironmentInputAuthority::precedence_rank);
+    let authority_rank = authority.map_or(u8::MAX, EnvironmentInputAuthority::precedence_rank);
     let state_rank = state.map_or(u8::MAX, EnvironmentInputState::sort_rank);
     (active_rank, authority_rank, state_rank, input_id.as_str())
 }
@@ -1286,11 +1263,7 @@ fn compute_fingerprint(
 
     if let Some(interpreter) = selected_interpreter {
         push_field(&mut material, "interpreter.logical", interpreter.logical_id.as_str());
-        push_field(
-            &mut material,
-            "interpreter.path",
-            interpreter.executable.normalized.as_str(),
-        );
+        push_field(&mut material, "interpreter.path", interpreter.executable.normalized.as_str());
         push_field(
             &mut material,
             "interpreter.evidence",
@@ -1410,23 +1383,17 @@ mod tests {
                 .build()?;
 
         assert_eq!(left, right);
+        assert_eq!(left.inputs.iter().filter(|item| item.state.is_active()).count(), 1);
         assert_eq!(
-            left.inputs.iter().filter(|item| item.state.is_active()).count(),
-            1
-        );
-        assert_eq!(
-            left.inputs
-                .iter()
-                .find(|item| item.state.is_active())
-                .map(|item| item.authority),
+            left.inputs.iter().find(|item| item.state.is_active()).map(|item| item.authority),
             Some(EnvironmentInputAuthority::UserConfiguration)
         );
         Ok(())
     }
 
     #[test]
-    fn equally_authoritative_disagreement_remains_conflicting()
-    -> Result<(), EnvironmentBuildError> {
+    fn equally_authoritative_disagreement_remains_conflicting() -> Result<(), EnvironmentBuildError>
+    {
         let left = input(
             "interpreter.selected",
             EnvironmentInputAuthority::UserConfiguration,
@@ -1492,8 +1459,7 @@ mod tests {
     }
 
     #[test]
-    fn same_path_with_different_root_roles_remains_distinct()
-    -> Result<(), EnvironmentBuildError> {
+    fn same_path_with_different_root_roles_remains_distinct() -> Result<(), EnvironmentBuildError> {
         let source_input = input(
             "root.source",
             EnvironmentInputAuthority::WorkspaceConvention,
