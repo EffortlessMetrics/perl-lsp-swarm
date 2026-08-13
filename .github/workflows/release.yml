@@ -281,6 +281,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      actions: write
       contents: write
 
     steps:
@@ -404,3 +405,32 @@ jobs:
           tag_name: ${{ needs.release-metadata.outputs.tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dispatch downstream package refresh workflows
+        if: github.event_name == 'workflow_dispatch' && needs.release-metadata.outputs.prerelease != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          workflows=(
+            brew-bump.yml
+            scoop-bump.yml
+            chocolatey-bump.yml
+            winget-bump.yml
+          )
+          for workflow in "${workflows[@]}"; do
+            printf 'Dispatching %s for %s\n' "$workflow" "$RELEASE_TAG"
+            gh workflow run "$workflow" \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref "$DEFAULT_BRANCH" \
+              --field "tag=$RELEASE_TAG"
+          done
+
+      - name: Record prerelease package refresh disposition
+        if: github.event_name == 'workflow_dispatch' && needs.release-metadata.outputs.prerelease == 'true'
+        env:
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          printf 'Package-channel refresh skipped for prerelease %s; downstream package workflows remain stable-release only.\n' "$RELEASE_TAG"
