@@ -4,9 +4,14 @@ This guide covers classic Vim setup, not Neovim's built-in LSP client. Use this
 when you want `perllsp` features such as diagnostics, go-to-definition,
 references, hover, formatting, and rename directly in Vim.
 
+> [!NOTE]
+> A working setup recipe is configuration evidence, not proof for every Vim
+> version, build, operating system, or LSP client plugin. `Vim + vim-lsp` and
+> `Vim + coc.nvim` are separate client subjects and are verified independently.
+
 ## Prerequisites
 
-- Vim with Perl filetype detection enabled
+- Vim with filetype detection enabled
 - `perllsp` installed and available on your `PATH`
 - one LSP client plugin:
   - [`vim-lsp`](https://github.com/prabirshrestha/vim-lsp), or
@@ -14,8 +19,13 @@ references, hover, formatting, and rename directly in Vim.
 
 Client-specific notes:
 
-- `vim-lsp` is the lightweight Vim-native path (Vim 8+).
-- `coc.nvim` requires Vim 9.0.0438+ and Node.js 16.18.0+.
+- `vim-lsp` is the lightweight Vim-native path. Its upstream plugin runtime
+  compatibility is broader than the set of Vim builds that perl-lsp has
+  directly verified; do not treat the plugin's minimum Vim version as a
+  perl-lsp support guarantee.
+- current `coc.nvim` upstream requires Vim 9.0.0438+ and Node.js 20.19.0+.
+  Those are Coc runtime prerequisites, not a statement that every such Vim
+  build is independently proven with `perllsp`.
 
 Verify `perllsp` before changing Vim configuration:
 
@@ -35,21 +45,28 @@ Check a Perl buffer with:
 :set filetype?
 ```
 
-It should print:
+For an ordinary Perl source file it should print:
 
 ```text
 filetype=perl
 ```
 
-If `.t` test files or other Perl-bearing files are not detected as Perl, add:
+Prefer Vim's native detection before adding custom autocmds. Vim already has
+non-trivial discrimination for Perl-related names: for example, `.pm` is also
+used by XPM and `.t` is intentionally ambiguous between Perl tests, Nroff, and
+TADS. A blanket rule such as `*.t setfiletype perl` can therefore steal valid
+non-Perl files.
+
+If a particular Perl-bearing file is not detected correctly, first confirm the
+current buffer manually:
 
 ```vim
-augroup perl_filetypes
-  autocmd!
-  autocmd BufRead,BufNewFile *.t setfiletype perl
-  autocmd BufRead,BufNewFile *.cgi,*.fcgi setfiletype perl
-augroup END
+:setfiletype perl
 ```
+
+Then add a persistent rule only when it is narrow enough for your project and
+does not override an ambiguous file family globally. Do not force `.t`, `.cgi`,
+or `.fcgi` to Perl solely from the extension.
 
 ## Option A: vim-lsp
 
@@ -102,6 +119,12 @@ augroup perllsp_vim_lsp_mappings
 augroup END
 ```
 
+The root helper above chooses the nearest parent containing one of the Perl
+project markers and falls back to Vim's current working directory when no
+marker exists. If your project needs different root semantics, change them
+intentionally rather than adding a second competing marker list elsewhere in
+your config.
+
 ### Optional vim-lsp server settings
 
 Prefer `.perl-lsp.toml` for project-wide settings shared across editors. For
@@ -137,7 +160,22 @@ For inlay hints in Vim, you may also need a recent Vim 9 build and:
 let g:lsp_inlay_hints_enabled = 1
 ```
 
+Optional UI features such as inlay hints are separate from the baseline LSP
+journey; a build without that UI does not automatically mean diagnostics,
+completion, navigation, or editing are unsupported.
+
 ## Option B: coc.nvim
+
+Current Coc upstream recommends several Vim-specific options before the LSP
+configuration. Add the ones that fit your setup:
+
+```vim
+set encoding=utf-8
+set nobackup
+set nowritebackup
+set updatetime=300
+set signcolumn=yes
+```
 
 Install `coc.nvim`, then open Coc configuration:
 
@@ -174,14 +212,14 @@ Add:
 }
 ```
 
-Coc uses Vim filetypes, not filename extensions. If the server does not start,
-check:
+Coc uses Vim filetypes, not filename extensions. Check the active document with:
 
 ```vim
 :CocCommand document.echoFiletype
 ```
 
-It should report `perl`.
+It should report `perl` for an ordinary Perl buffer. If it does not, fix Vim's
+filetype detection rather than adding a broad Coc extension map.
 
 ### Optional Coc mappings
 
@@ -196,18 +234,34 @@ nmap <leader>rn <Plug>(coc-rename)
 nmap <leader>ca <Plug>(coc-codeaction)
 ```
 
-For a full Coc-focused walkthrough, see
-[COC_NEOVIM_SETUP.md](./COC_NEOVIM_SETUP.md). The LSP configuration model also
-applies to Vim, but Neovim-specific keybindings or paths may differ.
+Useful Vim-specific Coc commands include:
+
+```vim
+:CocDiagnostics
+:CocInfo
+:CocOpenLog
+:CocCommand document.echoFiletype
+:CocCommand workspace.showOutput
+```
+
+The separate [COC_NEOVIM_SETUP.md](./COC_NEOVIM_SETUP.md) contains additional
+Coc material for Neovim. Do not copy Neovim-only keybindings or paths into Vim;
+the language-server JSON model is shared, but the host behavior is verified
+separately.
 
 ## Verify It Is Running
 
-1. Open a Perl file such as `lib/My/Module.pm`, `script/app.pl`, or `t/basic.t`.
+1. Open an ordinary Perl file such as `lib/My/Module.pm` or `script/app.pl`.
 2. Run `:set filetype?` and confirm `filetype=perl`.
 3. Introduce a temporary syntax error.
-4. Confirm diagnostics appear.
-5. Try a hover, definition lookup, or references lookup.
-6. Remove the syntax error after testing.
+4. Confirm diagnostics appear in the selected client.
+5. Try completion plus a hover, definition lookup, or references lookup.
+6. Apply one edit and confirm subsequent diagnostics/navigation reflect the
+   changed buffer rather than stale state.
+7. Remove the syntax error after testing.
+
+For `.t` and other ambiguous names, verify the detected filetype instead of
+assuming the extension alone means Perl.
 
 Useful commands:
 
@@ -263,13 +317,16 @@ Check the filetype:
 :set filetype?
 ```
 
-If it is empty or wrong, set it manually for the current buffer:
+If it is empty or wrong, set it manually for the current buffer while
+diagnosing the problem:
 
 ```vim
 :setfiletype perl
 ```
 
-Then add a persistent ftdetect rule for that file extension.
+Before making that persistent, determine why Vim's native detector chose its
+current result. Persistent rules should be project-specific or otherwise narrow
+enough not to steal ambiguous `.t`, `.pm`, CGI, template, POD, or XS files.
 
 ### Diagnostics do not appear
 
