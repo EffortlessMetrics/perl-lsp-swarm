@@ -68,16 +68,22 @@ jobs:
       - name: Format
         shell: bash
         run: |
-          if cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check; then
+          manifest='.ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml'
+          source='.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
+          if cargo fmt --manifest-path "$manifest" -- --check; then
             exit 0
           fi
 
-          cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
-          diff="$(git diff -- .ci/fixtures/zed-perl-upstream/zed-perl)"
-          escaped="${diff//'%'/'%25'}"
-          escaped="${escaped//$'\r'/'%0D'}"
-          escaped="${escaped//$'\n'/'%0A'}"
-          echo "::error title=rustfmt diff::$escaped"
+          cargo fmt --manifest-path "$manifest"
+          encoded="$(base64 -w0 "$source")"
+          chunk=0
+          while [[ -n "$encoded" ]]; do
+            piece="${encoded:0:5000}"
+            encoded="${encoded:5000}"
+            printf -v title 'rustfmt source chunk %03d' "$chunk"
+            echo "::error title=$title::$piece"
+            chunk=$((chunk + 1))
+          done
           exit 1
 
       - name: Clippy
