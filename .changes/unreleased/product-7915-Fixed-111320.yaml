@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Fixed
+body: "Add an importable LSP4IJ Perl template candidate that uses sparse server-native perl.* settings instead of copied VS Code perl-lsp.* configuration."
+time: 2026-08-13T11:13:20Z
+custom:
+  PR: "7915"
+  Slug: lsp4ij-canonical-settings-projection
+  Breaking: "no"
