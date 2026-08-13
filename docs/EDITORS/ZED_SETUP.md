@@ -35,32 +35,34 @@ A correct public route therefore requires the Perl extension to register a
 third, dedicated `perllsp` server ID and dispatch it explicitly to
 `perllsp --stdio`.
 
-## Prepared upstream candidate
+## Staged upstream candidate
 
-The repository carries a submission-ready candidate under:
+The repository carries an initial candidate under:
 
 ```text
 .ci/fixtures/zed-perl-upstream/
 ```
 
-It is bound to an exact `tree-sitter-perl/zed-perl` base and includes:
+It is bound to an exact `tree-sitter-perl/zed-perl` base and currently stages:
 
 - a separate `perllsp` server registration;
 - exhaustive dispatch that rejects unknown IDs instead of falling through to
   Perl Navigator;
-- PATH-first `perllsp` resolution;
+- explicit binary override, PATH, and managed-download resolution;
 - managed downloads from `EffortlessMetrics/perl-lsp` for checked release
   targets;
-- explicit `--stdio` launch;
+- exact `--stdio` launch with non-LSP routes rejected;
 - `.PL`, `.psgi`, `.cgi`, and `.fcgi` activation while preserving the separate
   POD language;
 - default mappings for `perllsp` custom semantic-token types;
 - a separate Zed-defaults fragment that keeps both alternative Perl servers
   dormant until selected.
 
-See [ZED_UPSTREAM_SUBMISSION.md](../integrations/ZED_UPSTREAM_SUBMISSION.md) for
-the exact base, apply script, verification chain, and copy-ready upstream PR
-text.
+That candidate is not yet submission-ready. Its settings route, public assets,
+default-selection behavior, and actual Zed host journey have separate issue and
+receipt gates under the Zed programme. See
+[ZED_UPSTREAM_SUBMISSION.md](../integrations/ZED_UPSTREAM_SUBMISSION.md) for the
+current exact-base staging material.
 
 ## Expected configuration after upstream registration
 
@@ -114,7 +116,7 @@ receipt before this guide treats them as supported.
 
 ## File associations
 
-The prepared Perl-language update covers:
+The staged Perl-language update covers:
 
 ```text
 .pl  .PL  .pm  .t  .psgi  .cgi  .fcgi
@@ -125,7 +127,7 @@ Do not add `.pod` to the Perl file-type override.
 
 ## Semantic tokens
 
-Zed keeps LSP semantic tokens disabled by default. The prepared extension maps
+Zed keeps LSP semantic tokens disabled by default. The staged extension maps
 `perllsp`'s custom SQL and JSON heredoc token types, but that package integrity
 does not prove rendered behavior in Zed. Semantic-token support remains a
 separate receipt cell after upstream registration.
