@@ -28,7 +28,7 @@ on:
         required: false
         type: string
       candidate_artifact_manifest:
-        description: 'JSON manifest with candidate_id, frozen_product_sha, artifact_set_id, vsix_sha256, and bundled_server_sha256.'
+        description: 'Linux-only JSON manifest with candidate_id, frozen_product_sha, artifact_set_id, platform=linux, vsix_sha256, and bundled_server_sha256.'
         required: false
         type: string
   schedule:
@@ -59,9 +59,12 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       PERL_LSP_PUBLISHED_EXTENSION_SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.source || 'marketplace' }}
       PERL_LSP_PUBLISHED_EXTENSION_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
-      PERL_LSP_CANDIDATE_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_id || '' }}
-      PERL_LSP_ARTIFACT_SET_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_set_id || '' }}
-      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_artifact_manifest || '' }}
+      # Candidate-bound installed acceptance is intentionally Linux-only: the
+      # manifest carries one bundled-server digest, and only Linux assembles
+      # and validates the parent fan-in receipt.
+      PERL_LSP_CANDIDATE_ID: ${{ runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.candidate_id || '' }}
+      PERL_LSP_ARTIFACT_SET_ID: ${{ runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.artifact_set_id || '' }}
+      PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST: ${{ runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.candidate_artifact_manifest || '' }}
 
     steps:
       - name: Checkout

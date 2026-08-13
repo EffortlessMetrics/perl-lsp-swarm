@@ -65,9 +65,6 @@ void test('assembles candidate-bound installed source and verified references', 
         claim_boundary: 'bounded packaged journey',
         limitation: 'not a release claim',
         artifact_hashes: {
-          candidate_id: candidate.candidate_id,
-          frozen_product_sha: candidate.frozen_product_sha,
-          artifact_set_id: candidate.artifact_set_id,
           vsix_sha256: 'a'.repeat(64),
           bundled_server_sha256: 'b'.repeat(64),
         },
@@ -164,9 +161,6 @@ void test('rejects assembly when the verified artifact is cross-candidate', () =
         artifact_set_id: candidate.artifact_set_id,
         receipt_schema_version: 'installed_acceptance.v1',
         artifact_hashes: {
-          candidate_id: 'candidate-b',
-          frozen_product_sha: candidate.frozen_product_sha,
-          artifact_set_id: candidate.artifact_set_id,
           vsix_sha256: 'a'.repeat(64),
           bundled_server_sha256: 'b'.repeat(64),
         },
@@ -222,7 +216,7 @@ void test('rejects missing or mismatched installed artifact hashes', () => {
       status: 'not_proven',
       claim_boundary: 'bounded packaged journey',
       limitation: 'not a release claim',
-      artifact_hashes: { ...candidate, ...sourceHashes },
+      artifact_hashes: sourceHashes,
     };
     const { artifact_hashes: omittedArtifactHashes, ...missingHashes } = verified;
     void omittedArtifactHashes;

@@ -838,6 +838,17 @@ fn load(path: &Path) -> Result<Receipt> {
     Ok(serde_json::from_str(&content)?)
 }
 
+fn enforce_exit_status(status: OverallStatus, allow_not_proven: bool) -> Result<()> {
+    match status {
+        OverallStatus::Ready => Ok(()),
+        OverallStatus::Blocked => bail!("public-beta experience is blocked"),
+        OverallStatus::NotProven if allow_not_proven => Ok(()),
+        OverallStatus::NotProven => bail!(
+            "public-beta experience is not_proven; pass --allow-not-proven only for an intentional incomplete result"
+        ),
+    }
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
@@ -857,10 +868,7 @@ fn main() -> Result<()> {
         receipt.journey_cells.len(),
         receipt.child_receipts.iter().len()
     );
-    if status != OverallStatus::Ready && !args.allow_not_proven {
-        bail!("public-beta experience is {}", status.as_str());
-    }
-    Ok(())
+    enforce_exit_status(status, args.allow_not_proven)
 }
 
 #[cfg(test)]
@@ -971,6 +979,42 @@ mod tests {
     fn blocked_fixture_is_blocked() -> Result<()> {
         let receipt = fixture(include_str!("../../fixtures/experience/public_beta/blocked.json"))?;
         assert_eq!(validate(&receipt)?, OverallStatus::Blocked);
+        Ok(())
+    }
+
+    #[test]
+    fn allow_not_proven_only_allows_intended_incomplete_statuses() -> Result<()> {
+        assert!(super::enforce_exit_status(OverallStatus::Blocked, true).is_err());
+        assert!(super::enforce_exit_status(OverallStatus::Blocked, false).is_err());
+        super::enforce_exit_status(OverallStatus::NotProven, true)?;
+        assert!(super::enforce_exit_status(OverallStatus::NotProven, false).is_err());
+        super::enforce_exit_status(OverallStatus::Ready, true)?;
+        Ok(())
+    }
+
+    #[test]
+    fn producer_shaped_verified_receipt_deserializes_through_fan_in_schema() -> Result<()> {
+        let artifact: super::VerifiedChildArtifact = serde_json::from_value(serde_json::json!({
+            "owner_issue": "#4346",
+            "schema_version": "verified_child_receipt.v1",
+            "receipt_schema_version": "installed_acceptance.v1",
+            "candidate_id": "v0.18.0-rc1",
+            "frozen_product_sha": "0123456789abcdef0123456789abcdef01234567",
+            "artifact_set_id": "v0.18.0-rc1-primary",
+            "status": "not_proven",
+            "claim_boundary": "Packaged VSIX and bundled-server journey exercised by the VS Code extension host.",
+            "limitation": "DAP preview is not exercised by this slice.",
+            "source_receipt_sha256": "a".repeat(64),
+            "artifact_hashes": {
+                "vsix_sha256": "b".repeat(64),
+                "bundled_server_sha256": "c".repeat(64)
+            }
+        }))?;
+        let hashes = artifact
+            .artifact_hashes
+            .ok_or_else(|| color_eyre::eyre::eyre!("producer receipt omitted artifact hashes"))?;
+        assert_eq!(hashes.vsix_sha256, "b".repeat(64));
+        assert_eq!(hashes.bundled_server_sha256, "c".repeat(64));
         Ok(())
     }
 

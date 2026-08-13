@@ -86,20 +86,6 @@ function assembleInstalledAcceptance({
       'verified artifact bundled_server_sha256',
     ),
   };
-  for (const field of ['candidate_id', 'frozen_product_sha', 'artifact_set_id']) {
-    if (
-      verifiedHashes[field] !==
-      identity[
-        field === 'candidate_id'
-          ? 'candidateId'
-          : field === 'frozen_product_sha'
-            ? 'frozenProductSha'
-            : 'artifactSetId'
-      ]
-    ) {
-      throw new Error(`verified artifact ${field} does not match candidate identity`);
-    }
-  }
   const sourceHashes = source.artifact_hashes;
   if (!sourceHashes || typeof sourceHashes !== 'object') {
     throw new Error('source receipt lacks artifact_hashes');

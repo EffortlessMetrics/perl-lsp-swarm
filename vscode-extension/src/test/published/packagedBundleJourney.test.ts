@@ -17,13 +17,19 @@ interface VerifiedChildArtifact {
   claim_boundary: string;
   limitation: string | null;
   source_receipt_sha256: string;
-  artifact_hashes: CandidateArtifactManifest;
+  artifact_hashes: ArtifactHashes;
 }
 
 interface CandidateArtifactManifest {
   candidate_id: string;
   frozen_product_sha: string;
   artifact_set_id: string;
+  platform: string;
+  vsix_sha256: string;
+  bundled_server_sha256: string;
+}
+
+interface ArtifactHashes {
   vsix_sha256: string;
   bundled_server_sha256: string;
 }
@@ -102,6 +108,11 @@ function requireCandidateArtifactManifest(
     manifest.artifact_set_id,
     artifactSetId,
     'candidate artifact manifest artifact-set mismatch',
+  );
+  assert.equal(
+    manifest.platform,
+    platformLabel(),
+    'candidate artifact manifest platform mismatch; candidate-bound verification is Linux-only',
   );
   assert.match(manifest.vsix_sha256, /^[0-9a-f]{64}$/i, 'manifest VSIX SHA-256 is invalid');
   assert.match(
@@ -185,9 +196,6 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: st
           : null,
     source_receipt_sha256: sha256(sourceReceiptPath),
     artifact_hashes: {
-      candidate_id: candidateId,
-      frozen_product_sha: frozenProductSha,
-      artifact_set_id: artifactSetId,
       vsix_sha256: vsixSha256 as string,
       bundled_server_sha256: bundledServerSha256 as string,
     },

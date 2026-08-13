@@ -57,6 +57,14 @@ export function assertCandidateBoundInstallSource({
   }
 }
 
+export function assertCandidateBoundPlatform(platform: string, candidateBound: boolean): void {
+  if (candidateBound && platform !== 'linux') {
+    throw new Error(
+      `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
+    );
+  }
+}
+
 function smokePlatformLabel(): string {
   switch (process.platform) {
     case 'win32':
@@ -345,6 +353,10 @@ async function main(): Promise<void> {
     envValue('PERL_LSP_ARTIFACT_SET_ID') ||
     envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
     envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
+  );
+  assertCandidateBoundPlatform(
+    process.platform === 'linux' ? 'linux' : process.platform,
+    candidateBound,
   );
   assertCandidateBoundInstallSource({
     source,
