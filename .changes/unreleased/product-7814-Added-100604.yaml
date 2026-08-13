@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Added
+body: Added a bounded real-Vim version, build-feature, platform, and public-artifact compatibility replay for the vim-lsp path.
+time: 2026-08-13T10:06:04Z
+custom:
+  PR: "7814"
+  Slug: vim-supported-host-matrix
+  Breaking: "no"
