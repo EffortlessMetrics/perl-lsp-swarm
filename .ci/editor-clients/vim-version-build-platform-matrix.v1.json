@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "subject": "Vim + prabirshrestha/vim-lsp + perllsp",
+  "controller": "#7760",
+  "canonical_journey": "#7691",
+  "activation_root": "#7762",
+  "rows": [
+    {
+      "id": "linux-support-floor",
+      "platform": "linux",
+      "arch": "x86_64",
+      "vim_selector": "VIM_FLOOR",
+      "required": true,
+      "purpose": "select and prove the minimum maintained Vim build",
+      "evidence_stage": "exact_source_local"
+    },
+    {
+      "id": "linux-current-9.2",
+      "platform": "linux",
+      "arch": "x86_64",
+      "vim_selector": "VIM_CURRENT",
+      "required": true,
+      "purpose": "prove the current Vim 9.2 family",
+      "evidence_stage": "exact_source_local"
+    },
+    {
+      "id": "linux-current-9.2-public-artifact",
+      "platform": "linux",
+      "arch": "x86_64",
+      "vim_selector": "VIM_CURRENT",
+      "required": false,
+      "purpose": "prove the packaged/public perllsp artifact separately from a workspace binary",
+      "evidence_stage": "public_artifact",
+      "binary_selector": "PUBLIC_PERLLSP"
+    },
+    {
+      "id": "windows-supported-row",
+      "platform": "windows",
+      "required": false,
+      "purpose": "path URI process and workspace-edit interoperability",
+      "state": "not_proven_until_direct_receipt"
+    },
+    {
+      "id": "macos-supported-row",
+      "platform": "macos",
+      "required": false,
+      "purpose": "path URI process and workspace-edit interoperability",
+      "state": "not_proven_until_direct_receipt"
+    }
+  ],
+  "row_identity": [
+    "vim exact version and patchlevel",
+    "compiled feature/version output digest",
+    "platform and architecture",
+    "vim-lsp exact ref",
+    "activation/root contract digest",
+    "perllsp path version build and hash",
+    "initialize capability digest",
+    "text-sync mode and observed didChange shape",
+    "journey cells",
+    "shutdown/process cleanup"
+  ],
+  "claim_rules": {
+    "plugin_minimum_is_not_support_floor": true,
+    "future_vim_versions_do_not_inherit": true,
+    "platform_rows_do_not_inherit": true,
+    "public_artifact_does_not_inherit_exact_source": true,
+    "optional_ui_features_do_not_define_baseline_support": true
+  }
+}
