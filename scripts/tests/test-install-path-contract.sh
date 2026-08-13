@@ -29,8 +29,8 @@ grep -Fq '[switch]$NoModifyPath' "$WINDOWS_INSTALLER" \
     || fail "Windows installer must expose -NoModifyPath"
 grep -Fq '[Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")' "$WINDOWS_INSTALLER" \
     || fail "Windows installer must persist only the constructed User PATH"
-if grep -Eq 'SetEnvironmentVariable\([^\n]*\$env:Path[^\n]*"User"' "$WINDOWS_INSTALLER"; then
-    fail "Windows installer must not copy merged process PATH into User PATH"
+if grep -F 'SetEnvironmentVariable' "$WINDOWS_INSTALLER" | grep -Fq '$env:Path'; then
+    fail "Windows installer must not copy merged process PATH into persistent User PATH"
 fi
 grep -Fq 'manual_path_action_required' "$WINDOWS_INSTALLER" \
     || fail "Windows installer must expose an explicit manual PATH disposition"
