@@ -51,6 +51,28 @@ fn schema_and_template_are_valid_json_and_fail_closed() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+fn sha256_fill(nibble: char) -> String {
+    let mut value = String::with_capacity("sha256:".len() + 64);
+    value.push_str("sha256:");
+    for _ in 0..64 {
+        value.push(nibble);
+    }
+    value
+}
+
+/// Fill Zed/extension identity so later fail-closed checks are reachable.
+fn with_host_identity(mut receipt: Value) -> Value {
+    receipt["zed"]["version"] = Value::String("0.0.0-test".to_string());
+    receipt["zed"]["channel"] = Value::String("stable".to_string());
+    receipt["zed"]["build"] = Value::String("zed-build-test".to_string());
+    receipt["extension"]["base_commit"] =
+        Value::String("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string());
+    receipt["extension"]["candidate_commit"] =
+        Value::String("ffffffffffffffffffffffffffffffffffffffff".to_string());
+    receipt["extension"]["wasm_sha256"] = Value::String(sha256_fill('a'));
+    receipt
+}
+
 #[test]
 fn false_green_mutations_are_rejected() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
@@ -64,14 +86,14 @@ fn false_green_mutations_are_rejected() -> Result<(), Box<dyn Error>> {
         "exact Zed host identity is missing"
     );
 
-    let mut wrong_provider = empty_pass.clone();
+    let mut wrong_provider = with_host_identity(empty_pass.clone());
     wrong_provider["perllsp"]["server_id"] = Value::String("perl-lsp".to_string());
     assert_eq!(
         validate_pass(&wrong_provider, None).expect_err("wrong provider"),
         "exact perllsp process identity is missing"
     );
 
-    let mut wrong_transport = empty_pass.clone();
+    let mut wrong_transport = with_host_identity(empty_pass.clone());
     wrong_transport["perllsp"]["arguments"] = serde_json::json!(["mcp", "--stdio"]);
     assert_eq!(
         validate_pass(&wrong_transport, None).expect_err("wrong transport"),
