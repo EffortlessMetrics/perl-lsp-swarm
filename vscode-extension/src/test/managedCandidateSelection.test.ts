@@ -68,7 +68,10 @@ describe('managed candidate publication and selection', () => {
       resolveManagedCandidateForHost({
         current,
         candidates: [oldCandidate, newCandidate],
-        compatible_candidate_ids: [oldCandidate.manifest.candidate_id, newCandidate.manifest.candidate_id],
+        compatible_candidate_ids: [
+          oldCandidate.manifest.candidate_id,
+          newCandidate.manifest.candidate_id,
+        ],
         running_candidate_id: oldCandidate.manifest.candidate_id,
       }),
     ).toBe(oldCandidate.manifest.candidate_id);
