@@ -76,8 +76,12 @@ require(
     "candidate source must normalize to exactly one explicit --stdio argument",
 )
 require(
-    "is_non_lsp_argument" in source and '"mcp"' in source and '"--socket"' in source,
-    "candidate source must reject non-LSP transport and MCP routes",
+    'argument == "--stdio" || argument == "--mcp" || argument == "mcp"' in source,
+    "candidate source must treat mcp/--mcp as stdio launcher aliases",
+)
+require(
+    "is_non_lsp_argument" in source and '"--socket"' in source,
+    "candidate source must reject non-LSP transport routes such as --socket",
 )
 require(
     "LspSettings::for_worktree(PERLLSP_SERVER_ID, worktree)" in source,
