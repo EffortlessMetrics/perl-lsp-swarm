@@ -1,0 +1,50 @@
+name: Temporary apply and verify indexed mapper 7881
+
+on:
+  push:
+    branches:
+      - agent/indexed-strict-position-mapper-7881
+
+permissions:
+  contents: write
+
+jobs:
+  apply-verify-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Install repository Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.95.0
+
+      - name: Apply indexed mapper patch
+        shell: bash
+        run: |
+          cat .github/tmp/7881/part* > indexed-7881.patch.b64
+          base64 --decode indexed-7881.patch.b64 > indexed-7881.patch
+          git apply --check indexed-7881.patch
+          git apply indexed-7881.patch
+          cargo fmt --all
+
+      - name: Verify focused crate
+        shell: bash
+        run: |
+          cargo test --locked -p perl-position-tracking
+          cargo clippy --locked -p perl-position-tracking --all-targets -- -D warnings
+          cargo fmt --all -- --check
+
+      - name: Publish verified candidate and remove bootstrap files
+        shell: bash
+        run: |
+          rm -f indexed-7881.patch indexed-7881.patch.b64
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add crates/perl-position-tracking/src/lib.rs crates/perl-position-tracking/src/strict.rs
+          git rm -r .github/tmp/7881 .github/workflows/tmp-apply-7881.yml
+          git commit -m "perf(position): add indexed strict mapper (#7881)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
