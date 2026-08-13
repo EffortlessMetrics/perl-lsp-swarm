@@ -15,6 +15,7 @@
 
 set -euo pipefail
 
+invocation_cwd=$(pwd)
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 perllsp_bin=${PERLLSP:-${1:-}}
 install_source=${PERLLSP_INSTALL_SOURCE:-}
@@ -25,6 +26,9 @@ nvim_bin=${NEOVIM:-nvim}
 if [[ -z "${perllsp_bin}" || -z "${install_source}" || -z "${expected_sha256}" ]]; then
   echo "NOT_PROVEN: PERLLSP, PERLLSP_INSTALL_SOURCE, and PERLLSP_EXPECTED_SHA256 are required" >&2
   exit 1
+fi
+if [[ "${perllsp_bin}" != /* ]]; then
+  perllsp_bin="${invocation_cwd}/${perllsp_bin}"
 fi
 if ! command -v "${nvim_bin}" >/dev/null 2>&1; then
   echo "NOT_PROVEN: nvim not found (set NEOVIM=/path/to/nvim)" >&2
@@ -51,8 +55,9 @@ sha256_file() {
   fi
 }
 
-actual_sha256=$(sha256_file "${perllsp_bin}")
-if [[ "${actual_sha256,,}" != "${expected_sha256,,}" ]]; then
+actual_sha256=$(sha256_file "${perllsp_bin}" | tr '[:upper:]' '[:lower:]')
+expected_sha256_lower=$(printf '%s' "${expected_sha256}" | tr '[:upper:]' '[:lower:]')
+if [[ "${actual_sha256}" != "${expected_sha256_lower}" ]]; then
   echo "installed perllsp SHA-256 mismatch" >&2
   echo "expected: ${expected_sha256}" >&2
   echo "actual:   ${actual_sha256}" >&2
