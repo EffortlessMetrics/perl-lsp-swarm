@@ -67,34 +67,41 @@ fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn unadvertised_document_formatting_observes_surface_gate_before_params()
+fn jsonrpc_unadvertised_formatting_hits_surface_gate_before_params()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
+    initialize(&server)?;
     server.advertised_features.lock().formatting = false;
-    server.advertised_feature_ids.lock().clear();
+    server
+        .advertised_feature_ids
+        .lock()
+        .retain(|id| *id != perl_lsp_rs_core::features::ids::LSP_FORMATTING);
 
-    let error = server
-        .handle_formatting_policy(None, None)
-        .err()
-        .ok_or("expected method-not-advertised")?;
-    assert_eq!(error.code, -32601);
+    let response = server
+        .handle_request(request_without_params(301, "textDocument/formatting"))
+        .ok_or("formatting returned no response")?;
+    let code = response.error.as_ref().map(|error| error.code).unwrap_or(0);
+    assert_eq!(
+        code, -32601,
+        "JSON-RPC formatting must hit ensure_surface_advertised before param validation"
+    );
     Ok(())
 }
 
 #[test]
-fn advertised_document_formatting_observes_missing_params_invalidation()
--> Result<(), Box<dyn std::error::Error>> {
+fn jsonrpc_advertised_formatting_rejects_missing_params() -> Result<(), Box<dyn std::error::Error>>
+{
     let server = LspServer::new();
-    advertise(&server);
-
-    let error = server
-        .handle_formatting_policy(None, None)
-        .err()
-        .ok_or("expected invalid params")?;
+    initialize(&server)?;
+    // initialize advertises formatting; keep that path and omit params entirely.
+    let response = server
+        .handle_request(request_without_params(302, "textDocument/formatting"))
+        .ok_or("formatting returned no response")?;
+    let error = response.error.ok_or("expected invalid params")?;
     assert_eq!(error.code, crate::protocol::INVALID_PARAMS);
     assert!(
         error.message.contains("Missing formatting parameters"),
-        "missing-params path must name the formatting parameter contract, got {}",
+        "JSON-RPC missing-params path must name the formatting contract, got {}",
         error.message
     );
     Ok(())
