@@ -1,4 +1,4 @@
-name: Temporary rustfmt extraction for PR 7753
+name: Temporary rustfmt finalization for PR 7753
 
 on:
   push:
@@ -6,10 +6,10 @@ on:
       - agent/strict-position-authority-1814
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  format:
+  format-and-finalize:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -22,19 +22,13 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt
           rustup default 1.95.0
 
-      - name: Format candidate
+      - name: Apply canonical formatting and remove temporary workflow
         shell: bash
         run: |
           cargo fmt --all
-          git diff -- crates/perl-position-tracking/src > rustfmt-7753.diff
-
-      - name: Upload exact formatter output
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
-        with:
-          name: rustfmt-output-7753-${{ github.sha }}
-          path: |
-            crates/perl-position-tracking/src/lib.rs
-            crates/perl-position-tracking/src/strict.rs
-            rustfmt-7753.diff
-          if-no-files-found: error
-          retention-days: 1
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add crates/perl-position-tracking/src/lib.rs crates/perl-position-tracking/src/strict.rs
+          git rm .github/workflows/tmp-rustfmt-7753.yml
+          git commit -m "style(position): apply canonical rustfmt (#1814)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
