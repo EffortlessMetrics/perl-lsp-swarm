@@ -56,30 +56,26 @@ jobs:
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
         with:
           toolchain: 1.95.0
-          components: rustfmt
+          components: rustfmt, clippy
+          targets: wasm32-wasip2
 
-      - name: Report workspace rustfmt change set
-        shell: bash
-        run: |
-          cargo fmt --all
-          mapfile -t changed < <(git diff --name-only -- '*.rs')
-          if [[ ${#changed[@]} -eq 0 ]]; then
-            echo '::notice title=workspace rustfmt::no Rust changes required'
-            exit 0
-          fi
-          for path in "${changed[@]}"; do
-            echo "::error file=$path,title=workspace rustfmt changed file::$path"
-          done
-          diff="$(git diff -- '*.rs')"
-          chunk=0
-          while [[ -n "$diff" ]]; do
-            piece="${diff:0:2800}"
-            diff="${diff:2800}"
-            escaped="${piece//'%'/'%25'}"
-            escaped="${escaped//$'\r'/'%0D'}"
-            escaped="${escaped//$'\n'/'%0A'}"
-            printf -v title 'workspace rustfmt diff %03d' "$chunk"
-            echo "::error title=$title::$escaped"
-            chunk=$((chunk + 1))
-          done
-          exit 1
+      - name: Check staged identities and claims
+        run: bash scripts/check-zed-upstream-candidate.sh
+
+      - name: Generate isolated candidate lockfile
+        run: cargo generate-lockfile --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
+
+      - name: Format staged candidate
+        run: cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check
+
+      - name: Clippy staged candidate
+        run: cargo clippy --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --all-targets --locked -- -D warnings
+
+      - name: Host helper tests
+        run: cargo test --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked
+
+      - name: Build Zed WASM extension
+        run: cargo build --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked --target wasm32-wasip2 --release
+
+      - name: Run repository claim guards
+        run: cargo test -p xtask --test zed_support_claims --locked
