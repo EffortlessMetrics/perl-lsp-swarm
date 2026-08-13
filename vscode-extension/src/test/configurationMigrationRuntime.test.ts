@@ -38,7 +38,9 @@ function compatibleRegistry(): ConfigurationMigrationRegistry {
 
 describe('configuration migration runtime', () => {
   test('keeps removed MCP process-execution settings inert without carrying their value', () => {
-    const secretLegacyValue = [{ label: 'private', command: '/private/tool', env: { TOKEN: 'secret' } }];
+    const secretLegacyValue = [
+      { label: 'private', command: '/private/tool', env: { TOKEN: 'secret' } },
+    ];
     const result = interpretLegacyConfiguration(V018_CONFIGURATION_MIGRATIONS, {
       old_key: 'perl-lsp.mcp.servers',
       source_scope: 'machine',
