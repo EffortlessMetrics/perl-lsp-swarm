@@ -31,12 +31,8 @@ describe('VS Code client measurement recorder', () => {
       availability: 'observed',
       offset_ms: 0,
     });
-    expect(
-      snapshot.phases.find((phase) => phase.phase === 'base_surface_ready')?.offset_ms,
-    ).toBe(12);
-    expect(
-      snapshot.phases.find((phase) => phase.phase === 'activation_committed')?.offset_ms,
-    ).toBe(50);
+    expect(snapshot.phases.find((phase) => phase.phase === 'base_surface_ready')?.offset_ms).toBe(12);
+    expect(snapshot.phases.find((phase) => phase.phase === 'activation_committed')?.offset_ms).toBe(50);
     expect(snapshot.instrument_complete).toBe(false);
   });
 
@@ -68,10 +64,7 @@ describe('VS Code client measurement recorder', () => {
   test('records observed and not-proven resources separately', () => {
     const recorder = new VscodeClientMeasurementRecorder(subject(), 0);
     recorder.observeResource('extension_owned_timers', 3);
-    recorder.markResourceNotProven(
-      'extension_host_rss_bytes',
-      'shared host attribution unavailable',
-    );
+    recorder.markResourceNotProven('extension_host_rss_bytes', 'shared host attribution unavailable');
 
     expect(recorder.snapshot().resources).toEqual([
       {
