@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "host": "vim9",
+    "client": "yegappan/lsp",
+    "client_ref": "6ab67121fa1364d95e4f282580d99b6aa85f808a",
+    "integration_mode": "generic_lsp",
+    "canonical_status": "evaluation_only"
+  },
+  "baseline_authorities": {
+    "activation_root": "#7762",
+    "canonical_vim_lsp": "#7691",
+    "supported_vim_builds": "#7766",
+    "claim_convergence": "#7696"
+  },
+  "comparison_cells": [
+    "attach_and_root",
+    "diagnostics",
+    "completion",
+    "hover",
+    "definition",
+    "references",
+    "edit_freshness",
+    "rename_workspace_edit",
+    "formatting",
+    "unicode_position",
+    "workspace_configuration",
+    "clean_shutdown"
+  ],
+  "optional_cells": ["semantic_tokens", "inlay_hints", "workspace_folders"],
+  "allowed_final_dispositions": [
+    "support_row_candidate",
+    "configuration_only",
+    "not_recommended",
+    "supersedes_canonical_candidate"
+  ],
+  "claim_rules": {
+    "canonical_client_does_not_change_automatically": true,
+    "vim_lsp_receipt_cannot_satisfy_yegappan": true,
+    "feature_list_is_not_interoperability_evidence": true,
+    "newer_vim_requirement_is_independent_row_data": true,
+    "server_workaround_requires_reproduced_general_defect": true
+  }
+}
