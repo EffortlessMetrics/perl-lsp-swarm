@@ -167,6 +167,11 @@ class CommandSurfaceContractTests(unittest.TestCase):
         for forbidden in ("subprocess", "os.system", "Popen(", "shell=True", "perlcritic ", "prove "):
             self.assertNotIn(forbidden, source)
 
+    def test_deterministic_export_contains_the_command_runtime(self) -> None:
+        exporter = (PACKAGE.parent / "export_lsp_perllsp.py").read_text(encoding="utf-8")
+        self.assertIn('"Default.sublime-commands"', exporter)
+        self.assertIn('"command_surface.py"', exporter)
+
 
 if __name__ == "__main__":
     unittest.main()
