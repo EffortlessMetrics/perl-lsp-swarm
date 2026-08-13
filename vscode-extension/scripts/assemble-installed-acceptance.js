@@ -17,6 +17,13 @@ function requireIdentity(value, field) {
   return value.trim();
 }
 
+function requireArtifactHash(value, field) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/i.test(value)) {
+    throw new Error(`${field} must be a 64-character SHA-256 hex digest`);
+  }
+  return value.toLowerCase();
+}
+
 function relativeReceiptPath(parentPath, artifactPath) {
   const parentDirectory = path.dirname(parentPath);
   const relative = path.relative(parentDirectory, artifactPath).split(path.sep).join('/');
@@ -68,6 +75,41 @@ function assembleInstalledAcceptance({
   if (verified.receipt_schema_version !== 'installed_acceptance.v1') {
     throw new Error('verified artifact is not an installed_acceptance.v1 envelope');
   }
+  const verifiedHashes = verified.artifact_hashes;
+  if (!verifiedHashes || typeof verifiedHashes !== 'object') {
+    throw new Error('verified artifact lacks artifact_hashes');
+  }
+  const artifactHashes = {
+    vsix_sha256: requireArtifactHash(verifiedHashes.vsix_sha256, 'verified artifact vsix_sha256'),
+    bundled_server_sha256: requireArtifactHash(
+      verifiedHashes.bundled_server_sha256,
+      'verified artifact bundled_server_sha256',
+    ),
+  };
+  for (const field of ['candidate_id', 'frozen_product_sha', 'artifact_set_id']) {
+    if (
+      verifiedHashes[field] !==
+      identity[
+        field === 'candidate_id'
+          ? 'candidateId'
+          : field === 'frozen_product_sha'
+            ? 'frozenProductSha'
+            : 'artifactSetId'
+      ]
+    ) {
+      throw new Error(`verified artifact ${field} does not match candidate identity`);
+    }
+  }
+  const sourceHashes = source.artifact_hashes;
+  if (!sourceHashes || typeof sourceHashes !== 'object') {
+    throw new Error('source receipt lacks artifact_hashes');
+  }
+  if (sourceHashes.vsix_sha256 !== artifactHashes.vsix_sha256) {
+    throw new Error('source receipt VSIX SHA-256 differs from the verified artifact');
+  }
+  if (sourceHashes.bundled_server_sha256 !== artifactHashes.bundled_server_sha256) {
+    throw new Error('source receipt bundled-server SHA-256 differs from the verified artifact');
+  }
 
   const sourceBytes = fs.readFileSync(sourceReceiptPath);
   const verifiedBytes = fs.readFileSync(verifiedArtifactPath);
@@ -83,6 +125,7 @@ function assembleInstalledAcceptance({
   installed.status = verified.status;
   installed.claim_boundary = verified.claim_boundary;
   installed.limitation = verified.limitation;
+  installed.artifact_hashes = artifactHashes;
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, `${JSON.stringify(parent, null, 2)}\n`);

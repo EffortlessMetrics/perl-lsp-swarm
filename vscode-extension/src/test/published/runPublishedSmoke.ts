@@ -22,6 +22,41 @@ function envValue(name: string): string {
   return process.env[name]?.trim() ?? '';
 }
 
+export interface CandidateBoundInstallContext {
+  source: ExtensionSource;
+  version: string;
+  vsixPath: string;
+  candidateBound: boolean;
+}
+
+export function assertCandidateBoundInstallSource({
+  source,
+  version,
+  vsixPath,
+  candidateBound,
+}: CandidateBoundInstallContext): void {
+  if (!candidateBound) {
+    return;
+  }
+  if (source === 'marketplace') {
+    throw new Error(
+      version
+        ? 'Candidate-bound installed acceptance refuses Marketplace installs because the installed extension VSIX digest cannot be observed; use source=vsix with an exact VSIX path and observed digest.'
+        : 'Candidate-bound installed acceptance refuses Marketplace latest; use source=vsix with an exact VSIX path and observed digest.',
+    );
+  }
+  if (source === 'open-vsx' && !version) {
+    throw new Error(
+      'Candidate-bound installed acceptance requires an exact Open VSX version so the downloaded VSIX can be observed and hashed.',
+    );
+  }
+  if (source === 'vsix' && !vsixPath) {
+    throw new Error(
+      'Candidate-bound installed acceptance requires PERL_LSP_PUBLISHED_VSIX_PATH for an observed VSIX artifact.',
+    );
+  }
+}
+
 function smokePlatformLabel(): string {
   switch (process.platform) {
     case 'win32':
@@ -304,6 +339,19 @@ function configureCurrentSourceSmoke(
 
 async function main(): Promise<void> {
   const source = publishedSource();
+  const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
+  const candidateBound = Boolean(
+    envValue('PERL_LSP_CANDIDATE_ID') ||
+    envValue('PERL_LSP_ARTIFACT_SET_ID') ||
+    envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
+    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
+  );
+  assertCandidateBoundInstallSource({
+    source,
+    version,
+    vsixPath: envValue('PERL_LSP_PUBLISHED_VSIX_PATH'),
+    candidateBound,
+  });
   const vscodeVersion = resolveVSCodeTestVersion(process.env.PERL_LSP_VSCODE_VERSION);
   const toolchainNodeVersion = process.version;
   const toolchainNpmVersionValue = toolchainNpmVersion();
@@ -404,8 +452,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exit(1);
+  });
+}

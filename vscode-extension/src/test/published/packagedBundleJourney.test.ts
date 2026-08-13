@@ -17,6 +17,7 @@ interface VerifiedChildArtifact {
   claim_boundary: string;
   limitation: string | null;
   source_receipt_sha256: string;
+  artifact_hashes: CandidateArtifactManifest;
 }
 
 interface CandidateArtifactManifest {
@@ -183,6 +184,13 @@ function writeVerifiedChildArtifact(receipt: ReceiptValue, sourceReceiptPath: st
           ? 'The packaged journey reported one or more product blockers.'
           : null,
     source_receipt_sha256: sha256(sourceReceiptPath),
+    artifact_hashes: {
+      candidate_id: candidateId,
+      frozen_product_sha: frozenProductSha,
+      artifact_set_id: artifactSetId,
+      vsix_sha256: vsixSha256 as string,
+      bundled_server_sha256: bundledServerSha256 as string,
+    },
   };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(artifact, null, 2));
