@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/.ci/schemas/zed-managed-asset-receipt.v1.schema.json",
+  "title": "Zed perllsp managed asset receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "result", "observed_at", "contract", "release", "verifier", "targets", "limitations", "claim_boundary"],
+  "properties": {
+    "schema_version": {"const": "zed_managed_asset_receipt.v1"},
+    "result": {"enum": ["not_run", "pass", "fail", "instrument_failed", "contract_stale"]},
+    "observed_at": {"type": ["string", "null"], "format": "date-time"},
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256", "schema_version"],
+      "properties": {
+        "relative_path": {"type": "string"},
+        "sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "schema_version": {"const": "zed_perllsp_managed_downloads.v1"}
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "id", "tag", "version", "prerelease", "draft", "published_at"],
+      "properties": {
+        "repository": {"const": "EffortlessMetrics/perl-lsp"},
+        "id": {"type": ["integer", "null"]},
+        "tag": {"type": ["string", "null"]},
+        "version": {"type": ["string", "null"]},
+        "prerelease": {"type": ["boolean", "null"]},
+        "draft": {"type": ["boolean", "null"]},
+        "published_at": {"type": ["string", "null"]}
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "version", "architecture", "python"],
+      "properties": {
+        "os": {"type": ["string", "null"]},
+        "version": {"type": ["string", "null"]},
+        "architecture": {"type": ["string", "null"]},
+        "python": {"type": ["string", "null"]}
+      }
+    },
+    "targets": {"type": "array", "items": {"$ref": "#/$defs/target"}},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "claim_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_bytes", "archive_layout", "host_process", "actual_zed", "public_registry"],
+      "properties": {
+        "asset_bytes": {"enum": ["not_run", "proven"]},
+        "archive_layout": {"enum": ["not_run", "proven"]},
+        "host_process": {"enum": ["not_run", "proven_for_matching_host_only", "not_executed_on_this_verifier"]},
+        "actual_zed": {"const": "not_proven"},
+        "public_registry": {"const": "not_proven"}
+      }
+    }
+  },
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "os", "architecture", "disposition", "result", "asset", "archive", "binary", "stdio_smoke", "errors"],
+      "properties": {
+        "target": {"type": "string"},
+        "os": {"type": "string"},
+        "architecture": {"type": "string"},
+        "disposition": {"enum": ["managed", "path_only", "deferred", "unsupported"]},
+        "result": {"enum": ["not_run", "managed_executed", "managed_extracted_not_executed", "path_only", "deferred", "unsupported", "fail"]},
+        "asset": {"type": ["object", "null"]},
+        "archive": {"type": ["object", "null"]},
+        "binary": {"type": ["object", "null"]},
+        "stdio_smoke": {"type": ["object", "null"]},
+        "errors": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}
