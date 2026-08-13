@@ -1,0 +1,46 @@
+{
+  "schema_version": "zed_exact_source_observations.v1",
+  "result": "not_run",
+  "observed_at": null,
+  "configuration": {
+    "workspace_configuration_observed": false,
+    "precedence_observed": null,
+    "live_update_observed": null
+  },
+  "activation": {
+    "pl": {"result": "not_proven", "evidence": null},
+    "pm": {"result": "not_proven", "evidence": null},
+    "t": {"result": "not_proven", "evidence": null},
+    "PL": {"result": "not_proven", "evidence": null},
+    "psgi": {"result": "not_proven", "evidence": null},
+    "cgi": {"result": "not_proven", "evidence": null},
+    "fcgi": {"result": "not_proven", "evidence": null},
+    "shebang": {"result": "not_proven", "evidence": null},
+    "pod": {"result": "not_proven", "evidence": null}
+  },
+  "journey": {
+    "manifest_discovery": {"result": "not_proven", "evidence": null},
+    "perl_attachment": {"result": "not_proven", "evidence": null},
+    "initialize": {"result": "not_proven", "evidence": null},
+    "workspace_root": {"result": "not_proven", "evidence": null},
+    "diagnostics": {"result": "not_proven", "evidence": null},
+    "completion": {"result": "not_proven", "evidence": null},
+    "hover": {"result": "not_proven", "evidence": null},
+    "definition": {"result": "not_proven", "evidence": null},
+    "references": {"result": "not_proven", "evidence": null},
+    "document_symbols": {"result": "not_proven", "evidence": null},
+    "workspace_symbols": {"result": "not_proven", "evidence": null},
+    "safe_edit_or_refusal": {"result": "not_proven", "evidence": null},
+    "unicode_positions": {"result": "not_proven", "evidence": null},
+    "mixed_newlines": {"result": "not_proven", "evidence": null},
+    "semantic_tokens": {"result": "not_proven", "evidence": null},
+    "post_edit_freshness": {"result": "not_proven", "evidence": null},
+    "restart": {"result": "not_proven", "evidence": null},
+    "shutdown": {"result": "not_proven", "evidence": null}
+  },
+  "language_server_log": null,
+  "limitations": [
+    "Template only. Install the exact candidate through Zed's Install Dev Extension action and record direct observations.",
+    "Managed download and official-registry installation are separate evidence stages."
+  ]
+}
