@@ -31,6 +31,18 @@
       "enum": ["not_run", "pass", "fail", "instrument_failed"]
     },
     "observed_at": {"type": ["string", "null"], "format": "date-time"},
+    "public_subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {
+          "type": ["string", "null"],
+          "const": ".ci/fixtures/zed-perl-upstream/receipts/public-registry-subject.v1.json"
+        },
+        "sha256": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
     "zed": {
       "type": "object",
       "additionalProperties": false,
@@ -252,6 +264,39 @@
               "language_server_log": {"type": "string"},
               "process_inventory": {"type": "string"},
               "redacted": {"const": true}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "evidence_stage": {"const": "public_registry_install"},
+          "result": {"const": "pass"}
+        },
+        "required": ["evidence_stage", "result"]
+      },
+      "then": {
+        "required": ["public_subject"],
+        "properties": {
+          "perllsp": {
+            "properties": {
+              "resolution_route": {"const": "managed_download"}
+            }
+          },
+          "profile": {
+            "properties": {
+              "prior_extension_absent": {"const": true},
+              "prior_managed_cache_absent": {"const": true}
+            }
+          },
+          "public_subject": {
+            "properties": {
+              "relative_path": {
+                "const": ".ci/fixtures/zed-perl-upstream/receipts/public-registry-subject.v1.json"
+              },
+              "sha256": {"type": "string"}
             }
           }
         }

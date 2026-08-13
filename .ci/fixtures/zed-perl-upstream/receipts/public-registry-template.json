@@ -86,6 +86,10 @@
     "process_inventory": null,
     "redacted": null
   },
+  "public_subject": {
+    "relative_path": ".ci/fixtures/zed-perl-upstream/receipts/public-registry-subject.v1.json",
+    "sha256": null
+  },
   "limitations": [
     "Template only. The official Zed registry has not installed the future extension subject.",
     "Managed download and PATH installation are separate routes.",

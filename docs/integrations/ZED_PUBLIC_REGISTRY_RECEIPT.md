@@ -54,3 +54,10 @@ After a passing run, #7912 may promote only the exact Zed version, platform,
 extension version, `perllsp` release/target, install route, activation families,
 configuration behavior, and journey cells observed. Other platforms, versions,
 methods, routes, and DAP remain unproven or unsupported.
+
+A public `result: "pass"` receipt must bind
+`public_subject.relative_path` plus the content SHA-256 of the published subject
+document and must use `resolution_route=managed_download` with
+`prior_extension_absent` and `prior_managed_cache_absent` both true. Development
+binary overrides, worktree PATH installs, and warm managed caches cannot validate
+as official-registry evidence.

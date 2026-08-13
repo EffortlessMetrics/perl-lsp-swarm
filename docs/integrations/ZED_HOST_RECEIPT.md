@@ -75,8 +75,10 @@ language and did not attach `perllsp` through the Perl registration.
 
 The validator rejects a pass when exact host, extension, binary, fixture,
 provider isolation, logs, or required journey cells are absent. It also rejects
-another provider ID, a non-LSP process route, and a development extension
-presented as an official-registry install.
+another provider ID, a non-LSP process route, a development extension presented
+as an official-registry install, a public-registry pass that did not use managed
+download into a clean prior state, and a public pass that is not content-bound to
+the published public subject.
 
 A green exact-source receipt may unblock manual upstream submission. It does not
 prove the public registry route or promote the public Zed support row; #7912 owns
