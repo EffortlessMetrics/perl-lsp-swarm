@@ -49,6 +49,7 @@ Expected release artifacts (`perllsp-<version>-<triple><ext>`):
 | Platform | Archive |
 |---|---|
 | Windows x64 | `perllsp-<version>-x86_64-pc-windows-msvc.zip` |
+| Windows arm64 | `perllsp-<version>-aarch64-pc-windows-msvc.zip` |
 | Linux x64 (glibc) | `perllsp-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux arm64 (glibc) | `perllsp-<version>-aarch64-unknown-linux-gnu.tar.gz` |
 | Linux x64 (musl) | `perllsp-<version>-x86_64-unknown-linux-musl.tar.gz` |
