@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::env;
 use std::fs;
 
@@ -34,7 +33,7 @@ fn classify_server_id(id: &str) -> Result<ServerKind> {
 struct PerllspCommandSettings {
     path: Option<String>,
     arguments: Vec<String>,
-    env: HashMap<String, String>,
+    env: Vec<(String, String)>,
 }
 
 struct PerlExtension {
