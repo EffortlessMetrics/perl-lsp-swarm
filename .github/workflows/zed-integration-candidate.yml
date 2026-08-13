@@ -4,11 +4,40 @@ on:
   pull_request:
     paths:
       - '.ci/fixtures/zed-perl-upstream/**'
+      - '.ci/schemas/zed-*.json'
       - '.github/workflows/zed-integration-candidate.yml'
+      - '.kiro/steering/product.md'
+      - 'book/src/reference/editor-setup-canonical.md'
+      - 'README.md'
+      - 'docs/EDITORS/ZED_SETUP.md'
+      - 'docs/how-to/EDITOR_SETUP.md'
+      - 'docs/how-to/TROUBLESHOOTING.md'
+      - 'docs/integrations/ZED_*.md'
+      - 'docs/reference/FAQ.md'
+      - 'scripts/apply-zed-*.sh'
+      - 'scripts/check-zed-*.sh'
+      - 'xtask/tests/zed_*.rs'
+  push:
+    branches: [main]
+    paths:
+      - '.ci/fixtures/zed-perl-upstream/**'
+      - '.ci/schemas/zed-*.json'
+      - '.github/workflows/zed-integration-candidate.yml'
+      - '.kiro/steering/product.md'
+      - 'book/src/reference/editor-setup-canonical.md'
+      - 'README.md'
+      - 'docs/EDITORS/ZED_SETUP.md'
+      - 'docs/how-to/EDITOR_SETUP.md'
+      - 'docs/how-to/TROUBLESHOOTING.md'
+      - 'docs/integrations/ZED_*.md'
+      - 'docs/reference/FAQ.md'
+      - 'scripts/apply-zed-*.sh'
+      - 'scripts/check-zed-*.sh'
+      - 'xtask/tests/zed_*.rs'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: zed-integration-candidate-${{ github.ref }}
@@ -16,45 +45,36 @@ concurrency:
 
 jobs:
   candidate:
-    name: Preserve known-good managed perllsp versions
-    if: github.head_ref == 'agent/zed-integration-readiness'
+    name: Build staged Zed extension candidate
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
-      - name: Checkout candidate branch
+      - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: true
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
-      - name: Remove eager perllsp cleanup
-        shell: bash
-        env:
-          HEAD_BRANCH: ${{ github.head_ref }}
-        run: |
-          source='.ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs'
-          python3 - "$source" <<'PY'
-          from pathlib import Path
-          import sys
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+          targets: wasm32-wasip2
 
-          path = Path(sys.argv[1])
-          text = path.read_text(encoding='utf-8')
-          old = '            remove_old_downloads("perllsp-", &version_dir);\n'
-          new = (
-              '            // Retain older perllsp versions: the extension API does not report\n'
-              '            // successful server startup, so deleting them here would discard the\n'
-              '            // known-good fallback before Zed observes launch success.\n'
-          )
-          if text.count(old) != 1:
-              raise SystemExit('error: expected one eager perllsp cleanup call')
-          path.write_text(text.replace(old, new), encoding='utf-8')
-          PY
-          git diff --check
-          git config user.name 'EffortlessSteven'
-          git config user.email 'git@effortlesssteven.com'
-          git add "$source"
-          git commit -m 'fix(zed): preserve known-good managed perllsp versions'
-          git push origin "HEAD:$HEAD_BRANCH"
+      - name: Generate isolated candidate lockfile
+        run: cargo generate-lockfile --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml
 
-      - name: Stop after bounded safety repair
-        run: exit 0
+      - name: Format staged candidate
+        run: cargo fmt --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml -- --check
+
+      - name: Clippy staged candidate
+        run: cargo clippy --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --all-targets --locked -- -D warnings
+
+      - name: Host helper tests
+        run: cargo test --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked
+
+      - name: Build Zed WASM extension
+        run: cargo build --manifest-path .ci/fixtures/zed-perl-upstream/zed-perl/Cargo.toml --locked --target wasm32-wasip2 --release
+
+      - name: Run all present Zed programme contracts
+        run: bash scripts/check-zed-programme-contracts.sh
