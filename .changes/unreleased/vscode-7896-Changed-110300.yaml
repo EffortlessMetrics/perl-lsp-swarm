@@ -1,0 +1,9 @@
+project: vscode
+component: Compatibility
+kind: Changed
+body: Added runtime interpretation for compatible, action-required, and inert public-beta VS Code setting migrations without rewriting user state.
+time: 2026-08-13T11:03:00Z
+custom:
+  PR: 7896
+  Slug: vscode-public-beta-migration-runtime
+  Breaking: "no"
