@@ -31,6 +31,7 @@ jobs:
     env:
       PERLLSP_SUBLIME_FIXTURE: ${{ github.workspace }}/clients/sublime/host-fixture
       PERLLSP_SUBLIME_RECEIPT: ${{ github.workspace }}/target/sublime-host/${{ runner.os }}.json
+      PERLLSP_SUBLIME_COMMAND_RECEIPT: ${{ github.workspace }}/target/sublime-host/${{ runner.os }}-commands.json
       PERLLSP_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PERLLSP_LSP_REF: cc9f5201d9f053d9ab67aa0ea575b494fd133803
     steps:
@@ -95,13 +96,15 @@ jobs:
             throw "perllsp remained alive after Sublime/UnitTesting shutdown"
           }
 
-      - name: Validate the exact-source receipt
-        run: python clients/sublime/validate_sublime_host_receipt.py "${{ env.PERLLSP_SUBLIME_RECEIPT }}"
+      - name: Validate the exact-source receipts
+        run: |
+          python clients/sublime/validate_sublime_host_receipt.py "${{ env.PERLLSP_SUBLIME_RECEIPT }}"
+          python clients/sublime/validate_sublime_command_receipt.py "${{ env.PERLLSP_SUBLIME_COMMAND_RECEIPT }}"
 
-      - name: Publish the host receipt
+      - name: Publish the host receipts
         uses: actions/upload-artifact@v4
         with:
           name: sublime-real-host-${{ runner.os }}
-          path: ${{ env.PERLLSP_SUBLIME_RECEIPT }}
+          path: target/sublime-host/*.json
           if-no-files-found: error
           retention-days: 30
