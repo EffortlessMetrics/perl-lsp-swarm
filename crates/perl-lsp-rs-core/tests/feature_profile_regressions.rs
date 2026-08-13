@@ -4,12 +4,16 @@ use perl_lsp_rs_core::features::contracts::all_features;
 use perl_lsp_rs_core::features::flags::BuildFlags;
 use perl_lsp_rs_core::features::grid::to_json_for_profile;
 use perl_lsp_rs_core::features::ids::{LSP_NOTEBOOK_CELL_EXECUTION, LSP_NOTEBOOK_DOCUMENT_SYNC};
-use perl_lsp_rs_core::features::policy::{FeatureProfile, catalog_advertised_feature_ids};
+use perl_lsp_rs_core::features::policy::{catalog_advertised_feature_ids, FeatureProfile};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn ensure(condition: bool, message: impl Into<String>) -> TestResult {
-    if condition { Ok(()) } else { Err(message.into().into()) }
+    if condition {
+        Ok(())
+    } else {
+        Err(message.into().into())
+    }
 }
 
 #[test]

@@ -2,12 +2,16 @@
 
 use perl_lsp::{JsonRpcId, JsonRpcRequest, LspServer};
 use perl_lsp_rs_core::features::policy::FeatureProfile;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn ensure(condition: bool, message: impl Into<String>) -> TestResult {
-    if condition { Ok(()) } else { Err(message.into().into()) }
+    if condition {
+        Ok(())
+    } else {
+        Err(message.into().into())
+    }
 }
 
 fn message(id: Option<i64>, method: &str, params: Option<Value>) -> JsonRpcRequest {
