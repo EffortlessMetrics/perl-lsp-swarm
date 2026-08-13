@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import copy
 import unittest
 from pathlib import Path
 
@@ -53,31 +52,38 @@ def load_workflows() -> dict[str, dict]:
     }
 
 
-def named_steps(workflow: dict) -> dict[str, dict]:
-    found = {}
+def raw_steps(workflow: dict) -> list[dict]:
+    found = []
     for job in workflow.get("jobs", {}).values():
         for step in job.get("steps", []):
-            if isinstance(step, dict) and isinstance(step.get("name"), str):
-                found[step["name"]] = step
+            if isinstance(step, dict):
+                found.append(step)
     return found
 
 
 def validate(workflows: dict[str, dict]) -> None:
-    all_steps = {path: named_steps(data) for path, data in workflows.items()}
-    action_steps = [
-        step
-        for steps in all_steps.values()
-        for step in steps.values()
-        if str(step.get("uses", "")).startswith("codecov/")
-        and "test_results" in step.get("with", {}).values()
+    all_steps = {path: raw_steps(data) for path, data in workflows.items()}
+    for steps in all_steps.values():
+        for step in steps:
+            if str(step.get("uses", "")).startswith("codecov/test-results-action@"):
+                raise AssertionError("deprecated Codecov test-results action remains")
+
+    population = [
+        (path, step.get("name"))
+        for path, steps in all_steps.items()
+        for step in steps
+        if step.get("uses") == ACTION
+        and step.get("with", {}).get("report_type") == "test_results"
     ]
-    if len(action_steps) != 4:
-        raise AssertionError("expected exactly four Codecov test-result upload steps")
+    expected_population = [(entry["file"], name) for name, entry in EXPECTED.items()]
+    if sorted(population) != sorted(expected_population):
+        raise AssertionError("Codecov test-result upload population drifted")
 
     for name, expected in EXPECTED.items():
-        step = all_steps[expected["file"]].get(name)
-        if step is None:
+        matches = [step for step in all_steps[expected["file"]] if step.get("name") == name]
+        if len(matches) != 1:
             raise AssertionError(f"missing named upload step: {name}")
+        step = matches[0]
         if step.get("uses") != ACTION:
             raise AssertionError(f"{name}: action pin drifted")
         if step.get("if") != expected["if"]:
@@ -106,8 +112,9 @@ class CodecovTestResultsWorkflowTests(unittest.TestCase):
         self.workflows = load_workflows()
 
     def mutate(self, name: str, key: str, value: object, section: str | None = None) -> None:
-        steps = named_steps(self.workflows[EXPECTED[name]["file"]])
-        target = steps[name] if section is None else steps[name].setdefault(section, {})
+        steps = raw_steps(self.workflows[EXPECTED[name]["file"]])
+        step = next(step for step in steps if step.get("name") == name)
+        target = step if section is None else step.setdefault(section, {})
         target[key] = value
 
     def assert_rejected(self) -> None:
@@ -159,6 +166,30 @@ class CodecovTestResultsWorkflowTests(unittest.TestCase):
                 "name": "Decoy Codecov result upload",
                 "uses": ACTION,
                 "with": {"report_type": "test_results"},
+            }
+        )
+        self.assert_rejected()
+
+    def test_rejects_fifth_deprecated_step_without_report_type(self) -> None:
+        workflow = self.workflows[".github/workflows/ci.yml"]
+        job = next(iter(workflow["jobs"].values()))
+        job["steps"].append(
+            {
+                "name": "Deprecated decoy upload",
+                "uses": "codecov/test-results-action@old",
+                "with": {"files": "decoy.xml"},
+            }
+        )
+        self.assert_rejected()
+
+    def test_rejects_same_name_deprecated_duplicate(self) -> None:
+        workflow = self.workflows[".github/workflows/ci.yml"]
+        job = next(iter(workflow["jobs"].values()))
+        job["steps"].append(
+            {
+                "name": "Upload PR-fast test results to Codecov",
+                "uses": "codecov/test-results-action@old",
+                "with": {"files": "target/test-results/pr-fast-junit.xml"},
             }
         )
         self.assert_rejected()
