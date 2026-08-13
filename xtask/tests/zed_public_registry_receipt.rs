@@ -357,3 +357,29 @@ fn public_pass_binds_content_addressed_subject() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn public_subject_loader_fails_closed_on_missing_and_invalid_bytes() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let missing = read_json_bytes(
+        root.as_path(),
+        ".ci/fixtures/zed-perl-upstream/receipts/does-not-exist-public-subject.json",
+    );
+    let missing_message = missing.expect_err("missing subject path").to_string();
+    assert!(
+        missing_message.contains("public subject read failed"),
+        "missing subject must fail on the read path: {missing_message}"
+    );
+
+    let relative = ".tmp-zed-public-subject-invalid.json";
+    let in_repo = root.join(relative);
+    fs::write(&in_repo, b"{not-json")?;
+    let invalid = read_json_bytes(root.as_path(), relative);
+    let _ = fs::remove_file(&in_repo);
+    let invalid_message = invalid.expect_err("invalid subject json").to_string();
+    assert!(
+        invalid_message.contains("public subject parse failed"),
+        "invalid subject must fail on the parse path: {invalid_message}"
+    );
+    Ok(())
+}

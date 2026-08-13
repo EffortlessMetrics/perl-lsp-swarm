@@ -2234,3 +2234,27 @@ created = "2026-08-13"
 review_after = "2026-09-30"
 expires = "2026-10-31"
 removal_criteria = "EffortlessMetrics/ripr#1428 is fixed so Result-style integration-test helpers are not treated as production seams, OR the suppression matcher enforces finding-level classification filters and a narrower evidence-backed rule can replace this path-wide exception, OR an exact-head RIPR artifact no longer needs suppression for this file; then delete or narrow this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# Zed host/public-registry shared fail-closed validators (PR #7958 / #7912):
+# test-support helpers under xtask/tests/support misclassified as production
+# seams (ripr#1428).
+#
+# Exact-head RIPR reports 33 no_static_path + 2 weakly_exposed findings in
+# xtask/tests/support/zed_host_compat.rs (match arms, Ok(()) markers, public
+# pass identity predicates). The helpers are compiled only into Zed programme
+# contract tests; public-registry loaders exercise the remaining reachable
+# error paths in zed_public_registry_receipt.rs. Suppress this single
+# test-support file; do not suppress the contract tests or fixtures.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-zed-host-compat-test-support"
+kind = "test_receipt_surface"
+paths = ["xtask/tests/support/zed_host_compat.rs"]
+owner = "integrations-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #7958 adds xtask/tests/support/zed_host_compat.rs as shared fail-closed validators for the Zed host and public-registry programme contracts. Exact-head RIPR 0.9.x reports 33 no_static_path and 2 weakly_exposed findings on match-arm/Ok(())/predicate plumbing inside that support module even though it is compiled only into xtask tests and the discriminating oracles live in zed_host_receipt.rs / zed_public_registry_receipt.rs (including explicit public-subject read/parse failure coverage). Same ripr#1428 test_receipt_surface class as ripr-suppress-heredoc-queue-contract-test-surface and ripr-suppress-seam-proof-tests. Exact-path, test-support-only; production findings suppressed are 0."
+created = "2026-08-13"
+review_after = "2026-09-13"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr#1428 distinguishes xtask/tests/support helpers from production seams, or exact-head RIPR no longer reports actionable gaps in zed_host_compat.rs after the contract tests grip the validators; then delete this entry and rerun the RIPR new-gap gate."
