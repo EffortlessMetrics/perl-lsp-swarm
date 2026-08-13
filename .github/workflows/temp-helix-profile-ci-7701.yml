@@ -1,0 +1,19 @@
+name: Temporary Helix Profile CI 7701
+
+on:
+  push:
+    branches:
+      - agent/temp-helix-profile-ci-7701
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+      - run: cargo +1.95.0 test -p perllsp --test helix_capability_profiles --locked
+      - run: cargo +1.95.0 fmt --manifest-path crates/perllsp/Cargo.toml -- --check
