@@ -1,0 +1,41 @@
+name: Agent rustfmt export
+
+on:
+  push:
+    branches:
+      - test/7777-editor-client-compat
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt-export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+
+      - name: Install exact Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+          cache: false
+
+      - name: Format candidate Rust
+        run: cargo fmt --all
+
+      - name: Upload exact formatted sources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: agent-rustfmt-export-${{ github.sha }}
+          path: |
+            xtask/tests/editor_client_compat_contract.rs
+            xtask/tests/support/agent_client_compat.rs
+            xtask/tests/support/client_compat_fixture.rs
+            xtask/tests/support/editor_client_compat.rs
+          if-no-files-found: error
+          retention-days: 1
