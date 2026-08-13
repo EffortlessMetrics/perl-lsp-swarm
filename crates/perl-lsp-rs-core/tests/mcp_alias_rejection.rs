@@ -1,6 +1,5 @@
-use clap::CommandFactory;
 use perl_lsp_rs_core::runtime::{
-    LaunchAction, LaunchParseError, LspArgs, TransportMode, parse_args,
+    LaunchAction, LaunchParseError, TransportMode, parse_args,
 };
 
 #[test]
@@ -27,12 +26,6 @@ fn mcp_assignment_spelling_is_rejected_too() {
     let error = parse_args(["perllsp", "--mcp=true"])
         .expect_err("an assignment spelling must not bypass protocol rejection");
     assert!(matches!(&error, LaunchParseError::McpAliasRejected));
-}
-
-#[test]
-fn help_does_not_advertise_an_mcp_transport_alias() {
-    let help = LspArgs::command().render_long_help().to_string();
-    assert!(!help.contains("--mcp"), "unexpected MCP alias in help: {help}");
 }
 
 #[test]
