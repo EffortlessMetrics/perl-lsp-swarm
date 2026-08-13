@@ -1,4 +1,4 @@
-name: Temporary apply and verify indexed mapper 7881
+name: Temporary inspect indexed mapper patch 7881
 
 on:
   push:
@@ -6,45 +6,34 @@ on:
       - agent/indexed-strict-position-mapper-7881
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-verify-publish:
+  inspect-patch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Checkout candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      - name: Install repository Rust toolchain
-        shell: bash
-        run: |
-          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
-          rustup default 1.95.0
-
-      - name: Apply indexed mapper patch
+      - name: Reconstruct and inspect patch
         shell: bash
         run: |
           cat .github/tmp/7881/part* > indexed-7881.patch.b64
+          sha256sum indexed-7881.patch.b64 > patch-integrity.txt
           base64 --decode indexed-7881.patch.b64 > indexed-7881.patch
-          git apply --check indexed-7881.patch
-          git apply indexed-7881.patch
-          cargo fmt --all
+          sha256sum indexed-7881.patch >> patch-integrity.txt
+          git apply --check indexed-7881.patch > apply-check.txt 2>&1 || true
+          cat apply-check.txt
 
-      - name: Verify focused crate
-        shell: bash
-        run: |
-          cargo test --locked -p perl-position-tracking
-          cargo clippy --locked -p perl-position-tracking --all-targets -- -D warnings
-          cargo fmt --all -- --check
-
-      - name: Publish verified candidate and remove bootstrap files
-        shell: bash
-        run: |
-          rm -f indexed-7881.patch indexed-7881.patch.b64
-          git config user.name "EffortlessSteven"
-          git config user.email "git@effortlesssteven.com"
-          git add crates/perl-position-tracking/src/lib.rs crates/perl-position-tracking/src/strict.rs
-          git rm -r .github/tmp/7881 .github/workflows/tmp-apply-7881.yml
-          git commit -m "perf(position): add indexed strict mapper (#7881)"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+      - name: Upload patch diagnostics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: indexed-patch-diagnostics-7881-${{ github.sha }}
+          path: |
+            indexed-7881.patch.b64
+            indexed-7881.patch
+            patch-integrity.txt
+            apply-check.txt
+          if-no-files-found: error
+          retention-days: 1
