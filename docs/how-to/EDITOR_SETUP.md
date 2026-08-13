@@ -280,6 +280,11 @@ Protocol-profile evidence can prove capability negotiation such as standard
 `textDocument/inlineCompletion`; user-facing feature support requires the
 matching actual IntelliJ/LSP4IJ host cell from #7719/#7122.
 
+Debugger setup is a separate subject. See
+[docs/EDITORS/INTELLIJ_DAP_SETUP.md](../EDITORS/INTELLIJ_DAP_SETUP.md); the
+presence of an upstream Perl DAP template does not prove `perl-dap` launch,
+breakpoint, variable, stepping, attach, or cleanup behavior.
+
 ## Diagnostics Mode (Push vs Pull)
 
 The server supports both push diagnostics (`textDocument/publishDiagnostics`)
