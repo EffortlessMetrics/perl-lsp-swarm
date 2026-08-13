@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{Digest, fnv1a};
 
@@ -569,7 +569,11 @@ impl std::fmt::Display for EnvironmentFingerprint {
 }
 
 /// Immutable, versioned authority for project environment inputs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Deserialization re-runs [`Self::validate`] so cache/transport consumers
+/// cannot expose forged `Accepted` authority, unsupported schema versions,
+/// dangling references, or a stale fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectEnvironmentSnapshot {
     /// Environment schema version.
@@ -599,7 +603,131 @@ pub struct ProjectEnvironmentSnapshot {
     pub fingerprint: EnvironmentFingerprint,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectEnvironmentSnapshotWire {
+    schema_version: u32,
+    workspace_id: String,
+    configuration_generation: u64,
+    trust: WorkspaceTrust,
+    inputs: Vec<EnvironmentInput>,
+    #[serde(default)]
+    selected_interpreter: Option<InterpreterIdentityRef>,
+    include_entries: Vec<IncludeEntry>,
+    project_roots: Vec<ProjectRoot>,
+    build_systems: Vec<BuildSystemFactRef>,
+    tool_candidates: Vec<ToolCandidate>,
+    limitations: Vec<EnvironmentLimitation>,
+    fingerprint: EnvironmentFingerprint,
+}
+
+impl<'de> Deserialize<'de> for ProjectEnvironmentSnapshot {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ProjectEnvironmentSnapshotWire::deserialize(deserializer)?;
+        let snapshot = Self {
+            schema_version: wire.schema_version,
+            workspace_id: wire.workspace_id,
+            configuration_generation: wire.configuration_generation,
+            trust: wire.trust,
+            inputs: wire.inputs,
+            selected_interpreter: wire.selected_interpreter,
+            include_entries: wire.include_entries,
+            project_roots: wire.project_roots,
+            build_systems: wire.build_systems,
+            tool_candidates: wire.tool_candidates,
+            limitations: wire.limitations,
+            fingerprint: wire.fingerprint,
+        };
+        snapshot.validate().map_err(serde::de::Error::custom)?;
+        Ok(snapshot)
+    }
+}
+
 impl ProjectEnvironmentSnapshot {
+    /// Re-check builder invariants for a deserialized or reconstructed snapshot.
+    ///
+    /// Transport and cache consumers must treat a failed validation as
+    /// non-authoritative: do not consult `active_*` APIs on an invalid value.
+    pub fn validate(&self) -> Result<(), EnvironmentBuildError> {
+        if self.workspace_id.is_empty() {
+            return Err(EnvironmentBuildError::EmptyWorkspaceId);
+        }
+        if self.schema_version != PROJECT_ENVIRONMENT_SCHEMA_VERSION {
+            return Err(EnvironmentBuildError::UnsupportedSchemaVersion {
+                schema_version: self.schema_version,
+            });
+        }
+
+        validate_inputs(self.trust, &self.inputs)?;
+
+        let input_decisions: BTreeMap<
+            EnvironmentInputId,
+            (EnvironmentInputState, EnvironmentInputAuthority),
+        > = self
+            .inputs
+            .iter()
+            .map(|input| (input.id.clone(), (input.state, input.authority)))
+            .collect();
+
+        validate_paths("include_entry", self.include_entries.iter().map(|item| &item.path))?;
+        validate_paths("project_root", self.project_roots.iter().map(|item| &item.path))?;
+        validate_paths("tool_candidate", self.tool_candidates.iter().map(|item| &item.executable))?;
+
+        validate_references(
+            &input_decisions,
+            "include_entry",
+            self.include_entries.iter().map(|item| &item.input_id),
+        )?;
+        validate_references(
+            &input_decisions,
+            "project_root",
+            self.project_roots.iter().map(|item| &item.input_id),
+        )?;
+        validate_references(
+            &input_decisions,
+            "build_system",
+            self.build_systems.iter().map(|item| &item.input_id),
+        )?;
+        validate_references(
+            &input_decisions,
+            "tool_candidate",
+            self.tool_candidates.iter().map(|item| &item.input_id),
+        )?;
+        validate_references(
+            &input_decisions,
+            "limitation",
+            self.limitations.iter().filter_map(|item| item.input_id.as_ref()),
+        )?;
+
+        if let Some(interpreter) = &self.selected_interpreter {
+            let state = input_decisions.get(&interpreter.input_id).map(|decision| decision.0);
+            if !state.is_some_and(EnvironmentInputState::is_active) {
+                return Err(EnvironmentBuildError::InactiveSelectedInterpreter {
+                    input_id: interpreter.input_id.clone(),
+                    state,
+                });
+            }
+            validate_paths("selected_interpreter", std::iter::once(&interpreter.executable))?;
+        }
+
+        let expected = compute_fingerprint(
+            self.workspace_id.as_str(),
+            self.configuration_generation,
+            self.trust,
+            &self.inputs,
+            self.selected_interpreter.as_ref(),
+            &self.include_entries,
+            &self.project_roots,
+            &self.build_systems,
+            &self.tool_candidates,
+            &self.limitations,
+        );
+        if self.fingerprint != expected {
+            return Err(EnvironmentBuildError::StaleFingerprint);
+        }
+        Ok(())
+    }
+
     /// State of a referenced input.
     #[must_use]
     pub fn input_state(&self, input_id: &EnvironmentInputId) -> Option<EnvironmentInputState> {
@@ -841,6 +969,20 @@ pub enum EnvironmentBuildError {
         /// Input identity.
         input_id: EnvironmentInputId,
     },
+    /// Trusted-project authority was accepted without workspace trust.
+    TrustedProjectInputWithoutTrust {
+        /// Input identity.
+        input_id: EnvironmentInputId,
+        /// Workspace trust that rejected the input.
+        trust: WorkspaceTrust,
+    },
+    /// Snapshot schema version is not supported by this crate.
+    UnsupportedSchemaVersion {
+        /// Observed schema version.
+        schema_version: u32,
+    },
+    /// Advertised fingerprint does not match behavior-bearing fields.
+    StaleFingerprint,
     /// A path reference is missing internal or public identity.
     EmptyPathField {
         /// Candidate class.
@@ -869,6 +1011,20 @@ impl std::fmt::Display for EnvironmentBuildError {
                     "ambient input {input_id} cannot be accepted; use explicit_environment authority"
                 )
             }
+            Self::TrustedProjectInputWithoutTrust { input_id, trust } => {
+                write!(
+                    formatter,
+                    "trusted project input {input_id} cannot be accepted while workspace trust is {trust:?}"
+                )
+            }
+            Self::UnsupportedSchemaVersion { schema_version } => {
+                write!(
+                    formatter,
+                    "unsupported project environment schema version {schema_version}; expected {PROJECT_ENVIRONMENT_SCHEMA_VERSION}"
+                )
+            }
+            Self::StaleFingerprint => formatter
+                .write_str("project environment fingerprint does not match snapshot fields"),
             Self::EmptyPathField { owner, field } => {
                 write!(formatter, "{owner} has empty path field {field}")
             }
@@ -972,7 +1128,7 @@ impl ProjectEnvironmentSnapshotBuilder {
 
         self.inputs.sort_by(input_sort_key);
         self.inputs.dedup();
-        validate_inputs(&self.inputs)?;
+        validate_inputs(self.trust, &self.inputs)?;
         resolve_input_precedence(&mut self.inputs);
         self.inputs.sort_by(input_sort_key);
 
@@ -1009,6 +1165,11 @@ impl ProjectEnvironmentSnapshotBuilder {
             "tool_candidate",
             self.tool_candidates.iter().map(|item| &item.input_id),
         )?;
+        validate_references(
+            &input_decisions,
+            "limitation",
+            self.limitations.iter().filter_map(|item| item.input_id.as_ref()),
+        )?;
 
         if let Some(interpreter) = &self.selected_interpreter {
             let state = input_decisions.get(&interpreter.input_id).map(|decision| decision.0);
@@ -1024,8 +1185,9 @@ impl ProjectEnvironmentSnapshotBuilder {
         self.include_entries.sort_by(|left, right| {
             candidate_precedence(&input_decisions, &left.input_id)
                 .cmp(&candidate_precedence(&input_decisions, &right.input_id))
-                .then(left.role.cmp(&right.role))
+                .then(left.input_id.cmp(&right.input_id))
                 .then(left.source_order.cmp(&right.source_order))
+                .then(left.role.cmp(&right.role))
                 .then(left.id.cmp(&right.id))
         });
         self.include_entries.dedup_by(|left, right| left.id == right.id);
@@ -1103,12 +1265,24 @@ fn input_sort_key(left: &EnvironmentInput, right: &EnvironmentInput) -> std::cmp
         .then(left.state.cmp(&right.state))
 }
 
-fn validate_inputs(inputs: &[EnvironmentInput]) -> Result<(), EnvironmentBuildError> {
+fn validate_inputs(
+    trust: WorkspaceTrust,
+    inputs: &[EnvironmentInput],
+) -> Result<(), EnvironmentBuildError> {
     for input in inputs {
         if input.authority == EnvironmentInputAuthority::Ambient
             && input.state == EnvironmentInputState::Accepted
         {
             return Err(EnvironmentBuildError::AmbientInputAccepted { input_id: input.id.clone() });
+        }
+        if input.authority == EnvironmentInputAuthority::TrustedProjectConfiguration
+            && input.state == EnvironmentInputState::Accepted
+            && !matches!(trust, WorkspaceTrust::Trusted)
+        {
+            return Err(EnvironmentBuildError::TrustedProjectInputWithoutTrust {
+                input_id: input.id.clone(),
+                trust,
+            });
         }
         for (field, value) in [
             ("semantic_key", input.semantic_key.as_str()),
@@ -1623,5 +1797,140 @@ mod tests {
                 input_id,
             }) if input_id == missing
         ));
+    }
+
+    #[test]
+    fn trusted_project_authority_requires_workspace_trust() {
+        let project = EnvironmentInput::new(
+            "project.perlcriticrc",
+            EnvironmentInputAuthority::TrustedProjectConfiguration,
+            EnvironmentInputState::Accepted,
+            "project_file",
+            Some(Digest::of("severity=1")),
+            "trusted_project_config",
+        );
+        let input_id = project.id.clone();
+
+        let result = ProjectEnvironmentSnapshotBuilder::new(
+            "workspace:fixture",
+            1,
+            WorkspaceTrust::Untrusted,
+        )
+        .with_input(project)
+        .build();
+
+        assert!(matches!(
+            result,
+            Err(EnvironmentBuildError::TrustedProjectInputWithoutTrust {
+                input_id: actual,
+                trust: WorkspaceTrust::Untrusted,
+            }) if actual == input_id
+        ));
+    }
+
+    #[test]
+    fn include_source_order_beats_role_within_one_input() -> Result<(), EnvironmentBuildError> {
+        let configured =
+            input("include.mixed", EnvironmentInputAuthority::UserConfiguration, "mixed", "client");
+        let vendor = IncludeEntry::new(
+            IncludeEntryRole::Vendor,
+            EnvironmentPathRef::new("/repo/vendor", "path:vendor"),
+            configured.id.clone(),
+            0,
+        );
+        let startup = IncludeEntry::new(
+            IncludeEntryRole::InterpreterStartup,
+            EnvironmentPathRef::new("/opt/perl/lib", "path:startup"),
+            configured.id.clone(),
+            1,
+        );
+
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(configured)
+                .with_include_entry(vendor)
+                .with_include_entry(startup)
+                .build()?;
+
+        let active: Vec<_> = snapshot.active_include_entries().map(|entry| entry.role).collect();
+        assert_eq!(active, vec![IncludeEntryRole::Vendor, IncludeEntryRole::InterpreterStartup]);
+        Ok(())
+    }
+
+    #[test]
+    fn limitation_with_missing_input_fails_closed() {
+        let missing = EnvironmentInputId("project_environment.input.v1:fnv64:missing".to_string());
+        let limitation = EnvironmentLimitation {
+            code: "probe_failed".to_string(),
+            detail: "interpreter probe timed out".to_string(),
+            input_id: Some(missing.clone()),
+        };
+        let result =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_limitation(limitation)
+                .build();
+
+        assert!(matches!(
+            result,
+            Err(EnvironmentBuildError::MissingInputReference {
+                owner: "limitation",
+                input_id,
+            }) if input_id == missing
+        ));
+    }
+
+    #[test]
+    fn deserialized_snapshot_rejects_stale_fingerprint() -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(input(
+                    "include.configured",
+                    EnvironmentInputAuthority::UserConfiguration,
+                    "lib",
+                    "client",
+                ))
+                .build()?;
+        let mut value = serde_json::to_value(&snapshot)?;
+        value["fingerprint"] = serde_json::Value::String("deadbeef".to_string());
+        let decoded = serde_json::from_value::<ProjectEnvironmentSnapshot>(value);
+        assert!(decoded.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn deserialized_snapshot_rejects_unsupported_schema() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(input(
+                    "include.configured",
+                    EnvironmentInputAuthority::UserConfiguration,
+                    "lib",
+                    "client",
+                ))
+                .build()?;
+        let mut value = serde_json::to_value(&snapshot)?;
+        value["schema_version"] = serde_json::Value::from(99_u32);
+        let decoded = serde_json::from_value::<ProjectEnvironmentSnapshot>(value);
+        assert!(decoded.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_round_trips_through_validated_deserialize() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let snapshot =
+            ProjectEnvironmentSnapshotBuilder::new("workspace:fixture", 1, WorkspaceTrust::Trusted)
+                .with_input(input(
+                    "include.configured",
+                    EnvironmentInputAuthority::UserConfiguration,
+                    "lib",
+                    "client",
+                ))
+                .build()?;
+        let json = serde_json::to_string(&snapshot)?;
+        let decoded: ProjectEnvironmentSnapshot = serde_json::from_str(&json)?;
+        assert_eq!(decoded, snapshot);
+        Ok(())
     }
 }
