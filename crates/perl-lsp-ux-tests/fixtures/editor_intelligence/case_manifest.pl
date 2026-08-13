@@ -22,3 +22,4 @@
 # case: workspace_restart_warm_project_facts
 # case: framework_user_loaded_adapter
 # case: claims_protocol_semantic_proof_matrix
+# control: near_miss_control_required
