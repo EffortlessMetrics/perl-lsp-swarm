@@ -1,48 +1,88 @@
-name: Agent notebook rustfmt
+name: Notebook rustfmt sweep
+
+# Automated rustfmt repair lane for the notebook document tests
+# (crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs).
+#
+# Why a sweep and not a per-PR auto-format: the workflow-security ratchet
+# rejects PR-triggered write authority (`pr_write_permission`) and PR-triggered
+# secret references, so a pull_request-triggered workflow cannot push format
+# commits. Per-PR drift is already rejected by the repository-wide `fmt` gate
+# in the pr-fast tier (`cargo xtask fmt --check`, restored on main by #9255).
+# This sweep adds the repair half on a non-PR trigger: it formats the notebook
+# tests with the pinned toolchain and, when drift exists, opens/updates an
+# automation PR via the repository's established peter-evans/create-pull-request
+# pattern (see post-merge-corpus-ratchet.yml, version-bump.yml).
+#
+# Ratchet posture: no pull_request trigger, actions pinned by full commit SHA,
+# write permissions declared explicitly, checkout does not persist credentials
+# (the create-pull-request action performs its own authenticated push with the
+# token passed to it), and no GitHub expressions embedded in run: source.
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/agent-notebook-rustfmt.yml'
-      - 'crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs'
+  schedule:
+    # Weekly, Sunday 06:00 UTC — this is bookkeeping for main drift, not a
+    # per-PR gate; the pr-fast fmt gate covers candidate branches.
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: notebook-rustfmt-sweep
+  cancel-in-progress: true
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   rustfmt:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    name: Format notebook tests (automation PR on drift)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+
     steps:
-      - name: Checkout candidate branch
+      - name: Checkout candidate tree
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Full history so the create-pull-request action can commit cleanly.
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Install exact Rust toolchain
         shell: bash
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
-      - name: Format perl-lsp-rs through Cargo
+      - name: Format notebook tests through the Cargo target
         shell: bash
-        run: rustup run 1.95.0 cargo fmt --manifest-path crates/perl-lsp-rs/Cargo.toml
-
-      - name: Commit exact notebook formatting
-        shell: bash
-        env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
+          rustup run 1.95.0 cargo fmt --manifest-path crates/perl-lsp-rs/Cargo.toml
           path=crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs
           if git diff --quiet -- "$path"; then
             echo "Notebook tests are already formatted under the Cargo target."
-            exit 0
+          else
+            echo "Notebook rustfmt drift detected; the automation PR below carries the repair."
+            git diff --stat -- "$path"
           fi
-          git config user.name EffortlessSteven
-          git config user.email git@effortlesssteven.com
-          git add -- "$path"
-          git commit -m 'style(lsp): apply rustfmt to notebook tests'
-          git push origin "HEAD:${HEAD_REF}"
+
+      - name: Open or update the notebook formatting automation PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          branch: automation/notebook-rustfmt
+          add-paths: |
+            crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs
+          commit-message: 'style(lsp): apply rustfmt to notebook tests'
+          title: 'style(lsp): apply rustfmt to notebook tests'
+          body: |
+            Automated rustfmt sweep for the notebook document tests
+            (`agent-notebook-rustfmt.yml`), pinned to toolchain 1.95.0.
+
+            The action is a no-op when the notebook tests are already
+            formatted; this PR only exists while drift is present, and a
+            fixed branch updates the existing PR instead of opening
+            duplicates.
+
+            Note: a PR created by GITHUB_TOKEN does not trigger required
+            checks (GitHub loop-prevention); merge via review override if
+            that applies at merge time.
