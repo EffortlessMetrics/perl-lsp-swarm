@@ -81,6 +81,19 @@ fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let error = server.ensure_current(&snapshot).err().ok_or("expected stale error")?;
     assert_eq!(error.code, CONTENT_MODIFIED);
     assert_eq!(receipt(&server)?["reason"], "stale_source");
+
+    // A source-current snapshot whose configuration changed after admission
+    // must report the distinct stale_configuration reason, so a selector
+    // hardcoded to stale_source cannot pass this contract.
+    let fresh_params = json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "options": { "tabSize": 4, "insertSpaces": true },
+    });
+    let fresh = server.admit(Surface::Document, &fresh_params)?;
+    server.config.lock().perltidy_maximum_line_length = Some(96);
+    let error = server.ensure_current(&fresh).err().ok_or("expected stale-configuration error")?;
+    assert_eq!(error.code, CONTENT_MODIFIED);
+    assert_eq!(receipt(&server)?["reason"], "stale_configuration");
     Ok(())
 }
 
@@ -185,6 +198,35 @@ fn receipt_source_id_is_always_hashed_never_raw() -> Result<(), Box<dyn std::err
     );
     // The hash must not equal the URI string itself.
     assert_ne!(hash, uri, "source_id_hash must not equal the raw URI");
+    // The hash must be the exact deterministic FNV-1a 64 digest of the URI,
+    // computed independently here so an algorithm swap or constant cannot pass.
+    let mut expected: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in uri.as_bytes() {
+        expected ^= u64::from(*byte);
+        expected = expected.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    assert_eq!(
+        hash,
+        format!("{expected:016x}"),
+        "source_id_hash must be the FNV-1a digest of the URI"
+    );
+    // The raw URI must never appear anywhere in the serialized receipt, and no
+    // nested `source_id` key may survive in any outcome object.
+    let serialized = serde_json::to_string(&trace)?;
+    assert!(!serialized.contains(uri), "raw URI leaked into the serialized receipt: {serialized}");
+    fn has_raw_source_id_key(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.iter().any(|(key, inner)| key == "source_id" || has_raw_source_id_key(inner))
+            }
+            serde_json::Value::Array(items) => items.iter().any(has_raw_source_id_key),
+            _ => false,
+        }
+    }
+    assert!(
+        !has_raw_source_id_key(&trace),
+        "a nested source_id key survived sanitization: {trace}"
+    );
     Ok(())
 }
 
