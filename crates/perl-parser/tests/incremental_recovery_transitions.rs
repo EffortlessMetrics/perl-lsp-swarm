@@ -2,8 +2,8 @@
 //! Differential recovery-transition proof for generation-bound parse snapshots.
 
 use perl_parser::incremental::{
-    ContentFingerprint, Edit, IncrementalState, ParseSnapshot, ParseSnapshotStrategy,
-    ParseTerminalDisposition, apply_edits,
+    apply_edits, ContentFingerprint, Edit, IncrementalState, ParseSnapshot, ParseSnapshotStrategy,
+    ParseTerminalDisposition,
 };
 use perl_parser::{ParseOutput, Parser};
 
