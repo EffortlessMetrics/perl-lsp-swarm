@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -115,9 +116,27 @@ class DapSupportContractTests(unittest.TestCase):
             self.assertIn(field, source)
 
     def test_exporter_contains_the_dap_runtime(self) -> None:
-        exporter = (PACKAGE.parent / "export_lsp_perllsp.py").read_text(encoding="utf-8")
+        # File-list authority lives in package-source.v1.json; prove the
+        # built package itself carries the DAP runtime.
+        with tempfile.TemporaryDirectory() as directory:
+            sys.path.insert(0, str(PACKAGE.parent))
+            try:
+                exporter_spec = importlib.util.spec_from_file_location(
+                    "perllsp_exporter",
+                    PACKAGE.parent / "export_lsp_perllsp.py",
+                )
+                assert exporter_spec and exporter_spec.loader
+                exporter = importlib.util.module_from_spec(exporter_spec)
+                sys.modules[exporter_spec.name] = exporter
+                exporter_spec.loader.exec_module(exporter)
+                output = Path(directory) / "LSP-perllsp.sublime-package"
+                exporter.build(output)
+            finally:
+                sys.path.pop(0)
+            with zipfile.ZipFile(output) as archive:
+                names = set(archive.namelist())
         for relative in ("dap_support.py", "debugger_adapter.py", "Perl.sublime-project.example"):
-            self.assertIn(f'"{relative}"', exporter)
+            self.assertIn(relative, names)
 
 
 if __name__ == "__main__":
