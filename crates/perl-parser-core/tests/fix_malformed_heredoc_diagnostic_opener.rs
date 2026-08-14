@@ -16,10 +16,7 @@ fn unterminated_heredoc_diagnostic_pins_to_opener_not_eof() -> Result<(), String
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
     let diagnostics = &output.diagnostics;
-    assert!(
-        !diagnostics.is_empty(),
-        "unterminated heredoc must emit at least one diagnostic"
-    );
+    assert!(!diagnostics.is_empty(), "unterminated heredoc must emit at least one diagnostic");
 
     let opener = source
         .find("<<'BROKEN'")
@@ -30,10 +27,7 @@ fn unterminated_heredoc_diagnostic_pins_to_opener_not_eof() -> Result<(), String
     let eof = source.len();
 
     let locations: Vec<usize> = diagnostics.iter().filter_map(|d| d.location()).collect();
-    assert!(
-        !locations.is_empty(),
-        "unterminated heredoc diagnostic must carry a byte location"
-    );
+    assert!(!locations.is_empty(), "unterminated heredoc diagnostic must carry a byte location");
 
     assert!(
         locations.iter().any(|&loc| loc == opener),
