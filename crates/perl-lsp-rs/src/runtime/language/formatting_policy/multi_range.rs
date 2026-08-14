@@ -644,8 +644,8 @@ mod tests {
     }
 
     #[test]
-    fn plan_errors_distinguish_invalid_input_from_contract_failures()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn plan_errors_distinguish_invalid_input_from_contract_failures(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let invalid = PlanError::new("invalid_position", "outside document");
         assert_eq!(invalid.json_rpc_code(), -32602);
         assert_eq!(invalid.error_kind(), "invalid_multi_range_plan");
@@ -657,8 +657,8 @@ mod tests {
     }
 
     #[test]
-    fn conflict_detector_rejects_overlapping_enclosing_edits()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn conflict_detector_rejects_overlapping_enclosing_edits(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let source = "abcdef\nghijkl\n";
         let plan = build_plan(source, &[range(0, 0, 0, 6), range(1, 0, 1, 6)])?;
         let edits = vec![
@@ -697,8 +697,8 @@ mod tests {
     }
 
     #[test]
-    fn end_at_line_start_excludes_that_line_from_line_expansion()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn end_at_line_start_excludes_that_line_from_line_expansion(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let source = "first\nsecond\n";
         let plan = build_plan(source, &[range(0, 2, 1, 0)])?;
         let edits = vec![vec![FormatTextEdit {
@@ -725,8 +725,8 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_edits_sharing_half_open_boundary_are_composed()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn adjacent_edits_sharing_half_open_boundary_are_composed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let source = "abcdef\n";
         let plan = build_plan(source, &[range(0, 0, 0, 3), range(0, 3, 0, 6)])?;
         let edits = vec![

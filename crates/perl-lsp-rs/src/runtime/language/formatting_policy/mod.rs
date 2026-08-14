@@ -5,8 +5,8 @@
 //! snapshot, binds cancellation, and projects that typed result onto LSP.
 
 use super::super::{
-    GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
-    PerlLspCancellationToken, Value, json,
+    json, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, Value,
+    GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::convert::{WirePosition, WireRange};
@@ -14,10 +14,10 @@ use crate::features::formatting::{
     CodeFormatter, FormatContext, FormatTextEdit, FormattingDecision, FormattingError,
     FormattingOptions, PerlTidyConfig,
 };
-use crate::protocol::{CONTENT_MODIFIED, REQUEST_CANCELLED, invalid_params, req_position, req_uri};
+use crate::protocol::{invalid_params, req_position, req_uri, CONTENT_MODIFIED, REQUEST_CANCELLED};
 use perl_lsp_rs_core::config::FormatterMode;
 use perl_lsp_rs_core::features::ids::{
-    LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGE_FORMATTING, LSP_RANGES_FORMATTING,
+    LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGES_FORMATTING, LSP_RANGE_FORMATTING,
 };
 use perl_lsp_rs_core::tooling::perltidy::native::FormatDisposition;
 use serde::Serialize;
