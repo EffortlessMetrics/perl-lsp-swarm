@@ -3,8 +3,22 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { parsePackagedServerVersionStdout } from '../../packagedServerVersion';
+import { runBoundedProcess } from '../../testAdapter';
 
 type ReceiptValue = Record<string, unknown>;
+
+interface VerifiedChildArtifact {
+  owner_issue: '#4346';
+  schema_version: 'verified_child_receipt.v1';
+  receipt_schema_version: 'installed_acceptance.v1';
+  candidate_id: string;
+  frozen_product_sha: string;
+  artifact_set_id: string;
+  status: 'pass' | 'limited' | 'blocked' | 'not_proven';
+  claim_boundary: string;
+  limitation: string | null;
+}
 
 function platformLabel(): string {
   switch (process.platform) {
@@ -31,6 +45,134 @@ function receiptsDir(): string {
 
 function sha256(filePath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+type BundledServerVersion =
+  | {
+      status: 'ok';
+      version: string;
+      stdout: string;
+      stderr: string;
+      outcome: 'completed';
+      output_truncated: boolean;
+      termination_confirmed: boolean;
+    }
+  | {
+      status: 'error';
+      version?: never;
+      stdout: string;
+      stderr: string;
+      outcome: string;
+      output_truncated: boolean;
+      termination_confirmed: boolean;
+      message: string;
+    };
+
+const VERSION_PROBE_TIMEOUT_MS = 15_000;
+const VERSION_PROBE_OUTPUT_MAX_BYTES = 64 * 1024;
+
+async function bundledServerVersion(binaryPath: string): Promise<BundledServerVersion> {
+  const result = await runBoundedProcess(binaryPath, ['--version'], {
+    shell: false,
+    timeoutMs: VERSION_PROBE_TIMEOUT_MS,
+    maxOutputBytes: VERSION_PROBE_OUTPUT_MAX_BYTES,
+    terminationGraceMs: 500,
+    terminationWatchdogMs: 5_000,
+    windowsHide: true,
+  });
+  const terminationConfirmed =
+    result.outcome !== 'spawn_error' && result.outcome !== 'termination_failed';
+  const base = {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    outcome: result.outcome,
+    output_truncated: result.outcome === 'output_limit',
+    termination_confirmed: terminationConfirmed,
+  };
+  if (result.outcome !== 'completed') {
+    return {
+      status: 'error',
+      ...base,
+      message:
+        result.diagnostic ??
+        `bundled server --version ended with ${result.outcome} before a clean completion`,
+    };
+  }
+  const completedBase = { ...base, outcome: 'completed' as const };
+  try {
+    const version = parsePackagedServerVersionStdout(result.stdout);
+    if (!version) {
+      return {
+        status: 'error',
+        ...completedBase,
+        message: 'bundled server --version did not contain a semantic version',
+      };
+    }
+    return {
+      status: 'ok',
+      version,
+      ...completedBase,
+    };
+  } catch (error: unknown) {
+    return {
+      status: 'error',
+      ...completedBase,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function writeVerifiedChildArtifact(receipt: ReceiptValue): void {
+  const outputPath = process.env.PERL_LSP_VERIFIED_OUTPUT;
+  if (!outputPath) {
+    return;
+  }
+
+  const candidateId = process.env.PERL_LSP_CANDIDATE_ID;
+  const frozenProductSha = process.env.PERL_LSP_CURRENT_SOURCE_SHA;
+  const artifactSetId = process.env.PERL_LSP_ARTIFACT_SET_ID;
+  assert.ok(candidateId, 'PERL_LSP_CANDIDATE_ID is required for a verified artifact');
+  assert.ok(frozenProductSha, 'PERL_LSP_CURRENT_SOURCE_SHA is required for a verified artifact');
+  assert.match(frozenProductSha, /^[0-9a-f]{40}$/i, 'frozen product SHA must be 40 hex characters');
+  assert.ok(artifactSetId, 'PERL_LSP_ARTIFACT_SET_ID is required for a verified artifact');
+
+  const knownLimitations = Array.isArray(receipt.known_limitations)
+    ? receipt.known_limitations.filter((value): value is string => typeof value === 'string')
+    : [];
+  const outcome = receipt.outcome;
+  const mandatoryEvidenceIsMissing = knownLimitations.some(
+    (limitation) =>
+      limitation === 'DAP preview is not exercised by this slice.' ||
+      limitation ===
+        'The public VS Code API does not expose server index generation or semantic exactness.',
+  );
+  const status: VerifiedChildArtifact['status'] =
+    outcome === 'failed'
+      ? 'blocked'
+      : outcome !== 'completed' || mandatoryEvidenceIsMissing
+        ? 'not_proven'
+        : knownLimitations.length > 0
+          ? 'limited'
+          : 'pass';
+  const artifact: VerifiedChildArtifact = {
+    owner_issue: '#4346',
+    schema_version: 'verified_child_receipt.v1',
+    receipt_schema_version: 'installed_acceptance.v1',
+    candidate_id: candidateId,
+    frozen_product_sha: frozenProductSha,
+    artifact_set_id: artifactSetId,
+    status,
+    claim_boundary:
+      'Packaged VSIX and bundled-server journey exercised by the VS Code extension host.',
+    limitation:
+      knownLimitations.length > 0
+        ? knownLimitations.join(' ')
+        : status === 'blocked'
+          ? 'The packaged journey reported one or more product blockers.'
+          : null,
+  };
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, JSON.stringify(artifact, null, 2));
 }
 
 async function withTimeout<T>(
@@ -81,6 +223,18 @@ function bundledBinaryPath(extensionPath: string): string {
     .find((candidate) => fs.existsSync(candidate));
   assert.ok(binary, `packaged VSIX must contain a bundled server in ${directory}`);
   return binary;
+}
+
+function pathsEquivalent(left: unknown, right: string): boolean {
+  if (typeof left !== 'string' || left.length === 0) {
+    return false;
+  }
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  if (process.platform === 'win32' || process.platform === 'darwin') {
+    return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+  }
+  return normalizedLeft === normalizedRight;
 }
 
 async function providerResult(
@@ -140,6 +294,7 @@ suite('Packaged VSIX bundled-server journey', function () {
     assert.ok(extension, 'packaged journey requires the installed extension');
 
     const bundledServerPath = bundledBinaryPath(extension.extensionPath);
+    const expectedVersion = extension.packageJSON?.version ?? null;
     const workspaceFile = path.join(workspacePath, 'packaged_daily_driver.pl');
     fs.writeFileSync(
       workspaceFile,
@@ -183,9 +338,19 @@ suite('Packaged VSIX bundled-server journey', function () {
         extension.activate(),
         90_000,
       )) as
-        | { getLanguageClientStartupMetrics?: () => ReceiptValue; stop?: () => Promise<void> }
+        | {
+            getLanguageClientStartupMetrics?: () => ReceiptValue;
+            getActiveDocumentReadiness?: () => {
+              generation: number;
+              indexState: string;
+              indexReason?: string;
+              fullyReady: boolean;
+            };
+            stop?: () => Promise<void>;
+          }
         | undefined;
       const activationCompleted = performance.now();
+      const bundledVersion = await bundledServerVersion(bundledServerPath);
       const document = await vscode.workspace.openTextDocument(workspaceFile);
       await vscode.window.showTextDocument(document);
       const position = providerPosition(document);
@@ -290,6 +455,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       const metrics = activation?.getLanguageClientStartupMetrics
         ? await waitForStartupMetrics(activation.getLanguageClientStartupMetrics, 30_000)
         : {};
+      const readiness = activation?.getActiveDocumentReadiness?.() ?? null;
       const receipt: ReceiptValue = {
         schema_version: 1,
         outcome: 'completed',
@@ -301,7 +467,24 @@ suite('Packaged VSIX bundled-server journey', function () {
         server_identity: {
           path: bundledServerPath,
           source: 'packaged_vsix_bundle',
-          version: process.env.PERL_LSP_PUBLISHED_EXTENSION_VERSION ?? null,
+          version: bundledVersion.version ?? null,
+          expected_version: expectedVersion,
+          version_stdout: bundledVersion.stdout,
+          version_stderr: bundledVersion.stderr,
+          version_output_truncated: bundledVersion.output_truncated,
+          version_probe_termination_confirmed: bundledVersion.termination_confirmed,
+          version_match:
+            bundledVersion.status === 'ok' && expectedVersion !== null
+              ? bundledVersion.version === expectedVersion
+              : false,
+          activated_version: metrics.server_version ?? null,
+          activated_version_match:
+            bundledVersion.status === 'ok' &&
+            expectedVersion !== null &&
+            metrics.server_version === bundledVersion.version &&
+            metrics.server_version === expectedVersion,
+          activated_path: metrics.binary_resolution_path ?? null,
+          activated_path_match: pathsEquivalent(metrics.binary_resolution_path, bundledServerPath),
           startup_source: metrics.binary_resolution_source ?? null,
         },
         startup: metrics,
@@ -316,6 +499,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         ],
         requests: { immediate, after_edit: afterEdit, formatting, rename },
         index_generation: 'not_observable_from_public_extension_api',
+        index_readiness: readiness ?? 'not_observable_from_public_extension_api',
         answering_tier: 'bundled_server_provider',
         fallback_or_refusal_reason:
           rename.status === 'safe_refusal' ? 'rename provider returned no edit' : null,
@@ -326,7 +510,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         unexplained_empty: 'not_scored',
         known_limitations: [
           'DAP preview is not exercised by this slice.',
-          'The public VS Code API does not expose index generation or semantic exactness.',
+          'The public VS Code API does not expose server index generation or semantic exactness.',
           'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
           ...(criticSettingRegistered
             ? []
@@ -381,18 +565,83 @@ suite('Packaged VSIX bundled-server journey', function () {
             metrics,
           },
         }));
+      const bundledVersionBlocker =
+        bundledVersion.status === 'error'
+          ? {
+              label: 'bundled_server_version',
+              result: {
+                expected: expectedVersion,
+                actual: null,
+                message: bundledVersion.message,
+                stdout: bundledVersion.stdout,
+                stderr: bundledVersion.stderr,
+                output_truncated: bundledVersion.output_truncated,
+                termination_confirmed: bundledVersion.termination_confirmed,
+              },
+            }
+          : expectedVersion === null || bundledVersion.version !== expectedVersion
+            ? {
+                label: 'bundled_server_version',
+                result: {
+                  expected: expectedVersion,
+                  actual: bundledVersion.version,
+                  stdout: bundledVersion.stdout,
+                  stderr: bundledVersion.stderr,
+                  output_truncated: bundledVersion.output_truncated,
+                  termination_confirmed: bundledVersion.termination_confirmed,
+                },
+              }
+            : null;
+      const activatedPath = metrics.binary_resolution_path;
+      const activatedPathBlocker = pathsEquivalent(activatedPath, bundledServerPath)
+        ? null
+        : {
+            label: 'activated_server_path',
+            result: {
+              expected: bundledServerPath,
+              actual: activatedPath ?? null,
+              source: metrics.binary_resolution_source ?? null,
+              message: 'initialized server path did not resolve to the packaged bundled binary',
+            },
+          };
+      const activatedVersion = metrics.server_version;
+      const activatedVersionBlocker =
+        bundledVersion.status !== 'ok' || expectedVersion === null || !activatedVersion
+          ? {
+              label: 'activated_server_version',
+              result: {
+                expected: expectedVersion ?? bundledVersion.version,
+                actual: activatedVersion ?? null,
+                message: 'initialized server did not report a comparable semantic version',
+              },
+            }
+          : activatedVersion !== bundledVersion.version || activatedVersion !== expectedVersion
+            ? {
+                label: 'activated_server_version',
+                result: {
+                  expected: { package: expectedVersion, bundled: bundledVersion.version },
+                  actual: activatedVersion,
+                  message: 'initialized server version disagrees with packaged identities',
+                },
+              }
+            : null;
       const productBlockers = [
+        ...(bundledVersionBlocker ? [bundledVersionBlocker] : []),
+        ...(activatedPathBlocker ? [activatedPathBlocker] : []),
+        ...(activatedVersionBlocker ? [activatedVersionBlocker] : []),
         ...lifecycleFailures,
         ...providerFailures.map(([label, result]) => ({ label, result })),
       ];
-      receipt.outcome = productBlockers.length === 0 ? 'completed' : 'failed';
+      receipt.outcome = productBlockers.length > 0 ? 'failed' : 'not_proven';
       receipt.product_blockers = productBlockers;
 
       fs.writeFileSync(
         path.join(receiptsDir(), 'packaged_bundle_journey_receipt.json'),
         JSON.stringify(receipt, null, 2),
       );
+      writeVerifiedChildArtifact(receipt);
 
+      assert.equal(productBlockers.length, 0, JSON.stringify(productBlockers));
       assert.equal(metrics.binary_resolution_source, 'bundled', JSON.stringify(metrics));
       assert.equal(metrics.binary_resolution_status, 'ok', JSON.stringify(metrics));
       assert.equal(metrics.server_start_status, 'ok', JSON.stringify(metrics));

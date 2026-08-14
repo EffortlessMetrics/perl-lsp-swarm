@@ -157,6 +157,22 @@ applies that predicate across every worktree.
 Post a closeout only when the landed effect, residual claim, support boundary, or next
 route is useful. Do not persist runtime topology, task state, or merge-check polling.
 
+## Supersession carries its corrections
+
+When one candidate replaces another, the replacement inherits the superseded candidate's
+findings, dispositions, and corrections. Carry them forward before closing:
+
+- corrections to claims the replacement still makes, including anything the superseded
+  body stated inaccurately and later fixed;
+- accepted findings not yet repaired, with the evidence behind each disposition;
+- limitations and `NOT_PROVEN` boundaries still applying to the replacement;
+- revalidate every carried finding against the replacement head before preserving a `fixed`, `accepted`, or `NOT_PROVEN` disposition.
+
+A correction that dies with a superseded PR is worse than one never made: the inaccurate
+claim reaches `main` through the replacement, and the record shows a reviewed candidate,
+so nothing downstream has reason to look again. Where the replacement's claim differs,
+state which corrections no longer apply and why rather than dropping them silently.
+
 ## Results and routes
 
 - `RECONCILED` → `$deliver-pr` or `$deliver-goal`

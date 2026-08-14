@@ -5,7 +5,7 @@
 //!
 //! - `jsonrpc` — Core JSON-RPC 2.0 request, response, and error message types
 //! - `errors` — Standard and LSP-specific JSON-RPC error codes and builders
-//! - [`methods`] — LSP 3.17 method name constants for request/notification routing
+//! - [`methods`] — LSP 3.18 method name constants for request/notification routing
 //! - [`capabilities`] — Server capability configuration advertised during `initialize`
 //!
 //! Previously the standalone `perl-lsp-protocol` crate; absorbed into

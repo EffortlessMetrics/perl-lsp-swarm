@@ -15,7 +15,8 @@ use perl_parser_core::hir::{
     CompileEffect, CompileEffectKind, CompileEffectSourceKind, CompilePhase, HirFile, HirScopeId,
     ScopeKind, lower_ast,
 };
-use perl_parser_core::{Parser, RecoverySalvageClass, RecoverySalvageProfile};
+use perl_parser_core::syntax::error::{RecoveryKind, RecoverySite};
+use perl_parser_core::{ParseError, Parser, RecoverySalvageClass, RecoverySalvageProfile};
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -51,6 +52,20 @@ const RUN_SWITCHC_PLATFORM_PROBE_SOURCE: &str = r#"BEGIN {
     skip_all_if_miniperl('-C and $ENV{PERL_UNICODE} are disabled on miniperl');
 }"#;
 const RUN_SWITCHI_SETUP_SOURCE: &str = "BEGIN {\n    chdir 't' if -d 't';\n    unshift @INC, '../lib';     # Do NOT make this @INC = '../lib';\n    require './test.pl';\t# for which_perl() etc\n    plan(4);\n}";
+const COMP_FINAL_LINE_NUM_PROBE_SOURCE: &str = r#"#!./perl
+
+BEGIN { print "1..1\n"; }
+
+BEGIN { $SIG{__DIE__} = sub {
+    $_[0] =~ /\Asyntax error at [^ ]+ line ([0-9]+), at EOF/ or exit 1;
+    my $error_line_num = $1;
+    print $error_line_num == $last_line_num ? "ok 1\n" : "not ok 1\n";
+    exit 0;
+}; }
+
+# the next line causes a syntax error at end of file, to be caught above
+BEGIN { $last_line_num = __LINE__; } print 1+
+"#;
 
 #[derive(Debug)]
 struct Invocation {
@@ -268,7 +283,7 @@ fn run_parse(invocation: &Invocation) -> Result<ModeRunResult> {
         .unwrap_or_else(|| format!("parse salvage class {:?}", profile.class));
 
     if let Some(boundary) =
-        comp_final_line_num_parse_boundary(invocation, &source, &first_diagnostic)
+        comp_final_line_num_parse_boundary(invocation, &source, &output.diagnostics)
     {
         let mut result = ModeRunResult::pass();
         result.semantic_boundaries.push(boundary);
@@ -292,7 +307,7 @@ fn run_compile(invocation: &Invocation) -> Result<ModeRunResult> {
             .or(profile.first_unrecovered_error_node)
             .unwrap_or_else(|| format!("parse salvage class {:?}", profile.class));
         if let Some(boundary) =
-            comp_final_line_num_parse_boundary(invocation, &source, &first_diagnostic)
+            comp_final_line_num_parse_boundary(invocation, &source, &output.diagnostics)
         {
             let mut result = ModeRunResult::pass();
             result.semantic_boundaries.push(boundary);
@@ -404,9 +419,9 @@ fn semantic_boundary_record(
 fn comp_final_line_num_parse_boundary(
     invocation: &Invocation,
     source: &str,
-    first_diagnostic: &str,
+    diagnostics: &[ParseError],
 ) -> Option<SemanticBoundaryRecord> {
-    if !is_comp_final_line_num_syntax_error_probe(invocation, source, first_diagnostic) {
+    if !is_comp_final_line_num_syntax_error_probe(invocation, source, diagnostics) {
         return None;
     }
 
@@ -669,19 +684,31 @@ fn is_run_todo_bootstrap_boundary(
 fn is_comp_final_line_num_syntax_error_probe(
     invocation: &Invocation,
     source: &str,
-    first_diagnostic: &str,
+    diagnostics: &[ParseError],
 ) -> bool {
-    if normalize_display_path(&invocation.display_path) != "comp/final_line_num.t"
-        || !first_diagnostic.contains("MissingOperand")
-        || !first_diagnostic.contains("InfixRhs")
+    if normalize_display_path(&invocation.display_path) != "comp/final_line_num.t" {
+        return false;
+    }
+
+    let is_target_recovery = |diagnostic: &ParseError| {
+        matches!(
+            diagnostic,
+            ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                ..
+            }
+        )
+    };
+    if !diagnostics.iter().any(is_target_recovery)
+        || diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.blocks_clean_parse() && !is_target_recovery(diagnostic))
     {
         return false;
     }
 
-    let normalized = source.replace("\r\n", "\n");
-    normalized.contains(r#"$SIG{__DIE__} = sub {"#)
-        && normalized.contains(r#"$last_line_num = __LINE__;"#)
-        && normalized.trim_end().ends_with("BEGIN { $last_line_num = __LINE__; } print 1+")
+    source.replace("\r\n", "\n") == COMP_FINAL_LINE_NUM_PROBE_SOURCE
 }
 
 fn is_base_term_cwd_setup_boundary(
@@ -2539,6 +2566,53 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Fail);
         assert_eq!(result.bucket.as_deref(), Some("parse_recovery"));
+        Ok(())
+    }
+
+    #[test]
+    fn comp_final_line_num_classifier_uses_typed_recovery() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(comp_final_line_num_probe_source()),
+            display_path: "comp/final_line_num.t".to_string(),
+        };
+        let diagnostics = [ParseError::Recovered {
+            site: RecoverySite::InfixRhs,
+            kind: RecoveryKind::MissingOperand,
+            location: COMP_FINAL_LINE_NUM_PROBE_SOURCE.len(),
+        }];
+
+        assert!(is_comp_final_line_num_syntax_error_probe(
+            &invocation,
+            &comp_final_line_num_probe_source(),
+            &diagnostics,
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn comp_final_line_num_classifier_rejects_unrelated_blocking_diagnostic() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(comp_final_line_num_probe_source()),
+            display_path: "comp/final_line_num.t".to_string(),
+        };
+        let diagnostics = [
+            ParseError::UnexpectedToken {
+                expected: "expression".to_string(),
+                found: ";".to_string(),
+                location: COMP_FINAL_LINE_NUM_PROBE_SOURCE.len().saturating_sub(1),
+            },
+            ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                location: COMP_FINAL_LINE_NUM_PROBE_SOURCE.len(),
+            },
+        ];
+
+        assert!(!is_comp_final_line_num_syntax_error_probe(
+            &invocation,
+            &comp_final_line_num_probe_source(),
+            &diagnostics,
+        ));
         Ok(())
     }
 
@@ -5575,21 +5649,7 @@ while ($x != 1) { $x = 1; }
     }
 
     fn comp_final_line_num_probe_source() -> String {
-        r#"#!./perl
-
-BEGIN { print "1..1\n"; }
-
-BEGIN { $SIG{__DIE__} = sub {
-    $_[0] =~ /\Asyntax error at [^ ]+ line ([0-9]+), at EOF/ or exit 1;
-    my $error_line_num = $1;
-    print $error_line_num == $last_line_num ? "ok 1\n" : "not ok 1\n";
-    exit 0;
-}; }
-
-# the next line causes a syntax error at end of file, to be caught above
-BEGIN { $last_line_num = __LINE__; } print 1+
-"#
-        .to_string()
+        COMP_FINAL_LINE_NUM_PROBE_SOURCE.to_string()
     }
 
     fn base_term_cwd_setup_source() -> String {

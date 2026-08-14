@@ -11,6 +11,7 @@
 use clap::Parser;
 use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,14 @@ struct Args {
     /// Optional verified-child envelope output consumed by the public-beta fan-in.
     #[arg(long)]
     verified_output: Option<PathBuf>,
+
+    /// Exact release_topology.v1 JSON consumed by this receipt.
+    #[arg(long)]
+    topology: PathBuf,
+
+    /// Exact candidate artifact bytes resolved by the transition.
+    #[arg(long)]
+    artifact: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -121,6 +130,7 @@ struct TransitionEvidence {
     outcome: TransitionOutcome,
     observed_release_identity: Option<String>,
     artifact_verified: bool,
+    artifact_sha256: Option<String>,
     known_good_preserved: bool,
     partial_artifact_promoted: bool,
     mixed_version_reported_ready: bool,
@@ -228,7 +238,31 @@ fn expected_topology_asset(receipt: &Receipt) -> Result<String> {
     Ok(format!("perllsp-{}-{}.{}", candidate.candidate_version, candidate.target, extension))
 }
 
+fn expected_platform_for_topology_target(target: &serde_json::Value) -> Option<String> {
+    let os = target.get("os")?.as_str()?;
+    let architecture = target.get("architecture")?.as_str()?;
+    Some(format!("{os}-{architecture}"))
+}
+
+fn validate_platform_target_pair(receipt: &Receipt) -> Result<()> {
+    if receipt.candidate.platform.is_empty() || receipt.candidate.target.is_empty() {
+        bail!("candidate platform and target must both be present");
+    }
+    if receipt.candidate.platform.contains('-') && receipt.candidate.target.contains('-') {
+        let platform_os = receipt.candidate.platform.split('-').next().unwrap_or("");
+        if receipt.candidate.target.contains("windows") != (platform_os == "windows") {
+            bail!(
+                "candidate platform {} is inconsistent with target {}",
+                receipt.candidate.platform,
+                receipt.candidate.target
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_topology_path(receipt: &Receipt) -> Result<()> {
+    validate_platform_target_pair(receipt)?;
     let expected_path_id =
         format!("{}-{}", receipt.transition.path.topology_prefix(), receipt.candidate.platform);
     if receipt.transition.topology_path_id != expected_path_id {
@@ -252,6 +286,9 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
     if let Some(identity) = &transition.observed_release_identity {
         non_empty(identity, "transition.observed_release_identity")?;
     }
+    if let Some(digest) = &transition.artifact_sha256 {
+        exact_hex(digest, 32, "transition.artifact_sha256")?;
+    }
     for limitation in transition.limitations.iter().chain(receipt.limitations.iter()) {
         non_empty(limitation, "limitations[]")?;
     }
@@ -274,6 +311,120 @@ fn validate_transition_identity(receipt: &Receipt) -> Result<()> {
         | TransitionClass::NormalUpgrade
         | TransitionClass::CachedOldBinary
         | TransitionClass::Rollback => {}
+    }
+    Ok(())
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn verify_topology_binding(receipt: &Receipt, path: &Path) -> Result<()> {
+    validate_platform_target_pair(receipt)?;
+    let bytes =
+        fs::read(path).with_context(|| format!("reading release topology {}", path.display()))?;
+    let digest = sha256_bytes(&bytes);
+    if digest != receipt.candidate.release_topology_sha256.to_ascii_lowercase() {
+        bail!(
+            "release topology digest mismatch: receipt={}, actual={digest}",
+            receipt.candidate.release_topology_sha256
+        );
+    }
+    let topology: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing release topology {}", path.display()))?;
+    if topology["schema"] != 1 || topology["track"] != "public-beta" {
+        bail!("release topology is not a public-beta schema v1 manifest");
+    }
+    if topology["release"] != receipt.candidate.candidate_version {
+        bail!("release topology version does not match candidate version");
+    }
+    if topology["frozen_product_sha"] != receipt.candidate.frozen_product_sha {
+        bail!("release topology frozen product SHA does not match candidate");
+    }
+    if topology["prepared_swarm_sha"] != receipt.candidate.prepared_swarm_sha {
+        bail!("release topology prepared swarm SHA does not match candidate");
+    }
+
+    if receipt.transition.path == InstallPath::Vsix {
+        if topology["vsix"]["version"] != receipt.candidate.extension_version
+            || topology["vsix"]["package_path"] != "vscode-extension"
+            || topology["vsix"]["asset_name"]
+                != format!("perl-lsp-rs-{}.vsix", receipt.candidate.extension_version)
+        {
+            bail!("release topology VS Code package or asset does not match candidate");
+        }
+        let managed_targets = topology["vsix"]["managed_targets"].as_array().ok_or_else(|| {
+            color_eyre::eyre::eyre!("release topology VSIX has no managed_targets array")
+        })?;
+        if !managed_targets.iter().any(|target| target == &receipt.candidate.target) {
+            bail!(
+                "release topology VSIX does not publish candidate target {}",
+                receipt.candidate.target
+            );
+        }
+        return Ok(());
+    }
+
+    let targets = topology["binary_targets"]
+        .as_array()
+        .ok_or_else(|| color_eyre::eyre::eyre!("release topology has no binary_targets array"))?;
+    let target = targets
+        .iter()
+        .find(|entry| entry["target"] == receipt.candidate.target)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "release topology does not publish candidate target {}",
+                receipt.candidate.target
+            )
+        })?;
+    let expected_platform = expected_platform_for_topology_target(target).ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "release topology target {} is missing os/architecture identity",
+            receipt.candidate.target
+        )
+    })?;
+    if receipt.candidate.platform != expected_platform {
+        bail!(
+            "receipt platform {} does not match topology target {} (expected platform {})",
+            receipt.candidate.platform,
+            receipt.candidate.target,
+            expected_platform
+        );
+    }
+    if target["archive_name"] != receipt.transition.expected_asset {
+        bail!("release topology archive does not match expected asset");
+    }
+    let members = target["required_members"].as_array().ok_or_else(|| {
+        color_eyre::eyre::eyre!("release topology target has no required_members array")
+    })?;
+    for required in [
+        if receipt.candidate.platform.starts_with("windows-") { "perllsp.exe" } else { "perllsp" },
+        if receipt.candidate.platform.starts_with("windows-") {
+            "perl-dap.exe"
+        } else {
+            "perl-dap"
+        },
+    ] {
+        if !members.iter().any(|member| member == required) {
+            bail!("release topology target omits required member {required}");
+        }
+    }
+    Ok(())
+}
+
+fn verify_artifact_binding(receipt: &Receipt, path: &Path) -> Result<()> {
+    if !receipt.transition.artifact_verified {
+        return Ok(());
+    }
+    let expected =
+        receipt.transition.artifact_sha256.as_deref().ok_or_else(|| {
+            color_eyre::eyre::eyre!("verified artifact is missing artifact_sha256")
+        })?;
+    let bytes =
+        fs::read(path).with_context(|| format!("reading candidate artifact {}", path.display()))?;
+    let actual = sha256_bytes(&bytes);
+    if actual != expected.to_ascii_lowercase() {
+        bail!("candidate artifact digest mismatch: receipt={expected}, actual={actual}");
     }
     Ok(())
 }
@@ -470,6 +621,14 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let receipt = load(&args.receipt)?;
     let status = validate(&receipt)?;
+    verify_topology_binding(&receipt, &args.topology)?;
+    if receipt.transition.artifact_verified {
+        let artifact = args
+            .artifact
+            .as_deref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("a passing receipt requires --artifact"))?;
+        verify_artifact_binding(&receipt, artifact)?;
+    }
     if let Some(path) = &args.verified_output {
         write_verified_child_artifact(&receipt, status, path)?;
     }
@@ -489,8 +648,11 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Receipt, ReceiptStatus, validate, write_verified_child_artifact};
-    use color_eyre::eyre::Result;
+    use super::{
+        InstallPath, Receipt, ReceiptStatus, sha256_bytes, validate, validate_topology_path,
+        verify_artifact_binding, verify_topology_binding, write_verified_child_artifact,
+    };
+    use color_eyre::eyre::{Result, bail};
     use std::fs;
     use tempfile::tempdir;
 
@@ -498,11 +660,217 @@ mod tests {
         Ok(serde_json::from_str(content)?)
     }
 
+    fn topology_for(receipt: &Receipt) -> serde_json::Value {
+        let windows = receipt.candidate.platform.starts_with("windows-");
+        let binary_members =
+            if windows { ["perllsp.exe", "perl-dap.exe"] } else { ["perllsp", "perl-dap"] };
+        serde_json::json!({
+            "schema": 1,
+            "release": receipt.candidate.candidate_version,
+            "track": "public-beta",
+            "frozen_product_sha": receipt.candidate.frozen_product_sha,
+            "prepared_swarm_sha": receipt.candidate.prepared_swarm_sha,
+            "binary_targets": [{
+                "target": receipt.candidate.target,
+                "os": if windows { "windows" } else { "linux" },
+                "architecture": if receipt.candidate.target.starts_with("aarch64") { "aarch64" } else { "x86_64" },
+                "libc": if windows { serde_json::Value::Null } else { serde_json::json!("gnu") },
+                "runner": if windows { "windows-latest" } else { "ubuntu-latest" },
+                "archive_name": receipt.transition.expected_asset,
+                "required_members": binary_members,
+            }],
+            "vsix": {
+                "version": receipt.candidate.extension_version,
+                "asset_name": format!("perl-lsp-rs-{}.vsix", receipt.candidate.extension_version),
+                "package_path": "vscode-extension",
+                "managed_targets": [receipt.candidate.target.clone()],
+                "bundled_targets": [receipt.candidate.target.clone()],
+            }
+        })
+    }
+
+    fn bind_artifact(receipt: &mut Receipt, bytes: &[u8]) {
+        receipt.status = ReceiptStatus::Pass;
+        receipt.transition.outcome = super::TransitionOutcome::Completed;
+        receipt.transition.artifact_verified = true;
+        receipt.transition.artifact_sha256 = Some(sha256_bytes(bytes));
+    }
+
     #[test]
-    fn verified_child_output_carries_transition_identity() -> Result<()> {
+    fn pass_requires_exact_topology_and_artifact_bytes() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let directory = tempdir()?;
+        let topology = serde_json::to_vec(&topology_for(&receipt))?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, &topology)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&topology);
+
+        let artifact_path = directory.path().join(&receipt.transition.expected_asset);
+        let artifact = b"candidate archive bytes";
+        fs::write(&artifact_path, artifact)?;
+        bind_artifact(&mut receipt, artifact);
+
+        verify_topology_binding(&receipt, &topology_path)?;
+        verify_artifact_binding(&receipt, &artifact_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn topology_digest_mismatch_is_rejected() -> Result<()> {
         let receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/clean_install.json"
         ))?;
+        let directory = tempdir()?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, br#"{"schema":1,"track":"public-beta"}"#)?;
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("topology digest mismatch unexpectedly passed"),
+            Err(error) => {
+                assert!(format!("{error:#}").contains("digest mismatch"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn platform_target_mismatch_is_rejected() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        receipt.candidate.platform = "linux-x86_64".to_string();
+        receipt.candidate.target = "x86_64-pc-windows-msvc".to_string();
+        let directory = tempdir()?;
+        let topology = serde_json::to_vec(&topology_for(&receipt))?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, &topology)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&topology);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("platform/target mismatch unexpectedly passed"),
+            Err(error) => {
+                assert!(format!("{error:#}").contains("inconsistent with target"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_swarm_identity_mismatch_is_rejected() -> Result<()> {
+        let receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        let directory = tempdir()?;
+        let mut topology = topology_for(&receipt);
+        topology["prepared_swarm_sha"] = serde_json::Value::String("4".repeat(40));
+        let bytes = serde_json::to_vec(&topology)?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, &bytes)?;
+        let mut receipt = receipt;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("prepared swarm identity mismatch unexpectedly passed"),
+            Err(error) => {
+                assert!(format!("{error:#}").contains("prepared swarm SHA"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn vsix_asset_identity_mismatch_is_rejected() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        receipt.transition.path = super::InstallPath::Vsix;
+        receipt.transition.topology_path_id = "vscode-windows-x86_64".to_string();
+        receipt.transition.expected_asset = "perl-lsp-rs-0.18.0.vsix".to_string();
+        let mut topology = topology_for(&receipt);
+        topology["vsix"]["asset_name"] = serde_json::Value::String("wrong.vsix".to_string());
+        let directory = tempdir()?;
+        let bytes = serde_json::to_vec(&topology)?;
+        let topology_path = directory.path().join("release-topology.json");
+        fs::write(&topology_path, &bytes)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("VSIX asset identity mismatch unexpectedly passed"),
+            Err(error) => {
+                assert!(format!("{error:#}").contains("VS Code package or asset"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Directly proves the `managed_targets` membership invariant on the VSIX
+    /// topology path.  The existing topology-binding tests build the topology
+    /// fixture from the same candidate target, so they would pass even if the
+    /// membership guard were removed.  This test provides three orthogonal
+    /// discriminating cases that can only pass if the guard fires on the
+    /// actual array contents.
+    #[test]
+    fn vsix_target_membership_is_required() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        receipt.transition.path = super::InstallPath::Vsix;
+        receipt.transition.topology_path_id = "vscode-windows-x86_64".to_string();
+        receipt.transition.expected_asset = "perl-lsp-rs-0.18.0.vsix".to_string();
+        let directory = tempdir()?;
+        let topology_path = directory.path().join("release-topology.json");
+
+        // Positive: candidate target is present in managed_targets — must pass.
+        let topology = topology_for(&receipt);
+        let bytes = serde_json::to_vec(&topology)?;
+        fs::write(&topology_path, &bytes)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes);
+        verify_topology_binding(&receipt, &topology_path)?;
+
+        // Negative: empty managed_targets array — must be rejected identifying the invariant.
+        let mut topology_empty = topology.clone();
+        topology_empty["vsix"]["managed_targets"] = serde_json::json!([]);
+        let bytes_empty = serde_json::to_vec(&topology_empty)?;
+        fs::write(&topology_path, &bytes_empty)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes_empty);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("empty managed_targets must not pass"),
+            Err(error) => {
+                let rendered = format!("{error:#}");
+                if !rendered.contains("does not publish candidate target") {
+                    bail!(
+                        "rejection must identify the target-membership invariant; got: {rendered}"
+                    );
+                }
+            }
+        }
+
+        // Negative: managed_targets contains only a foreign target — must be rejected.
+        let mut topology_foreign = topology.clone();
+        topology_foreign["vsix"]["managed_targets"] =
+            serde_json::json!(["aarch64-unknown-linux-gnu"]);
+        let bytes_foreign = serde_json::to_vec(&topology_foreign)?;
+        fs::write(&topology_path, &bytes_foreign)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes_foreign);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("foreign-only managed_targets must not pass"),
+            Err(error) => {
+                let rendered = format!("{error:#}");
+                if !rendered.contains("does not publish candidate target") {
+                    bail!(
+                        "rejection must identify the target-membership invariant; got: {rendered}"
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn verified_child_output_carries_transition_identity() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        bind_artifact(&mut receipt, b"candidate archive bytes");
         let status = validate(&receipt)?;
         let directory = tempdir()?;
         let output = directory.path().join("child.json");
@@ -540,11 +908,11 @@ mod tests {
     }
 
     #[test]
-    fn clean_install_fixture_passes() -> Result<()> {
+    fn clean_install_fixture_without_artifact_is_not_proven() -> Result<()> {
         let receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/clean_install.json"
         ))?;
-        assert_eq!(validate(&receipt)?, ReceiptStatus::Pass);
+        assert_eq!(validate(&receipt)?, ReceiptStatus::NotProven);
         Ok(())
     }
 
@@ -628,11 +996,11 @@ mod tests {
     }
 
     #[test]
-    fn normal_upgrade_fixture_passes() -> Result<()> {
+    fn normal_upgrade_fixture_without_artifact_is_not_proven() -> Result<()> {
         let receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/normal_upgrade.json"
         ))?;
-        assert_eq!(validate(&receipt)?, ReceiptStatus::Pass);
+        assert_eq!(validate(&receipt)?, ReceiptStatus::NotProven);
         Ok(())
     }
 
@@ -681,9 +1049,10 @@ mod tests {
     /// able to reach `pass`, so the new invariant is not blocking everything.
     #[test]
     fn matching_resolved_asset_still_reaches_pass() -> Result<()> {
-        let receipt = fixture(include_str!(
+        let mut receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/clean_install.json"
         ))?;
+        bind_artifact(&mut receipt, b"candidate archive bytes");
         assert_eq!(
             receipt.transition.resolved_asset.as_deref(),
             Some(receipt.transition.expected_asset.as_str())
@@ -755,6 +1124,7 @@ mod tests {
         let mut receipt = fixture(include_str!(
             "../../fixtures/experience/install_transition/normal_upgrade.json"
         ))?;
+        bind_artifact(&mut receipt, b"candidate upgrade artifact bytes");
         receipt.transition.class = super::TransitionClass::Rollback;
         receipt.transition.intended_disposition = super::Disposition::RolledBack;
         receipt.transition.observed_disposition = super::Disposition::RolledBack;

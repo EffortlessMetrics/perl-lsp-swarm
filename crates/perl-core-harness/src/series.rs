@@ -487,6 +487,50 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn series_manifest_rejects_duplicate_membership() {
+        let mut discovery = fixture_discovery();
+        discovery
+            .tests
+            .push(DiscoveredTest { path: "base/if.t".to_string(), root: "base".to_string() });
+
+        let error = build_series_manifest(
+            &discovery,
+            &fixture_config(),
+            "2026-01-01T00:00:00Z".to_string(),
+        )
+        .expect_err("duplicate selected files must fail closed");
+        assert!(error.to_string().contains("duplicate discovered test path"));
+    }
+
+    #[test]
+    fn series_manifest_rejects_wrong_profile_root() {
+        let mut discovery = fixture_discovery();
+        discovery.tests[0].root = "comp".to_string();
+
+        let error = build_series_manifest(
+            &discovery,
+            &fixture_config(),
+            "2026-01-01T00:00:00Z".to_string(),
+        )
+        .expect_err("mismatched roots must fail closed");
+        assert!(error.to_string().contains("mismatched root"));
+    }
+
+    #[test]
+    fn series_manifest_rejects_paths_that_escape_profile_roots() {
+        let mut discovery = fixture_discovery();
+        discovery.tests[0].path = "base/../outside.t".to_string();
+
+        let error = build_series_manifest(
+            &discovery,
+            &fixture_config(),
+            "2026-01-01T00:00:00Z".to_string(),
+        )
+        .expect_err("path escapes must fail closed");
+        assert!(error.to_string().contains("escapes the profile roots"));
+    }
+
     const PINNED_MANIFEST_JSON: &str = r#"{
   "schema_version": "perl_core_harness.comparison_series.v1",
   "series_id": "series-fixture-1",

@@ -27,6 +27,10 @@ pub struct CompletionContext {
     pub cursor_scope_id: ScopeId,
 }
 
+fn is_package_like_symbol(kind: SymbolKind) -> bool {
+    matches!(kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role)
+}
+
 impl CompletionContext {
     /// Return the receiver portion of an arrow-method completion prefix.
     ///
@@ -55,12 +59,13 @@ impl CompletionContext {
     }
 
     pub(crate) fn detect_current_package(symbol_table: &SymbolTable, position: usize) -> String {
-        // First, check for innermost package scope containing the position
+        // First, check for innermost package scope containing the position.
+        // Spans are half-open `[start, end)` — offsets equal to `end` are outside.
         let mut scope_start: Option<usize> = None;
         for scope in symbol_table.scopes.values() {
             if scope.kind == ScopeKind::Package
                 && scope.location.start <= position
-                && position <= scope.location.end
+                && position < scope.location.end
                 && scope_start.is_none_or(|s| scope.location.start >= s)
             {
                 scope_start = Some(scope.location.start);
@@ -72,30 +77,51 @@ impl CompletionContext {
                 .symbols
                 .values()
                 .flat_map(|v| v.iter())
-                .find(|sym| sym.kind == SymbolKind::Package && sym.location.start == start)
+                .find(|sym| sym.location.start == start && is_package_like_symbol(sym.kind))
         {
             return sym.name.clone();
         }
 
-        // Fallback: find last package declaration without block before position
+        // Fallback: find the active package declaration before `position`.
+        // Semicolon-form packages (`package Foo;`) do not create a package scope,
+        // so the first pass above cannot match positions inside later subs.
+        // Block-form packages only apply while the cursor stays inside the block.
         let mut current = "main".to_string();
         let mut packages: Vec<&perl_semantic_analyzer::symbol::Symbol> = symbol_table
             .symbols
             .values()
             .flat_map(|v| v.iter())
-            .filter(|sym| sym.kind == SymbolKind::Package)
+            .filter(|sym| is_package_like_symbol(sym.kind))
             .collect();
         packages.sort_by_key(|sym| sym.location.start);
         for sym in packages {
-            if sym.location.start <= position {
-                let has_scope = symbol_table.scopes.values().any(|sc| {
-                    sc.kind == ScopeKind::Package && sc.location.start == sym.location.start
-                });
-                if !has_scope {
+            if sym.location.start > position {
+                break;
+            }
+
+            let package_scope = symbol_table.scopes.values().find(|scope| {
+                scope.kind == ScopeKind::Package && scope.location.start == sym.location.start
+            });
+
+            match package_scope {
+                Some(scope)
+                    if scope.location.start <= position && position < scope.location.end =>
+                {
                     current = sym.name.clone();
                 }
-            } else {
-                break;
+                Some(scope)
+                    if position >= scope.location.end
+                        && scope.location.end <= sym.location.end
+                        && matches!(sym.kind, SymbolKind::Class | SymbolKind::Role) =>
+                {
+                    // Declaration-line class/role scopes name the lexical package for the
+                    // remainder of the compilation unit (e.g. `package Child; use Moo;`).
+                    current = sym.name.clone();
+                }
+                Some(_) => {}
+                None => {
+                    current = sym.name.clone();
+                }
             }
         }
         current

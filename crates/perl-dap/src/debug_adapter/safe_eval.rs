@@ -213,22 +213,24 @@ pub(super) fn validate_safe_expression(expression: &str) -> Option<String> {
     // Check for dynamic subroutine calls &{...}
     // This blocks tricks like &{"sys"."tem"}("ls")
     if let Some(re) = deref_re()
-        && re.is_match(expression) {
-            return Some(
+        && re.is_match(expression)
+    {
+        return Some(
                 "Safe evaluation mode: dynamic subroutine calls (&{...}) not allowed (use allowSideEffects: true)"
                     .to_string(),
             );
-        }
+    }
 
     // Check for glob operations <*...> (anywhere in expression)
     // This blocks filesystem access via globs
     if let Some(re) = glob_re()
-        && re.is_match(expression) {
-            return Some(
+        && re.is_match(expression)
+    {
+        return Some(
                 "Safe evaluation mode: glob operations (<*...>) not allowed (use allowSideEffects: true)"
                     .to_string(),
             );
-        }
+    }
 
     // Check for file handle reads <$fh> or globs at start of expression
     // This blocks state changes via reads like <STDIN> or <$fh>
@@ -277,22 +279,23 @@ pub(super) fn validate_safe_expression(expression: &str) -> Option<String> {
     // Check for regex mutation operators (s///, tr///, y///)
     // Handled separately to avoid false positives with escape sequences like \s in /\s+/
     if let Some(re) = regex_mutation_re()
-        && let Some(mat) = re.find(expression) {
-            let op = mat.as_str();
-            let start = mat.start();
+        && let Some(mat) = re.find(expression)
+    {
+        let op = mat.as_str();
+        let start = mat.start();
 
-            // Allow sigil-prefixed identifiers ($s, $tr, $y)
-            if is_sigil_prefixed_identifier(expression, start) {
-                // It's a variable, allow it
-            } else if is_escape_sequence(expression, start) {
-                // It's an escape sequence like \s or \y, allow it
-            } else {
-                return Some(format!(
-                    "Safe evaluation mode: regex mutation operator '{}' not allowed (use allowSideEffects: true)",
-                    op.trim()
-                ));
-            }
+        // Allow sigil-prefixed identifiers ($s, $tr, $y)
+        if is_sigil_prefixed_identifier(expression, start) {
+            // It's a variable, allow it
+        } else if is_escape_sequence(expression, start) {
+            // It's an escape sequence like \s or \y, allow it
+        } else {
+            return Some(format!(
+                "Safe evaluation mode: regex mutation operator '{}' not allowed (use allowSideEffects: true)",
+                op.trim()
+            ));
         }
+    }
 
     // Check for increment/decrement operators
     if expression.contains("++") || expression.contains("--") {

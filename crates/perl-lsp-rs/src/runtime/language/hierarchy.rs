@@ -302,11 +302,13 @@ impl LspServer {
                 let mut exact_sub: Option<(String, usize, usize)> = None;
                 for cap in sub_regex.captures_iter(&doc.text) {
                     if let (Some(m), Some(name)) = (cap.get(0), cap.get(1))
-                        && offset >= m.start() && offset <= m.end() {
-                            // Exact match - cursor is on this sub
-                            exact_sub = Some((name.as_str().to_string(), m.start(), m.end()));
-                            break;
-                        }
+                        && offset >= m.start()
+                        && offset <= m.end()
+                    {
+                        // Exact match - cursor is on this sub
+                        exact_sub = Some((name.as_str().to_string(), m.start(), m.end()));
+                        break;
+                    }
                 }
 
                 if let Some((name, start, end)) = exact_sub {
@@ -333,11 +335,13 @@ impl LspServer {
                 let mut exact_pkg: Option<(String, usize, usize)> = None;
                 for cap in package_regex.captures_iter(&doc.text) {
                     if let (Some(m), Some(name)) = (cap.get(0), cap.get(1))
-                        && offset >= m.start() && offset <= m.end() {
-                            // Exact match - cursor is on this package
-                            exact_pkg = Some((name.as_str().to_string(), m.start(), m.end()));
-                            break;
-                        }
+                        && offset >= m.start()
+                        && offset <= m.end()
+                    {
+                        // Exact match - cursor is on this package
+                        exact_pkg = Some((name.as_str().to_string(), m.start(), m.end()));
+                        break;
+                    }
                 }
 
                 if let Some((name, start, end)) = exact_pkg {
@@ -371,95 +375,93 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params
-            && let Some(item) = params.get("item") {
-                let uri = item["data"]["uri"].as_str().unwrap_or("");
-                let name = item["data"]["name"].as_str().unwrap_or("");
+            && let Some(item) = params.get("item")
+        {
+            let uri = item["data"]["uri"].as_str().unwrap_or("");
+            let name = item["data"]["name"].as_str().unwrap_or("");
 
-                let documents = self.documents_guard();
-                if let Some(doc) = documents.get(uri) {
-                    let parsed = doc.current_parsed();
-                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                        // Create type hierarchy provider
-                        let provider = TypeHierarchyProvider::new();
+            let documents = self.documents_guard();
+            if let Some(doc) = documents.get(uri) {
+                let parsed = doc.current_parsed();
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                    // Create type hierarchy provider
+                    let provider = TypeHierarchyProvider::new();
 
-                        // Extract range from request item (LSP uses camelCase)
-                        let type_item = crate::type_hierarchy::TypeHierarchyItem {
-                            name: name.to_string(),
-                            kind: crate::type_hierarchy::TypeHierarchySymbolKind::Class,
-                            uri: uri.to_string(),
-                            range: WireRange::new(
-                                WirePosition::new(
-                                    item["range"]["start"]["line"].as_u64().unwrap_or(0) as u32,
-                                    item["range"]["start"]["character"].as_u64().unwrap_or(0)
-                                        as u32,
-                                ),
-                                WirePosition::new(
-                                    item["range"]["end"]["line"].as_u64().unwrap_or(0) as u32,
-                                    item["range"]["end"]["character"].as_u64().unwrap_or(0) as u32,
-                                ),
+                    // Extract range from request item (LSP uses camelCase)
+                    let type_item = crate::type_hierarchy::TypeHierarchyItem {
+                        name: name.to_string(),
+                        kind: crate::type_hierarchy::TypeHierarchySymbolKind::Class,
+                        uri: uri.to_string(),
+                        range: WireRange::new(
+                            WirePosition::new(
+                                item["range"]["start"]["line"].as_u64().unwrap_or(0) as u32,
+                                item["range"]["start"]["character"].as_u64().unwrap_or(0) as u32,
                             ),
-                            selection_range: WireRange::new(
-                                WirePosition::new(
-                                    item["selectionRange"]["start"]["line"].as_u64().unwrap_or(0)
-                                        as u32,
-                                    item["selectionRange"]["start"]["character"]
-                                        .as_u64()
-                                        .unwrap_or(0) as u32,
-                                ),
-                                WirePosition::new(
-                                    item["selectionRange"]["end"]["line"].as_u64().unwrap_or(0)
-                                        as u32,
-                                    item["selectionRange"]["end"]["character"].as_u64().unwrap_or(0)
-                                        as u32,
-                                ),
+                            WirePosition::new(
+                                item["range"]["end"]["line"].as_u64().unwrap_or(0) as u32,
+                                item["range"]["end"]["character"].as_u64().unwrap_or(0) as u32,
                             ),
-                            detail: item["detail"].as_str().map(String::from),
-                            data: item.get("data").cloned(),
-                        };
+                        ),
+                        selection_range: WireRange::new(
+                            WirePosition::new(
+                                item["selectionRange"]["start"]["line"].as_u64().unwrap_or(0)
+                                    as u32,
+                                item["selectionRange"]["start"]["character"].as_u64().unwrap_or(0)
+                                    as u32,
+                            ),
+                            WirePosition::new(
+                                item["selectionRange"]["end"]["line"].as_u64().unwrap_or(0) as u32,
+                                item["selectionRange"]["end"]["character"].as_u64().unwrap_or(0)
+                                    as u32,
+                            ),
+                        ),
+                        detail: item["detail"].as_str().map(String::from),
+                        data: item.get("data").cloned(),
+                    };
 
-                        // Find supertypes
-                        let supertypes = provider.find_supertypes(ast, &type_item);
+                    // Find supertypes
+                    let supertypes = provider.find_supertypes(ast, &type_item);
 
-                        let lsp_items: Vec<Value> = supertypes
-                            .iter()
-                            .map(|item| {
-                                json!({
-                                    "name": item.name,
-                                    "kind": item.kind as u32,
+                    let lsp_items: Vec<Value> = supertypes
+                        .iter()
+                        .map(|item| {
+                            json!({
+                                "name": item.name,
+                                "kind": item.kind as u32,
+                                "uri": uri,
+                                "range": {
+                                    "start": {
+                                        "line": item.range.start.line,
+                                        "character": item.range.start.character,
+                                    },
+                                    "end": {
+                                        "line": item.range.end.line,
+                                        "character": item.range.end.character,
+                                    },
+                                },
+                                "selectionRange": {
+                                    "start": {
+                                        "line": item.selection_range.start.line,
+                                        "character": item.selection_range.start.character,
+                                    },
+                                    "end": {
+                                        "line": item.selection_range.end.line,
+                                        "character": item.selection_range.end.character,
+                                    },
+                                },
+                                "detail": item.detail,
+                                "data": {
                                     "uri": uri,
-                                    "range": {
-                                        "start": {
-                                            "line": item.range.start.line,
-                                            "character": item.range.start.character,
-                                        },
-                                        "end": {
-                                            "line": item.range.end.line,
-                                            "character": item.range.end.character,
-                                        },
-                                    },
-                                    "selectionRange": {
-                                        "start": {
-                                            "line": item.selection_range.start.line,
-                                            "character": item.selection_range.start.character,
-                                        },
-                                        "end": {
-                                            "line": item.selection_range.end.line,
-                                            "character": item.selection_range.end.character,
-                                        },
-                                    },
-                                    "detail": item.detail,
-                                    "data": {
-                                        "uri": uri,
-                                        "name": item.name,
-                                    },
-                                })
+                                    "name": item.name,
+                                },
                             })
-                            .collect();
+                        })
+                        .collect();
 
-                        return Ok(Some(to_json_array(&lsp_items)));
-                    }
+                    return Ok(Some(to_json_array(&lsp_items)));
                 }
             }
+        }
 
         Ok(Some(json!([])))
     }
@@ -470,95 +472,93 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(params) = params
-            && let Some(item) = params.get("item") {
-                let uri = item["data"]["uri"].as_str().unwrap_or("");
-                let name = item["data"]["name"].as_str().unwrap_or("");
+            && let Some(item) = params.get("item")
+        {
+            let uri = item["data"]["uri"].as_str().unwrap_or("");
+            let name = item["data"]["name"].as_str().unwrap_or("");
 
-                let documents = self.documents_guard();
-                if let Some(doc) = documents.get(uri) {
-                    let parsed = doc.current_parsed();
-                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                        // Create type hierarchy provider
-                        let provider = TypeHierarchyProvider::new();
+            let documents = self.documents_guard();
+            if let Some(doc) = documents.get(uri) {
+                let parsed = doc.current_parsed();
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
+                    // Create type hierarchy provider
+                    let provider = TypeHierarchyProvider::new();
 
-                        // Extract range from request item (LSP uses camelCase)
-                        let type_item = crate::type_hierarchy::TypeHierarchyItem {
-                            name: name.to_string(),
-                            kind: crate::type_hierarchy::TypeHierarchySymbolKind::Class,
-                            uri: uri.to_string(),
-                            range: WireRange::new(
-                                WirePosition::new(
-                                    item["range"]["start"]["line"].as_u64().unwrap_or(0) as u32,
-                                    item["range"]["start"]["character"].as_u64().unwrap_or(0)
-                                        as u32,
-                                ),
-                                WirePosition::new(
-                                    item["range"]["end"]["line"].as_u64().unwrap_or(0) as u32,
-                                    item["range"]["end"]["character"].as_u64().unwrap_or(0) as u32,
-                                ),
+                    // Extract range from request item (LSP uses camelCase)
+                    let type_item = crate::type_hierarchy::TypeHierarchyItem {
+                        name: name.to_string(),
+                        kind: crate::type_hierarchy::TypeHierarchySymbolKind::Class,
+                        uri: uri.to_string(),
+                        range: WireRange::new(
+                            WirePosition::new(
+                                item["range"]["start"]["line"].as_u64().unwrap_or(0) as u32,
+                                item["range"]["start"]["character"].as_u64().unwrap_or(0) as u32,
                             ),
-                            selection_range: WireRange::new(
-                                WirePosition::new(
-                                    item["selectionRange"]["start"]["line"].as_u64().unwrap_or(0)
-                                        as u32,
-                                    item["selectionRange"]["start"]["character"]
-                                        .as_u64()
-                                        .unwrap_or(0) as u32,
-                                ),
-                                WirePosition::new(
-                                    item["selectionRange"]["end"]["line"].as_u64().unwrap_or(0)
-                                        as u32,
-                                    item["selectionRange"]["end"]["character"].as_u64().unwrap_or(0)
-                                        as u32,
-                                ),
+                            WirePosition::new(
+                                item["range"]["end"]["line"].as_u64().unwrap_or(0) as u32,
+                                item["range"]["end"]["character"].as_u64().unwrap_or(0) as u32,
                             ),
-                            detail: item["detail"].as_str().map(String::from),
-                            data: item.get("data").cloned(),
-                        };
+                        ),
+                        selection_range: WireRange::new(
+                            WirePosition::new(
+                                item["selectionRange"]["start"]["line"].as_u64().unwrap_or(0)
+                                    as u32,
+                                item["selectionRange"]["start"]["character"].as_u64().unwrap_or(0)
+                                    as u32,
+                            ),
+                            WirePosition::new(
+                                item["selectionRange"]["end"]["line"].as_u64().unwrap_or(0) as u32,
+                                item["selectionRange"]["end"]["character"].as_u64().unwrap_or(0)
+                                    as u32,
+                            ),
+                        ),
+                        detail: item["detail"].as_str().map(String::from),
+                        data: item.get("data").cloned(),
+                    };
 
-                        // Find subtypes
-                        let subtypes = provider.find_subtypes(ast, &type_item);
+                    // Find subtypes
+                    let subtypes = provider.find_subtypes(ast, &type_item);
 
-                        let lsp_items: Vec<Value> = subtypes
-                            .iter()
-                            .map(|item| {
-                                json!({
-                                    "name": item.name,
-                                    "kind": item.kind as u32,
+                    let lsp_items: Vec<Value> = subtypes
+                        .iter()
+                        .map(|item| {
+                            json!({
+                                "name": item.name,
+                                "kind": item.kind as u32,
+                                "uri": uri,
+                                "range": {
+                                    "start": {
+                                        "line": item.range.start.line,
+                                        "character": item.range.start.character,
+                                    },
+                                    "end": {
+                                        "line": item.range.end.line,
+                                        "character": item.range.end.character,
+                                    },
+                                },
+                                "selectionRange": {
+                                    "start": {
+                                        "line": item.selection_range.start.line,
+                                        "character": item.selection_range.start.character,
+                                    },
+                                    "end": {
+                                        "line": item.selection_range.end.line,
+                                        "character": item.selection_range.end.character,
+                                    },
+                                },
+                                "detail": item.detail,
+                                "data": {
                                     "uri": uri,
-                                    "range": {
-                                        "start": {
-                                            "line": item.range.start.line,
-                                            "character": item.range.start.character,
-                                        },
-                                        "end": {
-                                            "line": item.range.end.line,
-                                            "character": item.range.end.character,
-                                        },
-                                    },
-                                    "selectionRange": {
-                                        "start": {
-                                            "line": item.selection_range.start.line,
-                                            "character": item.selection_range.start.character,
-                                        },
-                                        "end": {
-                                            "line": item.selection_range.end.line,
-                                            "character": item.selection_range.end.character,
-                                        },
-                                    },
-                                    "detail": item.detail,
-                                    "data": {
-                                        "uri": uri,
-                                        "name": item.name,
-                                    },
-                                })
+                                    "name": item.name,
+                                },
                             })
-                            .collect();
+                        })
+                        .collect();
 
-                        return Ok(Some(to_json_array(&lsp_items)));
-                    }
+                    return Ok(Some(to_json_array(&lsp_items)));
                 }
             }
+        }
 
         Ok(Some(json!([])))
     }

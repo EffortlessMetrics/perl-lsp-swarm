@@ -109,9 +109,10 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                                     &module_name,
                                     col_start,
                                     col_end,
-                                ) {
-                                    out.push(link);
-                                }
+                                )
+                            {
+                                out.push(link);
+                            }
                         }
                         Some(RequireForm::FilePath) => {
                             // Quoted file path that is NOT a .pm (e.g. .pl, extensionless) → file link

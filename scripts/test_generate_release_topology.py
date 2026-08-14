@@ -63,7 +63,9 @@ class ReleaseTopologyTests(unittest.TestCase):
                 "Cargo.toml": "[workspace.package]\nversion = '0.18.0'\n",
                 "Cargo.lock": "# fixture lock\n",
                 ".github/workflows/release.yml": workflow,
-                "vscode-extension/package.json": json.dumps({"version": release}),
+                "vscode-extension/package.json": json.dumps(
+                    {"name": "perl-lsp-rs", "version": release}
+                ),
                 "docs/reference/downstream-dap-integrations.json": json.dumps(
                     downstream
                 ),
@@ -96,6 +98,7 @@ class ReleaseTopologyTests(unittest.TestCase):
                 "archive_count": len(targets),
                 "vsix": {
                     "version": release,
+                    "asset_name": "perl-lsp-rs-0.18.0.vsix",
                     "package_path": "vscode-extension",
                     "managed_targets": ["x86_64-unknown-linux-gnu"],
                     "bundled_targets": [],
@@ -216,6 +219,7 @@ class ReleaseTopologyTests(unittest.TestCase):
 
     def test_manifest_mutations_fail_closed(self):
         with self.valid_manifest_fixture() as (root, manifest, frozen_sha):
+            MODULE.validate_manifest(manifest, root, frozen_sha)
             mutations = {}
 
             missing_crate = deepcopy(manifest)

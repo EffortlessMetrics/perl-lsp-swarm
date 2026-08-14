@@ -179,10 +179,10 @@ fn try_catch_variable_range_with_long_body() {
 
 /// Find a `MethodCall` node with the given method name anywhere in the AST.
 fn find_method_call<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
-    if let NodeKind::MethodCall { method, .. } = &node.kind {
-        if method == name {
-            return Some(node);
-        }
+    if let NodeKind::MethodCall { method, .. } = &node.kind
+        && method == name
+    {
+        return Some(node);
     }
     node.children().iter().find_map(|child| find_method_call(child, name))
 }
