@@ -3,11 +3,14 @@
 #
 # Required:
 #   PERLLSP         exact candidate perllsp executable
-#   NEOVIM_FLOOR    exact 0.11.x Neovim executable
+#   NEOVIM_FLOOR    exact Neovim 0.11.3+ executable (maintained feature floor;
+#                   nested equal-priority root_markers require 0.11.3+)
 #   NEOVIM_CURRENT  exact current-stable 0.12.x Neovim executable
 #
 # Optional:
-#   NEOVIM_FLOOR_PREFIX   expected version prefix (default 0.11)
+#   NEOVIM_FLOOR_PREFIX   version-family prefix for the floor row (default 0.11).
+#                         Family matching is not a feature floor: the Lua row
+#                         still hard-requires nvim-0.11.3 via vim.fn.has.
 #   NEOVIM_CURRENT_PREFIX expected version prefix (default 0.12)
 #
 # Each row runs with isolated XDG state so LSP trace evidence cannot leak from
