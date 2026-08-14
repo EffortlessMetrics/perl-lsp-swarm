@@ -47,6 +47,7 @@
 mod ast_explorer;
 mod cancellation;
 mod experimental;
+mod formatting_policy;
 mod lifecycle;
 mod preflight;
 mod request_cancellation;
@@ -72,7 +73,11 @@ impl LspServer {
             preflight::PreflightOutcome::Respond(response) => return Some(response),
         }
 
-        let routed = self.route_request(request, context.id.clone(), context.should_respond);
+        let routed =
+            formatting_policy::route(self, &request, context.id.clone(), context.should_respond)
+                .unwrap_or_else(|| {
+                    self.route_request(request, context.id.clone(), context.should_respond)
+                });
         response::finalize_response(context.id.as_ref(), routed)
     }
 }
@@ -158,6 +163,10 @@ mod tests {
             features.folding_range = false;
             features.document_symbol = false;
         }
+        server
+            .advertised_feature_ids
+            .lock()
+            .retain(|id| *id != perl_lsp_rs_core::features::ids::LSP_FORMATTING);
 
         // Each disabled handler must return method_not_advertised (−32601).
         let cases: &[(&str, Option<Value>)] = &[

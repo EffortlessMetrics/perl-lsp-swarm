@@ -9,14 +9,14 @@
 //! Assertion deltas, improvements, and V1 migration remain follow-up classifier
 //! slices. Aggregate `summary` fields cannot manufacture a transition: they are
 //! ignored for Regression/Improvement scoring and must reconcile with detailed
-//! `file_results` before `NoChange`. Compiler/invocation/capability/environment
-//! subject ids are retained on the V2 ratchet but are not present on
+//! `file_results` before any definitive outcome. Compiler/invocation/capability/
+//! environment subject ids are retained on the V2 ratchet but are not present on
 //! [`RunReport`]; they are bound in receipts by a later slice.
 
 use crate::transition::model::AcceptedBaseline;
+use crate::transition::validate::{validate_accepted_baseline, validate_run_report};
 use perl_core_harness_types::{
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition, CompileBaselineV2,
-    RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunnerStatus,
+    CompatibilityTransition, CompileBaselineV2, RunFileResult, RunReport, RunnerStatus,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -34,26 +34,25 @@ pub struct Classification {
 }
 
 /// Classify `current` against `accepted` for the minimal core outcomes above.
+///
+/// Canonical validation runs before any definitive transition arm. Invalid or
+/// incomplete evidence yields [`CompatibilityTransition::NotProven`].
 pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> Classification {
-    if current.harness_status.is_some_and(|status| status != 0) {
+    if let Err(error) = validate_accepted_baseline(accepted) {
         return not_proven(format!(
-            "accepted and current observations are not comparable: current harness_status {:?} is not a complete successful run",
-            current.harness_status
+            "accepted and current observations are not comparable: {}",
+            error.reason
         ));
     }
-    if let Some(path) = first_duplicate_path(accepted.file_results()) {
+    if let Err(error) = validate_run_report(current) {
         return not_proven(format!(
-            "accepted and current observations are not comparable: accepted observation repeats file-result path {path}"
-        ));
-    }
-    if let Some(path) = first_duplicate_path(&current.file_results) {
-        return not_proven(format!(
-            "accepted and current observations are not comparable: current observation repeats file-result path {path}"
+            "accepted and current observations are not comparable: {}",
+            error.reason
         ));
     }
 
     if let AcceptedBaseline::V2(value) = accepted
-        && let Some(reason) = v2_incomparable(value, current)
+        && let Some(reason) = v2_subject_incomparable(value, current)
     {
         return not_proven(reason);
     }
@@ -91,7 +90,6 @@ pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> 
         && accepted.failures() == current.failures.as_slice()
         && value.semantic_boundaries == current.semantic_boundaries
         && current.harness_status == Some(0)
-        && summary_matches_file_results(current)
     {
         return Classification {
             transition: CompatibilityTransition::NoChange,
@@ -107,35 +105,8 @@ pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> 
     )
 }
 
-fn v2_incomparable(value: &CompileBaselineV2, current: &RunReport) -> Option<String> {
-    if value.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION {
-        return Some(format!(
-            "accepted and current observations are not comparable: unsupported accepted V2 schema {}",
-            value.schema_version
-        ));
-    }
-    if value.report_schema_version != RUN_REPORT_SCHEMA_VERSION
-        || current.schema_version != RUN_REPORT_SCHEMA_VERSION
-    {
-        return Some(
-            "accepted and current observations are not comparable: report schema is not the supported run-report version"
-                .into(),
-        );
-    }
-    if let Some(path) = first_duplicate_str(value.file_membership.iter().map(String::as_str)) {
-        return Some(format!(
-            "accepted and current observations are not comparable: accepted V2 file_membership repeats path {path}"
-        ));
-    }
+fn v2_subject_incomparable(value: &CompileBaselineV2, current: &RunReport) -> Option<String> {
     let membership = value.file_membership.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    let accepted_paths =
-        value.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
-    if membership != accepted_paths {
-        return Some(
-            "accepted and current observations are not comparable: accepted V2 file_results do not match immutable file_membership"
-                .into(),
-        );
-    }
     let accepted_subject =
         (value.mode, value.profile, value.runner, value.perl_resolved_ref.as_str());
     let current_subject =
@@ -151,22 +122,6 @@ fn v2_incomparable(value: &CompileBaselineV2, current: &RunReport) -> Option<Str
     )
 }
 
-fn summary_matches_file_results(current: &RunReport) -> bool {
-    let files_total = current.file_results.len();
-    let files_passed =
-        current.file_results.iter().filter(|result| result.status == RunnerStatus::Pass).count();
-    let files_failed = files_total.saturating_sub(files_passed);
-    let tap_assertions_total =
-        current.file_results.iter().map(|result| result.assertions_total).sum::<usize>();
-    let tap_assertions_passed =
-        current.file_results.iter().map(|result| result.assertions_passed).sum::<usize>();
-    current.summary.files_total == files_total
-        && current.summary.files_passed == files_passed
-        && current.summary.files_failed == files_failed
-        && current.summary.tap_assertions_total == tap_assertions_total
-        && current.summary.tap_assertions_passed == tap_assertions_passed
-}
-
 fn not_proven(reason: String) -> Classification {
     Classification {
         transition: CompatibilityTransition::NotProven,
@@ -174,15 +129,6 @@ fn not_proven(reason: String) -> Classification {
         requires_candidate: false,
         semantic_boundary_change: false,
     }
-}
-
-fn first_duplicate_path(results: &[RunFileResult]) -> Option<&str> {
-    first_duplicate_str(results.iter().map(|result| result.path.as_str()))
-}
-
-fn first_duplicate_str<'a>(paths: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    let mut seen = BTreeSet::new();
-    paths.into_iter().find(|path| !seen.insert(*path))
 }
 
 fn index_by_path(results: &[RunFileResult]) -> BTreeMap<&str, &RunFileResult> {

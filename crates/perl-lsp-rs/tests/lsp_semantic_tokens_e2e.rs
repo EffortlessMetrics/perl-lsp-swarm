@@ -7,8 +7,8 @@ use support::lsp_client::LspClient;
 #[test]
 
 fn semantic_tokens_expected_ranges() -> Result<(), Box<dyn std::error::Error>> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
 
     let uri = "file:///semantic.pl";
     let source = "my $x = 1;\nsub foo { $x }\nfoo();\n";
