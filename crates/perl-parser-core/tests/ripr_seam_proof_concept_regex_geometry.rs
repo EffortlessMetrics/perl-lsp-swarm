@@ -1,8 +1,6 @@
 use perl_parser_core::{
     ParseError, Parser, SourceLocation,
-    quote_parser::{
-        RegexFamilyGeometry, RegexFamilyOperator, extract_regex_family_geometry,
-    },
+    quote_parser::{RegexFamilyGeometry, RegexFamilyOperator, extract_regex_family_geometry},
 };
 
 fn geometry(
@@ -68,9 +66,16 @@ fn regex_operator_geometry_preserves_exact_prefix_body_and_modifier_ranges()
         let result = geometry(source, source_start)?;
         assert_eq!(result.operator, operator, "operator for {source:?}");
         assert_eq!(result.operator_range, operator_range, "operator range for {source:?}");
-        assert_eq!(result.pattern.opening_delimiter_range, open, "opening delimiter for {source:?}");
+        assert_eq!(
+            result.pattern.opening_delimiter_range, open,
+            "opening delimiter for {source:?}"
+        );
         assert_eq!(result.pattern.range, body, "body range for {source:?}");
-        assert_eq!(result.pattern.closing_delimiter_range, Some(close), "closing delimiter for {source:?}");
+        assert_eq!(
+            result.pattern.closing_delimiter_range,
+            Some(close),
+            "closing delimiter for {source:?}"
+        );
         assert_eq!(result.modifiers.range, modifiers, "modifier range for {source:?}");
         assert_eq!(result.full_range, full, "full range for {source:?}");
         assert!(result.replacement.is_none(), "unexpected replacement for {source:?}");
@@ -128,26 +133,19 @@ fn two_body_operator_geometry_keeps_pattern_replacement_and_modifier_identity()
 
     let shared = geometry("s/foo/bar/ge", source_start)?;
     let shared_replacement = shared.replacement.as_ref().ok_or("missing replacement")?;
-    assert_eq!(
-        shared.pattern.closing_delimiter_range,
-        Some(absolute(source_start, 5, 6))
-    );
+    assert_eq!(shared.pattern.closing_delimiter_range, Some(absolute(source_start, 5, 6)));
     assert_eq!(
         shared_replacement.opening_delimiter_range,
         absolute(source_start, 5, 6),
         "the middle slash closes the pattern and opens the replacement"
     );
-    assert_eq!(
-        shared_replacement.closing_delimiter_range,
-        Some(absolute(source_start, 9, 10))
-    );
+    assert_eq!(shared_replacement.closing_delimiter_range, Some(absolute(source_start, 9, 10)));
 
     Ok(())
 }
 
 #[test]
-fn geometry_preserves_partial_and_unicode_byte_ranges()
--> Result<(), Box<dyn std::error::Error>> {
+fn geometry_preserves_partial_and_unicode_byte_ranges() -> Result<(), Box<dyn std::error::Error>> {
     let source_start = 7;
 
     let partial = geometry("m{foo", source_start)?;
@@ -156,10 +154,8 @@ fn geometry_preserves_partial_and_unicode_byte_ranges()
     assert!(!partial.pattern.is_closed());
 
     let missing_replacement_closer = geometry("s/foo/", source_start)?;
-    let replacement = missing_replacement_closer
-        .replacement
-        .as_ref()
-        .ok_or("expected partial replacement")?;
+    let replacement =
+        missing_replacement_closer.replacement.as_ref().ok_or("expected partial replacement")?;
     assert_eq!(replacement.text, "");
     assert_eq!(replacement.range, absolute(source_start, 6, 6));
     assert!(!replacement.is_closed());
@@ -178,12 +174,8 @@ fn geometry_preserves_partial_and_unicode_byte_ranges()
 #[test]
 fn nested_quantifier_advisories_use_original_pattern_coordinates()
 -> Result<(), Box<dyn std::error::Error>> {
-    let sources = [
-        "my $x = /(a+)+/;",
-        "my $x = m/(a+)+/;",
-        "my $x = qr{(a+)+};",
-        "my $x = s/(a+)+/x/;",
-    ];
+    let sources =
+        ["my $x = /(a+)+/;", "my $x = m/(a+)+/;", "my $x = qr{(a+)+};", "my $x = s/(a+)+/x/;"];
 
     for source in sources {
         let pattern_start = source
