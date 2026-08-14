@@ -417,9 +417,10 @@ impl LspServer {
             }
         });
         if let Some(shadow_receipt) = semantic_shadow_receipt
-            && let Some(object) = receipt.as_object_mut() {
-                object.insert("semantic_shadow_receipt".to_string(), shadow_receipt);
-            }
+            && let Some(object) = receipt.as_object_mut()
+        {
+            object.insert("semantic_shadow_receipt".to_string(), shadow_receipt);
+        }
         self.record_provider_decision_trace("completion", &receipt);
     }
 
@@ -926,16 +927,18 @@ impl LspServer {
                             | crate::workspace_index::SymbolKind::Class
                             | crate::workspace_index::SymbolKind::Role
                     );
-                    if is_use_module_context && is_module_kind
+                    if is_use_module_context
+                        && is_module_kind
                         && let Some(ctx) = inc_ctx
-                            && !ctx.symbol_uri_reachable(&symbol.uri) {
-                                tracing::trace!(
-                                    symbol = %symbol.name,
-                                    uri = %symbol.uri,
-                                    "completion: skipping workspace symbol not reachable via @INC"
-                                );
-                                continue;
-                            }
+                        && !ctx.symbol_uri_reachable(&symbol.uri)
+                    {
+                        tracing::trace!(
+                            symbol = %symbol.name,
+                            uri = %symbol.uri,
+                            "completion: skipping workspace symbol not reachable via @INC"
+                        );
+                        continue;
+                    }
 
                     // Strategy B: non-module symbols in multi-root workspace — filter
                     // by workspace-folder containment. symbol_uri_reachable is designed
@@ -944,15 +947,16 @@ impl LspServer {
                     // for subroutines, variables, methods, and constants (fixes #970).
                     if !is_module_kind
                         && let Some(ref folder) = doc_folder_filter
-                            && !workspace_folder_matches_doc_uri(folder, &symbol.uri) {
-                                tracing::trace!(
-                                    symbol = %symbol.name,
-                                    uri = %symbol.uri,
-                                    folder = %folder.uri,
-                                    "completion: skipping cross-folder non-module symbol"
-                                );
-                                continue;
-                            }
+                        && !workspace_folder_matches_doc_uri(folder, &symbol.uri)
+                    {
+                        tracing::trace!(
+                            symbol = %symbol.name,
+                            uri = %symbol.uri,
+                            folder = %folder.uri,
+                            "completion: skipping cross-folder non-module symbol"
+                        );
+                        continue;
+                    }
 
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
@@ -1160,19 +1164,18 @@ impl LspServer {
             item["filterText"] = json!(filter_text);
         }
 
-        if label_details_support
-            && let Some(ld) = c.label_details {
-                let mut obj = serde_json::Map::new();
-                if let Some(d) = ld.detail {
-                    obj.insert("detail".to_string(), json!(d));
-                }
-                if let Some(desc) = ld.description {
-                    obj.insert("description".to_string(), json!(desc));
-                }
-                if !obj.is_empty() {
-                    item["labelDetails"] = Value::Object(obj);
-                }
+        if label_details_support && let Some(ld) = c.label_details {
+            let mut obj = serde_json::Map::new();
+            if let Some(d) = ld.detail {
+                obj.insert("detail".to_string(), json!(d));
             }
+            if let Some(desc) = ld.description {
+                obj.insert("description".to_string(), json!(desc));
+            }
+            if !obj.is_empty() {
+                item["labelDetails"] = Value::Object(obj);
+            }
+        }
 
         if !c.additional_edits.is_empty() {
             let edits: Vec<Value> = c
@@ -2150,9 +2153,10 @@ impl LspServer {
                 }
                 if label_details_support
                     && let Some(detail) = label_detail
-                        && obj.get("labelDetails").is_none() {
-                            obj.insert("labelDetails".to_string(), json!({ "detail": detail }));
-                        }
+                    && obj.get("labelDetails").is_none()
+                {
+                    obj.insert("labelDetails".to_string(), json!({ "detail": detail }));
+                }
             }
             return Ok(Some(item));
         }
@@ -2189,15 +2193,16 @@ impl LspServer {
             };
 
             if let Some(doc) = keyword_doc
-                && let Some(obj) = item.as_object_mut() {
-                    obj.insert(
-                        "documentation".to_string(),
-                        json!({
-                            "kind": "markdown",
-                            "value": doc
-                        }),
-                    );
-                }
+                && let Some(obj) = item.as_object_mut()
+            {
+                obj.insert(
+                    "documentation".to_string(),
+                    json!({
+                        "kind": "markdown",
+                        "value": doc
+                    }),
+                );
+            }
         }
 
         Ok(Some(item))

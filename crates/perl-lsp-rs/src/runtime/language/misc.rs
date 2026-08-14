@@ -602,14 +602,14 @@ impl LspServer {
                 .map(|props| props.contains("label.location"))
                 .unwrap_or(false);
 
-            if hint.get("labelDetails").is_none() && kind == 2 && client_supports_label_location
+            if hint.get("labelDetails").is_none()
+                && kind == 2
+                && client_supports_label_location
                 && let Some(label_location) = self.resolve_hint_label_location(&hint)
-                    && let Some(obj) = hint.as_object_mut() {
-                        obj.insert(
-                            "labelDetails".to_string(),
-                            json!({ "location": label_location }),
-                        );
-                    }
+                && let Some(obj) = hint.as_object_mut()
+            {
+                obj.insert("labelDetails".to_string(), json!({ "location": label_location }));
+            }
 
             Ok(Some(hint))
         } else {
@@ -970,57 +970,52 @@ impl LspServer {
                 let a = &cfg.ai_completion;
                 (a.enabled, a.fallback, a.max_output_tokens, a.timeout_ms)
             };
-            if ai_enabled
-                && let Some(context) = provider.prepare_context(&text, line, character) {
-                    let backend_result = self.try_ai_inline_completion(
-                        &context,
-                        ai_max_output_tokens,
-                        ai_timeout_ms,
-                    );
-                    match backend_result {
-                        Ok(ref items) if !items.is_empty() => {
-                            let list = perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+            if ai_enabled && let Some(context) = provider.prepare_context(&text, line, character) {
+                let backend_result =
+                    self.try_ai_inline_completion(&context, ai_max_output_tokens, ai_timeout_ms);
+                match backend_result {
+                    Ok(ref items) if !items.is_empty() => {
+                        let list =
+                            perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
                                 items: items.clone(),
                             };
-                            let list = provider.apply_replacement_ranges_for_context(
-                                list, &context, line, character,
-                            );
-                            let list =
-                                provider.filter_parse_safe_items(list, &text, line, character);
-                            let list = constrain_inline_completions_to_selected_info(
-                                list,
-                                selected_completion.as_ref(),
-                                line,
-                                character,
-                            );
-                            let list = apply_inline_completion_trigger_policy(list, trigger_kind);
-                            if !list.items.is_empty() || !ai_fallback {
-                                return Ok(Some(serde_json::to_value(list).map_err(|e| {
-                                    crate::protocol::internal_error(&format!(
-                                        "Failed to serialize inline completions: {}",
-                                        e
-                                    ))
-                                })?));
-                            }
+                        let list = provider
+                            .apply_replacement_ranges_for_context(list, &context, line, character);
+                        let list = provider.filter_parse_safe_items(list, &text, line, character);
+                        let list = constrain_inline_completions_to_selected_info(
+                            list,
+                            selected_completion.as_ref(),
+                            line,
+                            character,
+                        );
+                        let list = apply_inline_completion_trigger_policy(list, trigger_kind);
+                        if !list.items.is_empty() || !ai_fallback {
+                            return Ok(Some(serde_json::to_value(list).map_err(|e| {
+                                crate::protocol::internal_error(&format!(
+                                    "Failed to serialize inline completions: {}",
+                                    e
+                                ))
+                            })?));
                         }
-                        Err(ref e) => {
-                            if matches!(e, BackendError::Auth(_)) {
-                                self.notify_ai_auth_failure();
-                            }
-                            tracing::debug!("AI inline completion failed: {}", e);
-                            if !ai_fallback {
-                                return Ok(Some(json!({ "items": [] })));
-                            }
-                            // Fall through to deterministic
+                    }
+                    Err(ref e) => {
+                        if matches!(e, BackendError::Auth(_)) {
+                            self.notify_ai_auth_failure();
                         }
-                        _ => {
-                            // Ok(empty) — fall through to deterministic if fallback enabled
-                            if !ai_fallback {
-                                return Ok(Some(json!({ "items": [] })));
-                            }
+                        tracing::debug!("AI inline completion failed: {}", e);
+                        if !ai_fallback {
+                            return Ok(Some(json!({ "items": [] })));
+                        }
+                        // Fall through to deterministic
+                    }
+                    _ => {
+                        // Ok(empty) — fall through to deterministic if fallback enabled
+                        if !ai_fallback {
+                            return Ok(Some(json!({ "items": [] })));
                         }
                     }
                 }
+            }
 
             // Deterministic fallback
             let environment = provider
@@ -1152,9 +1147,10 @@ impl LspServer {
                     continue;
                 }
                 if let Some(ref context) = inc_context
-                    && !context.symbol_uri_reachable(&symbol.uri) {
-                        continue;
-                    }
+                    && !context.symbol_uri_reachable(&symbol.uri)
+                {
+                    continue;
+                }
 
                 let module_name = inline_workspace_module_name(&symbol);
                 if !module_name.starts_with(fragment) {
@@ -1632,9 +1628,10 @@ impl LspServer {
                 for folder in folders.iter() {
                     if let Ok(parsed) = url::Url::parse(&folder.uri)
                         && let Ok(path) = parsed.to_file_path()
-                            && !workspace_roots.contains(&path) {
-                                workspace_roots.push(path);
-                            }
+                        && !workspace_roots.contains(&path)
+                    {
+                        workspace_roots.push(path);
+                    }
                 }
             }
 
@@ -1959,17 +1956,19 @@ impl LspServer {
         let mut results = Vec::new();
 
         if let Some(ref path) = *self.root_path.lock()
-            && let Ok(url) = url::Url::from_file_path(path) {
-                results.push(url);
-            }
+            && let Ok(url) = url::Url::from_file_path(path)
+        {
+            results.push(url);
+        }
 
         {
             let folders = self.workspace_folders.lock();
             for folder in folders.iter() {
                 if let Ok(parsed) = url::Url::parse(&folder.uri)
-                    && !results.contains(&parsed) {
-                        results.push(parsed);
-                    }
+                    && !results.contains(&parsed)
+                {
+                    results.push(parsed);
+                }
             }
         }
 

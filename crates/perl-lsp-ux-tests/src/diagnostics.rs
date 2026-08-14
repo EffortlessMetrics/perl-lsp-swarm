@@ -74,9 +74,10 @@ impl DiagnosticsTracker {
         loop {
             let events = events_provider();
             if let Some(diagnostics) = Self::latest_for_uri(&events, uri)
-                && predicate(&diagnostics) {
-                    return Some(diagnostics);
-                }
+                && predicate(&diagnostics)
+            {
+                return Some(diagnostics);
+            }
 
             if Instant::now() >= deadline {
                 return None;

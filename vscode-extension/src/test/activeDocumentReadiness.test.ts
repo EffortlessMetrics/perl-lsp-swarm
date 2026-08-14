@@ -41,6 +41,19 @@ describe('ActiveDocumentReadiness', () => {
     await expect(pending).rejects.toThrow('was not ready after 100ms');
   });
 
+  test('exposes an honest readiness snapshot for installed-path receipts', () => {
+    const readiness = new ActiveDocumentReadiness();
+    const generation = readiness.beginGeneration();
+    readiness.markIndexReady(generation, 'ready_limited', 'resource limit');
+
+    expect(readiness.snapshot()).toEqual({
+      generation,
+      indexState: 'ready_limited',
+      indexReason: 'resource limit',
+      fullyReady: false,
+    });
+  });
+
   test('rejects pending waiters when a restart begins a new generation', async () => {
     const readiness = new ActiveDocumentReadiness();
     readiness.beginGeneration();

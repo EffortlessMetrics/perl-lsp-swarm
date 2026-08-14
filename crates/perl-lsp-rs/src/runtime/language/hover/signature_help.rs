@@ -81,13 +81,13 @@ impl LspServer {
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
                         && let Some(signature) =
                             self.get_user_function_signature(ast, &function_name)
-                        {
-                            return Ok(Some(json!({
-                                "signatures": [signature],
-                                "activeSignature": active_signature,
-                                "activeParameter": active_param
-                            })));
-                        }
+                    {
+                        return Ok(Some(json!({
+                            "signatures": [signature],
+                            "activeSignature": active_signature,
+                            "activeParameter": active_param
+                        })));
+                    }
 
                     // Fall back to built-in functions
                     if let Some(signature) = self.get_builtin_function_signature(&function_name) {
@@ -114,13 +114,14 @@ impl LspServer {
                     let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                     #[cfg(feature = "workspace")]
                     if Self::is_method_call_context(&doc.text, offset)
-                        && let Some(signature) = self.resolve_method_in_workspace(&function_name) {
-                            return Ok(Some(json!({
-                                "signatures": [signature],
-                                "activeSignature": active_signature,
-                                "activeParameter": active_param
-                            })));
-                        }
+                        && let Some(signature) = self.resolve_method_in_workspace(&function_name)
+                    {
+                        return Ok(Some(json!({
+                            "signatures": [signature],
+                            "activeSignature": active_signature,
+                            "activeParameter": active_param
+                        })));
+                    }
 
                     // Check DBI method signatures — only for files that import DBI/DBIx,
                     // to avoid false positives for common method names like `execute`.
@@ -159,22 +160,22 @@ impl LspServer {
                         if let Some(paren_pos) = paren_offset
                             && let Some(receiver) =
                                 Self::extract_arrow_receiver(&doc.text, paren_pos)
-                                && let Some((sig, desc)) =
-                                    crate::completion::get_dbi_method_documentation(
-                                        &receiver,
-                                        &function_name,
-                                    )
-                                {
-                                    return Ok(Some(json!({
-                                        "signatures": [json!({
-                                            "label": sig,
-                                            "documentation": desc,
-                                            "parameters": []
-                                        })],
-                                        "activeSignature": active_signature,
-                                        "activeParameter": active_param
-                                    })));
-                                }
+                            && let Some((sig, desc)) =
+                                crate::completion::get_dbi_method_documentation(
+                                    &receiver,
+                                    &function_name,
+                                )
+                        {
+                            return Ok(Some(json!({
+                                "signatures": [json!({
+                                    "label": sig,
+                                    "documentation": desc,
+                                    "parameters": []
+                                })],
+                                "activeSignature": active_signature,
+                                "activeParameter": active_param
+                            })));
+                        }
                     }
 
                     // If no signature found, return a generic one
@@ -469,10 +470,9 @@ impl LspServer {
                     }
                     _ => false,
                 };
-                if matched
-                    && let NodeKind::String { value, .. } = &package.kind {
-                        return Some(value.trim_matches(|c| c == '\'' || c == '"').to_string());
-                    }
+                if matched && let NodeKind::String { value, .. } = &package.kind {
+                    return Some(value.trim_matches(|c| c == '\'' || c == '"').to_string());
+                }
                 None
             }
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
@@ -570,23 +570,27 @@ impl LspServer {
                     // Check if initializer is @_
                     if let Some(init) = initializer
                         && let NodeKind::Variable { sigil, name } = &init.kind
-                            && sigil == "@" && name == "_" {
-                                // Extract params from variables
-                                for var in variables {
-                                    if let NodeKind::Variable { sigil: var_sigil, name: var_name } =
-                                        &var.kind
-                                    {
-                                        params.push(format!("{}{}", var_sigil, var_name));
-                                    }
-                                }
+                        && sigil == "@"
+                        && name == "_"
+                    {
+                        // Extract params from variables
+                        for var in variables {
+                            if let NodeKind::Variable { sigil: var_sigil, name: var_name } =
+                                &var.kind
+                            {
+                                params.push(format!("{}{}", var_sigil, var_name));
                             }
+                        }
+                    }
                 } else if let NodeKind::Assignment { lhs, rhs, .. } = &stmt.kind {
                     // Alternative pattern: ($x, $y) = @_
                     if let NodeKind::Variable { sigil, name } = &rhs.kind
-                        && sigil == "@" && name == "_" {
-                            // Extract params from lhs
-                            self.extract_params_from_lhs(lhs, params);
-                        }
+                        && sigil == "@"
+                        && name == "_"
+                    {
+                        // Extract params from lhs
+                        self.extract_params_from_lhs(lhs, params);
+                    }
                 }
             }
         }

@@ -39,12 +39,19 @@ const IMPACTED_JSON: &str = "target/xtask/impacted-evidence/latest.json";
 const IMPACTED_MD: &str = "target/xtask/impacted-evidence/latest.md";
 const DEFAULT_RIPR_SUPPRESSIONS: &str = "policy/ripr-suppressions.toml";
 
-pub fn ripr_pr(root: &str, base: &str, head: &str, check: bool) -> Result<()> {
+pub fn ripr_pr(
+    root: &str,
+    base: &str,
+    head: &str,
+    pr_head: Option<&str>,
+    check: bool,
+) -> Result<()> {
     let repo = repo_root()?;
     let options = PrEvidenceOptions {
         root: normalized_option(root, DEFAULT_ROOT),
         base: normalized_option(base, DEFAULT_BASE),
         head: normalized_option(head, DEFAULT_HEAD),
+        pr_head_sha: normalized_optional(pr_head),
     };
     if check { check_pr_evidence(&repo, &options) } else { write_pr_evidence(&repo, &options) }
 }
@@ -81,6 +88,7 @@ pub fn ripr_review_comments(
     root: &str,
     base: &str,
     head: &str,
+    pr_head: Option<&str>,
     timeout_seconds: Option<u64>,
     check: bool,
 ) -> Result<()> {
@@ -89,6 +97,7 @@ pub fn ripr_review_comments(
         root: normalized_option(root, DEFAULT_ROOT),
         base: normalized_option(base, DEFAULT_BASE),
         head: normalized_option(head, DEFAULT_HEAD),
+        pr_head_sha: normalized_optional(pr_head),
         timeout_seconds: timeout_seconds.filter(|seconds| *seconds > 0),
     };
     if check {
@@ -185,6 +194,14 @@ fn normalized_option(value: &str, default: &str) -> String {
     if value.trim().is_empty() { default.to_string() } else { value.to_string() }
 }
 
+fn normalized_optional(value: Option<&str>) -> Option<String> {
+    value.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
+}
+
+fn optional_sha_value(value: Option<&str>) -> Value {
+    value.map_or(Value::Null, |sha| json!(sha))
+}
+
 fn repo_root() -> Result<PathBuf> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
@@ -198,6 +215,7 @@ struct PrEvidenceOptions {
     root: String,
     base: String,
     head: String,
+    pr_head_sha: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -673,6 +691,9 @@ fn revision_sha(repo: &Path, revision: &str) -> Result<String> {
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
+    if let Some(pr_head_sha) = &options.pr_head_sha {
+        verify_revision(repo, pr_head_sha)?;
+    }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
@@ -709,6 +730,9 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
+    if let Some(pr_head_sha) = &options.pr_head_sha {
+        verify_revision(repo, pr_head_sha)?;
+    }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
     let diff_receipt = resolve_committed_diff(repo, &options.base, &options.head)?;
@@ -1129,6 +1153,9 @@ fn pr_evidence_packet_with_count(
         "base_sha": base_sha,
         "head": options.head,
         "head_sha": head_sha,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
+        "evaluated_head": options.head,
+        "evaluated_head_sha": head_sha,
         "summary": {
             "changed_files": changed_file_count,
             "comments": 0,
@@ -1204,6 +1231,19 @@ fn validate_pr_evidence_packet(
     expect_string(packet, "base_sha", expected_base_sha, &mut violations);
     expect_string(packet, "head", &options.head, &mut violations);
     expect_string(packet, "head_sha", expected_head_sha, &mut violations);
+    match (&options.pr_head_sha, packet.get("pr_head_sha")) {
+        (Some(expected), Some(value)) => {
+            expect_string_value(value, "pr_head_sha", expected, &mut violations)
+        }
+        (Some(_), None) => violations.push("pr_head_sha is missing".to_string()),
+        (None, Some(value)) if !value.is_null() => {
+            violations.push("pr_head_sha must be null when no PR head was supplied".to_string())
+        }
+        (None, None) => violations.push("pr_head_sha is missing".to_string()),
+        (None, Some(_)) => {}
+    }
+    expect_string(packet, "evaluated_head", &options.head, &mut violations);
+    expect_string(packet, "evaluated_head_sha", expected_head_sha, &mut violations);
     match packet.get("status").and_then(Value::as_str) {
         Some("advisory" | "incomplete" | "error") => {}
         Some(other) => violations.push(format!("status {other:?} is not valid")),
@@ -1326,12 +1366,16 @@ struct ReviewCommentsOptions {
     root: String,
     base: String,
     head: String,
+    pr_head_sha: Option<String>,
     timeout_seconds: Option<u64>,
 }
 
 fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
+    if let Some(pr_head_sha) = &options.pr_head_sha {
+        verify_revision(repo, pr_head_sha)?;
+    }
     let root = command_root_arg(repo, &options.root)?;
     if current_pr_evidence_has_no_severe_gaps(repo, options)? {
         write_clean_review_comments(repo, options, &root)?;
@@ -1348,6 +1392,9 @@ fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result
 fn check_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result<()> {
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
+    if let Some(pr_head_sha) = &options.pr_head_sha {
+        verify_revision(repo, pr_head_sha)?;
+    }
     validate_review_comments(repo, options, true)?;
     println!("Review comments contract ok: {REVIEW_COMMENTS_JSON}");
     Ok(())
@@ -1399,8 +1446,10 @@ fn current_pr_evidence_has_no_severe_gaps(
     }
     let base_sha = revision_sha(repo, &options.base)?;
     let head_sha = revision_sha(repo, &options.head)?;
+    let packet_pr_head = packet.get("pr_head_sha").and_then(Value::as_str);
     if packet.get("base_sha").and_then(Value::as_str) != Some(base_sha.as_str())
         || packet.get("head_sha").and_then(Value::as_str) != Some(head_sha.as_str())
+        || packet_pr_head != options.pr_head_sha.as_deref()
     {
         return Ok(false);
     }
@@ -1423,6 +1472,24 @@ fn validate_review_comments(
     expect_string(&packet, "base_sha", &revision_sha(repo, &options.base)?, &mut violations);
     expect_string(&packet, "head", &options.head, &mut violations);
     expect_string(&packet, "head_sha", &revision_sha(repo, &options.head)?, &mut violations);
+    match (&options.pr_head_sha, packet.get("pr_head_sha")) {
+        (Some(expected), Some(value)) => {
+            expect_string_value(value, "pr_head_sha", expected, &mut violations)
+        }
+        (Some(_), None) => violations.push("pr_head_sha is missing".to_string()),
+        (None, Some(value)) if !value.is_null() => {
+            violations.push("pr_head_sha must be null when no PR head was supplied".to_string())
+        }
+        (None, None) => violations.push("pr_head_sha is missing".to_string()),
+        (None, Some(_)) => {}
+    }
+    expect_string(&packet, "evaluated_head", &options.head, &mut violations);
+    expect_string(
+        &packet,
+        "evaluated_head_sha",
+        &revision_sha(repo, &options.head)?,
+        &mut violations,
+    );
     match packet.get("status").and_then(Value::as_str) {
         Some("advisory" | "incomplete" | "error") => {}
         Some(other) => violations.push(format!("status {other:?} is not valid")),
@@ -1457,6 +1524,9 @@ fn stamp_review_comments_receipt(repo: &Path, options: &ReviewCommentsOptions) -
     };
     object.insert("base_sha".to_string(), json!(revision_sha(repo, &options.base)?));
     object.insert("head_sha".to_string(), json!(revision_sha(repo, &options.head)?));
+    object.insert("pr_head_sha".to_string(), optional_sha_value(options.pr_head_sha.as_deref()));
+    object.insert("evaluated_head".to_string(), json!(options.head));
+    object.insert("evaluated_head_sha".to_string(), json!(revision_sha(repo, &options.head)?));
     write_text(&path, &format_json(&packet)?)
 }
 
@@ -1472,6 +1542,9 @@ fn write_clean_review_comments(
         "root": normalize_path_text(root),
         "base": options.base,
         "head": options.head,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
+        "evaluated_head": options.head,
+        "evaluated_head_sha": revision_sha(repo, &options.head)?,
         "mode": "pr_evidence_clean",
         "rendering_limits": {
             "max_inline_comments": 0,
@@ -1516,6 +1589,9 @@ fn write_error_review_comments(
         "root": normalize_path_text(root),
         "base": options.base,
         "head": options.head,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
+        "evaluated_head": options.head,
+        "evaluated_head_sha": revision_sha(repo, &options.head)?,
         "mode": "fast",
         "rendering_limits": {
             "max_inline_comments": 0,
@@ -2345,6 +2421,14 @@ fn expect_string(packet: &Value, key: &str, expected: &str, violations: &mut Vec
     }
 }
 
+fn expect_string_value(value: &Value, key: &str, expected: &str, violations: &mut Vec<String>) {
+    match value.as_str() {
+        Some(actual) if actual == expected => {}
+        Some(actual) => violations.push(format!("{key} is {actual:?}, expected {expected:?}")),
+        None => violations.push(format!("{key} is missing or not a string")),
+    }
+}
+
 fn count_field(summary: Option<&Map<String, Value>>, key: &str) -> usize {
     summary
         .and_then(|summary| summary.get(key))
@@ -3096,6 +3180,12 @@ paths = ["archive/["]
     }
 
     #[test]
+    fn optional_sha_value_preserves_string_or_null_contract() {
+        assert_eq!(optional_sha_value(Some("abc123")), json!("abc123"));
+        assert_eq!(optional_sha_value(None), Value::Null);
+    }
+
+    #[test]
     fn revision_sha_reads_current_head() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
@@ -3124,6 +3214,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: Some("pr-head-sha".to_string()),
         };
         let check_value = json!({
             "summary": {
@@ -3144,6 +3235,9 @@ paths = ["archive/["]
 
         assert_eq!(packet["base_sha"], json!("base-sha"));
         assert_eq!(packet["head_sha"], json!("head-sha"));
+        assert_eq!(packet["pr_head_sha"], json!("pr-head-sha"));
+        assert_eq!(packet["evaluated_head"], json!("HEAD"));
+        assert_eq!(packet["evaluated_head_sha"], json!("head-sha"));
         validate_pr_evidence_packet(&packet, &options, 1, true, "base-sha", "head-sha")?;
         Ok(())
     }
@@ -3154,6 +3248,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let check_value = json!({
             "summary": {
@@ -3259,6 +3354,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         // Simulate ripr 0.9.x check output: summary.reachable_unrevealed=3, findings use grip_class+seam.
         let check_value = json!({
@@ -3329,6 +3425,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         // ripr 0.9.x output: 2 weakly_gripped findings on a file not in any suppression.
         let check_value = json!({
@@ -3400,6 +3497,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         pr_evidence_packet_with_count(
             &options,
@@ -3740,12 +3838,14 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: Some(1),
         };
         let pr_options = PrEvidenceOptions {
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let head = revision_sha(repo, "HEAD")?;
         let pr_packet = pr_evidence_packet(
@@ -3805,6 +3905,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3840,6 +3941,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3865,6 +3967,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3902,6 +4005,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3918,6 +4022,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -3995,12 +4100,14 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
         let pr_options = PrEvidenceOptions {
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let head = revision_sha(repo, "HEAD")?;
         let pr_packet = pr_evidence_packet(
@@ -4381,6 +4488,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let packet = json!({
             "schema_version": "0.1",
@@ -4458,6 +4566,7 @@ paths = ["archive/["]
             root: ".".to_string(),
             base: "HEAD".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
             timeout_seconds: None,
         };
 
@@ -4804,6 +4913,7 @@ esac
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         // Simulate ripr output with an unrecognized classification that is counted in the
         // summary but whose path is covered by our suppression policy.
@@ -4883,6 +4993,7 @@ esac
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         let check_value = json!({
             "summary": {
@@ -4941,6 +5052,7 @@ esac
             root: ".".to_string(),
             base: "origin/main".to_string(),
             head: "HEAD".to_string(),
+            pr_head_sha: None,
         };
         // No summary object — triggers Path B (findings-only mode).
         let check_value = json!({

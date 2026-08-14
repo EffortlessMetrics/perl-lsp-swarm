@@ -2,51 +2,29 @@
 
 > Canonical planning document.
 > Evidence and computed metrics belong in [CURRENT_STATUS.md](CURRENT_STATUS.md).
-> Current workspace version is taken from [`../../Cargo.toml`](../../Cargo.toml);
+> Current workspace version is taken from [../../Cargo.toml](../../Cargo.toml);
 > published release state must be verified against GitHub Releases;
-> current capability truth is taken from [`../../features.toml`](../../features.toml).
+> current capability truth is taken from [../../features.toml](../../features.toml).
 
-## Current Focus (2026-06-26): UX/Usability + Reliability
+## Current Focus (2026-08-10): Multi-Lane Trust Hardening
 
-### Cross-file correctness lane: COMPLETE
+The repository is in an active swarm execution phase. The current objective is
+to improve parser, semantic, LSP, DAP, editor-trust, reliability, and
+documentation surfaces through small, evidence-backed changes while keeping
+release-lineage work explicitly parked.
 
-The cross-file CORRECTNESS lane is done. ~19 providers now serve index-backed
-answers; ux_scenario_20/21/22 all pass. The compiler bet (#2674 / PIR-A) is
-consciously **paused, not dropped** — it resumes after the reliability foundation
-is solid.
-
-### Active lane: reliability/UX
-
-The next user-visible risk is the first 30 seconds of workspace open. A real
-workspace spends time in `IndexState::Building`, and during that window providers
-must not return misleading empty/success.
-
-Priority sequence this weekend:
-
-| # | Issue | Description |
-|---|-------|-------------|
-| 1 | #3097 | Point-query index-readiness wait (7 providers) — **merge first** |
-| 2 | #3099 | Readiness CONTRACT as a shared substrate (policy enum + shared API) |
-| 3 | #3096 | `$/progress` indexing UX (turns the wait from "is it frozen?" to "it's working") |
-| 4 | #3080 | Diagnostics quick-fixes / `source.organizeImports` code action |
-| 5 | latency receipt | Measure hot-path latency AFTER readiness + crash-safety land |
-
-Strategic second priority: gate-tax relief / ripr convergence (#3067 — stop
-compiling the full xtask on every ripr+ gate run; CX43 disk pressure is the
-dominant CI wall-clock bottleneck).
-
-Scoreboard work (#3056) and the compiler bet (#2674) are **next** after the
-reliability lane closes.
-
-See [docs/reference/PROVIDER_READINESS_CONTRACT.md](../reference/PROVIDER_READINESS_CONTRACT.md)
-for the reliability doctrine and [docs/reference/CI_GATE_PLAYBOOK.md](../reference/CI_GATE_PLAYBOOK.md)
-for the contributor gate playbook.
+This section is intentionally a routing summary, not a second status ledger.
+The active lanes, their boundaries, and their exit conditions are defined below.
+Current release and channel truth belongs in
+[status/release.md](status/release.md) and
+[RELEASE_HISTORY.md](../../RELEASE_HISTORY.md); current capability truth belongs
+in [features.toml](../../features.toml).
 
 ## Release Surface
 
 - Workspace version line: `v0.17.0`
 - Current release train: `v0.17.0` shipped public beta; channel receipts remain independently verified
-- Published crate surface target: 32 crates from `[workspace.metadata.publish.allow]`
+- Published crate surface target: 33 crates from `[workspace.metadata.publish.allow]`
 Publication discipline: `v0.17.0` uses a normal SemVer package version while the human-facing product posture remains public beta, not stable/GA. See [RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) for independently verified channel receipts.
 
 
@@ -165,73 +143,17 @@ When blocked by another lane:
 - split the PR if necessary;
 - keep local fixes narrow.
 
-## Completed: v0.12.1 Fix-Forward
+## Release-lineage history
 
-Released 2026-03-30. Cleanup completed 2026-04-02.
+Historical milestone detail for the v0.12.x work is retained in Git history
+and release notes. It is not the current planning surface. Use
+[RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) for the append-only shipped
+ledger and the [release notes](../releases/) for version-specific detail.
 
-- Fixed README drift, hook-fixture isolation, and git-identity injection
-- Aligned all version surfaces (`Cargo.toml`, `features.toml`, `package.json`)
-- Cleaned 11 stale release branches, closed tracking issue #2936
-- Found and filed: pre-push hook fires CI gate on branch deletions (#3081)
-- Found and fixed: `core.bare = true` corruption in `.git/config` (stale worktree interaction)
-
-## Completed: v0.12.2 Stability Hardening (shipped 2026-04-02)
-
-- CI improvements: version sync gate (#3078), benchmark alerts (#3079), coverage baseline (#3080)
-- Pre-push hook fix (#3081, #3086), enforcement gaps (#3088), pipeline-labels race (#3100)
-- Error handling logging (#3087), test coverage batch (#3091)
-- 8 Dependabot PRs merged, perl-uri CI fix (#3084)
-- All 7 Tier 1 parser blockers confirmed fixed via scouts (#3085, #3096)
-- 10 PRs merged total
-
-## Completed: v0.12.3 Diagnostic & Refactoring Hardening (GitHub/editor release shipped 2026-04-09)
-
-- Dead code highlighting with DiagnosticTag::Unnecessary (#2060, PR #3092)
-- Perlcritic integration hardened: cached analyzer, walk-up discovery (#2018, PR #3097)
-- Strict/warnings diagnostics already implemented (PL100/PL101), catalogued in features.toml (#3095)
-- Subroutine inlining (#3040, PR #3083) — 4 bugs caught and fixed by deep review
-- Extract variable/subroutine (#3031, PR #3090)
-- Scoped rename already complete (#3037)
-- Moose/Moo method modifiers (#2328) and role composition (#2325) already implemented
-- DAP Phase 3 test suite (#435) already complete (20 tests, all AC criteria met)
-- 12 PRs merged + 6 issues discovered already-done
-
-## Completed: v0.12.4 Diagnostics & Semantics (shipped 2026-04-12)
-
-- Semantic framework coverage: inheritance, exports (#3077, PR #3098)
-- Cross-platform DAP continue/interrupt signal handling (#3028, PR #3117)
-- DAP attach command: stale mock stub removed, tests updated (#3025, PR #3135)
-
-## Prepared Scope: v0.12.5 Parser Confidence
-
-- All Tier 1 parser blockers confirmed fixed
-- Incremental parser checkpoint recovery (#2080, PR #3114)
-- Token caching for incremental parsing (#3021, PR #3116)
-- Corpus ratchet automation (#2026, PR #3110)
-- 90% CPAN clean rate target documented (#3076, PR #3123)
-
-## Prepared Scope: v0.12.6 Performance
-
-- Large-workspace HashMap optimization (#2078, PR #3112)
-- Memory profiling infrastructure (#2085, PR #3125)
-- CPAN-scale benchmarks: 10K files, 500K symbols (#1664, PR #3121/3132)
-- Large-workspace testing and profiling guide (#3022, PR #3126)
-
-## Prepared Scope: v0.12.7 Distribution & Packaging
-
-- Docker image with perllsp + Perl runtime (#2083, PR #3113)
-- Linux/macOS installer script (#2095, PR #3122)
-- Homebrew bump workflow + install docs (#2086, PR #3120)
-- Windows bump workflows aligned (#2596, PR #3106)
-
-## Prepared Scope: v0.12.8 Announcement Polish
-
-- Heredoc language injection for SQL/JSON (#2059, PR #3134)
-- POD preview panel (#2062, PR #3131)
-- AST explorer debug panel (#2065, PR #3124)
-- Problem-first README rewrite (#3119)
-- End-to-end LSP feature development guide (#3027, PR #3115)
-- GIF recording guide and asset structure (#2336, PR #3130)
+The current roadmap does not repeat prepared scopes from old release trains:
+those scopes are easy to misread as active work after later releases ship.
+Open future release work is recorded in the release-lineage parking lot below
+and in explicitly assigned issues.
 
 ## Active: Public-Beta Release (v0.17.0)
 
@@ -247,7 +169,7 @@ The release train is complete only when each criterion has an evidence link in t
 | Area | Exit criterion | Evidence source |
 | --- | --- | --- |
 | Version surface | Workspace package version, `features.toml` metadata, extension packaging, release notes, and changelog align with the current `v0.17.0` train | [`../../Cargo.toml`](../../Cargo.toml), [`../../features.toml`](../../features.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
-| Publish surface | The 32-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
+| Publish surface | The 33-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
 | Install channels | GitHub assets, crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew each have an install/smoke receipt or an explicit pending/deferred state | [status/release.md](status/release.md), [CURRENT_STATUS.md](CURRENT_STATUS.md), [docs/releases/v0.17.0.md](../releases/v0.17.0.md) |
 | Local gate | The canonical merge receipt is fresh for the branch being released or the post-release closeout branch | [protocols/verification.md](protocols/verification.md) |
 | Public wording | User-facing docs call the release public beta and avoid stable/GA promises | [docs/releases/v0.17.0.md](../releases/v0.17.0.md), [CURRENT_STATUS.md](CURRENT_STATUS.md) |

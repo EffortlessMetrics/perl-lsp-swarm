@@ -566,12 +566,10 @@ fn find_plack_middleware_definition_location(
         }
 
         if let Some(fs_path) = crate::workspace_index::uri_to_fs_path(&symbol.uri)
-            && fs_path.ends_with(&expected_suffix) {
-                return Some(crate::workspace_index::Location {
-                    uri: symbol.uri,
-                    range: symbol.range,
-                });
-            }
+            && fs_path.ends_with(&expected_suffix)
+        {
+            return Some(crate::workspace_index::Location { uri: symbol.uri, range: symbol.range });
+        }
     }
 
     None
@@ -697,9 +695,9 @@ fn find_symbol_key_definition_locations(
         && symbol_key.pkg.starts_with("Plack::Middleware::")
         && let Some(location) =
             find_plack_middleware_definition_location(workspace_index, symbol_key.pkg.as_ref())
-        {
-            return vec![location];
-        }
+    {
+        return vec![location];
+    }
 
     if symbol_key.kind == crate::workspace_index::SymKind::Sub && symbol_key.sigil.is_none() {
         // For subroutines, try workspace definitions (may include multiple across packages),
@@ -768,9 +766,10 @@ fn lookup_workspace_definition(
                 .unwrap_or(false))
             && let Some(lsp_location) = crate::workspace_index::lsp_adapter::to_lsp_location(
                 &crate::workspace_index::Location { uri: symbol.uri.clone(), range: symbol.range },
-            ) {
-                return Some(json!([lsp_location]));
-            }
+            )
+        {
+            return Some(json!([lsp_location]));
+        }
     }
 
     // Fallback to original lookup methods for backward compatibility
@@ -785,9 +784,9 @@ fn lookup_workspace_definition(
         })
         && let Some(lsp_location) =
             crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
-        {
-            return Some(json!([lsp_location]));
-        }
+    {
+        return Some(json!([lsp_location]));
+    }
 
     None
 }
@@ -941,10 +940,10 @@ impl LspServer {
                 "claim_boundary": "records existing navigation response only; no broader live navigation cutover"
         });
         if let Some(semantic_shadow_receipt) = semantic_shadow_receipt
-            && let Some(receipt_object) = receipt.as_object_mut() {
-                receipt_object
-                    .insert("semantic_shadow_receipt".to_string(), semantic_shadow_receipt);
-            }
+            && let Some(receipt_object) = receipt.as_object_mut()
+        {
+            receipt_object.insert("semantic_shadow_receipt".to_string(), semantic_shadow_receipt);
+        }
         self.record_provider_decision_trace(context.provider, &receipt);
     }
 
@@ -1110,6 +1109,7 @@ impl LspServer {
     }
 
     /// Handle textDocument/definition request
+    #[tracing::instrument(skip(self, params), name = "textDocument/definition")]
     pub(crate) fn handle_definition(
         &self,
         params: Option<Value>,
@@ -1333,9 +1333,10 @@ impl LspServer {
                                 module_ref.definition_location(coordinator.index())
                             && let Some(lsp_location) =
                                 crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
-                            && workspace_index_is_fresh() {
-                                return Ok(Some(json!([lsp_location])));
-                            }
+                            && workspace_index_is_fresh()
+                        {
+                            return Ok(Some(json!([lsp_location])));
+                        }
 
                         if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
                             &module_ref.module_name,
@@ -1419,32 +1420,30 @@ impl LspServer {
                 if let Some(mason_location) = self.resolve_mason_definition(uri, &doc.text, offset)
                     && let Some(lsp_location) =
                         crate::workspace_index::lsp_adapter::to_lsp_location(&mason_location)
-                    {
-                        return Ok(Some(json!([lsp_location])));
-                    }
+                {
+                    return Ok(Some(json!([lsp_location])));
+                }
 
                 #[cfg(feature = "workspace")]
                 if workspace_index_is_fresh() {
                     let parsed = doc.current_parsed();
                     if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
-                        && let Some(coordinator) = self.coordinator() {
-                            let workspace_index = coordinator.index();
-                            let current_package =
-                                crate::declaration::current_package_at(ast, offset);
-                            if let Some(def_location) = resolve_mojolicious_route_definition(
-                                workspace_index,
-                                current_package,
-                                &text_around,
-                                cursor_in_text,
-                            )
-                                && let Some(lsp_location) =
-                                    crate::workspace_index::lsp_adapter::to_lsp_location(
-                                        &def_location,
-                                    )
-                                    && workspace_index_is_fresh() {
-                                        return Ok(Some(json!([lsp_location])));
-                                    }
+                        && let Some(coordinator) = self.coordinator()
+                    {
+                        let workspace_index = coordinator.index();
+                        let current_package = crate::declaration::current_package_at(ast, offset);
+                        if let Some(def_location) = resolve_mojolicious_route_definition(
+                            workspace_index,
+                            current_package,
+                            &text_around,
+                            cursor_in_text,
+                        ) && let Some(lsp_location) =
+                            crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
+                            && workspace_index_is_fresh()
+                        {
+                            return Ok(Some(json!([lsp_location])));
                         }
+                    }
 
                     // Attempt to resolve `SUPER::method` calls using the current package's
                     // inheritance chain before falling back to generic fully-qualified lookup.
@@ -1505,9 +1504,10 @@ impl LspServer {
                                         crate::workspace_index::lsp_adapter::to_lsp_location(
                                             &def_location,
                                         )
-                                    && workspace_index_is_fresh() {
-                                        return Ok(Some(json!([lsp_location])));
-                                    }
+                                    && workspace_index_is_fresh()
+                                {
+                                    return Ok(Some(json!([lsp_location])));
+                                }
                             }
                         }
                     }
@@ -1562,49 +1562,51 @@ impl LspServer {
                     for cap in arrow_re.captures_iter(&text_around) {
                         if let (Some(package_match), Some(method_match)) = (cap.get(1), cap.get(2))
                             && cursor_in_text >= method_match.start()
-                                && cursor_in_text <= method_match.end()
-                            {
-                                let package_name = package_match.as_str();
-                                let method_name = method_match.as_str();
+                            && cursor_in_text <= method_match.end()
+                        {
+                            let package_name = package_match.as_str();
+                            let method_name = method_match.as_str();
 
-                                if let Some(result) = lookup_workspace_definition(
+                            if let Some(result) = lookup_workspace_definition(
+                                self.coordinator(),
+                                package_name,
+                                method_name,
+                                Some(uri),
+                            ) && workspace_index_is_fresh()
+                            {
+                                return Ok(Some(result));
+                            }
+                            #[cfg(feature = "workspace")]
+                            {
+                                if let Some(coordinator) = self.coordinator()
+                                    && let Some(def_location) = autoload_definition_location(
+                                        coordinator.index(),
+                                        package_name,
+                                        true,
+                                    )
+                                    && let Some(lsp_location) =
+                                        crate::workspace_index::lsp_adapter::to_lsp_location(
+                                            &def_location,
+                                        )
+                                    && workspace_index_is_fresh()
+                                {
+                                    return Ok(Some(json!([lsp_location])));
+                                }
+                            }
+                            if is_universal_method(method_name)
+                                && let Some(result) = lookup_workspace_definition(
                                     self.coordinator(),
-                                    package_name,
+                                    "UNIVERSAL",
                                     method_name,
                                     Some(uri),
                                 )
-                                    && workspace_index_is_fresh() {
-                                        return Ok(Some(result));
-                                    }
-                                #[cfg(feature = "workspace")]
-                                {
-                                    if let Some(coordinator) = self.coordinator()
-                                        && let Some(def_location) = autoload_definition_location(
-                                            coordinator.index(),
-                                            package_name,
-                                            true,
-                                        )
-                                        && let Some(lsp_location) =
-                                            crate::workspace_index::lsp_adapter::to_lsp_location(
-                                                &def_location,
-                                            )
-                                        && workspace_index_is_fresh() {
-                                            return Ok(Some(json!([lsp_location])));
-                                        }
-                                }
-                                if is_universal_method(method_name)
-                                    && let Some(result) = lookup_workspace_definition(
-                                        self.coordinator(),
-                                        "UNIVERSAL",
-                                        method_name,
-                                        Some(uri),
-                                    )
-                                    && workspace_index_is_fresh() {
-                                        return Ok(Some(result));
-                                    }
-                                // Partial/None: fall through to same-file resolution
-                                break;
+                                && workspace_index_is_fresh()
+                            {
+                                return Ok(Some(result));
                             }
+                            // Partial/None: fall through to same-file resolution
+                            break;
+                        }
                     }
 
                     // Attempt to resolve $var->method() calls (e.g., $self->method())
@@ -1613,65 +1615,61 @@ impl LspServer {
                     for cap in var_method_re.captures_iter(&text_around) {
                         if let (Some(var_match), Some(method_match)) = (cap.get(1), cap.get(2))
                             && cursor_in_text >= method_match.start()
-                                && cursor_in_text <= method_match.end()
-                            {
-                                let var_name = var_match.as_str();
-                                let method_name = method_match.as_str();
+                            && cursor_in_text <= method_match.end()
+                        {
+                            let var_name = var_match.as_str();
+                            let method_name = method_match.as_str();
 
-                                // For $self/$this/$class, resolve using current package
-                                if var_name == "self" || var_name == "this" || var_name == "class" {
-                                    let self_method_parsed = doc.current_parsed();
-                                    if let Some(ast) =
-                                        self_method_parsed.as_ref().and_then(|p| p.ast())
+                            // For $self/$this/$class, resolve using current package
+                            if var_name == "self" || var_name == "this" || var_name == "class" {
+                                let self_method_parsed = doc.current_parsed();
+                                if let Some(ast) = self_method_parsed.as_ref().and_then(|p| p.ast())
+                                {
+                                    let byte_offset = self.pos16_to_offset(doc, line, character);
+                                    let current_package =
+                                        crate::declaration::current_package_at(ast, byte_offset);
+                                    if let Some(result) = lookup_workspace_definition(
+                                        self.coordinator(),
+                                        current_package,
+                                        method_name,
+                                        Some(uri),
+                                    ) && workspace_index_is_fresh()
                                     {
-                                        let byte_offset =
-                                            self.pos16_to_offset(doc, line, character);
-                                        let current_package =
-                                            crate::declaration::current_package_at(
-                                                ast,
-                                                byte_offset,
-                                            );
-                                        if let Some(result) = lookup_workspace_definition(
-                                            self.coordinator(),
-                                            current_package,
-                                            method_name,
-                                            Some(uri),
-                                        )
-                                            && workspace_index_is_fresh() {
-                                                return Ok(Some(result));
-                                            }
-                                        #[cfg(feature = "workspace")]
+                                        return Ok(Some(result));
+                                    }
+                                    #[cfg(feature = "workspace")]
+                                    {
+                                        if let Some(coordinator) = self.coordinator()
+                                            && let Some(def_location) = autoload_definition_location(
+                                                coordinator.index(),
+                                                current_package,
+                                                true,
+                                            )
+                                            && let Some(lsp_location) =
+                                                crate::workspace_index::lsp_adapter::to_lsp_location(
+                                                    &def_location,
+                                                )
+                                            && workspace_index_is_fresh()
                                         {
-                                            if let Some(coordinator) = self.coordinator()
-                                                && let Some(def_location) =
-                                                    autoload_definition_location(
-                                                        coordinator.index(),
-                                                        current_package,
-                                                        true,
-                                                    )
-                                                && let Some(lsp_location) =
-                                                    crate::workspace_index::lsp_adapter::to_lsp_location(
-                                                        &def_location,
-                                                    )
-                                                && workspace_index_is_fresh() {
-                                                    return Ok(Some(json!([lsp_location])));
-                                                }
+                                            return Ok(Some(json!([lsp_location])));
                                         }
                                     }
                                 }
-                                if is_universal_method(method_name)
-                                    && let Some(result) = lookup_workspace_definition(
-                                        self.coordinator(),
-                                        "UNIVERSAL",
-                                        method_name,
-                                        Some(uri),
-                                    )
-                                    && workspace_index_is_fresh() {
-                                        return Ok(Some(result));
-                                    }
-                                // Fall through for non-self variables
-                                break;
                             }
+                            if is_universal_method(method_name)
+                                && let Some(result) = lookup_workspace_definition(
+                                    self.coordinator(),
+                                    "UNIVERSAL",
+                                    method_name,
+                                    Some(uri),
+                                )
+                                && workspace_index_is_fresh()
+                            {
+                                return Ok(Some(result));
+                            }
+                            // Fall through for non-self variables
+                            break;
+                        }
                     }
                 }
 
@@ -1770,71 +1768,67 @@ impl LspServer {
                     // Try workspace index for cross-file definitions using routing policy
                     #[cfg(feature = "workspace")]
                     if workspace_index_is_fresh()
-                        && let Some(coordinator) = self.coordinator() {
-                            let workspace_index = coordinator.index();
-                            // Use symbol_at_cursor to get the symbol key
-                            let current_package =
-                                crate::declaration::current_package_at(ast, offset);
-                            if let Some(symbol_key) =
-                                crate::declaration::symbol_at_cursor_with_source(
-                                    ast,
-                                    offset,
-                                    current_package,
-                                    &doc.text,
-                                )
-                            {
-                                tracing::debug!(symbol_key = ?symbol_key, "looking for definition");
-                                let workspace_symbol_key =
-                                    super::to_workspace_symbol_key(&symbol_key);
+                        && let Some(coordinator) = self.coordinator()
+                    {
+                        let workspace_index = coordinator.index();
+                        // Use symbol_at_cursor to get the symbol key
+                        let current_package = crate::declaration::current_package_at(ast, offset);
+                        if let Some(symbol_key) = crate::declaration::symbol_at_cursor_with_source(
+                            ast,
+                            offset,
+                            current_package,
+                            &doc.text,
+                        ) {
+                            tracing::debug!(symbol_key = ?symbol_key, "looking for definition");
+                            let workspace_symbol_key = super::to_workspace_symbol_key(&symbol_key);
 
-                                let def_locations = find_symbol_key_definition_locations(
-                                    workspace_index,
-                                    &workspace_symbol_key,
-                                );
-                                if !def_locations.is_empty() {
-                                    tracing::debug!(
-                                        count = def_locations.len(),
-                                        "found definition(s)"
-                                    );
-                                    let lsp_locations: Vec<serde_json::Value> = def_locations
-                                        .iter()
-                                        .filter_map(|loc| {
-                                            let lsp_loc = crate::workspace_index::lsp_adapter::to_lsp_location(loc)?;
-                                            serde_json::to_value(lsp_loc).ok()
-                                        })
-                                        .collect();
-                                    if !lsp_locations.is_empty()
-                                        && workspace_index_is_fresh() {
-                                            return Ok(Some(to_json_array(&lsp_locations)));
-                                        }
+                            let def_locations = find_symbol_key_definition_locations(
+                                workspace_index,
+                                &workspace_symbol_key,
+                            );
+                            if !def_locations.is_empty() {
+                                tracing::debug!(count = def_locations.len(), "found definition(s)");
+                                let lsp_locations: Vec<serde_json::Value> = def_locations
+                                    .iter()
+                                    .filter_map(|loc| {
+                                        let lsp_loc =
+                                            crate::workspace_index::lsp_adapter::to_lsp_location(
+                                                loc,
+                                            )?;
+                                        serde_json::to_value(lsp_loc).ok()
+                                    })
+                                    .collect();
+                                if !lsp_locations.is_empty() && workspace_index_is_fresh() {
+                                    return Ok(Some(to_json_array(&lsp_locations)));
                                 }
+                            }
 
-                                if workspace_symbol_key.kind == crate::workspace_index::SymKind::Sub
-                                    && workspace_symbol_key.sigil.is_none()
-                                    && let Some(import_source) =
-                                        self.find_import_source(ast, &workspace_symbol_key.name)
-                                    && let Some(def_location) = find_workspace_definition_location(
-                                        workspace_index,
-                                        &import_source,
-                                        &workspace_symbol_key.name,
+                            if workspace_symbol_key.kind == crate::workspace_index::SymKind::Sub
+                                && workspace_symbol_key.sigil.is_none()
+                                && let Some(import_source) =
+                                    self.find_import_source(ast, &workspace_symbol_key.name)
+                                && let Some(def_location) = find_workspace_definition_location(
+                                    workspace_index,
+                                    &import_source,
+                                    &workspace_symbol_key.name,
+                                )
+                                && let Some(lsp_location) =
+                                    crate::workspace_index::lsp_adapter::to_lsp_location(
+                                        &def_location,
                                     )
-                                    && let Some(lsp_location) =
-                                        crate::workspace_index::lsp_adapter::to_lsp_location(
-                                            &def_location,
-                                        )
-                                {
-                                    tracing::debug!(
-                                        symbol = %workspace_symbol_key.name,
-                                        source_pkg = %import_source,
-                                        "resolved bare imported symbol through require/import source"
-                                    );
-                                    if workspace_index_is_fresh() {
-                                        return Ok(Some(json!([lsp_location])));
-                                    }
+                            {
+                                tracing::debug!(
+                                    symbol = %workspace_symbol_key.name,
+                                    source_pkg = %import_source,
+                                    "resolved bare imported symbol through require/import source"
+                                );
+                                if workspace_index_is_fresh() {
+                                    return Ok(Some(json!([lsp_location])));
                                 }
                             }
                         }
-                        // No coordinator: fall through to same-file semantic model
+                    }
+                    // No coordinator: fall through to same-file semantic model
 
                     // Fall back to same-file definition
                     let model = crate::semantic::SemanticModel::build(ast, &doc.text);
@@ -2519,10 +2513,11 @@ impl LspServer {
         let module = token_under_cursor(&text, line, ch).filter(|s| s.contains("::"));
 
         if let Some(m) = module
-            && let Some(path) = self.resolve_module_path_with_uri(&m, Some(&text), Some(uri)) {
-                let loc = location_from_path(&path);
-                return Ok(serde_json::json!([loc]));
-            }
+            && let Some(path) = self.resolve_module_path_with_uri(&m, Some(&text), Some(uri))
+        {
+            let loc = location_from_path(&path);
+            return Ok(serde_json::json!([loc]));
+        }
 
         // Fallback: try existing analysis
         // For now, just return empty array

@@ -46,7 +46,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
@@ -69,7 +71,7 @@ jobs:
 
       - name: Upload published smoke artifacts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vscode-smoke-published-${{ env.PERL_LSP_PUBLISHED_EXTENSION_SOURCE }}-${{ matrix.os }}
           path: target/receipts/vscode-smoke/**

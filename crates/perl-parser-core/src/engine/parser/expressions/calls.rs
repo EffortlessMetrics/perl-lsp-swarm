@@ -103,12 +103,7 @@ impl<'a> Parser<'a> {
             //      print { *STDERR } "error\n"
             // A LeftBrace followed by a sigiled variable or glob is a filehandle block,
             // not a hash constructor or code block.
-            if next_kind == TokenKind::LeftBrace
-                && matches!(
-                    name,
-                    "print" | "say" | "printf"
-                )
-            {
+            if next_kind == TokenKind::LeftBrace && matches!(name, "print" | "say" | "printf") {
                 if let Ok(third) = self.tokens.peek_third() {
                     let third_text = &third.text;
                     // $var or *GLOB inside { } is a filehandle
@@ -220,153 +215,189 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // AC1: General indirect method call heuristic: method $object
-        // Lowercase identifier followed by a sigiled variable ($x, @arr, %hash)
-        //
-        // Unary operators that can never take an indirect object are excluded so
-        // that `defined $obj->{field}` and `ref $obj->{list}` at statement start
-        // do not fire the indirect-call path (which would use parse_primary() and
-        // stop before the `->`, producing an error).
-        //
-        // Array/list manipulation builtins are also excluded because
-        // `push $aref->@*, $x` has `$aref->@*` as the first argument, not an
-        // indirect object.
-        //
-        // Block-list functions (sort, map, grep, etc.) are excluded because
-        // `sort @list or die` is a regular function call with word operator,
-        // not an indirect method call.
-        if name.chars().next().is_some_and(|c| c.is_lowercase())
-            && !matches!(
-                name,
-                "tie"
-                    | "untie"
-                    | "bless"
-                    | "push"
-                    | "pop"
-                    | "shift"
-                    | "unshift"
-                    | "splice"
-                    | "defined"
-                    | "ref"
-                    | "scalar"
-                    | "not"
-                    | "abs"
-                    | "chr"
-                    | "chop"
-                    | "chomp"
-                    | "lc"
-                    | "lcfirst"
-                    | "length"
-                    | "ord"
-                    | "uc"
-                    | "ucfirst"
-                    | "int"
-                    | "hex"
-                    | "oct"
-                    | "sqrt"
-                    | "cos"
-                    | "sin"
-                    | "exp"
-                    | "log"
-                    // Block-list functions: `sort @list or die` is a regular call
-                    | "sort"
-                    | "map"
-                    | "grep"
-                    | "reverse"
-                    | "join"
-                    // Common builtins whose first arg is never an indirect object
-                    | "die"
-                    | "warn"
-                    | "carp"
-                    | "croak"
-                    | "confess"
-                    | "cluck"
-                    | "exit"
-                    | "eval"
-                    | "require"
-                    | "return"
-                    | "delete"
-                    | "exists"
-                    | "values"
-                    | "keys"
-                    | "each"
-                    | "local"
-                    | "wantarray"
-                    | "caller"
-                    | "mkdir"
-                    | "rmdir"
-                    | "chdir"
-                    | "chmod"
-                    | "chown"
-                    | "unlink"
-                    | "rename"
-                    | "symlink"
-                    | "link"
-                    | "readlink"
-                    | "stat"
-                    | "lstat"
-                    | "chroot"
-                    | "utime"
-                    | "umask"
-                    // `pos` is an lvalue-capable optional-arg builtin; `pos $s = value`
-                    // must not be treated as an indirect method call.
-                    | "pos"
-            )
-        {
-            if let Ok(next) = self.tokens.peek_second() {
-                let next_text = &next.text;
-                if next_text.starts_with('$') || next_text.starts_with('@') || next_text.starts_with('%') {
-                    // Bare sigil followed by { or [ is a dereference expression
-                    // like @{$ref}, %{$hash}, not an indirect object
-                    if next_text.len() <= 1 {
+        false
+    }
+
+    /// Statement-start unknown lowercase bareword followed by sigiled arguments.
+    ///
+    /// Per PARSER_CONTRACTS (#1788): user-defined names like `my_custom_method`
+    /// must parse as flat [`NodeKind::FunctionCall`] nodes, not
+    /// [`NodeKind::IndirectCall`].
+    fn is_unknown_lowercase_bareword_call_pattern(&mut self, name: &str) -> bool {
+        if !self.at_stmt_start {
+            return false;
+        }
+
+        if Self::is_builtin_function(name) {
+            return false;
+        }
+
+        if !name.chars().next().is_some_and(|c| c.is_lowercase()) {
+            return false;
+        }
+
+        if matches!(
+            name,
+            "tie"
+                | "untie"
+                | "bless"
+                | "push"
+                | "pop"
+                | "shift"
+                | "unshift"
+                | "splice"
+                | "defined"
+                | "ref"
+                | "scalar"
+                | "not"
+                | "abs"
+                | "chr"
+                | "chop"
+                | "chomp"
+                | "lc"
+                | "lcfirst"
+                | "length"
+                | "ord"
+                | "uc"
+                | "ucfirst"
+                | "int"
+                | "hex"
+                | "oct"
+                | "sqrt"
+                | "cos"
+                | "sin"
+                | "exp"
+                | "log"
+                | "sort"
+                | "map"
+                | "grep"
+                | "reverse"
+                | "join"
+                | "die"
+                | "warn"
+                | "carp"
+                | "croak"
+                | "confess"
+                | "cluck"
+                | "exit"
+                | "eval"
+                | "require"
+                | "return"
+                | "delete"
+                | "exists"
+                | "values"
+                | "keys"
+                | "each"
+                | "local"
+                | "wantarray"
+                | "caller"
+                | "mkdir"
+                | "rmdir"
+                | "chdir"
+                | "chmod"
+                | "chown"
+                | "unlink"
+                | "rename"
+                | "symlink"
+                | "link"
+                | "readlink"
+                | "stat"
+                | "lstat"
+                | "chroot"
+                | "utime"
+                | "umask"
+                | "pos"
+        ) {
+            return false;
+        }
+
+        if let Ok(next) = self.tokens.peek_second() {
+            let next_text = &next.text;
+            if next_text.starts_with('$')
+                || next_text.starts_with('@')
+                || next_text.starts_with('%')
+            {
+                if next_text.len() <= 1 {
+                    return false;
+                }
+                if let Ok(third) = self.tokens.peek_third() {
+                    if matches!(third.kind, TokenKind::Comma | TokenKind::FatArrow) {
                         return false;
                     }
-                    // Check if another typical arg or terminator follows to confirm it's not a regular call
-                    if let Ok(third) = self.tokens.peek_third() {
-                        // Comma or fat arrow means regular call: func $arg, ...
-                        // e.g. push @array, $val  or  push @array => $val
-                        if matches!(third.kind, TokenKind::Comma | TokenKind::FatArrow) {
-                            return false;
-                        }
-                        // A closing brace/paren/bracket means the call is the
-                        // last expression inside a block or parenthesised list,
-                        // e.g. `grep { defined $v }` — not an indirect call.
-                        if matches!(
+                    if matches!(
+                        third.kind,
+                        TokenKind::RightBrace | TokenKind::RightParen | TokenKind::RightBracket
+                    ) {
+                        return false;
+                    }
+                    if third.kind == TokenKind::Arrow {
+                        return false;
+                    }
+                    if Self::is_symbolic_short_circuit_operator(Some(third.kind))
+                        || matches!(
                             third.kind,
-                            TokenKind::RightBrace | TokenKind::RightParen | TokenKind::RightBracket
-                        ) {
-                            return false;
-                        }
-                        // Arrow after $var means method/deref chain: func $obj->method(...)
-                        // That's a regular call with a complex first argument, not indirect object.
-                        if third.kind == TokenKind::Arrow {
-                            return false;
-                        }
-                        // Short-circuit operators after $var mean a regular call with
-                        // the operator outside the argument: func $arg || die,
-                        // func @list or die, func $arg and next, etc.
-                        // These are NOT indirect method calls.
-                        if Self::is_symbolic_short_circuit_operator(Some(third.kind))
-                            || matches!(
-                                third.kind,
-                                TokenKind::WordOr
-                                    | TokenKind::WordAnd
-                                    | TokenKind::WordXor
-                                    | TokenKind::WordNot
-                                    | TokenKind::Question
-                                    | TokenKind::Semicolon
-                            )
-                        {
-                            return false;
-                        }
-                        return true;
+                            TokenKind::WordOr
+                                | TokenKind::WordAnd
+                                | TokenKind::WordXor
+                                | TokenKind::WordNot
+                                | TokenKind::Question
+                                | TokenKind::Semicolon
+                        )
+                    {
+                        return false;
                     }
                     return true;
                 }
+                return true;
             }
         }
 
         false
+    }
+
+    /// Parse a statement-start user function call with space-separated arguments.
+    fn parse_unknown_lowercase_bareword_call(&mut self) -> ParseResult<Node> {
+        self.with_recursion_guard(|s| {
+            let start = s.current_position();
+            let name_token = s.consume_token()?;
+            let name = name_token.text.to_string();
+            s.mark_not_stmt_start();
+
+            let mut args = vec![];
+            while !Self::is_statement_terminator(s.peek_kind())
+                && !s.is_statement_modifier_keyword()
+                && !Self::is_symbolic_short_circuit_operator(s.peek_kind())
+                && !matches!(
+                    s.peek_kind(),
+                    Some(
+                        TokenKind::WordOr
+                            | TokenKind::WordAnd
+                            | TokenKind::WordXor
+                            | TokenKind::WordNot
+                            | TokenKind::Question
+                            | TokenKind::RightBrace
+                            | TokenKind::RightParen
+                            | TokenKind::RightBracket
+                    )
+                )
+            {
+                args.push(s.parse_assignment_or_declaration()?);
+
+                if matches!(s.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
+                    s.tokens.next()?;
+                } else if Self::is_statement_terminator(s.peek_kind())
+                    || s.is_statement_modifier_keyword()
+                {
+                    break;
+                }
+            }
+
+            let end = args
+                .last()
+                .map(|arg| arg.location.end)
+                .unwrap_or_else(|| s.previous_position());
+            Ok(Node::new(NodeKind::FunctionCall { name, args }, SourceLocation { start, end }))
+        })
     }
 
     /// Parse indirect object/method call
@@ -374,7 +405,7 @@ impl<'a> Parser<'a> {
         // Use recursion guard to prevent stack overflow on deep nesting
         // Indirect calls can be nested: new Class(new Class(new Class()))
         self.check_recursion()?;
-        
+
         let start = self.current_position();
         let method_token = self.consume_token()?; // consume method name
         let method = method_token.text.to_string();
@@ -389,22 +420,20 @@ impl<'a> Parser<'a> {
         //   scalar $dh->read       — $dh->read is one postfix expr
         // Other indirect-call builtins (print, say, etc.) only consume
         // the object/filehandle here; remaining args are parsed in the loop below.
-        let object = if matches!(
-            method.as_str(),
-            "delete" | "exists" | "scalar" | "ref" | "defined"
-        ) {
-            self.parse_postfix()?
-        } else if matches!(method.as_str(), "print" | "say" | "printf" | "close")
-            && self.peek_kind() == Some(TokenKind::Try)
-        {
-            let token = self.consume_token()?;
-            Node::new(
-                NodeKind::Identifier { name: token.text.to_string() },
-                SourceLocation { start: token.start, end: token.end },
-            )
-        } else {
-            self.parse_primary()?
-        };
+        let object =
+            if matches!(method.as_str(), "delete" | "exists" | "scalar" | "ref" | "defined") {
+                self.parse_postfix()?
+            } else if matches!(method.as_str(), "print" | "say" | "printf" | "close")
+                && self.peek_kind() == Some(TokenKind::Try)
+            {
+                let token = self.consume_token()?;
+                Node::new(
+                    NodeKind::Identifier { name: token.text.to_string() },
+                    SourceLocation { start: token.start, end: token.end },
+                )
+            } else {
+                self.parse_primary()?
+            };
 
         // Parse remaining arguments
         let mut args = vec![];
@@ -452,10 +481,7 @@ impl<'a> Parser<'a> {
             args.push(self.parse_assignment()?);
 
             // Check if we should continue (comma or fat arrow as separator in indirect syntax)
-            if matches!(
-                self.peek_kind(),
-                Some(TokenKind::Comma | TokenKind::FatArrow)
-            ) {
+            if matches!(self.peek_kind(), Some(TokenKind::Comma | TokenKind::FatArrow)) {
                 self.tokens.next()?; // consume , or =>
             } else if Self::is_statement_terminator(self.peek_kind())
                 || self.is_statement_modifier_keyword()
@@ -465,7 +491,7 @@ impl<'a> Parser<'a> {
         }
 
         let end = self.previous_position();
-        
+
         self.exit_recursion();
 
         // Return as an indirect call node (using MethodCall with a flag or separate node)
@@ -595,8 +621,10 @@ impl<'a> Parser<'a> {
             let mut variables = Vec::new();
 
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
+                // Declaration-as-argument list forms share per-item attribute
+                // attachment with statement-form `my ($x :shared, $y)`.
                 let var = self.parse_variable_list_item()?;
-                variables.push(var);
+                variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
                     self.consume_token()?; // consume comma
@@ -687,21 +715,15 @@ impl<'a> Parser<'a> {
             // Peek ahead: if the first token is a scalar variable ($fh) and the
             // token after it is NOT a comma, fat-arrow, or `)`, treat it as the
             // indirect filehandle (no comma before the message list).
-            let first_is_scalar = s.tokens.peek().is_ok_and(|t| {
-                t.text.starts_with('$') && t.text.len() > 1
-            });
-            let first_is_filehandle_block = s
-                .tokens
-                .peek()
-                .is_ok_and(|t| t.kind == TokenKind::LeftBrace)
-                && s.tokens.peek_second().is_ok_and(|t| {
-                    t.text.starts_with('$') || t.text.starts_with('*')
-                });
+            let first_is_scalar =
+                s.tokens.peek().is_ok_and(|t| t.text.starts_with('$') && t.text.len() > 1);
+            let first_is_filehandle_block =
+                s.tokens.peek().is_ok_and(|t| t.kind == TokenKind::LeftBrace)
+                    && s.tokens
+                        .peek_second()
+                        .is_ok_and(|t| t.text.starts_with('$') || t.text.starts_with('*'));
             let second_is_not_separator = s.tokens.peek_second().is_ok_and(|t| {
-                !matches!(
-                    t.kind,
-                    TokenKind::Comma | TokenKind::FatArrow | TokenKind::RightParen
-                )
+                !matches!(t.kind, TokenKind::Comma | TokenKind::FatArrow | TokenKind::RightParen)
             });
 
             if (first_is_scalar && second_is_not_separator) || first_is_filehandle_block {
@@ -713,8 +735,7 @@ impl<'a> Parser<'a> {
 
                 // Collect remaining arguments (no comma required after filehandle)
                 while s.peek_kind() != Some(TokenKind::RightParen) && !s.tokens.is_eof() {
-                    if matches!(s.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow))
-                    {
+                    if matches!(s.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::FatArrow)) {
                         s.tokens.next()?;
                     }
                     if s.peek_kind() == Some(TokenKind::RightParen) {
@@ -818,5 +839,4 @@ impl<'a> Parser<'a> {
             Ok(args)
         })
     }
-
 }

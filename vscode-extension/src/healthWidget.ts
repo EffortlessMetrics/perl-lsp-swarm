@@ -1,22 +1,26 @@
 /**
  * HealthWidget — status bar item that reflects LSP health.
  *
- * Displays one of:
- *   $(sync~spin) Perl LSP: Indexing...
- *   $(check) perl-lsp: 847 files | 12 errors
- *   $(error) perl-lsp: stopped
+ * The widget consumes the existing language-client lifecycle and progress
+ * owners. Provider outcomes are retained separately for on-demand explanation;
+ * one operation cannot reclassify workspace-scoped health.
  *
- * The widget is driven by four external events:
- *   - LSP state changes (Starting / Running / Stopped)
- *   - $/progress notifications (begin → report → end)
- *   - workspace diagnostic changes (error count)
- *   - explicit file-count updates from the server
- *
- * Callers own the StatusBarItem lifecycle; this class merely reads and
- * mutates its text / tooltip / backgroundColor properties.
+ * Callers own the StatusBarItem lifecycle; this class merely reads and mutates
+ * its text / tooltip / backgroundColor properties.
  */
 
 import * as vscode from 'vscode';
+import type { IndexReadinessState } from './activeDocumentReadiness';
+import {
+  presentIndexReadinessReason,
+  presentWorkspaceExperience,
+  type LegacyWidgetMode,
+  type ProviderOutcome,
+  type WorkspaceExperienceSnapshot,
+  type WorkspaceLifecycleState,
+} from './workspaceExperienceState';
+
+export type { IndexReadinessState };
 
 /**
  * Mirror of `State` from vscode-languageclient.
@@ -58,13 +62,22 @@ export interface ProgressEndPayload {
 
 export type ProgressPayload = ProgressBeginPayload | ProgressReportPayload | ProgressEndPayload;
 
-/** Internal display state of the widget. */
-export type IndexReadinessState = 'building' | 'ready' | 'ready_limited';
+/** Compatibility display mode retained for existing callers and tests. */
+export type WidgetMode = LegacyWidgetMode;
 
-export type WidgetMode = 'starting' | 'indexing' | 'running' | 'ready_limited' | 'stopped';
+export interface WorkspaceExperienceUpdate {
+  readonly detail?: string;
+  readonly action?: string;
+  readonly reasonCode?: string;
+}
 
 export class HealthWidget {
   private _mode: WidgetMode = 'starting';
+  private _experience: WorkspaceExperienceSnapshot = { lifecycle: 'starting' };
+  private _providerOutcome: ProviderOutcome | undefined;
+  private _providerDetail: string | undefined;
+  private _providerAction: string | undefined;
+  private _providerReasonCode: string | undefined;
   private _fileCount: number | undefined = undefined;
   private _errorCount = 0;
   private _indexingMessage: string | undefined = undefined;
@@ -73,6 +86,7 @@ export class HealthWidget {
   private _version: string | undefined = undefined;
   private _readinessState: IndexReadinessState = 'ready';
   private _readinessReason: string | undefined = undefined;
+  private _enhancedReadinessAvailable = false;
 
   constructor(private readonly item: vscode.StatusBarItem) {
     this._render();
@@ -86,38 +100,32 @@ export class HealthWidget {
   onStateChange(state: ClientState): void {
     switch (state) {
       case ClientState.Starting:
-        this._setMode('starting');
+        this._enhancedReadinessAvailable = false;
+        this.setWorkspaceLifecycleState('starting');
         break;
       case ClientState.Running:
-        // Only move to 'running' if no active indexing progress tokens.
+        // Only move to ready if no active indexing progress tokens.
         if (this._activeTokens.size === 0) {
-          this._setMode(this._modeForReadiness());
+          this._applyReadinessLifecycle();
         }
         break;
       case ClientState.Stopped:
         this._activeTokens.clear();
         this._indexingMessage = undefined;
         this._indexingPercentage = undefined;
-        // The two counts have different owners, so they are handled
-        // differently here.
-        //
-        // `_errorCount` came from the server session that just ended, so it IS
-        // stale — clear it. It repopulates on its own: HealthWidgetDataSource
-        // subscribes to `onDidChangeDiagnostics` and calls
-        // `refreshErrorCount()`, which the restarted server triggers as it
-        // republishes diagnostics.
-        //
-        // `_fileCount` is client-owned — HealthWidgetDataSource computes it
-        // from `vscode.workspace.findFiles`, never from the server — so a
-        // server restart does not invalidate it; the files on disk did not
-        // change. Do NOT clear it. `refreshFileCount()` short-circuits on the
-        // cached `fileCountPromise`, which is only invalidated when workspace
-        // folders change, and `start()` runs once per data-source lifetime, so
-        // nothing would recompute it. Clearing here blanked the count until the
-        // workspace changed or the extension host reloaded — worse than the
-        // stale value this reset exists to avoid.
+        // The error count belonged to the server session that just ended, so
+        // clear it. The file count is derived from the client-visible workspace
+        // and remains current across a server restart.
         this._errorCount = 0;
-        this._setMode('stopped');
+        // A client stop is not, by itself, a product failure: normal restart
+        // and extension shutdown use the same language-client state. The
+        // authoritative crash/diagnosis path promotes an unexpected stop to
+        // `failed` explicitly after it has established that meaning.
+        this.setWorkspaceLifecycleState('starting', {
+          detail: 'Perl Language Server is restarting or shutting down.',
+          action: 'Wait for the server to reconnect, or start it again.',
+          reasonCode: 'client_stopped',
+        });
         break;
     }
   }
@@ -127,7 +135,7 @@ export class HealthWidget {
     if (payload.kind === 'begin') {
       this._activeTokens.add(token);
       this._indexingMessage = payload.message ?? payload.title;
-      this._setMode('indexing');
+      this.setWorkspaceLifecycleState('indexing_workspace');
     } else if (payload.kind === 'report') {
       if (this._activeTokens.has(token)) {
         if (payload.message !== undefined) {
@@ -141,21 +149,68 @@ export class HealthWidget {
       if (this._activeTokens.size === 0) {
         this._indexingMessage = undefined;
         this._indexingPercentage = undefined;
-        this._setMode(this._modeForReadiness());
+        this._applyReadinessLifecycle();
       }
+    }
+  }
+
+  /** Seed the visible readiness state while waiting for the server contract. */
+  seedIndexReadinessState(state: IndexReadinessState): void {
+    this._readinessState = state;
+    this._readinessReason = undefined;
+    this._clearProviderOutcome();
+    if (this._activeTokens.size === 0) {
+      this._applyReadinessLifecycle();
     }
   }
 
   /** Consume canonical server readiness without inferring it from progress. */
   onIndexReadinessState(state: IndexReadinessState, reason?: string): void {
+    this._enhancedReadinessAvailable = true;
     this._readinessState = state;
     this._readinessReason = reason;
-    if (this._activeTokens.size === 0 && this._mode !== 'stopped') {
-      this._setMode(this._modeForReadiness());
+    this._clearProviderOutcome();
+    if (this._activeTokens.size === 0) {
+      this._applyReadinessLifecycle();
     }
   }
 
-  /** Update the workspace-wide file count (from server telemetry). */
+  /**
+   * Present one canonical lifecycle state without making the widget its owner.
+   *
+   * A lifecycle transition clears the prior operation-scoped provider outcome,
+   * preventing an old fallback, refusal, or failure from surviving restart or
+   * a later readiness generation.
+   */
+  setWorkspaceLifecycleState(
+    lifecycle: WorkspaceLifecycleState,
+    update: WorkspaceExperienceUpdate = {},
+  ): void {
+    this._experience = {
+      lifecycle,
+      detail: update.detail,
+      action: update.action,
+      reasonCode: update.reasonCode,
+    };
+    this._clearProviderOutcome();
+    this._render();
+  }
+
+  /**
+   * Retain the latest operation-scoped provider result without reclassifying
+   * workspace health. A future recent-result surface may consume these fields.
+   */
+  setProviderOutcome(
+    providerOutcome: ProviderOutcome | undefined,
+    update: WorkspaceExperienceUpdate = {},
+  ): void {
+    this._providerOutcome = providerOutcome;
+    this._providerDetail = update.detail;
+    this._providerAction = update.action;
+    this._providerReasonCode = update.reasonCode;
+  }
+
+  /** Update the workspace-wide file count. */
   setFileCount(count: number): void {
     this._fileCount = count;
     this._render();
@@ -173,9 +228,31 @@ export class HealthWidget {
     this._render();
   }
 
-  /** Current display mode (useful for testing). */
+  /** Current compatibility display mode. */
   get mode(): WidgetMode {
     return this._mode;
+  }
+
+  /** Current canonical user-facing lifecycle state. */
+  get lifecycleState(): WorkspaceLifecycleState {
+    return this._experience.lifecycle;
+  }
+
+  /** Latest operation-scoped provider outcome, when one has been recorded. */
+  get providerOutcome(): ProviderOutcome | undefined {
+    return this._providerOutcome;
+  }
+
+  get providerDetail(): string | undefined {
+    return this._providerDetail;
+  }
+
+  get providerAction(): string | undefined {
+    return this._providerAction;
+  }
+
+  get providerReasonCode(): string | undefined {
+    return this._providerReasonCode;
   }
 
   /** Current file count (undefined until first update). */
@@ -193,82 +270,79 @@ export class HealthWidget {
     return this._version;
   }
 
-  /** Current canonical index state. */
+  /** Current canonical index readiness state from the server. */
   get readinessState(): IndexReadinessState {
     return this._readinessState;
+  }
+
+  /** Whether this server has emitted the enhanced readiness notification. */
+  get enhancedReadinessAvailable(): boolean {
+    return this._enhancedReadinessAvailable;
+  }
+
+  /** Bounded user-facing readiness detail for status surfaces. */
+  get readinessReason(): string | undefined {
+    return this._readinessState === 'ready_limited'
+      ? presentIndexReadinessReason(this._readinessReason)
+      : undefined;
+  }
+
+  /** Current presentation detail/action supplied by the owning lifecycle path. */
+  get experienceDetail(): string | undefined {
+    return this._experience.detail;
+  }
+
+  get experienceAction(): string | undefined {
+    return this._experience.action;
   }
 
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
 
-  private _setMode(mode: WidgetMode): void {
-    this._mode = mode;
-    this._render();
+  private _clearProviderOutcome(): void {
+    this._providerOutcome = undefined;
+    this._providerDetail = undefined;
+    this._providerAction = undefined;
+    this._providerReasonCode = undefined;
   }
 
-  private _modeForReadiness(): WidgetMode {
-    return this._readinessState === 'building'
-      ? 'indexing'
-      : this._readinessState === 'ready_limited'
-        ? 'ready_limited'
-        : 'running';
+  private _applyReadinessLifecycle(): void {
+    switch (this._readinessState) {
+      case 'building':
+        this.setWorkspaceLifecycleState('indexing_workspace');
+        break;
+      case 'ready_limited': {
+        const detail = presentIndexReadinessReason(this._readinessReason);
+        this.setWorkspaceLifecycleState('ready_limited', {
+          detail,
+          reasonCode: 'index_ready_limited',
+        });
+        break;
+      }
+      case 'ready':
+        this.setWorkspaceLifecycleState('ready');
+        break;
+    }
   }
 
   private _render(): void {
-    switch (this._mode) {
-      case 'starting':
-        this.item.text = '$(sync~spin) Perl LSP';
-        this.item.tooltip = 'Perl Language Server is starting\u2026 (click for options)';
-        this.item.backgroundColor = undefined;
-        break;
+    const presentation = presentWorkspaceExperience(this._experience, {
+      version: this._version,
+      fileCount: this._fileCount,
+      errorCount: this._errorCount,
+      indexingMessage: this._indexingMessage,
+      indexingPercentage: this._indexingPercentage,
+    });
 
-      case 'indexing': {
-        let msg = this._indexingMessage ?? 'Indexing\u2026';
-        // Show file count and percentage when available (UX_GAP_1.1)
-        if (this._fileCount !== undefined && this._fileCount > 0) {
-          msg = `Indexing\u2026 (${this._fileCount} files)`;
-        }
-        if (this._indexingPercentage !== undefined && this._indexingPercentage > 0) {
-          msg += ` ${Math.round(this._indexingPercentage)}%`;
-        }
-        this.item.text = `$(sync~spin) perl-lsp: ${msg}`;
-        this.item.tooltip = 'Perl Language Server is indexing your workspace (click for options)';
-        this.item.backgroundColor = undefined;
-        break;
-      }
-
-      case 'running': {
-        const label = this._version ? `perl-lsp v${this._version}` : 'perl-lsp';
-        const parts: string[] = [];
-        if (this._fileCount !== undefined) {
-          parts.push(`${this._fileCount} files`);
-        }
-        if (this._errorCount > 0) {
-          parts.push(`${this._errorCount} error${this._errorCount === 1 ? '' : 's'}`);
-        }
-        const detail = parts.length > 0 ? `: ${parts.join(' | ')}` : '';
-        this.item.text = `$(check) ${label}${detail}`;
-        const versionNote = this._version ? ` v${this._version}` : '';
-        this.item.tooltip = `Perl Language Server${versionNote} is running (click for options)`;
-        this.item.backgroundColor = undefined;
-        break;
-      }
-
-      case 'ready_limited': {
-        const label = this._version ? `perl-lsp v${this._version}` : 'perl-lsp';
-        this.item.text = `$(check) ${label} (limited)`;
-        const reason = this._readinessReason ? `: ${this._readinessReason}` : '';
-        this.item.tooltip = `Perl Language Server is ready with limited workspace coverage${reason} (click for options)`;
-        this.item.backgroundColor = undefined;
-        break;
-      }
-
-      case 'stopped':
-        this.item.text = '$(error) perl-lsp: stopped';
-        this.item.tooltip = 'Perl Language Server has stopped (click to restart)';
-        this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-        break;
-    }
+    this._mode = presentation.mode;
+    this.item.text = presentation.text;
+    this.item.tooltip = presentation.tooltip;
+    this.item.backgroundColor =
+      presentation.background === 'warning'
+        ? new vscode.ThemeColor('statusBarItem.warningBackground')
+        : presentation.background === 'error'
+          ? new vscode.ThemeColor('statusBarItem.errorBackground')
+          : undefined;
   }
 }

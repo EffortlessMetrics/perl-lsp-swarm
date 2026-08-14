@@ -1,0 +1,90 @@
+name: DAP Protocol Authority
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.ci/dap/protocol-authority.json'
+      - 'crates/perl-dap/**'
+      - 'scripts/ci/dap_protocol_authority.py'
+      - 'scripts/ci/dap_authority_*.py'
+      - 'scripts/tests/test_dap_protocol_authority.py'
+      - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
+      - 'book/src/dap/protocol-schema.md'
+      - '.github/workflows/dap-protocol-authority.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - '.ci/dap/protocol-authority.json'
+      - 'crates/perl-dap/**'
+      - 'scripts/ci/dap_protocol_authority.py'
+      - 'scripts/ci/dap_authority_*.py'
+      - 'scripts/tests/test_dap_protocol_authority.py'
+      - 'docs/reference/DAP_PROTOCOL_SCHEMA.md'
+      - 'book/src/dap/protocol-schema.md'
+      - '.github/workflows/dap-protocol-authority.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: dap-protocol-authority-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DAP_AUTHORITY_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  authority:
+    name: Pinned upstream schema
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ env.DAP_AUTHORITY_CANDIDATE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout identity and clean source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$DAP_AUTHORITY_CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Run protocol-authority falsifiers
+        run: python3 scripts/tests/test_dap_protocol_authority.py
+
+      - name: Enforce exact upstream and production authority
+        run: |
+          python3 scripts/ci/dap_protocol_authority.py check \
+            --root . \
+            --manifest .ci/dap/protocol-authority.json \
+            --receipt target/receipts/dap-protocol-authority.json
+
+      - name: Publish authority summary
+        shell: bash
+        run: |
+          {
+            echo '### DAP protocol authority'
+            echo
+            echo '- Candidate: `'$DAP_AUTHORITY_CANDIDATE_SHA'`'
+            echo '- Receipt: `target/receipts/dap-protocol-authority.json`'
+            echo
+            echo '```json'
+            cat target/receipts/dap-protocol-authority.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload authority receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: dap-protocol-authority-${{ env.DAP_AUTHORITY_CANDIDATE_SHA }}
+          path: target/receipts/dap-protocol-authority.json
+          if-no-files-found: error
+          retention-days: 14

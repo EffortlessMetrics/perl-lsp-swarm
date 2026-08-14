@@ -104,6 +104,7 @@ allow = [
     # Tier 1 — Leaf crates (no workspace deps)
     "perl-position-tracking",
     "perl-token",
+    "perl-test-facts",
     # (perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing — Wave Final PR B)
     # (perl-percentile absorbed into perl-parser — Wave D)
     "perl-subprocess-runtime",
@@ -414,6 +415,9 @@ unnecessary_trailing_comma = "warn"
 wildcard_imports = "warn"
 print_stderr = "deny"
 print_stdout = "deny"
+# disallowed_fields: architectural seam protection (#6114).
+# The actual field denylist lives in clippy.toml `disallowed-fields = []`.
+disallowed_fields = "deny"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ci)', 'cfg(feature, values("slow_tests"))'] }

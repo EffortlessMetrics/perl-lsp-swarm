@@ -143,27 +143,26 @@ impl ImplementationProvider {
                 if (symbol.kind == crate::workspace_index::SymbolKind::Class
                     || symbol.kind == crate::workspace_index::SymbolKind::Package)
                     && let Some(container) = &symbol.container_name
-                        && container.contains(base_package) {
-                            let target_uri = parse_uri(&symbol.uri);
-                            // Convert internal Position to LSP Position (LSP uses 0-based, internal uses 1-based)
-                            let lsp_start = LspPosition::new(
-                                symbol.range.start.line - 1,
-                                symbol.range.start.column - 1,
-                            );
-                            let lsp_end = LspPosition::new(
-                                symbol.range.end.line - 1,
-                                symbol.range.end.column - 1,
-                            );
-                            results.push((
-                                symbol.name.clone(),
-                                LocationLink {
-                                    origin_selection_range: None,
-                                    target_uri,
-                                    target_range: LspRange::new(lsp_start, lsp_end),
-                                    target_selection_range: LspRange::new(lsp_start, lsp_end),
-                                },
-                            ));
-                        }
+                    && container.contains(base_package)
+                {
+                    let target_uri = parse_uri(&symbol.uri);
+                    // Convert internal Position to LSP Position (LSP uses 0-based, internal uses 1-based)
+                    let lsp_start = LspPosition::new(
+                        symbol.range.start.line - 1,
+                        symbol.range.start.column - 1,
+                    );
+                    let lsp_end =
+                        LspPosition::new(symbol.range.end.line - 1, symbol.range.end.column - 1);
+                    results.push((
+                        symbol.name.clone(),
+                        LocationLink {
+                            origin_selection_range: None,
+                            target_uri,
+                            target_range: LspRange::new(lsp_start, lsp_end),
+                            target_selection_range: LspRange::new(lsp_start, lsp_end),
+                        },
+                    ));
+                }
             }
         }
 
@@ -185,16 +184,17 @@ impl ImplementationProvider {
         // Then find the method in each subclass, restricted to the subclass package scope
         for (subclass_name, subclass_link) in &subclasses {
             if let Some(doc_content) = documents.get(subclass_link.target_uri.as_str())
-                && let Ok(ast) = crate::Parser::new(doc_content).parse() {
-                    self.find_method_in_package(
-                        &ast,
-                        method,
-                        subclass_name,
-                        subclass_link.target_uri.as_str(),
-                        doc_content,
-                        &mut results,
-                    );
-                }
+                && let Ok(ast) = crate::Parser::new(doc_content).parse()
+            {
+                self.find_method_in_package(
+                    &ast,
+                    method,
+                    subclass_name,
+                    subclass_link.target_uri.as_str(),
+                    doc_content,
+                    &mut results,
+                );
+            }
         }
 
         results
@@ -263,21 +263,23 @@ impl ImplementationProvider {
             NodeKind::VariableDeclaration { declarator, variable, initializer, .. } => {
                 if declarator == "our"
                     && let NodeKind::Variable { sigil, name } = &variable.kind
-                        && sigil == "@" && name == "ISA"
-                            && let Some(init) = initializer
-                                && self.contains_parent(init, base_package) {
-                                    let pkg_range = *current_package_range;
-                                    let target_uri = parse_uri(uri);
-                                    results.push((
-                                        current_package.clone(),
-                                        LocationLink {
-                                            origin_selection_range: None,
-                                            target_uri,
-                                            target_range: pkg_range,
-                                            target_selection_range: pkg_range,
-                                        },
-                                    ));
-                                }
+                    && sigil == "@"
+                    && name == "ISA"
+                    && let Some(init) = initializer
+                    && self.contains_parent(init, base_package)
+                {
+                    let pkg_range = *current_package_range;
+                    let target_uri = parse_uri(uri);
+                    results.push((
+                        current_package.clone(),
+                        LocationLink {
+                            origin_selection_range: None,
+                            target_uri,
+                            target_range: pkg_range,
+                            target_selection_range: pkg_range,
+                        },
+                    ));
+                }
             }
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
                 for stmt in statements {
@@ -487,26 +489,27 @@ impl ImplementationProvider {
             let (end_line, end_col) =
                 crate::position::offset_to_utf16_line_col(src, node.location.end);
 
-            if line >= start_line && line <= end_line
+            if line >= start_line
+                && line <= end_line
                 && ((line == start_line && character >= start_col)
                     || (line == end_line && character <= end_col)
                     || (line > start_line && line < end_line))
-                {
-                    // Check children first for more specific match
-                    match &node.kind {
-                        NodeKind::Program { statements } | NodeKind::Block { statements } => {
-                            for stmt in statements {
-                                if let Some(child) =
-                                    self.find_node_at_position(stmt, line, character, source)
-                                {
-                                    return Some(child);
-                                }
+            {
+                // Check children first for more specific match
+                match &node.kind {
+                    NodeKind::Program { statements } | NodeKind::Block { statements } => {
+                        for stmt in statements {
+                            if let Some(child) =
+                                self.find_node_at_position(stmt, line, character, source)
+                            {
+                                return Some(child);
                             }
                         }
-                        _ => {}
                     }
-                    return Some(node.clone());
+                    _ => {}
                 }
+                return Some(node.clone());
+            }
         }
         None
     }
@@ -553,9 +556,9 @@ impl ImplementationProvider {
         if s.len() >= 2
             && ((s.starts_with('\'') && s.ends_with('\''))
                 || (s.starts_with('"') && s.ends_with('"')))
-            {
-                return &s[1..s.len() - 1];
-            }
+        {
+            return &s[1..s.len() - 1];
+        }
         s
     }
 }
