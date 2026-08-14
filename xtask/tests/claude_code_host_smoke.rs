@@ -20,10 +20,10 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
-const PLUGIN_ROOT: &str = "integrations/claude-code/plugins/perl-lsp";
+const PLUGIN_ROOT: &str = "integrations/claude-code/plugins/perl-lsp-rs";
 const FIXTURE_ROOT: &str = "crates/perl-lsp-ux-tests/fixtures/agent-client-compat";
 const MARKETPLACE_NAME: &str = "effortlessmetrics";
-const PLUGIN_NAME: &str = "perl-lsp";
+const PLUGIN_NAME: &str = "perl-lsp-rs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum LspOperation {
@@ -643,13 +643,13 @@ fn claude_code_exact_source_smoke() -> Result<()> {
 
     ensure!(
         summary.plugin_paths.contains_key(PLUGIN_NAME),
-        "Claude system/init did not load perl-lsp plugin"
+        "Claude system/init did not load perl-lsp-rs plugin"
     );
     let installed_path = summary
         .plugin_paths
         .get(PLUGIN_NAME)
         .filter(|path| !path.as_os_str().is_empty() && path.is_dir())
-        .context("Claude did not report a usable installed perl-lsp plugin path")?;
+        .context("Claude did not report a usable installed perl-lsp-rs plugin path")?;
     ensure!(
         fixture_digest(installed_path)? == plugin_hash,
         "installed Claude plugin package differs from source candidate"
@@ -750,7 +750,7 @@ fn stream_parser_requires_real_lsp_tool_results_for_oracles() -> Result<()> {
             "type": "system",
             "subtype": "init",
             "tools": ["LSP"],
-            "plugins": [{"name":"perl-lsp","path":"plugin-cache/perl-lsp"}],
+            "plugins": [{"name":"perl-lsp-rs","path":"plugin-cache/perl-lsp-rs"}],
             "plugin_errors": []
         }),
         serde_json::json!({"type":"assistant","message":{"content":[
