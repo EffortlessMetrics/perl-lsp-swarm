@@ -444,8 +444,8 @@ fn receipt_source_id_is_always_hashed_never_raw() -> Result<(), Box<dyn std::err
             }),
         ))
         .ok_or("formatting returned no response")?;
-    // The server must have produced a receipt regardless of formatting outcome.
-    assert!(response.error.is_none() || response.result.is_none() || response.result.is_some());
+    // This valid formatting request must not return an error.
+    assert!(response.error.is_none(), "expected no error; got {:?}", response.error);
     let trace = receipt(&server)?;
 
     // source_id (the raw URI) must never appear as a key in the receipt.
