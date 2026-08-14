@@ -5,11 +5,10 @@
 //! internal implementation details owned under `runtime::dispatch` and reached
 //! through [`crate::LspServer::handle_request`].
 //!
-//! The module remains public as a narrow, stable migration boundary. It gives
-//! downstream code an intentional envelope-only import surface while the
-//! canonical definitions remain in [`crate::protocol`]. Both paths name the
-//! same types; no adapter, behavior, or alternate dispatch implementation is
-//! created here.
+//! The module is public as an envelope-only facade for the existing
+//! `perl_lsp::dispatch` path while the canonical definitions remain in
+//! [`crate::protocol`]. Both paths name the same types; no adapter, behavior,
+//! or alternate dispatch implementation is created here.
 //!
 //! New code should normally import these types from [`crate::protocol`] or from
 //! the crate-root re-exports.
@@ -49,23 +48,23 @@ mod tests {
     }
 
     #[test]
-    fn public_docs_define_only_the_envelope_migration_boundary() {
-        let source = include_str!("dispatch.rs");
+    fn architecture_docs_define_only_the_envelope_facade() {
+        let architecture_docs = include_str!("lib.rs");
         for stale_or_overclaim in [
             "server_impl/dispatch.rs",
             "crate::lsp::server_impl::dispatch",
             "Intentionally empty",
             "Request dispatch placeholder",
             "historically imported",
+            "Request routing and method dispatch logic",
         ] {
             assert!(
-                !source.contains(stale_or_overclaim),
-                "public dispatch documentation must not retain stale or unproved marker \
+                !architecture_docs.contains(stale_or_overclaim),
+                "architecture documentation must not retain stale or unproved marker \
                  `{stale_or_overclaim}`"
             );
         }
-        assert!(source.contains("runtime::dispatch"));
-        assert!(source.contains("crate::protocol"));
-        assert!(source.contains("no adapter, behavior, or alternate dispatch implementation"));
+        assert!(architecture_docs.contains("Public JSON-RPC envelope compatibility facade"));
+        assert!(architecture_docs.contains("runtime::dispatch"));
     }
 }

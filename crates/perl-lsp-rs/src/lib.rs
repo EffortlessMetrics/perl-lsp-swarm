@@ -60,7 +60,8 @@
 //!
 //! - **[`protocol`]**: JSON-RPC message types and LSP protocol definitions
 //! - **[`transport`]**: Message framing and transport (stdio, TCP, WebSocket)
-//! - **[`dispatch`]**: Request routing and method dispatch logic
+//! - **[`dispatch`]**: Public JSON-RPC envelope compatibility facade; request
+//!   routing and method dispatch remain internal to `runtime::dispatch`
 //!
 //! ## State Management
 //!
