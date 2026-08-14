@@ -173,15 +173,31 @@ impl<'a> Parser<'a> {
                 // Body-line evidence is required so the recovery oracle can keep
                 // region 3..=4 without treating UnknownRest (which swallows the
                 // recovered `sub`) as an Error-node span.
+                //
+                // Prefer the collector's body span start over `decl.body_start`:
+                // later heredocs on the same declaration line share one
+                // `body_start` at queue time, while FIFO collection advances the
+                // actual body offset.
                 self.errors.push(ParseError::SyntaxError {
                     message: format!("Unterminated heredoc: {}", label),
                     location: decl.decl_span.start,
                 });
-                if decl.body_start < self.src_bytes.len() && decl.body_start != decl.decl_span.start {
-                    self.errors.push(ParseError::SyntaxError {
-                        message: format!("Unterminated heredoc body: {}", label),
-                        location: decl.body_start,
-                    });
+                let body_location = if body.full_span.start < body.full_span.end {
+                    Some(body.full_span.start)
+                } else if decl.body_start < self.src_bytes.len()
+                    && decl.body_start != decl.decl_span.start
+                {
+                    Some(decl.body_start)
+                } else {
+                    None
+                };
+                if let Some(body_location) = body_location {
+                    if body_location != decl.decl_span.start {
+                        self.errors.push(ParseError::SyntaxError {
+                            message: format!("Unterminated heredoc body: {}", label),
+                            location: body_location,
+                        });
+                    }
                 }
             }
 
