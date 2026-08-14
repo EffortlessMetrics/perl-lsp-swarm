@@ -62,7 +62,7 @@ pub use ast::GotoTargetForm;
 pub use ast::{FieldId, Node, NodeKind};
 /// AST structural validation types and entry point.
 pub use invariants::{
-    AstInvariantCode, AstInvariantFinding, AstInvariantOptions, AstInvariantReport, validate_ast,
+    validate_ast, AstInvariantCode, AstInvariantFinding, AstInvariantOptions, AstInvariantReport,
 };
 /// Byte-offset span indicating where a node appears in source text.
 pub use perl_position_tracking::SourceLocation;
