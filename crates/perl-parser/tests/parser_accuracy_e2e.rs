@@ -210,7 +210,11 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
     let workspace_root = workspace_root();
     let manifest_json = fs::read_to_string(
         workspace_root
-            .join("crates").join("perl-corpus").join("fixtures").join("parser_accuracy").join("manifest.json"),
+            .join("crates")
+            .join("perl-corpus")
+            .join("fixtures")
+            .join("parser_accuracy")
+            .join("manifest.json"),
     )?;
     let manifest: ParserAccuracyManifest = serde_json::from_str(&manifest_json)?;
 
@@ -298,10 +302,8 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
                 spillover,
                 expectation.id
             );
-            let missing_region_lines: Vec<_> = expected_region
-                .clone()
-                .filter(|line| !error_lines.contains(&line))
-                .collect();
+            let missing_region_lines: Vec<_> =
+                expected_region.clone().filter(|line| !error_lines.contains(&line)).collect();
             assert!(
                 missing_region_lines.is_empty(),
                 "recovery fixture '{}' missing error evidence on declared region lines {:?}: observed {:?} ({})",
@@ -330,8 +332,7 @@ fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
         }
     }
     assert_eq!(
-        seen_followups,
-        followups,
+        seen_followups, followups,
         "RECOVERY_GEOMETRY_FOLLOWUPS must name only current divergent recovery fixtures"
     );
     assert!(
