@@ -23,6 +23,13 @@
 //! parser accepts the documented `{}` clean result and the documented
 //! `crates` result shape only; all other successful output is `NOT_PROVEN`.
 
+//!
+//! Unit tests cover probe classification, structured/legacy parser behavior,
+//! and finding metadata. They do not claim to exercise filesystem write
+//! failures, target/feature-specific Cargo retention, stale exception
+//! matching, legacy udeps arbitration, or check/report installation side
+//! effects; those require integration or hosted proof.
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -434,7 +441,6 @@ pub fn classify_probe_output(exit_code: Option<i32>, stdout: &str, stderr: &str)
 struct MacheteJsonCrate {
     package_name: String,
     manifest_path: String,
-    #[serde(default)]
     unused: Vec<String>,
     #[serde(default)]
     ignored_used: Vec<String>,
@@ -707,6 +713,8 @@ mod tests {
         include_str!("../../tests/fixtures/dependency-hygiene/machete-findings.json");
     const MALFORMED_MACHETE_OUTPUT: &str =
         include_str!("../../tests/fixtures/dependency-hygiene/machete-malformed.json");
+    const MISSING_UNUSED_MACHETE_OUTPUT: &str =
+        include_str!("../../tests/fixtures/dependency-hygiene/machete-missing-unused.json");
 
     // ── Outcome display ───────────────────────────────────────────────────────
 
@@ -842,6 +850,19 @@ mod tests {
         );
 
         assert!(result.is_err(), "malformed exit-0 output must fail closed");
+    }
+
+    #[test]
+    fn test_missing_unused_field_is_not_proven() {
+        let result = classify_machete_output(
+            Some(0),
+            MISSING_UNUSED_MACHETE_OUTPUT,
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        );
+
+        assert!(result.is_err(), "missing unused must fail closed");
     }
 
     #[test]
@@ -1142,33 +1163,32 @@ mod tests {
         );
     }
 
-    // ── Negative control #9: cargo-udeps not in active path ───────────────────
+    // ── Primary instrument attribution ─────────────────────────────────────────
 
-    /// Documents that cargo-udeps is removed from the active dependency
-    /// hygiene path per issue #9364. Every finding must identify cargo-machete.
+    /// Every parsed finding identifies the primary cargo-machete instrument.
+    /// This does not exercise a cargo-udeps subprocess or override path.
     #[test]
-    fn test_all_findings_attribute_to_machete_not_udeps() {
+    fn test_findings_attribute_to_primary_instrument() {
         let text = "Found the following unused dependencies in /ws/Cargo.toml:\nfoo\n\n";
         let findings = parse_machete_text(text, "/out", "0.7.0", "cargo machete").unwrap();
         for f in &findings {
             assert_eq!(
                 f.instrument, "cargo-machete",
-                "all findings must attribute to cargo-machete, not cargo-udeps"
+                "all parsed findings must attribute to cargo-machete"
             );
         }
     }
 
-    // ── Negative control #10: no tool installation in check/report paths ───────
+    // ── Missing-tool probe classification ─────────────────────────────────────
 
-    /// Verifies that a missing binary does not result in an installation side
-    /// effect. The probe returns a non-Available result; gather_findings would
-    /// return NOT_PROVEN before ever reaching any install logic.
+    /// A missing probe binary is never treated as an available instrument.
+    /// This unit test does not exercise check/report subprocess side effects.
     #[test]
-    fn test_no_installation_side_effect_on_missing_tool() {
+    fn test_missing_probe_binary_is_not_available() {
         let outcome = probe_machete_with_cargo("/nonexistent/binary");
         assert!(
             !matches!(outcome, ProbeOutcome::Available(_)),
-            "a missing binary must not become Available (installation must not be a side effect)"
+            "a missing binary must not become Available"
         );
     }
 }
