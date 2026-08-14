@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 const CONTRACT: &str = ".ci/fixtures/zed-perl-upstream/default-order.v1.json";
-const TEMPLATE: &str =
-    ".ci/fixtures/zed-perl-upstream/receipts/default-order-template.json";
+const TEMPLATE: &str = ".ci/fixtures/zed-perl-upstream/receipts/default-order-template.json";
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -33,9 +32,7 @@ fn checked_contract_and_not_run_template_validate() -> Result<(), Box<dyn Error>
     zed_default_order::validate_receipt(&receipt, &contract).map_err(io::Error::other)?;
     assert_eq!(receipt.get("result").and_then(Value::as_str), Some("not_run"));
     assert_eq!(
-        receipt
-            .pointer("/claim_boundary/publication_order")
-            .and_then(Value::as_str),
+        receipt.pointer("/claim_boundary/publication_order").and_then(Value::as_str),
         Some("unresolved")
     );
     Ok(())
@@ -49,12 +46,8 @@ fn contract_rejects_aliasing_order_drift_and_static_ruling() -> Result<(), Box<d
     assert!(zed_default_order::validate_contract(&alias).is_err());
 
     let mut order = read_json(&root, CONTRACT)?;
-    order["candidate_order"] = serde_json::json!([
-        "perllsp",
-        "!perl-lsp",
-        "!perlnavigator-server",
-        "..."
-    ]);
+    order["candidate_order"] =
+        serde_json::json!(["perllsp", "!perl-lsp", "!perlnavigator-server", "..."]);
     assert!(zed_default_order::validate_contract(&order).is_err());
 
     let mut ruling = read_json(&root, CONTRACT)?;

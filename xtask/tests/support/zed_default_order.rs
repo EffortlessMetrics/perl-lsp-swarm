@@ -48,10 +48,7 @@ fn strings(value: &Value, field: &str) -> Result<Vec<String>, String> {
 
 fn exact_set(value: &Value, field: &str, expected: &[&str]) -> Result<(), String> {
     let actual = strings(value, field)?.into_iter().collect::<BTreeSet<_>>();
-    let expected = expected
-        .iter()
-        .map(|item| (*item).to_string())
-        .collect::<BTreeSet<_>>();
+    let expected = expected.iter().map(|item| (*item).to_string()).collect::<BTreeSet<_>>();
     (actual == expected)
         .then_some(())
         .ok_or_else(|| format!("`{field}` has the wrong provider set"))
@@ -60,8 +57,7 @@ fn exact_set(value: &Value, field: &str, expected: &[&str]) -> Result<(), String
 pub fn validate_contract(contract: &Value) -> Result<(), String> {
     if contract.get("schema_version").and_then(Value::as_str)
         != Some("zed_default_order_contract.v1")
-        || contract.get("host_receipt_schema").and_then(Value::as_str)
-            != Some("zed_host_compat.v1")
+        || contract.get("host_receipt_schema").and_then(Value::as_str) != Some("zed_host_compat.v1")
         || contract.get("host_evidence_stage").and_then(Value::as_str)
             != Some("exact_source_dev_extension")
     {
@@ -74,12 +70,7 @@ pub fn validate_contract(contract: &Value) -> Result<(), String> {
         return Err("provider identities were collapsed or changed".to_string());
     }
     if contract.get("candidate_order")
-        != Some(&serde_json::json!([
-            "perlnavigator-server",
-            "!perl-lsp",
-            "!perllsp",
-            "..."
-        ]))
+        != Some(&serde_json::json!(["perlnavigator-server", "!perl-lsp", "!perllsp", "..."]))
     {
         return Err("candidate default order drift".to_string());
     }
@@ -126,8 +117,7 @@ pub fn validate_contract(contract: &Value) -> Result<(), String> {
 }
 
 pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String> {
-    if receipt.get("schema_version").and_then(Value::as_str)
-        != Some("zed_default_order_receipt.v1")
+    if receipt.get("schema_version").and_then(Value::as_str) != Some("zed_default_order_receipt.v1")
     {
         return Err("wrong default-order receipt schema".to_string());
     }
@@ -145,7 +135,10 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         }
         return Ok(());
     }
-    if result != "pass" || text(receipt, "/observed_at").is_none() || !digest(receipt, "/contract/sha256") {
+    if result != "pass"
+        || text(receipt, "/observed_at").is_none()
+        || !digest(receipt, "/contract/sha256")
+    {
         return Err("passing default-order receipt lacks exact identity".to_string());
     }
 
@@ -213,22 +206,21 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         return Err("perllsp selection did not launch exact perllsp --stdio".to_string());
     }
     exact_set(cases["select_perl_lsp"], "started_server_ids", &["perl-lsp"])?;
-    if text(cases["select_perl_lsp"], "/command").is_none()
-        || text(cases["select_perl_lsp"], "/command").is_some_and(|command| command.contains("perllsp"))
-    {
+    let perl_lsp_command = text(cases["select_perl_lsp"], "/command");
+    if perl_lsp_command.is_none() {
+        return Err("perl-lsp selection has no command".to_string());
+    }
+    if perl_lsp_command.is_some_and(|command| command.contains("perllsp")) {
         return Err("perl-lsp selection collapsed into perllsp".to_string());
     }
-    exact_set(
-        cases["deliberate_multi_server"],
-        "started_server_ids",
-        &["perl-lsp", "perllsp"],
-    )?;
+    exact_set(cases["deliberate_multi_server"], "started_server_ids", &["perl-lsp", "perllsp"])?;
     exact_set(cases["missing_selected_server"], "started_server_ids", &[])?;
     exact_set(cases["missing_selected_server"], "failed_server_ids", &["perllsp"])?;
     let preserved = strings(cases["ellipsis_preserves_user_registration"], "started_server_ids")?;
-    if !preserved.iter().any(|id| {
-        !matches!(id.as_str(), "perlnavigator-server" | "perl-lsp" | "perllsp")
-    }) {
+    if !preserved
+        .iter()
+        .any(|id| !matches!(id.as_str(), "perlnavigator-server" | "perl-lsp" | "perllsp"))
+    {
         return Err("ellipsis did not preserve an independent user registration".to_string());
     }
 
