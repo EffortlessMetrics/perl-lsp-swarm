@@ -15,13 +15,18 @@ jobs:
     name: Merge gate target
     runs-on: ubuntu-latest
     steps:
+      # Judge from trusted default-branch bytes: a candidate may modify the
+      # guard script itself, so the pull-request checkout must not supply the
+      # logic that classifies that same candidate.
       - name: Check out guard
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
           fetch-depth: 1
+          ref: main
       - name: Classify merge-gate target
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_REF: ${{ github.ref }}
         run: bash scripts/check-merge-gate-target.sh

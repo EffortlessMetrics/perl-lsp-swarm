@@ -28,9 +28,11 @@ assert_blocked() {
 
 assert_pass "main target" "$CHECK_SCRIPT" pull_request main
 assert_pass "master target" "$CHECK_SCRIPT" pull_request master
-assert_pass "merge-group target" "$CHECK_SCRIPT" merge_group
+assert_pass "merge-group target" "$CHECK_SCRIPT" merge_group main refs/heads/main-merge-queue/abc/x
 assert_blocked "stacked target" "Merge gate not evaluated" "$CHECK_SCRIPT" pull_request feature/base
 assert_blocked "missing target" "NOT_PROVEN" "$CHECK_SCRIPT" pull_request ""
 assert_blocked "unknown event" "Unsupported GitHub event" "$CHECK_SCRIPT" workflow_dispatch
+assert_blocked "foreign merge queue" "not a protected-branch merge queue" "$CHECK_SCRIPT" merge_group main refs/heads/release-merge-queue/x
+assert_blocked "missing merge ref" "not a protected-branch merge queue" "$CHECK_SCRIPT" merge_group main ""
 
 echo "PASS: merge-gate target guard distinguishes protected, stacked, missing, and unsupported inputs"
