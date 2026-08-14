@@ -36,6 +36,7 @@ optional = true
 [dev-dependencies]
 perl-tdd-support = { path = "../perl-tdd-support" }
 perl-test-generators = { path = "../perl-test-generators" }
+perl-test-must = { path = "../perl-test-must" }
 proptest.workspace = true
 
 [package.metadata.docs.rs]

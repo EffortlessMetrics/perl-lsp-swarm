@@ -1,6 +1,12 @@
 //! Targeted coverage tests for uncovered branches in perl-position-tracking.
 //!
 //! Each test covers a specific function or branch identified by source analysis.
+//!
+//! # Deprecated method coverage
+//!
+//! One test exercises the deprecated `whole_document` helper to keep regression
+//! coverage active during the deprecation window (v0.15 removal tracked in #8798).
+#![allow(deprecated)]
 
 use perl_position_tracking::{
     ByteSpan, LineIndex, LineStartsCache, Position, PositionMapper, Range, WirePosition, WireRange,

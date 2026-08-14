@@ -2,6 +2,14 @@
 //!
 //! Covers: ByteSpan, LineStartsCache, LineIndex, PositionMapper, WirePosition,
 //! WireRange, WireLocation, Position, Range, convert functions, and mapper utilities.
+//!
+//! # Deprecated method coverage
+//!
+//! Several tests intentionally exercise the deprecated `from_byte_offset`,
+//! `to_byte_offset`, `from_byte_offsets`, and `whole_document` helpers to
+//! keep regression coverage active during the deprecation window (v0.15
+//! removal is tracked in issue #8798).
+#![allow(deprecated)]
 
 use perl_position_tracking::{
     ByteSpan, LineEnding, LineIndex, LineStartsCache, PositionMapper, SourceLocation, WireLocation,

@@ -1858,6 +1858,7 @@ dependencies = [
  "lsp-types",
  "perl-tdd-support",
  "perl-test-generators",
+ "perl-test-must",
  "proptest",
  "ropey",
  "serde",
