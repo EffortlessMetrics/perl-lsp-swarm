@@ -22,7 +22,10 @@ fn validate(
 }
 
 #[test]
-fn pinned_source_and_rust_registry_are_identical() {
+fn pinned_manifest_and_rust_registry_are_consistent() {
+    // This is intentionally a checked-in manifest/registry consistency check.
+    // It does not independently verify the manifest against upstream without
+    // a network-dependent source acquisition step.
     let source: Value =
         serde_json::from_str(SCHEMA_SOURCE_JSON).expect("pinned schema source must be valid JSON");
     assert_eq!(
@@ -60,6 +63,48 @@ fn pinned_source_and_rust_registry_are_identical() {
         })
         .collect::<Vec<_>>();
     assert_eq!(registered_schema_identities(), declared);
+}
+
+#[test]
+fn unregistration_params_require_the_pinned_historical_field_name() {
+    let historical = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "client/unregisterCapability",
+        "params": {
+            "unregisterations": [{
+                "id": "registration-1",
+                "method": "textDocument/hover"
+            }]
+        }
+    });
+    validate(
+        &historical,
+        Direction::ServerToClient,
+        Some("client/unregisterCapability"),
+    )
+    .expect("the pinned historical LSP field name should validate");
+
+    let corrected = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "client/unregisterCapability",
+        "params": {
+            "unregistrations": [{
+                "id": "registration-1",
+                "method": "textDocument/hover"
+            }]
+        }
+    });
+    let error = validate(
+        &corrected,
+        Direction::ServerToClient,
+        Some("client/unregisterCapability"),
+    )
+    .expect_err("the corrected spelling is outside the pinned schema contract");
+    assert_eq!(error.path, "$.params.unregisterations");
+    assert_eq!(error.expected, "unregistration array");
+    assert_eq!(error.observed, "missing");
 }
 
 #[test]

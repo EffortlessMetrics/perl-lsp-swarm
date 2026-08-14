@@ -6,6 +6,7 @@
 //! separately by #7116.
 
 mod methods;
+mod payloads;
 
 use serde_json::{Map, Value};
 use std::error::Error;
@@ -452,7 +453,7 @@ fn validate_extension_payload(
                 SchemaError::new(Some(method), "$.result", "extension result", "missing")
             })?;
         }
-        MessageKind::ErrorResponse => validate_error_object(method, &object["error"])?;
+        MessageKind::ErrorResponse => validate_error_object(method, &object["error"])?,
     }
     Ok(())
 }

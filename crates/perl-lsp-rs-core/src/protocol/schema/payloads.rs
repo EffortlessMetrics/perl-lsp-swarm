@@ -582,10 +582,12 @@ pub(super) fn registration_params(method: &str, value: &Value) -> Result<(), Sch
 }
 
 pub(super) fn unregistration_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    // The pinned LSP source preserves this historical field-name typo. The
+    // corrected spelling is intentionally not accepted without an explicit
+    // compatibility decision and separate contract proof.
     let object = expect_object(Some(method), "$.params", value)?;
     let values = object
         .get("unregisterations")
-        .or_else(|| object.get("unregistrations"))
         .ok_or_else(|| {
             SchemaError::new(
                 Some(method),
