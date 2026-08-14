@@ -642,7 +642,7 @@ pub(super) fn handle(
 
 #[cfg(test)]
 mod tests {
-    use super::super::default_options;
+    use super::super::super::default_options;
     use super::*;
     use perl_lsp_rs_core::tooling::perltidy::native::FormatReasonCode;
 
