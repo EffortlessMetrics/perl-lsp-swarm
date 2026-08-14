@@ -176,9 +176,7 @@ fn receipt_source_id_is_always_hashed_never_raw() -> Result<(), Box<dyn std::err
         "raw source_id must not appear in the receipt; got trace={trace}"
     );
     // source_id_hash must always be present.
-    let hash = trace["source_id_hash"]
-        .as_str()
-        .ok_or("source_id_hash must be a string")?;
+    let hash = trace["source_id_hash"].as_str().ok_or("source_id_hash must be a string")?;
     // Hash is a 16-character lowercase hexadecimal string (FNV-1a 64-bit).
     assert_eq!(hash.len(), 16, "source_id_hash must be 16 hex chars; got {hash:?}");
     assert!(
@@ -201,8 +199,8 @@ fn receipt_source_id_is_always_hashed_never_raw() -> Result<(), Box<dyn std::err
 /// - `confidence` is `"low"` for blocked decisions
 /// - `freshness` is `"fresh"` for reasons that do not start with `"stale_"`
 #[test]
-fn receipt_static_invariants_hold_for_disabled_formatter()
--> Result<(), Box<dyn std::error::Error>> {
+fn receipt_static_invariants_hold_for_disabled_formatter() -> Result<(), Box<dyn std::error::Error>>
+{
     let server = LspServer::new();
     advertise(&server);
     server.config.lock().perltidy_enabled = false;
@@ -232,8 +230,7 @@ fn receipt_static_invariants_hold_for_disabled_formatter()
     );
     // Non-native engine routes facts through the provider runtime, not the parser.
     assert_eq!(
-        trace["fact_source"],
-        "provider_runtime",
+        trace["fact_source"], "provider_runtime",
         "fact_source must be 'provider_runtime' for disabled engine; got trace={trace}"
     );
     // Blocked decision → low confidence.
@@ -242,14 +239,12 @@ fn receipt_static_invariants_hold_for_disabled_formatter()
         "disabled formatter must produce decision='blocked'; got trace={trace}"
     );
     assert_eq!(
-        trace["confidence"],
-        "low",
+        trace["confidence"], "low",
         "confidence must be 'low' for blocked decisions; got trace={trace}"
     );
     // Reason "formatter_disabled" does not start with "stale_" → fresh.
     assert_eq!(
-        trace["freshness"],
-        "fresh",
+        trace["freshness"], "fresh",
         "freshness must be 'fresh' when reason does not start with 'stale_'; got trace={trace}"
     );
     Ok(())
@@ -276,16 +271,11 @@ fn receipt_freshness_is_stale_when_reason_starts_with_stale_prefix()
     // Advance the document generation to make the snapshot stale.
     {
         let mut documents = server.documents.lock();
-        let doc = server
-            .get_document_mut(&mut documents, uri)
-            .ok_or("document must be open")?;
+        let doc = server.get_document_mut(&mut documents, uri).ok_or("document must be open")?;
         doc.update_content("my $x = 2;\n", 2);
     }
 
-    let error = server
-        .ensure_current(&snapshot)
-        .err()
-        .ok_or("expected stale-source error")?;
+    let error = server.ensure_current(&snapshot).err().ok_or("expected stale-source error")?;
     assert_eq!(error.code, CONTENT_MODIFIED);
 
     let trace = receipt(&server)?;
@@ -297,8 +287,7 @@ fn receipt_freshness_is_stale_when_reason_starts_with_stale_prefix()
     );
     // Freshness must be "stale" when reason starts with "stale_".
     assert_eq!(
-        trace["freshness"],
-        "stale",
+        trace["freshness"], "stale",
         "freshness must be 'stale' when reason starts with 'stale_'; got trace={trace}"
     );
     Ok(())
@@ -332,8 +321,7 @@ fn live_dispatch_receipt_carries_canonical_provider_identity()
     let trace = receipt(&server)?;
     assert_eq!(trace["provider"], PROVIDER, "provider field must match PROVIDER constant");
     assert_eq!(
-        trace["provider_action"],
-        "textDocument/formatting",
+        trace["provider_action"], "textDocument/formatting",
         "provider_action must be the LSP method name"
     );
     // claim_boundary must be a non-empty explanatory string.
@@ -342,10 +330,31 @@ fn live_dispatch_receipt_carries_canonical_provider_identity()
         !boundary.is_empty(),
         "claim_boundary must be a non-empty explanation; got {boundary:?}"
     );
-    // source_generation must be a non-zero u64 (at least one open event has been applied).
+    // Per the documented text-sync invariant (`handle_did_open` in
+    // runtime/text_sync.rs), didOpen always starts at generation 0; only a
+    // didChange bumps it. A first-dispatch receipt on a freshly opened
+    // document must therefore carry source_generation == 0, and a
+    // re-dispatch after an edit must carry a positive generation.
+    assert_eq!(
+        trace["source_generation"], 0,
+        "source_generation must be 0 for a freshly opened document; got trace={trace}"
+    );
+    server.test_apply_did_change(uri, "my $x = 2;\n", 2)?;
+    let edited = server
+        .handle_request(request(
+            501,
+            "textDocument/formatting",
+            json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }),
+        ))
+        .ok_or("formatting returned no response after edit")?;
+    assert!(edited.error.is_none(), "expected no error after edit; got {:?}", edited.error);
+    let edited_trace = receipt(&server)?;
     assert!(
-        trace["source_generation"].as_u64().is_some_and(|g| g > 0),
-        "source_generation must be a positive u64; got trace={trace}"
+        edited_trace["source_generation"].as_u64().is_some_and(|g| g > 0),
+        "source_generation must be positive after a didChange; got trace={edited_trace}"
     );
     // config_fingerprint must be a non-empty string.
     let fingerprint =
