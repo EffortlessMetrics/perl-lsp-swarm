@@ -129,17 +129,17 @@ impl<'a> Parser<'a> {
                 }
 
                 Some(TokenKind::Arrow) => {
-                    self.consume_token()?; // consume ->
+                    self.tokens.next()?; // consume ->
 
                     // Check for postfix dereference operators
                     match self.peek_kind() {
                         Some(TokenKind::ArraySigil) => {
                             // ->@* or ->@[...]
-                            self.consume_token()?; // consume @
+                            self.tokens.next()?; // consume @
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->@*
-                                self.consume_token()?; // consume *
+                                self.tokens.next()?; // consume *
                                 let start = expr.location.start;
                                 let end = self.previous_position();
 
@@ -153,7 +153,7 @@ impl<'a> Parser<'a> {
                                 );
                             } else if self.peek_kind() == Some(TokenKind::LeftBracket) {
                                 // ->@[...] array slice
-                                self.consume_token()?; // consume [
+                                self.tokens.next()?; // consume [
                                 let index = self.parse_expression()?;
                                 self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
@@ -175,11 +175,11 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::HashSigil) => {
                             // ->%* or ->%{...}
-                            self.consume_token()?; // consume %
+                            self.tokens.next()?; // consume %
 
                             if self.peek_kind() == Some(TokenKind::Star) {
                                 // ->%*
-                                self.consume_token()?; // consume *
+                                self.tokens.next()?; // consume *
                                 let start = expr.location.start;
                                 let end = self.previous_position();
 
@@ -193,7 +193,7 @@ impl<'a> Parser<'a> {
                                 );
                             } else if self.peek_kind() == Some(TokenKind::LeftBrace) {
                                 // ->%{...} hash slice
-                                self.consume_token()?; // consume {
+                                self.tokens.next()?; // consume {
                                 let key = self.parse_hash_subscript_key()?;
                                 self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
@@ -215,10 +215,10 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::ScalarSigil) => {
                             // ->$*
-                            self.consume_token()?; // consume $
+                            self.tokens.next()?; // consume $
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                self.consume_token()?; // consume *
+                                self.tokens.next()?; // consume *
                                 let start = expr.location.start;
                                 let end = self.previous_position();
 
@@ -235,10 +235,10 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::SubSigil | TokenKind::BitwiseAnd) => {
                             // ->&* (code dereference)
-                            self.consume_token()?; // consume &
+                            self.tokens.next()?; // consume &
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                self.consume_token()?; // consume *
+                                self.tokens.next()?; // consume *
                                 let start = expr.location.start;
                                 let end = self.previous_position();
 
@@ -255,10 +255,10 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::Star) => {
                             // ->** (glob dereference)
-                            self.consume_token()?; // consume first *
+                            self.tokens.next()?; // consume first *
 
                             if self.peek_kind() == Some(TokenKind::Star) {
-                                self.consume_token()?; // consume second *
+                                self.tokens.next()?; // consume second *
                                 let start = expr.location.start;
                                 let end = self.previous_position();
 
@@ -283,8 +283,8 @@ impl<'a> Parser<'a> {
                                     .peek_second()
                                     .is_ok_and(|t| t.kind == TokenKind::Star)
                                 {
-                                    self.consume_token()?; // consume $#
-                                    self.consume_token()?; // consume *
+                                    self.tokens.next()?; // consume $#
+                                    self.tokens.next()?; // consume *
                                     let start = expr.location.start;
                                     let end = self.previous_position();
                                     record_postfix_layer()?;
@@ -336,7 +336,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::LeftBracket) => {
                             // Arrow array dereference: $ref->[index]
-                            self.consume_token()?; // consume [
+                            self.tokens.next()?; // consume [
                             let index = self.parse_expression()?;
                             self.expect_closing_delimiter(TokenKind::RightBracket)?;
 
@@ -356,7 +356,7 @@ impl<'a> Parser<'a> {
 
                         Some(TokenKind::LeftBrace) => {
                             // Arrow hash dereference: $ref->{key}
-                            self.consume_token()?; // consume {
+                            self.tokens.next()?; // consume {
                             let key = self.parse_hash_subscript_key()?;
                             self.expect_closing_delimiter(TokenKind::RightBrace)?;
 
