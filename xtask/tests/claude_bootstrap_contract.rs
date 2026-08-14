@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -40,7 +40,10 @@ fn bootstrap_runs_only_after_binary_install_and_verification() -> Result<()> {
 
     ensure!(install < verify, "verification moved before binary installation");
     ensure!(verify < path, "PATH observation moved before binary verification");
-    ensure!(path < claude, "Claude reconciliation must run after binary install/verification/PATH observation");
+    ensure!(
+        path < claude,
+        "Claude reconciliation must run after binary install/verification/PATH observation"
+    );
     Ok(())
 }
 
@@ -87,6 +90,9 @@ fn claude_failure_preserves_the_installed_binary_and_returns_stage_result() -> R
             && !function.contains("rm -f \"$INSTALL_DIR/$BIN_NAME\""),
         "Claude-stage failure must not roll back the verified binary"
     );
-    ensure!(function.contains("return \"$_status\""), "combined result must retain Claude-stage exit status");
+    ensure!(
+        function.contains("return \"$_status\""),
+        "combined result must retain Claude-stage exit status"
+    );
     Ok(())
 }
