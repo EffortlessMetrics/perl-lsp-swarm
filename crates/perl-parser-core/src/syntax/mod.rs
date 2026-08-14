@@ -13,8 +13,8 @@
 //! - `path_normalize`, `path_security`, `percentile`, `qualified_name`,
 //!   `source_file`, and `text_line` are re-exported directly at crate root
 //!   so consumers use `perl_parser_core::path_normalize` etc.
-//! - `quote` is only accessed via `engine::quote_parser` to keep quote-parsing
-//!   concerns encapsulated behind the engine boundary.
+//! - `quote` and `quote_geometry` are accessed via `engine::quote_parser` to
+//!   keep quote-parsing concerns encapsulated behind the engine boundary.
 
 /// Edit tracking for incremental parsing (previously `perl-edit`).
 pub mod edit;
