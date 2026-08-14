@@ -1,7 +1,17 @@
 //! Dead code detection for the perl-lsp workspace
 //!
-//! Combines cargo-machete (unused dependencies), cargo-udeps (deep unused dep detection),
-//! and clippy dead_code lints. Supports three modes:
+//! Rust source/item liveness: clippy dead_code lints.
+//! Dependency-unused analysis has moved to `dependency-hygiene` (issue #9364).
+//!
+//! ## Compatibility routing (temporary — exit: Rust-hygiene PR per #9364)
+//!
+//! During the transition, `dead-code check` continues to invoke the shared
+//! dependency-unused analysis via `dependency_hygiene::run` so that dependency
+//! findings are not silently lost. The following Rust-hygiene PR will remove
+//! dependency semantics from this command entirely and make it a pure
+//! Rust source/item liveness checker.
+//!
+//! Supports three modes:
 //! - `check`: Compare current state against baseline thresholds
 //! - `baseline`: Generate a new baseline YAML file
 //! - `report`: Generate a JSON report for CI integration
