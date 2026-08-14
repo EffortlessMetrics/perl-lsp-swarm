@@ -71,7 +71,11 @@ def validate_relative_member(name: str) -> PurePosixPath:
     if re.match(r"^[A-Za-z]:", normalized):
         raise ReceiptError(f"archive member uses a drive prefix: {name!r}")
     path = PurePosixPath(normalized)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    if (
+        not path.parts
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
         raise ReceiptError(f"unsafe archive member path: {name!r}")
     return path
 

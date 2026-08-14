@@ -7,8 +7,7 @@ use std::process::Command;
 use serde_json::Value;
 
 const CONTRACT: &str = ".ci/fixtures/zed-perl-upstream/managed-downloads.v1.json";
-const TEMPLATE: &str =
-    ".ci/fixtures/zed-perl-upstream/receipts/managed-asset-template.json";
+const TEMPLATE: &str = ".ci/fixtures/zed-perl-upstream/receipts/managed-asset-template.json";
 const SCRIPT: &str = "scripts/zed_public_asset_receipts.py";
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
@@ -20,19 +19,11 @@ fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn python() -> &'static str {
-    if cfg!(windows) {
-        "python"
-    } else {
-        "python3"
-    }
+    if cfg!(windows) { "python" } else { "python3" }
 }
 
 fn run(root: &Path, arguments: &[&str]) -> Result<std::process::Output, Box<dyn Error>> {
-    Ok(Command::new(python())
-        .arg(root.join(SCRIPT))
-        .args(arguments)
-        .current_dir(root)
-        .output()?)
+    Ok(Command::new(python()).arg(root.join(SCRIPT)).args(arguments).current_dir(root).output()?)
 }
 
 fn assert_success(output: &std::process::Output, context: &str) -> Result<(), Box<dyn Error>> {
@@ -94,9 +85,7 @@ fn mutation_controls_reject_wrong_identity_and_zed_overclaim() -> Result<(), Box
         &[
             "validate-receipt",
             "--receipt",
-            overclaim
-                .to_str()
-                .ok_or_else(|| io::Error::other("overclaim path is not UTF-8"))?,
+            overclaim.to_str().ok_or_else(|| io::Error::other("overclaim path is not UTF-8"))?,
         ],
     )?;
     assert!(!overclaim_output.status.success());
@@ -104,8 +93,8 @@ fn mutation_controls_reject_wrong_identity_and_zed_overclaim() -> Result<(), Box
 }
 
 #[test]
-fn implementation_binds_bytes_archive_process_and_cross_build_boundaries(
-) -> Result<(), Box<dyn Error>> {
+fn implementation_binds_bytes_archive_process_and_cross_build_boundaries()
+-> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let read = |relative: &str| -> Result<String, Box<dyn Error>> {
         Ok(fs::read_to_string(root.join(relative))?)
@@ -113,6 +102,7 @@ fn implementation_binds_bytes_archive_process_and_cross_build_boundaries(
 
     let github = read("scripts/zed_assets/github_io.py")?;
     let archive = read("scripts/zed_assets/archive.py")?;
+    let common = read("scripts/zed_assets/common.py")?;
     let framing = read("scripts/zed_assets/framing.py")?;
     let process = read("scripts/zed_assets/process.py")?;
     let producer = read("scripts/zed_assets/producer.py")?;
@@ -129,6 +119,7 @@ fn implementation_binds_bytes_archive_process_and_cross_build_boundaries(
     assert!(archive.contains("archive links are not accepted"));
     assert!(!archive.contains("extractall("));
     assert!(archive.contains("unexpected code-intelligence executable"));
+    assert!(common.contains("not path.parts"));
 
     assert!(framing.contains("Content-Length"));
     assert!(process.contains("[str(binary), \"--version\"]"));
@@ -147,21 +138,15 @@ fn template_cannot_be_mistaken_for_an_executed_receipt() -> Result<(), Box<dyn E
     let receipt: Value = serde_json::from_str(&text)?;
     assert_eq!(receipt.pointer("/result").and_then(Value::as_str), Some("not_run"));
     assert_eq!(
-        receipt
-            .pointer("/claim_boundary/asset_bytes")
-            .and_then(Value::as_str),
+        receipt.pointer("/claim_boundary/asset_bytes").and_then(Value::as_str),
         Some("not_run")
     );
     assert_eq!(
-        receipt
-            .pointer("/claim_boundary/actual_zed")
-            .and_then(Value::as_str),
+        receipt.pointer("/claim_boundary/actual_zed").and_then(Value::as_str),
         Some("not_proven")
     );
     assert_eq!(
-        receipt
-            .pointer("/claim_boundary/public_registry")
-            .and_then(Value::as_str),
+        receipt.pointer("/claim_boundary/public_registry").and_then(Value::as_str),
         Some("not_proven")
     );
     Ok(())
