@@ -110,8 +110,8 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
     let index = index_by_id(&train)?;
 
     let required_dependencies = BTreeMap::from([
-        ("P10", BTreeSet::from(["P01", "P06"])),
-        ("P11", BTreeSet::from(["P02", "P03"])),
+        ("P10", BTreeSet::from(["C01", "P01", "P06"])),
+        ("P11", BTreeSet::from(["C01", "P02", "P03"])),
         ("P12", BTreeSet::from(["P04", "P11"])),
         ("P13", BTreeSet::from(["P05", "P11"])),
         ("P14", BTreeSet::from(["P07", "P10", "P11"])),
@@ -119,7 +119,7 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
         ("P16", BTreeSet::from(["P15"])),
         ("P17", BTreeSet::from(["P13"])),
         ("P18", BTreeSet::from(["M01"])),
-        ("P19", BTreeSet::from(["P08", "P10", "P13", "P14", "M02"])),
+        ("P19", BTreeSet::from(["C01", "M02", "P08", "P10", "P13", "P14"])),
         ("P20", BTreeSet::from(["P09", "P19"])),
         ("P21", BTreeSet::from(["P20"])),
     ]);
@@ -140,6 +140,10 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
     assert_eq!(
         index.get("P09").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
         Some(9468)
+    );
+    assert_eq!(
+        index.get("C01").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
+        Some(9483)
     );
     assert_eq!(
         index.get("P19").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
@@ -181,5 +185,77 @@ fn support_and_closeout_cannot_precede_public_receipt() -> Result<(), Box<dyn Er
     assert_eq!(string(index["P20"], "kind")?, "projection");
     assert_eq!(string(index["P21"], "kind")?, "closeout");
     assert_eq!(index["P21"].get("closes_issue").and_then(Value::as_bool), Some(true));
+    Ok(())
+}
+
+#[test]
+fn dap_sidecar_is_explicitly_non_blocking_and_has_manual_publication_stops()
+-> Result<(), Box<dyn Error>> {
+    let train = load_train()?;
+    let sidecars = train
+        .get("non_blocking_sidecars")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::other("train lacks non_blocking_sidecars"))?;
+    assert_eq!(sidecars.len(), 1);
+
+    let dap = &sidecars[0];
+    assert_eq!(dap.get("id").and_then(Value::as_str), Some("zed_dap"));
+    assert_eq!(dap.get("controller_issue").and_then(Value::as_u64), Some(9484));
+    assert_eq!(dap.get("blocks_programme_closeout").and_then(Value::as_bool), Some(false));
+
+    let dap_stages = dap
+        .get("stages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::other("zed_dap sidecar lacks stages"))?;
+    let expected = BTreeMap::from([
+        ("D01", Some(9485)),
+        ("D02", Some(9486)),
+        ("D03", Some(9490)),
+        ("DM01", None),
+        ("D04", Some(9491)),
+        ("DM02", None),
+        ("D05", Some(9487)),
+        ("D06", Some(9489)),
+        ("D07", Some(9484)),
+    ]);
+    let mut seen = BTreeSet::new();
+    let mut external = BTreeSet::new();
+
+    for stage in dap_stages {
+        let id = string(stage, "id")?;
+        assert!(seen.insert(id), "duplicate DAP sidecar stage `{id}`");
+        assert_eq!(
+            stage.get("issue").and_then(Value::as_u64),
+            expected.get(id).copied().flatten(),
+            "DAP sidecar issue drifted for `{id}`"
+        );
+
+        for dependency in stage
+            .get("depends_on_sidecar")
+            .and_then(Value::as_array)
+            .ok_or_else(|| io::Error::other(format!("DAP stage `{id}` lacks sidecar dependencies")))?
+        {
+            let dependency = dependency
+                .as_str()
+                .ok_or_else(|| io::Error::other("DAP dependency is not a string"))?;
+            assert!(
+                seen.contains(dependency),
+                "DAP stage `{id}` appears before dependency `{dependency}`"
+            );
+        }
+
+        let writes_external = stage
+            .get("external_write")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| io::Error::other(format!("DAP stage `{id}` lacks external_write")))?;
+        if writes_external {
+            assert_eq!(string(stage, "actor")?, "maintainer");
+            assert_eq!(string(stage, "kind")?, "manual_checkpoint");
+            external.insert(id);
+        }
+    }
+
+    assert_eq!(external, BTreeSet::from(["DM01", "DM02"]));
+    assert_eq!(expected.len(), dap_stages.len());
     Ok(())
 }
