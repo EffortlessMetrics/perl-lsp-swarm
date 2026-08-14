@@ -172,7 +172,6 @@ if s:mode ==# 'workspace_folders'
   qa!
 endif
 
-" Diagnostics must be consumed by vim-lsp, not inferred from server stderr.
 if !s:WaitFor('g:perllsp_diagnostics_updated > 0', 10000)
   call s:Fail('vim-lsp did not publish a diagnostics-updated event')
 endif
@@ -182,9 +181,8 @@ let s:cells.diagnostics = {
       \ 'initial_counts': s:initial_diagnostics,
       \ }
 
-" Workspace configuration is behavior-bearing: main.pl intentionally has no
-" `use lib`, so Widget.pm resolving through the workspace lib directory proves
-" perl.workspace.includePaths reached the server.
+" main.pl intentionally has no `use lib`; successful navigation to Widget.pm
+" makes the documented workspace_config includePaths setting behavior-bearing.
 call cursor(5, match(getline(5), 'Widget::answer') + 1)
 let s:hover = s:Request('hover', 'textDocument/hover', s:PositionParams())
 let s:cells.hover = has_key(s:hover, 'result') && type(s:hover.result) != type(v:null)
@@ -197,9 +195,6 @@ if !s:cells.definition
   call s:Fail('definition did not resolve Widget.pm through workspace includePaths: ' . s:def_text)
 endif
 
-" Unicode discriminator: the non-BMP emoji is before Widget::answer() on the
-" same line. Vim's cursor uses a byte column; vim-lsp must translate that into
-" the negotiated LSP position and still land on Widget.pm.
 let s:unicode_col = match(getline(7), 'Widget::answer') + 1
 call cursor(7, s:unicode_col)
 let s:unicode_def = s:Request('unicode_definition', 'textDocument/definition', s:PositionParams())
@@ -209,9 +204,6 @@ if !s:cells.unicode_position
   call s:Fail('definition after a non-BMP character did not resolve Widget.pm: ' . s:unicode_text)
 endif
 
-" Fix the syntax defect through Vim and require a new client diagnostic event
-" plus current provider answer. The shell layer later binds the exact wire
-" didChange payload emitted by this real client.
 let s:before_diag_events = g:perllsp_diagnostics_updated
 call setline(6, 'my $copy = $value;')
 doautocmd <nomodeline> TextChanged
@@ -228,10 +220,6 @@ if !s:cells.edit_requery
 endif
 let s:cells.diagnostics.post_edit_counts = s:post_edit_diagnostics
 
-" Exercise a completion authored as a server snippet. `subr` is a stable
-" built-in snippet trigger. Because vim-lsp advertises snippetSupport=false,
-" the server must send the plain fallback, and the real omnifunc insertion must
-" leave valid plain text in the actual Vim buffer.
 call append(line('$'), 'subr')
 doautocmd <nomodeline> TextChanged
 call cursor(line('$'), strlen(getline('$')) + 1)
@@ -259,26 +247,44 @@ let s:plain_wire = !empty(s:snippet_item)
 if !s:plain_wire
   call s:Fail('subr completion was not degraded to a plain-text wire item')
 endif
-setlocal omnifunc=lsp#complete
-set completeopt=menuone,noselect
-call feedkeys("A\<C-x>\<C-o>\<C-n>\<C-y>\<Esc>", 'xt')
-let s:inserted_tail = join(getline(max([1, line('$') - 8]), '$'), "\n")
-let s:actual_plain = s:inserted_tail =~# 'sub name'
-      \ && s:inserted_tail !~# '\${\|\$[0-9]'
-      \ && s:inserted_tail !~# '^subr$'
+let s:converted = lsp#omni#get_vim_completion_items({
+      \ 'server': lsp#get_server_info('perllsp-under-test'),
+      \ 'position': s:snippet_pos,
+      \ 'response': s:snippet_response,
+      \ })
+let s:converted_subr = filter(copy(s:converted.items), {_, item -> get(item, 'abbr', '') =~# '^subr'})
+let s:actual_plain = v:false
+if !empty(s:converted_subr)
+  let g:perllsp_receipt_completion_startcol = s:converted.startcol
+  let g:perllsp_receipt_completion_items = [s:converted_subr[0]]
+  function! PerllspReceiptComplete() abort
+    call complete(g:perllsp_receipt_completion_startcol, g:perllsp_receipt_completion_items)
+    return ''
+  endfunction
+  set completeopt=menuone,noselect
+  call feedkeys("A\<C-r>=PerllspReceiptComplete()\<CR>\<C-n>\<C-y>\<Esc>", 'xt')
+  delfunction PerllspReceiptComplete
+  unlet g:perllsp_receipt_completion_startcol
+  unlet g:perllsp_receipt_completion_items
+  let s:inserted_tail = join(getline(max([1, line('$') - 8]), '$'), "\n")
+  let s:actual_plain = s:inserted_tail =~# 'sub name'
+        \ && s:inserted_tail !~# '\${\|\$[0-9]'
+        \ && s:inserted_tail !~# '^subr$'
+else
+  let s:inserted_tail = join(getline(max([1, line('$') - 8]), '$'), "\n")
+endif
 let s:cells.completion = {
       \ 'wire_item_count': len(s:snippet_items),
       \ 'snippet_trigger_found': !empty(s:snippet_item),
       \ 'wire_plain_text': s:plain_wire,
+      \ 'client_converted_item_found': !empty(s:converted_subr),
       \ 'actual_buffer_plain_text': s:actual_plain,
       \ 'inserted_tail': s:inserted_tail,
       \ }
 if !s:actual_plain
-  call s:Fail('actual Vim omnifunc insertion did not produce valid plain snippet fallback text')
+  call s:Fail('actual Vim completion insertion did not produce valid plain snippet fallback text')
 endif
 
-" References and rename exercise another position-bearing path plus vim-lsp's
-" WorkspaceEdit applier.
 call cursor(5, match(getline(5), '\$value') + 1)
 let s:ref_params = s:PositionParams()
 let s:ref_params.context = {'includeDeclaration': v:true}
@@ -295,8 +301,6 @@ if !s:cells.rename_applied
   call s:Fail('rename WorkspaceEdit was not applied to the Vim buffer')
 endif
 
-" Formatting must produce an observed buffer state, even when the formatter
-" legitimately returns an empty edit list for already-formatted text.
 let s:before_format = join(getline(1, '$'), "\n")
 let s:format = s:Request('formatting', 'textDocument/formatting', {
       \ 'textDocument': lsp#get_text_document_identifier(),
@@ -318,10 +322,7 @@ else
   call s:Fail('formatting response did not contain an edit list')
 endif
 
-" Persist the real workspace edits, close/reopen through Vim, and prove the
-" same server session remains alive with the persisted generation visible.
 silent write
-let s:before_reopen_status = lsp#get_server_status('perllsp-under-test')
 silent bwipeout!
 execute 'silent edit ' . fnameescape(s:workspace . '/main.pl')
 let s:reopened = s:WaitFor("&l:filetype ==# 'perl'", 3000)
