@@ -140,9 +140,7 @@ fn parse_json_only(args: &[String]) -> Result<bool, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ClaudeProductAction, ClaudeProductInvocation, parse_claude_product_invocation,
-    };
+    use super::{ClaudeProductAction, ClaudeProductInvocation, parse_claude_product_invocation};
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
@@ -150,7 +148,8 @@ mod tests {
 
     #[test]
     fn canonical_setup_surface_maps_to_setup_action() {
-        let parsed = parse_claude_product_invocation(&args(&["perllsp", "setup", "claude", "--json"]));
+        let parsed =
+            parse_claude_product_invocation(&args(&["perllsp", "setup", "claude", "--json"]));
         assert_eq!(
             parsed,
             Ok(Some(ClaudeProductInvocation { action: ClaudeProductAction::Setup, json: true }))
@@ -170,17 +169,12 @@ mod tests {
 
     #[test]
     fn unrelated_existing_doctor_surface_falls_through() {
-        assert_eq!(
-            parse_claude_product_invocation(&args(&["perllsp", "doctor"])),
-            Ok(None)
-        );
+        assert_eq!(parse_claude_product_invocation(&args(&["perllsp", "doctor"])), Ok(None));
     }
 
     #[test]
     fn setup_does_not_accept_an_implicit_or_other_client() {
         assert!(parse_claude_product_invocation(&args(&["perllsp", "setup"])).is_err());
-        assert!(
-            parse_claude_product_invocation(&args(&["perllsp", "setup", "other"])).is_err()
-        );
+        assert!(parse_claude_product_invocation(&args(&["perllsp", "setup", "other"])).is_err());
     }
 }

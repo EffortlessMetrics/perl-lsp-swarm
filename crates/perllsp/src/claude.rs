@@ -251,14 +251,15 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, &'static str> {
             "uninstall" | "remove" | "rm" => set_action(&mut action, Action::Uninstall)?,
             "--json" => json_output = true,
             "--help" | "-h" => set_action(&mut action, Action::Help)?,
-            _ => return Err("unknown perllsp claude argument; user scope is the only admitted lifecycle scope"),
+            _ => {
+                return Err(
+                    "unknown perllsp claude argument; user scope is the only admitted lifecycle scope",
+                );
+            }
         }
     }
 
-    Ok(Invocation {
-        action: action.unwrap_or(Action::Help),
-        json: json_output,
-    })
+    Ok(Invocation { action: action.unwrap_or(Action::Help), json: json_output })
 }
 
 fn set_action(slot: &mut Option<Action>, action: Action) -> Result<(), &'static str> {
@@ -269,7 +270,11 @@ fn set_action(slot: &mut Option<Action>, action: Action) -> Result<(), &'static 
     Ok(())
 }
 
-fn run_invocation<R: ClaudeRunner>(runner: &mut R, invocation: Invocation, path_visible: bool) -> u8 {
+fn run_invocation<R: ClaudeRunner>(
+    runner: &mut R,
+    invocation: Invocation,
+    path_visible: bool,
+) -> u8 {
     match invocation.action {
         Action::Status | Action::Doctor => {
             let status = collect_status(runner, path_visible);
@@ -313,10 +318,7 @@ fn run_install<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visible:
 
     match initial.plugin.state {
         ResourceState::Absent => {
-            if !run_mutation(
-                runner,
-                &["plugin", "install", PLUGIN_ID, "--scope", "user"],
-            ) {
+            if !run_mutation(runner, &["plugin", "install", PLUGIN_ID, "--scope", "user"]) {
                 render_operation_failure("claude_plugin_install_failed", json_output);
                 return 1;
             }
@@ -371,10 +373,7 @@ fn run_uninstall<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visibl
     let initial = collect_status(runner, path_visible);
     if initial.host.state != HostState::Present
         || initial.marketplace.source_matches_expected == Some(false)
-        || matches!(
-            initial.marketplace.state,
-            ResourceState::Unsupported | ResourceState::Error
-        )
+        || matches!(initial.marketplace.state, ResourceState::Unsupported | ResourceState::Error)
     {
         render_status(&initial, json_output);
         return initial.verdict.exit_code();
@@ -409,10 +408,7 @@ fn mutation_preconditions_met(status: &IntegrationStatus) -> bool {
 
     status.host.state == HostState::Present
         && marketplace_source_safe
-        && !matches!(
-            status.plugin.state,
-            ResourceState::Unsupported | ResourceState::Error
-        )
+        && !matches!(status.plugin.state, ResourceState::Unsupported | ResourceState::Error)
 }
 
 fn run_mutation<R: ClaudeRunner>(runner: &mut R, args: &[&str]) -> bool {
@@ -430,15 +426,8 @@ fn collect_status<R: ClaudeRunner>(runner: &mut R, path_visible: bool) -> Integr
         return finish_status(
             host,
             server,
-            MarketplaceStatus {
-                state: ResourceState::Absent,
-                source_matches_expected: None,
-            },
-            PluginStatus {
-                state: ResourceState::Absent,
-                enabled: None,
-                version: None,
-            },
+            MarketplaceStatus { state: ResourceState::Absent, source_matches_expected: None },
+            PluginStatus { state: ResourceState::Absent, enabled: None, version: None },
         );
     }
 
@@ -451,20 +440,14 @@ fn probe_host<R: ClaudeRunner>(runner: &mut R) -> HostStatus {
     match runner.run(&["--version"]) {
         Ok(result) if result.success => HostStatus {
             state: HostState::Present,
-            version: first_nonempty_line(&result.stdout).or_else(|| first_nonempty_line(&result.stderr)),
+            version: first_nonempty_line(&result.stdout)
+                .or_else(|| first_nonempty_line(&result.stderr)),
         },
-        Ok(_) => HostStatus {
-            state: HostState::Error,
-            version: None,
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => HostStatus {
-            state: HostState::Missing,
-            version: None,
-        },
-        Err(_) => HostStatus {
-            state: HostState::Error,
-            version: None,
-        },
+        Ok(_) => HostStatus { state: HostState::Error, version: None },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            HostStatus { state: HostState::Missing, version: None }
+        }
+        Err(_) => HostStatus { state: HostState::Error, version: None },
     }
 }
 
@@ -490,21 +473,15 @@ fn probe_marketplace<R: ClaudeRunner>(runner: &mut R) -> MarketplaceStatus {
         };
     }
 
-    parse_marketplace_list(&result.stdout).unwrap_or(MarketplaceStatus {
-        state: ResourceState::Error,
-        source_matches_expected: None,
-    })
+    parse_marketplace_list(&result.stdout)
+        .unwrap_or(MarketplaceStatus { state: ResourceState::Error, source_matches_expected: None })
 }
 
 fn probe_plugin<R: ClaudeRunner>(runner: &mut R) -> PluginStatus {
     let result = match runner.run(&["plugin", "list", "--json"]) {
         Ok(result) => result,
         Err(_) => {
-            return PluginStatus {
-                state: ResourceState::Error,
-                enabled: None,
-                version: None,
-            };
+            return PluginStatus { state: ResourceState::Error, enabled: None, version: None };
         }
     };
 
@@ -547,10 +524,7 @@ fn parse_marketplace_list(raw: &str) -> Option<MarketplaceStatus> {
     }
 
     if recognized > 0 || collection_is_empty(&value, "marketplaces") {
-        Some(MarketplaceStatus {
-            state: ResourceState::Absent,
-            source_matches_expected: None,
-        })
+        Some(MarketplaceStatus { state: ResourceState::Absent, source_matches_expected: None })
     } else {
         None
     }
@@ -578,11 +552,7 @@ fn parse_plugin_list(raw: &str) -> Option<PluginStatus> {
     }
 
     if recognized > 0 || collection_is_empty(&value, "plugins") {
-        Some(PluginStatus {
-            state: ResourceState::Absent,
-            enabled: None,
-            version: None,
-        })
+        Some(PluginStatus { state: ResourceState::Absent, enabled: None, version: None })
     } else {
         None
     }
@@ -745,15 +715,7 @@ fn finish_status(
         Verdict::ActionRequired
     };
 
-    IntegrationStatus {
-        host,
-        server,
-        marketplace,
-        plugin,
-        verdict,
-        reasons,
-        next_actions,
-    }
+    IntegrationStatus { host, server, marketplace, plugin, verdict, reasons, next_actions }
 }
 
 fn dedup_stable(values: &mut Vec<&'static str>) {
@@ -780,11 +742,8 @@ fn current_binary_visible_on_path() -> bool {
 }
 
 fn path_candidate_matches(current: &Path, directory: &Path) -> bool {
-    let candidates: &[&str] = if cfg!(windows) {
-        &["perllsp.exe", "perllsp"]
-    } else {
-        &["perllsp"]
-    };
+    let candidates: &[&str] =
+        if cfg!(windows) { &["perllsp.exe", "perllsp"] } else { &["perllsp"] };
 
     candidates.iter().any(|name| {
         let candidate: PathBuf = directory.join(name);
@@ -808,11 +767,7 @@ fn render_status(status: &IntegrationStatus, json_output: bool) {
     }
     println!(
         "  Server PATH: {}",
-        if status.server.path_visible_from_current_environment {
-            "visible"
-        } else {
-            "not visible"
-        }
+        if status.server.path_visible_from_current_environment { "visible" } else { "not visible" }
     );
     println!("  Marketplace: {}", status.marketplace.state.as_str());
     println!("  Plugin:      {}", status.plugin.state.as_str());
@@ -878,16 +833,17 @@ mod tests {
 
     impl FakeRunner {
         fn new(responses: Vec<(Vec<String>, io::Result<CommandResult>)>) -> Self {
-            Self {
-                responses: responses.into_iter().collect(),
-            }
+            Self { responses: responses.into_iter().collect() }
         }
     }
 
     impl ClaudeRunner for FakeRunner {
         fn run(&mut self, args: &[&str]) -> io::Result<CommandResult> {
             let Some((expected, response)) = self.responses.pop_front() else {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "unexpected Claude command"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "unexpected Claude command",
+                ));
             };
             let actual = args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>();
             if actual != expected {
@@ -903,11 +859,7 @@ mod tests {
     fn command(args: &[&str], stdout: &str) -> (Vec<String>, io::Result<CommandResult>) {
         (
             args.iter().map(|value| (*value).to_string()).collect(),
-            Ok(CommandResult {
-                success: true,
-                stdout: stdout.to_string(),
-                stderr: String::new(),
-            }),
+            Ok(CommandResult { success: true, stdout: stdout.to_string(), stderr: String::new() }),
         )
     }
 
@@ -970,10 +922,7 @@ mod tests {
     fn changed_json_shape_fails_closed_as_instrument_error() {
         let mut runner = FakeRunner::new(vec![
             command(&["--version"], "2.1.231 (Claude Code)\n"),
-            command(
-                &["plugin", "marketplace", "list", "--json"],
-                r#"{"unexpected":"shape"}"#,
-            ),
+            command(&["plugin", "marketplace", "list", "--json"], r#"{"unexpected":"shape"}"#),
             command(&["plugin", "list", "--json"], PLUGIN_READY),
         ]);
 
@@ -984,7 +933,8 @@ mod tests {
 
     #[test]
     fn wrong_marketplace_source_is_action_required_and_never_mutated() {
-        let marketplace = r#"[{"name":"effortlessmetrics","source":{"source":"github","repo":"someone/else"}}]"#;
+        let marketplace =
+            r#"[{"name":"effortlessmetrics","source":{"source":"github","repo":"someone/else"}}]"#;
         let mut runner = FakeRunner::new(vec![
             command(&["--version"], "2.1.231 (Claude Code)\n"),
             command(&["plugin", "marketplace", "list", "--json"], marketplace),

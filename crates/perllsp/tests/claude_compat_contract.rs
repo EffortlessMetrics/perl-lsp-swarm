@@ -30,10 +30,7 @@ fn server(version: &str, revision: char, fill: char) -> ServerSubject {
 }
 
 fn host(version: &str) -> HostSubject {
-    HostSubject {
-        claude_code_version: version.to_string(),
-        control_plane_schema: None,
-    }
+    HostSubject { claude_code_version: version.to_string(), control_plane_schema: None }
 }
 
 fn row(
@@ -46,10 +43,9 @@ fn row(
         CompatibilityResult::Compatible | CompatibilityResult::Incompatible => {
             (vec!["agent_client_compat.fixture".to_string()], Vec::new())
         }
-        CompatibilityResult::NotProven => (
-            Vec::new(),
-            vec!["exact pair deliberately remains unproven".to_string()],
-        ),
+        CompatibilityResult::NotProven => {
+            (Vec::new(), vec!["exact pair deliberately remains unproven".to_string()])
+        }
     };
     CompatibilityRow { plugin, server, host, result, evidence_refs, limitations }
 }
@@ -71,7 +67,8 @@ fn embedded_catalog_is_conservative_and_valid() -> Result<()> {
 
 #[test]
 fn matching_version_numbers_without_evidence_are_not_proven() -> Result<()> {
-    let catalog = CompatibilityCatalog { schema_version: SCHEMA_VERSION.to_string(), rows: Vec::new() };
+    let catalog =
+        CompatibilityCatalog { schema_version: SCHEMA_VERSION.to_string(), rows: Vec::new() };
     catalog.validate().map_err(anyhow::Error::msg)?;
 
     let plugin = plugin("0.18.0", '1');
@@ -127,15 +124,13 @@ fn stale_plugin_tree_or_wrong_server_build_cannot_reuse_row() -> Result<()> {
     let mut stale_plugin = plugin.clone();
     stale_plugin.tree_digest = sha256('3');
     ensure!(
-        catalog.decision_for(&stale_plugin, &server, None).result
-            == CompatibilityResult::NotProven
+        catalog.decision_for(&stale_plugin, &server, None).result == CompatibilityResult::NotProven
     );
 
     let mut wrong_build = server.clone();
     wrong_build.build_revision = "b".repeat(40);
     ensure!(
-        catalog.decision_for(&plugin, &wrong_build, None).result
-            == CompatibilityResult::NotProven
+        catalog.decision_for(&plugin, &wrong_build, None).result == CompatibilityResult::NotProven
     );
     Ok(())
 }
@@ -164,9 +159,7 @@ fn host_coupled_rows_do_not_transfer_to_another_host() -> Result<()> {
         catalog.decision_for(&plugin, &server, Some(&host("2.2.0"))).result
             == CompatibilityResult::NotProven
     );
-    ensure!(
-        catalog.decision_for(&plugin, &server, None).result == CompatibilityResult::NotProven
-    );
+    ensure!(catalog.decision_for(&plugin, &server, None).result == CompatibilityResult::NotProven);
     Ok(())
 }
 

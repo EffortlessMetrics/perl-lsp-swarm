@@ -276,10 +276,7 @@ impl CompatibilityDecision {
 /// The catalog intentionally starts empty. Actual compatible/incompatible rows are added only by
 /// reviewed evidence-producing work; unknown pairs therefore remain `not_proven` by construction.
 pub fn embedded_catalog() -> CompatibilityCatalog {
-    CompatibilityCatalog {
-        schema_version: SCHEMA_VERSION.to_string(),
-        rows: Vec::new(),
-    }
+    CompatibilityCatalog { schema_version: SCHEMA_VERSION.to_string(), rows: Vec::new() }
 }
 
 fn not_proven_decision(reason: CompatibilityReason, limitation: &str) -> CompatibilityDecision {
@@ -372,7 +369,5 @@ fn validate_sha256(value: &str, field: &str) -> Result<(), String> {
 
 fn is_lower_hex(value: &str, len: usize) -> bool {
     value.len() == len
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        && value.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
