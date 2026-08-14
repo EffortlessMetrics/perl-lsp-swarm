@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SCHEMA_VERSION: &str = "perllsp.claude_status.v1";
+const OPERATION_SCHEMA_VERSION: &str = "perllsp.claude_operation.v1";
 const MARKETPLACE_NAME: &str = "effortlessmetrics";
 const MARKETPLACE_SOURCE: &str = "https://github.com/EffortlessMetrics/perl-lsp.git";
 const MARKETPLACE_REPO_TOKEN: &str = "effortlessmetrics/perl-lsp";
@@ -66,6 +67,10 @@ impl ResourceState {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Verdict {
+    #[expect(
+        dead_code,
+        reason = "Reserved for #7924 Compatible evidence; this slice keeps Ready gated as not_proven"
+    )]
     Ready,
     Degraded,
     ActionRequired,
@@ -296,7 +301,8 @@ fn run_install<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visible:
         return initial.verdict.exit_code();
     }
 
-    if initial.marketplace.state == ResourceState::Absent {
+    let marketplace_was_absent = initial.marketplace.state == ResourceState::Absent;
+    if marketplace_was_absent {
         let result = run_mutation(
             runner,
             &[
@@ -317,14 +323,19 @@ fn run_install<R: ClaudeRunner>(runner: &mut R, json_output: bool, path_visible:
         }
     }
 
-    match initial.plugin.state {
+    // When the marketplace was missing, the initial plugin probe may have reported
+    // Absent only because Claude could not resolve the marketplace-scoped identity.
+    // Re-probe after marketplace mutation before choosing install vs enable.
+    let plugin = if marketplace_was_absent { probe_plugin(runner) } else { initial.plugin.clone() };
+
+    match plugin.state {
         ResourceState::Absent => {
             if !run_mutation(runner, &["plugin", "install", PLUGIN_ID, "--scope", "user"]) {
                 render_operation_failure("claude_plugin_install_failed", json_output);
                 return 1;
             }
         }
-        ResourceState::Present if initial.plugin.enabled == Some(false) => {
+        ResourceState::Present if plugin.enabled == Some(false) => {
             if !run_mutation(runner, &["plugin", "enable", PLUGIN_ID, "--scope", "user"]) {
                 render_operation_failure("claude_plugin_enable_failed", json_output);
                 return 1;
@@ -824,7 +835,7 @@ fn render_operation_failure(reason: &'static str, json_output: bool) {
         println!(
             "{}",
             json!({
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": OPERATION_SCHEMA_VERSION,
                 "operation_result": "failed",
                 "reason": reason,
             })
@@ -839,7 +850,7 @@ fn render_operation_result(result: &'static str, json_output: bool) {
         println!(
             "{}",
             json!({
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": OPERATION_SCHEMA_VERSION,
                 "operation_result": result,
             })
         );
@@ -914,7 +925,11 @@ mod tests {
         // Structural probes can succeed while the empty compatibility catalog remains
         // not_proven; Ready is reserved for Compatible evidence only.
         assert_eq!(status.verdict, Verdict::Degraded);
-        assert!(status.reasons.contains(&"plugin_server_compatibility_not_proven"));
+        assert!(
+            status.reasons.contains(&"plugin_server_compatibility_not_proven"),
+            "expected not_proven compatibility reason, got {:?}",
+            status.reasons
+        );
     }
 
     #[test]
@@ -926,7 +941,11 @@ mod tests {
 
         let status = collect_status(&mut runner, true);
         assert_eq!(status.verdict, Verdict::ActionRequired);
-        assert!(status.reasons.contains(&"claude_not_found"));
+        assert!(
+            status.reasons.contains(&"claude_not_found"),
+            "expected claude_not_found reason, got {:?}",
+            status.reasons
+        );
     }
 
     #[test]
@@ -949,6 +968,8 @@ mod tests {
                 ],
                 "",
             ),
+            // Re-probe plugin after marketplace mutation before choosing install.
+            command(&["plugin", "list", "--json"], "[]"),
             command(&["plugin", "install", PLUGIN_ID, "--scope", "user"], ""),
             command(&["--version"], "2.1.231 (Claude Code)\n"),
             command(&["plugin", "marketplace", "list", "--json"], MARKETPLACE_READY),
@@ -958,7 +979,7 @@ mod tests {
         let code = run_install(&mut runner, true, true);
         // Install may mutate marketplace/plugin state, but final readiness stays
         // action_required/degraded until compatibility evidence exists.
-        assert_eq!(code, 2);
+        assert_eq!(code, 2, "expected degraded exit until compatibility evidence exists");
     }
 
     #[test]
@@ -971,7 +992,11 @@ mod tests {
 
         let status = collect_status(&mut runner, true);
         assert_eq!(status.verdict, Verdict::InstrumentError);
-        assert!(status.reasons.contains(&"claude_marketplace_state_unreadable"));
+        assert!(
+            status.reasons.contains(&"claude_marketplace_state_unreadable"),
+            "expected marketplace instrument error, got {:?}",
+            status.reasons
+        );
     }
 
     #[test]
@@ -985,7 +1010,11 @@ mod tests {
 
         let status = collect_status(&mut runner, true);
         assert_eq!(status.verdict, Verdict::ActionRequired);
-        assert!(status.reasons.contains(&"unexpected_effortlessmetrics_marketplace_source"));
+        assert!(
+            status.reasons.contains(&"unexpected_effortlessmetrics_marketplace_source"),
+            "expected unexpected marketplace source reason, got {:?}",
+            status.reasons
+        );
         assert!(!mutation_preconditions_met(&status));
     }
 
@@ -1001,7 +1030,11 @@ mod tests {
 
         let status = collect_status(&mut runner, true);
         assert_eq!(status.verdict, Verdict::ActionRequired);
-        assert!(status.reasons.contains(&"unexpected_effortlessmetrics_marketplace_source"));
+        assert!(
+            status.reasons.contains(&"unexpected_effortlessmetrics_marketplace_source"),
+            "expected unexpected marketplace source reason, got {:?}",
+            status.reasons
+        );
         assert!(!mutation_preconditions_met(&status));
     }
 }
