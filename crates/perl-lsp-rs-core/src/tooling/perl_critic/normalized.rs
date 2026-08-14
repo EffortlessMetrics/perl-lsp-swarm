@@ -52,79 +52,7 @@ impl OwnedCriticObservedIdentity {
     }
 
     fn resolve(&self) -> Option<&'static CriticIdentityEntry> {
-        let observed = match (self.origin, self.code.as_str(), self.shape) {
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL404",
-                CriticFindingShape::LiteralUndefComparison,
-            ) => Some(CriticObservedIdentity::built_in_literal_undef_comparison()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL404",
-                CriticFindingShape::PotentiallyUndefComparison,
-            ) => Some(CriticObservedIdentity::built_in_potentially_undef_comparison()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL601",
-                CriticFindingShape::Backtick,
-            ) => Some(CriticObservedIdentity::built_in_backtick_exec()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL601",
-                CriticFindingShape::Qx,
-            ) => Some(CriticObservedIdentity::built_in_qx_exec()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL606",
-                CriticFindingShape::Readpipe,
-            ) => Some(CriticObservedIdentity::built_in_readpipe_exec()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL603",
-                CriticFindingShape::SystemCall,
-            ) => Some(CriticObservedIdentity::built_in_system_call()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL604",
-                CriticFindingShape::ExecCall,
-            ) => Some(CriticObservedIdentity::built_in_exec_call()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.common.undef_comparison",
-                CriticFindingShape::LiteralUndefComparison,
-            ) => Some(CriticObservedIdentity::native_literal_undef_comparison()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.backtick_exec",
-                CriticFindingShape::Backtick,
-            ) => Some(CriticObservedIdentity::native_backtick_exec()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.qx_readpipe",
-                CriticFindingShape::Qx,
-            ) => Some(CriticObservedIdentity::native_qx_exec()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.qx_readpipe",
-                CriticFindingShape::Readpipe,
-            ) => Some(CriticObservedIdentity::native_readpipe_exec()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.system_exec",
-                CriticFindingShape::SystemCall,
-            ) => Some(CriticObservedIdentity::native_system_call()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.system_exec",
-                CriticFindingShape::ExecCall,
-            ) => Some(CriticObservedIdentity::native_exec_call()),
-            (_, _, CriticFindingShape::General) => {
-                CriticObservedIdentity::general(self.origin, &self.code).ok()
-            }
-            _ => None,
-        }?;
-
-        CriticIdentityRegistry::resolve(&observed)
+        CriticIdentityRegistry::resolve_parts(self.origin, &self.code, self.shape)
     }
 }
 
@@ -604,10 +532,11 @@ mod tests {
     use perl_parser_core::position::{Position, Range};
 
     use super::{
-        CriticFindingCandidate, CriticSourceIdentity, normalize_critic_findings,
+        CriticFindingCandidate, CriticSourceIdentity, OwnedCriticObservedIdentity,
+        normalize_critic_findings,
     };
     use crate::tooling::perl_critic::{
-        CriticFindingOrigin, CriticObservedIdentity, Severity,
+        CriticFindingOrigin, CriticIdentityRegistry, CriticObservedIdentity, Severity,
     };
 
     fn source(document: u8, generation: u64) -> CriticSourceIdentity {
@@ -955,5 +884,20 @@ mod tests {
         let mut reverse = forward.clone();
         reverse.reverse();
         assert_eq!(normalize_critic_findings(forward), normalize_critic_findings(reverse));
+    }
+
+    #[test]
+    fn every_registered_alias_resolves_through_owned_identity() {
+        for entry in CriticIdentityRegistry::entries() {
+            for alias in entry.aliases() {
+                let owned = OwnedCriticObservedIdentity::from(alias.observed());
+                assert_eq!(
+                    owned.resolve().map(|resolved| resolved.canonical_id()),
+                    Some(entry.canonical_id()),
+                    "registered alias must remain resolvable through normalization: {:?}",
+                    alias,
+                );
+            }
+        }
     }
 }
