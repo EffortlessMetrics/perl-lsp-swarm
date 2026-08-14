@@ -116,15 +116,16 @@ pub fn selection_chain(
         // Also inject synthetics from the parent node (for when the cursor
         // is deeper than the sub, e.g. inside the body).
         if let Some(&parent_ptr) = parent_map.get(&current_ptr)
-            && let Some(parent_node) = node_lookup.get(&parent_ptr).copied() {
-                let synthetics = synthetic_ranges(parent_node);
-                let mut applicable: Vec<(usize, usize)> =
-                    synthetics.into_iter().filter(|&(s, e)| offset >= s && offset <= e).collect();
-                applicable.sort_by_key(|&(s, e)| e - s);
-                for synth in applicable {
-                    ranges.push(synth);
-                }
+            && let Some(parent_node) = node_lookup.get(&parent_ptr).copied()
+        {
+            let synthetics = synthetic_ranges(parent_node);
+            let mut applicable: Vec<(usize, usize)> =
+                synthetics.into_iter().filter(|&(s, e)| offset >= s && offset <= e).collect();
+            applicable.sort_by_key(|&(s, e)| e - s);
+            for synth in applicable {
+                ranges.push(synth);
             }
+        }
 
         // Move to parent; if there is no parent, exit the loop.
         match parent_map.get(&current_ptr) {

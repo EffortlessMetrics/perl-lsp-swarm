@@ -484,6 +484,8 @@ impl LspServer {
             .map(|t| match t {
                 InternalDiagnosticTag::Unnecessary => 1,
                 InternalDiagnosticTag::Deprecated => 2,
+                // Forward-compatible fallback for future variants (#2898)
+                _ => 1,
             })
             .collect()
     }
@@ -625,7 +627,7 @@ impl LspServer {
                 let _ = self.check_index_readiness(
                     crate::runtime::readiness::IndexReadinessPolicy::WaitBriefly,
                 );
-                !self.workspace_index_stale_for_document(uri)
+                !self.workspace_index_stale_for_any_open_document()
             };
 
             // Wire semantic queries when workspace data is available for this URI.
@@ -712,16 +714,28 @@ impl LspServer {
             // Add external perlcritic diagnostics (opt-in)
             self.collect_external_perlcritic_diagnostics(uri, &text, &mut diagnostics);
 
-            // Add dead code diagnostics from workspace-wide symbol analysis
+            // Add dead code diagnostics from workspace-wide symbol analysis.
+            // Re-check freshness immediately before reading the index: readiness
+            // work and semantic queries above may have crossed an index-generation
+            // boundary since the first tier decision. Never let a stale snapshot
+            // reach publish even if the earlier readiness sample was current.
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-            if workspace_index_tier_enabled && let Some(workspace_index) = self.workspace_index() {
+            if workspace_index_tier_enabled
+                && !self.workspace_index_stale_for_any_open_document()
+                && let Some(workspace_index) = self.workspace_index()
+            {
                 let dead_code_diags = perl_lsp_rs_core::providers::diagnostics::detect_dead_code(
                     &workspace_index,
                     uri,
                     &text,
                     &line_starts,
                 );
-                diagnostics.extend(dead_code_diags);
+                // The workspace snapshot can become stale while the
+                // workspace-wide query runs. Recheck after the query and
+                // discard its result unless the complete computation is fresh.
+                if !self.workspace_index_stale_for_any_open_document() {
+                    diagnostics.extend(dead_code_diags);
+                }
             }
 
             // Deduplicate diagnostics appended after the provider's own dedup pass
@@ -744,6 +758,8 @@ impl LspServer {
                         InternalDiagnosticSeverity::Warning => 2,
                         InternalDiagnosticSeverity::Information => 3,
                         InternalDiagnosticSeverity::Hint => 4,
+                        // Forward-compatible fallback for future variants (#2898)
+                        _ => 1,
                     };
                     let code_str = d.code.as_deref().unwrap_or("");
                     let mut diag = diagnostic_json(
@@ -759,6 +775,60 @@ impl LspServer {
                     if !d.tags.is_empty() {
                         diag["tags"] = to_json_array(&Self::diagnostic_tags_to_lsp(&d.tags));
                     }
+
+                    // Enrichment fields for push/pull parity (#1773):
+                    // codeDescription, relatedInformation, and data.
+                    if let Some(ref code_str) = d.code {
+                        // codeDescription: link to documentation URL
+                        if let Some(url) = DiagnosticCode::parse_code(code_str)
+                            .and_then(|dc| dc.documentation_url())
+                        {
+                            diag["codeDescription"] = json!({ "href": url });
+                        }
+                    }
+
+                    // relatedInformation: additional context locations
+                    if !d.related_information.is_empty() {
+                        diag["relatedInformation"] = json!(
+                            d.related_information
+                                .iter()
+                                .map(|ri| {
+                                    let (ri_sl, ri_sc) = pos16(ri.location.0);
+                                    let (ri_el, ri_ec) = pos16(ri.location.1);
+                                    json!({
+                                        "location": {
+                                            "uri": uri,
+                                            "range": {
+                                                "start": {"line": ri_sl, "character": ri_sc},
+                                                "end":   {"line": ri_el, "character": ri_ec},
+                                            }
+                                        },
+                                        "message": ri.message
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        );
+                    }
+
+                    // data: structured metadata (category, fixability, tags)
+                    if let Some(ref code_str) = d.code {
+                        let category = DiagnosticCode::parse_code(code_str)
+                            .map(|dc| format!("{:?}", dc.category()))
+                            .unwrap_or_else(|| "Other".to_string());
+                        let fixable = is_fixable_diagnostic(code_str);
+                        let tag_strings: Vec<String> = d
+                            .tags
+                            .iter()
+                            .map(|t| match t {
+                                InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
+                                InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                                // Forward-compatible fallback for future variants (#2898)
+                                _ => "Unnecessary".to_string(),
+                            })
+                            .collect();
+                        diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
+                    }
+
                     diag
                 })
                 .collect()
@@ -884,6 +954,8 @@ impl LspServer {
                     crate::error::ParseError::Recovered { location, .. } => {
                         (*location, e.to_string())
                     }
+                    // Forward-compatible fallback for future variants (#2898)
+                    _ => (0, e.to_string()),
                 };
                 let message =
                     match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
@@ -1278,9 +1350,10 @@ impl LspServer {
         }
 
         if let Some(markup) = message_data.and_then(|data| data.get("messageMarkup"))
-            && Self::is_markup_content_value(markup) {
-                return markup.clone();
-            }
+            && Self::is_markup_content_value(markup)
+        {
+            return markup.clone();
+        }
 
         json!({
             "kind": "markdown",
@@ -1392,6 +1465,8 @@ impl LspServer {
             InternalDiagnosticSeverity::Warning => 2,
             InternalDiagnosticSeverity::Information => 3,
             InternalDiagnosticSeverity::Hint => 4,
+            // Forward-compatible fallback for future variants (#2898)
+            _ => 1,
         };
         let code_str = d.code.as_deref().unwrap_or("");
         let message_val = Self::diagnostic_message_value(&d.message, None, markup_message_support);
@@ -1446,14 +1521,11 @@ impl LspServer {
                 .map(|t| match t {
                     InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                     InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                    // Forward-compatible fallback for future variants (#2898)
+                    _ => "Unnecessary".to_string(),
                 })
                 .collect();
-            diag["data"] = diagnostic_data(
-                code_str,
-                &category,
-                fixable,
-                &tag_strings,
-            );
+            diag["data"] = diagnostic_data(code_str, &category, fixable, &tag_strings);
         }
 
         diag
@@ -1745,6 +1817,8 @@ impl LspServer {
                                         InternalDiagnosticSeverity::Warning => 2,
                                         InternalDiagnosticSeverity::Information => 3,
                                         InternalDiagnosticSeverity::Hint => 4,
+                                        // Forward-compatible fallback for future variants (#2898)
+                                        _ => 1,
                                     },
                                     "code": d.code.clone(),
                                     "source": diagnostic_source(d.code.as_deref()),
@@ -1784,6 +1858,8 @@ impl LspServer {
                                         d.tags.iter().map(|t| match t {
                                             InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                                             InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                                            // Forward-compatible fallback for future variants (#2898)
+                                            _ => "Unnecessary".to_string(),
                                         }).collect();
                                     diag["data"] = diagnostic_data(
                                         code_str,
@@ -1840,6 +1916,8 @@ impl LspServer {
                                     InternalDiagnosticSeverity::Warning => 2,
                                     InternalDiagnosticSeverity::Information => 3,
                                     InternalDiagnosticSeverity::Hint => 4,
+                                    // Forward-compatible fallback for future variants (#2898)
+                                    _ => 1,
                                 },
                                 "code": d.code.clone(),
                                 "source": diagnostic_source(d.code.as_deref()),
@@ -1879,6 +1957,8 @@ impl LspServer {
                                     d.tags.iter().map(|t| match t {
                                         InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                                         InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                                        // Forward-compatible fallback for future variants (#2898)
+                                        _ => "Unnecessary".to_string(),
                                     }).collect();
                                 diag["data"] = diagnostic_data(
                                     code_str,
@@ -1956,7 +2036,7 @@ impl LspServer {
         };
         let critic_context =
             crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config);
-        let profile = crate::perl_critic::NativeCriticProfile::parse(&native_profile)
+        let profile = crate::perl_critic::NativeCriticProfile::parse_legacy(&native_profile)
             .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
         let registry = crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
             profile,
@@ -2513,6 +2593,52 @@ mod tests {
         );
     }
 
+    /// #1773: push diagnostics must include enrichment fields (codeDescription,
+    /// data) for parity with the pull-based path. A code like PL103 (undefined
+    /// variable) should produce both a `codeDescription.href` link and a `data`
+    /// object with category/fixable metadata.
+    #[test]
+    fn push_diagnostics_include_enrichment_fields() {
+        let (server, buf) = make_server_with_capture();
+        let uri = "file:///push_enrichment_test.pl";
+        // Code that produces an UndefinedVariable (PL103) diagnostic under strict
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "use strict;\nprint $undeclared_var;\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let bytes = buf.lock().clone();
+        let text = String::from_utf8(bytes).unwrap_or_default();
+
+        // The push path must include codeDescription with an href link
+        assert!(
+            text.contains("codeDescription"),
+            "push diagnostics must include codeDescription (#1773); got: {text:?}"
+        );
+        assert!(
+            text.contains("href"),
+            "codeDescription must include href URL (#1773); got: {text:?}"
+        );
+
+        // The push path must include data with structured metadata
+        assert!(
+            text.contains("\"data\""),
+            "push diagnostics must include data field (#1773); got: {text:?}"
+        );
+        assert!(text.contains("category"), "data must include category (#1773); got: {text:?}");
+        assert!(text.contains("fixable"), "data must include fixable flag (#1773); got: {text:?}");
+    }
+
     /// Pending-parse gap (#3396 PR4): bumping the generation counter WITHOUT
     /// publishing a new `ParsedSnapshot` for it forces `current_parsed()` to
     /// return `None` -- exactly the state a future async parse worker can
@@ -2823,6 +2949,34 @@ mod tests {
         assert!(
             !text.contains("native.variables.unused_lexical"),
             "recommended native critic profile should omit broader variable-noise findings; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict() {
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.config.lock().native_critic_profile = " RECOMMENDED ".to_string();
+        let uri = "file:///native_critic_legacy_profile_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "=pod\n=head1 NAME\n=cut\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let text = String::from_utf8(buf.lock().clone()).unwrap_or_default();
+        assert!(
+            text.contains("native.documentation.require_pod_sections"),
+            "legacy invalid profile fallback must remain strict; got: {text:?}"
         );
     }
 
@@ -3931,8 +4085,12 @@ print \"unreachable\\n\";\n";
         uri: &str,
         indexed_text: &str,
         updated_text: &str,
+        capture: Option<&StdArc<parking_lot::Mutex<Vec<u8>>>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         server.test_apply_did_open(uri, indexed_text, 1)?;
+        if let Some(buf) = capture {
+            wait_for_published_diagnostics(buf, uri)?;
+        }
         server
             .test_index_file_in_building_state(uri, indexed_text)
             .map_err(std::io::Error::other)?;
@@ -3945,8 +4103,74 @@ print \"unreachable\\n\";\n";
             server.workspace_index_stale_for_document(uri),
             "test setup must leave the open document newer than the workspace index"
         );
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave at least one edited open document stale"
+        );
 
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn latest_published_diagnostics<'a>(text: &'a str, uri: &str) -> Option<&'a str> {
+        let marker = "\"method\":\"textDocument/publishDiagnostics\"";
+        let uri_key = format!("\"uri\":\"{uri}\"");
+        let mut remaining = text;
+        let mut latest = None;
+
+        while let Some(header_start) = remaining.find("Content-Length:") {
+            let Some(after_header) = remaining.get(header_start + "Content-Length:".len()..) else {
+                break;
+            };
+            let Some((header, body)) = after_header.split_once("\r\n\r\n") else {
+                break;
+            };
+            let Some(length_text) = header.lines().next() else {
+                break;
+            };
+            let Ok(length) = length_text.trim().parse::<usize>() else {
+                break;
+            };
+            let body_bytes = body.as_bytes();
+            let Some(frame_bytes) = body_bytes.get(..length) else {
+                break;
+            };
+            let Some(rest) = body_bytes.get(length..) else {
+                break;
+            };
+            let Ok(frame) = std::str::from_utf8(frame_bytes) else {
+                break;
+            };
+            if frame.contains(marker) && frame.contains(&uri_key) {
+                latest = Some(frame);
+            }
+            let Ok(next) = std::str::from_utf8(rest) else {
+                break;
+            };
+            remaining = next;
+        }
+
+        latest
+    }
+
+    #[cfg(feature = "workspace")]
+    fn wait_for_published_diagnostics(
+        buf: &StdArc<parking_lot::Mutex<Vec<u8>>>,
+        uri: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let text = String::from_utf8_lossy(&buf.lock()).into_owned();
+            if latest_published_diagnostics(&text, uri).is_some() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    format!("timed out waiting for publishDiagnostics frame for {uri}").into()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[cfg(feature = "workspace")]
@@ -3973,6 +4197,7 @@ print \"unreachable\\n\";\n";
             uri,
             stale_dead_code_indexed_source(),
             stale_dead_code_used_source(),
+            None,
         )?;
 
         let report = server
@@ -3999,13 +4224,14 @@ print \"unreachable\\n\";\n";
         let uri = "file:///workspace/fresh_dead_code_publish.pl";
         let source = stale_dead_code_indexed_source();
         server.test_apply_did_open(uri, source, 1)?;
+        wait_for_published_diagnostics(&buf, uri)?;
         server.test_index_file_in_building_state(uri, source).map_err(std::io::Error::other)?;
         server.test_simulate_indexing_complete();
 
         buf.lock().clear();
         server.publish_diagnostics(uri);
+        wait_for_published_diagnostics(&buf, uri)?;
         drop(server);
-        std::thread::sleep(Duration::from_millis(50));
 
         let text = String::from_utf8(buf.lock().clone())?;
         assert!(
@@ -4029,17 +4255,62 @@ print \"unreachable\\n\";\n";
             uri,
             stale_dead_code_indexed_source(),
             stale_dead_code_used_source(),
+            Some(&buf),
         )?;
 
         buf.lock().clear();
         server.publish_diagnostics(uri);
+        wait_for_published_diagnostics(&buf, uri)?;
         drop(server);
-        std::thread::sleep(Duration::from_millis(50));
 
         let text = String::from_utf8(buf.lock().clone())?;
+        let latest = latest_published_diagnostics(&text, uri)
+            .ok_or("stale publish regression must emit a target diagnostic frame")?;
         assert!(
-            !text.contains("dead-code-subroutine"),
-            "stale workspace index must not publish dead-code diagnostics from outdated symbols: {text:?}"
+            !latest.contains("dead-code-subroutine"),
+            "latest stale-target publish must not contain dead-code diagnostics: {latest:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Regression: workspace-wide dead-code analysis must not publish from a
+    /// fresh target URI while another edited open document is stale.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn publish_diagnostic_skips_dead_code_when_other_open_document_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (server, buf) = make_server_with_capture();
+        let target_uri = "file:///workspace/fresh_target_dead_code_publish.pl";
+        let contributor_uri = "file:///workspace/stale_contributor_dead_code_publish.pl";
+        let target_source = stale_dead_code_indexed_source();
+
+        server.test_apply_did_open(target_uri, target_source, 1)?;
+        wait_for_published_diagnostics(&buf, target_uri)?;
+        server
+            .test_index_file_in_building_state(target_uri, target_source)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        make_document_index_stale_for_diagnostics(
+            &server,
+            contributor_uri,
+            stale_dead_code_indexed_source(),
+            stale_dead_code_used_source(),
+            Some(&buf),
+        )?;
+
+        buf.lock().clear();
+        server.publish_diagnostics(target_uri);
+        wait_for_published_diagnostics(&buf, target_uri)?;
+        drop(server);
+
+        let text = String::from_utf8(buf.lock().clone())?;
+        let latest = latest_published_diagnostics(&text, target_uri)
+            .ok_or("stale contributor regression must emit a target diagnostic frame")?;
+        assert!(
+            !latest.contains("dead-code-subroutine"),
+            "latest target publish must suppress stale-contributor dead-code diagnostics: {latest:?}"
         );
 
         Ok(())

@@ -6,6 +6,13 @@ interface PendingWaiter {
 
 export type IndexReadinessState = 'building' | 'ready' | 'ready_limited';
 
+export interface ActiveDocumentReadinessSnapshot {
+  readonly generation: number;
+  readonly indexState: IndexReadinessState;
+  readonly indexReason?: string;
+  readonly fullyReady: boolean;
+}
+
 function clearPendingTimer(waiter: PendingWaiter): void {
   if (waiter.timer !== undefined) {
     clearTimeout(waiter.timer);
@@ -73,12 +80,27 @@ export class ActiveDocumentReadiness {
     }
   }
 
+  /** Whether the current generation may answer provider requests for a URI. */
+  public isReady(uri: string): boolean {
+    return this.indexReady || this.readyUris.has(uri);
+  }
+
   public currentIndexState(): IndexReadinessState {
     return this.indexState;
   }
 
   public currentIndexReason(): string | undefined {
     return this.indexReason;
+  }
+
+  /** Return the current lifecycle generation and canonical index readiness. */
+  public snapshot(): ActiveDocumentReadinessSnapshot {
+    return {
+      generation: this.generation,
+      indexState: this.indexState,
+      ...(this.indexReason === undefined ? {} : { indexReason: this.indexReason }),
+      fullyReady: this.indexReady,
+    };
   }
 
   private resolveWaiters(uri: string): void {

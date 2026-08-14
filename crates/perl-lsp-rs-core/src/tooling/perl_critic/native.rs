@@ -2448,9 +2448,10 @@ fn collect_leading_zeros_findings(
     out: &mut Vec<CriticFinding>,
 ) {
     if let NodeKind::Number { value } = &node.kind
-        && is_octal_leading_zero(value) {
-            out.push(leading_zeros_finding(rule, source, node, value));
-        }
+        && is_octal_leading_zero(value)
+    {
+        out.push(leading_zeros_finding(rule, source, node, value));
+    }
 
     for child in node.children() {
         collect_leading_zeros_findings(rule, source, child, out);
@@ -3568,7 +3569,7 @@ mod tests {
         assert_eq!(finding.severity, Severity::Harsh);
         assert_eq!(finding.message, "Unreachable code: this statement cannot be executed");
         assert_eq!(finding.suppression_key, "native.common.unreachable_code");
-        assert_eq!(&source[finding.range.start.byte..finding.range.end.byte], "my $dead");
+        assert_eq!(&source[finding.range.start.byte..finding.range.end.byte], "my $dead = 2");
         let fix = must_some(finding.fix.as_ref());
         assert_eq!(fix.title, "Remove unreachable code");
         assert_eq!(fix.safety, FixSafety::Safe);

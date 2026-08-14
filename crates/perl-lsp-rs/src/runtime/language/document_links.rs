@@ -23,9 +23,10 @@ fn resolve_file_link_target(base_uri: &str, file_path: &str) -> Option<String> {
     }
 
     if Path::new(file_path).is_absolute()
-        && let Ok(target_url) = url::Url::from_file_path(file_path) {
-            return Some(target_url.to_string());
-        }
+        && let Ok(target_url) = url::Url::from_file_path(file_path)
+    {
+        return Some(target_url.to_string());
+    }
 
     let base_url = url::Url::parse(base_uri).ok()?;
     if let Ok(target_url) = base_url.join(file_path) {

@@ -141,16 +141,17 @@ impl FoldingRangeExtractor {
                     let after_endregion = after_hash.strip_prefix("endregion").unwrap_or("");
                     if (after_endregion.is_empty()
                         || !after_endregion.chars().next().unwrap_or(' ').is_alphanumeric())
-                        && depth > 0 {
-                            depth -= 1;
-                            if let Some((start_offset, _)) = stack.pop() {
-                                ranges.push(FoldingRange {
-                                    start_offset,
-                                    end_offset: line_end_offset,
-                                    kind: Some(FoldingRangeKind::Region),
-                                });
-                            }
+                        && depth > 0
+                    {
+                        depth -= 1;
+                        if let Some((start_offset, _)) = stack.pop() {
+                            ranges.push(FoldingRange {
+                                start_offset,
+                                end_offset: line_end_offset,
+                                kind: Some(FoldingRangeKind::Region),
+                            });
                         }
+                    }
                 }
             }
 
@@ -180,16 +181,17 @@ impl FoldingRangeExtractor {
                         _ => {
                             // End of import block
                             if let (Some(start_idx), Some(end_idx)) = (import_start, import_end)
-                                && end_idx > start_idx {
-                                    // Multiple imports - create folding range
-                                    let start_loc = &statements[start_idx].location;
-                                    let end_loc = &statements[end_idx].location;
-                                    self.add_range_from_locations(
-                                        start_loc,
-                                        end_loc,
-                                        Some(FoldingRangeKind::Imports),
-                                    );
-                                }
+                                && end_idx > start_idx
+                            {
+                                // Multiple imports - create folding range
+                                let start_loc = &statements[start_idx].location;
+                                let end_loc = &statements[end_idx].location;
+                                self.add_range_from_locations(
+                                    start_loc,
+                                    end_loc,
+                                    Some(FoldingRangeKind::Imports),
+                                );
+                            }
                             import_start = None;
                             import_end = None;
                         }
@@ -201,15 +203,16 @@ impl FoldingRangeExtractor {
 
                 // Handle trailing imports
                 if let (Some(start_idx), Some(end_idx)) = (import_start, import_end)
-                    && end_idx > start_idx {
-                        let start_loc = &statements[start_idx].location;
-                        let end_loc = &statements[end_idx].location;
-                        self.add_range_from_locations(
-                            start_loc,
-                            end_loc,
-                            Some(FoldingRangeKind::Imports),
-                        );
-                    }
+                    && end_idx > start_idx
+                {
+                    let start_loc = &statements[start_idx].location;
+                    let end_loc = &statements[end_idx].location;
+                    self.add_range_from_locations(
+                        start_loc,
+                        end_loc,
+                        Some(FoldingRangeKind::Imports),
+                    );
+                }
             }
 
             NodeKind::Package { name: _, block, name_span: _ } => {
