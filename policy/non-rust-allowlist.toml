@@ -1090,3 +1090,54 @@ covered_by = [
 ]
 created = "2026-08-14"
 review_after = "2026-11-14"
+
+# =============================================================================
+# Editor-intelligence gap-matrix fixture tree
+# =============================================================================
+
+[[allow]]
+id = "non-rust-editor-intelligence-perl-fixtures"
+glob = "crates/perl-lsp-ux-tests/fixtures/editor_intelligence/**/*.pl"
+kind = "test_fixture"
+language = "perl"
+surface = "ux-tests"
+classification = "test"
+owner = "ux-tests"
+reason = "Perl source subjects for the editor-intelligence semantic gap matrix (#7430)."
+covered_by = [
+  "cargo test -p perl-lsp-ux-tests --test editor_intelligence_gap_matrix",
+]
+broad_glob_reason = "Gap-matrix Perl subjects are intentionally tree-shaped; the gap-matrix test binds every applicable row to its fixture file and fails when a fixture or its row marker is missing. The matcher is extension-bound so non-Perl additions still hit the unclassified-file gate."
+created = "2026-08-14"
+review_after = "2026-11-14"
+
+[[allow]]
+id = "non-rust-editor-intelligence-perl-module-fixtures"
+glob = "crates/perl-lsp-ux-tests/fixtures/editor_intelligence/**/*.pm"
+kind = "test_fixture"
+language = "perl"
+surface = "ux-tests"
+classification = "test"
+owner = "ux-tests"
+reason = "Perl module dependencies for the editor-intelligence semantic gap matrix (#7430)."
+covered_by = [
+  "cargo test -p perl-lsp-ux-tests --test editor_intelligence_gap_matrix",
+]
+broad_glob_reason = "Same tree-shaped fixture rationale as the .pl entry; extension-bound so non-Perl additions still hit the unclassified-file gate."
+created = "2026-08-14"
+review_after = "2026-11-14"
+
+[[allow]]
+id = "non-rust-editor-intelligence-readme"
+path = "crates/perl-lsp-ux-tests/fixtures/editor_intelligence/README.md"
+kind = "documentation"
+language = "markdown"
+surface = "ux-tests"
+classification = "documentation"
+owner = "ux-tests"
+reason = "Fixture-tree README describing the editor-intelligence gap-matrix subjects (#7430)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
