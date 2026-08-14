@@ -478,6 +478,10 @@ fn print_error(error: &ParseError, source: &str) {
             .ok();
             print_error_context(source, *location, &mut stderr);
         }
+        // Forward-compatible fallback for future variants (#2898)
+        _ => {
+            writeln!(stderr, "Parse error: {}", error).ok();
+        }
     }
 }
 
