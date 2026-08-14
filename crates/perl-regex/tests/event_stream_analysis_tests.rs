@@ -49,6 +49,67 @@ fn extended_line_comments_are_excluded_from_every_analysis()
 }
 
 #[test]
+fn pattern_whitespace_does_not_hide_nbsp_as_trivia()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(a+)\u{00a0}+";
+    let analysis = RegexValidator::new().analyze_with_modifiers(
+        pattern,
+        effective(RegexOperator::Match, "x")?,
+    );
+
+    assert!(analysis.facts.nested_quantifiers.is_empty());
+    Ok(())
+}
+
+#[test]
+fn nested_quantifier_state_survives_extended_comments()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(a+) # ignored\n +";
+    let analysis = RegexValidator::new().analyze_with_modifiers(
+        pattern,
+        effective(RegexOperator::Match, "x")?,
+    );
+
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.rfind('+').ok_or("missing live outer quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
+fn omitted_lower_bound_brace_quantifier_is_structurally_normalized()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(a+){,3}";
+    let analysis = RegexValidator::new().analyze(pattern);
+
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.find("{,3}").ok_or("missing omitted-lower-bound quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
+fn caret_modifier_scope_resets_extended_mode_for_embedded_code()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(?^:#(?{ live }))";
+    let analysis = RegexValidator::new().analyze_with_modifiers(
+        pattern,
+        effective(RegexOperator::Match, "x")?,
+    );
+
+    assert_eq!(analysis.facts.embedded_code.len(), 1);
+    assert_eq!(
+        analysis.facts.embedded_code[0].range.start,
+        pattern.find("(?{").ok_or("missing live embedded-code opener")?
+    );
+    Ok(())
+}
+
+#[test]
 fn group_comments_are_excluded_before_later_live_structure()
 -> Result<(), Box<dyn std::error::Error>> {
     let pattern = "(?# (?{ hidden })(a+)+";

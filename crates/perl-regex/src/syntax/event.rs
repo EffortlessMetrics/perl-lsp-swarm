@@ -445,13 +445,13 @@ impl<'a> EventParser<'a> {
         let Some(ch) = self.pattern.get(self.pos..).and_then(|rest| rest.chars().next()) else {
             return false;
         };
-        if !ch.is_whitespace() {
+        if !is_pattern_whitespace(ch) {
             return false;
         }
         let start = self.pos;
         let mut cursor = start;
         while let Some(candidate) = self.pattern.get(cursor..).and_then(|rest| rest.chars().next()) {
-            if !candidate.is_whitespace() {
+            if !is_pattern_whitespace(candidate) {
                 break;
             }
             cursor = cursor.saturating_add(candidate.len_utf8());
@@ -864,13 +864,22 @@ impl<'a> EventParser<'a> {
 
     fn brace_quantifier(&self, start: usize) -> Option<(usize, Option<usize>, usize)> {
         let mut cursor = start + 1;
-        let (lower, next) = parse_decimal(self.bytes, cursor)?;
-        cursor = next;
+        let omitted_lower = self.bytes.get(cursor) == Some(&b',');
+        let lower = if omitted_lower {
+            0
+        } else {
+            let (lower, next) = parse_decimal(self.bytes, cursor)?;
+            cursor = next;
+            lower
+        };
         match self.bytes.get(cursor).copied()? {
             b'}' => Some((lower, Some(lower), cursor + 1)),
             b',' => {
                 cursor += 1;
                 if self.bytes.get(cursor) == Some(&b'}') {
+                    if omitted_lower {
+                        return None;
+                    }
                     return Some((lower, None, cursor + 1));
                 }
                 let (upper, next) = parse_decimal(self.bytes, cursor)?;
@@ -886,6 +895,7 @@ impl<'a> EventParser<'a> {
 
     fn parse_inline_modifier_prefix(&self, start: usize) -> Option<InlineModifierPrefix> {
         let mut cursor = start + 2;
+        let mut reset = false;
         let mut saw_modifier = false;
         let mut disabling = false;
         let mut enable_x = 0usize;
@@ -893,6 +903,14 @@ impl<'a> EventParser<'a> {
         let mut enable_n = false;
         let mut disable_n = false;
 
+        if self.bytes.get(cursor) == Some(&b'^') {
+            reset = true;
+            saw_modifier = true;
+            cursor += 1;
+        }
+        if reset && self.bytes.get(cursor) == Some(&b'-') {
+            return None;
+        }
         if self.bytes.get(cursor) == Some(&b'-') {
             disabling = true;
             cursor += 1;
@@ -926,7 +944,7 @@ impl<'a> EventParser<'a> {
             b')' => InlineModifierTerminator::Change,
             _ => return None,
         };
-        let mut mode = self.mode;
+        let mut mode = if reset { RegexModeState::default() } else { self.mode };
         if disable_x {
             mode.extended = RegexExtendedMode::Off;
         } else if enable_x >= 2 {
@@ -1094,6 +1112,23 @@ fn parse_decimal(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
 
 fn is_inline_modifier(ch: u8) -> bool {
     matches!(ch, b'i' | b'm' | b's' | b'x' | b'a' | b'd' | b'l' | b'u' | b'p' | b'n')
+}
+
+fn is_pattern_whitespace(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0009}'
+            | '\u{000A}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{000D}'
+            | '\u{0020}'
+            | '\u{0085}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{2028}'
+            | '\u{2029}'
+    )
 }
 
 #[cfg(test)]
