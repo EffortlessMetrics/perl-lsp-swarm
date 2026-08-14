@@ -3,7 +3,8 @@
 //! The formatter libraries decide whether a result was applied, unchanged,
 //! refused, or not proven. This module admits one current source/configuration
 //! snapshot, binds cancellation, and projects that typed result onto LSP.
-//! Multi-range atomic planning remains a successor slice.
+//! Multi-range plan geometry lands under test compilation; live
+//! `rangesFormatting` wiring remains a successor slice.
 
 use super::super::{
     GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
@@ -317,5 +318,7 @@ impl LspServer {
 mod handlers;
 mod receipt;
 
+#[cfg(test)]
+mod multi_range;
 #[cfg(test)]
 mod tests;
