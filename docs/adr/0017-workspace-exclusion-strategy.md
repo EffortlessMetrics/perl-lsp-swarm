@@ -1,4 +1,4 @@
-# ADR-0017: Workspace Exclusion Strategy
+# ADR-0017: Workspace and Archive Strategy
 
 **Status**: Accepted
 **Date**: 2025-02-15
@@ -7,38 +7,42 @@
 
 ## Context
 
-The Perl LSP workspace contains 80+ crates with diverse dependencies and build requirements. Some crates require system-level C dependencies (libclang, bindgen) that create platform-specific build challenges. This creates several problems:
+The Perl LSP workspace contains crates with different build requirements. Current Tree-sitter compatibility crates are maintained workspace members, while legacy parser sources and specialized tooling are kept outside the default workspace.
 
-1. **Platform Fragility**: Builds fail on systems without C toolchains
-2. **CI Instability**: Cross-platform CI runners have varying system dependency availability
-3. **User Installation Friction**: Published crates should install cleanly without system prerequisites
-4. **Development vs Production Tension**: Internal tooling needs differ from published crate requirements
+1. **Build-surface clarity**: Current compatibility crates must be visible to workspace tooling and CI.
+2. **Legacy isolation**: Archived or specialized sources should not become default workspace members.
+3. **User installation friction**: Published crates should document real prerequisites rather than historical ones.
+4. **Development vs production tension**: Internal tooling and published crate requirements remain distinct.
 
 ### Problem Statement
 
-The tree-sitter integration crates require C dependencies:
-- `tree-sitter-perl-c`: Requires libclang-dev
-- `tree-sitter-perl-rs`: Requires bindgen for C interop
-- `tree-sitter-perl/`: Original C implementation with libclang dependency
+The current tree-sitter integration crates have different ownership and build
+surfaces:
+- `crates/tree-sitter-perl-c` is a workspace member that compiles its vendored C
+  grammar with `cc`; it declares the required C symbol by hand and does not use
+  bindgen or libclang.
+- `crates/tree-sitter-perl-rs` is a workspace member providing the Rust facade.
+- `tree-sitter-perl/` is the legacy top-level C parser and remains excluded.
 
-These dependencies create build failures for users who only need the pure Rust parser and LSP server.
+The workspace must describe those current boundaries instead of treating the
+maintained compatibility crates as archived.
 
 ## Decision
 
-**We implement a production-focused exclusion strategy that removes crates with C dependencies from the main workspace build, prioritizing published crate reliability over comprehensive internal tooling.**
+**We keep maintained compatibility crates in the workspace and exclude only legacy or specialized trees.** This makes current source, CI, and package tooling addressable while keeping the legacy parser and archive outside the default build graph.
 
-### Excluded Crates
+### Excluded Trees
 
-| Crate | Exclusion Reason |
+| Tree | Exclusion Reason |
 |-------|------------------|
-| `tree-sitter-perl-c` | libclang-dev dependency |
-| `tree-sitter-perl-rs` | bindgen dependency |
-| `tree-sitter-perl/` | libclang dependency |
-| Legacy tooling | Internal development only |
+| `tree-sitter-perl/` | Legacy top-level C parser |
+| `fuzz/` | cargo-fuzz specialized requirements |
+| `archive/` | Archived legacy components |
 
 ### Implementation
 
-The workspace configuration excludes these crates from default builds:
+The workspace configuration includes the maintained compatibility crates and
+excludes the legacy/specialized trees:
 
 ```toml
 # Cargo.toml workspace configuration
@@ -48,41 +52,41 @@ members = [
     "crates/perl-lsp-rs",
     "crates/perl-dap",
     "crates/perl-lexer",
-    # ... other pure-Rust crates
+    "crates/tree-sitter-perl-c",
+    "crates/tree-sitter-perl-rs",
+    # ... other current crates
 ]
-# Excluded: tree-sitter-perl-c, tree-sitter-perl-rs
+
+exclude = ["tree-sitter-perl", "fuzz", "archive"]
 ```
 
 ### Architectural Benefits
 
-1. **Platform Independence**: No C toolchain requirements for standard builds
-2. **CI Stability**: Consistent build behavior across Windows, macOS, Linux
-3. **Production Focus**: Testing only published crate surface area
-4. **Dependency Safety**: Avoid system-specific build failures
-5. **Clean Installation**: Users can `cargo install perllsp` without prerequisites
+1. **Current-source visibility**: CI and workspace tooling can build and test maintained compatibility crates.
+2. **Legacy isolation**: The old top-level parser and archive cannot silently become current product dependencies.
+3. **Honest prerequisites**: The C binding's vendored grammar and `cc` build path are visible; libclang/bindgen are not claimed.
+4. **Clear package boundaries**: The Rust facade and C binding remain independently addressable.
 
 ## Consequences
 
 ### Positive
 
-- **Reliable Cross-Platform Builds**: Pure Rust builds work everywhere
-- **Faster CI Pipelines**: No C compilation overhead
-- **Reduced Support Burden**: No system dependency troubleshooting
-- **Clean Published Experience**: `cargo install` just works
-- **Simplified Dependency Tree**: No transitive C dependency issues
+- **Current workspace coverage**: Maintained Tree-sitter crates are addressable by CI and package tooling.
+- **Explicit C boundary**: The C binding's vendored grammar and compiler requirement are visible.
+- **Clean legacy boundary**: The old top-level parser remains outside the current workspace.
 
 ### Negative
 
-- **Reduced Workspace Coverage**: Tree-sitter crates not tested in main CI
-- **Manual Benchmarking**: C parser benchmarks require separate environment
-- **Development Overhead**: Tree-sitter work requires explicit workspace opt-in
-- **Feature Parity Tracking**: Must maintain awareness of excluded capabilities
+- **C toolchain coverage**: Building the C binding still requires a usable C compiler/toolchain.
+- **Legacy separation**: The excluded top-level parser is not covered by the current workspace.
+- **Benchmark selection**: Optional benchmark commands may still use explicit manifest paths.
+- **Feature parity tracking**: Compatibility tiers remain governed by #4752, not workspace membership alone.
 
 ### Mitigations
 
 - Separate benchmark infrastructure for tree-sitter comparison
-- Documentation clearly indicates excluded crates
-- Benchmark scripts handle workspace exclusion gracefully
+- Documentation distinguishes current workspace members from excluded legacy trees
+- Benchmark scripts handle optional C-toolchain availability gracefully
 
 ## References
 

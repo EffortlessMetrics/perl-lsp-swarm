@@ -44,8 +44,12 @@ code --install-extension EffortlessMetrics.perl-lsp-rs
 # GitHub release binary
 # Download from https://github.com/EffortlessMetrics/perl-lsp/releases
 
-# Best-effort install script (Linux/macOS)
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+# Installer script (Linux/macOS) — identity-bound remote bootstrap once closeout publishes ref+digest
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 
 # Homebrew via the EffortlessMetrics tap (macOS/Linux)
 brew install effortlessmetrics/tap/perllsp

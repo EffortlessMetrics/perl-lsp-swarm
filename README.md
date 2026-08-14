@@ -62,7 +62,8 @@ The README is a front door, not the metric source of truth. Current release post
 - **UX testing**: tracked editor UX scenarios cover first-five-minutes flows, issue-regression guards, cross-file navigation, diagnostics-after-edit, workspace churn, and rename.
 - **Workspace intelligence**: module resolution, symbol indexing, stale-index guards, multi-root workspaces, and workspace-aware rename.
 - **Debug adapter**: breakpoints, stepping, stack frames, variables, evaluate, and launch/attach flows.
-- **Editor support**: VS Code, Open VSX, Neovim, Vim, Emacs, Helix, Zed, Sublime, and any editor with LSP support.
+- **Editor integrations**: VS Code is the packaged first-class path. Generic LSP setup is documented for Neovim, Vim, Emacs, Helix, and Sublime, with actual-host evidence tracked separately from configuration prose.
+- **Zed integration: planned / not proven**: the public Perl extension does not yet register the EffortlessMetrics `perllsp` server ID. Do not repoint its independent `perl-lsp` ID to this product.
 
 ## Install
 
@@ -72,10 +73,20 @@ The README is a front door, not the metric source of truth. Current release post
 code --install-extension EffortlessMetrics.perl-lsp-rs
 ```
 
-**macOS and Linux** — installer script; installs `perllsp` and `perl-dap`, and verifies the release archive against the published `SHA256SUMS` when that file and a checksum tool are both available ([details](docs/how-to/INSTALLATION.md#installer-script-macos-and-linux)):
+**macOS and Linux** — use a manual archive from
+[GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases) until
+the release closeout publishes an immutable installer ref and the reviewed
+SHA-256 digest of `scripts/install.sh`. The remote wrapper no longer executes
+installer logic selected from mutable `master`. Once a release packet supplies
+both values, the identity-bound bootstrap has this shape
+([details](docs/how-to/INSTALLATION.md#installer-script-macos-and-linux)):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 ```
 
 **Homebrew** (macOS, Linux via Linuxbrew) — from the owned EffortlessMetrics tap, not Homebrew/core:
@@ -116,7 +127,11 @@ run explicit checks for the Perl, workspace, and module paths your job requires;
 the doctor report's exit status is not a readiness gate. Use `perllsp --health`
 when you only need to confirm that the executable starts; it prints `ok <version>`.
 
-Other editors use the `perllsp --stdio` server command after installing a release binary.
+Generic LSP clients can launch `perllsp --stdio` after installing a release
+binary, but each editor still needs a working registration/configuration route
+and its own evidence before this project calls that host supported. Zed is not
+currently on that list because its public Perl extension does not register
+`perllsp`.
 
 Native formatting and native critic diagnostics do not require `perltidy` or
 `perlcritic`. Install those tools only when a project explicitly opts into
@@ -126,7 +141,7 @@ Do not install `perl-lsp` from crates.io; that is a different project.
 
 ## Crate surface
 
-The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates. The published surface is 32 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).
+The current architecture collapsed the old microcrate graph into a smaller published surface. Most implementation detail now lives in modules behind focused public crates. The published surface is 33 crates, listed in `[workspace.metadata.publish.allow]` in [`Cargo.toml`](Cargo.toml).
 
 | Need | Crate |
 |---|---|

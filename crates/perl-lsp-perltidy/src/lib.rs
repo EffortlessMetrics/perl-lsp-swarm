@@ -520,27 +520,27 @@ fn significant_delimiters_with_state(line: &str, state: &mut DelimiterScanState)
             continue;
         }
 
-        if state.regex_closer.is_none() {
-            if let Some((replacement_opener, replacement_closer)) = state.pending_replacement {
-                if replacement_opener.is_some() {
-                    if let Some((opener, closer, nesting)) = replacement_delimiter(ch) {
-                        state.pending_replacement = None;
-                        state.regex_opener = opener;
-                        state.regex_closer = Some(closer);
-                        state.regex_nesting = nesting;
-                        state.regex_char_class = false;
-                        state.regex_is_substitution = false;
-                        state.record_non_whitespace(ch);
-                        continue;
-                    }
-                } else {
+        if state.regex_closer.is_none()
+            && let Some((replacement_opener, replacement_closer)) = state.pending_replacement
+        {
+            if replacement_opener.is_some() {
+                if let Some((opener, closer, nesting)) = replacement_delimiter(ch) {
                     state.pending_replacement = None;
-                    state.regex_opener = None;
-                    state.regex_closer = Some(replacement_closer);
-                    state.regex_nesting = 0;
+                    state.regex_opener = opener;
+                    state.regex_closer = Some(closer);
+                    state.regex_nesting = nesting;
                     state.regex_char_class = false;
                     state.regex_is_substitution = false;
+                    state.record_non_whitespace(ch);
+                    continue;
                 }
+            } else {
+                state.pending_replacement = None;
+                state.regex_opener = None;
+                state.regex_closer = Some(replacement_closer);
+                state.regex_nesting = 0;
+                state.regex_char_class = false;
+                state.regex_is_substitution = false;
             }
         }
 
@@ -560,10 +560,8 @@ fn significant_delimiters_with_state(line: &str, state: &mut DelimiterScanState)
                         state.regex_nesting -= 1;
                     } else {
                         state.clear_regex();
-                        if replacement {
-                            if let Some(closer) = replacement_closer {
-                                state.pending_replacement = Some((replacement_opener, closer));
-                            }
+                        if replacement && let Some(closer) = replacement_closer {
+                            state.pending_replacement = Some((replacement_opener, closer));
                         }
                     }
                     state.record_non_whitespace(ch);
@@ -644,10 +642,8 @@ fn regex_start(
     );
     let is_substitution = matches!(quote_like.as_deref(), Some("s" | "tr" | "y"));
 
-    if is_quote_like {
-        if let Some((opener, closer, nesting)) = replacement_delimiter(ch) {
-            return Some((opener, closer, nesting, is_substitution));
-        }
+    if is_quote_like && let Some((opener, closer, nesting)) = replacement_delimiter(ch) {
+        return Some((opener, closer, nesting, is_substitution));
     }
 
     if ch != '/' {

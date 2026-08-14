@@ -181,6 +181,41 @@ impl<'a> Parser<'a> {
         byte.is_ascii_alphanumeric() || byte == b'_'
     }
 
+    /// Locate one word inside a `qw` token without assigning the whole list span.
+    ///
+    /// The cleaned word list can omit comments, so locations are found in the original
+    /// token text and advanced monotonically. A conservative token-wide fallback keeps
+    /// malformed recovery nodes representable when a cleaned word cannot be located.
+    fn qw_word_location(
+        token_text: &str,
+        token_start: usize,
+        word: &str,
+        search_offset: &mut usize,
+        fallback_end: usize,
+    ) -> SourceLocation {
+        let bytes = token_text.as_bytes();
+        let word_bytes = word.as_bytes();
+        let mut index = (*search_offset).min(bytes.len());
+        while index.saturating_add(word_bytes.len()) <= bytes.len() {
+            if &bytes[index..index + word_bytes.len()] == word_bytes {
+                let before_ok = index == 0
+                    || !bytes[index - 1].is_ascii_alphanumeric() && bytes[index - 1] != b'_';
+                let after = index + word_bytes.len();
+                let after_ok = after == bytes.len()
+                    || !bytes[after].is_ascii_alphanumeric() && bytes[after] != b'_';
+                if before_ok && after_ok {
+                    *search_offset = after;
+                    return SourceLocation {
+                        start: token_start + index,
+                        end: token_start + after,
+                    };
+                }
+            }
+            index += 1;
+        }
+        SourceLocation { start: token_start, end: fallback_end }
+    }
+
     /// Inner implementation of parse_primary (called under recursion guard)
     fn parse_primary_inner(&mut self) -> ParseResult<Node> {
         let token = self.tokens.peek()?;
@@ -290,14 +325,14 @@ impl<'a> Parser<'a> {
                                     start,
                                 ));
                             } else {
-                                let followed_by_identifier_statement = token
-                                    .text
-                                    .trim_end_matches([' ', '\t', '\r'])
-                                    .ends_with('\n')
-                                    && self.tokens.peek().is_ok_and(|next| {
-                                        next.kind == TokenKind::Identifier
-                                            && next.text.as_ref() == "print"
-                                    });
+                                let followed_by_identifier_statement = {
+                                    let line_ending = token.text.trim_end_matches([' ', '\t']);
+                                    (line_ending.ends_with('\n') || line_ending.ends_with('\r'))
+                                        && self.tokens.peek().is_ok_and(|next| {
+                                            next.kind == TokenKind::Identifier
+                                                && next.text.as_ref() == "print"
+                                        })
+                                };
                                 if followed_by_identifier_statement {
                                     self.record_inserted_closer(TokenKind::RightParen);
                                 } else {
@@ -309,12 +344,23 @@ impl<'a> Parser<'a> {
 
                     // Split into words, stripping # line comments first (perlop).
                     let cleaned = strip_qw_comments(content_str);
+                    // Anchor matching at the original content slice so an
+                    // operator/comment prefix cannot steal a matching word.
+                    let content_offset = text.get(2..).and_then(|rest| rest.chars().next()).map_or(2, |delimiter| 2 + delimiter.len_utf8());
+                    let mut search_offset = content_offset;
                     let words: Vec<Node> = cleaned
                         .split_whitespace()
                         .map(|word| {
+                            let location = Self::qw_word_location(
+                                text,
+                                start,
+                                word,
+                                &mut search_offset,
+                                token.end,
+                            );
                             Node::new(
                                 NodeKind::String { value: word.to_string(), interpolated: false },
-                                SourceLocation { start, end: token.end },
+                                location,
                             )
                         })
                         .collect();
@@ -926,7 +972,10 @@ impl<'a> Parser<'a> {
                                         .collect(),
                                     _ => vec![args_node],
                                 };
-                                let call_end = self.previous_position();
+                                let call_end = args
+                                    .last()
+                                    .map(|arg| arg.location.end.max(self.previous_position()))
+                                    .unwrap_or_else(|| self.previous_position());
                                 let call = Node::new(
                                     NodeKind::FunctionCall { name, args },
                                     SourceLocation { start: call_start, end: call_end },

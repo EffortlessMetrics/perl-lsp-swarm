@@ -12,9 +12,41 @@ Use this flow when the problem, owner, scope, proof seam, or implementation dire
 
 Use current source, live GitHub issues and PRs, accepted repository contracts, package guidance, and primary external authority where relevant.
 
-## Orchestration
+## Orchestration affordances
 
-The main thread owns synthesis and issue updates. It may use subagents or Teams for independent source mapping, related-work search, reproduction, external truth, proof inventory, and vision challenge. Join contradictions into one current synthesis; do not count votes.
+### Lane-root decisions
+
+The lane root retains the accepted problem, whether the work should exist, semantic
+owner and consumers, one coherent claim, scope/non-goals, risk/rollback, contradiction
+resolution, current plan, and whether a durable cross-PR specification is warranted.
+
+### Useful subagent work
+
+Use focused subagents or an Agent Team only where useful for:
+
+- source-owner and production-consumer mapping;
+- related issue, PR, and landed-work search;
+- reproduction and current proof inventory;
+- external language/protocol/dependency truth;
+- vision, duplication, slice, risk, and rollback challenge.
+
+Give each child settled facts, exact authorities and scope, one question, falsifiers,
+and a bounded return. Children do not choose the claim or update the issue independently.
+
+### Mutation owner and join
+
+One issue-body integrator owns durable synthesis and plan updates. Join evidence and
+contradictions rather than counting agents.
+
+The join is ready when the problem, owner, consumers, scope/non-goals, proof obligations,
+prerequisites, and plan are current; material contradictions are resolved or explicitly
+`NOT_PROVEN`; and the result supports proof design or an honest no-proof route.
+
+### Return packet
+
+Return the current claim, owner/consumers, accepted plan, evidence references,
+contradictions and dispositions, proof obligations, limitations, material return-to-
+issue conditions, and typed route result.
 
 ## Flow
 
@@ -28,7 +60,14 @@ The main thread owns synthesis and issue updates. It may use subagents or Teams 
 
 ## GitHub
 
-Keep the issue body current and use comments for evidence, corrections, and alternatives. Use labels for stable classification and requested attention only. Do not use lifecycle labels or task completion as authority.
+Use comments for durable research, corrected assumptions, external truth, dependencies,
+alternatives, and contradictions. Update the issue body when one current synthesis or
+plan helps builders and later contexts. Record a route change only when the material
+next judgment changes.
+
+Keep subagent/Team topology, task state, retries, raw logs, provisional reasoning, and
+routine skill transitions runtime-local. Labels classify stable area/risk/attention;
+they do not prove lifecycle completion or lane ownership.
 
 ## Establishes
 

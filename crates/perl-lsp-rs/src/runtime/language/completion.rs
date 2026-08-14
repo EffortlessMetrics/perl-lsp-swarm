@@ -33,6 +33,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 use super::super::LspServer;
 
 /// Sentinel request ID used for the notification-path token in
@@ -411,10 +416,10 @@ impl LspServer {
                 "records existing comparable visibility completions only; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
             }
         });
-        if let Some(shadow_receipt) = semantic_shadow_receipt {
-            if let Some(object) = receipt.as_object_mut() {
-                object.insert("semantic_shadow_receipt".to_string(), shadow_receipt);
-            }
+        if let Some(shadow_receipt) = semantic_shadow_receipt
+            && let Some(object) = receipt.as_object_mut()
+        {
+            object.insert("semantic_shadow_receipt".to_string(), shadow_receipt);
         }
         self.record_provider_decision_trace("completion", &receipt);
     }
@@ -446,6 +451,9 @@ impl LspServer {
             return None;
         }
         if !(budget.should_continue)() {
+            return None;
+        }
+        if self.workspace_index_stale_for_any_open_document() {
             return None;
         }
         let index = coordinator.index();
@@ -919,17 +927,17 @@ impl LspServer {
                             | crate::workspace_index::SymbolKind::Class
                             | crate::workspace_index::SymbolKind::Role
                     );
-                    if is_use_module_context && is_module_kind {
-                        if let Some(ctx) = inc_ctx {
-                            if !ctx.symbol_uri_reachable(&symbol.uri) {
-                                tracing::trace!(
-                                    symbol = %symbol.name,
-                                    uri = %symbol.uri,
-                                    "completion: skipping workspace symbol not reachable via @INC"
-                                );
-                                continue;
-                            }
-                        }
+                    if is_use_module_context
+                        && is_module_kind
+                        && let Some(ctx) = inc_ctx
+                        && !ctx.symbol_uri_reachable(&symbol.uri)
+                    {
+                        tracing::trace!(
+                            symbol = %symbol.name,
+                            uri = %symbol.uri,
+                            "completion: skipping workspace symbol not reachable via @INC"
+                        );
+                        continue;
                     }
 
                     // Strategy B: non-module symbols in multi-root workspace — filter
@@ -937,18 +945,17 @@ impl LspServer {
                     // for @INC paths (module files) and would incorrectly drop scripts
                     // and .pm files not on @INC. Folder containment is the right filter
                     // for subroutines, variables, methods, and constants (fixes #970).
-                    if !is_module_kind {
-                        if let Some(ref folder) = doc_folder_filter {
-                            if !workspace_folder_matches_doc_uri(folder, &symbol.uri) {
-                                tracing::trace!(
-                                    symbol = %symbol.name,
-                                    uri = %symbol.uri,
-                                    folder = %folder.uri,
-                                    "completion: skipping cross-folder non-module symbol"
-                                );
-                                continue;
-                            }
-                        }
+                    if !is_module_kind
+                        && let Some(ref folder) = doc_folder_filter
+                        && !workspace_folder_matches_doc_uri(folder, &symbol.uri)
+                    {
+                        tracing::trace!(
+                            symbol = %symbol.name,
+                            uri = %symbol.uri,
+                            folder = %folder.uri,
+                            "completion: skipping cross-folder non-module symbol"
+                        );
+                        continue;
                     }
 
                     let label = symbol.name.clone();
@@ -1157,18 +1164,16 @@ impl LspServer {
             item["filterText"] = json!(filter_text);
         }
 
-        if label_details_support {
-            if let Some(ld) = c.label_details {
-                let mut obj = serde_json::Map::new();
-                if let Some(d) = ld.detail {
-                    obj.insert("detail".to_string(), json!(d));
-                }
-                if let Some(desc) = ld.description {
-                    obj.insert("description".to_string(), json!(desc));
-                }
-                if !obj.is_empty() {
-                    item["labelDetails"] = Value::Object(obj);
-                }
+        if label_details_support && let Some(ld) = c.label_details {
+            let mut obj = serde_json::Map::new();
+            if let Some(d) = ld.detail {
+                obj.insert("detail".to_string(), json!(d));
+            }
+            if let Some(desc) = ld.description {
+                obj.insert("description".to_string(), json!(desc));
+            }
+            if !obj.is_empty() {
+                item["labelDetails"] = Value::Object(obj);
             }
         }
 
@@ -1188,7 +1193,7 @@ impl LspServer {
                     })
                 })
                 .collect();
-            item["additionalTextEdits"] = json!(edits);
+            item["additionalTextEdits"] = to_json_array(&edits);
         }
 
         // LSP 3.17 §3.16.1: when `textEdit` is present it takes precedence over
@@ -1245,7 +1250,7 @@ impl LspServer {
 
             // Use routing to determine workspace index access mode
             let mut workspace_mode = route_index_access(self.coordinator());
-            if self.workspace_index_stale_for_document(uri) {
+            if self.workspace_index_stale_for_any_open_document() {
                 workspace_mode = IndexAccessMode::None;
             }
 
@@ -1578,7 +1583,7 @@ impl LspServer {
 
             // Use routing to determine workspace index access mode
             let mut workspace_mode = route_index_access(self.coordinator());
-            if self.workspace_index_stale_for_document(uri) {
+            if self.workspace_index_stale_for_any_open_document() {
                 workspace_mode = IndexAccessMode::None;
             }
 
@@ -2146,12 +2151,11 @@ impl LspServer {
                         }),
                     );
                 }
-                if label_details_support {
-                    if let Some(detail) = label_detail {
-                        if obj.get("labelDetails").is_none() {
-                            obj.insert("labelDetails".to_string(), json!({ "detail": detail }));
-                        }
-                    }
+                if label_details_support
+                    && let Some(detail) = label_detail
+                    && obj.get("labelDetails").is_none()
+                {
+                    obj.insert("labelDetails".to_string(), json!({ "detail": detail }));
                 }
             }
             return Ok(Some(item));
@@ -2188,16 +2192,16 @@ impl LspServer {
                 _ => None,
             };
 
-            if let Some(doc) = keyword_doc {
-                if let Some(obj) = item.as_object_mut() {
-                    obj.insert(
-                        "documentation".to_string(),
-                        json!({
-                            "kind": "markdown",
-                            "value": doc
-                        }),
-                    );
-                }
+            if let Some(doc) = keyword_doc
+                && let Some(obj) = item.as_object_mut()
+            {
+                obj.insert(
+                    "documentation".to_string(),
+                    json!({
+                        "kind": "markdown",
+                        "value": doc
+                    }),
+                );
             }
         }
 
@@ -3007,6 +3011,10 @@ mod tests {
             Some("none"),
             "stale current-document index must downgrade regular completion index access"
         );
+        assert!(
+            receipt.get("semantic_shadow_receipt").is_none(),
+            "stale workspace index must not run completion visibility shadow queries"
+        );
 
         Ok(())
     }
@@ -3046,6 +3054,72 @@ mod tests {
             receipt.get("workspace_index_state").and_then(Value::as_str),
             Some("none"),
             "stale current-document index must downgrade cancellable completion index access"
+        );
+
+        Ok(())
+    }
+
+    /// Regression (#5016 item 2): cross-file completion must not use the
+    /// workspace index tier while an unrelated open document is ahead of the
+    /// indexed snapshot.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn completion_skips_workspace_index_when_unrelated_open_document_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let source_uri = "file:///workspace/completion_source.pl";
+        let unrelated_uri = "file:///workspace/completion_unrelated.pl";
+        let source_text = "package CompletionSource;\nmy $ready = 1;\n$re\n";
+        let unrelated_v1 = "package CompletionUnrelated;\nsub helper {}\n";
+        let unrelated_v2 = "package CompletionUnrelated;\nsub renamed {}\n";
+
+        server.test_apply_did_open(source_uri, source_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(unrelated_uri, unrelated_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": source_uri, "version": 1 },
+            "position": { "line": 2, "character": 3 }
+        })))?;
+        let fresh = explain_provider_decision(&server, "completion")?;
+        let fresh_receipt = fresh
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing fresh completion request receipt")?;
+        assert_eq!(
+            fresh_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("full"),
+            "fresh completion request should observe the full index: {fresh:?}"
+        );
+
+        server
+            .test_replace_document_without_index(unrelated_uri, unrelated_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(server.workspace_index_stale_for_any_open_document());
+
+        server.handle_completion(Some(json!({
+            "textDocument": { "uri": source_uri, "version": 1 },
+            "position": { "line": 2, "character": 3 }
+        })))?;
+        let stale = explain_provider_decision(&server, "completion")?;
+        let stale_receipt = stale
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing stale completion request receipt")?;
+        assert_eq!(
+            stale_receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("none"),
+            "unrelated stale open document must disable cross-file completion index access: {stale:?}"
+        );
+        assert!(
+            stale_receipt.get("semantic_shadow_receipt").is_none(),
+            "stale workspace index must not run completion visibility shadow queries"
         );
 
         Ok(())

@@ -320,15 +320,15 @@ fn apply_diagnostic(test: &mut TapTest, diag: &str) {
             test.line = caps.get(2).and_then(|m| m.as_str().parse().ok());
         }
     }
-    if let Some(caps) = GOT_RE.captures(diag) {
-        if test.got.is_none() {
-            test.got = caps.get(1).map(|m| m.as_str().trim().to_string());
-        }
+    if let Some(caps) = GOT_RE.captures(diag)
+        && test.got.is_none()
+    {
+        test.got = caps.get(1).map(|m| m.as_str().trim().to_string());
     }
-    if let Some(caps) = EXPECTED_RE.captures(diag) {
-        if test.expected.is_none() {
-            test.expected = caps.get(1).map(|m| m.as_str().trim().to_string());
-        }
+    if let Some(caps) = EXPECTED_RE.captures(diag)
+        && test.expected.is_none()
+    {
+        test.expected = caps.get(1).map(|m| m.as_str().trim().to_string());
     }
     test.diagnostics.push(diag.to_string());
 }

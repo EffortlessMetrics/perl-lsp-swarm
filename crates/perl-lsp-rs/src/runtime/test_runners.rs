@@ -18,7 +18,7 @@ impl LspServer {
     ) -> Option<T> {
         let document_text = {
             let documents = self.documents_guard();
-            documents.get(uri).map(|doc| doc.text.clone())
+            documents.get(uri).map(|doc| doc.text_arc.to_string())
         };
         document_text.map(operation)
     }

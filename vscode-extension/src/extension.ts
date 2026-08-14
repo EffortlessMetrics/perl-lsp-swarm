@@ -37,6 +37,7 @@ import { generateBoilerplate } from './fileCreation';
 import { handleFormattingError } from './formattingErrors';
 import { HealthWidget, ClientState } from './healthWidget';
 import { HealthWidgetDataSource } from './healthWidgetDataSource';
+import { projectWorkspaceLifecycle } from './workspaceExperienceState';
 import { registerPodPreview } from './podPreview';
 import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
@@ -57,6 +58,7 @@ import { registerNavigationCommandGroup } from './navigationCommandGroup';
 import {
   organizeImportsCommand,
   showStatusMenuCommand,
+  showWorkspaceStatusCommand,
   showVersionCommand,
 } from './navigationCommands';
 import { registerDiagnosticCommandGroup } from './diagnosticCommandGroup';
@@ -119,7 +121,10 @@ import {
 } from './startupDiagnosis';
 import type { StartupErrorDiagnosis } from './startupDiagnosis';
 import type { ManagedBinarySource, ReinstallCommandResult } from './commandResults';
-import { ActiveDocumentReadiness } from './activeDocumentReadiness';
+import {
+  ActiveDocumentReadiness,
+  type ActiveDocumentReadinessSnapshot,
+} from './activeDocumentReadiness';
 
 // Compatibility projections for existing command/provider code. Lifecycle
 // ownership lives in `languageClientLifecycle`; these values are synchronized
@@ -141,6 +146,7 @@ let languageClientLifecycle:
   | undefined;
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
 const activeDocumentReadiness = new ActiveDocumentReadiness();
+let latestLanguageClientGeneration = 0;
 const featureActivationMetrics = new FeatureActivationMetrics();
 
 export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsSnapshot {
@@ -149,6 +155,10 @@ export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsS
 
 export function getFeatureActivationMetrics(): FeatureActivationMetricsSnapshot {
   return featureActivationMetrics.snapshot();
+}
+
+export function getActiveDocumentReadiness(): ActiveDocumentReadinessSnapshot {
+  return activeDocumentReadiness.snapshot();
 }
 
 export function markLanguageClientStartupMilestone(
@@ -502,7 +512,7 @@ export async function activate(context: vscode.ExtensionContext) {
     registerMcpSupport(outputChannel),
   );
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.command = 'perl-lsp.showStatusMenu';
+  statusBarItem.command = 'perl-lsp.showWorkspaceStatus';
   statusBarItem.accessibilityInformation = {
     label: 'Perl Language Server',
     role: 'button',
@@ -528,6 +538,24 @@ export async function activate(context: vscode.ExtensionContext) {
   const serverCommandDisposables = registerServerCommandGroup({
     outputChannel,
     currentServerPath: () => currentServerPath,
+    resolveServerPath: async () => {
+      const lifecycle = languageClientLifecycle;
+      if (!lifecycle) {
+        return currentServerPath;
+      }
+
+      try {
+        // Coalesce with activation's in-flight startup so a first-run health
+        // check never observes the transient null projection while the
+        // managed binary is being resolved.
+        await lifecycle.start();
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        outputChannel.warn(`[health-check] Server startup did not complete: ${message}`);
+      }
+      syncLifecycleProjection();
+      return lifecycle.serverPath;
+    },
     reinstallServerBinary: () => reinstallServerBinary(context),
     restartServer: () => restartServer(context),
     runHealthCheck: async (serverPath) => {
@@ -582,6 +610,40 @@ export async function activate(context: vscode.ExtensionContext) {
           }),
       }),
     showStatusMenu: showStatusMenuCommand,
+    showWorkspaceStatus: () =>
+      showWorkspaceStatusCommand({
+        getWorkspaceStatus: () => {
+          const widget = healthWidget;
+          const mode = widget?.mode ?? 'starting';
+          const hasLiveServer = mode === 'running' || mode === 'indexing';
+          const activeEditor = vscode.window.activeTextEditor;
+          const activePerlDocument = activeEditor?.document.languageId === 'perl';
+          return {
+            mode,
+            ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
+            ...(widget?.fileCount === undefined ? {} : { fileCount: widget.fileCount }),
+            ...(mode === 'stopped' ? {} : { errorCount: widget?.errorCount ?? 0 }),
+            ...(widget?.lifecycleState ? { lifecycle: widget.lifecycleState } : {}),
+            ...(widget?.experienceDetail ? { lifecycleDetail: widget.experienceDetail } : {}),
+            ...(hasLiveServer
+              ? {
+                  readinessState: widget?.enhancedReadinessAvailable
+                    ? widget.readinessState
+                    : ('legacy' as const),
+                }
+              : {}),
+            ...(widget?.readinessReason ? { readinessReason: widget.readinessReason } : {}),
+            ...(widget?.experienceAction ? { nextAction: widget.experienceAction } : {}),
+            ...(activePerlDocument && activeEditor
+              ? {
+                  activeDocumentReady: activeDocumentReadiness.isReady(
+                    activeEditor.document.uri.toString(),
+                  ),
+                }
+              : {}),
+          };
+        },
+      }),
   });
 
   const documentCommandDisposables = registerDocumentCommandGroup({
@@ -810,6 +872,7 @@ export async function activate(context: vscode.ExtensionContext) {
     return {
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
+      getActiveDocumentReadiness,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
       stop: deactivate,
@@ -822,8 +885,20 @@ export async function activate(context: vscode.ExtensionContext) {
     outputChannel.info(
       '[startup] Workspace is not trusted — deferring language server startup until trust is granted.',
     );
+    // Deferred startup is a configuration decision, not a slow start. Without
+    // this the widget stays on 'starting' indefinitely, which is
+    // indistinguishable from a server that hung — the exact conflation the
+    // #5900 experience contract forbids.
+    healthWidget?.setWorkspaceLifecycleState('configuration_action_required', {
+      detail: 'Perl language features are paused because this workspace is not trusted.',
+      action: 'Trust this workspace to start the Perl language server.',
+      reasonCode: 'workspace_untrusted',
+    });
     const trustDisposable = vscode.workspace.onDidGrantWorkspaceTrust(() => {
       outputChannel.info('[startup] Workspace trust granted — starting language server.');
+      // Hand the widget back to the ordinary startup lifecycle so the
+      // action-required state cannot outlive the condition that caused it.
+      healthWidget?.setWorkspaceLifecycleState('starting');
       startLanguageClientAfterActivation(context, whatsNewManager);
     });
     context.subscriptions.push(trustDisposable);
@@ -831,6 +906,7 @@ export async function activate(context: vscode.ExtensionContext) {
     return {
       getLanguageClientStartupMetrics,
       getFeatureActivationMetrics,
+      getActiveDocumentReadiness,
       markLanguageClientStartupMilestone,
       waitForActiveDocumentReady,
       stop: deactivate,
@@ -842,6 +918,7 @@ export async function activate(context: vscode.ExtensionContext) {
   return {
     getLanguageClientStartupMetrics,
     getFeatureActivationMetrics,
+    getActiveDocumentReadiness,
     markLanguageClientStartupMilestone,
     waitForActiveDocumentReady,
     stop: deactivate,
@@ -863,7 +940,11 @@ function startLanguageClientAfterActivation(
   finishStartupAfterActivation(context, whatsNewManager).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
     outputChannel.error(`[startup] Background startup failed: ${msg}`);
-    healthWidget?.onStateChange(ClientState.Stopped);
+    healthWidget?.setWorkspaceLifecycleState('failed', {
+      detail: `Perl Language Server failed to start: ${msg}`,
+      action: 'Run the Health Check or fix the server configuration.',
+      reasonCode: 'startup_failure',
+    });
   });
 }
 
@@ -1080,6 +1161,7 @@ function createLanguageClientLifecycle(
         languageClientStartupMetrics.finishBinaryResolution(
           resolution.path ? 'ok' : 'unavailable',
           resolution.source,
+          resolution.path,
         );
         return resolution.path;
       } catch (error: unknown) {
@@ -1098,7 +1180,7 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setServerVersion(
         startedClient.initializeResult?.serverInfo?.version,
       );
-      await finalizeStartedLanguageClient(context, startedClient);
+      await finalizeStartedLanguageClient(context, startedClient, latestLanguageClientGeneration);
     },
     onFailed: () => {
       languageClientStartupMetrics.finishServerStart('error');
@@ -1108,6 +1190,12 @@ function createLanguageClientLifecycle(
       languageClientStartupMetrics.setLifecycleState(snapshot.state);
       syncLifecycleProjection();
       healthWidget?.onStateChange(clientStateForLifecycle(snapshot.state));
+      // Only `resolving` needs an explicit projection: onStateChange maps it to
+      // generic Starting, and every other lifecycle state is already owned by
+      // onStateChange (including active indexing tokens and client_stopped detail).
+      if (snapshot.state === 'resolving') {
+        healthWidget?.setWorkspaceLifecycleState(projectWorkspaceLifecycle(snapshot.state));
+      }
     },
     onClientStateChange: (_activeClient, event) => {
       if (event.newState === LanguageClientState.Starting) {
@@ -1142,7 +1230,15 @@ function clientStateForLifecycle(state: LifecycleState): ClientState {
 async function finalizeStartedLanguageClient(
   context: vscode.ExtensionContext,
   startedClient: LanguageClient,
+  generation: number,
 ): Promise<void> {
+  // A LanguageClient restart does not replay didOpen for documents that VS Code
+  // kept open while the previous client was stopped. Rehydrate those documents
+  // before providers issue requests against the new server.
+  if (generation > 1) {
+    await synchronizeOpenPerlDocuments(startedClient);
+  }
+
   // This hook is part of the lifecycle controller so initial startup and
   // restart/reinstall generations rebuild the same client integrations.
   const serverVersion = startedClient.initializeResult?.serverInfo?.version;
@@ -1167,6 +1263,26 @@ async function finalizeStartedLanguageClient(
   }
   lastStartupDiagnosis = undefined;
   outputChannel.info('Perl Language Server started successfully');
+}
+
+async function synchronizeOpenPerlDocuments(client: LanguageClient): Promise<void> {
+  for (const document of vscode.workspace.textDocuments) {
+    if (
+      document.languageId !== 'perl' ||
+      (document.uri.scheme !== 'file' && document.uri.scheme !== 'untitled')
+    ) {
+      continue;
+    }
+
+    await client.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri: document.uri.toString(),
+        languageId: document.languageId,
+        version: document.version,
+        text: document.getText(),
+      },
+    });
+  }
 }
 
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
@@ -1246,7 +1362,11 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
     if (choice === 'View Logs') {
       outputChannel.show();
     } else if (choice === 'Run Health Check') {
-      await vscode.commands.executeCommand('perl-lsp.runHealthCheck', lifecycle.serverPath);
+      if (lifecycle.serverPath) {
+        await vscode.commands.executeCommand('perl-lsp.runHealthCheck', lifecycle.serverPath);
+      } else {
+        await vscode.commands.executeCommand('perl-lsp.runHealthCheck');
+      }
     } else if (choice === 'Reinstall') {
       await reinstallServerBinary(context);
     } else if (choice === 'Check serverPath Setting') {
@@ -1258,6 +1378,8 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
 
 function createLanguageClient(serverPath: string): LanguageClient {
   const generation = activeDocumentReadiness.beginGeneration();
+  latestLanguageClientGeneration = generation;
+  healthWidget?.seedIndexReadinessState('building');
   const serverOptions: ServerOptions = {
     run: {
       command: serverPath,
@@ -1286,6 +1408,60 @@ function createLanguageClient(serverPath: string): LanguageClient {
     outputChannel,
     traceOutputChannel: outputChannel,
     middleware: {
+      provideCompletionItem: async (document, position, context, token, next) => {
+        try {
+          const result = await next(document, position, context, token);
+          recordLspProviderOutcome('Completion', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Completion', error);
+        }
+      },
+      provideDefinition: async (document, position, token, next) => {
+        try {
+          const result = await next(document, position, token);
+          recordLspProviderOutcome('Definition', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Definition', error);
+        }
+      },
+      provideHover: async (document, position, token, next) => {
+        try {
+          const result = await next(document, position, token);
+          recordLspProviderOutcome('Hover', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Hover', error);
+        }
+      },
+      provideReferences: async (document, position, options, token, next) => {
+        try {
+          const result = await next(document, position, options, token);
+          recordLspProviderOutcome('References', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('References', error);
+        }
+      },
+      provideDocumentSymbols: async (document, token, next) => {
+        try {
+          const result = await next(document, token);
+          recordLspProviderOutcome('Symbols', document, result);
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Symbols', error);
+        }
+      },
+      provideRenameEdits: async (document, position, newName, token, next) => {
+        try {
+          const result = await next(document, position, newName, token);
+          recordLspProviderOutcome('Rename', document, result, 'safe_refusal');
+          return result;
+        } catch (error: unknown) {
+          return handleLspProviderError('Rename', error);
+        }
+      },
       provideCodeLenses: async (document, token, next) => {
         const lenses = await next(document, token);
         return lenses?.map(rewriteTestLensCommand);
@@ -1296,7 +1472,10 @@ function createLanguageClient(serverPath: string): LanguageClient {
       },
       provideDocumentFormattingEdits: async (document, options, token, next) => {
         try {
-          return await next(document, options, token);
+          const edits = await next(document, options, token);
+          const presentation = presentFormattingProviderOutcome(edits?.length ?? 0);
+          healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+          return edits;
         } catch (err: unknown) {
           const code =
             err && typeof err === 'object' && 'code' in err
@@ -1306,13 +1485,18 @@ function createLanguageClient(serverPath: string): LanguageClient {
           if (code !== -32800) {
             const msg = err instanceof Error ? err.message : String(err);
             handleFormattingError(msg, outputChannel);
+            const presentation = presentFormattingProviderError(msg);
+            healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           }
           return null;
         }
       },
       provideDocumentRangeFormattingEdits: async (document, range, options, token, next) => {
         try {
-          return await next(document, range, options, token);
+          const edits = await next(document, range, options, token);
+          const presentation = presentFormattingProviderOutcome(edits?.length ?? 0, true);
+          healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+          return edits;
         } catch (err: unknown) {
           const code =
             err && typeof err === 'object' && 'code' in err
@@ -1321,6 +1505,8 @@ function createLanguageClient(serverPath: string): LanguageClient {
           if (code !== -32800) {
             const msg = err instanceof Error ? err.message : String(err);
             handleFormattingError(msg, outputChannel);
+            const presentation = presentFormattingProviderError(msg, true);
+            healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
           }
           return null;
         }
@@ -1346,13 +1532,128 @@ function createLanguageClient(serverPath: string): LanguageClient {
       activeDocumentReadiness.markReady(params.uri, generation);
     }
   });
-  lc.onNotification('perl-lsp/index-ready', (params: { ready?: boolean }) => {
-    if (params?.ready === true) {
-      activeDocumentReadiness.markIndexReady(generation);
-    }
-  });
+  lc.onNotification(
+    'perl-lsp/index-ready',
+    (params: {
+      ready?: boolean;
+      state?: 'building' | 'ready' | 'ready_limited';
+      reason?: string | null;
+    }) => {
+      const state = params?.state ?? (params?.ready === true ? 'ready' : undefined);
+      if (state !== undefined) {
+        activeDocumentReadiness.markIndexReady(generation, state, params.reason ?? undefined);
+        healthWidget?.onIndexReadinessState(state, params.reason ?? undefined);
+      }
+    },
+  );
   void lc.setTrace(getTraceLevel());
   return lc;
+}
+
+function recordLspProviderOutcome(
+  label: string,
+  document: vscode.TextDocument,
+  result: unknown,
+  emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
+): void {
+  const presentation = presentLspProviderOutcome(
+    label,
+    result,
+    activeDocumentReadiness.isReady(document.uri.toString()),
+    emptyOutcome,
+  );
+  healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+}
+
+function handleLspProviderError(label: string, error: unknown): null {
+  if (isRequestCancellation(error)) {
+    return null;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const presentation = presentLspProviderError(label, message);
+  healthWidget?.setProviderOutcome(presentation.providerOutcome, presentation);
+  outputChannel?.warn(`[provider] ${label} failed: ${message}`);
+  return null;
+}
+
+function isRequestCancellation(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code === -32800
+  );
+}
+
+function providerResultHasValue(result: unknown): boolean {
+  if (result === undefined || result === null) {
+    return false;
+  }
+  if (Array.isArray(result)) {
+    return result.length > 0;
+  }
+  if (typeof result === 'object' && 'items' in result) {
+    const items = (result as { items?: unknown }).items;
+    return Array.isArray(items) ? items.length > 0 : Boolean(items);
+  }
+  return true;
+}
+
+export function presentLspProviderOutcome(
+  label: string,
+  result: unknown,
+  ready: boolean,
+  emptyOutcome: 'legitimate_empty' | 'safe_refusal' = 'legitimate_empty',
+): {
+  providerOutcome: 'exact_current' | 'legitimate_empty' | 'safe_refusal' | 'not_ready';
+  detail: string;
+  action?: string;
+  reasonCode: string;
+} {
+  if (!ready) {
+    return {
+      providerOutcome: 'not_ready',
+      detail: `${label} is waiting for the active Perl document and workspace index to become ready.`,
+      action: 'Wait for workspace readiness, then retry the request.',
+      reasonCode: `${label.toLowerCase()}_before_readiness`,
+    };
+  }
+  if (providerResultHasValue(result)) {
+    return {
+      providerOutcome: 'exact_current',
+      detail: `${label} returned a current source-backed result.`,
+      reasonCode: `${label.toLowerCase()}_result_available`,
+    };
+  }
+  return emptyOutcome === 'safe_refusal'
+    ? {
+        providerOutcome: 'safe_refusal',
+        detail: `${label} declined to produce an edit for this request.`,
+        action: 'Review the provider decision before applying changes.',
+        reasonCode: `${label.toLowerCase()}_safe_refusal`,
+      }
+    : {
+        providerOutcome: 'legitimate_empty',
+        detail: `${label} returned no result for the current source.`,
+        reasonCode: `${label.toLowerCase()}_legitimate_empty`,
+      };
+}
+
+export function presentLspProviderError(
+  label: string,
+  message: string,
+): {
+  providerOutcome: 'product_or_instrument_error';
+  detail: string;
+  action: string;
+  reasonCode: string;
+} {
+  return {
+    providerOutcome: 'product_or_instrument_error',
+    detail: `${label} failed: ${message}`,
+    action: 'Run the Health Check or inspect the provider decision explanation.',
+    reasonCode: `${label.toLowerCase()}_provider_error`,
+  };
 }
 
 export function shouldNudgeArrowCompletion(linePrefix: string): boolean {
@@ -1366,6 +1667,49 @@ export function shouldNudgeArrowCompletion(linePrefix: string): boolean {
   }
 
   return /(?:\$[\w:]+|[@%][\w:]+|[A-Z]\w*)$/.test(beforeDash);
+}
+
+/** Map an observed formatting result to the canonical provider presentation. */
+export function presentFormattingProviderOutcome(
+  editCount: number,
+  range: boolean = false,
+): {
+  providerOutcome: 'exact_current' | 'legitimate_empty';
+  detail: string;
+  reasonCode: string;
+} {
+  if (editCount > 0) {
+    return {
+      providerOutcome: 'exact_current',
+      detail: `Formatter produced ${editCount} ${range ? 'range ' : 'document '}edit${editCount === 1 ? '' : 's'}.`,
+      reasonCode: range ? 'range_formatting_edits_available' : 'formatting_edits_available',
+    };
+  }
+  return {
+    providerOutcome: 'legitimate_empty',
+    detail: range
+      ? 'Formatter reported no range edits; the selected range is already formatted.'
+      : 'Formatter reported no edits; the document is already formatted.',
+    reasonCode: range ? 'range_formatting_already_current' : 'formatting_already_current',
+  };
+}
+
+/** Map an observed formatting failure to an actionable provider presentation. */
+export function presentFormattingProviderError(
+  message: string,
+  range: boolean = false,
+): {
+  providerOutcome: 'product_or_instrument_error';
+  detail: string;
+  action: string;
+  reasonCode: string;
+} {
+  return {
+    providerOutcome: 'product_or_instrument_error',
+    detail: `${range ? 'Range formatting' : 'Formatting'} failed: ${message}`,
+    action: 'Check the formatter configuration or run the Health Check.',
+    reasonCode: range ? 'range_formatting_error' : 'formatting_error',
+  };
 }
 
 export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent): void {
@@ -1835,6 +2179,15 @@ export function handleClientStateChange(event: StateChangeEvent): void {
       'Try restarting the server (Command Palette: "Perl: Restart Server") or run the Health Check.',
   };
 
+  // ClientState.Stopped is ambiguous and is rendered neutrally by the widget.
+  // This path has established the stronger meaning: an unexpected mid-session
+  // crash with an actionable diagnosis.
+  healthWidget?.setWorkspaceLifecycleState('failed', {
+    detail: 'The Perl Language Server stopped unexpectedly.',
+    action: 'Restart the server or run the Health Check.',
+    reasonCode: 'unexpected_server_stop',
+  });
+
   outputChannel?.info('[lifecycle] Perl Language Server stopped unexpectedly (mid-session crash).');
 
   // If the prior run was stable long enough, treat this crash as a new
@@ -1866,17 +2219,25 @@ function startWatchdog(): void {
     if (languageClientLifecycle?.snapshot.state !== 'running') {
       return;
     }
+    let watchdogTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        languageClientLifecycle.client?.sendRequest('workspace/symbol', { query: '' }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('watchdog timeout')), WATCHDOG_TIMEOUT_MS),
-        ),
+        languageClientLifecycle.client?.sendRequest('$/perl-lsp/watchdog'),
+        new Promise((_, reject) => {
+          watchdogTimeout = setTimeout(
+            () => reject(new Error('watchdog timeout')),
+            WATCHDOG_TIMEOUT_MS,
+          );
+        }),
       ]);
     } catch {
       outputChannel.warn('[watchdog] Server unresponsive — triggering restart');
       autoRestartAttempts = 0;
       await handleUnexpectedServerStop();
+    } finally {
+      if (watchdogTimeout !== undefined) {
+        clearTimeout(watchdogTimeout);
+      }
     }
   }, WATCHDOG_INTERVAL_MS);
 }
@@ -1902,10 +2263,11 @@ async function handleUnexpectedServerStop(): Promise<void> {
       `[lifecycle] Auto-restarting Perl Language Server (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS})\u2026`,
     );
     const message = `Perl Language Server crashed and is restarting automatically (attempt ${attempt}/${MAX_AUTO_RESTART_ATTEMPTS}). ${hint}`;
-    const selection = await vscode.window.showErrorMessage(message, 'Show Output');
-    if (selection === 'Show Output') {
-      outputChannel?.show();
-    }
+    void vscode.window.showErrorMessage(message, 'Show Output').then((selection) => {
+      if (selection === 'Show Output') {
+        outputChannel?.show();
+      }
+    });
     if (!context) {
       outputChannel?.info('[lifecycle] Cannot auto-restart: extension context is not available.');
       return;

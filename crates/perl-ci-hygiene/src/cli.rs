@@ -91,6 +91,8 @@ pub(crate) enum CliCommand {
     CheckGithooks,
     /// Check docs for machine-specific paths.
     CheckDocPaths { docs_dir: Option<String> },
+    /// Check relative Markdown links in a documentation subtree.
+    CheckDocLinks { docs_dir: Option<String> },
     /// Check active status docs agree with the canonical workspace version and published-crate count.
     CheckDocDrift,
     /// Enforce linked-only task-marker policy.

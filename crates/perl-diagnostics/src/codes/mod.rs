@@ -35,6 +35,7 @@ pub use tag::DiagnosticTag;
 /// Each code has a fixed string representation and associated metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DiagnosticCode {
     // Parser diagnostics (PL001-PL099)
     /// General parse error
@@ -94,6 +95,8 @@ pub enum DiagnosticCode {
     RoleConflict,
     /// Exported subroutine lacks POD documentation
     MissingPodCoverage,
+    /// Package-qualified call to a sub not defined in the target (in-file) package (#3014)
+    UnresolvedQualifiedCall,
 
     // Best practices (PL400-PL499)
     /// Bareword filehandle usage

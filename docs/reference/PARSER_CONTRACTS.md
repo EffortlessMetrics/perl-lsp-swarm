@@ -185,6 +185,24 @@ a distinct code path.
 
 ---
 
+### Heuristic limitation for user-defined barewords
+
+The parser does not have complete symbol-table context while building the
+syntax tree. Consequently, lowercase barewords that are not recognized
+builtins are conservatively parsed as ordinary `FunctionCall` nodes, not
+`IndirectCall` nodes.
+
+This is intentional parser behavior, not a claim about Perl runtime
+semantics. The semantic-analysis layer may later use symbol information to
+interpret the call more precisely.
+
+**Proof.** `crates/perl-parser-core/src/engine/parser/indirect_object_tests.rs`
+covers unknown lowercase names with scalar, nested, comma-separated, and
+control-flow arguments. Known builtin and `new` indirect forms remain covered
+separately in the same test module.
+
+---
+
 ## 3. Embedded-Code Metadata (`s///e`)
 
 ### Contract

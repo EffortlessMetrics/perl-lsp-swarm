@@ -13,7 +13,7 @@ Thank you for your interest in contributing to Perl LSP! This guide will help yo
 2. **Install Dependencies**
    ```bash
    # Rust toolchain (if not already installed)
-   # The project pins its toolchain via rust-toolchain.toml (MSRV 1.92)
+   # The project pins its toolchain via rust-toolchain.toml (MSRV 1.95)
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
    # Recommended: use Nix for a reproducible dev environment

@@ -144,6 +144,29 @@ fn postfix_dynamic_glob_assignment_is_not_typeglob() -> Result<(), Box<dyn std::
 }
 
 #[test]
+fn fused_postfix_dynamic_glob_assignment_is_not_typeglob() -> Result<(), Box<dyn std::error::Error>>
+{
+    let source = "*{$glob}{CODE} = \\&target;";
+    let mut parser = Parser::new(source);
+    let ast = parser.parse()?;
+    if !parser.errors().is_empty() {
+        return Err(format!("expected clean parse, got {:?}", parser.errors()).into());
+    }
+    let assignment =
+        find_assignment(&ast).ok_or("expected fused postfix dynamic glob assignment")?;
+    let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
+        return Err("find_assignment returned a non-assignment node".into());
+    };
+    if matches!(lhs.kind, NodeKind::Typeglob { .. }) {
+        return Err("fused postfix dynamic glob assignment must not use a Typeglob LHS".into());
+    }
+    if find_unary_operand(lhs, "*{}").is_none() {
+        return Err("expected fused postfix dynamic glob assignment to retain its deref LHS".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn braced_glob_postfix_form_remains_a_deref() {
     let source = "*{$glob}{CODE};";
     assert_clean_parse(source);

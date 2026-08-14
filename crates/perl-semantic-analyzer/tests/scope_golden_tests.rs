@@ -640,3 +640,45 @@ print $message;
     );
     Ok(())
 }
+
+#[test]
+fn golden_five_level_closure_captures_lexicals_from_each_enclosing_scope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+my $level0 = 0;
+my $level1 = sub {
+    my $level2 = 2;
+    return sub {
+        my $level3 = 3;
+        return sub {
+            my $level4 = 4;
+            return sub {
+                my $level5 = 5;
+                return sub {
+                    return $level0 + $level2 + $level3 + $level4 + $level5;
+                };
+            };
+        };
+    };
+};
+"#;
+
+    let issues = scope_issues_strict(code);
+    for variable in ["$level0", "$level2", "$level3", "$level4", "$level5"] {
+        assert!(
+            !issues.iter().any(|issue| {
+                issue.variable_name == variable
+                    && matches!(
+                        issue.kind,
+                        IssueKind::UndeclaredVariable
+                            | IssueKind::UnusedVariable
+                            | IssueKind::UninitializedVariable
+                    )
+            }),
+            "deeply captured {variable} should resolve and count as used: {issues:?}"
+        );
+    }
+
+    Ok(())
+}

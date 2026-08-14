@@ -24,8 +24,9 @@ use perl_lsp_rs_core::tooling::perl_critic::{
     CriticConfig, CriticContext, CriticFinding, NativeCriticProfile, NativeCriticRegistry, Severity,
 };
 use perl_module::resolution::use_lib::{
-    extract_use_lib_operations_with_offsets, no_lib_cancelled_paths_from_operations_at_offset,
-    resolve_use_lib_paths_from_operations_at_offset, UseLibOperation,
+    UseLibOperation, extract_use_lib_operations_with_offsets,
+    no_lib_cancelled_paths_from_operations_at_offset,
+    resolve_use_lib_paths_from_operations_at_offset,
 };
 use perl_parser::Parser;
 use perl_parser::error::ParseError;
@@ -449,12 +450,12 @@ impl PullDiagnosticsProvider {
         }
 
         // Check relative to source file
-        if let Some(source) = source_path {
-            if let Some(parent) = source.parent() {
-                let relative_path = parent.join(&module_path);
-                if relative_path.exists() {
-                    return true;
-                }
+        if let Some(source) = source_path
+            && let Some(parent) = source.parent()
+        {
+            let relative_path = parent.join(&module_path);
+            if relative_path.exists() {
+                return true;
             }
         }
 
@@ -603,7 +604,7 @@ impl PullDiagnosticsProvider {
             ..CriticConfig::default()
         };
         let critic_context = CriticContext::new(content, ast.as_ref(), &critic_config);
-        let profile = NativeCriticProfile::parse(&context.native_critic_profile)
+        let profile = NativeCriticProfile::parse_legacy(&context.native_critic_profile)
             .unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
 
@@ -875,6 +876,8 @@ impl PullDiagnosticsProvider {
             .map(|t| match t {
                 InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                 InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "Unnecessary".to_string(),
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
@@ -887,12 +890,10 @@ impl PullDiagnosticsProvider {
         if let Some(code_str) = code.as_ref().and_then(|c| match c {
             NumberOrString::String(s) => Some(s.as_str()),
             _ => None,
-        }) {
-            if let Some(dc) = DiagnosticCode::parse_code(code_str)
-                && let Some(hint) = dc.context_hint()
-            {
-                message = format!("{message}\n\n💡 {hint}");
-            }
+        }) && let Some(dc) = DiagnosticCode::parse_code(code_str)
+            && let Some(hint) = dc.context_hint()
+        {
+            message = format!("{message}\n\n💡 {hint}");
         }
         if let Some(ref suggestion) = diagnostic.suggestion {
             message = format!("{message}\nSuggestion: {suggestion}");
@@ -953,6 +954,8 @@ impl PullDiagnosticsProvider {
             .map(|t| match t {
                 InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                 InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "Unnecessary".to_string(),
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
@@ -1041,6 +1044,8 @@ impl PullDiagnosticsProvider {
                 perl_lsp_rs_core::providers::diagnostics::DiagnosticTag::Deprecated => {
                     "Deprecated".to_string()
                 }
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "Unnecessary".to_string(),
             })
             .collect();
 
@@ -1201,6 +1206,8 @@ fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverit
         InternalDiagnosticSeverity::Warning => LspDiagnosticSeverity::WARNING,
         InternalDiagnosticSeverity::Information => LspDiagnosticSeverity::INFORMATION,
         InternalDiagnosticSeverity::Hint => LspDiagnosticSeverity::HINT,
+        // Forward-compatible fallback for future variants (#2898)
+        _ => LspDiagnosticSeverity::ERROR,
     }
 }
 
@@ -1218,6 +1225,8 @@ fn to_lsp_tags(tags: &[InternalDiagnosticTag]) -> Option<Vec<LspDiagnosticTag>> 
             .map(|tag| match tag {
                 InternalDiagnosticTag::Unnecessary => LspDiagnosticTag::UNNECESSARY,
                 InternalDiagnosticTag::Deprecated => LspDiagnosticTag::DEPRECATED,
+                // Forward-compatible fallback for future variants (#2898)
+                _ => LspDiagnosticTag::UNNECESSARY,
             })
             .collect(),
     )
@@ -2000,6 +2009,35 @@ mod tests {
                 )
             }),
             "recommended native critic profile should omit broader variable findings: {items:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = " RECOMMENDED ".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n",
+            None,
+            &context,
+            None,
+        ));
+
+        assert!(
+            items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                )
+            }),
+            "legacy invalid profile fallback must remain strict: {items:?}"
         );
 
         Ok(())
