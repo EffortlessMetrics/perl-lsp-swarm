@@ -18,11 +18,7 @@ fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn python() -> &'static str {
-    if cfg!(windows) {
-        "python"
-    } else {
-        "python3"
-    }
+    if cfg!(windows) { "python" } else { "python3" }
 }
 
 fn read(root: &Path, relative: &str) -> Result<String, Box<dyn Error>> {
@@ -38,10 +34,7 @@ fn observation_template_is_not_run_and_cell_complete() -> Result<(), Box<dyn Err
         template.get("schema_version").and_then(Value::as_str),
         Some("zed_exact_source_observations.v1")
     );
-    assert_eq!(
-        template.get("result").and_then(Value::as_str),
-        Some("not_run")
-    );
+    assert_eq!(template.get("result").and_then(Value::as_str), Some("not_run"));
     assert_eq!(
         template
             .pointer("/configuration/workspace_configuration_observed")
@@ -69,17 +62,13 @@ fn observation_template_is_not_run_and_cell_complete() -> Result<(), Box<dyn Err
         "shutdown",
     ] {
         assert_eq!(
-            template
-                .pointer(&format!("/journey/{cell}/result"))
-                .and_then(Value::as_str),
+            template.pointer(&format!("/journey/{cell}/result")).and_then(Value::as_str),
             Some("not_proven"),
             "journey cell `{cell}` must fail closed"
         );
     }
     assert_eq!(
-        template
-            .pointer("/activation/pod/result")
-            .and_then(Value::as_str),
+        template.pointer("/activation/pod/result").and_then(Value::as_str),
         Some("not_proven")
     );
     Ok(())

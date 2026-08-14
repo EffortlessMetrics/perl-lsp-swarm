@@ -16,10 +16,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::other("usage: validate-zed-host-receipt <receipt.json>"))?;
     if arguments.next().is_some() {
-        return Err(io::Error::other(
-            "usage: validate-zed-host-receipt <receipt.json>",
-        )
-        .into());
+        return Err(io::Error::other("usage: validate-zed-host-receipt <receipt.json>").into());
     }
 
     let receipt_bytes = fs::read(&receipt)?;
