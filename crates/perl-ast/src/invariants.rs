@@ -30,23 +30,6 @@ pub enum AstInvariantCode {
     NodeLimitExceeded,
 }
 
-impl AstInvariantCode {
-    /// Return the stable machine token for this finding class.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReversedRange => "reversed_range",
-            Self::RangeOutOfBounds => "range_out_of_bounds",
-            Self::NonUtf8Boundary => "non_utf8_boundary",
-            Self::UnexpectedEmptyRange => "unexpected_empty_range",
-            Self::ChildOutsideParent => "child_outside_parent",
-            Self::ChildOrderRegression => "child_order_regression",
-            Self::DepthLimitExceeded => "depth_limit_exceeded",
-            Self::NodeLimitExceeded => "node_limit_exceeded",
-        }
-    }
-}
-
 /// One reproducible AST structural finding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
