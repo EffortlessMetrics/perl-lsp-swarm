@@ -133,25 +133,6 @@ function Ensure-InstallDirOnUserPath {
 
 function Write-ManualPathGuidance {
     Write-Host "Add this directory to your user PATH before starting a new editor/Claude process: $InstallDir" -ForegroundColor Cyan
-
-function Get-ExpectedAssetHash {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ChecksumPath,
-        [Parameter(Mandatory = $true)]
-        [string]$Asset
-    )
-
-    $EntryPattern = [regex]'^(?<hash>[0-9a-f]{64})[ \t]+\*?(?<name>.+)
-
-    if ($Entries.Count -eq 0) {
-        throw "SHA256SUMS contains no exact lowercase SHA-256 entry for $Asset"
-    }
-    if ($Entries.Count -ne 1) {
-        throw "SHA256SUMS contains duplicate entries for $Asset"
-    }
-
-    return $Entries[0]
 }
 
 # Detect architecture.
@@ -181,6 +162,36 @@ $HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
 }
 
 $IsArm64Host = $HostArch -eq "ARM64"
+
+function Get-ExpectedAssetHash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ChecksumPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Asset
+    )
+
+    $HashPattern = [regex]'^[0-9a-f]{64}$'
+    $Rows = @(
+        Get-Content -LiteralPath $ChecksumPath | ForEach-Object {
+            $Parts = $_ -split '\s+', 2
+            if ($Parts.Count -eq 2 -and $Parts[0] -and $Parts[1]) {
+                [pscustomobject]@{ Hash = $Parts[0]; Name = $Parts[1].Trim().TrimStart('*') }
+            }
+        } | Where-Object { $_.Name -ceq $Asset }
+    )
+
+    if ($Rows.Count -eq 0) {
+        throw "SHA256SUMS contains no exact entry for $Asset"
+    }
+    if ($Rows.Count -ne 1) {
+        throw "SHA256SUMS contains duplicate entries for $Asset"
+    }
+    if (-not $HashPattern.IsMatch($Rows[0].Hash)) {
+        throw "SHA256SUMS entry for $Asset is not an exact lowercase SHA-256 hash"
+    }
+    return $Rows[0].Hash
+}
 
 function Get-WindowsBuildNumber {
     try {
@@ -304,7 +315,6 @@ if ($IsArm64Host) {
 # Construct download URL
 $Asset = "$Name-$VersionNum-$Target.zip"
 $Url = "$ReleaseBaseUrl/$Asset"
-$ChecksumUrl = "$ReleaseBaseUrl/SHA256SUMS"
 
 Write-Info "Downloading $Name $Tag for $Target"
 
@@ -312,38 +322,33 @@ Write-Info "Downloading $Name $Tag for $Target"
 $TempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
 
 try {
-    # Integrity metadata is required and selected before the archive download.
+    # Integrity metadata is required and validated before the archive download.
+    $ChecksumUrl = "$ReleaseBaseUrl/SHA256SUMS"
     $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
-    Write-Info "Downloading required checksum manifest"
     try {
         Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
     } catch {
         Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
+        throw
     }
 
-    try {
-        $ExpectedHash = Get-ExpectedAssetHash -ChecksumPath $ChecksumPath -Asset $Asset
-    } catch {
-        Write-Error "Invalid checksum manifest for $Asset : $($_.Exception.Message)"
-    }
+    $ExpectedHash = Get-ExpectedAssetHash -ChecksumPath $ChecksumPath -Asset $Asset
 
-    # Download the exact selected archive only after its checksum identity is usable.
+    # Download binary
     $ZipPath = Join-Path $TempDir $Asset
     Write-Info "Downloading from $Url"
     try {
         Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
     } catch {
         Write-Error "Failed to download from $Url : $_"
+        throw
     }
 
-    try {
-        $ActualHash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    } catch {
-        Write-Error "Failed to calculate SHA-256 for $Asset : $_"
-    }
-
+    # Verify checksum
+    $ActualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
     if ($ExpectedHash -ne $ActualHash) {
         Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
+        throw
     }
     Write-Success "Checksum verified"
 
@@ -351,36 +356,36 @@ try {
     Write-Info "Extracting archive"
     $ExtractDir = Join-Path $TempDir "extract"
     Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
-
+    
     # Find the binary
     $ExtractedDir = Join-Path $ExtractDir "$Name-$VersionNum-$Target"
     if (-not (Test-Path $ExtractedDir)) {
         # Try without nested directory
         $ExtractedDir = $ExtractDir
     }
-
+    
     $BinaryPath = Join-Path $ExtractedDir "$Name.exe"
     if (-not (Test-Path $BinaryPath)) {
         Write-Error "Binary not found at $BinaryPath"
     }
-
+    
     # Create install directory
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
-
+    
     # Install binary
     $DestPath = Join-Path $InstallDir "$Name.exe"
     Write-Info "Installing $Name to $DestPath"
-
+    
     # Remove old binary if exists
     if (Test-Path $DestPath) {
         Remove-Item $DestPath -Force
     }
-
+    
     # Copy binary
     Copy-Item -Path $BinaryPath -Destination $DestPath -Force
-
+    
     Write-Success "Installed $Name to $DestPath"
 
     # Install the perl-dap companion binary when the archive carries it.
@@ -468,510 +473,7 @@ try {
     }
     Write-Host ""
     Write-Host "For more information: https://github.com/$Repo"
-
-} finally {
-    # Cleanup
-    if (Test-Path $TempDir) {
-        Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
-    $CandidatePattern = [regex]'^(?<hash>[^ \t]+)[ \t]+\*?(?<name>.+)
-
-    if ($Entries.Count -eq 0) {
-        throw "SHA256SUMS contains no exact lowercase SHA-256 entry for $Asset"
-    }
-    if ($Entries.Count -ne 1) {
-        throw "SHA256SUMS contains duplicate entries for $Asset"
-    }
-
-    return $Entries[0]
-}
-
-# Detect architecture.
-#
-# Only x86_64-pc-windows-msvc is published: the release matrix in
-# .github/workflows/release.yml has no aarch64-pc-windows-msvc entry. Asking
-# for one built a URL that always 404s, and the failure surfaced as a bare
-# "Failed to download" with nothing actionable in it (#5007).
-#
-# ARM64 Windows runs x64 binaries under emulation on Windows 11 (build 22000
-# or newer), so the x64 asset is the working answer there. Windows 10 ARM64
-# cannot run the published x64 asset and must fail before downloading it.
-#
-# A 32-bit PowerShell host on 64-bit Windows reports "x86" in
-# PROCESSOR_ARCHITECTURE and the real architecture in PROCESSOR_ARCHITEW6432,
-# so consult the latter first.
-$HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
-    $env:PROCESSOR_ARCHITEW6432
-} else {
-    $env:PROCESSOR_ARCHITECTURE
-}
-
-$IsArm64Host = $HostArch -eq "ARM64"
-
-function Get-WindowsBuildNumber {
-    try {
-        $build = [int](Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "CurrentBuildNumber")
-        if ($build -ge 0) {
-            return $build
-        }
-    } catch {
-        # Fall back for restricted registry access or older PowerShell hosts.
-    }
-
-    try {
-        return [int][System.Environment]::OSVersion.Version.Build
-    } catch {
-        return -1
-    }
-}
-
-if ($IsArm64Host) {
-    $WindowsBuild = Get-WindowsBuildNumber
-    if ($WindowsBuild -lt 22000) {
-        $DetectedBuild = if ($WindowsBuild -ge 0) { "build $WindowsBuild" } else { "an unknown Windows build" }
-        Write-Error "Windows ARM64 x64 emulation requires Windows 11 (build 22000 or newer); detected $DetectedBuild. Windows 10 ARM64 cannot run the published x86_64 binary. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
-    }
-}
-
-# Name the target as a whole literal rather than assembling it from an arch
-# variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
-# the Linux CI host, so the contract test in
-# scripts/tests/test-install-target-selection.sh checks which targets this
-# script can request by reading them out of the source. Assembling the triple
-# from a variable hides it from that check, which is how the original defect
-# ($Arch = "aarch64") stayed invisible.
-$Target = if ($IsArm64Host -or $HostArch -eq "AMD64") {
-    "x86_64-pc-windows-msvc"
-} else {
-    Write-Error "Unsupported architecture: $HostArch. Only x86_64 Windows binaries are published. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
-}
-
-if ($IsArm64Host) {
-    Write-Info "Detected system: Windows (ARM64) - installing $Target"
-    Write-Warn "No native ARM64 Windows build is published. The x64 build runs under the x64 emulation in Windows 11 on ARM."
-} else {
-    Write-Info "Detected system: Windows ($HostArch) - $Target"
-}
-
-# Get version
-if ($Version -eq "latest") {
-    try {
-        $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
-        $Tag = $Release.tag_name
-        Write-Info "Latest version: $Tag"
-    } catch {
-        Write-Error "Failed to fetch latest release: $_"
-    }
-} else {
-    $Tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
-}
-
-$VersionNum = $Tag.TrimStart("v")
-
-# Construct download URL
-$Asset = "$Name-$VersionNum-$Target.zip"
-$Url = "https://github.com/$Repo/releases/download/$Tag/$Asset"
-$ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS"
-
-Write-Info "Downloading $Name $Tag for $Target"
-
-# Create temp directory
-$TempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
-
-try {
-    # Integrity metadata is required and selected before the archive download.
-    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
-    Write-Info "Downloading required checksum manifest"
-    try {
-        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
-    } catch {
-        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
-    }
-
-    try {
-        $ExpectedHash = Get-ExpectedAssetHash -ChecksumPath $ChecksumPath -Asset $Asset
-    } catch {
-        Write-Error "Invalid checksum manifest for $Asset : $($_.Exception.Message)"
-    }
-
-    # Download the exact selected archive only after its checksum identity is usable.
-    $ZipPath = Join-Path $TempDir $Asset
-    Write-Info "Downloading from $Url"
-    try {
-        Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
-    } catch {
-        Write-Error "Failed to download from $Url : $_"
-    }
-
-    try {
-        $ActualHash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    } catch {
-        Write-Error "Failed to calculate SHA-256 for $Asset : $_"
-    }
-
-    if ($ExpectedHash -ne $ActualHash) {
-        Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
-    }
-    Write-Success "Checksum verified"
-
-    # Extract archive
-    Write-Info "Extracting archive"
-    $ExtractDir = Join-Path $TempDir "extract"
-    Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
-
-    # Find the binary
-    $ExtractedDir = Join-Path $ExtractDir "$Name-$VersionNum-$Target"
-    if (-not (Test-Path $ExtractedDir)) {
-        # Try without nested directory
-        $ExtractedDir = $ExtractDir
-    }
-
-    $BinaryPath = Join-Path $ExtractedDir "$Name.exe"
-    if (-not (Test-Path $BinaryPath)) {
-        Write-Error "Binary not found at $BinaryPath"
-    }
-
-    # Create install directory
-    if (-not (Test-Path $InstallDir)) {
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    }
-
-    # Install binary
-    $DestPath = Join-Path $InstallDir "$Name.exe"
-    Write-Info "Installing $Name to $DestPath"
-
-    # Remove old binary if exists
-    if (Test-Path $DestPath) {
-        Remove-Item $DestPath -Force
-    }
-
-    # Copy binary
-    Copy-Item -Path $BinaryPath -Destination $DestPath -Force
-
-    Write-Success "Installed $Name to $DestPath"
-
-    # Install the perl-dap companion binary when the archive carries it.
-    # Mirrors the optional-DAP copy in scripts/install.sh: present since
-    # v0.9.1, so treat absence as a warning rather than a hard failure to stay
-    # compatible with older archives.
-    $DapInstalled = $false
-    $DapSourcePath = Join-Path $ExtractedDir "$DapName.exe"
-    $DapDestPath = Join-Path $InstallDir "$DapName.exe"
-    if (Test-Path $DapSourcePath) {
-        Write-Info "Installing $DapName to $DapDestPath"
-        if (Test-Path $DapDestPath) {
-            Remove-Item $DapDestPath -Force
-        }
-        Copy-Item -Path $DapSourcePath -Destination $DapDestPath -Force
-        Write-Success "Installed $DapName to $DapDestPath"
-        $DapInstalled = $true
-    } else {
-        Write-Warn "$DapName.exe not found in the release archive - debugging support will be unavailable"
-    }
-
-    # Verify installation
-    try {
-        $VersionOutput = & $DestPath --version 2>&1
-        Write-Success "Installation verified: $VersionOutput"
-    } catch {
-        Write-Warn "Could not verify installation"
-    }
-
-    # Check PATH - persist only the user scope; never copy the merged process PATH.
-    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if (Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir) {
-        Add-InstallDirToCurrentProcessPath
-        Write-Success "$InstallDir is already persisted in the user PATH"
-    } else {
-        try {
-            Ensure-InstallDirOnUserPath | Out-Null
-            Add-InstallDirToCurrentProcessPath
-            Write-Success "Added $InstallDir to the persistent user PATH"
-            Write-Warn "Restart already-running terminals and editors so they inherit the persisted PATH."
-        } catch {
-            Add-InstallDirToCurrentProcessPath
-            Write-Warn "Could not persist $InstallDir on the user PATH: $($_.Exception.Message)"
-            Write-ManualPathGuidance
-        }
-    }
-
-    Write-Host ""
-    Write-Host "Installation complete! 🎉" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "To get started with Perl LSP:"
-    Write-Host "  • VS Code: Install the Perl LSP extension from the marketplace"
-    Write-Host "  • Other editors: Configure to use '$DestPath --stdio'"
-    if ($DapInstalled) {
-        Write-Host "  • Debugging: Configure your DAP client to use '$DapDestPath'"
-    } else {
-        Write-Host "  • Debugging: unavailable - $DapName.exe was not in this release archive"
-    }
-    Write-Host ""
-    Write-Host "For more information: https://github.com/$Repo"
-
-} finally {
-    # Cleanup
-    if (Test-Path $TempDir) {
-        Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
-    $Entries = [System.Collections.Generic.List[string]]::new()
-
-    foreach ($RawLine in Get-Content -LiteralPath $ChecksumPath) {
-        $Line = $RawLine.TrimEnd("`r")
-        if ([string]::IsNullOrWhiteSpace($Line)) {
-            continue
-        }
-
-        $Candidate = $CandidatePattern.Match($Line)
-        if (-not $Candidate.Success -or $Candidate.Groups['name'].Value -cne $Asset) {
-            continue
-        }
-
-        $Match = $EntryPattern.Match($Line)
-        if (-not $Match.Success) {
-            throw "SHA256SUMS contains malformed entry for $Asset"
-        }
-
-        $Entries.Add($Match.Groups['hash'].Value)
-    }
-
-    if ($Entries.Count -eq 0) {
-        throw "SHA256SUMS contains no exact lowercase SHA-256 entry for $Asset"
-    }
-    if ($Entries.Count -ne 1) {
-        throw "SHA256SUMS contains duplicate entries for $Asset"
-    }
-
-    return $Entries[0]
-}
-
-# Detect architecture.
-#
-# Only x86_64-pc-windows-msvc is published: the release matrix in
-# .github/workflows/release.yml has no aarch64-pc-windows-msvc entry. Asking
-# for one built a URL that always 404s, and the failure surfaced as a bare
-# "Failed to download" with nothing actionable in it (#5007).
-#
-# ARM64 Windows runs x64 binaries under emulation on Windows 11 (build 22000
-# or newer), so the x64 asset is the working answer there. Windows 10 ARM64
-# cannot run the published x64 asset and must fail before downloading it.
-#
-# A 32-bit PowerShell host on 64-bit Windows reports "x86" in
-# PROCESSOR_ARCHITECTURE and the real architecture in PROCESSOR_ARCHITEW6432,
-# so consult the latter first.
-$HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
-    $env:PROCESSOR_ARCHITEW6432
-} else {
-    $env:PROCESSOR_ARCHITECTURE
-}
-
-$IsArm64Host = $HostArch -eq "ARM64"
-
-function Get-WindowsBuildNumber {
-    try {
-        $build = [int](Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "CurrentBuildNumber")
-        if ($build -ge 0) {
-            return $build
-        }
-    } catch {
-        # Fall back for restricted registry access or older PowerShell hosts.
-    }
-
-    try {
-        return [int][System.Environment]::OSVersion.Version.Build
-    } catch {
-        return -1
-    }
-}
-
-if ($IsArm64Host) {
-    $WindowsBuild = Get-WindowsBuildNumber
-    if ($WindowsBuild -lt 22000) {
-        $DetectedBuild = if ($WindowsBuild -ge 0) { "build $WindowsBuild" } else { "an unknown Windows build" }
-        Write-Error "Windows ARM64 x64 emulation requires Windows 11 (build 22000 or newer); detected $DetectedBuild. Windows 10 ARM64 cannot run the published x86_64 binary. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
-    }
-}
-
-# Name the target as a whole literal rather than assembling it from an arch
-# variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
-# the Linux CI host, so the contract test in
-# scripts/tests/test-install-target-selection.sh checks which targets this
-# script can request by reading them out of the source. Assembling the triple
-# from a variable hides it from that check, which is how the original defect
-# ($Arch = "aarch64") stayed invisible.
-$Target = if ($IsArm64Host -or $HostArch -eq "AMD64") {
-    "x86_64-pc-windows-msvc"
-} else {
-    Write-Error "Unsupported architecture: $HostArch. Only x86_64 Windows binaries are published. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
-}
-
-if ($IsArm64Host) {
-    Write-Info "Detected system: Windows (ARM64) - installing $Target"
-    Write-Warn "No native ARM64 Windows build is published. The x64 build runs under the x64 emulation in Windows 11 on ARM."
-} else {
-    Write-Info "Detected system: Windows ($HostArch) - $Target"
-}
-
-# Get version
-if ($Version -eq "latest") {
-    try {
-        $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
-        $Tag = $Release.tag_name
-        Write-Info "Latest version: $Tag"
-    } catch {
-        Write-Error "Failed to fetch latest release: $_"
-    }
-} else {
-    $Tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
-}
-
-$VersionNum = $Tag.TrimStart("v")
-
-# Construct download URL
-$Asset = "$Name-$VersionNum-$Target.zip"
-$Url = "https://github.com/$Repo/releases/download/$Tag/$Asset"
-$ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS"
-
-Write-Info "Downloading $Name $Tag for $Target"
-
-# Create temp directory
-$TempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
-
-try {
-    # Integrity metadata is required and selected before the archive download.
-    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
-    Write-Info "Downloading required checksum manifest"
-    try {
-        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
-    } catch {
-        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
-    }
-
-    try {
-        $ExpectedHash = Get-ExpectedAssetHash -ChecksumPath $ChecksumPath -Asset $Asset
-    } catch {
-        Write-Error "Invalid checksum manifest for $Asset : $($_.Exception.Message)"
-    }
-
-    # Download the exact selected archive only after its checksum identity is usable.
-    $ZipPath = Join-Path $TempDir $Asset
-    Write-Info "Downloading from $Url"
-    try {
-        Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
-    } catch {
-        Write-Error "Failed to download from $Url : $_"
-    }
-
-    try {
-        $ActualHash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    } catch {
-        Write-Error "Failed to calculate SHA-256 for $Asset : $_"
-    }
-
-    if ($ExpectedHash -ne $ActualHash) {
-        Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
-    }
-    Write-Success "Checksum verified"
-
-    # Extract archive
-    Write-Info "Extracting archive"
-    $ExtractDir = Join-Path $TempDir "extract"
-    Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
-
-    # Find the binary
-    $ExtractedDir = Join-Path $ExtractDir "$Name-$VersionNum-$Target"
-    if (-not (Test-Path $ExtractedDir)) {
-        # Try without nested directory
-        $ExtractedDir = $ExtractDir
-    }
-
-    $BinaryPath = Join-Path $ExtractedDir "$Name.exe"
-    if (-not (Test-Path $BinaryPath)) {
-        Write-Error "Binary not found at $BinaryPath"
-    }
-
-    # Create install directory
-    if (-not (Test-Path $InstallDir)) {
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    }
-
-    # Install binary
-    $DestPath = Join-Path $InstallDir "$Name.exe"
-    Write-Info "Installing $Name to $DestPath"
-
-    # Remove old binary if exists
-    if (Test-Path $DestPath) {
-        Remove-Item $DestPath -Force
-    }
-
-    # Copy binary
-    Copy-Item -Path $BinaryPath -Destination $DestPath -Force
-
-    Write-Success "Installed $Name to $DestPath"
-
-    # Install the perl-dap companion binary when the archive carries it.
-    # Mirrors the optional-DAP copy in scripts/install.sh: present since
-    # v0.9.1, so treat absence as a warning rather than a hard failure to stay
-    # compatible with older archives.
-    $DapInstalled = $false
-    $DapSourcePath = Join-Path $ExtractedDir "$DapName.exe"
-    $DapDestPath = Join-Path $InstallDir "$DapName.exe"
-    if (Test-Path $DapSourcePath) {
-        Write-Info "Installing $DapName to $DapDestPath"
-        if (Test-Path $DapDestPath) {
-            Remove-Item $DapDestPath -Force
-        }
-        Copy-Item -Path $DapSourcePath -Destination $DapDestPath -Force
-        Write-Success "Installed $DapName to $DapDestPath"
-        $DapInstalled = $true
-    } else {
-        Write-Warn "$DapName.exe not found in the release archive - debugging support will be unavailable"
-    }
-
-    # Verify installation
-    try {
-        $VersionOutput = & $DestPath --version 2>&1
-        Write-Success "Installation verified: $VersionOutput"
-    } catch {
-        Write-Warn "Could not verify installation"
-    }
-
-    # Check PATH - persist only the user scope; never copy the merged process PATH.
-    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if (Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir) {
-        Add-InstallDirToCurrentProcessPath
-        Write-Success "$InstallDir is already persisted in the user PATH"
-    } else {
-        try {
-            Ensure-InstallDirOnUserPath | Out-Null
-            Add-InstallDirToCurrentProcessPath
-            Write-Success "Added $InstallDir to the persistent user PATH"
-            Write-Warn "Restart already-running terminals and editors so they inherit the persisted PATH."
-        } catch {
-            Add-InstallDirToCurrentProcessPath
-            Write-Warn "Could not persist $InstallDir on the user PATH: $($_.Exception.Message)"
-            Write-ManualPathGuidance
-        }
-    }
-
-    Write-Host ""
-    Write-Host "Installation complete! 🎉" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "To get started with Perl LSP:"
-    Write-Host "  • VS Code: Install the Perl LSP extension from the marketplace"
-    Write-Host "  • Other editors: Configure to use '$DestPath --stdio'"
-    if ($DapInstalled) {
-        Write-Host "  • Debugging: Configure your DAP client to use '$DapDestPath'"
-    } else {
-        Write-Host "  • Debugging: unavailable - $DapName.exe was not in this release archive"
-    }
-    Write-Host ""
-    Write-Host "For more information: https://github.com/$Repo"
-
+    
 } finally {
     # Cleanup
     if (Test-Path $TempDir) {
