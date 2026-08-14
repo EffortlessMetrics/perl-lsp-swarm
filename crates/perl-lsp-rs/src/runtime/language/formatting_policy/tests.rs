@@ -259,83 +259,6 @@ fn external_partial_range_never_substitutes_native() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn invalid_multi_range_geometry_rejects_atomically() -> Result<(), Box<dyn std::error::Error>> {
-    let server = LspServer::new();
-    advertise(&server, Surface::Ranges);
-    let uri = "file:///multi-range-refusal.pl";
-    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
-
-    let error = server
-        .handle_ranges_formatting_policy(
-            Some(json!({
-                "textDocument": { "uri": uri, "version": 1 },
-                "ranges": [
-                    {
-                        "start": { "line": 0, "character": 0 },
-                        "end": { "line": 0, "character": 7 }
-                    },
-                    {
-                        "start": { "line": 99, "character": 0 },
-                        "end": { "line": 99, "character": 1 }
-                    }
-                ],
-                "options": { "tabSize": 4, "insertSpaces": true },
-            })),
-            None,
-        )
-        .err()
-        .ok_or("invalid range geometry was admitted")?;
-
-    assert_eq!(error.code, -32602);
-    let data = error.data.ok_or("missing invalid-plan evidence")?;
-    assert_eq!(data["reason"], "invalid_position");
-    let receipt = receipt(&server)?;
-    assert_eq!(receipt["decision"], "blocked");
-    assert_eq!(receipt["reason"], "invalid_position");
-    assert_eq!(receipt["result_count"], 0);
-    Ok(())
-}
-
-#[test]
-fn overlapping_multi_ranges_are_rejected_before_formatting()
--> Result<(), Box<dyn std::error::Error>> {
-    let server = LspServer::new();
-    advertise(&server, Surface::Ranges);
-    let uri = "file:///overlapping-ranges.pl";
-    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
-
-    let error = server
-        .handle_ranges_formatting_policy(
-            Some(json!({
-                "textDocument": { "uri": uri, "version": 1 },
-                "ranges": [
-                    {
-                        "start": { "line": 0, "character": 0 },
-                        "end": { "line": 0, "character": 5 }
-                    },
-                    {
-                        "start": { "line": 0, "character": 3 },
-                        "end": { "line": 0, "character": 7 }
-                    }
-                ],
-                "options": { "tabSize": 4, "insertSpaces": true },
-            })),
-            None,
-        )
-        .err()
-        .ok_or("overlapping ranges were admitted")?;
-
-    assert_eq!(error.code, -32602);
-    let data = error.data.ok_or("missing invalid-plan evidence")?;
-    assert_eq!(data["reason"], "overlapping_ranges");
-    let receipt = receipt(&server)?;
-    assert_eq!(receipt["decision"], "blocked");
-    assert_eq!(receipt["reason"], "overlapping_ranges");
-    assert_eq!(receipt["result_count"], 0);
-    Ok(())
-}
-
-#[test]
 fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::Document);
@@ -359,7 +282,7 @@ fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
+fn live_dispatch_routes_document_range_and_on_type_through_one_receipt_policy()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
@@ -384,17 +307,6 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
                     "start": { "line": 0, "character": 0 },
                     "end": { "line": 0, "character": 7 }
                 },
-                "options": { "tabSize": 4, "insertSpaces": true }
-            }),
-        ),
-        (
-            "textDocument/rangesFormatting",
-            json!({
-                "textDocument": { "uri": document_uri, "version": 1 },
-                "ranges": [{
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 7 }
-                }],
                 "options": { "tabSize": 4, "insertSpaces": true }
             }),
         ),

@@ -4,9 +4,6 @@ use super::{
     invalid_params, json, parse_range, req_position,
 };
 
-#[path = "multi_range.rs"]
-mod multi_range;
-
 impl LspServer {
     /// Run document formatting through the shared runtime policy.
     pub(crate) fn handle_formatting_policy(
@@ -80,15 +77,6 @@ impl LspServer {
         })?;
         self.ensure_current(&snapshot)?;
         self.project(&snapshot, decision)
-    }
-
-    /// Run LSP 3.18 multi-range formatting through one atomic plan.
-    pub(crate) fn handle_ranges_formatting_policy(
-        &self,
-        params: Option<Value>,
-        request_id: Option<&Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        multi_range::handle(self, params, request_id)
     }
 
     /// Run bounded on-type indentation through the shared runtime policy.
