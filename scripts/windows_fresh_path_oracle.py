@@ -44,7 +44,11 @@ def _path_entries(path_value: str) -> list[str]:
 
 
 def candidate_names(command: str, pathext: Optional[str]) -> list[str]:
-    """Windows command lookup candidates (PATHEXT-aware, case-preserving)."""
+    """Windows command lookup candidates (PATHEXT-aware).
+
+    On case-sensitive hosts, include both the PATHEXT spelling and a lowercase
+    variant so fixture proofs still exercise the Windows name surface.
+    """
     names = [command]
     if os.name == "nt" or pathext is not None:
         ext_list = (pathext if pathext is not None else ".COM;.EXE;.BAT;.CMD").split(";")
@@ -58,14 +62,18 @@ def candidate_names(command: str, pathext: Optional[str]) -> list[str]:
             if not ext.startswith("."):
                 ext = "." + ext
             names.append(f"{command}{ext}")
+            lower = ext.lower()
+            if lower != ext:
+                names.append(f"{command}{lower}")
     else:
         # Cross-platform CI still proves the Windows name surface used by install.ps1.
         names.extend([f"{command}.exe", f"{command}.cmd", f"{command}.bat"])
-    # Preserve order, drop duplicates.
+    # Preserve order, drop duplicates. On Windows, PATH lookup is case-insensitive;
+    # on Linux CI keep both PATHEXT and lowercase spellings so fixtures resolve.
     seen: set[str] = set()
     ordered: list[str] = []
     for name in names:
-        key = name.lower()
+        key = name.lower() if os.name == "nt" else name
         if key in seen:
             continue
         seen.add(key)
