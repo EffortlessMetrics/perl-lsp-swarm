@@ -143,7 +143,14 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
             .get("P08")
             .and_then(|stage| stage.get("issue"))
             .and_then(Value::as_u64),
-        Some(7912)
+        Some(9467)
+    );
+    assert_eq!(
+        index
+            .get("P09")
+            .and_then(|stage| stage.get("issue"))
+            .and_then(Value::as_u64),
+        Some(9468)
     );
     assert_eq!(
         index
@@ -151,6 +158,13 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
             .and_then(|stage| stage.get("issue"))
             .and_then(Value::as_u64),
         Some(7912)
+    );
+    assert_eq!(
+        index
+            .get("P20")
+            .and_then(|stage| stage.get("issue"))
+            .and_then(Value::as_u64),
+        Some(8000)
     );
     assert_ne!(
         index.get("P08").and_then(|stage| stage.get("phase")),
