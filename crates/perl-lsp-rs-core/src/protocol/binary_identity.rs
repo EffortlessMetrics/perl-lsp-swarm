@@ -825,6 +825,7 @@ mod tests {
         BINARY_IDENTITY_FEATURE_VERSION, BinaryCompatibilityReason, BinaryCompatibilityState,
         BinaryIdentityRequestV1, BinaryIdentityTransportStateV1, CANONICAL_EXTENSION_ID,
         CANONICAL_EXTENSION_PACKAGE, CANONICAL_EXTENSION_PUBLISHER, ExpectedExtensionIdentityV1,
+        MAX_IDENTITY_LEN,
     };
     use crate::product_identity::{ArtifactRole, BinaryIdentityInput, BinaryIdentityPacketV1};
 
@@ -1003,5 +1004,106 @@ mod tests {
         let response = state().respond(request);
         assert_eq!(response.compatibility, BinaryCompatibilityState::Unsupported);
         assert_eq!(response.reasons, vec![BinaryCompatibilityReason::FeatureVersionUnsupported]);
+    }
+
+    #[test]
+    fn missing_extension_target_keeps_field_specific_partial() {
+        let mut request = request();
+        request.expected_extension.target = None;
+        let response = state().respond(request);
+        assert_eq!(response.compatibility, BinaryCompatibilityState::CompatiblePartial);
+        assert_eq!(response.reasons, vec![BinaryCompatibilityReason::TargetNotProven]);
+        assert!(
+            !response.reasons.contains(&BinaryCompatibilityReason::BuildIdentityPartial),
+            "absent extension target must not collapse to build_identity_partial"
+        );
+    }
+
+    #[test]
+    fn missing_extension_candidate_keeps_field_specific_partial() {
+        let mut request = request();
+        request.expected_extension.candidate_identity = None;
+        let response = state().respond(request);
+        assert_eq!(response.compatibility, BinaryCompatibilityState::CompatiblePartial);
+        assert_eq!(response.reasons, vec![BinaryCompatibilityReason::CandidateNotProven]);
+        assert!(
+            !response.reasons.contains(&BinaryCompatibilityReason::BuildIdentityPartial),
+            "absent candidate identity must not collapse to build_identity_partial"
+        );
+    }
+
+    #[test]
+    fn missing_dap_source_revision_keeps_field_specific_partial() {
+        let mut state = state();
+        state.dap = Some(BinaryIdentityPacketV1::dap(
+            "0.18.0",
+            BinaryIdentityInput { source_revision: None, ..exact_input("rc1", &digest('d')) },
+        ));
+        let response = state.respond(request());
+        assert_eq!(response.compatibility, BinaryCompatibilityState::CompatiblePartial);
+        assert!(
+            response.reasons.contains(&BinaryCompatibilityReason::SourceRevisionNotProven),
+            "absent DAP source revision must surface source_revision_not_proven"
+        );
+    }
+
+    #[test]
+    fn missing_source_tree_digest_falls_back_to_field_specific_partial() {
+        let mut state = state();
+        state.dap = Some(BinaryIdentityPacketV1::dap(
+            "0.18.0",
+            BinaryIdentityInput { source_tree_digest: None, ..exact_input("rc1", &digest('d')) },
+        ));
+        let response = state.respond(request());
+        assert_eq!(response.compatibility, BinaryCompatibilityState::CompatiblePartial);
+        assert!(
+            response.reasons.contains(&BinaryCompatibilityReason::SourceTreeDigestNotProven),
+            "absent source-tree digest must fall back to source_tree_digest_not_proven"
+        );
+    }
+
+    #[test]
+    fn wrong_dap_posture_is_a_distinct_mismatch() {
+        let mut state = state();
+        state.server.compatibility.dap_posture = "stable".to_owned();
+        let response = state.respond(request());
+        assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::DapPostureMismatch));
+    }
+
+    #[test]
+    fn artifact_role_mismatch_is_a_distinct_mismatch() {
+        let mut state = state();
+        state.server.artifact.role = ArtifactRole::Archive;
+        let response = state.respond(request());
+        assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::ArtifactRoleMismatch));
+    }
+
+    #[test]
+    fn unsupported_product_identity_version_classifies_separately() {
+        let mut state = state();
+        state.server.compatibility.expected_product_identity_version = 99;
+        let response = state.respond(request());
+        assert_eq!(
+            response.compatibility,
+            BinaryCompatibilityState::NotProven,
+            "unsupported contract version is not a plain mismatch"
+        );
+        assert_eq!(
+            response.reasons,
+            vec![BinaryCompatibilityReason::ProductIdentityVersionUnsupported]
+        );
+    }
+
+    #[test]
+    fn oversized_payload_field_is_not_copy_safe() {
+        let mut request = request();
+        request.expected_extension.candidate_identity = Some("x".repeat(MAX_IDENTITY_LEN * 2));
+        let response = state().respond(request);
+        assert_eq!(response.compatibility, BinaryCompatibilityState::NotProven);
+        assert!(!response.redacted, "oversized payload required a redaction");
+        assert_eq!(response.expected_extension.candidate_identity, None);
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::PayloadNotRedacted));
     }
 }

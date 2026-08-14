@@ -31,6 +31,78 @@ fn read(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     Ok(std::fs::read_to_string(path)?)
 }
 
+/// The formatter owns the TypeScript quote style, so accept either delimiter
+/// while still requiring the exact literal content as a string token.
+fn typescript_declares(typescript: &str, literal: &str) -> bool {
+    typescript.contains(&format!("\"{literal}\"")) || typescript.contains(&format!("'{literal}'"))
+}
+
+/// Assert one schema token grammar that every Rust-emitted reason must satisfy.
+fn assert_reason_admitted_by_schema_token(
+    schema: &Value,
+    name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let token = &schema["$defs"]["reasonToken"];
+    let pattern = token["pattern"].as_str().ok_or("reasonToken pattern must be a string")?;
+    if pattern != "^[a-z0-9_]+$" {
+        return Err(format!("reasonToken grammar drifted: {pattern:?}").into());
+    }
+    let max_length =
+        token["maxLength"].as_u64().ok_or("reasonToken maxLength must be an integer")?;
+    if name.is_empty()
+        || name.len() > usize::try_from(max_length).map_err(|error| error.to_string())?
+        || !name.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
+    {
+        return Err(
+            format!("Rust reason {name:?} is not admissible as a schema reasonToken").into()
+        );
+    }
+    Ok(())
+}
+
+/// Every current Rust reason, including the field-specific partial reasons.
+fn all_reasons() -> Vec<BinaryCompatibilityReason> {
+    use BinaryCompatibilityReason::*;
+    vec![
+        ServerProductMismatch,
+        ProductRepositoryMismatch,
+        PacketSchemaUnsupported,
+        ProductIdentityVersionUnsupported,
+        DapPostureMismatch,
+        ExtensionPublisherMismatch,
+        ExtensionPackageMismatch,
+        ExtensionIdentityMismatch,
+        ExtensionAuthorityNotProven,
+        ExtensionPackageDigestNotProven,
+        VersionMismatch,
+        TargetMismatch,
+        TargetNotProven,
+        SourceRevisionMismatch,
+        SourceRevisionNotProven,
+        SourceTreeDigestMismatch,
+        SourceTreeDigestNotProven,
+        ProfileMismatch,
+        ProfileNotProven,
+        CandidateMismatch,
+        CandidateNotProven,
+        ArtifactRoleMismatch,
+        ArtifactRoleNotProven,
+        ArtifactDigestMismatch,
+        ArtifactDigestNotProven,
+        DapRoleMismatch,
+        DapIdentityAbsent,
+        BuildIdentityPartial,
+        BuildIdentityNotProven,
+        PayloadNotRedacted,
+        ServerInstanceStale,
+        EnvironmentSnapshotStale,
+        FeatureVersionUnsupported,
+        ExactIdentityMatch,
+    ]
+}
+
 #[test]
 fn checked_typescript_projection_contains_every_current_literal()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -49,7 +121,7 @@ fn checked_typescript_projection_contains_every_current_literal()
         "EffortlessMetrics/perl-lsp-swarm",
     ] {
         assert!(
-            typescript.contains(&format!("\"{literal}\"")),
+            typescript_declares(&typescript, literal),
             "TypeScript projection is missing literal {literal:?}"
         );
     }
@@ -70,50 +142,15 @@ fn checked_typescript_projection_contains_every_current_literal()
     ] {
         let name = serde_name(state)?;
         assert!(
-            typescript.contains(&format!("\"{name}\"")),
+            typescript_declares(&typescript, &name),
             "TypeScript projection is missing compatibility state {name:?}"
         );
     }
 
-    for reason in [
-        BinaryCompatibilityReason::ServerProductMismatch,
-        BinaryCompatibilityReason::ProductRepositoryMismatch,
-        BinaryCompatibilityReason::PacketSchemaUnsupported,
-        BinaryCompatibilityReason::ProductIdentityVersionUnsupported,
-        BinaryCompatibilityReason::DapPostureMismatch,
-        BinaryCompatibilityReason::ExtensionPublisherMismatch,
-        BinaryCompatibilityReason::ExtensionPackageMismatch,
-        BinaryCompatibilityReason::ExtensionIdentityMismatch,
-        BinaryCompatibilityReason::ExtensionAuthorityNotProven,
-        BinaryCompatibilityReason::ExtensionPackageDigestNotProven,
-        BinaryCompatibilityReason::VersionMismatch,
-        BinaryCompatibilityReason::TargetMismatch,
-        BinaryCompatibilityReason::TargetNotProven,
-        BinaryCompatibilityReason::SourceRevisionMismatch,
-        BinaryCompatibilityReason::SourceRevisionNotProven,
-        BinaryCompatibilityReason::SourceTreeDigestMismatch,
-        BinaryCompatibilityReason::SourceTreeDigestNotProven,
-        BinaryCompatibilityReason::ProfileMismatch,
-        BinaryCompatibilityReason::ProfileNotProven,
-        BinaryCompatibilityReason::CandidateMismatch,
-        BinaryCompatibilityReason::CandidateNotProven,
-        BinaryCompatibilityReason::ArtifactRoleMismatch,
-        BinaryCompatibilityReason::ArtifactRoleNotProven,
-        BinaryCompatibilityReason::ArtifactDigestMismatch,
-        BinaryCompatibilityReason::ArtifactDigestNotProven,
-        BinaryCompatibilityReason::DapRoleMismatch,
-        BinaryCompatibilityReason::DapIdentityAbsent,
-        BinaryCompatibilityReason::BuildIdentityPartial,
-        BinaryCompatibilityReason::BuildIdentityNotProven,
-        BinaryCompatibilityReason::PayloadNotRedacted,
-        BinaryCompatibilityReason::ServerInstanceStale,
-        BinaryCompatibilityReason::EnvironmentSnapshotStale,
-        BinaryCompatibilityReason::FeatureVersionUnsupported,
-        BinaryCompatibilityReason::ExactIdentityMatch,
-    ] {
+    for reason in all_reasons() {
         let name = serde_name(reason)?;
         assert!(
-            typescript.contains(&format!("\"{name}\"")),
+            typescript_declares(&typescript, &name),
             "TypeScript projection is missing compatibility reason {name:?}"
         );
     }
@@ -160,6 +197,33 @@ fn response_schema_preserves_mismatch_and_redaction_semantics()
             schema["$defs"]["extensionIdentity"]["properties"].get(field).is_some(),
             "schema extension identity is missing digest field {field:?}"
         );
+    }
+
+    // Every Rust state and reason must remain distinctly representable in the
+    // schema: the state enum must contain each serde name and every reason
+    // (including the field-specific partial and mismatch reasons) must satisfy
+    // the bounded reasonToken grammar the schema declares.
+    for state in [
+        BinaryCompatibilityState::ExactMatch,
+        BinaryCompatibilityState::CompatiblePartial,
+        BinaryCompatibilityState::Mismatch,
+        BinaryCompatibilityState::Unsupported,
+        BinaryCompatibilityState::Stale,
+        BinaryCompatibilityState::NotProven,
+    ] {
+        let name = serde_name(state)?;
+        assert!(
+            schema["properties"]["compatibility"]["enum"]
+                .as_array()
+                .ok_or("compatibility enum must be an array")?
+                .iter()
+                .any(|value| value == &name),
+            "schema compatibility enum is missing state {name:?}"
+        );
+    }
+    for reason in all_reasons() {
+        let name = serde_name(reason)?;
+        assert_reason_admitted_by_schema_token(&schema, &name)?;
     }
     Ok(())
 }
