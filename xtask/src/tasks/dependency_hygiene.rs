@@ -442,7 +442,6 @@ struct MacheteJsonCrate {
     package_name: String,
     manifest_path: String,
     unused: Vec<String>,
-    #[serde(default)]
     ignored_used: Vec<String>,
 }
 
@@ -715,6 +714,8 @@ mod tests {
         include_str!("../../tests/fixtures/dependency-hygiene/machete-malformed.json");
     const MISSING_UNUSED_MACHETE_OUTPUT: &str =
         include_str!("../../tests/fixtures/dependency-hygiene/machete-missing-unused.json");
+    const MISSING_IGNORED_USED_MACHETE_OUTPUT: &str =
+        include_str!("../../tests/fixtures/dependency-hygiene/machete-missing-ignored-used.json");
 
     // ── Outcome display ───────────────────────────────────────────────────────
 
@@ -863,6 +864,19 @@ mod tests {
         );
 
         assert!(result.is_err(), "missing unused must fail closed");
+    }
+
+    #[test]
+    fn test_missing_ignored_used_field_is_not_proven() {
+        let result = classify_machete_output(
+            Some(0),
+            MISSING_IGNORED_USED_MACHETE_OUTPUT,
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        );
+
+        assert!(result.is_err(), "missing ignored_used must fail closed");
     }
 
     #[test]
