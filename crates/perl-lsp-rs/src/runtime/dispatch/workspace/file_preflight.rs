@@ -85,7 +85,7 @@ impl LspServer {
                     build_module_rename_workspace_edits(&original_text, &current_text),
                 );
             }
-            return Ok(Some(workspace_edit));
+            Ok(Some(workspace_edit))
         }
 
         #[cfg(not(feature = "workspace"))]
