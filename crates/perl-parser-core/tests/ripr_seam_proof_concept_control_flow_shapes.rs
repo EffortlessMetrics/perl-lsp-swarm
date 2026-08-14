@@ -25,26 +25,14 @@ fn parse_with_inferred_semicolons(source: &str) -> Result<(Node, usize), String>
         .errors()
         .iter()
         .filter(|error| {
-            matches!(
-                error,
-                ParseError::Recovered {
-                    kind: RecoveryKind::InferredSemicolon,
-                    ..
-                }
-            )
+            matches!(error, ParseError::Recovered { kind: RecoveryKind::InferredSemicolon, .. })
         })
         .count();
     let unexpected = parser
         .errors()
         .iter()
         .filter(|error| {
-            !matches!(
-                error,
-                ParseError::Recovered {
-                    kind: RecoveryKind::InferredSemicolon,
-                    ..
-                }
-            )
+            !matches!(error, ParseError::Recovered { kind: RecoveryKind::InferredSemicolon, .. })
         })
         .count();
     if unexpected == 0 {
@@ -226,7 +214,8 @@ fn every_phase_keyword_label_remains_distinct_from_its_phase_block() -> Result<(
     );
     let (ast, inferred) = parse_with_inferred_semicolons(source)?;
     assert_eq!(
-        inferred, PHASES.len(),
+        inferred,
+        PHASES.len(),
         "current main recovers one InferredSemicolon per phase-keyword label statement"
     );
     let mut labels = Vec::new();
