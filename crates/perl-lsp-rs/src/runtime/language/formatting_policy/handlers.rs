@@ -107,6 +107,13 @@ impl LspServer {
         let snapshot = self.admit(Surface::OnType, &params)?;
         self.ensure_not_cancelled(Surface::OnType, token.as_ref(), Some(&snapshot), None)?;
 
+        let character = params
+            .get("ch")
+            .and_then(Value::as_str)
+            .and_then(|text| text.chars().next())
+            .ok_or_else(|| invalid_params("Missing or invalid on-type trigger character"))?;
+        let (line, column) = req_position(&params)?;
+
         if snapshot.config.mode == FormatterMode::Off {
             self.ensure_current(&snapshot)?;
             self.record_formatting_receipt(
@@ -136,12 +143,6 @@ impl LspServer {
             return Ok(Some(json!([])));
         }
 
-        let character = params
-            .get("ch")
-            .and_then(Value::as_str)
-            .and_then(|text| text.chars().next())
-            .ok_or_else(|| invalid_params("Missing or invalid on-type trigger character"))?;
-        let (line, column) = req_position(&params)?;
         let indent =
             snapshot.config.perltidy.indent_columns.unwrap_or(snapshot.options.tab_size).max(1)
                 as usize;

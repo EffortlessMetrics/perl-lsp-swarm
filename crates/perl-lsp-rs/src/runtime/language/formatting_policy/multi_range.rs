@@ -763,7 +763,7 @@ mod tests {
             &context,
         )?;
         assert_eq!(first.outcome.disposition, FormatDisposition::Applied);
-        assert!(!first.document.edits.is_empty());
+        assert!(!first.document.edits.is_empty(), "first range must produce edits");
 
         let mut second = formatter.format_range_decision(
             source,
@@ -773,13 +773,16 @@ mod tests {
         )?;
         second.outcome.disposition = FormatDisposition::FailedOrNotProven;
         second.outcome.reason = FormatReasonCode::InstrumentFailure;
-        assert!(second.document.edits.is_empty());
+        assert!(second.document.edits.is_empty(), "failed range must carry no edits");
 
         let decisions = vec![first, second];
         let blocked = blocked_decision(&decisions).ok_or("failed outcome was not blocked")?;
         assert_eq!(blocked.outcome.disposition, FormatDisposition::FailedOrNotProven);
         assert_eq!(blocked.outcome.reason, FormatReasonCode::InstrumentFailure);
-        assert!(decisions.iter().any(|decision| !decision.document.edits.is_empty()));
+        assert!(
+            decisions.iter().any(|decision| !decision.document.edits.is_empty()),
+            "atomic refusal requires at least one range with edits"
+        );
 
         let server = LspServer::new();
         server.advertised_feature_ids.lock().push(Surface::Ranges.feature_id());
@@ -835,7 +838,10 @@ mod tests {
             ),
             new_text: "my $x = 1;".to_string(),
         }]];
-        assert!(compose_edits(source, &plan, edits, 1, "cfg").is_ok());
+        assert!(
+            compose_edits(source, &plan, edits, 1, "cfg").is_ok(),
+            "line-expanded edit inside the touched lines must compose"
+        );
         Ok(())
     }
 
@@ -851,7 +857,10 @@ mod tests {
             ),
             new_text: "first\n".to_string(),
         }]];
-        assert!(compose_edits(source, &plan, edits, 1, "cfg").is_ok());
+        assert!(
+            compose_edits(source, &plan, edits, 1, "cfg").is_ok(),
+            "edit ending at the next line start must compose"
+        );
 
         let edits = vec![vec![FormatTextEdit {
             range: crate::features::formatting::FormatRange::new(
