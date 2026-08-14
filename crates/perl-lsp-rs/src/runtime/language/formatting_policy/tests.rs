@@ -509,7 +509,7 @@ fn receipt_source_id_is_always_hashed_never_raw() -> Result<(), Box<dyn std::err
 fn receipt_static_invariants_hold_for_disabled_formatter() -> Result<(), Box<dyn std::error::Error>>
 {
     let server = LspServer::new();
-    advertise(&server);
+    advertise(&server, Surface::Document);
     server.config.lock().perltidy_enabled = false;
     let uri = "file:///disabled-formatter-invariants.pl";
     server.test_apply_did_open(uri, "my $x = 1;\n", 1)?;
@@ -567,7 +567,7 @@ fn receipt_static_invariants_hold_for_disabled_formatter() -> Result<(), Box<dyn
 fn receipt_freshness_is_stale_when_reason_starts_with_stale_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
-    advertise(&server);
+    advertise(&server, Surface::Document);
     let uri = "file:///freshness-stale-check.pl";
     server.test_apply_did_open(uri, "my $x = 1;\n", 1)?;
     let params = json!({
