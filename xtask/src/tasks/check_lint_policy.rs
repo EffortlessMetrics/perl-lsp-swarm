@@ -409,7 +409,7 @@ mod tests {
     fn ledger_with(lint: LintEntry) -> LintLedger {
         LintLedger {
             schema: 1,
-            msrv: "1.92".to_owned(),
+            msrv: "1.95".to_owned(),
             policy: LintPolicy {
                 panic_free_tests: true,
                 allow_test_carveouts: true,

@@ -601,6 +601,30 @@ impl ParseWorkerTestBarrier {
         self.cvar.notify_all();
     }
 
+    /// Disarm and release unconditionally, for shutdown.
+    ///
+    /// `maybe_pause`'s wait is unbounded and is woken only by `release`, which
+    /// no shutdown path calls: `Coordinator::request_shutdown` notifies the
+    /// *coordinator's* condvar, a different one entirely. So a worker parked
+    /// here is invisible to shutdown, and `Drop for ParseWorker`'s
+    /// `handle.join()` would block on it forever.
+    ///
+    /// That turned every barrier test into a latent hang: a panic anywhere
+    /// between `wait_until_paused()` and `release()` unwinds, drops the
+    /// `ParseWorker`, and deadlocks inside `Drop` -- before libtest can print
+    /// the captured failure. The test never completes, so the real assertion
+    /// message is never reported and the whole lane burns its timeout ceiling
+    /// with no diagnostic (#6209).
+    ///
+    /// Clearing `armed` matters as much as setting `release`: a worker that
+    /// has not yet reached its pause point must not park after this call.
+    pub(crate) fn force_release(&self) {
+        let mut state = self.state.lock();
+        state.armed = None;
+        state.release = true;
+        self.cvar.notify_all();
+    }
+
     /// Called by a worker immediately before publishing `(uri,
     /// generation)`. A no-op unless the barrier is currently armed for
     /// exactly this pair.
@@ -1003,6 +1027,15 @@ impl ParseWorker {
 impl Drop for ParseWorker {
     fn drop(&mut self) {
         self.coordinator.request_shutdown();
+        // Before joining: release any worker parked at a test barrier.
+        // `request_shutdown` only notifies the coordinator's condvar, so a
+        // worker waiting inside `maybe_pause` would never wake and the joins
+        // below would block forever -- see `force_release` (#6209).
+        #[cfg(any(test, feature = "expose_lsp_test_api"))]
+        {
+            self.test_barrier.force_release();
+            self.side_effect_barrier.force_release();
+        }
         let mut handles = self.handles.lock();
         let self_id = thread::current().id();
         for handle in handles.drain(..) {
@@ -1238,6 +1271,80 @@ mod tests {
             }
             std::thread::yield_now();
         }
+    }
+
+    /// #6209: dropping a `ParseWorker` while a worker thread is still parked
+    /// at an armed test barrier must not deadlock.
+    ///
+    /// This is the exact state every barrier test is left in when an
+    /// assertion between `wait_until_paused()` and `barrier.release()` fails:
+    /// the panic unwinds, drops the `ParseWorker`, and `Drop` joins a thread
+    /// that is waiting on the barrier's condvar. `request_shutdown` notifies
+    /// the *coordinator's* condvar, not the barrier's, so before the fix the
+    /// join blocked forever -- turning what should be a one-line assertion
+    /// failure into a silent hang that consumed the `lsp` lane's full 420s
+    /// ceiling and reported nothing, because libtest only prints a test's
+    /// captured output once the test completes.
+    ///
+    /// Deliberately does NOT call `release()`: that omission IS the scenario.
+    ///
+    /// The drop runs on a helper thread and the test thread waits on a
+    /// bounded channel, so a reintroduced deadlock wedges only the helper and
+    /// surfaces as an ordinary assertion failure on a live test thread. The
+    /// obvious alternative -- drop on the test thread with a watchdog that
+    /// `abort()`s -- is wrong twice over: the test thread must still run one
+    /// more instruction after `drop` returns to signal success, so a
+    /// deschedule in that window aborts the whole libtest process on a
+    /// *passing* run, destroying every other test's result; and abort
+    /// produces no libtest output, which is the same "reports nothing"
+    /// failure shape this test exists to eliminate.
+    ///
+    /// The ceiling matches `wait_until_paused`'s: this file already
+    /// establishes one minute as the margin that survives CPU starvation from
+    /// concurrent builds on a loaded machine. The happy path returns in
+    /// milliseconds, so a generous ceiling costs a passing run nothing.
+    #[test]
+    fn dropping_a_worker_parked_at_an_armed_barrier_does_not_deadlock() {
+        let uri = "file:///drop_while_parked.pl";
+        let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
+        let (cb, _calls) = counting_callback();
+        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let barrier = worker.test_barrier();
+
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        barrier.arm(uri, 1);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from("my $aa = 1;\n"),
+        );
+        barrier.wait_until_paused();
+
+        // Deadlock ceiling for the drop below. Deliberately the same one
+        // minute `wait_until_paused` uses, and for the same reason.
+        const DROP_CEILING: Duration = Duration::from_mins(1);
+
+        // The load-bearing call: with the barrier still armed and never
+        // released, `drop` must return rather than block in `handle.join()`.
+        // It runs here, off the test thread, so that a regression parks this
+        // helper forever while the test thread stays live to report it.
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let dropper = thread::spawn(move || {
+            drop(worker);
+            // Send failure means the test thread already gave up and failed;
+            // nothing useful left to do on this thread.
+            let _ = done_tx.send(());
+        });
+
+        assert!(
+            done_rx.recv_timeout(DROP_CEILING).is_ok(),
+            "#6209 REGRESSION: dropping a ParseWorker parked at an armed test barrier did \
+             not return within {DROP_CEILING:?} -- it is deadlocked in Drop's handle.join(), \
+             because shutdown failed to force_release() the barriers before joining"
+        );
+        assert!(dropper.join().is_ok(), "drop thread panicked");
     }
 
     // ---- Invariant 1: didChange returns before parse completes ----------

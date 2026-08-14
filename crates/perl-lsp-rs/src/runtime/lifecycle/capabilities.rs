@@ -6,6 +6,66 @@ use super::super::{JsonRpcError, LspServer, Ordering};
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
+/// Typed TextDocumentSyncOptions for ServerCapabilities construction (#4995).
+///
+/// Replaces inline json!() for the textDocumentSync field of
+/// ServerCapabilities with a typed struct that can be serialized
+/// directly, preventing field name drift.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TextDocumentSyncOptions {
+    open_close: bool,
+    change: i32,
+    will_save: bool,
+    will_save_wait_until: bool,
+    save: SaveOptions,
+}
+
+/// Save options for TextDocumentSyncOptions.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveOptions {
+    include_text: bool,
+}
+
+impl TextDocumentSyncOptions {
+    fn new(change: i32) -> Self {
+        Self {
+            open_close: true,
+            change,
+            will_save: true,
+            will_save_wait_until: true,
+            save: SaveOptions { include_text: true },
+        }
+    }
+}
+
+/// Build the workspace capabilities with file operation filters for Perl
+/// extensions (#4995).
+fn workspace_capabilities(workspace_folders_support: bool) -> Value {
+    let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
+    let filters: Vec<Value> =
+        perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
+
+    json!({
+        "workspaceFolders": {
+            "supported": workspace_folders_support,
+            "changeNotifications": true
+        },
+        "fileOperations": {
+            "willCreate": { "filters": filters.clone() },
+            "didCreate": { "filters": filters.clone() },
+            "willRename": { "filters": filters.clone() },
+            "didRename": { "filters": filters.clone() },
+            "willDelete": { "filters": filters.clone() },
+            "didDelete": { "filters": filters }
+        },
+        "textDocumentContent": {
+            "schemes": ["perldoc"]
+        }
+    })
+}
+
 /// The LSP protocol version this server implements.
 ///
 /// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
@@ -40,7 +100,8 @@ fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Val
             tracing::warn!("Failed to merge experimental capability into non-object capabilities");
             return;
         };
-        capabilities_object.insert("experimental".to_string(), json!({}));
+        capabilities_object
+            .insert("experimental".to_string(), Value::Object(serde_json::Map::new()));
     }
 
     let Some(experimental) = capabilities.get_mut("experimental").and_then(Value::as_object_mut)
@@ -295,6 +356,27 @@ impl LspServer {
                     .and_then(|d| d.get("markupMessageSupport"))
                     .and_then(|b| b.as_bool())
                     .unwrap_or(false);
+
+                // Check if client supports markdown in MarkupContent (hover,
+                // completion, signature help). LSP 3.17 general.markup.contentFormat
+                // is the canonical source; textDocument.hover.contentFormat is the
+                // legacy fallback. Default to true since most clients support
+                // markdown (#1724).
+                caps.markdown_support = {
+                    let general_format = params
+                        .pointer("/capabilities/general/markup/contentFormat")
+                        .and_then(|v| v.as_array());
+                    let hover_format = params
+                        .pointer("/capabilities/textDocument/hover/contentFormat")
+                        .and_then(|v| v.as_array());
+                    let format = general_format.or(hover_format);
+                    match format {
+                        Some(arr) => {
+                            arr.iter().any(|v| v.as_str().is_some_and(|s| s == "markdown"))
+                        }
+                        None => true, // Default: assume markdown support
+                    }
+                };
 
                 // Check if client supports refresh requests for various features
                 if let Some(cap_val) = params.get("capabilities") {
@@ -558,24 +640,23 @@ impl LspServer {
         // Apply initializationOptions.perl.* as the base config layer.
         // This is parsed before .perl-lsp.toml so project config overrides it,
         // and subsequent workspace/configuration responses override both.
-        if let Some(params) = params.as_ref() {
-            if let Some(init_options) = params.get("initializationOptions") {
-                if let Some(perl) = super::super::workspace::extract_perl_settings(init_options) {
-                    tracing::debug!("Applying initializationOptions.perl.* as base config layer");
-                    {
-                        let mut config = self.config.lock();
-                        config.update_from_value(perl);
-                    }
-                    {
-                        let mut workspace_config = self.workspace_config.lock();
-                        workspace_config.update_from_value(perl);
-                    }
-                    if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
-                        limits.update_from_value(perl);
-                    }
-                    *self.initialization_options_perl_settings.lock() = Some(perl.clone());
-                }
+        if let Some(params) = params.as_ref()
+            && let Some(init_options) = params.get("initializationOptions")
+            && let Some(perl) = super::super::workspace::extract_perl_settings(init_options)
+        {
+            tracing::debug!("Applying initializationOptions.perl.* as base config layer");
+            {
+                let mut config = self.config.lock();
+                config.update_from_value(perl);
             }
+            {
+                let mut workspace_config = self.workspace_config.lock();
+                workspace_config.update_from_value(perl);
+            }
+            if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+                limits.update_from_value(perl);
+            }
+            *self.initialization_options_perl_settings.lock() = Some(perl.clone());
         }
 
         // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
@@ -649,7 +730,10 @@ impl LspServer {
             }
             (true, false) => {
                 if let Some(capabilities) = capabilities.as_object_mut() {
-                    capabilities.insert("inlineCompletionProvider".to_string(), json!({}));
+                    capabilities.insert(
+                        "inlineCompletionProvider".to_string(),
+                        Value::Object(serde_json::Map::new()),
+                    );
                 }
             }
             (false, _) => {
@@ -672,9 +756,9 @@ impl LspServer {
         // providers. Advertising anything else here would silently corrupt
         // document sync and every position-bearing response for non-ASCII
         // content on a client that prefers a different encoding.
-        capabilities["positionEncoding"] = json!("utf-16");
+        capabilities["positionEncoding"] = Value::String("utf-16".to_string());
         if features.declaration {
-            capabilities["declarationProvider"] = json!(true);
+            capabilities["declarationProvider"] = Value::Bool(true);
         }
         let code_action_documentation_support =
             self.client_capabilities.lock().code_action_documentation_support;
@@ -690,71 +774,21 @@ impl LspServer {
                 );
             }
         }
-        // Override text document sync with more detailed options
-        capabilities["textDocumentSync"] = json!({
-            "openClose": true,
-            "change": sync_kind,
-            "willSave": true,
-            "willSaveWaitUntil": true,
-            "save": { "includeText": true }
-        });
+        // Override text document sync with typed struct (#4995)
+        capabilities["textDocumentSync"] =
+            serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
+                .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
 
-        // Workspace capabilities: folders, file operations, and content schemes
+        // Workspace capabilities: typed helper for file operations (#4995)
         let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;
-        capabilities["workspace"] = json!({
-            "workspaceFolders": {
-                "supported": workspace_folders_support,
-                "changeNotifications": true
-            },
-            "fileOperations": {
-                "willCreate": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "didCreate": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "willRename": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "didRename": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "willDelete": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]},
-                "didDelete": { "filters": [
-                    { "pattern": { "glob": "**/*.pl" } },
-                    { "pattern": { "glob": "**/*.pm" } },
-                    { "pattern": { "glob": "**/*.t" } },
-                    { "pattern": { "glob": "**/*.psgi" } }
-                ]}
-            },
-            "textDocumentContent": {
-                "schemes": ["perldoc"]
-            }
-        });
+        capabilities["workspace"] = workspace_capabilities(workspace_folders_support);
 
         // Advertise experimental custom requests
         if features.inline_completion {
             merge_experimental_capability(
                 &mut capabilities,
                 "perlInlineCompletionStream",
-                json!(true),
+                Value::Bool(true),
             );
         }
 
@@ -766,6 +800,10 @@ impl LspServer {
                 "version": env!("CARGO_PKG_VERSION")
             }
         })))
+        // Note: the initialize result wrapper is kept as json!() because it
+        // is the final envelope wrapping the dynamically-built capabilities
+        // object — a typed InitializeResult struct would need to own the
+        // capabilities Value, adding indirection without type safety benefit.
     }
 }
 
@@ -1654,7 +1692,7 @@ mod tests {
         }
         let non_jetbrains = json!({ "clientInfo": { "name": "vscode" } });
         assert!(!is_jetbrains_client(&non_jetbrains));
-        assert!(!is_jetbrains_client(&json!({})));
+        assert!(!is_jetbrains_client(&Value::Object(serde_json::Map::new())));
     }
 
     #[test]

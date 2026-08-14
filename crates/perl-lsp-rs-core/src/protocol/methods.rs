@@ -18,7 +18,7 @@
 //! ## Basic Request Dispatching
 //!
 //! ```rust
-//! use perl_lsp_protocol::methods;
+//! use perl_lsp_rs_core::protocol::methods;
 //!
 //! fn handle_request(method: &str) {
 //!     match method {
@@ -39,7 +39,7 @@
 //! ## Cancellation Registration
 //!
 //! ```rust
-//! use perl_lsp_protocol::methods;
+//! use perl_lsp_rs_core::protocol::methods;
 //!
 //! fn should_support_cancellation(method: &str) -> bool {
 //!     matches!(
@@ -56,7 +56,7 @@
 //! ## Server-to-Client Notifications
 //!
 //! ```rust
-//! use perl_lsp_protocol::methods;
+//! use perl_lsp_rs_core::protocol::methods;
 //!
 //! fn send_diagnostics(uri: &str) {
 //!     // Send diagnostics using the standard method name

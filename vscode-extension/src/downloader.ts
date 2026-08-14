@@ -20,6 +20,8 @@ interface ReleaseAsset {
 interface Release {
   tag_name: string;
   prerelease?: boolean;
+  /** Synthetic metadata produced for an internal download mirror. */
+  internal?: boolean;
   assets: ReleaseAsset[];
 }
 
@@ -95,6 +97,70 @@ export function getUnsupportedWindowsArm64Message(
     'Windows 10 ARM64 cannot run the published x86_64 binary. Build from source with ' +
     '`cargo install --locked --path crates/perllsp` and configure perl-lsp.serverPath instead.'
   );
+}
+
+export const WINDOWS_X64_TARGET = 'x86_64-pc-windows-msvc';
+export const WINDOWS_ARM64_TARGET = 'aarch64-pc-windows-msvc';
+
+export interface WindowsArm64Selection {
+  /** The target triple to download. */
+  target: string;
+  /** True when the native ARM64 asset was absent and x64 emulation was chosen. */
+  emulated: boolean;
+  /** Set when neither path is usable; the caller must fail with this message. */
+  error?: string;
+  /** Human-readable reason, for the output channel. */
+  reason: string;
+}
+
+/**
+ * Choose the Windows ARM64 download target for one specific release.
+ *
+ * The release matrix builds a native `aarch64-pc-windows-msvc` since #5208, so
+ * prefer it. This must stay a *preference* rather than a requirement: that
+ * target was added on 2026-08-03 and no release has been cut since, so the
+ * asset has never actually been produced, and every existing release carries
+ * only the x64 archive. Requiring it would break installing any published tag.
+ *
+ * The Windows 11 build floor gates ONLY the emulation fallback. It is a
+ * property of running x64 code on ARM64, not of ARM64 itself — a native ARM64
+ * binary runs fine on Windows 10 ARM64. Applying it to the native path is the
+ * defect this function exists to prevent: it refused an install that works and
+ * sent the user to a source build they did not need (#6196).
+ */
+export function selectWindowsArm64Target(
+  assets: ReadonlyArray<{ name: string }>,
+  versionOrTag: string,
+  ext: string,
+  release = os.release(),
+): WindowsArm64Selection {
+  if (findReleaseAssetName(assets, versionOrTag, WINDOWS_ARM64_TARGET, ext)) {
+    return {
+      target: WINDOWS_ARM64_TARGET,
+      emulated: false,
+      reason: `Using the native ARM64 Windows build (${WINDOWS_ARM64_TARGET}).`,
+    };
+  }
+
+  const unsupported = getUnsupportedWindowsArm64Message('win32', 'arm64', release);
+  if (unsupported) {
+    return {
+      target: WINDOWS_X64_TARGET,
+      emulated: true,
+      error:
+        `${versionOrTag} ships no native ARM64 Windows build (${WINDOWS_ARM64_TARGET}), ` +
+        `so the x86_64 build would have to run under emulation. ${unsupported}`,
+      reason: 'No native ARM64 asset, and this Windows build cannot emulate x64.',
+    };
+  }
+
+  return {
+    target: WINDOWS_X64_TARGET,
+    emulated: true,
+    reason:
+      `${versionOrTag} ships no native ARM64 Windows build; using ${WINDOWS_X64_TARGET}, ` +
+      'which runs under the x64 emulation in Windows 11 on ARM.',
+  };
 }
 
 // Module-level singleflight: coalesce concurrent managed-install calls so
@@ -333,10 +399,10 @@ export class BinaryDownloader {
 
     // Download binary
     try {
-      const unsupportedPlatformMessage = getUnsupportedWindowsArm64Message();
-      if (unsupportedPlatformMessage) {
-        throw new Error(unsupportedPlatformMessage);
-      }
+      // No eager Windows 10 ARM64 rejection here. Whether emulation is even
+      // needed depends on whether the target release carries a native ARM64
+      // asset, which is not known until the release is fetched; rejecting up
+      // front refused installs that would have succeeded natively (#6196).
       return await this.downloadWithProgress();
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -453,10 +519,30 @@ export class BinaryDownloader {
         }
 
         // Determine platform and architecture
-        const target = this.getPlatformTarget();
+        let target = this.getPlatformTarget();
 
         // Try multiple naming patterns for our release format
         const ext = process.platform === 'win32' ? '.zip' : '.tar.gz';
+
+        // Windows ARM64 is the one target whose choice depends on what this
+        // release actually carries: prefer the native build, fall back to x64
+        // emulation when it is absent. Resolved here because this is the first
+        // point with the release's asset list in hand.
+        if (release.internal && process.platform === 'win32' && process.arch === 'arm64') {
+          // Internal mirrors historically served the x64 archive for ARM64.
+          // Synthetic metadata cannot establish which mirror files really
+          // exist, so do not let the native preference turn a working mirror
+          // into an unverified ARM64 URL.
+          target = WINDOWS_X64_TARGET;
+        } else if (process.platform === 'win32' && process.arch === 'arm64') {
+          const selection = selectWindowsArm64Target(release.assets, release.tag_name, ext);
+          this.outputChannel.appendLine(`Windows ARM64: ${selection.reason}`);
+          if (selection.error) {
+            throw new Error(selection.error);
+          }
+          target = selection.target;
+        }
+
         const assetName = findReleaseAssetName(release.assets, release.tag_name, target, ext);
         const asset = assetName ? release.assets.find((a) => a.name === assetName) : undefined;
 
@@ -763,12 +849,15 @@ export class BinaryDownloader {
     // For internal hosting, create a synthetic release object
     // This assumes the internal server hosts files directly without GitHub API
     const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-    const target = this.getPlatformTarget();
     const ext = process.platform === 'win32' ? '.zip' : '.tar.gz';
+    const isWindowsArm64 = process.platform === 'win32' && process.arch === 'arm64';
+    const targets = isWindowsArm64
+      ? [WINDOWS_ARM64_TARGET, WINDOWS_X64_TARGET]
+      : [this.getPlatformTarget()];
 
     // Try multiple naming patterns that might be used internally
     const possibleFilenames = [
-      ...buildBinaryAssetCandidateNames(version, target, ext),
+      ...targets.flatMap((target) => buildBinaryAssetCandidateNames(version, target, ext)),
       `perllsp${ext}`,
       `perl-lsp${ext}`,
     ];
@@ -787,6 +876,7 @@ export class BinaryDownloader {
 
     return {
       tag_name: version,
+      internal: true,
       assets,
     };
   }
@@ -963,7 +1053,10 @@ export class BinaryDownloader {
     });
   }
 
-  private getPlatformTarget(release = os.release()): string {
+  // No `release` parameter: target selection no longer depends on the OS
+  // build. The Windows 11 floor moved to selectWindowsArm64Target, where it
+  // gates only the x64 emulation fallback (#6196).
+  private getPlatformTarget(): string {
     const platform = process.platform;
     const arch = process.arch;
 
@@ -992,22 +1085,19 @@ export class BinaryDownloader {
       this.outputChannel.appendLine(`Linux binary target libc: ${libc}`);
       return `${archPrefix}-unknown-linux-${libc}`;
     } else if (platform === 'win32') {
-      // Windows ships x86_64 only: the release matrix in
-      // .github/workflows/release.yml has no aarch64-pc-windows-msvc entry, so
-      // asking for one produced a 404 that surfaced as a generic download
-      // failure (#5007). ARM64 Windows runs x64 binaries under emulation, so
-      // the x64 asset is the working answer rather than merely a better error.
-      const unsupportedPlatformMessage = getUnsupportedWindowsArm64Message(platform, arch, release);
-      if (unsupportedPlatformMessage) {
-        throw new Error(unsupportedPlatformMessage);
-      }
+      // The *preferred* target, which is not necessarily the one downloaded.
+      // Windows builds both x86_64-pc-windows-msvc and, since #5208, a native
+      // aarch64-pc-windows-msvc, so ARM64 prefers the native build here.
+      //
+      // Whether that asset exists in a given release is decided later by
+      // selectWindowsArm64Target, against that release's actual asset list.
+      // This function has no asset list, so it must not reject anything: the
+      // Windows 10 ARM64 rejection belongs on the emulation fallback path
+      // only, and applying it here refused installs that work (#6196).
       if (arch === 'arm64') {
-        this.outputChannel.appendLine(
-          'Windows on ARM64 detected: installing the x86_64 build, which runs under ' +
-            'Windows 11 ARM64 x64 emulation. No native ARM64 Windows binary is published.',
-        );
+        return WINDOWS_ARM64_TARGET;
       }
-      return 'x86_64-pc-windows-msvc';
+      return WINDOWS_X64_TARGET;
     }
 
     // Fallback to the old logic

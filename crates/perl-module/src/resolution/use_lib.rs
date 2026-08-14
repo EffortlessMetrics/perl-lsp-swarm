@@ -31,11 +31,22 @@ pub enum UseLibAction {
     Remove(Vec<UseLibPath>),
 }
 
-/// A `use lib` / `no lib` operation with the byte offset immediately after its
-/// terminating statement slice (semicolon or end-of-source).
+/// A `use lib` / `no lib` operation with the byte offset at which it becomes
+/// active.
+///
+/// For a well-formed pragma this is the end of its enclosing statement slice,
+/// which is what Perl's own ordering implies: the import runs only once the
+/// whole argument list has been evaluated.
+///
+/// The exception is a pragma that is *not* terminated. An editor buffer
+/// frequently contains a pragma whose semicolon has not been typed yet
+/// (`use lib 'lib'\nuse My::Test;`), and the statement splitter then hands back
+/// one slice spanning both lines. Keying activation on that slice's end would
+/// hide `lib` from the later use-site and emit a spurious PL701 (#6208), so an
+/// unterminated pragma activates at the end of its argument text instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseLibOperation {
-    /// Byte offset in the original source immediately after this statement.
+    /// Byte offset in the original source at which this operation takes effect.
     pub end_offset: usize,
     /// The extracted operation.
     pub action: UseLibAction,
@@ -69,29 +80,24 @@ pub fn extract_use_lib_paths(source: &str) -> Vec<UseLibPath> {
 /// Extract ordered `use lib` and `no lib` operations from source text.
 #[must_use]
 pub fn extract_use_lib_operations(source: &str) -> Vec<UseLibAction> {
-    extract_use_lib_operations_with_offsets(source)
-        .into_iter()
-        .map(|op| op.action)
-        .collect()
+    extract_use_lib_operations_with_offsets(source).into_iter().map(|op| op.action).collect()
 }
 
-/// Extract ordered `use lib` / `no lib` operations with statement end offsets.
+/// Extract ordered `use lib` / `no lib` operations with activation offsets.
 ///
-/// Offsets match the prefix slicing semantics used by
-/// [`resolve_use_lib_paths_from_source_at_offset`]: only complete statements
-/// whose `end_offset <= use_site_offset` are active at that offset.
+/// An operation is active at a use-site offset when its `end_offset <= offset`.
 #[must_use]
 pub fn extract_use_lib_operations_with_offsets(source: &str) -> Vec<UseLibOperation> {
     let mut ops = Vec::new();
 
     for statement in split_perl_statements(source) {
         let trimmed = statement.trim();
-        let end_offset = statement_end_offset(source, statement);
 
         if let Some(rest) = strip_use_lib_prefix(trimmed) {
             let mut paths = Vec::new();
-            extract_paths_from_args(rest, &mut paths);
+            let consumed = extract_paths_from_args(rest, &mut paths);
             if !paths.is_empty() {
+                let end_offset = activation_offset(source, statement, rest, consumed);
                 ops.push(UseLibOperation { end_offset, action: UseLibAction::Add(paths) });
             }
             continue;
@@ -99,8 +105,9 @@ pub fn extract_use_lib_operations_with_offsets(source: &str) -> Vec<UseLibOperat
 
         if let Some(rest) = strip_no_lib_prefix(trimmed) {
             let mut paths = Vec::new();
-            extract_paths_from_args(rest, &mut paths);
+            let consumed = extract_paths_from_args(rest, &mut paths);
             if !paths.is_empty() {
+                let end_offset = activation_offset(source, statement, rest, consumed);
                 ops.push(UseLibOperation { end_offset, action: UseLibAction::Remove(paths) });
             }
         }
@@ -109,17 +116,54 @@ pub fn extract_use_lib_operations_with_offsets(source: &str) -> Vec<UseLibOperat
     ops
 }
 
-fn statement_end_offset(source: &str, statement: &str) -> usize {
-    let start = statement.as_ptr() as usize - source.as_ptr() as usize;
-    start + statement.len()
+/// Byte offset at which a pragma's paths become visible.
+///
+/// Defaults to the end of the enclosing statement slice, matching Perl: the
+/// import runs after the whole argument list is evaluated, so a compile-time
+/// `use` nested inside that list (`use lib 'lib', do { use Nested; 1 };`) runs
+/// *before* `lib` joins `@INC` and must not see it.
+///
+/// The statement end is only wrong when the pragma has no terminator of its
+/// own, because `split_perl_statements` then returns a slice that runs on
+/// through unrelated later code. That is detected by what follows the consumed
+/// arguments:
+///
+/// - nothing, or `;` — a complete, terminated pragma; use the statement end.
+/// - `,` — the argument list continues with an expression this extractor does
+///   not parse; the true end is unknown, so conservatively use the statement
+///   end rather than activating early.
+/// - anything else — the pragma was never terminated and the splitter swallowed
+///   a following statement; activate at the end of the argument text (#6208).
+fn activation_offset(source: &str, statement: &str, rest: &str, consumed: usize) -> usize {
+    let statement_end = byte_offset_within(source, statement) + statement.len();
+    let Some(tail) = rest.get(consumed..) else {
+        return statement_end;
+    };
+
+    let tail = tail.trim_start();
+    match tail.chars().next() {
+        None | Some(';') | Some(',') => statement_end,
+        Some(_) => byte_offset_within(source, rest) + consumed,
+    }
 }
 
-fn use_lib_actions_before_offset(ops: &[UseLibOperation], offset: usize) -> impl Iterator<Item = &UseLibAction> {
+/// Byte offset of the subslice `inner` within the string it was sliced from.
+///
+/// Both arguments must come from the same allocation; every caller here derives
+/// `inner` from `outer` by slicing or trimming.
+fn byte_offset_within(outer: &str, inner: &str) -> usize {
+    (inner.as_ptr() as usize).saturating_sub(outer.as_ptr() as usize)
+}
+
+fn use_lib_actions_before_offset(
+    ops: &[UseLibOperation],
+    offset: usize,
+) -> impl Iterator<Item = &UseLibAction> {
     ops.iter().filter(move |op| op.end_offset <= offset).map(|op| &op.action)
 }
 
-fn resolve_effective_paths_from_actions(
-    actions: impl IntoIterator<Item = UseLibAction>,
+fn resolve_effective_paths_from_actions<'a>(
+    actions: impl IntoIterator<Item = &'a UseLibAction>,
     workspace_root: &Path,
     file_dir: Option<&Path>,
 ) -> Vec<String> {
@@ -127,14 +171,14 @@ fn resolve_effective_paths_from_actions(
     for action in actions {
         match action {
             UseLibAction::Add(paths) => {
-                let added = resolve_use_lib_paths(&paths, workspace_root, file_dir);
+                let added = resolve_use_lib_paths(paths, workspace_root, file_dir);
                 for path in added.into_iter().rev() {
                     resolved.retain(|existing| existing != &path);
                     resolved.insert(0, path);
                 }
             }
             UseLibAction::Remove(paths) => {
-                for path in resolve_use_lib_paths(&paths, workspace_root, file_dir) {
+                for path in resolve_use_lib_paths(paths, workspace_root, file_dir) {
                     resolved.retain(|existing| existing != &path);
                 }
             }
@@ -143,8 +187,8 @@ fn resolve_effective_paths_from_actions(
     resolved
 }
 
-fn cancelled_paths_from_actions(
-    actions: impl IntoIterator<Item = UseLibAction>,
+fn cancelled_paths_from_actions<'a>(
+    actions: impl IntoIterator<Item = &'a UseLibAction>,
     workspace_root: &Path,
     file_dir: Option<&Path>,
 ) -> Vec<String> {
@@ -153,7 +197,7 @@ fn cancelled_paths_from_actions(
     for action in actions {
         match action {
             UseLibAction::Add(paths) => {
-                let added = resolve_use_lib_paths(&paths, workspace_root, file_dir);
+                let added = resolve_use_lib_paths(paths, workspace_root, file_dir);
                 for path in &added {
                     cancelled.retain(|c| c != path);
                 }
@@ -163,7 +207,7 @@ fn cancelled_paths_from_actions(
                 }
             }
             UseLibAction::Remove(paths) => {
-                let removed = resolve_use_lib_paths(&paths, workspace_root, file_dir);
+                let removed = resolve_use_lib_paths(paths, workspace_root, file_dir);
                 for path in removed {
                     effective.retain(|e| e != &path);
                     if !cancelled.contains(&path) {
@@ -207,7 +251,7 @@ pub fn resolve_use_lib_paths_from_operations_at_offset(
     workspace_root: &Path,
     file_dir: Option<&Path>,
 ) -> Vec<String> {
-    let actions = use_lib_actions_before_offset(ops, offset).cloned();
+    let actions = use_lib_actions_before_offset(ops, offset);
     resolve_effective_paths_from_actions(actions, workspace_root, file_dir)
 }
 
@@ -244,6 +288,6 @@ pub fn no_lib_cancelled_paths_from_operations_at_offset(
     workspace_root: &Path,
     file_dir: Option<&Path>,
 ) -> Vec<String> {
-    let actions = use_lib_actions_before_offset(ops, offset).cloned();
+    let actions = use_lib_actions_before_offset(ops, offset);
     cancelled_paths_from_actions(actions, workspace_root, file_dir)
 }

@@ -30,16 +30,16 @@ pub fn enhanced_cancelled_response(
     }
 
     // Add cleanup context if available
-    if let Some(context) = cleanup_context {
-        if let Some(obj) = data.as_object_mut() {
-            obj.insert(
-                "cancelled_at_ms".to_string(),
-                json!(context.cancelled_at.elapsed().as_millis() as u64),
-            );
+    if let Some(context) = cleanup_context
+        && let Some(obj) = data.as_object_mut()
+    {
+        obj.insert(
+            "cancelled_at_ms".to_string(),
+            json!(context.cancelled_at.elapsed().as_millis() as u64),
+        );
 
-            if let Some(params) = &context.request_params {
-                obj.insert("original_params".to_string(), params.clone());
-            }
+        if let Some(params) = &context.request_params {
+            obj.insert("original_params".to_string(), params.clone());
         }
     }
 

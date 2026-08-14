@@ -26,6 +26,9 @@ on:
       - 'Formula/**'
       - 'scripts/render-linux-packages.py'
       - 'scripts/tests/test-installer-zero-args.sh'
+      - 'scripts/tests/test-install-path-contract.sh'
+      - 'scripts/windows_fresh_path_oracle.py'
+      - 'scripts/tests/test-windows-fresh-path-oracle.sh'
       - 'scripts/tests/test-distribution-manifest-consistency.sh'
       # The manifest-consistency gate derives its expected values from these
       # three authorities, so a change to any of them can make every
@@ -43,6 +46,7 @@ on:
       - 'scripts/tests/test-check-pr-review-convergence.sh'
       - 'scripts/reviews/**'
       - 'scripts/tests/test-review-lease.sh'
+      - 'scripts/tests/test-review-threads-inline.sh'
       - 'scripts/worktree-manager.py'
       - 'scripts/tests/test-worktree-manager.sh'
       - '.cargo/config.toml'
@@ -74,7 +78,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
@@ -147,6 +151,60 @@ jobs:
             echo "## Installer zero-argument self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The zero-argument installer bootstrap regressed — the documented curl-pipe command may abort before installing anything. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  installer-path-contract-self-test:
+    name: Installer PATH contract self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Run installer PATH contract self-test
+        run: bash scripts/tests/test-install-path-contract.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Installer PATH contract self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Windows install.ps1 owns User-PATH persistence with -NoModifyPath and bounded dispositions; POSIX remains explicitly manual when the user-local fallback is outside PATH (issue #7832). This is a source contract, not fresh-host proof." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Installer PATH contract self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The installer PATH source contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  windows-fresh-path-oracle-self-test:
+    name: Windows fresh-process PATH oracle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Run Windows fresh-process PATH oracle self-test
+        run: bash scripts/tests/test-windows-fresh-path-oracle.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Windows fresh-process PATH oracle passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Spawned oracle rebuilds PATH from Machine+User fixtures and resolves the exact staged subject without harness PATH injection (issue #7832). Fixture-scope proof only — not live-host install proof." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Windows fresh-process PATH oracle FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The Machine+User fresh-process PATH oracle regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   distribution-manifest-consistency-self-test:
@@ -222,6 +280,31 @@ jobs:
             echo "## Review-lease self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The review-lease contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  review-threads-inline-self-test:
+    name: Review threads/inline self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Run review threads/inline self-test
+        run: bash scripts/tests/test-review-threads-inline.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "## Review threads/inline self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "scripts/reviews/threads (issue #6178) pages through a multi-page reviewThreads connection without dropping a thread, filters with --unresolved-only, makes no mutating call, and emits thread IDs that scripts/reviews/disposition --thread accepts. scripts/reviews/inline posts findings as ONE submitted review and refuses to post anything when a finding is not anchored to an addressable diff line, naming the offending finding." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Review threads/inline self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The review threads/inline contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   worktree-manager-self-test:

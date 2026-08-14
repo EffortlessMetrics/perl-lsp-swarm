@@ -682,10 +682,10 @@ impl ExecuteCommandProvider {
             // Legacy engine: external `perlcritic` when present, else the
             // `BuiltInAnalyzer` (Perl::Critic-compatible) fallback. Legacy
             // behavior is unchanged.
-            if command_exists("perlcritic") {
-                if let Ok(result) = self.run_external_critic(&canonical_path) {
-                    return Ok(result);
-                }
+            if command_exists("perlcritic")
+                && let Ok(result) = self.run_external_critic(&canonical_path)
+            {
+                return Ok(result);
             }
             return self.run_builtin_critic(&canonical_path);
         }
@@ -723,10 +723,10 @@ impl ExecuteCommandProvider {
         }
 
         if self.external_critic_requested() {
-            if command_exists("perlcritic") {
-                if let Ok(result) = self.run_external_critic(path) {
-                    return Ok(result);
-                }
+            if command_exists("perlcritic")
+                && let Ok(result) = self.run_external_critic(path)
+            {
+                return Ok(result);
             }
             return self.run_builtin_critic(path);
         }
@@ -819,7 +819,7 @@ impl ExecuteCommandProvider {
         };
         let critic_context = CriticContext::new(code_text, &ast, &critic_config);
         let profile =
-            NativeCriticProfile::parse(&cfg.profile).unwrap_or(NativeCriticProfile::Strict);
+            NativeCriticProfile::parse_legacy(&cfg.profile).unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
 
         let file = file_path.to_string_lossy();

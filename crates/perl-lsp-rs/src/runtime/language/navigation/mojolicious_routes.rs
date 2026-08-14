@@ -134,12 +134,11 @@ pub(super) fn resolve_mojolicious_route_definition(
             continue;
         };
 
-        if (cursor_in_text >= controller_match.start() && cursor_in_text < controller_match.end())
-            || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end())
+        if ((cursor_in_text >= controller_match.start() && cursor_in_text < controller_match.end())
+            || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end()))
+            && let Some(location) = try_route(controller_match.as_str(), action_match.as_str())
         {
-            if let Some(location) = try_route(controller_match.as_str(), action_match.as_str()) {
-                return Some(location);
-            }
+            return Some(location);
         }
     }
 
@@ -159,14 +158,12 @@ pub(super) fn resolve_mojolicious_route_definition(
                 continue;
             };
 
-            if (cursor_in_text >= controller_match.start()
+            if ((cursor_in_text >= controller_match.start()
                 && cursor_in_text < controller_match.end())
-                || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end())
+                || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end()))
+                && let Some(location) = try_route(controller_match.as_str(), action_match.as_str())
             {
-                if let Some(location) = try_route(controller_match.as_str(), action_match.as_str())
-                {
-                    return Some(location);
-                }
+                return Some(location);
             }
         }
     }

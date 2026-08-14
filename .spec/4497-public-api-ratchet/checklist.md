@@ -302,7 +302,7 @@ This is a spec-planner task — no implementation code is written. The builder w
 - Other CI workflow files (`.github/workflows/*.yml` except ci-nightly.yml)
 
 **Assumptions:**
-- Stable Rust 1.92.0 or later is available
+- Historical assumption: stable Rust 1.92.0 or later was available; current verification must use the pinned 1.95.0 toolchain.
 - `cargo-public-api` 0.50.1 installs cleanly from crates.io
 - The 5 facade crates (perl-lsp-rs, perl-parser, perl-uri, perl-dap, perllsp) have stable public surfaces at current master commit 961c85dfc
 

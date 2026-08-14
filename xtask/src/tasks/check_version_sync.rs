@@ -1,30 +1,28 @@
 //! check-version-sync task wrapper.
 //!
-//! Always invokes `perl-ci-hygiene` through Cargo so release verification cannot
-//! accidentally reuse a stale repo-local helper binary.
+//! Delegates to the workspace `perl-ci-hygiene` library, which is compiled into
+//! this exact `xtask` binary. Keeping the call in-process avoids a nested Cargo
+//! build on every CI gate invocation while retaining source-level freshness.
+//!
+//! Product/package identity is checked in the same gate because a coherent
+//! semantic version is not sufficient when the product, executable, Cargo
+//! package, extension, or debug-adapter identities drift. Direct path authority,
+//! default-build activation, and Cargo workspace binding then prove those names
+//! resolve to eligible product targets in the normal build graph.
 
 use crate::utils::project_root;
-use color_eyre::eyre::{Context, Result, bail};
-use std::process::Command;
+use color_eyre::eyre::Result;
+
+#[path = "product_identity_default_build.rs"]
+mod product_identity_default_build;
+#[path = "product_identity_path_authority.rs"]
+mod product_identity_path_authority;
 
 pub fn run() -> Result<()> {
     let root = project_root()?;
-    let mut command = Command::new("cargo");
-    command.args([
-        "run",
-        "--quiet",
-        "--manifest-path",
-        root.join("Cargo.toml").to_string_lossy().as_ref(),
-        "-p",
-        "perl-ci-hygiene",
-        "--",
-        "check-version-sync",
-    ]);
-
-    let status = command.status().context("failed to run check-version-sync")?;
-    if !status.success() {
-        bail!("check-version-sync command failed");
-    }
-
-    Ok(())
+    perl_ci_hygiene::version_sync::check(&root)?;
+    super::product_identity::check(&root)?;
+    product_identity_path_authority::check(&root)?;
+    product_identity_default_build::check(&root)?;
+    super::product_identity_workspace::check(&root)
 }

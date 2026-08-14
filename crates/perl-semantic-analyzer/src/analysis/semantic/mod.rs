@@ -84,7 +84,7 @@ const MAX_MRO_TRAVERSAL_DEPTH: usize = 1024;
 /// # Examples
 ///
 /// ```ignore
-/// use perl_parser::{Parser, SemanticAnalyzer};
+/// use perl_semantic_analyzer::{Parser, SemanticAnalyzer};
 ///
 /// let code = "my $greeting = 'hello'; sub say_hi { print $greeting; }";
 /// let mut parser = Parser::new(code);
@@ -123,7 +123,7 @@ impl SemanticAnalyzer {
     /// # Examples
     ///
     /// ```ignore
-    /// use perl_parser::{Parser, SemanticAnalyzer};
+    /// use perl_semantic_analyzer::{Parser, SemanticAnalyzer};
     ///
     /// let mut parser = Parser::new("my $x = 42;");
     /// let ast = parser.parse()?;
@@ -142,7 +142,7 @@ impl SemanticAnalyzer {
     /// # Examples
     ///
     /// ```ignore
-    /// use perl_parser::{Parser, SemanticAnalyzer};
+    /// use perl_semantic_analyzer::{Parser, SemanticAnalyzer};
     ///
     /// let code = "sub greet { print \"Hello\\n\"; }";
     /// let mut parser = Parser::new(code);

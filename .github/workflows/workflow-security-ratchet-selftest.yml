@@ -1,0 +1,68 @@
+# Workflow Security Ratchet — candidate self-test (advisory)
+#
+# This lane runs the CANDIDATE's own scanner tests and exact-validates the
+# candidate's own baseline, so a PR that touches the scanner gets fast feedback
+# on its own terms. It is advisory and carries no authority.
+#
+# It lives in its own file, separate from the authoritative
+# workflow-security-ratchet.yml, for one reason: this job legitimately checks
+# out the pull-request head, and it runs under the UNPRIVILEGED `pull_request`
+# event where that is ordinary. Keeping it out of the `pull_request_target`
+# file means no job in the privileged workflow ever references the head in a
+# checkout, and the trust boundary is visible at the file level rather than
+# buried in per-job `if:` guards.
+
+name: Workflow Security Ratchet Selftest
+
+on:
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - '.ci/workflow-security-baseline.json'
+      - 'scripts/ci/workflow_security_ratchet.py'
+      - 'scripts/ci/test_workflow_security_ratchet.py'
+
+concurrency:
+  group: workflow-security-ratchet-selftest-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-selftest:
+    name: Candidate scanner self-test (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact candidate as read-only source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run candidate scanner unit tests
+        run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+
+      - name: Validate candidate baseline and control digests
+        run: |
+          mkdir -p target/receipts
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --baseline-root . \
+            --report target/receipts/workflow-security-candidate.json
+
+      - name: Upload candidate self-test receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workflow-security-candidate-${{ github.event.pull_request.head.sha }}
+          path: target/receipts/workflow-security-candidate.json
+          if-no-files-found: warn
+          retention-days: 14

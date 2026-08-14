@@ -196,28 +196,28 @@ impl RuntimeTuning {
 
         let mut tuning = Self::defaults_for(runtime_mode);
 
-        if let Some(raw) = read_env("PERL_LSP_DIAGNOSTIC_MODE") {
-            if let Some(mode) = DiagnosticMode::parse(&raw) {
-                tuning.diagnostic_mode = mode;
-            }
+        if let Some(raw) = read_env("PERL_LSP_DIAGNOSTIC_MODE")
+            && let Some(mode) = DiagnosticMode::parse(&raw)
+        {
+            tuning.diagnostic_mode = mode;
         }
 
-        if let Some(raw) = read_env("PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS") {
-            if let Ok(parsed) = raw.trim().parse::<u64>() {
-                tuning.diagnostic_debounce_ms = parsed;
-            }
+        if let Some(raw) = read_env("PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS")
+            && let Ok(parsed) = raw.trim().parse::<u64>()
+        {
+            tuning.diagnostic_debounce_ms = parsed;
         }
 
-        if let Some(raw) = read_env("PERL_LSP_EAGER_WORKSPACE_INDEXING") {
-            if let Some(flag) = env_truthy(&Some(raw)) {
-                tuning.eager_workspace_indexing = flag;
-            }
+        if let Some(raw) = read_env("PERL_LSP_EAGER_WORKSPACE_INDEXING")
+            && let Some(flag) = env_truthy(&Some(raw))
+        {
+            tuning.eager_workspace_indexing = flag;
         }
 
-        if let Some(raw) = read_env("PERL_LSP_FILE_WATCHERS") {
-            if let Some(flag) = env_truthy(&Some(raw)) {
-                tuning.file_watchers = flag;
-            }
+        if let Some(raw) = read_env("PERL_LSP_FILE_WATCHERS")
+            && let Some(flag) = env_truthy(&Some(raw))
+        {
+            tuning.file_watchers = flag;
         }
 
         tuning
