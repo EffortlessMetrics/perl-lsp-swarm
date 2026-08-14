@@ -626,6 +626,18 @@ mod tests {
         include_str!("../../../contracts/compiler/perl_compiler_concepts.v1.toml");
     const COMMITTED_STATUS: &str =
         include_str!("../../../docs/project/status/perl_compiler_concepts.md");
+    const COMMITTED_SCHEMA: &str =
+        include_str!("../../../schemas/perl_compiler_concepts.v1.schema.json");
+
+    fn published_concept_id_pattern() -> Result<String> {
+        let schema: serde_json::Value =
+            serde_json::from_str(COMMITTED_SCHEMA).context("parse compiler concept schema")?;
+        let pattern = schema
+            .pointer("/$defs/concept/properties/concept_id/pattern")
+            .and_then(|value| value.as_str())
+            .context("compiler concept schema must publish a concept_id pattern")?;
+        Ok(pattern.to_string())
+    }
 
     #[test]
     fn committed_ledger_validates_and_status_is_current() -> Result<()> {
@@ -780,6 +792,45 @@ mod tests {
         for value in ["", ".calls", "calls.", "calls..ampersand", "-calls.x", "calls.x-"] {
             assert!(!valid_concept_id(value));
         }
+    }
+
+    #[test]
+    fn concept_id_grammar_is_shared_with_published_schema() -> Result<()> {
+        let pattern = published_concept_id_pattern()?;
+        let published = regex::Regex::new(&pattern)
+            .with_context(|| format!("compile published concept_id pattern {pattern:?}"))?;
+
+        let accepted = ["a", "x1", "a1.2b", "calls.ampersand", "x1.a-b_c"];
+        let rejected = [
+            "",
+            ".calls",
+            "calls.",
+            "calls..ampersand",
+            "-calls.x",
+            "calls.x-",
+            "calls._x",
+            "calls.x_",
+            "Calls.x",
+            "calls.x!",
+        ];
+        for value in accepted {
+            assert!(valid_concept_id(value), "typed gate must accept {value:?}");
+            assert!(published.is_match(value), "published schema must accept {value:?}");
+        }
+        for value in rejected {
+            assert!(!valid_concept_id(value), "typed gate must reject {value:?}");
+            assert!(!published.is_match(value), "published schema must reject {value:?}");
+        }
+
+        let ledger = ConceptLedger::from_str(COMMITTED_LEDGER)?;
+        for concept in &ledger.concepts {
+            assert!(
+                published.is_match(&concept.concept_id),
+                "committed concept id {:?} must match the published schema grammar",
+                concept.concept_id
+            );
+        }
+        Ok(())
     }
 
     #[test]
