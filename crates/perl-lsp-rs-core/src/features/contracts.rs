@@ -26,6 +26,7 @@ const ALL_ALIASES: &[&str] = &["all"];
 
 /// Canonical profile definitions and alias map.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum FeatureProfileKind {
     /// Conservative GA-lock feature profile.
     GaLock,
