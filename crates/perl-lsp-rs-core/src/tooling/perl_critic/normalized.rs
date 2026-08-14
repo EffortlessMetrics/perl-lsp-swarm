@@ -404,11 +404,11 @@ impl NormalizedCriticFinding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct RangeIdentity {
     start_byte: usize,
-    start_line: usize,
-    start_column: usize,
+    start_line: u32,
+    start_column: u32,
     end_byte: usize,
-    end_line: usize,
-    end_column: usize,
+    end_line: u32,
+    end_column: u32,
 }
 
 impl From<Range> for RangeIdentity {
@@ -546,16 +546,23 @@ mod tests {
     }
 
     fn range(start: usize, end: usize) -> Range {
-        range_with_positions(start, 0, start, end, 0, end)
+        range_with_positions(
+            start,
+            0,
+            u32::try_from(start).unwrap_or(u32::MAX),
+            end,
+            0,
+            u32::try_from(end).unwrap_or(u32::MAX),
+        )
     }
 
     fn range_with_positions(
         start_byte: usize,
-        start_line: usize,
-        start_column: usize,
+        start_line: u32,
+        start_column: u32,
         end_byte: usize,
-        end_line: usize,
-        end_column: usize,
+        end_line: u32,
+        end_column: u32,
     ) -> Range {
         Range {
             start: Position { byte: start_byte, line: start_line, column: start_column },
