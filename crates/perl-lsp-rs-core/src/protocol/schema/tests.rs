@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 fn context<'a>(
     direction: Direction,
@@ -19,9 +20,13 @@ fn validate(
 
 #[test]
 fn pinned_manifest_and_rust_registry_are_consistent() {
-    // This is intentionally a checked-in manifest/registry consistency check.
-    // It does not independently verify the manifest against upstream without
-    // a network-dependent source acquisition step.
+    // This offline digest binds the checked-in source artifact to the reviewed
+    // bytes; it does not claim to re-fetch or semantically verify upstream.
+    let manifest_digest = Sha256::digest(SCHEMA_SOURCE_JSON.as_bytes());
+    let manifest_digest =
+        manifest_digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    assert_eq!(manifest_digest, SCHEMA_SOURCE_MANIFEST_SHA256);
+
     let source: Value =
         serde_json::from_str(SCHEMA_SOURCE_JSON).expect("pinned schema source must be valid JSON");
     assert_eq!(
@@ -45,6 +50,49 @@ fn pinned_manifest_and_rust_registry_are_consistent() {
         .map(|value| value.as_str().expect("source registry entry must be a string").to_string())
         .collect::<Vec<_>>();
     assert_eq!(registered_schema_identities(), declared);
+}
+
+#[test]
+fn show_document_known_fields_reject_wrong_types_at_stable_paths() {
+    let valid = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "window/showDocument",
+        "params": {
+            "uri": "file:///workspace/main.pl",
+            "external": false,
+            "takeFocus": true,
+            "selection": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 3 }
+            }
+        }
+    });
+    validate(&valid, Direction::ServerToClient, Some("window/showDocument"))
+        .expect("valid optional ShowDocumentParams fields should pass");
+
+    for (field, value, path, expected) in [
+        ("external", json!("yes"), "$.params.external", "boolean"),
+        ("takeFocus", json!(1), "$.params.takeFocus", "boolean"),
+        ("selection", json!([]), "$.params.selection", "object"),
+    ] {
+        let mut message = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "window/showDocument",
+            "params": { "uri": "file:///workspace/main.pl" }
+        });
+        let params = message
+            .get_mut("params")
+            .and_then(Value::as_object_mut)
+            .expect("show document params must be an object");
+        params.insert(field.to_string(), value);
+
+        let error = validate(&message, Direction::ServerToClient, Some("window/showDocument"))
+            .expect_err("wrong known ShowDocumentParams field type must fail");
+        assert_eq!(error.path, path);
+        assert_eq!(error.expected, expected);
+    }
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use super::{
     SchemaError, expect_array, expect_boolean, expect_integer, expect_null, expect_object,
-    expect_string, expect_uinteger, observed,
+    expect_string, expect_uinteger,
 };
 use serde_json::{Map, Value};
 
@@ -577,6 +577,15 @@ pub(super) fn show_message_request_params(method: &str, value: &Value) -> Result
 pub(super) fn show_document_params(method: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), "$.params", value)?;
     let _ = expect_string(Some(method), "$.params.uri", object.get("uri"))?;
+    if let Some(external) = object.get("external") {
+        let _ = expect_boolean(Some(method), "$.params.external", Some(external))?;
+    }
+    if let Some(take_focus) = object.get("takeFocus") {
+        let _ = expect_boolean(Some(method), "$.params.takeFocus", Some(take_focus))?;
+    }
+    if let Some(selection) = object.get("selection") {
+        validate_range(method, selection, "$.params.selection")?;
+    }
     Ok(())
 }
 
