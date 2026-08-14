@@ -3,8 +3,8 @@ use serde::Serialize;
 use super::super::{
     CodeFormatter, FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision,
     JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Snapshot, Surface, Value,
-    WirePosition, WireRange, actual_engine_for_mode, cancellation_token, digest,
-    invalid_params, json, parse_range, sanitized_outcome,
+    WirePosition, WireRange, actual_engine_for_mode, cancellation_token, digest, invalid_params,
+    json, parse_range, sanitized_outcome,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -642,6 +642,7 @@ pub(super) fn handle(
 
 #[cfg(test)]
 mod tests {
+    use super::super::default_options;
     use super::*;
     use perl_lsp_rs_core::tooling::perltidy::native::FormatReasonCode;
 
