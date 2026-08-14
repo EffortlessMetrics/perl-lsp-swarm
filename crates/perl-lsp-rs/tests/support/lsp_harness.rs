@@ -136,6 +136,18 @@ impl LspHarness {
         Self::new_raw_with_server_factory(perl_lsp::LspServer::with_output)
     }
 
+    /// Create an uninitialized harness with an explicit capability profile.
+    pub fn new_raw_with_feature_profile(feature_profile: FeatureProfile) -> Self {
+        Self::new_raw_with_server_factory(|writer| {
+            perl_lsp::LspServer::with_output_and_feature_profile(writer, feature_profile)
+        })
+    }
+
+    /// Create a harness with an explicit capability profile.
+    pub fn new_with_feature_profile(feature_profile: FeatureProfile) -> Self {
+        Self::new_raw_with_feature_profile(feature_profile)
+    }
+
     /// Create a harness with explicit runtime tuning.
     pub fn new_with_tuning(runtime_tuning: RuntimeTuning) -> Self {
         Self::new_raw_with_server_factory(|writer| {

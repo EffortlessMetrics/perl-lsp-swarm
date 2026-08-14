@@ -72,6 +72,94 @@ mod tests {
     }
 
     #[test]
+    fn test_parenthesized_expression_statement_span_keeps_closer() {
+        let source = "(42);";
+        let stmt = first_statement(source);
+        assert_eq!(
+            stmt.location.end,
+            source.len() - 1,
+            "ExpressionStatement span must include the closing parenthesis"
+        );
+        match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => {
+                assert_eq!(expression.location.start, 1);
+                assert_eq!(expression.location.end, 3);
+            }
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parenthesized_builtin_call_span_keeps_closer() {
+        let source = "print(1);";
+        let stmt = first_statement(source);
+        let expression = match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => expression,
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        };
+        match expression.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "print");
+                assert_eq!(args.len(), 1);
+                assert_eq!(
+                    expression.location.end,
+                    source.len() - 1,
+                    "parenthesized builtin FunctionCall span must include ')'"
+                );
+            }
+            other => panic!("Expected FunctionCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_unparenthesized_builtin_call_span_covers_argument() {
+        let source = "print qq/value=$café/;";
+        let stmt = first_statement(source);
+        let statement_end = stmt.location.end;
+        let expression = match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => expression,
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        };
+        assert_eq!(
+            statement_end,
+            source.len() - 1,
+            "ExpressionStatement span must cover its expression"
+        );
+        match expression.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "print");
+                assert_eq!(args.len(), 1);
+                assert_eq!(
+                    expression.location.end,
+                    source.len() - 1,
+                    "builtin FunctionCall span must cover its argument"
+                );
+            }
+            other => panic!("Expected FunctionCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_require_call_span_covers_string_argument() {
+        let source = "require 'relative/file.pl';";
+        let stmt = first_statement(source);
+        let statement_end = stmt.location.end;
+        let expression = match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => expression,
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        };
+        assert_eq!(statement_end, source.len() - 1);
+        match expression.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "require");
+                assert_eq!(args.len(), 1);
+                assert_eq!(expression.location.end, source.len() - 1);
+            }
+            other => panic!("Expected FunctionCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
         let source = "my_custom_method $obj ($title // 'Untitled'), $options->{limit};";
         let stmt = first_statement(source);
