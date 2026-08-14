@@ -108,14 +108,15 @@ fn plan_uri_rewrite(
     old_module: &str,
     new_module: &str,
 ) {
-    if !planned_workspace_texts.contains_key(uri) {
+    let uri_key = server.normalize_uri_key(uri);
+    if !planned_workspace_texts.contains_key(&uri_key) {
         let Some(text) = read_workspace_text(server, uri) else {
             return;
         };
-        planned_workspace_texts.insert(uri.to_string(), (text.clone(), text));
+        planned_workspace_texts.insert(uri_key.clone(), (text.clone(), text));
     }
 
-    let Some((_, current_text)) = planned_workspace_texts.get_mut(uri) else {
+    let Some((_, current_text)) = planned_workspace_texts.get_mut(&uri_key) else {
         return;
     };
     let planned = plan_module_rename_edits(current_text, old_module, new_module);
@@ -156,11 +157,13 @@ fn warn_unhandled_open_document_references(
     old_module: &str,
     planned_workspace_texts: &BTreeMap<String, (String, String)>,
 ) {
-    let updated_uris: HashSet<&str> = planned_workspace_texts.keys().map(String::as_str).collect();
+    let renamed_key = server.normalize_uri_key(renamed_uri);
+    let updated_uris: HashSet<String> = planned_workspace_texts.keys().cloned().collect();
     let documents = server.documents.lock();
     let unhandled = documents.iter().any(|(uri, document)| {
-        uri.as_str() != renamed_uri
-            && !updated_uris.contains(uri.as_str())
+        let uri_key = server.normalize_uri_key(uri);
+        uri_key != renamed_key
+            && !updated_uris.contains(&uri_key)
             && module_name_appears_in_text(&document.text, old_module)
     });
     drop(documents);
@@ -436,8 +439,47 @@ mod tests {
             .and_then(Value::as_object)
             .ok_or("preflight must return a WorkspaceEdit changes map")?;
         assert!(
-            changes.get(&old_uri).is_some_and(Value::is_array),
-            "rename preflight should still return the package edit"
+            changes.get(&server.normalize_uri_key(&old_uri)).is_some_and(Value::is_array),
+            "rename preflight should still return the package edit under the normalized URI key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn planned_workspace_texts_collapse_uri_aliases() -> TestResult {
+        let (server, _directory, old_uri, new_uri, _source) = indexed_rename_fixture()?;
+        let aliased_old = if let Some(rest) = old_uri.strip_prefix("file:///") {
+            if rest.len() > 1 && rest.as_bytes()[1] == b':' {
+                let mut chars = rest.chars();
+                let drive = chars.next().ok_or("missing drive letter")?;
+                let flipped = if drive.is_ascii_uppercase() {
+                    drive.to_ascii_lowercase()
+                } else {
+                    drive.to_ascii_uppercase()
+                };
+                format!("file:///{flipped}{}", chars.as_str())
+            } else {
+                old_uri.clone()
+            }
+        } else {
+            old_uri.clone()
+        };
+
+        let mut planned = BTreeMap::new();
+        let old_module = path_to_module_name(&old_uri);
+        let new_module = path_to_module_name(&new_uri);
+        plan_uri_rewrite(&server, &mut planned, &old_uri, &old_module, &new_module);
+        plan_uri_rewrite(&server, &mut planned, &aliased_old, &old_module, &new_module);
+
+        assert_eq!(
+            planned.len(),
+            1,
+            "raw and normalized URI spellings must share one planned edit entry"
+        );
+        assert_eq!(
+            server.normalize_uri_key(&old_uri),
+            server.normalize_uri_key(&aliased_old),
+            "fixture aliases must normalize to the same URI key"
         );
         Ok(())
     }
@@ -463,7 +505,8 @@ mod tests {
                 .ok_or("workspace coordinator unavailable")?
                 .index()
                 .file_symbols(&old_uri)
-                .is_empty()
+                .is_empty(),
+            "preflight must retain the old file symbols until didRenameFiles"
         );
 
         std::fs::rename(&old_path, &new_path)?;
@@ -475,10 +518,10 @@ mod tests {
         did_outcome.map_err(|error| format!("didRenameFiles commit failed: {error}"))?;
 
         let committed = fingerprint(&server, &old_uri, &new_uri)?;
-        assert_eq!(committed.old_file_symbols, 0);
-        assert!(!committed.old_document_stored);
-        assert!(committed.new_file_symbols > 0);
-        assert!(committed.new_document_stored);
+        assert_eq!(committed.old_file_symbols, 0, "didRenameFiles must drop old file symbols");
+        assert!(!committed.old_document_stored, "didRenameFiles must drop the old document");
+        assert!(committed.new_file_symbols > 0, "didRenameFiles must index the new file");
+        assert!(committed.new_document_stored, "didRenameFiles must store the new document");
         Ok(())
     }
 
@@ -498,7 +541,11 @@ mod tests {
         );
         let _ =
             create_outcome.map_err(|error| format!("willCreateFiles preflight failed: {error}"))?;
-        assert_eq!(fingerprint(&server, &old_uri, &new_uri)?, before_create);
+        assert_eq!(
+            fingerprint(&server, &old_uri, &new_uri)?,
+            before_create,
+            "willCreateFiles must leave retained state unchanged"
+        );
 
         let before_delete = fingerprint(&server, &old_uri, &new_uri)?;
         let delete_outcome = server.handle_will_delete_files_dispatch(Some(json!({
@@ -510,7 +557,11 @@ mod tests {
         );
         let _ =
             delete_outcome.map_err(|error| format!("willDeleteFiles preflight failed: {error}"))?;
-        assert_eq!(fingerprint(&server, &old_uri, &new_uri)?, before_delete);
+        assert_eq!(
+            fingerprint(&server, &old_uri, &new_uri)?,
+            before_delete,
+            "willDeleteFiles must leave retained state unchanged"
+        );
         Ok(())
     }
 
