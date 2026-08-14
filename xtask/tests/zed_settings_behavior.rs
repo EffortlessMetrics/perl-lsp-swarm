@@ -10,8 +10,7 @@ use serde_json::Value;
 
 const CONTRACT: &str = ".ci/fixtures/zed-perl-upstream/settings-behavior.v1.json";
 const SCHEMA: &str = "schemas/perllsp-settings.schema.json";
-const TEMPLATE: &str =
-    ".ci/fixtures/zed-perl-upstream/receipts/settings-behavior-template.json";
+const TEMPLATE: &str = ".ci/fixtures/zed-perl-upstream/receipts/settings-behavior-template.json";
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -40,20 +39,13 @@ fn not_run_template_is_valid_and_cannot_promote_support() -> Result<(), Box<dyn 
     let contract = read_json(&root, CONTRACT)?;
     let receipt = read_json(&root, TEMPLATE)?;
     zed_settings_behavior::validate_receipt(&receipt, &contract).map_err(io::Error::other)?;
+    assert_eq!(receipt.get("result").and_then(Value::as_str), Some("not_run"));
     assert_eq!(
-        receipt.get("result").and_then(Value::as_str),
-        Some("not_run")
-    );
-    assert_eq!(
-        receipt
-            .pointer("/claim_boundary/full_zed_support")
-            .and_then(Value::as_str),
+        receipt.pointer("/claim_boundary/full_zed_support").and_then(Value::as_str),
         Some("not_proven")
     );
     assert_eq!(
-        receipt
-            .pointer("/claim_boundary/public_registry")
-            .and_then(Value::as_str),
+        receipt.pointer("/claim_boundary/public_registry").and_then(Value::as_str),
         Some("not_proven")
     );
     Ok(())

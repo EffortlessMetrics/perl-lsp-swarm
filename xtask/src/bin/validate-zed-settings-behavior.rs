@@ -52,7 +52,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             .and_then(Value::as_str)
             .ok_or_else(|| io::Error::other("passing receipt lacks contract.sha256"))?;
         if bound != content_sha256(&contract_bytes) {
-            return Err(io::Error::other("receipt contract digest does not match contract bytes").into());
+            return Err(
+                io::Error::other("receipt contract digest does not match contract bytes").into()
+            );
         }
     }
     zed_settings_behavior::validate_receipt(&receipt, &contract).map_err(io::Error::other)?;

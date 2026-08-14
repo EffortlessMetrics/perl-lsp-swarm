@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn text(value: &Value, pointer: &str) -> Option<&str> {
     value.pointer(pointer).and_then(Value::as_str).filter(|text| !text.trim().is_empty())
@@ -20,10 +20,8 @@ fn probes(value: &Value) -> Result<BTreeMap<String, &Value>, String> {
         .ok_or_else(|| "missing probes".to_string())?;
     let mut result = BTreeMap::new();
     for row in rows {
-        let id = row
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "probe lacks id".to_string())?;
+        let id =
+            row.get("id").and_then(Value::as_str).ok_or_else(|| "probe lacks id".to_string())?;
         if result.insert(id.to_string(), row).is_some() {
             return Err(format!("duplicate probe `{id}`"));
         }
@@ -34,15 +32,13 @@ fn probes(value: &Value) -> Result<BTreeMap<String, &Value>, String> {
 pub fn validate_contract(contract: &Value, schema: &Value) -> Result<(), String> {
     if contract.get("schema_version").and_then(Value::as_str)
         != Some("zed_settings_behavior_contract.v1")
-        || contract.get("host_receipt_schema").and_then(Value::as_str)
-            != Some("zed_host_compat.v1")
+        || contract.get("host_receipt_schema").and_then(Value::as_str) != Some("zed_host_compat.v1")
         || contract.get("host_evidence_stage").and_then(Value::as_str)
             != Some("exact_source_dev_extension")
     {
         return Err("wrong settings contract identity".to_string());
     }
-    if contract.get("zed_process_prefix").and_then(Value::as_str)
-        != Some("lsp.perllsp.binary")
+    if contract.get("zed_process_prefix").and_then(Value::as_str) != Some("lsp.perllsp.binary")
         || contract.get("server_settings_prefix").and_then(Value::as_str)
             != Some("lsp.perllsp.settings.perl")
     {
@@ -73,7 +69,10 @@ pub fn validate_contract(contract: &Value, schema: &Value) -> Result<(), String>
             .get("expected_type")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("probe `{id}` lacks expected type"))?;
-        if !key.starts_with("perl.") || key.contains("binary.") || text(row, "/observable").is_none() {
+        if !key.starts_with("perl.")
+            || key.contains("binary.")
+            || text(row, "/observable").is_none()
+        {
             return Err(format!("probe `{id}` is not a canonical observable server setting"));
         }
         let node = schema
@@ -83,9 +82,10 @@ pub fn validate_contract(contract: &Value, schema: &Value) -> Result<(), String>
             return Err(format!("probe `{id}` type drift"));
         }
         if expected_type == "string" {
-            let allowed = node.get("enum").and_then(Value::as_array).ok_or_else(|| {
-                format!("probe `{id}` lacks a canonical enum")
-            })?;
+            let allowed = node
+                .get("enum")
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("probe `{id}` lacks a canonical enum"))?;
             if !allowed.contains(row.get("project_value").unwrap_or(&Value::Null))
                 || !allowed.contains(row.get("zed_value").unwrap_or(&Value::Null))
             {
@@ -94,18 +94,11 @@ pub fn validate_contract(contract: &Value, schema: &Value) -> Result<(), String>
         }
         types.insert(expected_type);
     }
-    if !["boolean", "string", "integer", "array"]
-        .iter()
-        .all(|kind| types.contains(kind))
-    {
+    if !["boolean", "string", "integer", "array"].iter().all(|kind| types.contains(kind)) {
         return Err("typed settings denominator is incomplete".to_string());
     }
     if contract.get("precedence_sequence")
-        != Some(&serde_json::json!([
-            "project_only",
-            "zed_override",
-            "zed_override_removed"
-        ]))
+        != Some(&serde_json::json!(["project_only", "zed_override", "zed_override_removed"]))
     {
         return Err("wrong precedence sequence".to_string());
     }
@@ -123,9 +116,7 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         "binary_arguments_forwarded_to_server",
         "binary_environment_forwarded_to_server",
     ] {
-        if receipt
-            .pointer(&format!("/process_settings/{field}"))
-            .and_then(Value::as_bool)
+        if receipt.pointer(&format!("/process_settings/{field}")).and_then(Value::as_bool)
             != Some(false)
         {
             return Err(format!("process field `{field}` leaked to the server"));
@@ -145,8 +136,7 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
     if result != "pass"
         || text(receipt, "/observed_at").is_none()
         || !digest(receipt, "/contract/sha256")
-        || text(receipt, "/claim_boundary/settings_behavior")
-            != Some("proven_for_exact_subject")
+        || text(receipt, "/claim_boundary/settings_behavior") != Some("proven_for_exact_subject")
     {
         return Err("passing settings receipt lacks exact identity".to_string());
     }
@@ -174,12 +164,8 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         }
         identity = current;
     }
-    let expected_roles = BTreeSet::from([
-        "project_only",
-        "zed_override",
-        "zed_override_removed",
-        "live_edit",
-    ]);
+    let expected_roles =
+        BTreeSet::from(["project_only", "zed_override", "zed_override_removed", "live_edit"]);
     if roles != expected_roles {
         return Err("wrong host receipt role population".to_string());
     }
@@ -230,11 +216,19 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         return Err("live/restart effect is not proven".to_string());
     }
     match disposition {
-        "live_configuration" if before.is_some() && before == after
-            && restart.get("configuration_notification_observed").and_then(Value::as_bool)
-                == Some(true) => Ok(()),
+        "live_configuration"
+            if before.is_some()
+                && before == after
+                && restart.get("configuration_notification_observed").and_then(Value::as_bool)
+                    == Some(true) =>
+        {
+            Ok(())
+        }
         "zed_managed_restart" | "manual_restart"
-            if before.is_some() && after.is_some() && before != after => Ok(()),
+            if before.is_some() && after.is_some() && before != after =>
+        {
+            Ok(())
+        }
         _ => Err("passing receipt has no valid live/restart disposition".to_string()),
     }
 }
