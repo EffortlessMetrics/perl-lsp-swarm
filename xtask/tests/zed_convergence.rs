@@ -32,9 +32,8 @@ fn validate_required_files(root: &Path, manifest: &Value) -> Result<(), String> 
         .ok_or_else(|| "missing required_files".to_string())?;
 
     for entry in required {
-        let relative = entry
-            .as_str()
-            .ok_or_else(|| "required_files entry is not a string".to_string())?;
+        let relative =
+            entry.as_str().ok_or_else(|| "required_files entry is not a string".to_string())?;
         if !root.join(relative).is_file() {
             return Err(format!("missing converged file `{relative}`"));
         }
@@ -49,32 +48,17 @@ fn convergence_contains_every_static_authority_once() -> Result<(), Box<dyn Erro
     let manifest = read_json(&root, ".ci/fixtures/zed-perl-upstream/convergence.v1.json")?;
 
     assert_eq!(string(&manifest, "/schema_version")?, "zed_perllsp_convergence.v1");
-    assert_eq!(
-        string(&manifest, "/status")?,
-        "static_substrate_complete_execution_not_proven"
-    );
+    assert_eq!(string(&manifest, "/status")?, "static_substrate_complete_execution_not_proven");
     validate_required_files(&root, &manifest).map_err(io::Error::other)?;
 
-    assert_eq!(
-        string(&manifest, "/mainline/candidate/result")?,
-        "present_on_main"
-    );
-    assert_eq!(
-        string(&manifest, "/mainline/settings/result")?,
-        "imported_static_contract"
-    );
-    assert_eq!(
-        string(&manifest, "/mainline/managed_assets/result")?,
-        "imported_static_contract"
-    );
+    assert_eq!(string(&manifest, "/mainline/candidate/result")?, "present_on_main");
+    assert_eq!(string(&manifest, "/mainline/settings/result")?, "imported_static_contract");
+    assert_eq!(string(&manifest, "/mainline/managed_assets/result")?, "imported_static_contract");
     assert_eq!(
         string(&manifest, "/mainline/dormant_defaults/result")?,
         "present_on_main_independent_packet"
     );
-    assert_eq!(
-        string(&manifest, "/mainline/submission/result")?,
-        "imported_blocked_fan_in"
-    );
+    assert_eq!(string(&manifest, "/mainline/submission/result")?, "imported_blocked_fan_in");
 
     Ok(())
 }
@@ -82,9 +66,8 @@ fn convergence_contains_every_static_authority_once() -> Result<(), Box<dyn Erro
 #[test]
 fn product_identity_and_launch_contract_survive_convergence() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let source = fs::read_to_string(
-        root.join(".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs"),
-    )?;
+    let source =
+        fs::read_to_string(root.join(".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs"))?;
 
     for identity in ["perlnavigator-server", "perl-lsp", "perllsp"] {
         assert!(source.contains(identity), "missing provider identity `{identity}`");
@@ -99,12 +82,7 @@ fn product_identity_and_launch_contract_survive_convergence() -> Result<(), Box<
 fn static_contracts_cannot_manufacture_execution_evidence() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let convergence = read_json(&root, ".ci/fixtures/zed-perl-upstream/convergence.v1.json")?;
-    for cell in [
-        "public_asset_execution",
-        "actual_zed",
-        "public_registry",
-        "support_promotion",
-    ] {
+    for cell in ["public_asset_execution", "actual_zed", "public_registry", "support_promotion"] {
         let pointer = format!("/claim_boundary/{cell}");
         assert_eq!(string(&convergence, &pointer)?, "not_proven");
     }
@@ -139,18 +117,14 @@ fn static_contracts_cannot_manufacture_execution_evidence() -> Result<(), Box<dy
     assert_eq!(string(&exact_source, "/result")?, "not_run");
     assert_eq!(string(&public, "/result")?, "not_run");
 
-    let submission_text = fs::read_to_string(
-        root.join(".ci/fixtures/zed-perl-upstream/submission/manifest.toml"),
-    )?;
+    let submission_text =
+        fs::read_to_string(root.join(".ci/fixtures/zed-perl-upstream/submission/manifest.toml"))?;
     let submission: toml::Value = toml::from_str(&submission_text)?;
     assert_eq!(
         submission.get("status").and_then(toml::Value::as_str),
         Some("blocked_pending_fan_in")
     );
-    assert_eq!(
-        submission.get("ready").and_then(toml::Value::as_bool),
-        Some(false)
-    );
+    assert_eq!(submission.get("ready").and_then(toml::Value::as_bool), Some(false));
 
     Ok(())
 }
@@ -163,9 +137,7 @@ fn missing_authority_is_a_hard_failure() -> Result<(), Box<dyn Error>> {
         .pointer_mut("/required_files")
         .and_then(Value::as_array_mut)
         .ok_or_else(|| io::Error::other("missing mutable required_files"))?;
-    required.push(Value::String(
-        ".ci/fixtures/zed-perl-upstream/does-not-exist".to_string(),
-    ));
+    required.push(Value::String(".ci/fixtures/zed-perl-upstream/does-not-exist".to_string()));
 
     assert!(validate_required_files(&root, &manifest).is_err());
     Ok(())
