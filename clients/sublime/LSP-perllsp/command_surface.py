@@ -222,7 +222,9 @@ def format_result(caption: str, result: Any) -> str:
     elif isinstance(result, str):
         lines.append(result)
     elif isinstance(result, Mapping):
-        for key in sorted(result, key=str):
+        # Render the success status first so the failure signal survives the
+        # output bound below; bounded detail rows cannot guarantee it.
+        for key in sorted(result, key=lambda item: (0 if str(item) == "success" else 1, str(item))):
             _append_value(lines, _humanize(str(key)), result[key])
     elif isinstance(result, (list, tuple)):
         _append_value(lines, "Results", result)
