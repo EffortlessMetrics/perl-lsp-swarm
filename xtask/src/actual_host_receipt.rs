@@ -78,11 +78,8 @@ pub fn validate_receipt_with_policy(
     validate_identity_object(root, "profile", &["identity", "source"])?;
     validate_identity_object(root, "artifacts", &["client_log", "server_stderr"])?;
 
-    let registration = require_nonempty_string(
-        root,
-        "registration_state",
-        "receipt.registration_state",
-    )?;
+    let registration =
+        require_nonempty_string(root, "registration_state", "receipt.registration_state")?;
     let registration = RegistrationState::parse(registration).ok_or_else(|| {
         ReceiptValidationError::new(format!(
             "receipt.registration_state: unsupported value `{registration}`"
@@ -156,11 +153,7 @@ fn validate_features(root: &Map<String, Value>) -> Result<(), ReceiptValidationE
             )?;
             if !matches!(
                 classification,
-                "unsupported"
-                    | "harness_limit"
-                    | "blocked"
-                    | "not_applicable"
-                    | "infra_blocked"
+                "unsupported" | "harness_limit" | "blocked" | "not_applicable" | "infra_blocked"
             ) {
                 return Err(ReceiptValidationError::new(format!(
                     "{path}.skip_classification: unsupported value `{classification}`"
@@ -176,16 +169,8 @@ fn validate_state_machine(root: &Map<String, Value>) -> Result<(), ReceiptValida
     let state = require_object(root, "state_machine", "receipt.state_machine")?;
     validate_terminal_event(state, "initialize")?;
     validate_terminal_event(state, "initialized")?;
-    require_nonempty_string(
-        state,
-        "position_encoding",
-        "receipt.state_machine.position_encoding",
-    )?;
-    require_nonempty_string(
-        state,
-        "diagnostics_mode",
-        "receipt.state_machine.diagnostics_mode",
-    )?;
+    require_nonempty_string(state, "position_encoding", "receipt.state_machine.position_encoding")?;
+    require_nonempty_string(state, "diagnostics_mode", "receipt.state_machine.diagnostics_mode")?;
     require_nonempty_string(
         state,
         "diagnostics_response_form",
@@ -198,11 +183,8 @@ fn validate_state_machine(root: &Map<String, Value>) -> Result<(), ReceiptValida
     validate_terminal_event(state, "shutdown")?;
     validate_terminal_event(state, "exit")?;
 
-    let orphan = require_nonempty_string(
-        state,
-        "orphan_result",
-        "receipt.state_machine.orphan_result",
-    )?;
+    let orphan =
+        require_nonempty_string(state, "orphan_result", "receipt.state_machine.orphan_result")?;
     if !matches!(orphan, "none" | "orphan_detected") {
         return Err(ReceiptValidationError::new(format!(
             "receipt.state_machine.orphan_result: unsupported value `{orphan}`"
@@ -218,10 +200,7 @@ fn validate_terminal_event(
     let path = format!("receipt.state_machine.{key}");
     let event = require_object(state, key, &path)?;
     let outcome = require_nonempty_string(event, "outcome", &format!("{path}.outcome"))?;
-    if !matches!(
-        outcome,
-        "ok" | "unsupported" | "not_applicable" | "skipped" | "failed"
-    ) {
+    if !matches!(outcome, "ok" | "unsupported" | "not_applicable" | "skipped" | "failed") {
         return Err(ReceiptValidationError::new(format!(
             "{path}.outcome: unsupported value `{outcome}`"
         )));
@@ -251,9 +230,7 @@ fn as_object<'a>(
     value: &'a Value,
     path: &str,
 ) -> Result<&'a Map<String, Value>, ReceiptValidationError> {
-    value
-        .as_object()
-        .ok_or_else(|| ReceiptValidationError::new(format!("{path}: expected object")))
+    value.as_object().ok_or_else(|| ReceiptValidationError::new(format!("{path}: expected object")))
 }
 
 fn require_object<'a>(
@@ -279,9 +256,7 @@ fn require_nonempty_string<'a>(
         .as_str()
         .ok_or_else(|| ReceiptValidationError::new(format!("{path}: expected string")))?;
     if value.trim().is_empty() {
-        return Err(ReceiptValidationError::new(format!(
-            "{path}: must not be empty"
-        )));
+        return Err(ReceiptValidationError::new(format!("{path}: must not be empty")));
     }
     Ok(value)
 }

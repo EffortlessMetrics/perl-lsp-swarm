@@ -5,9 +5,7 @@ use xtask::actual_host_receipt::{
 };
 
 fn valid_fixture() -> Result<Value, serde_json::Error> {
-    serde_json::from_str(include_str!(
-        "fixtures/actual_host_receipts/valid-eglot-manual.json"
-    ))
+    serde_json::from_str(include_str!("fixtures/actual_host_receipts/valid-eglot-manual.json"))
 }
 
 fn validation_error(
