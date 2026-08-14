@@ -43,9 +43,7 @@ fn dependency_ids(stage: &Value) -> Result<Vec<&str>, Box<dyn Error>> {
         .ok_or_else(|| io::Error::other("stage lacks depends_on array"))?
         .iter()
         .map(|entry| {
-            entry
-                .as_str()
-                .ok_or_else(|| io::Error::other("dependency id is not a string").into())
+            entry.as_str().ok_or_else(|| io::Error::other("dependency id is not a string").into())
         })
         .collect()
 }
@@ -64,10 +62,7 @@ fn index_by_id<'a>(train: &'a Value) -> Result<BTreeMap<&'a str, &'a Value>, Box
 #[test]
 fn train_is_topologically_ordered_and_has_unique_stages() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
-    assert_eq!(
-        train.get("schema_version").and_then(Value::as_str),
-        Some("zed_codex_train.v1")
-    );
+    assert_eq!(train.get("schema_version").and_then(Value::as_str), Some("zed_codex_train.v1"));
     assert_eq!(train.get("programme_issue").and_then(Value::as_u64), Some(7759));
 
     let mut seen = BTreeSet::new();
@@ -139,31 +134,19 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
     }
 
     assert_eq!(
-        index
-            .get("P08")
-            .and_then(|stage| stage.get("issue"))
-            .and_then(Value::as_u64),
+        index.get("P08").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
         Some(9467)
     );
     assert_eq!(
-        index
-            .get("P09")
-            .and_then(|stage| stage.get("issue"))
-            .and_then(Value::as_u64),
+        index.get("P09").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
         Some(9468)
     );
     assert_eq!(
-        index
-            .get("P19")
-            .and_then(|stage| stage.get("issue"))
-            .and_then(Value::as_u64),
+        index.get("P19").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
         Some(7912)
     );
     assert_eq!(
-        index
-            .get("P20")
-            .and_then(|stage| stage.get("issue"))
-            .and_then(Value::as_u64),
+        index.get("P20").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
         Some(8000)
     );
     assert_ne!(
@@ -197,9 +180,6 @@ fn support_and_closeout_cannot_precede_public_receipt() -> Result<(), Box<dyn Er
     assert_eq!(string(index["P19"], "kind")?, "public_evidence");
     assert_eq!(string(index["P20"], "kind")?, "projection");
     assert_eq!(string(index["P21"], "kind")?, "closeout");
-    assert_eq!(
-        index["P21"].get("closes_issue").and_then(Value::as_bool),
-        Some(true)
-    );
+    assert_eq!(index["P21"].get("closes_issue").and_then(Value::as_bool), Some(true));
     Ok(())
 }
