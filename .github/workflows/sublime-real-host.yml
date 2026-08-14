@@ -111,6 +111,10 @@ jobs:
           package-path: target/LSP-perllsp-package
           sublime-text-version: 4
           install-package-control: false
+          # The UnitTesting setup action resolves refs against tags/heads
+          # only, so pin the tag whose commit is the exact-source SHA:
+          # 4070-2.13.0 -> cc9f5201d9f053d9ab67aa0ea575b494fd133803 (see
+          # PERLLSP_LSP_REF above).
           extra-packages: |
             LSP:sublimelsp/LSP@${{ env.PERLLSP_LSP_TAG }}
             sublime_aio:packagecontrol/sublime_aio@${{ env.PERLLSP_AIO_TAG }}
