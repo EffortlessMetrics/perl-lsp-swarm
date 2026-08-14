@@ -1106,6 +1106,10 @@ owner = "identity"
 reason = "JSON Schema for the perl_lsp.binary_identity.v1 wire contract (#6852); schema-leg parity is ratcheted by the binary identity protocol contract test."
 covered_by = [
   "cargo test -p perl-lsp-rs-core --test binary_identity_protocol_contract --locked",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
+
 # Editor-intelligence gap-matrix fixture tree
 # =============================================================================
 
