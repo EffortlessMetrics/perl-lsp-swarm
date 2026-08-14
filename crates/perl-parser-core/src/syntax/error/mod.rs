@@ -24,6 +24,7 @@ use thiserror::Error;
 
 #[derive(Debug, Clone)]
 /// Rich error context with source line and fix suggestions
+#[non_exhaustive]
 pub struct ErrorContext {
     /// The original parse error
     pub error: ParseError,
@@ -53,6 +54,7 @@ impl From<perl_regex::RegexError> for ParseError {
 /// the parser applied a recovery strategy. LSP providers use this to decide
 /// which features can still be offered after a recovery.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum RecoverySite {
     /// Inside a parenthesised argument list `(...)`.
     ArgList,
@@ -75,6 +77,7 @@ pub enum RecoverySite {
 /// exact repair the parser made. This information lets consumers (e.g. LSP
 /// providers) understand the confidence level of the resulting AST region.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum RecoveryKind {
     /// A synthetic closing delimiter (`)` or `]`) was inferred.
     InsertedCloser,
@@ -109,6 +112,7 @@ pub enum RecoveryKind {
 /// };
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ParseBudget {
     /// Maximum number of errors to collect before giving up.
     /// After this limit, parsing stops to avoid flooding diagnostics.
@@ -164,6 +168,7 @@ impl ParseBudget {
 /// This struct monitors how much of the parse budget has been used
 /// and provides methods to check and consume budget atomically.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct BudgetTracker {
     /// Number of errors emitted so far.
     pub errors_emitted: usize,
@@ -338,6 +343,7 @@ impl ParseDiagnosticSeverity {
 ///
 /// Error handling is optimized for large Perl files and multi-file workspaces, ensuring
 /// memory-efficient error propagation and logging.
+#[non_exhaustive]
 pub enum ParseError {
     /// Parser encountered unexpected end of input during Perl code analysis
     ///
@@ -518,6 +524,7 @@ use perl_ast::Node;
 /// println!("Errors: {}", output.budget_usage.errors_emitted);
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ParseOutput {
     /// The parsed AST. Always present, but may contain error nodes
     /// if parsing encountered recoverable errors.
@@ -548,6 +555,7 @@ pub struct ParseOutput {
 /// Used by corpus-level reporting to distinguish successful structured
 /// recovery from unrecovered parser damage and catastrophic failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RecoverySalvageClass {
     /// No diagnostics and no `ERROR` AST nodes.
     Clean,

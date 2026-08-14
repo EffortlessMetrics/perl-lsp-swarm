@@ -801,6 +801,70 @@ mod tests {
         Ok(())
     }
 
+    /// Directly proves the `managed_targets` membership invariant on the VSIX
+    /// topology path.  The existing topology-binding tests build the topology
+    /// fixture from the same candidate target, so they would pass even if the
+    /// membership guard were removed.  This test provides three orthogonal
+    /// discriminating cases that can only pass if the guard fires on the
+    /// actual array contents.
+    #[test]
+    fn vsix_target_membership_is_required() -> Result<()> {
+        let mut receipt = fixture(include_str!(
+            "../../fixtures/experience/install_transition/clean_install.json"
+        ))?;
+        receipt.transition.path = super::InstallPath::Vsix;
+        receipt.transition.topology_path_id = "vscode-windows-x86_64".to_string();
+        receipt.transition.expected_asset = "perl-lsp-rs-0.18.0.vsix".to_string();
+        let directory = tempdir()?;
+        let topology_path = directory.path().join("release-topology.json");
+
+        // Positive: candidate target is present in managed_targets — must pass.
+        let topology = topology_for(&receipt);
+        let bytes = serde_json::to_vec(&topology)?;
+        fs::write(&topology_path, &bytes)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes);
+        verify_topology_binding(&receipt, &topology_path)?;
+
+        // Negative: empty managed_targets array — must be rejected identifying the invariant.
+        let mut topology_empty = topology.clone();
+        topology_empty["vsix"]["managed_targets"] = serde_json::json!([]);
+        let bytes_empty = serde_json::to_vec(&topology_empty)?;
+        fs::write(&topology_path, &bytes_empty)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes_empty);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("empty managed_targets must not pass"),
+            Err(error) => {
+                let rendered = format!("{error:#}");
+                if !rendered.contains("does not publish candidate target") {
+                    bail!(
+                        "rejection must identify the target-membership invariant; got: {rendered}"
+                    );
+                }
+            }
+        }
+
+        // Negative: managed_targets contains only a foreign target — must be rejected.
+        let mut topology_foreign = topology.clone();
+        topology_foreign["vsix"]["managed_targets"] =
+            serde_json::json!(["aarch64-unknown-linux-gnu"]);
+        let bytes_foreign = serde_json::to_vec(&topology_foreign)?;
+        fs::write(&topology_path, &bytes_foreign)?;
+        receipt.candidate.release_topology_sha256 = sha256_bytes(&bytes_foreign);
+        match verify_topology_binding(&receipt, &topology_path) {
+            Ok(()) => bail!("foreign-only managed_targets must not pass"),
+            Err(error) => {
+                let rendered = format!("{error:#}");
+                if !rendered.contains("does not publish candidate target") {
+                    bail!(
+                        "rejection must identify the target-membership invariant; got: {rendered}"
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     #[test]
     fn verified_child_output_carries_transition_identity() -> Result<()> {
         let mut receipt = fixture(include_str!(
