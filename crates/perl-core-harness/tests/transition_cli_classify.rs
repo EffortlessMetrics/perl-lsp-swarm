@@ -1,8 +1,10 @@
 //! Discriminating proof for lean transition classify CLI load+classify I/O.
 
+use color_eyre::eyre::{Result, ensure};
 use perl_core_harness_types::{
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompileBaselineV2, HarnessMode, HarnessProfile,
-    HarnessRunner, RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunSummary, RunnerStatus,
+    HarnessRunner, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary,
+    RunnerStatus,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -176,32 +178,29 @@ fn classify_cli_rejects_output_aliasing_series() {
 
 #[cfg(any(unix, windows))]
 #[test]
-fn classify_cli_rejects_hard_link_output_aliasing_accepted_baseline() {
-    let dir = tempdir().expect("tempdir");
+fn classify_cli_rejects_hard_link_output_aliasing_accepted_baseline() -> Result<()> {
+    let dir = tempdir()?;
     let accepted = dir.path().join("accepted.json");
     let compile = dir.path().join("compile.json");
     let output = dir.path().join("out.json");
     write_baseline(&accepted, 1, 1);
     write_report(&compile, 1, 1);
-    fs::hard_link(&accepted, &output).expect("hard_link");
-    let before = fs::read(&accepted).expect("read accepted before");
+    fs::hard_link(&accepted, &output)?;
+    let before = fs::read(&accepted)?;
     let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
-        .args([
-            "classify",
-            "--accepted-baseline",
-            accepted.to_str().expect("utf8"),
-            "--compile",
-            compile.to_str().expect("utf8"),
-            "--output",
-            output.to_str().expect("utf8"),
-        ])
-        .output()
-        .expect("spawn classify CLI");
-    assert!(!result.status.success());
+        .arg("classify")
+        .arg("--accepted-baseline")
+        .arg(&accepted)
+        .arg("--compile")
+        .arg(&compile)
+        .arg("--output")
+        .arg(&output)
+        .output()?;
+    ensure!(!result.status.success(), "hard-link alias unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(stderr.contains("hard-link alias"), "unexpected stderr: {stderr}");
-    let after = fs::read(&accepted).expect("read accepted after");
-    assert_eq!(before, after);
+    ensure!(stderr.contains("hard-link alias"), "unexpected stderr: {stderr}");
+    ensure!(before == fs::read(&accepted)?, "accepted baseline changed");
+    Ok(())
 }
 
 #[test]
@@ -256,6 +255,10 @@ fn classify_cli_writes_regression_receipt_for_pass_to_fail() {
     current.file_results[0].assertions_passed = 0;
     current.file_results[1].status = RunnerStatus::Pass;
     current.file_results[1].assertions_passed = 1;
+    current.failures = vec![sample_failure("base/0.t", "parse_recovery")];
+    current.summary.files_passed = 1;
+    current.summary.files_failed = 1;
+    current.summary.tap_assertions_passed = 1;
     fs::write(&compile, serde_json::to_string_pretty(&current).expect("encode")).expect("write");
     let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
         .args([
@@ -885,6 +888,8 @@ fn write_discovery(path: &Path, perl_ref: &str, files: &[&str]) {
 }
 
 fn sample_report(total: usize, passed: usize) -> RunReport {
+    let file_results = sample_results(total, passed);
+    let failures = sample_failures_for(&file_results);
     RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
         commit: "a".repeat(40),
@@ -905,8 +910,8 @@ fn sample_report(total: usize, passed: usize) -> RunReport {
             tap_assertions_passed: passed,
         },
         buckets: BTreeMap::new(),
-        file_results: sample_results(total, passed),
-        failures: Vec::new(),
+        file_results,
+        failures,
         semantic_boundaries: Vec::new(),
     }
 }
@@ -925,8 +930,28 @@ fn sample_results(total: usize, passed: usize) -> Vec<RunFileResult> {
         .collect()
 }
 
+fn sample_failures_for(file_results: &[RunFileResult]) -> Vec<RunFailure> {
+    file_results
+        .iter()
+        .filter(|result| result.status == RunnerStatus::Fail)
+        .map(|result| sample_failure(&result.path, "parse_recovery"))
+        .collect()
+}
+
+fn sample_failure(path: &str, bucket: &str) -> RunFailure {
+    RunFailure {
+        path: path.into(),
+        phase: "compile".into(),
+        bucket: bucket.into(),
+        first_diagnostic: "sample failure".into(),
+        workstream: "parser".into(),
+        lsp_impact: vec!["diagnostics".into()],
+    }
+}
+
 fn sample_v2_baseline(total: usize, passed: usize) -> CompileBaselineV2 {
     let file_results = sample_results(total, passed);
+    let expected_failures = sample_failures_for(&file_results);
     CompileBaselineV2 {
         schema_version: COMPILE_BASELINE_V2_SCHEMA_VERSION.into(),
         report_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
@@ -952,7 +977,7 @@ fn sample_v2_baseline(total: usize, passed: usize) -> CompileBaselineV2 {
         tap_assertions_total: total,
         tap_assertions_passed: passed,
         buckets: BTreeMap::new(),
-        expected_failures: Vec::new(),
+        expected_failures,
         file_results,
         semantic_boundaries: Vec::new(),
         boundary_retirements: Vec::new(),

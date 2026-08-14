@@ -1,6 +1,6 @@
 name: Release Orchestration
 
-# Master release workflow that orchestrates all release tasks
+# Default-branch release workflow that orchestrates all release tasks
 # Triggered manually after version bump PR is merged
 
 on:
@@ -107,7 +107,7 @@ jobs:
             exit 1
           fi
 
-          # Poll combined-status with a bounded window. Master CI on a just-
+          # Poll combined-status with a bounded window. Default-branch CI on a just-
           # squash-merged commit can return `pending` for several minutes
           # before all required checks report; that is "no signal yet," not
           # "negative signal." Treat `pending` as wait-and-retry; fail fast
@@ -176,7 +176,7 @@ jobs:
       - name: Verify RELEASE_HISTORY ledger row exists
         run: |
           # Trip-wire: a missing ledger row breaks the release-history drift
-          # gate for *every* PR opened against master, not just release PRs.
+          # gate for *every* PR opened against the default branch, not just release PRs.
           # The bundling guarantee (version bump and ledger row land together)
           # is enforced both upstream by `cargo xtask bump-version` (which
           # appends the row) and here at finalization (so a manually-edited

@@ -5,12 +5,19 @@
 
 mod analyzer;
 mod built_in;
+mod identity;
 mod native;
 mod quick_fix;
 mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
 pub use built_in::{BuiltInAnalyzer, Policy};
+pub use identity::{
+    CRITIC_IDENTITY_SCHEMA_VERSION, CriticAlias, CriticFindingOrigin, CriticFindingShape,
+    CriticIdentityCategory, CriticIdentityDisposition, CriticIdentityEntry, CriticIdentityRegistry,
+    CriticIdentityRegistryError, CriticObservedIdentity, CriticObservedIdentityError,
+    NativeCriticIdentityDisposition,
+};
 pub use native::{
     AssignmentInConditionRule, CriticCategory, CriticContext, CriticFinding, CriticFix,
     CriticRelatedInformation, CriticRule, CriticSuppression, CriticSuppressionMap,

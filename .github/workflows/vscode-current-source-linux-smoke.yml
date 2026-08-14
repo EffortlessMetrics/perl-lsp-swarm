@@ -60,6 +60,15 @@ jobs:
           cache-all-crates: true
           shared-key: vscode-current-source-smoke-${{ hashFiles('Cargo.lock') }}
 
+      - name: Prove exact public perllsp process contracts
+        working-directory: .
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/perl-lsp-public-process-target
+          RUST_TEST_THREADS: '1'
+        run: >-
+          cargo test -p perllsp --tests
+          --locked -- --test-threads=1
+
       - name: Build current Rust server
         working-directory: .
         env:

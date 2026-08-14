@@ -2589,6 +2589,7 @@
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-bootstrap-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/lsp-318-claim-guard.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/merge-gate-target.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/methodology-gate.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-core-harness.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/perl-version-matrix.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -5266,6 +5267,7 @@
 | `scripts/cargo-safe` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-coverage-baseline.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-doc-claims.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/check-merge-gate-target.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-rust-toolchain.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-v2-bundle-sync.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/check-version-sync.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -5527,6 +5529,7 @@
 | `scripts/tests/test-installer-zero-args.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-list-gates-wrapper.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-lsp-cancellation-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/tests/test-merge-gate-target.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-pre-merge-check.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-preflight-wrapper.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/tests/test-publish-dry-run-gate.sh` | tooling | `non-rust-ci-scripts-tree` | release/ci |

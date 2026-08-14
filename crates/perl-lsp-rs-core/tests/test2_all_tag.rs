@@ -25,22 +25,18 @@ fn all_tag_still_honors_an_explicit_exclusion() -> Result<(), Box<dyn std::error
 
 #[test]
 fn standalone_compare_all_uses_the_reviewed_export_ok_menu()
-    -> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_import("Test2::Tools::Compare", "':ALL'")
         .ok_or_else(|| io::Error::other("Test2::Tools::Compare must be recognized"))?;
 
     for name in ["is", "like", "match", "array", "hash"] {
-        assert!(
-            resolved.symbols.contains(name),
-            "reviewed Compare :ALL set must contain {name}"
-        );
+        assert!(resolved.symbols.contains(name), "reviewed Compare :ALL set must contain {name}");
     }
     Ok(())
 }
 
 #[test]
-fn all_tag_and_rename_keep_tag_original_and_alias()
-    -> Result<(), Box<dyn std::error::Error>> {
+fn all_tag_and_rename_keep_tag_original_and_alias() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_import("Test2::V0", "':ALL', ok => {-as => 'my_ok'}")
         .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
 
@@ -51,8 +47,7 @@ fn all_tag_and_rename_keep_tag_original_and_alias()
 }
 
 #[test]
-fn default_tag_and_rename_keep_tag_original_and_alias()
-    -> Result<(), Box<dyn std::error::Error>> {
+fn default_tag_and_rename_keep_tag_original_and_alias() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_import("Test2::V0", "':DEFAULT', ok => {-as => 'my_ok'}")
         .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
 
@@ -63,8 +58,7 @@ fn default_tag_and_rename_keep_tag_original_and_alias()
 }
 
 #[test]
-fn rename_without_tag_still_replaces_the_original()
-    -> Result<(), Box<dyn std::error::Error>> {
+fn rename_without_tag_still_replaces_the_original() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = resolve_import("Test2::V0", "ok => {-as => 'my_ok'}")
         .ok_or_else(|| io::Error::other("Test2::V0 must be recognized"))?;
 
