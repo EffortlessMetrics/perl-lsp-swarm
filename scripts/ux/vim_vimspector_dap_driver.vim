@@ -75,16 +75,17 @@ endtry
 if !s:Wait('g:perl_dap_ui_created > 0', 10000)
   call s:Fail('Vimspector UI was not created')
 endif
+let s:init_launch_settled = s:Wait(
+      \ "py3eval('_vimspector_session is not None and _vimspector_session._connection is not None and _vimspector_session._init_complete and _vimspector_session._launch_complete')",
+      \ 10000)
 let s:connection_present = py3eval('_vimspector_session is not None and _vimspector_session._connection is not None')
-let s:init_complete = py3eval('_vimspector_session is not None and _vimspector_session._init_complete')
-let s:launch_complete = py3eval('_vimspector_session is not None and _vimspector_session._launch_complete')
 let s:cells.adapter_launch = g:perl_dap_ui_created > 0 && s:connection_present
-let s:cells.initialize_launch = s:connection_present && s:init_complete && s:launch_complete
+let s:cells.initialize_launch = s:init_launch_settled
 if !s:cells.adapter_launch
   call s:Fail('Vimspector did not retain a live adapter connection')
 endif
 if !s:cells.initialize_launch
-  call s:Fail('DAP initialize/launch did not complete')
+  call s:Fail('DAP initialize/launch did not settle before the deadline')
 endif
 
 if !s:Wait('g:perl_dap_frame_events > 0', 15000)
