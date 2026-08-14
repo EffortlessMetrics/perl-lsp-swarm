@@ -244,21 +244,14 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
         }
     });
 
-    assert_eq!(
-        scalar_handle_print,
-        vec![(Some("$fh".to_string()), vec!["\"hello\"".to_string()])]
-    );
+    assert_eq!(scalar_handle_print, vec![(Some("$fh".to_string()), vec!["\"hello\"".to_string()])]);
     assert_eq!(
         braced_handle_print,
         vec![(Some("{ $fh }".to_string()), vec!["\"hello\"".to_string()])]
     );
     assert_eq!(
         scalar_handle_printf,
-        vec![(
-            Some("$fh".to_string()),
-            vec!["\"%s\"".to_string(), "$value".to_string()],
-        )]
+        vec![(Some("$fh".to_string()), vec!["\"%s\"".to_string(), "$value".to_string()],)]
     );
     Ok(())
 }
-
