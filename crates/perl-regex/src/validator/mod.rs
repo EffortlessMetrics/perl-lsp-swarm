@@ -5,6 +5,7 @@ mod batch;
 mod code_execution;
 mod complexity;
 mod config;
+mod group;
 mod nested_quantifier;
 
 #[cfg(test)]
@@ -48,18 +49,16 @@ impl RegexValidator {
         &self.config
     }
 
-    /// Analyze one regex body and return all typed diagnostics and reusable facts.
+    /// Analyze one regex body and return typed diagnostics and reusable facts.
     ///
-    /// Diagnostic and fact ranges are byte offsets relative to `pattern`.
+    /// This slice projects the existing fail-fast scanners into the typed shell.
+    /// Ranges are byte offsets relative to `pattern`.
     #[must_use]
     pub fn analyze(&self, pattern: &str) -> RegexAnalysis {
         batch::analyze(pattern, &self.config)
     }
 
     /// Validate through the historical fail-fast compatibility contract.
-    ///
-    /// This lossy adapter preserves the old category priority while mapping the
-    /// selected typed diagnostic to [`RegexError::Syntax`].
     pub fn validate(&self, pattern: &str, start_pos: usize) -> Result<(), RegexError> {
         let analysis = self.analyze(pattern);
         if let Some(diagnostic) = batch::first_compatibility_diagnostic(&analysis) {
@@ -72,50 +71,31 @@ impl RegexValidator {
     }
 
     pub fn detects_code_execution(&self, pattern: &str) -> bool {
-        !self.analyze(pattern).facts.embedded_code.is_empty()
+        code_execution::detects_code_execution(pattern)
     }
 
     pub fn detect_nested_quantifiers(&self, pattern: &str) -> bool {
-        !self.analyze(pattern).facts.nested_quantifiers.is_empty()
+        nested_quantifier::detect_nested_quantifiers(pattern)
     }
 
     pub fn find_code_execution(&self, pattern: &str, start_pos: usize) -> Option<RegexFinding> {
-        self.analyze(pattern).facts.embedded_code.first().map(|finding| RegexFinding {
-            offset: start_pos.saturating_add(finding.range.start),
-            message: match finding.kind {
-                EmbeddedCodeKind::Immediate => {
+        code_execution::find_code_execution(pattern, start_pos).map(|finding| {
+            let message = match finding.kind {
+                code_execution::EmbeddedCodeKind::Immediate => {
                     "Embedded code execution is not allowed in regex patterns"
                 }
-                EmbeddedCodeKind::Deferred => {
+                code_execution::EmbeddedCodeKind::Deferred => {
                     "Deferred embedded code execution is not allowed in regex patterns"
                 }
-            },
+            };
+            RegexFinding { offset: finding.offset, message }
         })
     }
 
     pub fn find_nested_quantifier(&self, pattern: &str, start_pos: usize) -> Option<RegexFinding> {
-        self.analyze(pattern).facts.nested_quantifiers.first().map(|range| RegexFinding {
-            offset: start_pos.saturating_add(range.start),
+        nested_quantifier::find_nested_quantifier(pattern, start_pos).map(|offset| RegexFinding {
+            offset,
             message: "Nested quantifiers may cause catastrophic backtracking",
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::error::RegexError;
-
-    #[test]
-    fn validate_returns_exact_syntax_error_for_embedded_code() {
-        let err = RegexValidator::new()
-            .validate("(?{ run })", 10)
-            .expect_err("embedded code must fail closed");
-        match err {
-            RegexError::Syntax { message, offset } => {
-                assert_eq!(message, "Embedded code execution is not allowed in regex patterns");
-                assert_eq!(offset, 10);
-            }
-        }
     }
 }

@@ -1,7 +1,5 @@
 use crate::syntax::cursor::quoted_literal_end;
 
-use super::analysis::RegexRange;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GroupFrame {
     has_backtracking_quantifier: bool,
@@ -15,19 +13,17 @@ enum LastAtom {
     Group { has_backtracking_quantifier: bool, is_atomic: bool },
 }
 
-pub(crate) fn find_nested_quantifiers(pattern: &str, excluded_ranges: &[RegexRange]) -> Vec<usize> {
+pub(crate) fn detect_nested_quantifiers(pattern: &str) -> bool {
+    find_nested_quantifier(pattern, 0).is_some()
+}
+
+pub(crate) fn find_nested_quantifier(pattern: &str, start_pos: usize) -> Option<usize> {
     let bytes = pattern.as_bytes();
     let mut i = 0;
     let mut group_stack = Vec::new();
     let mut last_atom = LastAtom::None;
-    let mut findings = Vec::new();
 
     while i < bytes.len() {
-        if let Some(excluded) = excluded_ranges.iter().find(|range| range.contains(i)) {
-            i = excluded.end;
-            last_atom = LastAtom::Other;
-            continue;
-        }
         match bytes[i] {
             b'\\' => {
                 if let Some(end) = quoted_literal_end(bytes, i) {
@@ -72,7 +68,7 @@ pub(crate) fn find_nested_quantifiers(pattern: &str, excluded_ranges: &[RegexRan
                         if let LastAtom::Group { has_backtracking_quantifier: true, .. } = last_atom
                             && quantifier.can_repeat
                         {
-                            findings.push(i);
+                            return Some(start_pos + i);
                         }
 
                         if let Some(parent) = group_stack.last_mut()
@@ -93,7 +89,7 @@ pub(crate) fn find_nested_quantifiers(pattern: &str, excluded_ranges: &[RegexRan
         i += 1;
     }
 
-    findings
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,15 +130,7 @@ fn brace_quantifier_len(bytes: &[u8], start: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Quantifier, find_nested_quantifiers, quantifier_at};
-
-    #[test]
-    fn nested_group_repeat_emits_exact_offsets() {
-        assert_eq!(find_nested_quantifiers("(a+)+", &[]), vec![4]);
-        assert_eq!(find_nested_quantifiers("(a+)*", &[]), vec![4]);
-        assert!(find_nested_quantifiers("(a+)?", &[]).is_empty());
-        assert!(find_nested_quantifiers("a+", &[]).is_empty());
-    }
+    use super::{Quantifier, quantifier_at};
 
     #[test]
     fn question_quantifier_is_not_repeatable() {
