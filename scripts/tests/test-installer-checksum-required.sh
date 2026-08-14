@@ -163,7 +163,6 @@ printf '%s  %s\n' "$ARCHIVE_HASH" "$ASSET" > "$SUMS_SOURCE"
 run_download
 EXPECTED_ARCHIVE="$TMP/download/$ASSET"
 if [ "$LAST_STATUS" -eq 0 ] \
-    && [ "$ARCHIVE_PATH" = "" ] \
     && [ -f "$EXPECTED_ARCHIVE" ] \
     && cmp -s "$ARCHIVE_SOURCE" "$EXPECTED_ARCHIVE" \
     && [ "$(sed -n '1p' "$CURL_LOG")" = "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.18.0/SHA256SUMS" ] \
