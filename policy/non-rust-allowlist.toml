@@ -1090,3 +1090,23 @@ covered_by = [
 ]
 created = "2026-08-14"
 review_after = "2026-11-14"
+
+# =============================================================================
+# Editor-intelligence gap-matrix fixture tree
+# =============================================================================
+
+[[allow]]
+id = "non-rust-editor-intelligence-fixtures"
+glob = "crates/perl-lsp-ux-tests/fixtures/editor_intelligence/**"
+kind = "test_fixture"
+language = "perl"
+surface = "ux-tests"
+classification = "test"
+owner = "ux-tests"
+reason = "Perl source subjects for the editor-intelligence semantic gap matrix (#7430)."
+covered_by = [
+  "cargo test -p perl-lsp-ux-tests --test editor_intelligence_gap_matrix",
+]
+broad_glob_reason = "Gap-matrix fixtures are intentionally tree-shaped Perl subjects (flow/frameworks/dispatch/rename/restart families); the gap-matrix test binds every applicable row to its fixture file and fails when a fixture or its row marker is missing."
+created = "2026-08-14"
+review_after = "2026-11-14"
