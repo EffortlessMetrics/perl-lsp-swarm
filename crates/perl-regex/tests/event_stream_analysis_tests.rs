@@ -118,6 +118,64 @@ fn persistent_inline_x_changes_apply_to_the_remaining_pattern()
 }
 
 #[test]
+fn extended_mode_keeps_nbsp_as_a_literal_atom() {
+    let pattern = "(?x:(a)\u{00a0}+)";
+    let analysis = RegexValidator::new().analyze(pattern);
+
+    assert!(
+        analysis.facts.nested_quantifiers.is_empty(),
+        "NBSP must remain an atom, not let + quantify the preceding group"
+    );
+}
+
+#[test]
+fn ignored_extended_comment_does_not_erase_the_previous_group()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(?x:(a+)# keep the group live\n+)";
+    let analysis = RegexValidator::new().analyze(pattern);
+
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.rfind('+').ok_or("missing outer quantifier")?
+    );
+
+    let safe = "(?x:(a+)# keep the group live\n?)";
+    assert!(RegexValidator::new().analyze(safe).facts.nested_quantifiers.is_empty());
+    Ok(())
+}
+
+#[test]
+fn omitted_brace_lower_bound_is_a_quantifier_but_empty_range_is_not()
+-> Result<(), Box<dyn std::error::Error>> {
+    let open_range = "(a+){,3}";
+    let analysis = RegexValidator::new().analyze(open_range);
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        open_range.find('{').ok_or("missing brace quantifier")?
+    );
+
+    let empty_range = "(a+){,}";
+    assert!(RegexValidator::new().analyze(empty_range).facts.nested_quantifiers.is_empty());
+    Ok(())
+}
+
+#[test]
+fn modifier_reset_group_disables_inherited_extended_mode() -> Result<(), Box<dyn std::error::Error>>
+{
+    let pattern = "(?x:(?^:# (a+)+\n))";
+    let analysis = RegexValidator::new().analyze(pattern);
+
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.rfind('+').ok_or("missing outer quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
 fn optional_exact_and_repeating_outer_quantifiers_are_distinct()
 -> Result<(), Box<dyn std::error::Error>> {
     let validator = RegexValidator::new();

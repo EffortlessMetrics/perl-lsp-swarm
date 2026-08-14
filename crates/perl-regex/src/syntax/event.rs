@@ -445,13 +445,14 @@ impl<'a> EventParser<'a> {
         let Some(ch) = self.pattern.get(self.pos..).and_then(|rest| rest.chars().next()) else {
             return false;
         };
-        if !ch.is_whitespace() {
+        if !ch.is_ascii_whitespace() {
             return false;
         }
         let start = self.pos;
         let mut cursor = start;
-        while let Some(candidate) = self.pattern.get(cursor..).and_then(|rest| rest.chars().next()) {
-            if !candidate.is_whitespace() {
+        while let Some(candidate) = self.pattern.get(cursor..).and_then(|rest| rest.chars().next())
+        {
+            if !candidate.is_ascii_whitespace() {
                 break;
             }
             cursor = cursor.saturating_add(candidate.len_utf8());
@@ -494,6 +495,14 @@ impl<'a> EventParser<'a> {
             && self.bytes.get(start + 3) == Some(&b'{')
         {
             return self.parse_embedded_code(start, start + 3, RegexEmbeddedCodeKind::Deferred, 4);
+        }
+        if self.bytes.get(start + 2) == Some(&b'^') && self.bytes.get(start + 3) == Some(&b':') {
+            return self.open_group(
+                start,
+                start + 4,
+                RegexGroupKind::ModifierScope,
+                RegexModeState::default(),
+            );
         }
 
         match self.bytes.get(start + 2).copied() {
@@ -863,9 +872,13 @@ impl<'a> EventParser<'a> {
     }
 
     fn brace_quantifier(&self, start: usize) -> Option<(usize, Option<usize>, usize)> {
-        let mut cursor = start + 1;
-        let (lower, next) = parse_decimal(self.bytes, cursor)?;
-        cursor = next;
+        if self.bytes.get(start + 1) == Some(&b',') {
+            let (upper, cursor) = parse_decimal(self.bytes, start + 2)?;
+            return (self.bytes.get(cursor) == Some(&b'}'))
+                .then_some((0, Some(upper), cursor + 1));
+        }
+
+        let (lower, mut cursor) = parse_decimal(self.bytes, start + 1)?;
         match self.bytes.get(cursor).copied()? {
             b'}' => Some((lower, Some(lower), cursor + 1)),
             b',' => {

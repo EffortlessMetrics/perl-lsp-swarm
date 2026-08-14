@@ -68,8 +68,8 @@ pub(crate) fn find_nested_quantifiers(stream: &RegexEventStream) -> Vec<usize> {
             | RegexEventKind::Interpolation => {
                 last_atom = LastAtom::Other;
             }
-            RegexEventKind::Comment(_)
-            | RegexEventKind::ModeChange
+            RegexEventKind::Comment(_) => {}
+            RegexEventKind::ModeChange
             | RegexEventKind::Alternation
             | RegexEventKind::EmbeddedCode { .. }
             | RegexEventKind::Malformed(_) => {
