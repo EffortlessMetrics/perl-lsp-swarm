@@ -190,7 +190,8 @@ fn support_and_closeout_cannot_precede_public_receipt() -> Result<(), Box<dyn Er
 
 #[test]
 fn dap_sidecar_is_explicitly_non_blocking_and_has_manual_publication_stops()
--> Result<(), Box<dyn Error>> {
+    -> Result<(), Box<dyn Error>>
+{
     let train = load_train()?;
     let sidecars = train
         .get("non_blocking_sidecars")
