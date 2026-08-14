@@ -1294,10 +1294,18 @@ mod tests {
         )?;
         let mut issues = Vec::new();
         check_runner_label_mismatch(&real_workflows_dir, &lane, &mut issues)?;
-        assert!(
-            issues.iter().all(|i| i.code != "RUNNER_LABEL_MISMATCH"),
-            "unexpected RUNNER_LABEL_MISMATCH for Droid self-hosted runner: {issues:?}"
-        );
+        // Paused-Droid posture (#5778): droid-review temporarily targets the
+        // hosted `ubuntu_24_04` label while the whitelist still declares the
+        // resumed self-hosted lane; realignment is owned by #7543. A mismatch
+        // against any other label remains a failure.
+        for issue in &issues {
+            if issue.code == "RUNNER_LABEL_MISMATCH" {
+                assert!(
+                    issue.message.contains("`ubuntu_24_04`"),
+                    "unexpected RUNNER_LABEL_MISMATCH for Droid self-hosted runner: {issues:?}"
+                );
+            }
+        }
         Ok(())
     }
 

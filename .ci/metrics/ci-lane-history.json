@@ -1,13 +1,18 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-07T09:54:19Z",
+  "generated_at": "2026-08-14T05:42:03Z",
   "window_days": 14,
   "min_samples_for_learned": 5,
-  "lane_count": 23,
+  "lane_count": 24,
   "lanes": {
     "check_all_targets": {
       "samples": 0,
       "static_floor": 6.0,
+      "learned": false
+    },
+    "commit_checks": {
+      "samples": 0,
+      "static_floor": 0.0,
       "learned": false
     },
     "conflict_markers": {
@@ -32,7 +37,7 @@
     },
     "droid_auto_review": {
       "samples": 0,
-      "static_floor": 4.0,
+      "static_floor": 0.0,
       "learned": false
     },
     "fuzz": {
@@ -119,6 +124,26 @@
       "samples": 0,
       "static_floor": 20.0,
       "learned": false
+    }
+  },
+  "validation": {
+    "files_seen": 0,
+    "files_accepted": 0,
+    "jobs_seen": 0,
+    "accepted_samples": 0,
+    "jobs_with_sample": 0,
+    "jobs_with_lane_id": 0,
+    "lane_executions": 0,
+    "unmapped_samples": 0,
+    "unmapped_keys": {},
+    "rejected": {},
+    "source_run_count": 0,
+    "source_run_ids": [],
+    "limits": {
+      "max_actual_lem": 125.0,
+      "max_receipt_bytes": 1048576,
+      "max_jobs_per_receipt": 100,
+      "max_samples_per_lane": 1000
     }
   }
 }
