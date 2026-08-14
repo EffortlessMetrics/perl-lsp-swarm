@@ -15,9 +15,7 @@ fn walk(node: &Node, visit: &mut impl FnMut(&Node)) {
 }
 
 fn source_text(source: &str, node: &Node) -> Option<String> {
-    source
-        .get(node.location.start..node.location.end)
-        .map(str::to_owned)
+    source.get(node.location.start..node.location.end).map(str::to_owned)
 }
 
 fn is_recovery_node(node: &Node) -> bool {
@@ -61,21 +59,15 @@ fn assert_single_local_recovery_diagnostic(
         .diagnostics
         .iter()
         .map(|diagnostic| match diagnostic {
-            ParseError::Recovered {
-                site,
-                kind,
-                location,
-            } => Ok((site.clone(), kind.clone(), *location)),
-            other => Err(format!(
-                "{context}: unexpected non-recovery diagnostic: {other:?}"
-            )),
+            ParseError::Recovered { site, kind, location } => {
+                Ok((site.clone(), kind.clone(), *location))
+            }
+            other => Err(format!("{context}: unexpected non-recovery diagnostic: {other:?}")),
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     if diagnostics.len() != 1 {
-        return Err(format!(
-            "{context}: expected one recovery diagnostic, got {diagnostics:?}"
-        ));
+        return Err(format!("{context}: expected one recovery diagnostic, got {diagnostics:?}"));
     }
     if output.recovered_count != 1 {
         return Err(format!(
@@ -86,9 +78,7 @@ fn assert_single_local_recovery_diagnostic(
 
     let (site, kind, location) = &diagnostics[0];
     if site != &expected_site || kind != &expected_kind {
-        return Err(format!(
-            "{context}: unexpected recovery classification: {site:?}/{kind:?}"
-        ));
+        return Err(format!("{context}: unexpected recovery classification: {site:?}/{kind:?}"));
     }
     if *location < gap_start || *location > gap_end {
         return Err(format!(
@@ -119,8 +109,8 @@ fn clean_source_has_no_recovery_evidence() {
 }
 
 #[test]
-fn missing_infix_rhs_emits_local_evidence_and_preserves_following_declaration()
--> Result<(), String> {
+fn missing_infix_rhs_emits_local_evidence_and_preserves_following_declaration() -> Result<(), String>
+{
     let source = "my $value = 1 +; my $after = 2;";
     let mut parser = Parser::new(source);
     let output = parser.parse_with_recovery();
@@ -197,9 +187,8 @@ fn missing_initializer_emits_local_evidence_and_preserves_following_declaration(
         "the declaration hole must remain one typed MissingExpression node"
     );
 
-    let gap_start = source
-        .find("= ;")
-        .ok_or_else(|| "test source lost the initializer hole".to_string())?;
+    let gap_start =
+        source.find("= ;").ok_or_else(|| "test source lost the initializer hole".to_string())?;
     let gap_end = gap_start + "= ;".len();
     let (missing_start, missing_end) = missing_expression_spans[0];
     assert!(
