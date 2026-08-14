@@ -1,5 +1,5 @@
 use perl_ast::{
-    validate_ast, AstInvariantCode, AstInvariantOptions, Node, NodeKind, SourceLocation,
+    AstInvariantCode, AstInvariantOptions, Node, NodeKind, SourceLocation, validate_ast,
 };
 
 fn location(start: usize, end: usize) -> SourceLocation {

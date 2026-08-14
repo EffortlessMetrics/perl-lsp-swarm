@@ -1,4 +1,4 @@
-use perl_ast::{validate_ast, AstInvariantOptions, AstInvariantReport};
+use perl_ast::{AstInvariantOptions, AstInvariantReport, validate_ast};
 use perl_parser::Parser;
 
 fn assert_valid(source: &str, report: AstInvariantReport, path: &str) {
@@ -11,8 +11,8 @@ fn assert_valid(source: &str, report: AstInvariantReport, path: &str) {
 }
 
 #[test]
-fn strict_parser_outputs_satisfy_the_shared_structural_oracle(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn strict_parser_outputs_satisfy_the_shared_structural_oracle()
+-> Result<(), Box<dyn std::error::Error>> {
     let cases = [
         "use strict; package Demo; sub answer { my ($x) = @_; return $x + 1; }",
         "my $café = 1; if ($café) { print qq/value=$café/; }",
@@ -49,9 +49,9 @@ fn recovered_parser_output_satisfies_the_same_structural_oracle() {
 #[cfg(feature = "incremental")]
 #[test]
 #[allow(deprecated)]
-fn incremental_edit_output_satisfies_the_same_structural_oracle(
-) -> Result<(), Box<dyn std::error::Error>> {
-    use perl_parser::{apply_edits, Edit, IncrementalState};
+fn incremental_edit_output_satisfies_the_same_structural_oracle()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser::{Edit, IncrementalState, apply_edits};
 
     let source = "my $x = 1; print $x;";
     let start = source.find("= 1").ok_or("fixture lost its literal")? + 2;

@@ -1,4 +1,4 @@
-use perl_ast::{validate_ast, AstInvariantOptions, Node, NodeKind, SourceLocation};
+use perl_ast::{AstInvariantOptions, Node, NodeKind, SourceLocation, validate_ast};
 
 fn number(start: usize, end: usize) -> Node {
     Node::new(NodeKind::Number { value: "1".to_string() }, SourceLocation { start, end })
