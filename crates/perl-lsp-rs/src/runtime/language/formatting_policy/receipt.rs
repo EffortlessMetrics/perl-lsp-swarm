@@ -111,6 +111,16 @@ impl LspServer {
         context: &str,
         error: FormattingError,
     ) -> JsonRpcError {
+        self.formatting_failure_with_evidence(snapshot, context, error, None)
+    }
+
+    pub(super) fn formatting_failure_with_evidence(
+        &self,
+        snapshot: &Snapshot,
+        context: &str,
+        error: FormattingError,
+        evidence: Option<Value>,
+    ) -> JsonRpcError {
         let reason = formatting_error_reason(&error);
         let receipt = self.record_formatting_receipt(
             snapshot,
@@ -119,7 +129,7 @@ impl LspServer {
             actual_engine_for_mode(snapshot.config.mode),
             "no_edit",
             0,
-            None,
+            evidence,
         );
         JsonRpcError {
             code: -32603,

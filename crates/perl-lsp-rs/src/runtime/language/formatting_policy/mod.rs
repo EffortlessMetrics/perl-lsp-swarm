@@ -1,10 +1,10 @@
-//! Shared runtime policy for document, range, and on-type formatting requests.
+//! Shared runtime policy for every formatting request surface.
 //!
 //! The formatter libraries decide whether a result was applied, unchanged,
 //! refused, or not proven. This module admits one current source/configuration
 //! snapshot, binds cancellation, and projects that typed result onto LSP.
-//! Multi-range plan geometry compiles in production; live
-//! `rangesFormatting` wiring remains a successor slice.
+//! Multi-range plan geometry and live `textDocument/rangesFormatting`
+//! wiring share this module; compose unit-test packet remains a follow-up.
 
 use super::super::{
     GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
@@ -13,13 +13,13 @@ use super::super::{
 use crate::cancellation::RequestCleanupGuard;
 use crate::convert::{WirePosition, WireRange};
 use crate::features::formatting::{
-    CodeFormatter, FormatContext, FormattingDecision, FormattingError, FormattingOptions,
-    PerlTidyConfig,
+    CodeFormatter, FormatContext, FormatTextEdit, FormattingDecision, FormattingError,
+    FormattingOptions, PerlTidyConfig,
 };
 use crate::protocol::{CONTENT_MODIFIED, REQUEST_CANCELLED, invalid_params, req_position, req_uri};
 use perl_lsp_rs_core::config::FormatterMode;
 use perl_lsp_rs_core::features::ids::{
-    LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGE_FORMATTING,
+    LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGE_FORMATTING, LSP_RANGES_FORMATTING,
 };
 use perl_lsp_rs_core::tooling::perltidy::native::FormatDisposition;
 use serde::Serialize;
@@ -32,6 +32,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 enum Surface {
     Document,
     Range,
+    Ranges,
     OnType,
 }
 
@@ -40,6 +41,7 @@ impl Surface {
         match self {
             Self::Document => "textDocument/formatting",
             Self::Range => "textDocument/rangeFormatting",
+            Self::Ranges => "textDocument/rangesFormatting",
             Self::OnType => "textDocument/onTypeFormatting",
         }
     }
@@ -48,6 +50,7 @@ impl Surface {
         match self {
             Self::Document => LSP_FORMATTING,
             Self::Range => LSP_RANGE_FORMATTING,
+            Self::Ranges => LSP_RANGES_FORMATTING,
             Self::OnType => LSP_ON_TYPE_FORMATTING,
         }
     }
@@ -198,7 +201,7 @@ impl LspServer {
         let advertised = self.advertised_features.lock();
         match surface {
             Surface::Document | Surface::OnType => advertised.formatting,
-            Surface::Range => advertised.range_formatting,
+            Surface::Range | Surface::Ranges => advertised.range_formatting,
         }
     }
 

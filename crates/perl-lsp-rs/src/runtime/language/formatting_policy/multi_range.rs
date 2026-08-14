@@ -1,19 +1,15 @@
-//! Atomic multi-range formatting plan builder (types + geometry).
+//! Atomic multi-range formatting plan builder plus rangesFormatting wiring.
 //!
-//! Live `textDocument/rangesFormatting` wiring and edit composition remain
-//! successor slices; this module proves plan admission and refusal geometry.
-
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "policy:multi-range-7089-plan: production link lands with rangesFormatting wiring successor"
-    )
-)]
+//! Compose-heavy unit coverage remains a follow-up packet for ripr-safe size.
 
 use serde::Serialize;
 
-use super::{Value, digest, json, parse_range};
+use super::super::{
+    CodeFormatter, FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision,
+    JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Snapshot, Surface, Value,
+    WirePosition, WireRange, actual_engine_for_mode, cancellation_token, digest, invalid_params,
+    json, parse_range, sanitized_outcome,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct PositionRecord {
@@ -38,6 +34,14 @@ impl NormalizedRange {
     fn between(start: PositionRecord, end: PositionRecord) -> Self {
         Self { start, end }
     }
+
+    fn wire(&self) -> WireRange {
+        WireRange::new(
+            WirePosition::new(self.start.line, self.start.character),
+            WirePosition::new(self.end.line, self.end.character),
+        )
+    }
+}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +198,24 @@ impl SourceGeometry {
         }
         if units == target { Ok(end) } else { Err(PlanError::outside_line(line, character, units)) }
     }
+
+    fn line_byte_span(&self, source: &str, line: u32) -> Result<(usize, usize), PlanError> {
+        let line_index = line as usize;
+        let start = *self.line_starts.get(line_index).ok_or_else(|| {
+            PlanError::new(
+                "invalid_position",
+                format!("line {line} is outside the current document"),
+            )
+        })?;
+        let mut end = self
+            .line_starts
+            .get(line_index + 1)
+            .map_or(source.len(), |next| next.saturating_sub(1));
+        if end > start && source.as_bytes().get(end.saturating_sub(1)) == Some(&b'\r') {
+            end -= 1;
+        }
+        Ok((start, end))
+    }
 }
 
 fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, PlanError> {
@@ -262,6 +284,117 @@ fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, PlanError> {
     })
 }
 
+#[derive(Debug)]
+struct PlannedEdit {
+    edit: FormatTextEdit,
+    start_byte: usize,
+    end_byte: usize,
+    owner: usize,
+}
+
+fn compose_edits(
+    source: &str,
+    plan: &RangePlan,
+    per_range_edits: Vec<Vec<FormatTextEdit>>,
+    generation: u64,
+    config_fingerprint: &str,
+) -> Result<(Vec<FormatTextEdit>, String), PlanError> {
+    if per_range_edits.len() != plan.normalized_ranges.len() {
+        return Err(PlanError::new(
+            "instrument_failure",
+            "per-range edit count does not match the admitted plan",
+        ));
+    }
+
+    let geometry = SourceGeometry::new(source);
+    let mut edits = Vec::new();
+    for (owner, (admitted, range_edits)) in
+        plan.normalized_ranges.iter().zip(per_range_edits).enumerate()
+    {
+        for edit in range_edits {
+            let start_byte =
+                geometry.byte_offset(source, edit.range.start.line, edit.range.start.character)?;
+            let end_byte =
+                geometry.byte_offset(source, edit.range.end.line, edit.range.end.character)?;
+            if end_byte < start_byte {
+                return Err(PlanError::new(
+                    "edit_conflict",
+                    format!("formatter edit for normalized range {owner} is reversed"),
+                ));
+            }
+            // Native range formatting is line-oriented: a partial-line request
+            // may legitimately produce an edit covering the touched lines. Keep
+            // the safety boundary at those lines while still rejecting edits
+            // that escape the admitted line set.
+            let (allowed_start, allowed_end) = if admitted.start.line == admitted.end.line
+                && admitted.end.character == admitted.start.character
+            {
+                (admitted.start.byte, admitted.end.byte)
+            } else if admitted.end.character == 0 {
+                let (start, _) = geometry.line_byte_span(source, admitted.start.line)?;
+                (start, admitted.end.byte)
+            } else {
+                let (start, _) = geometry.line_byte_span(source, admitted.start.line)?;
+                let (_, end) = geometry.line_byte_span(source, admitted.end.line)?;
+                (start, end)
+            };
+            if start_byte < allowed_start || end_byte > allowed_end {
+                return Err(PlanError::new(
+                    "edit_outside_range",
+                    format!(
+                        "formatter edit {start_byte}..{end_byte} escapes admitted line span {allowed_start}..{allowed_end}"
+                    ),
+                ));
+            }
+            edits.push(PlannedEdit { edit, start_byte, end_byte, owner });
+        }
+    }
+
+    edits.sort_by(|left, right| {
+        (left.start_byte, left.end_byte, left.owner, left.edit.new_text.as_str()).cmp(&(
+            right.start_byte,
+            right.end_byte,
+            right.owner,
+            right.edit.new_text.as_str(),
+        ))
+    });
+    for pair in edits.windows(2) {
+        let left = &pair[0];
+        let right = &pair[1];
+        if left.start_byte == right.start_byte && left.end_byte == right.end_byte {
+            return Err(PlanError::new(
+                "duplicate_edit",
+                format!(
+                    "normalized ranges {} and {} produced duplicate edits",
+                    left.owner, right.owner
+                ),
+            ));
+        }
+        if right.start_byte < left.end_byte || right.start_byte == left.start_byte {
+            return Err(PlanError::new(
+                "edit_conflict",
+                format!(
+                    "normalized ranges {} and {} produced overlapping edits",
+                    left.owner, right.owner
+                ),
+            ));
+        }
+    }
+
+    let canonical = edits
+        .iter()
+        .map(|edit| {
+            format!("{}:{}:{}", edit.start_byte, edit.end_byte, digest(&edit.edit.new_text))
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    let final_digest = digest(&format!(
+        "multi-range-edits-v1|generation={generation}|config={config_fingerprint}|plan={}|{canonical}",
+        plan.plan_digest
+    ));
+    Ok((edits.into_iter().map(|edit| edit.edit).collect(), final_digest))
+}
+
 fn plan_evidence(
     plan: &RangePlan,
     outcomes: Vec<Value>,
@@ -280,9 +413,267 @@ fn plan_evidence(
     })
 }
 
+fn plan_outcomes(plan: &RangePlan, decisions: &[FormattingDecision]) -> Vec<Value> {
+    decisions
+        .iter()
+        .zip(plan.normalized_ranges.iter().zip(&plan.range_provenance))
+        .map(|(decision, (admitted, provenance))| {
+            json!({
+                "original_index": provenance.original_index,
+                "normalized_range": admitted,
+                "outcome": sanitized_outcome(decision),
+            })
+        })
+        .collect()
+}
+
+fn blocked_decision(decisions: &[FormattingDecision]) -> Option<&FormattingDecision> {
+    decisions.iter().find(|decision| {
+        matches!(
+            decision.outcome.disposition,
+            FormatDisposition::Refused | FormatDisposition::FailedOrNotProven
+        )
+    })
+}
+
+fn typed_outcome_error(
+    server: &LspServer,
+    snapshot: &Snapshot,
+    plan: &RangePlan,
+    outcomes: Vec<Value>,
+    decision: &FormattingDecision,
+    message: &str,
+) -> JsonRpcError {
+    let outcome = sanitized_outcome(decision);
+    let reason = outcome.get("reason").cloned().unwrap_or_else(|| json!("unknown"));
+    let engine =
+        outcome.pointer("/identity/actual_engine").and_then(Value::as_str).unwrap_or("unknown");
+    let evidence = plan_evidence(plan, outcomes, None);
+    let receipt = server.record_formatting_receipt(
+        snapshot,
+        "blocked",
+        reason.clone(),
+        engine,
+        "no_edit",
+        0,
+        Some(evidence),
+    );
+    JsonRpcError {
+        code: -32603,
+        message: message.to_string(),
+        data: Some(json!({
+            "error_kind": "formatting_outcome_contract",
+            "reason": reason,
+            "identity": outcome.get("identity").cloned().unwrap_or(Value::Null),
+            "formatting_outcome": outcome,
+            "formatting_receipt": receipt,
+        })),
+    }
+}
+
+fn plan_error(
+    server: &LspServer,
+    snapshot: &Snapshot,
+    error: PlanError,
+    evidence: Option<Value>,
+) -> JsonRpcError {
+    let code = error.json_rpc_code();
+    let error_kind = error.error_kind();
+    let receipt = server.record_formatting_receipt(
+        snapshot,
+        "blocked",
+        json!(error.reason),
+        "not_started",
+        "no_edit",
+        0,
+        evidence,
+    );
+    JsonRpcError {
+        code,
+        message: error.message,
+        data: Some(json!({
+            "error_kind": error_kind,
+            "reason": error.reason,
+            "formatting_receipt": receipt,
+        })),
+    }
+}
+
+pub(super) fn handle(
+    server: &LspServer,
+    params: Option<Value>,
+    request_id: Option<&Value>,
+) -> Result<Option<Value>, JsonRpcError> {
+    let typed_id = request_id.and_then(JsonRpcId::try_from_value);
+    let _cleanup = RequestCleanupGuard::from_ref(typed_id.as_ref());
+    let token = cancellation_token(typed_id.as_ref(), Surface::Ranges);
+    server.ensure_not_cancelled(Surface::Ranges, token.as_ref(), None, None)?;
+    let params =
+        params.ok_or_else(|| invalid_params("Missing multi-range formatting parameters"))?;
+    let snapshot = server.admit(Surface::Ranges, &params)?;
+    let ranges = params
+        .get("ranges")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_params("Missing required parameter: ranges"))?;
+    let plan = build_plan(&snapshot.text, ranges)
+        .map_err(|error| plan_error(server, &snapshot, error, None))?;
+
+    server.ensure_not_cancelled(Surface::Ranges, token.as_ref(), Some(&snapshot), None)?;
+    if plan.normalized_ranges.is_empty() {
+        server.ensure_current(&snapshot)?;
+        server.record_formatting_receipt(
+            &snapshot,
+            "acted",
+            json!("already_formatted"),
+            "not_started",
+            "none",
+            0,
+            Some(plan_evidence(&plan, Vec::new(), Some(digest("empty-edit-set")))),
+        );
+        return Ok(Some(json!([])));
+    }
+
+    let formatter =
+        CodeFormatter::with_config_and_mode(snapshot.config.perltidy.clone(), snapshot.config.mode);
+    let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
+    let mut decisions = Vec::with_capacity(plan.normalized_ranges.len());
+    for (normalized_index, admitted) in plan.normalized_ranges.iter().enumerate() {
+        server.ensure_not_cancelled(
+            Surface::Ranges,
+            token.as_ref(),
+            Some(&snapshot),
+            Some(actual_engine_for_mode(snapshot.config.mode)),
+        )?;
+        let decision = match formatter.format_range_decision(
+            &snapshot.text,
+            &admitted.wire(),
+            &snapshot.options,
+            &context,
+        ) {
+            Ok(decision) => decision,
+            Err(error) => {
+                server.ensure_not_cancelled(
+                    Surface::Ranges,
+                    token.as_ref(),
+                    Some(&snapshot),
+                    Some(actual_engine_for_mode(snapshot.config.mode)),
+                )?;
+                let original_index = plan
+                    .range_provenance
+                    .get(normalized_index)
+                    .map_or(normalized_index, |provenance| provenance.original_index);
+                let outcomes = plan_outcomes(&plan, &decisions);
+                return Err(server.formatting_failure_with_evidence(
+                    &snapshot,
+                    &format!("Range formatting failed for ranges[{original_index}]"),
+                    error,
+                    Some(plan_evidence(&plan, outcomes, None)),
+                ));
+            }
+        };
+        decisions.push(decision);
+    }
+
+    server.ensure_not_cancelled(
+        Surface::Ranges,
+        token.as_ref(),
+        Some(&snapshot),
+        Some(actual_engine_for_mode(snapshot.config.mode)),
+    )?;
+    server.ensure_current(&snapshot)?;
+    let outcomes = plan_outcomes(&plan, &decisions);
+
+    if let Some(blocked) = blocked_decision(&decisions) {
+        if decisions.iter().any(|decision| !decision.document.edits.is_empty()) {
+            return Err(typed_outcome_error(
+                server,
+                &snapshot,
+                &plan,
+                outcomes,
+                blocked,
+                "one range was blocked after another produced edits; no edits were returned",
+            ));
+        }
+        if blocked.outcome.disposition == FormatDisposition::FailedOrNotProven {
+            return Err(typed_outcome_error(
+                server,
+                &snapshot,
+                &plan,
+                outcomes,
+                blocked,
+                "formatting returned an unproven successful value; no edits were returned",
+            ));
+        }
+        let outcome = sanitized_outcome(blocked);
+        let reason = outcome.get("reason").cloned().unwrap_or_else(|| json!("unknown"));
+        let engine = outcome
+            .pointer("/identity/actual_engine")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        server.record_formatting_receipt(
+            &snapshot,
+            "blocked",
+            reason,
+            &engine,
+            "no_edit",
+            0,
+            Some(plan_evidence(&plan, outcomes, None)),
+        );
+        return Ok(Some(json!([])));
+    }
+
+    let per_range_edits = decisions
+        .iter()
+        .map(|decision| match decision.outcome.disposition {
+            FormatDisposition::Applied if !decision.document.edits.is_empty() => {
+                Ok(decision.document.edits.clone())
+            }
+            FormatDisposition::NoChange if decision.document.edits.is_empty() => Ok(Vec::new()),
+            _ => Err(PlanError::new(
+                "instrument_failure",
+                "per-range outcome and edit shape disagree",
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            plan_error(server, &snapshot, error, Some(plan_evidence(&plan, outcomes.clone(), None)))
+        })?;
+    let (edits, final_edit_digest) = compose_edits(
+        &snapshot.text,
+        &plan,
+        per_range_edits,
+        snapshot.generation,
+        &snapshot.config.fingerprint,
+    )
+    .map_err(|error| {
+        plan_error(server, &snapshot, error, Some(plan_evidence(&plan, outcomes.clone(), None)))
+    })?;
+
+    server.ensure_not_cancelled(
+        Surface::Ranges,
+        token.as_ref(),
+        Some(&snapshot),
+        Some(actual_engine_for_mode(snapshot.config.mode)),
+    )?;
+    server.ensure_current(&snapshot)?;
+    server.record_formatting_receipt(
+        &snapshot,
+        "acted",
+        if edits.is_empty() { json!("already_formatted") } else { json!("applied") },
+        actual_engine_for_mode(snapshot.config.mode),
+        "none",
+        edits.len(),
+        Some(plan_evidence(&plan, outcomes, Some(final_edit_digest))),
+    );
+    Ok(Some(json!(edits)))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::super::default_options;
     use super::*;
+    use perl_lsp_rs_core::tooling::perltidy::native::FormatReasonCode;
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
         json!({
