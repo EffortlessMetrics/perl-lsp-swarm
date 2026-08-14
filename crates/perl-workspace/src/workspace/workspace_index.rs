@@ -158,6 +158,7 @@ pub use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 /// };
 /// ```
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum IndexState {
     /// Index is being constructed (workspace scan in progress)
     Building {
@@ -955,6 +956,7 @@ impl Default for IndexCoordinator {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Symbol kinds for cross-file indexing during Index/Navigate workflows.
+#[non_exhaustive]
 pub enum SymKind {
     /// Variable symbol ($, @, or % sigil)
     Var,
@@ -1114,6 +1116,7 @@ pub struct SymbolReference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Classification of how a symbol is referenced in Navigate/Analyze workflows.
+#[non_exhaustive]
 pub enum ReferenceKind {
     /// Symbol definition site (sub declaration, variable declaration)
     Definition,

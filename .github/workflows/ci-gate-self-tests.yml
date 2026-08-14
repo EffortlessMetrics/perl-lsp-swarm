@@ -26,6 +26,7 @@ on:
       - 'Formula/**'
       - 'scripts/render-linux-packages.py'
       - 'scripts/tests/test-installer-zero-args.sh'
+      - 'scripts/tests/test-install-path-contract.sh'
       - 'scripts/tests/test-distribution-manifest-consistency.sh'
       # The manifest-consistency gate derives its expected values from these
       # three authorities, so a change to any of them can make every
@@ -75,7 +76,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
@@ -148,6 +149,33 @@ jobs:
             echo "## Installer zero-argument self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "The zero-argument installer bootstrap regressed — the documented curl-pipe command may abort before installing anything. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  installer-path-contract-self-test:
+    name: Installer PATH contract self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Run installer PATH contract self-test
+        run: bash scripts/tests/test-install-path-contract.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Installer PATH contract self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Windows install.ps1 owns User-PATH persistence with -NoModifyPath and bounded dispositions; POSIX remains explicitly manual when the user-local fallback is outside PATH (issue #7832). This is a source contract, not fresh-host proof." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Installer PATH contract self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The installer PATH source contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   distribution-manifest-consistency-self-test:

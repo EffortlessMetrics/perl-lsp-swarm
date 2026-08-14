@@ -82,6 +82,26 @@ fn increment_depth_130_hits_limit() {
     assert!(fails_gracefully(&code), "130-deep `++` chain should hit the recursion guard");
 }
 
+#[test]
+fn power_chain_depth_hits_limit() {
+    let code = "1 ** ".repeat(130) + "1";
+    assert!(
+        fails_gracefully(&code),
+        "130-deep power chain should fail with NestingTooDeep, not overflow the stack"
+    );
+}
+
+#[test]
+fn deep_power_chain_recovery_surfaces_nesting_diagnostic() {
+    let code = "1 ** ".repeat(2_000) + "1";
+    let mut parser = Parser::new(&code);
+    let output = parser.parse_with_recovery();
+    assert!(
+        output.diagnostics.iter().any(|d| matches!(d, ParseError::NestingTooDeep { .. })),
+        "parse_with_recovery should surface NestingTooDeep for a deep power chain"
+    );
+}
+
 // --- regression: shallow nesting still parses cleanly ---
 
 #[test]

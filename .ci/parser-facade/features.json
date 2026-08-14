@@ -1,0 +1,212 @@
+{
+  "schema_version": 1,
+  "features": [
+    {
+      "name": "default",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#7058",
+      "target_owner": "#7063",
+      "exit_condition": "Replace the broad default bundle with the reviewed staged facade defaults.",
+      "default": false
+    },
+    {
+      "name": "cli",
+      "classification": "product_composition",
+      "disposition": "gate",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Keep only if the parser facade remains the reviewed owner of perl-parse.",
+      "default": false
+    },
+    {
+      "name": "incremental",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Expose only the canonical incremental API after historical generations are dispositioned.",
+      "default": false
+    },
+    {
+      "name": "lsp-compat",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "gate",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move LSP compatibility out of the minimal parser surface and retain only bounded migration paths.",
+      "default": true
+    },
+    {
+      "name": "workspace",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "gate",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move workspace composition behind an explicit product feature or product facade.",
+      "default": true
+    },
+    {
+      "name": "test-performance",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#2477",
+      "target_owner": "#7065",
+      "exit_condition": "Keep non-default and prove any supported test-only regime explicitly.",
+      "default": false
+    },
+    {
+      "name": "lsp-ga-lock",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move product capability policy to the LSP product owner.",
+      "default": false
+    },
+    {
+      "name": "experimental-features",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#2477",
+      "target_owner": "#7065",
+      "exit_condition": "Keep non-default and prevent production claims or consumers.",
+      "default": false
+    },
+    {
+      "name": "constant-advanced",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6663",
+      "target_owner": "#7065",
+      "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
+      "default": false
+    },
+    {
+      "name": "qw-variants",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6663",
+      "target_owner": "#7065",
+      "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
+      "default": false
+    },
+    {
+      "name": "package-qualified",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6663",
+      "target_owner": "#7065",
+      "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
+      "default": false
+    },
+    {
+      "name": "error-classifier-v2",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6597",
+      "target_owner": "#7065",
+      "exit_condition": "Retain only while an executable migration contract names its consumer.",
+      "default": false
+    },
+    {
+      "name": "lsp-advanced",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move LSP product experiments to the LSP owner.",
+      "default": false
+    },
+    {
+      "name": "expose_lsp_test_api",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move LSP test-only API exposure to the LSP product crates.",
+      "default": false
+    },
+    {
+      "name": "workspace_refactor",
+      "classification": "product_composition",
+      "disposition": "gate",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Remove from broad defaults and retain only through explicit product composition.",
+      "default": true
+    },
+    {
+      "name": "modernize",
+      "classification": "product_composition",
+      "disposition": "gate",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move modernization composition behind an explicit product feature or owner.",
+      "default": false
+    },
+    {
+      "name": "substitution-advanced",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6663",
+      "target_owner": "#7065",
+      "exit_condition": "Retain only with a named parser concept and supported feature-matrix row.",
+      "default": false
+    },
+    {
+      "name": "utf16-complete",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2298",
+      "target_owner": "#7063",
+      "exit_condition": "Keep UTF-16 transport policy above the parser byte-coordinate contract.",
+      "default": false
+    },
+    {
+      "name": "semantic-phase2",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move semantic product composition to the semantic/product owner.",
+      "default": false
+    },
+    {
+      "name": "parser-extras",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7065",
+      "exit_condition": "Replace the generic feature with named supported combinations or retire it.",
+      "default": false
+    },
+    {
+      "name": "crash-repros",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#1820",
+      "target_owner": "#7065",
+      "exit_condition": "Keep non-default and execute only through bounded reproducer policy.",
+      "default": false
+    },
+    {
+      "name": "slow_tests",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#2477",
+      "target_owner": "#7065",
+      "exit_condition": "Keep non-default and route through explicit bounded test profiles.",
+      "default": false
+    },
+    {
+      "name": "doc-coverage",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#2318",
+      "target_owner": "#7065",
+      "exit_condition": "Keep only as an explicit documentation proof profile.",
+      "default": false
+    }
+  ]
+}

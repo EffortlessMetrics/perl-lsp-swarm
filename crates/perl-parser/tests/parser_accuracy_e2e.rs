@@ -91,6 +91,7 @@ const E2E_FIXTURES: &[&str] = &[
     "medium_method_call",
     "method_decl",
     "generated_accessor",
+    "heuristic_generated_member",
     "slash_ambiguity",
     "control_flow_core",
     "dynamic_require_boundary",
