@@ -1,8 +1,7 @@
 use super::{
-    CodeFormatter, FormatContext, FormatDisposition, FormatTextEdit, FormatterMode, JsonRpcError,
-    JsonRpcId, LspServer, RequestCleanupGuard, Snapshot, Surface, Value, WirePosition, WireRange,
-    actual_engine_for_mode, cancellation_token, digest, invalid_params, json, parse_range,
-    req_position, sanitized_outcome,
+    CodeFormatter, FormatContext, FormatterMode, JsonRpcError, JsonRpcId, LspServer,
+    RequestCleanupGuard, Surface, Value, actual_engine_for_mode, cancellation_token,
+    invalid_params, json, parse_range, req_position,
 };
 
 #[path = "multi_range.rs"]
