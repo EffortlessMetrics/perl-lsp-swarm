@@ -201,14 +201,24 @@ impl CompatibilityCatalog {
         server: &ServerSubject,
         host: Option<&HostSubject>,
     ) -> CompatibilityDecision {
-        let matching = self.rows.iter().find(|row| {
-            row.plugin == *plugin
-                && row.server == *server
-                && match row.host.as_ref() {
-                    Some(expected) => host.is_some_and(|observed| observed == expected),
-                    None => true,
-                }
-        });
+        let mut matching: Option<&CompatibilityRow> = None;
+        for row in &self.rows {
+            if row.plugin != *plugin || row.server != *server {
+                continue;
+            }
+            let host_matches = match row.host.as_ref() {
+                Some(expected) => host.is_some_and(|observed| observed == expected),
+                None => true,
+            };
+            if !host_matches {
+                continue;
+            }
+            matching = Some(match matching {
+                None => row,
+                Some(current) if current.host.is_none() && row.host.is_some() => row,
+                Some(current) => current,
+            });
+        }
 
         let Some(row) = matching else {
             return not_proven_decision(

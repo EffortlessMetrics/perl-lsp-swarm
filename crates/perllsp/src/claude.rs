@@ -13,6 +13,7 @@
 //! so CLI parsing, tests, installers, and future presentation adapters consume
 //! one control plane instead of reimplementing Claude state discovery.
 
+use perllsp::claude_compat::{CompatibilityResult, embedded_catalog};
 use serde_json::{Map, Value, json};
 use std::env;
 use std::io;
@@ -616,11 +617,35 @@ fn plugin_enabled(object: &Map<String, Value>) -> Option<bool> {
 
 fn value_contains_expected_repo(value: &Value) -> bool {
     match value {
-        Value::String(value) => value.to_ascii_lowercase().contains(MARKETPLACE_REPO_TOKEN),
+        Value::String(value) => marketplace_repo_matches(value),
         Value::Array(values) => values.iter().any(value_contains_expected_repo),
-        Value::Object(object) => object.values().any(value_contains_expected_repo),
+        Value::Object(object) => {
+            if let Some(repo) = object.get("repo").and_then(Value::as_str) {
+                return marketplace_repo_matches(repo);
+            }
+            object.values().any(value_contains_expected_repo)
+        }
         _ => false,
     }
+}
+
+fn marketplace_repo_matches(value: &str) -> bool {
+    let trimmed = value.trim().trim_end_matches('/').trim_end_matches(".git");
+    let lower = trimmed.to_ascii_lowercase();
+    let token = MARKETPLACE_REPO_TOKEN.to_ascii_lowercase();
+    if lower == token {
+        return true;
+    }
+    // Accept common URL forms that end with the exact owner/repo path segment pair.
+    for prefix in
+        ["https://github.com/", "http://github.com/", "git@github.com:", "ssh://git@github.com/"]
+    {
+        let remainder = lower.strip_prefix(prefix);
+        if remainder == Some(token.as_str()) {
+            return true;
+        }
+    }
+    false
 }
 
 fn command_surface_unsupported(result: &CommandResult) -> bool {
@@ -710,7 +735,22 @@ fn finish_status(
     } else if unknown_observed_state {
         Verdict::Degraded
     } else if reasons.is_empty() {
-        Verdict::Ready
+        // Structural probes alone do not prove plugin/server compatibility. The
+        // catalog starts empty, so Ready is reserved for Compatible evidence.
+        let compatibility = embedded_catalog().decision_for_observation(None, None, None);
+        match compatibility.result {
+            CompatibilityResult::Compatible => Verdict::Ready,
+            CompatibilityResult::Incompatible => {
+                reasons.push("plugin_server_compatibility_incompatible");
+                next_actions.push("resolve_claude_plugin_server_compatibility");
+                Verdict::ActionRequired
+            }
+            CompatibilityResult::NotProven => {
+                reasons.push("plugin_server_compatibility_not_proven");
+                next_actions.push("establish_claude_plugin_server_compatibility_evidence");
+                Verdict::Degraded
+            }
+        }
     } else {
         Verdict::ActionRequired
     };
@@ -872,8 +912,10 @@ mod tests {
         ]);
 
         let status = collect_status(&mut runner, true);
-        assert_eq!(status.verdict, Verdict::Ready);
-        assert!(status.reasons.is_empty());
+        // Structural probes can succeed while the empty compatibility catalog remains
+        // not_proven; Ready is reserved for Compatible evidence only.
+        assert_eq!(status.verdict, Verdict::Degraded);
+        assert!(status.reasons.contains(&"plugin_server_compatibility_not_proven"));
     }
 
     #[test]
@@ -915,7 +957,9 @@ mod tests {
         ]);
 
         let code = run_install(&mut runner, true, true);
-        assert_eq!(code, 0);
+        // Install may mutate marketplace/plugin state, but final readiness stays
+        // action_required/degraded until compatibility evidence exists.
+        assert_eq!(code, 2);
     }
 
     #[test]
@@ -929,6 +973,21 @@ mod tests {
         let status = collect_status(&mut runner, true);
         assert_eq!(status.verdict, Verdict::InstrumentError);
         assert!(status.reasons.contains(&"claude_marketplace_state_unreadable"));
+    }
+
+    #[test]
+    fn malicious_marketplace_repo_suffix_is_not_trusted() {
+        let marketplace = r#"[{"name":"effortlessmetrics","source":{"source":"github","repo":"EffortlessMetrics/perl-lsp-malicious"}}]"#;
+        let mut runner = FakeRunner::new(vec![
+            command(&["--version"], "2.1.231 (Claude Code)\n"),
+            command(&["plugin", "marketplace", "list", "--json"], marketplace),
+            command(&["plugin", "list", "--json"], PLUGIN_READY),
+        ]);
+
+        let status = collect_status(&mut runner, true);
+        assert_eq!(status.verdict, Verdict::ActionRequired);
+        assert!(status.reasons.contains(&"unexpected_effortlessmetrics_marketplace_source"));
+        assert!(!mutation_preconditions_met(&status));
     }
 
     #[test]
