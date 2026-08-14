@@ -83,12 +83,36 @@ struct SourceGeometry {
 impl SourceGeometry {
     fn new(source: &str) -> Self {
         let mut line_starts = vec![0];
-        for (offset, byte) in source.bytes().enumerate() {
-            if byte == b'\n' {
-                line_starts.push(offset + 1);
+        let bytes = source.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\n' {
+                line_starts.push(i + 1);
+            } else if bytes[i] == b'\r' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                    line_starts.push(i + 2);
+                    i += 1;
+                } else {
+                    line_starts.push(i + 1);
+                }
             }
+            i += 1;
         }
         Self { line_starts }
+    }
+
+    fn line_content_end(&self, source: &str, line_index: usize) -> usize {
+        let Some(&next) = self.line_starts.get(line_index + 1) else {
+            return source.len();
+        };
+        let bytes = source.as_bytes();
+        if next >= 2 && bytes.get(next - 2) == Some(&b'\r') && bytes.get(next - 1) == Some(&b'\n') {
+            next - 2
+        } else if next >= 1 && matches!(bytes.get(next - 1), Some(&b'\n') | Some(&b'\r')) {
+            next - 1
+        } else {
+            next
+        }
     }
 
     fn byte_offset(&self, source: &str, line: u32, character: u32) -> Result<usize, PlanError> {
@@ -99,17 +123,7 @@ impl SourceGeometry {
                 format!("line {line} is outside the current document"),
             )
         })?;
-        let physical_end = self
-            .line_starts
-            .get(line_index + 1)
-            .map_or(source.len(), |next| next.saturating_sub(1));
-        let end = if physical_end > start
-            && source.as_bytes().get(physical_end.saturating_sub(1)) == Some(&b'\r')
-        {
-            physical_end - 1
-        } else {
-            physical_end
-        };
+        let end = self.line_content_end(source, line_index);
 
         let target = character as usize;
         let mut units = 0usize;
@@ -299,6 +313,32 @@ mod tests {
             .err()
             .ok_or("surrogate-splitting position was admitted")?;
         assert_eq!(surrogate_split.reason, "invalid_position");
+        Ok(())
+    }
+
+    #[test]
+    fn lone_cr_line_endings_are_recognized() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "a\rb";
+        let plan = build_plan(source, &[range(1, 0, 1, 1)])?;
+        assert_eq!(plan.normalized_ranges[0].start.byte, 2);
+        assert_eq!(plan.normalized_ranges[0].end.byte, 3);
+        let across_terminator = build_plan(source, &[range(0, 0, 0, 1)])?;
+        assert_eq!(across_terminator.normalized_ranges[0].end.byte, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_and_out_of_document_ranges_are_rejected() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "abc\n";
+        let malformed = build_plan(source, &[json!({"start": {"line": 0}})])
+            .err()
+            .ok_or("malformed range was admitted")?;
+        assert_eq!(malformed.reason, "invalid_range");
+        let outside = build_plan(source, &[range(9, 0, 9, 1)])
+            .err()
+            .ok_or("out-of-document range was admitted")?;
+        assert_eq!(outside.reason, "invalid_position");
         Ok(())
     }
 
