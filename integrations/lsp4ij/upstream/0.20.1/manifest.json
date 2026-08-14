@@ -9,6 +9,10 @@
     "dap_tree_sha1": "b805cbe3a40772c2ed90d819180b556ff2d38111",
     "normalization": "identity-v1"
   },
+  "import_tool": {
+    "name": "git-hash-object",
+    "version": "1"
+  },
   "sources": [
     {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/attach.pid.json","git_blob_sha1":"595e4d3dbb3c7c31862b738c5d491711d26396cb","size":92,"materialized":false},
     {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/attach.tcp.json","git_blob_sha1":"467b08deb4b0ceba10267afd75c7735b4f3e1097","size":129,"materialized":false},
