@@ -103,9 +103,14 @@ jobs:
           package-path: target/LSP-perllsp-package
           sublime-text-version: 4
           install-package-control: false
+          # The UnitTesting setup action resolves refs against tags/heads
+          # only, so pin the tags whose commits are the exact-source SHAs:
+          # 4070-2.13.0 -> cc9f5201d9f053d9ab67aa0ea575b494fd133803,
+          # 0.11.6 -> 58ed02acb8c06759445be62b63aef071462e0349 (see
+          # PERLLSP_LSP_REF / PERLLSP_DEBUGGER_REF above).
           extra-packages: |
-            LSP:sublimelsp/LSP@cc9f5201d9f053d9ab67aa0ea575b494fd133803
-            Debugger:daveleroy/SublimeDebugger@58ed02acb8c06759445be62b63aef071462e0349
+            LSP:sublimelsp/LSP@4070-2.13.0
+            Debugger:daveleroy/SublimeDebugger@0.11.6
 
       - name: Run the real Sublime Debugger adapter journey
         uses: SublimeText/UnitTesting/actions/run-tests@b8abedefd5fbc0f64a8c6082506ebd1e24203164
