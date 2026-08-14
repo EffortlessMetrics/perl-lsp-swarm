@@ -1148,7 +1148,6 @@ mod shared_scanner_invariants {
 mod regex_family_geometry {
     use perl_ast::SourceLocation;
 
-    
     /// Regex-family operator recognized by the geometry scanner.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[non_exhaustive]
@@ -1247,11 +1246,8 @@ mod regex_family_geometry {
         source_start: usize,
     ) -> Option<RegexFamilyGeometry> {
         let prefix = identify_operator(text)?;
-        let delimiter_offset = if prefix.len == 0 {
-            0
-        } else {
-            skip_operator_gap(text, prefix.len)
-        };
+        let delimiter_offset =
+            if prefix.len == 0 { 0 } else { skip_operator_gap(text, prefix.len) };
         let delimiter = text.get(delimiter_offset..)?.chars().next()?;
         if !is_valid_delimiter(delimiter) {
             return None;
@@ -1264,8 +1260,7 @@ mod regex_family_geometry {
             RegexFamilyOperator::Substitution => {
                 scan_second_body(text, pattern_scan, SecondBodyKind::Substitution)
             }
-            RegexFamilyOperator::Transliteration
-            | RegexFamilyOperator::TransliterationAlias => {
+            RegexFamilyOperator::Transliteration | RegexFamilyOperator::TransliterationAlias => {
                 scan_second_body(text, pattern_scan, SecondBodyKind::Transliteration)
             }
             RegexFamilyOperator::BareMatch
@@ -1277,7 +1272,8 @@ mod regex_family_geometry {
             Some(scan) => Some(body_geometry(text, source_start, scan)?),
             None => None,
         };
-        let modifiers_start = replacement_scan.map_or(pattern_scan.rest_offset, |scan| scan.rest_offset);
+        let modifiers_start =
+            replacement_scan.map_or(pattern_scan.rest_offset, |scan| scan.rest_offset);
         let modifiers_end = modifier_end(text, modifiers_start);
         let operator_range = absolute_range(source_start, 0, prefix.len)?;
         let full_range = absolute_range(source_start, 0, modifiers_end)?;
@@ -1563,11 +1559,9 @@ mod regex_family_geometry {
             scan.open_offset.checked_add(delimiter_len)?,
         )?;
         let closing_delimiter_range = match scan.close_offset {
-            Some(offset) => Some(absolute_range(
-                source_start,
-                offset,
-                offset.checked_add(delimiter_len)?,
-            )?),
+            Some(offset) => {
+                Some(absolute_range(source_start, offset, offset.checked_add(delimiter_len)?)?)
+            }
             None => None,
         };
 
