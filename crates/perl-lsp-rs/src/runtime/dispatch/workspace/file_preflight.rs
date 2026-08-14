@@ -7,7 +7,7 @@
 
 use crate::protocol::JsonRpcError;
 use crate::runtime::LspServer;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[cfg(feature = "workspace")]
 use crate::runtime::workspace::{module_name_appears_in_text, path_to_module_name};
@@ -310,12 +310,14 @@ mod tests {
         let _ = server.handle_will_rename_files_dispatch(Some(json!({
             "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
         })))?;
-        assert!(!server
-            .coordinator()
-            .ok_or("workspace coordinator unavailable")?
-            .index()
-            .file_symbols(&old_uri)
-            .is_empty());
+        assert!(
+            !server
+                .coordinator()
+                .ok_or("workspace coordinator unavailable")?
+                .index()
+                .file_symbols(&old_uri)
+                .is_empty()
+        );
 
         std::fs::rename(&old_path, &new_path)?;
         std::fs::write(&new_path, source)?;
