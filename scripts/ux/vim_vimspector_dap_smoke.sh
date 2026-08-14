@@ -165,7 +165,11 @@ call cursor(4, 1)
 call vimspector#SetLineBreakpoint(expand('%:p'), 4)
 
 try
-  call vimspector#LaunchWithSettings(#{ configuration: 'Launch Perl' })
+  " There is exactly one autoselectable configuration in .vimspector.json.
+  " LaunchWithSettings() supplies replacement-variable overrides; it is not a
+  " configuration selector. Ordinary Launch() therefore exercises Vimspector's
+  " normal one-configuration discovery path without an interactive chooser.
+  call vimspector#Launch()
 catch
   call s:Fail('Vimspector launch raised: ' . v:exception)
 endtry
