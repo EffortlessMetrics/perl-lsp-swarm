@@ -1,0 +1,397 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/public_beta_experience.v1.schema.json",
+  "title": "public_beta_experience.v1",
+  "description": "Candidate-bound conjunction of the public-beta daily-driver experience and its independent child receipts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "check",
+    "schema_version",
+    "status",
+    "claim_boundary",
+    "candidate",
+    "supported_envelope",
+    "journey_cells",
+    "zero_budget",
+    "child_receipts",
+    "limitations"
+  ],
+  "properties": {
+    "check": {
+      "const": "public-beta-experience"
+    },
+    "schema_version": {
+      "const": "public_beta_experience.v1"
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "blocked",
+        "not_proven"
+      ]
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate": {
+      "$ref": "#/$defs/candidate"
+    },
+    "supported_envelope": {
+      "$ref": "#/$defs/supported_envelope"
+    },
+    "journey_cells": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "$ref": "#/$defs/journey_cell"
+      }
+    },
+    "zero_budget": {
+      "$ref": "#/$defs/zero_budget"
+    },
+    "child_receipts": {
+      "$ref": "#/$defs/child_receipts"
+    },
+    "limitations": {
+      "$ref": "#/$defs/non_empty_strings"
+    }
+  },
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "non_empty_strings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release",
+        "track",
+        "frozen_product_sha",
+        "candidate_id",
+        "artifact_set_id",
+        "release_topology_sha256"
+      ],
+      "properties": {
+        "release": {
+          "type": "string",
+          "minLength": 1
+        },
+        "track": {
+          "const": "public_beta"
+        },
+        "frozen_product_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_set_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "release_topology_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "supported_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "editor",
+        "other_editors",
+        "project_families",
+        "core_loop",
+        "dynamic_perl",
+        "dap_posture"
+      ],
+      "properties": {
+        "editor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "other_editors": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project_families": {
+          "$ref": "#/$defs/non_empty_strings"
+        },
+        "core_loop": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "diagnostics",
+              "completion",
+              "hover",
+              "definition",
+              "references",
+              "symbols",
+              "edit_requery",
+              "formatting",
+              "safe_rename_or_refusal"
+            ]
+          }
+        },
+        "dynamic_perl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dap_posture": {
+          "const": "preview"
+        }
+      }
+    },
+    "journey_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "owner_issue",
+        "disposition",
+        "evidence_refs",
+        "limitation"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "install_upgrade",
+            "startup",
+            "workspace",
+            "completion_hover_navigation",
+            "diagnostics",
+            "empty_results",
+            "rename_delete",
+            "formatting",
+            "doctor_trust",
+            "dap_preview",
+            "shutdown"
+          ]
+        },
+        "owner_issue": {
+          "type": "string",
+          "pattern": "^#[0-9]+$"
+        },
+        "disposition": {
+          "enum": [
+            "pass",
+            "limited",
+            "failed",
+            "not_proven"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "limitation": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "zero_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "false_exact",
+        "stale_exact",
+        "unsafe_edit",
+        "unexplained_success_empty",
+        "silent_startup_failure",
+        "broken_documented_install",
+        "wrong_binary_or_version",
+        "orphaned_server_or_debuggee"
+      ],
+      "properties": {
+        "false_exact": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stale_exact": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsafe_edit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unexplained_success_empty": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "silent_startup_failure": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "broken_documented_install": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "wrong_binary_or_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "orphaned_server_or_debuggee": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "receipt_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_issue",
+        "artifact_path",
+        "schema_version",
+        "sha256",
+        "candidate_id",
+        "status",
+        "claim_boundary",
+        "limitation"
+      ],
+      "properties": {
+        "owner_issue": {
+          "type": "string",
+          "pattern": "^#[0-9]+$"
+        },
+        "artifact_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_artifact_path": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "limited",
+            "blocked",
+            "not_proven"
+          ]
+        },
+        "claim_boundary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "limitation": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "dependentRequired": {
+        "source_artifact_path": ["source_sha256"],
+        "source_sha256": ["source_artifact_path"]
+      }
+    },
+    "child_receipts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_state_presentation",
+        "first_ten_minutes",
+        "install_transition",
+        "installed_acceptance",
+        "first_useful_answer",
+        "representative_workload",
+        "release_topology",
+        "release_integrity"
+      ],
+      "properties": {
+        "user_state_presentation": {
+          "$ref": "#/$defs/receipt_ref"
+        },
+        "first_ten_minutes": {
+          "$ref": "#/$defs/receipt_ref"
+        },
+        "install_transition": {
+          "$ref": "#/$defs/receipt_ref"
+        },
+        "installed_acceptance": {
+          "$ref": "#/$defs/receipt_ref"
+        },
+        "first_useful_answer": {
+          "$ref": "#/$defs/receipt_ref"
+        },
+        "representative_workload": {
+          "$ref": "#/$defs/receipt_ref"
+        },
+        "release_topology": {
+          "$ref": "#/$defs/receipt_ref"
+        },
+        "release_integrity": {
+          "$ref": "#/$defs/receipt_ref"
+        }
+      }
+    }
+  }
+}

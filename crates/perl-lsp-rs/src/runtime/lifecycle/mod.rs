@@ -54,6 +54,8 @@ mod watchers;
 mod workspace;
 
 use super::{LspServer, io};
+#[cfg(feature = "workspace")]
+use perl_parser::workspace_index::IndexState;
 use serde_json::json;
 
 impl LspServer {
@@ -120,11 +122,31 @@ impl LspServer {
             }
         }
 
-        self.notify(
-            "perl-lsp/index-ready",
-            json!({
-                "ready": has_symbols
-            }),
-        )
+        #[cfg(feature = "workspace")]
+        let (readiness_state, readiness_reason) = self
+            .coordinator()
+            .map(|coordinator| match coordinator.state() {
+                IndexState::Ready { .. } => ("ready", None),
+                IndexState::Degraded { reason, .. } => {
+                    ("ready_limited", Some(format!("{reason:?}")))
+                }
+                IndexState::Building { .. } => ("building", None),
+                // Forward-compatible fallback for future variants (#2898)
+                _ => ("unknown", None),
+            })
+            .unwrap_or(("building", None));
+
+        #[cfg(not(feature = "workspace"))]
+        let (readiness_state, readiness_reason): (&str, Option<String>) = ("ready", None);
+
+        let mut payload = json!({
+            "ready": readiness_state == "ready",
+            "state": readiness_state,
+        });
+        if let Some(reason) = readiness_reason {
+            payload["reason"] = json!(reason);
+        }
+
+        self.notify("perl-lsp/index-ready", payload)
     }
 }

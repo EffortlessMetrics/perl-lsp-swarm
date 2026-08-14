@@ -1,0 +1,235 @@
+{
+  "check": "public-beta-experience",
+  "schema_version": "public_beta_experience.v1",
+  "status": "not_proven",
+  "claim_boundary": "Candidate-bound conjunction of the v0.18 VS Code public-beta experience; other editors retain ordinary LSP claims without equivalent UI proof.",
+  "candidate": {
+    "release": "0.18.0",
+    "track": "public_beta",
+    "frozen_product_sha": "0123456789abcdef0123456789abcdef01234567",
+    "candidate_id": "v0.18.0-rc1",
+    "artifact_set_id": "v0.18.0-rc1-primary",
+    "release_topology_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "supported_envelope": {
+    "editor": "VS Code is the first-class installed experience.",
+    "other_editors": "Standard LSP compatibility only; no equivalent UI-polish claim.",
+    "project_families": [
+      "conventional_modules",
+      "test_heavy",
+      "framework_shaped",
+      "environment_sensitive",
+      "dynamic_boundary_control"
+    ],
+    "core_loop": [
+      "diagnostics",
+      "completion",
+      "hover",
+      "definition",
+      "references",
+      "symbols",
+      "edit_requery",
+      "formatting",
+      "safe_rename_or_refusal"
+    ],
+    "dynamic_perl": "Bounded fallback, degraded answer, or refusal with an intelligible reason; never manufactured certainty.",
+    "dap_posture": "preview"
+  },
+  "journey_cells": [
+    {
+      "id": "install_upgrade",
+      "owner_issue": "#5903",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://install-transition/v0.18.0-rc1"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "startup",
+      "owner_issue": "#5901",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://workspace-state/startup"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "workspace",
+      "owner_issue": "#4048",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://readiness/v0.18.0-rc1"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "completion_hover_navigation",
+      "owner_issue": "#4050",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://scenario67/providers"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "diagnostics",
+      "owner_issue": "#4346",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://installed-acceptance/diagnostics"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "empty_results",
+      "owner_issue": "#3099",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://provider-readiness/empty-results"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "rename_delete",
+      "owner_issue": "#4346",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://installed-acceptance/safe-edits"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "formatting",
+      "owner_issue": "#4346",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://installed-acceptance/formatting"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "doctor_trust",
+      "owner_issue": "#5901",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://workspace-trust/v0.18.0-rc1"
+      ],
+      "limitation": null
+    },
+    {
+      "id": "dap_preview",
+      "owner_issue": "#4346",
+      "disposition": "limited",
+      "evidence_refs": [
+        "receipt://installed-acceptance/dap-preview"
+      ],
+      "limitation": "DAP is a bounded preview smoke, not a reliability or parity claim."
+    },
+    {
+      "id": "shutdown",
+      "owner_issue": "#4346",
+      "disposition": "pass",
+      "evidence_refs": [
+        "receipt://installed-acceptance/shutdown"
+      ],
+      "limitation": null
+    }
+  ],
+  "zero_budget": {
+    "false_exact": 0,
+    "stale_exact": 0,
+    "unsafe_edit": 0,
+    "unexplained_success_empty": 0,
+    "silent_startup_failure": 0,
+    "broken_documented_install": 0,
+    "wrong_binary_or_version": 0,
+    "orphaned_server_or_debuggee": 0
+  },
+  "child_receipts": {
+    "user_state_presentation": {
+      "owner_issue": "#5901",
+      "artifact_path": "child_receipts/user_state_presentation.json",
+      "schema_version": "workspace_experience.v1",
+      "sha256": "78ae8d689b9897b96921b87b5076a5552914d21871054a4f3fc5fcf2d146661d",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Installed VS Code state presentation.",
+      "limitation": null
+    },
+    "first_ten_minutes": {
+      "owner_issue": "#5902",
+      "artifact_path": "child_receipts/first_ten_minutes.json",
+      "schema_version": "first_ten_minutes.v1",
+      "sha256": "a85315e96a2e0ee69698778cca5d75108ce876d6d83040d3f86cb34f7f35f8bd",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Finite representative first-use observation.",
+      "limitation": null
+    },
+    "install_transition": {
+      "owner_issue": "#5903",
+      "artifact_path": "child_receipts/install_transition.json",
+      "schema_version": "install_transition.v1",
+      "sha256": "df45734acbf29b33b0d9301a7a72e81ec8b80703486c3fab2906ccd53e913be6",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Topology-bound primary install transition.",
+      "limitation": null
+    },
+    "installed_acceptance": {
+      "owner_issue": "#4346",
+      "artifact_path": "child_receipts/installed_acceptance.json",
+      "schema_version": "installed_acceptance.v1",
+      "sha256": "8420720d0ae57982e188cb3f257851f62d93e4bbadc3c1fc711e7e9100dd4d41",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Exact packaged VSIX and binary journey.",
+      "limitation": null
+    },
+    "first_useful_answer": {
+      "owner_issue": "#4048",
+      "artifact_path": "child_receipts/first_useful_answer.json",
+      "schema_version": "first_useful_answer.v1",
+      "sha256": "cb15305a5d0bb45802432b33961d59f9ae24cb2cfff8638a92bef45e47d69812",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "First useful and correct provider answers.",
+      "limitation": null
+    },
+    "representative_workload": {
+      "owner_issue": "#4050",
+      "artifact_path": "child_receipts/representative_workload.json",
+      "schema_version": "scenario67.v1",
+      "sha256": "a61ed4f39c6c72274803550f1e58dbb3138fe607eea5bc49ae46b434247d3e97",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Finite representative Perl project workload.",
+      "limitation": null
+    },
+    "release_topology": {
+      "owner_issue": "#5889",
+      "artifact_path": "child_receipts/release_topology.json",
+      "schema_version": "release_topology.v1",
+      "sha256": "541c08e9fc199cd36e834d1eb994e016fa50f80355e22c04f03df6b23029fab0",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Publishable crates, targets, archives, installers, and channels.",
+      "limitation": null
+    },
+    "release_integrity": {
+      "owner_issue": "#4145",
+      "artifact_path": "child_receipts/release_integrity.json",
+      "schema_version": "release_integrity.v1",
+      "sha256": "e6905b061e59438532a5b47c6c788ea4625fa20fe3b07cff32220a3a2abea9e2",
+      "candidate_id": "v0.18.0-rc1",
+      "status": "pass",
+      "claim_boundary": "Candidate archives, checksums, SBOM, and attestation subject set.",
+      "limitation": null
+    }
+  },
+  "limitations": [
+    "DAP remains preview.",
+    "Other editors do not receive the same UI-polish claim."
+  ]
+}

@@ -5,17 +5,24 @@
 //!
 //! - `jsonrpc` — Core JSON-RPC 2.0 request, response, and error message types
 //! - `errors` — Standard and LSP-specific JSON-RPC error codes and builders
-//! - [`methods`] — LSP 3.17 method name constants for request/notification routing
+//! - [`methods`] — LSP 3.18 method name constants for request/notification routing
 //! - [`capabilities`] — Server capability configuration advertised during `initialize`
 //!
 //! Previously the standalone `perl-lsp-protocol` crate; absorbed into
 //! `perl-lsp-rs-core::protocol` in Wave G3 (#4535).
 
 pub mod capabilities;
+pub mod error_disposition;
+pub mod error_inventory;
 mod errors;
 mod jsonrpc;
 pub mod methods;
 
+pub use error_disposition::{Disposition, disposition_for};
+pub use error_inventory::{
+    ErrorInventoryEntry, classified_count, error_type_inventory, unclassified_count,
+    unclassified_types,
+};
 pub use errors::*;
 pub use jsonrpc::*;
 

@@ -10,6 +10,7 @@
 #   PERL_LSP_LINUX_LIBC=musl bash scripts/install.sh
 #   BUILD_FROM_SOURCE=1 bash scripts/install.sh   # force cargo build/install
 #   bash scripts/install.sh --print-target
+#   bash scripts/install.sh --with-claude        # install perllsp, then reconcile Claude
 #
 # Supported platforms:
 #   Linux x86_64 (musl/gnu), Linux aarch64 (musl/gnu), macOS x86_64, macOS aarch64
@@ -23,6 +24,8 @@ PERL_LSP_LINUX_LIBC="${PERL_LSP_LINUX_LIBC:-auto}"
 PREFER_GNU="${PREFER_GNU:-0}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-0}"
 PRINT_TARGET=0
+WITH_CLAUDE=0
+CLAUDE_SETUP_RESULT="not_requested"
 
 # Determine install directory: user-local by default, system-wide if explicitly set
 if [ -z "${INSTALL_DIR:-}" ]; then
@@ -59,9 +62,19 @@ while [ "$#" -gt 0 ]; do
             PRINT_TARGET=1
             shift
             ;;
+        --with-claude)
+            WITH_CLAUDE=1
+            shift
+            ;;
         -h|--help)
             cat <<'USAGE'
-Usage: scripts/install.sh [--print-target]
+Usage: scripts/install.sh [--print-target] [--with-claude]
+
+Options:
+  --print-target                         Print selected release target and exit.
+  --with-claude                          After installing/verifying perllsp, run
+                                         `perllsp setup claude` through the exact
+                                         installed binary.
 
 Environment:
   VERSION=<latest|vX.Y.Z|X.Y.Z>        Release to install.
@@ -73,6 +86,11 @@ Environment:
 Most Linux distributions use gnu/glibc. Use musl mainly for Alpine Linux and
 musl-based containers. --print-target prints the selected release target and
 exits without downloading.
+
+--with-claude is composition only: the installer still installs one `perllsp`
+binary and delegates all Claude marketplace/plugin lifecycle to the Rust-owned
+`perllsp setup claude` command. It does not prove fresh-process PATH visibility;
+that remains a separate installation receipt.
 USAGE
             exit 0
             ;;
@@ -440,6 +458,46 @@ check_path() {
     esac
 }
 
+configure_claude() {
+    if [ "$WITH_CLAUDE" != "1" ]; then
+        return 0
+    fi
+
+    # User-scoped Claude reconciliation must not run as root. Elevated installs
+    # (`sudo INSTALL_DIR=...`) remain supported for the binary stage only.
+    if [ "$(id -u)" -eq 0 ]; then
+        CLAUDE_SETUP_RESULT="skipped_elevated"
+        warn "skipping Claude reconciliation under elevated privileges; install kept the binary and the invoking user should rerun '$BIN_NAME setup claude' without sudo"
+        return 2
+    fi
+
+    local _bin="$INSTALL_DIR/$BIN_NAME"
+    local _status=0
+    info "reconciling Claude Code through '$BIN_NAME setup claude'"
+
+    # Invoke the exact verified binary by absolute path because this installer process may
+    # still have a stale PATH. This is composition only and MUST NOT be interpreted as
+    # fresh-process PATH proof; #7832/#7746 own that separate receipt.
+    "$_bin" setup claude || _status=$?
+
+    case "$_status" in
+        0)
+            CLAUDE_SETUP_RESULT="complete"
+            info "Claude integration reconciled"
+            ;;
+        2)
+            CLAUDE_SETUP_RESULT="action_required"
+            warn "perllsp installed successfully, but Claude integration still requires an action; the binary has been preserved"
+            ;;
+        *)
+            CLAUDE_SETUP_RESULT="failed"
+            warn "perllsp installed successfully, but Claude reconciliation failed; rerun '$BIN_NAME setup claude' after resolving the reported problem"
+            ;;
+    esac
+
+    return "$_status"
+}
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 main() {
@@ -481,16 +539,27 @@ main() {
     verify_install
     check_path
 
+    local _combined_exit=0
+    configure_claude || _combined_exit=$?
+
     say ""
     say "Done. ${BIN_NAME} ${VERSION_NUM} installed to ${INSTALL_DIR}/${BIN_NAME}"
+    if [ "$WITH_CLAUDE" = "1" ]; then
+        say "Claude integration: ${CLAUDE_SETUP_RESULT}"
+    fi
     say ""
     say "Get started:"
     say "  VS Code:  install the Perl LSP extension from the marketplace"
     say "  Vim/Neovim: add perllsp to your LSP config"
     say "  Other:    configure to use '${INSTALL_DIR}/${BIN_NAME} --stdio'"
+    if [ "$WITH_CLAUDE" = "1" ] && [ "$CLAUDE_SETUP_RESULT" != "complete" ]; then
+        say "  Claude:   rerun '${BIN_NAME} setup claude' after the reported action is resolved"
+    fi
     say ""
     say "Docs: https://github.com/$REPO"
     say ""
+
+    return "$_combined_exit"
 }
 
 main "$@"

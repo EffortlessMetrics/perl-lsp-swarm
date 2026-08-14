@@ -1,0 +1,45 @@
+name: Validate CI lane-history contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/aggregate-ci-lane-history.yml'
+      - '.github/workflows/validate-ci-lane-history.yml'
+      - 'scripts/ci/aggregate_lane_history.py'
+      - 'scripts/ci/test_aggregate_lane_history.py'
+      - 'policy/ci-lanes.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-contract:
+    name: Validate lane-history trust contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Run focused aggregation tests
+        run: python3 scripts/ci/test_aggregate_lane_history.py
+
+      - name: Validate checked-in lane policy
+        run: |
+          set -euo pipefail
+          empty_actuals="$RUNNER_TEMP/empty-ci-actuals"
+          mkdir -p "$empty_actuals"
+          python3 scripts/ci/aggregate_lane_history.py \
+            --actuals-dir "$empty_actuals" \
+            --output "$RUNNER_TEMP/ci-lane-history.json" \
+            --static-lanes policy/ci-lanes.toml

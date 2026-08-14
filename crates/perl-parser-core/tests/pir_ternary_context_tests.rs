@@ -111,10 +111,11 @@ fn list_context_ternary_stays_unknown() {
 
 #[test]
 fn ternary_with_differing_arm_contexts_stays_unknown() {
-    // The arms impose different context requirements (`@list` propagates the
-    // enclosing list context, `scalar(@list)` forces scalar). The Branch node
-    // describes the conditional itself, not a merge of its arms, so it stays
-    // Unknown rather than picking one arm's context.
+    // Context propagates downward into whichever arm is selected, and the arms
+    // consume it differently (`@list` yields the enclosing list context,
+    // `scalar(@list)` forces scalar). The Branch node describes the
+    // conditional itself, not a merge of its arms, so it stays Unknown rather
+    // than picking one arm's context.
     let graph = lower("my @x = $c ? @list : scalar(@list);");
     let branch = first_branch_node(&graph);
 

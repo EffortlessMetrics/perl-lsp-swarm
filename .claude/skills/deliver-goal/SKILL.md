@@ -44,10 +44,43 @@ liveness, or mirror it through labels/comments.
 Revisit an in-flight lane only when its wake event occurs. Unchanged checks, reviews,
 queue state, or base movement do not justify polling or route churn.
 
+## Phase eligibility
+
+Admission asks whether the host can run a claim. Phase eligibility asks whether this
+campaign should run it now. They are different questions, and a campaign can fail on
+either.
+
+Name the goal's current phase and what it admits. The failure this prevents is not
+picking bad work — it is that every valuable adjacent finding becomes runnable while the
+phase predicate stays unsatisfied, so the campaign accumulates good PRs and never
+converges on its own acceptance criterion:
+
+```text
+phase: honest-main
+
+eligible
+  classify current main failures
+  repair current main failures
+  repair the instruments needed to classify them
+  bounded read-only evidence supporting those decisions
+
+defer
+  ordinary backlog
+  unrelated hardening
+  product opportunities
+  release work the phase does not require
+```
+
+Deferring is not discarding. Record a deferred finding as a durable issue and move on;
+the cost of losing it is what makes adjacent work feel urgent.
+
+A discovery may change the phase, but change it deliberately and state why. Widening the
+phase to accommodate work already started is how the predicate quietly stops governing.
+
 ## Select and run a claim route
 
-Choose one distinct claim that remains required, actionable, not already represented by
-an equivalent current PR, and independently reviewable.
+Choose one distinct claim that is phase-eligible, still required, actionable, not
+already represented by an equivalent current PR, and independently reviewable.
 
 For substantial work, delegate the whole claim as a lane-root route:
 
@@ -132,9 +165,22 @@ reconstruct goal and runtime-local frontier
 → retain the lane as IN_FLIGHT
 → advance another independent claim
 → reconcile merged or deliberately closed claims
+→ sweep worktree residue
 → publish useful goal-level deltas
 → re-evaluate every original acceptance predicate
 ```
+
+Sweep each pass, not at wind-down. Per-claim release misses whatever ended without
+reconciling — superseded, abandoned, or a lane that died mid-flight — so residue
+accumulates even when every individual release worked. Deferring the sweep to the end of
+a campaign means running it exactly when local evidence is least trustworthy and the
+context that knew what each worktree was for is gone.
+
+Run `bash scripts/cleanup-completed-worktrees.sh --dry-run` to report disposition; it
+keeps anything holding uncommitted changes, unpushed commits, detached work outside the
+base, or a worktree-manager owner. Review the output, then run the same command without
+`--dry-run` to apply safe removals, or release owned slots via
+`worktree-manager.py release` when the allocator still holds the lease.
 
 If another PR lands and a candidate remains valid, do nothing. If an actual conflict,
 explicit stack change, or combined-tree failure appears, the affected lane repairs its

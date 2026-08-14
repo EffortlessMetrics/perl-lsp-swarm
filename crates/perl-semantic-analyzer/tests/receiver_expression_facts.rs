@@ -9,10 +9,10 @@ fn parse_ast(code: &str) -> Result<Node, String> {
 }
 
 fn method_call_named<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
-    if let NodeKind::MethodCall { method, .. } = &node.kind {
-        if method == name {
-            return Some(node);
-        }
+    if let NodeKind::MethodCall { method, .. } = &node.kind
+        && method == name
+    {
+        return Some(node);
     }
 
     match &node.kind {

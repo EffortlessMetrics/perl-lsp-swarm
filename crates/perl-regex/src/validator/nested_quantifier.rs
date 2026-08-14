@@ -51,10 +51,8 @@ pub(crate) fn find_nested_quantifier(pattern: &str, start_pos: usize) -> Option<
                 if let Some(frame) = group_stack.pop() {
                     let has_backtracking_quantifier =
                         frame.has_backtracking_quantifier && !frame.is_atomic;
-                    if has_backtracking_quantifier {
-                        if let Some(parent) = group_stack.last_mut() {
-                            parent.has_backtracking_quantifier = true;
-                        }
+                    if has_backtracking_quantifier && let Some(parent) = group_stack.last_mut() {
+                        parent.has_backtracking_quantifier = true;
                     }
                     last_atom =
                         LastAtom::Group { has_backtracking_quantifier, is_atomic: frame.is_atomic };
@@ -68,16 +66,15 @@ pub(crate) fn find_nested_quantifier(pattern: &str, start_pos: usize) -> Option<
                 if let Some(quantifier) = quantifier_at(bytes, i) {
                     if !quantifier.is_possessive {
                         if let LastAtom::Group { has_backtracking_quantifier: true, .. } = last_atom
+                            && quantifier.can_repeat
                         {
-                            if quantifier.can_repeat {
-                                return Some(start_pos + i);
-                            }
+                            return Some(start_pos + i);
                         }
 
-                        if let Some(parent) = group_stack.last_mut() {
-                            if !matches!(last_atom, LastAtom::Group { is_atomic: true, .. }) {
-                                parent.has_backtracking_quantifier = true;
-                            }
+                        if let Some(parent) = group_stack.last_mut()
+                            && !matches!(last_atom, LastAtom::Group { is_atomic: true, .. })
+                        {
+                            parent.has_backtracking_quantifier = true;
                         }
                     }
                     i += quantifier.len;

@@ -24,6 +24,24 @@ fn perl_core_harness_workflow_is_schedule_or_manual_only() {
     );
 }
 
+#[test]
+fn perl_core_harness_preserves_each_selected_observation_after_a_red() {
+    let root = repo_root();
+    let workflow = must(fs::read_to_string(root.join(".github/workflows/perl-core-harness.yml")));
+
+    for step in [
+        "- name: Run comp parse+compile smoke\n        if: always()",
+        "- name: Run run parse+compile smoke\n        if: always()",
+        "- name: Check upstream compile ratchets\n        if: always()",
+        "- name: Run core parse+compile smoke (advisory)\n        if: always()",
+    ] {
+        assert!(
+            workflow.contains(step),
+            "selected harness step must run after an earlier red: {step}"
+        );
+    }
+}
+
 fn repo_root() -> PathBuf {
     must_some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent()).to_path_buf()
 }

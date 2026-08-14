@@ -8,6 +8,7 @@ use serde_json::Value;
 /// JSON-RPC request/response id.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum JsonRpcId {
     /// Numeric JSON-RPC id.
     Integer(i64),
@@ -186,6 +187,45 @@ impl std::fmt::Display for JsonRpcError {
 }
 
 impl std::error::Error for JsonRpcError {}
+
+impl perl_parser_core::ErrorClass for JsonRpcError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        use crate::protocol::errors::ErrorCode;
+        // Map well-known JSON-RPC error codes to operational categories (#4978).
+        match self.code {
+            // Parse errors and invalid request format — protocol violation.
+            c if c == ErrorCode::ParseError as i32 || c == ErrorCode::InvalidRequest as i32 => {
+                perl_parser_core::ErrorCategory::Protocol
+            }
+            // Method not found / invalid params — client usage error.
+            c if c == ErrorCode::MethodNotFound as i32 || c == ErrorCode::InvalidParams as i32 => {
+                perl_parser_core::ErrorCategory::UserError
+            }
+            // Internal error and server errors — server bug.
+            c if c == ErrorCode::InternalError as i32
+                || (ErrorCode::ServerErrorStart as i32..=ErrorCode::ServerErrorEnd as i32)
+                    .contains(&c) =>
+            {
+                perl_parser_core::ErrorCategory::Bug
+            }
+            // Cancellation — transient, not an error per se.
+            c if c == ErrorCode::RequestCancelled as i32
+                || c == ErrorCode::ServerCancelled as i32
+                || c == ErrorCode::ContentModified as i32 =>
+            {
+                perl_parser_core::ErrorCategory::Transient
+            }
+            // Request failed (LSP 3.17) — may succeed on retry.
+            c if c == ErrorCode::RequestFailed as i32 => perl_parser_core::ErrorCategory::Transient,
+            // Server not initialized — infra readiness.
+            c if c == ErrorCode::ServerNotInitialized as i32 => {
+                perl_parser_core::ErrorCategory::Infra
+            }
+            // Unknown codes — conservative default.
+            _ => perl_parser_core::ErrorCategory::Bug,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

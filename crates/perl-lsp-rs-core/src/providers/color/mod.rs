@@ -445,20 +445,20 @@ fn detect_term_ansicolor(text: &str) -> Vec<ColorInformation> {
 
     for (line_num, line) in text.lines().enumerate() {
         for cap in re.captures_iter(line) {
-            if let Some(name_match) = cap.get(1) {
-                if let Some(color) = lookup_named_color(name_match.as_str()) {
-                    // Highlight only the color literal, not the full function call.
-                    let start_char = byte_to_utf16_col(line, name_match.start());
-                    let end_char = byte_to_utf16_col(line, name_match.end());
+            if let Some(name_match) = cap.get(1)
+                && let Some(color) = lookup_named_color(name_match.as_str())
+            {
+                // Highlight only the color literal, not the full function call.
+                let start_char = byte_to_utf16_col(line, name_match.start());
+                let end_char = byte_to_utf16_col(line, name_match.end());
 
-                    colors.push(ColorInformation {
-                        range: WireRange {
-                            start: WirePosition::new(line_num as u32, start_char),
-                            end: WirePosition::new(line_num as u32, end_char),
-                        },
-                        color,
-                    });
-                }
+                colors.push(ColorInformation {
+                    range: WireRange {
+                        start: WirePosition::new(line_num as u32, start_char),
+                        end: WirePosition::new(line_num as u32, end_char),
+                    },
+                    color,
+                });
             }
         }
     }
@@ -513,12 +513,12 @@ pub fn color_to_presentations(color: &Color) -> Vec<Value> {
     }
 
     // Named color presentation if the color matches a known named color exactly
-    if color.alpha >= 0.99 {
-        if let Some(name) = lookup_color_name(r, g, b) {
-            presentations.push(json!({
-                "label": name
-            }));
-        }
+    if color.alpha >= 0.99
+        && let Some(name) = lookup_color_name(r, g, b)
+    {
+        presentations.push(json!({
+            "label": name
+        }));
     }
 
     presentations

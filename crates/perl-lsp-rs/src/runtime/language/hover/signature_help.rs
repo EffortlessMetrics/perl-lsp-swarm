@@ -62,17 +62,15 @@ impl LspServer {
                 .ok_or_else(invalid_signature_help_params)?;
             let active_signature = active_signature_from_context(&params);
 
-            // Freshness reads open-document generations and must run before acquiring
-            // `documents_guard()` — `resolve_method_in_workspace` is called while that
-            // guard is held and must not re-lock the same non-reentrant mutex.
-            #[cfg(feature = "workspace")]
-            let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
-            #[cfg(not(feature = "workspace"))]
-            let workspace_index_stale = false;
-
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
-                let offset = self.pos16_to_offset(doc, line, character);
+            // Clone the current document snapshot and release the mutex before any
+            // workspace lookup. The resolver performs its own freshness check and
+            // must not re-lock the document map while this handler is holding it.
+            let doc = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned()
+            };
+            if let Some(doc) = doc {
+                let offset = self.pos16_to_offset(&doc, line, character);
 
                 // Find the function call context at this position
                 if let Some((function_name, active_param)) =
@@ -80,16 +78,15 @@ impl LspServer {
                 {
                     // Try to get signature from user-defined functions first (if AST exists)
                     let parsed = doc.current_parsed();
-                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                        if let Some(signature) =
+                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
+                        && let Some(signature) =
                             self.get_user_function_signature(ast, &function_name)
-                        {
-                            return Ok(Some(json!({
-                                "signatures": [signature],
-                                "activeSignature": active_signature,
-                                "activeParameter": active_param
-                            })));
-                        }
+                    {
+                        return Ok(Some(json!({
+                            "signatures": [signature],
+                            "activeSignature": active_signature,
+                            "activeParameter": active_param
+                        })));
                     }
 
                     // Fall back to built-in functions
@@ -116,16 +113,14 @@ impl LspServer {
                     #[cfg(feature = "workspace")]
                     let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                     #[cfg(feature = "workspace")]
-                    if Self::is_method_call_context(&doc.text, offset) {
-                        if let Some(signature) =
-                            self.resolve_method_in_workspace(&function_name, workspace_index_stale)
-                        {
-                            return Ok(Some(json!({
-                                "signatures": [signature],
-                                "activeSignature": active_signature,
-                                "activeParameter": active_param
-                            })));
-                        }
+                    if Self::is_method_call_context(&doc.text, offset)
+                        && let Some(signature) = self.resolve_method_in_workspace(&function_name)
+                    {
+                        return Ok(Some(json!({
+                            "signatures": [signature],
+                            "activeSignature": active_signature,
+                            "activeParameter": active_param
+                        })));
                     }
 
                     // Check DBI method signatures — only for files that import DBI/DBIx,
@@ -162,27 +157,24 @@ impl LspServer {
                             }
                             found
                         };
-                        if let Some(paren_pos) = paren_offset {
-                            if let Some(receiver) =
+                        if let Some(paren_pos) = paren_offset
+                            && let Some(receiver) =
                                 Self::extract_arrow_receiver(&doc.text, paren_pos)
-                            {
-                                if let Some((sig, desc)) =
-                                    crate::completion::get_dbi_method_documentation(
-                                        &receiver,
-                                        &function_name,
-                                    )
-                                {
-                                    return Ok(Some(json!({
-                                        "signatures": [json!({
-                                            "label": sig,
-                                            "documentation": desc,
-                                            "parameters": []
-                                        })],
-                                        "activeSignature": active_signature,
-                                        "activeParameter": active_param
-                                    })));
-                                }
-                            }
+                            && let Some((sig, desc)) =
+                                crate::completion::get_dbi_method_documentation(
+                                    &receiver,
+                                    &function_name,
+                                )
+                        {
+                            return Ok(Some(json!({
+                                "signatures": [json!({
+                                    "label": sig,
+                                    "documentation": desc,
+                                    "parameters": []
+                                })],
+                                "activeSignature": active_signature,
+                                "activeParameter": active_param
+                            })));
                         }
                     }
 
@@ -478,10 +470,8 @@ impl LspServer {
                     }
                     _ => false,
                 };
-                if matched {
-                    if let NodeKind::String { value, .. } = &package.kind {
-                        return Some(value.trim_matches(|c| c == '\'' || c == '"').to_string());
-                    }
+                if matched && let NodeKind::String { value, .. } = &package.kind {
+                    return Some(value.trim_matches(|c| c == '\'' || c == '"').to_string());
                 }
                 None
             }
@@ -578,27 +568,28 @@ impl LspServer {
                 if let NodeKind::VariableListDeclaration { variables, initializer, .. } = &stmt.kind
                 {
                     // Check if initializer is @_
-                    if let Some(init) = initializer {
-                        if let NodeKind::Variable { sigil, name } = &init.kind {
-                            if sigil == "@" && name == "_" {
-                                // Extract params from variables
-                                for var in variables {
-                                    if let NodeKind::Variable { sigil: var_sigil, name: var_name } =
-                                        &var.kind
-                                    {
-                                        params.push(format!("{}{}", var_sigil, var_name));
-                                    }
-                                }
+                    if let Some(init) = initializer
+                        && let NodeKind::Variable { sigil, name } = &init.kind
+                        && sigil == "@"
+                        && name == "_"
+                    {
+                        // Extract params from variables
+                        for var in variables {
+                            if let NodeKind::Variable { sigil: var_sigil, name: var_name } =
+                                &var.kind
+                            {
+                                params.push(format!("{}{}", var_sigil, var_name));
                             }
                         }
                     }
                 } else if let NodeKind::Assignment { lhs, rhs, .. } = &stmt.kind {
                     // Alternative pattern: ($x, $y) = @_
-                    if let NodeKind::Variable { sigil, name } = &rhs.kind {
-                        if sigil == "@" && name == "_" {
-                            // Extract params from lhs
-                            self.extract_params_from_lhs(lhs, params);
-                        }
+                    if let NodeKind::Variable { sigil, name } = &rhs.kind
+                        && sigil == "@"
+                        && name == "_"
+                    {
+                        // Extract params from lhs
+                        self.extract_params_from_lhs(lhs, params);
                     }
                 }
             }
@@ -958,14 +949,10 @@ impl LspServer {
     /// This helper is intentionally self-contained and reusable. A later slice will
     /// call it from the inlay hints provider without rebuilding the lookup logic.
     #[cfg(feature = "workspace")]
-    pub(crate) fn resolve_method_in_workspace(
-        &self,
-        method_name: &str,
-        workspace_index_stale: bool,
-    ) -> Option<Value> {
+    pub(crate) fn resolve_method_in_workspace(&self, method_name: &str) -> Option<Value> {
         use crate::runtime::routing::{IndexAccessMode, route_index_access};
 
-        if workspace_index_stale {
+        if self.workspace_index_stale_for_any_open_document() {
             return None;
         }
 
@@ -987,6 +974,12 @@ impl LspServer {
             workspace_index,
             &symbol.uri,
         )?;
+
+        // An edit may race the index search and source load. Do not publish a
+        // workspace-derived signature after that race has made the index stale.
+        if self.workspace_index_stale_for_any_open_document() {
+            return None;
+        }
 
         // Parse the source and extract the function signature.
         // SAFETY: index_file_str only accepts syntactically valid Perl source, so
@@ -1175,7 +1168,7 @@ mod tests {
         // files have been indexed, so route_index_access returns Partial (not
         // Full), and the method exits via the `_ => return None` branch.
         let server = LspServer::new();
-        let result = server.resolve_method_in_workspace("format", false);
+        let result = server.resolve_method_in_workspace("format");
         assert!(
             result.is_none(),
             "resolve_method_in_workspace must return None when workspace index is not ready, got: {:?}",
@@ -1191,7 +1184,7 @@ mod tests {
     #[test]
     fn test_resolve_method_empty_name_returns_none() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
-        let result = server.resolve_method_in_workspace("", false);
+        let result = server.resolve_method_in_workspace("");
         assert!(
             result.is_none(),
             "resolve_method_in_workspace with empty name must return None, got: {:?}",
@@ -1237,7 +1230,7 @@ sub format_output {
         server.index_coordinator = Some(coordinator);
 
         // Invoke the full resolution path.
-        let result = server.resolve_method_in_workspace("format_output", false);
+        let result = server.resolve_method_in_workspace("format_output");
 
         // The method has `my ($self, $template, @args) = @_` — a signature SHOULD
         // be returned containing "format_output".
@@ -1279,7 +1272,7 @@ sub format_output {
         server.index_coordinator = Some(coordinator);
 
         // A method name that was never indexed — must return None, not panic.
-        let result = server.resolve_method_in_workspace("completely_nonexistent_xyz", false);
+        let result = server.resolve_method_in_workspace("completely_nonexistent_xyz");
         assert!(
             result.is_none(),
             "Unknown method in ready workspace must return None, got: {:?}",
@@ -1318,7 +1311,7 @@ sub format_output {
         let mut server = LspServer::new();
         server.index_coordinator = Some(coordinator);
 
-        let result = server.resolve_method_in_workspace("haunt", false);
+        let result = server.resolve_method_in_workspace("haunt");
         assert!(
             result.is_none(),
             "Method with unavailable source file must return None, got: {:?}",
@@ -1366,7 +1359,7 @@ sub format {
         server.test_simulate_indexing_complete();
 
         assert!(
-            server.resolve_method_in_workspace("format", false).is_some(),
+            server.resolve_method_in_workspace("format").is_some(),
             "fresh workspace index should resolve format signature"
         );
 
@@ -1379,12 +1372,7 @@ sub format {
         );
 
         assert!(
-            server
-                .resolve_method_in_workspace(
-                    "format",
-                    server.workspace_index_stale_for_any_open_document(),
-                )
-                .is_none(),
+            server.resolve_method_in_workspace("format").is_none(),
             "stale workspace index must not supply workspace-derived method signature"
         );
 
@@ -1402,12 +1390,7 @@ sub format {
             "caller-only edit must also mark the workspace index stale"
         );
         assert!(
-            server
-                .resolve_method_in_workspace(
-                    "format",
-                    server.workspace_index_stale_for_any_open_document(),
-                )
-                .is_none(),
+            server.resolve_method_in_workspace("format").is_none(),
             "stale workspace index must skip tier even when only an unrelated caller changed"
         );
 

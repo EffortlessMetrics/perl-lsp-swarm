@@ -82,6 +82,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use url::Url;
 
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static INCREMENTAL_SEARCH_ADD_CALLS: Cell<usize> = const { Cell::new(0) };
+    static REBUILD_SEARCH_INDEX_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
 use crate::semantic::facts::PRODUCER_SCHEMA_VERSION;
 use crate::semantic::imports::ImportExportIndex;
 pub use crate::semantic::invalidation::ShardReplaceResult;
@@ -149,6 +158,7 @@ pub use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 /// };
 /// ```
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum IndexState {
     /// Index is being constructed (workspace scan in progress)
     Building {
@@ -946,6 +956,7 @@ impl Default for IndexCoordinator {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Symbol kinds for cross-file indexing during Index/Navigate workflows.
+#[non_exhaustive]
 pub enum SymKind {
     /// Variable symbol ($, @, or % sigil)
     Var,
@@ -1099,15 +1110,24 @@ pub struct SymbolReference {
     pub range: Range,
     /// How the symbol is being referenced (definition, usage, etc.)
     pub kind: ReferenceKind,
+    /// Package context for bare-name call/definition records (#6110).
+    pub package: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Classification of how a symbol is referenced in Navigate/Analyze workflows.
+#[non_exhaustive]
 pub enum ReferenceKind {
     /// Symbol definition site (sub declaration, variable declaration)
     Definition,
     /// General usage of the symbol (function call, method call)
     Usage,
+    /// Dynamic or static method dispatch stored under its bare method name.
+    ///
+    /// Method dispatch is kept distinct from a bare function usage because a
+    /// qualified lookup may need to retain it for the rename layer's
+    /// inheritance-aware resolution.
+    MethodCall,
     /// Import via use statement
     Import,
     /// Variable read access
@@ -1409,11 +1429,10 @@ impl WorkspaceIndex {
     /// Incrementally remove one file's symbols from the global cache,
     /// re-inserting shadowed symbols from remaining files.
     fn incremental_remove_symbols(
-        files: &HashMap<String, FileIndex>,
+        _files: &HashMap<String, FileIndex>,
         symbols: &mut HashMap<String, Vec<DefinitionCandidate>>,
         old_file_index: &FileIndex,
     ) {
-        let mut affected_names: Vec<String> = Vec::new();
         for sym in &old_file_index.symbols {
             if let Some(ref qname) = sym.qualified_name {
                 let mut remove_key = false;
@@ -1423,7 +1442,6 @@ impl WorkspaceIndex {
                 }
                 if remove_key {
                     symbols.remove(qname);
-                    affected_names.push(qname.clone());
                 }
             }
             let mut remove_key = false;
@@ -1433,34 +1451,6 @@ impl WorkspaceIndex {
             }
             if remove_key {
                 symbols.remove(&sym.name);
-                affected_names.push(sym.name.clone());
-            }
-        }
-        if !affected_names.is_empty() {
-            symbols.clear();
-            for file_index in files
-                .values()
-                .filter(|file_index| file_index.source_uri != old_file_index.source_uri)
-            {
-                for symbol in &file_index.symbols {
-                    if let Some(ref qname) = symbol.qualified_name {
-                        symbols.entry(qname.clone()).or_default().push(DefinitionCandidate {
-                            location: Location { uri: symbol.uri.clone(), range: symbol.range },
-                            kind: symbol.kind,
-                        });
-                    }
-                    symbols.entry(symbol.name.clone()).or_default().push(DefinitionCandidate {
-                        location: Location { uri: symbol.uri.clone(), range: symbol.range },
-                        kind: symbol.kind,
-                    });
-                }
-            }
-            for entries in symbols.values_mut() {
-                entries.sort_by(|left, right| {
-                    Self::definition_candidate_sort_key(left)
-                        .cmp(&Self::definition_candidate_sort_key(right))
-                });
-                entries.dedup();
             }
         }
     }
@@ -1503,6 +1493,9 @@ impl WorkspaceIndex {
         files: &HashMap<String, FileIndex>,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
     ) {
+        #[cfg(test)]
+        REBUILD_SEARCH_INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
+
         search_index.clear();
         for file_index in files.values() {
             for symbol in &file_index.symbols {
@@ -1519,6 +1512,9 @@ impl WorkspaceIndex {
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
         file_index: &FileIndex,
     ) {
+        #[cfg(test)]
+        INCREMENTAL_SEARCH_ADD_CALLS.with(|calls| calls.set(calls.get() + 1));
+
         for symbol in &file_index.symbols {
             search_index.entry(symbol.name.clone()).or_default().push(symbol.clone());
             if let Some(ref qname) = symbol.qualified_name {
@@ -1527,18 +1523,15 @@ impl WorkspaceIndex {
         }
     }
 
-    /// Incrementally remove one file's symbols from the search index,
-    /// re-inserting shadowed symbols from remaining files on collision.
+    /// Incrementally remove one file's symbols from the search index.
     ///
-    /// Mirrors [`Self::incremental_remove_symbols`]: when any key becomes empty
-    /// after removing this file's entries, the entire search index is cleared and
-    /// rebuilt from the remaining files so it cannot drift from `symbols`.
+    /// Mirrors [`Self::incremental_remove_symbols`]: per-key retain surgery only;
+    /// empty buckets are dropped without an O(workspace) full rebuild.
     fn incremental_remove_search(
-        files: &HashMap<String, FileIndex>,
+        _files: &HashMap<String, FileIndex>,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
         old_file_index: &FileIndex,
     ) {
-        let mut affected_names: Vec<String> = Vec::new();
         for sym in &old_file_index.symbols {
             if let Some(ref qname) = sym.qualified_name {
                 let mut remove_key = false;
@@ -1548,7 +1541,6 @@ impl WorkspaceIndex {
                 }
                 if remove_key {
                     search_index.remove(qname);
-                    affected_names.push(qname.clone());
                 }
             }
             let mut remove_key = false;
@@ -1558,16 +1550,6 @@ impl WorkspaceIndex {
             }
             if remove_key {
                 search_index.remove(&sym.name);
-                affected_names.push(sym.name.clone());
-            }
-        }
-        if !affected_names.is_empty() {
-            search_index.clear();
-            for file_index in files
-                .values()
-                .filter(|file_index| file_index.source_uri != old_file_index.source_uri)
-            {
-                Self::incremental_add_search(search_index, file_index);
             }
         }
     }
@@ -2902,9 +2884,13 @@ impl WorkspaceIndex {
 
         // If the symbol is qualified, also collect bare name references
         if let Some(idx) = symbol_name.rfind("::") {
+            let package = &symbol_name[..idx];
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
                 for sym_ref in refs {
+                    if !self.bare_reference_matches_package(sym_ref, package) {
+                        continue;
+                    }
                     let key = (
                         sym_ref.uri.clone(),
                         sym_ref.range.start.line,
@@ -3018,9 +3004,14 @@ impl WorkspaceIndex {
         }
 
         if let Some(idx) = symbol_name.rfind("::") {
+            let package = &symbol_name[..idx];
             let bare_name = &symbol_name[idx + 2..];
             if let Some(refs) = global_refs.get(bare_name) {
-                for r in refs.iter().filter(|r| r.kind != ReferenceKind::Definition) {
+                for r in refs
+                    .iter()
+                    .filter(|r| r.kind != ReferenceKind::Definition)
+                    .filter(|r| self.bare_reference_matches_package(r, package))
+                {
                     seen.insert((
                         r.uri.as_str(),
                         r.range.start.line,
@@ -3052,6 +3043,40 @@ impl WorkspaceIndex {
 
     fn is_qualified_variant_of(candidate: &str, bare_symbol: &str) -> bool {
         candidate.rsplit_once("::").is_some_and(|(_, candidate_bare)| candidate_bare == bare_symbol)
+    }
+
+    fn bare_reference_matches_package(&self, sym_ref: &SymbolReference, package: &str) -> bool {
+        // Bare function references carry their defining package and must stay
+        // filtered (#6110). Method dispatch is different: an instance receiver
+        // can resolve through inheritance, so the rename layer must retain the
+        // method reference and apply its receiver/inheritance checks. Retain
+        // only conventional object receivers here; an arbitrary `$other` in
+        // the defining package is not evidence that it dispatches to this
+        // package's method.
+        sym_ref.package.as_deref() == Some(package)
+            || (sym_ref.kind == ReferenceKind::MethodCall
+                && self.method_reference_has_self_receiver(sym_ref))
+    }
+
+    fn method_reference_has_self_receiver(&self, sym_ref: &SymbolReference) -> bool {
+        let Some(doc) = self.document_store().get(&sym_ref.uri) else {
+            return false;
+        };
+        let Some(start) =
+            doc.line_index.position_to_offset(sym_ref.range.start.line, sym_ref.range.start.column)
+        else {
+            return false;
+        };
+        let Some(end) =
+            doc.line_index.position_to_offset(sym_ref.range.end.line, sym_ref.range.end.column)
+        else {
+            return false;
+        };
+        let Some(expression) = doc.text().get(start..end) else {
+            return false;
+        };
+
+        matches!(expression.split_once("->"), Some((receiver, _)) if matches!(receiver.trim(), "$self" | "$this"))
     }
 
     /// Find all definitions of a symbol, including duplicates across files.
@@ -3816,7 +3841,12 @@ impl WorkspaceIndex {
     /// ```
     pub fn has_symbols(&self) -> bool {
         let files = self.files.read();
-        files.values().any(|file_index| !file_index.symbols.is_empty())
+        if files.values().any(|file_index| !file_index.symbols.is_empty()) {
+            return true;
+        }
+
+        let shards = self.fact_shards.read();
+        shards.values().any(|shard| !shard.entities.is_empty())
     }
 
     /// Search for symbols by query
@@ -4468,6 +4498,63 @@ impl WorkspaceIndex {
         members
     }
 
+    /// Return framework-generated members for one package from semantic fact shards.
+    ///
+    /// Legacy package members remain available through get_package_members.
+    /// This companion query exposes generated accessors and similar framework
+    /// members using the same source anchor range used by workspace-symbol
+    /// responses, so completion can traverse indexed generated members without
+    /// treating them as source-defined methods.
+    pub fn get_generated_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
+        let shards = self.fact_shards.read();
+        let mut members = Vec::new();
+
+        for shard in shards.values() {
+            for entity in &shard.entities {
+                if entity.kind != EntityKind::GeneratedMember
+                    || !is_framework_generated_member_entity(entity)
+                {
+                    continue;
+                }
+
+                let Some((container_name, bare_name)) =
+                    split_qualified_symbol_name(&entity.canonical_name)
+                else {
+                    continue;
+                };
+                if container_name != package_name {
+                    continue;
+                }
+
+                let Some(anchor_id) = entity.anchor_id else {
+                    continue;
+                };
+                let Some(range) = self.generated_member_anchor_range(shard, anchor_id) else {
+                    continue;
+                };
+
+                members.push(WorkspaceSymbol {
+                    name: bare_name.to_string(),
+                    kind: SymbolKind::Method,
+                    uri: shard.source_uri.clone(),
+                    range,
+                    qualified_name: Some(entity.canonical_name.clone()),
+                    documentation: Some(
+                        "Generated/framework member; virtual symbol anchored to source declaration"
+                            .to_string(),
+                    ),
+                    container_name: Some(container_name.to_string()),
+                    has_body: false,
+                    workspace_folder_uri: self.determine_folder_uri(&shard.source_uri),
+                    is_lexical: false,
+                });
+            }
+        }
+
+        sort_workspace_symbols(&mut members);
+        members
+    }
+
     /// Names of all packages explicitly declared in a file.
     ///
     /// Returns the bare declared name for each `package` statement or block in
@@ -4682,6 +4769,32 @@ impl WorkspaceIndex {
 
         all_refs
     }
+
+    /// Find bare function usages outside the target package that must make a
+    /// rename fail closed, without including them in normal qualified
+    /// reference results (#6110).
+    pub fn find_cross_package_bare_refs(&self, key: &SymbolKey) -> Vec<Location> {
+        if key.sigil.is_some() {
+            return Vec::new();
+        }
+
+        let global_refs = self.global_references.read();
+        let mut locations = global_refs
+            .get(key.name.as_ref())
+            .into_iter()
+            .flat_map(|refs| refs.iter())
+            .filter(|reference| {
+                reference.kind == ReferenceKind::Usage
+                    && reference.package.as_deref() != Some(key.pkg.as_ref())
+            })
+            .map(|reference| Location { uri: reference.uri.clone(), range: reference.range })
+            .collect::<Vec<_>>();
+        drop(global_refs);
+
+        Self::sort_locations_deterministically(&mut locations);
+        locations.dedup_by(|left, right| left.uri == right.uri && left.range == right.range);
+        locations
+    }
 }
 
 /// **`build_unified` is the production extraction path (perl-lsp-swarm#1711-B
@@ -4704,7 +4817,7 @@ impl WorkspaceIndex {
 /// | Output | Legacy (`IndexVisitor` / [`FileIndex`]) | Canonical ([`FileFactShard`]) |
 /// |---|---|---|
 /// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by `IndexVisitor::project_symbol_declarations`, which calls `extract_symbol_decls(ast, Some("main"))` | [`EntityFact`] + [`AnchorFact`] via `extract_symbol_decls(ast, None)` -> `symbol_decls_to_semantic_facts` |
-/// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
+/// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,MethodCall,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
 /// | Dynamic / generated facts | not modeled in `FileIndex` | `extract_eval_sub_boundaries` + `extract_generated_member_facts`, merged into `FileFactShard.{entities,anchors,occurrences}` |
 /// | Imports | `ReferenceKind::Import` entries in `FileIndex.references`, plus `FileIndex.dependencies: HashSet<String>` | `extract_import_specs` / `extract_use_lib_facts`, written to `ImportExportIndex` -- **not** part of `FileFactShard` (see `build_canonical_fact_shard_for_ast`'s always-empty `imports: &[]` argument) |
 /// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
@@ -4952,6 +5065,7 @@ impl IndexVisitor {
 
     fn project_symbol_declarations(&self, node: &Node, file_index: &mut FileIndex) {
         for decl in extract_symbol_decls(node, self.current_package.as_deref()) {
+            let definition_package = decl.container.clone();
             let (start, end) = match decl.kind {
                 SymbolKind::Variable(_) => match decl.anchor_span {
                     Some(span) => span,
@@ -5006,6 +5120,9 @@ impl IndexVisitor {
                 uri: self.uri.clone(),
                 range,
                 kind: ReferenceKind::Definition,
+                // Use the declaration's enclosing package from extract_symbol_decls,
+                // not the visitor's pre-walk current_package (still "main" here).
+                package: definition_package,
             });
         }
     }
@@ -5063,6 +5180,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range,
                     kind: ReferenceKind::Read,
+                    package: None,
                 });
             }
 
@@ -5120,6 +5238,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: self.node_to_range(node),
                     kind: ReferenceKind::Read, // Default to read, would need context for write
+                    package: None,
                 });
             }
 
@@ -5144,12 +5263,14 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: location,
                         kind: ReferenceKind::Usage,
+                        package: Some(pkg.to_string()),
                     },
                 );
                 file_index.references.entry(qualified).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
                     kind: ReferenceKind::Usage,
+                    package: None,
                 });
 
                 if name == "extends" || name == "with" {
@@ -5202,6 +5323,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: self.node_to_range(node),
                     kind: ReferenceKind::Import,
+                    package: None,
                 });
             }
 
@@ -5231,6 +5353,7 @@ impl IndexVisitor {
                                 uri: self.uri.clone(),
                                 range: self.node_to_range(lhs),
                                 kind: ReferenceKind::Read,
+                                package: None,
                             },
                         );
                     }
@@ -5240,6 +5363,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(lhs),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                 }
 
@@ -5301,6 +5425,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(variable),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                 }
                 self.visit_node(variable, file_index);
@@ -5334,13 +5459,15 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: location,
                             kind: ReferenceKind::Usage,
+                            package: None,
                         },
                     );
                 }
                 file_index.references.entry(method.clone()).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
-                    kind: ReferenceKind::Usage,
+                    kind: ReferenceKind::MethodCall,
+                    package: None,
                 });
 
                 if method == "import"
@@ -5351,6 +5478,7 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: self.node_to_range(node),
                             kind: ReferenceKind::Import,
+                            package: None,
                         });
                     }
                     file_index.dependencies.insert(normalize_dependency_module_name(module_name));
@@ -5411,6 +5539,7 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: self.node_to_range(operand),
                             kind: ReferenceKind::Read,
+                            package: None,
                         },
                     );
 
@@ -5418,6 +5547,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(operand),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                 }
             }
@@ -5709,6 +5839,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: self.node_to_range(node),
                     kind: ReferenceKind::Read,
+                    package: None,
                 });
                 Self::emit_canonical_ref(node, symbol_refs);
             }
@@ -5729,6 +5860,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(node),
                         kind: ReferenceKind::Usage,
+                        package: None,
                     });
                     symbol_refs.push(symbol_ref);
                 }
@@ -5750,12 +5882,14 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: location,
                         kind: ReferenceKind::Usage,
+                        package: Some(pkg.to_string()),
                     },
                 );
                 file_index.references.entry(qualified).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
                     kind: ReferenceKind::Usage,
+                    package: None,
                 });
 
                 if name == "extends" || name == "with" {
@@ -5801,6 +5935,7 @@ impl IndexVisitor {
                     uri: self.uri.clone(),
                     range: self.node_to_range(node),
                     kind: ReferenceKind::Import,
+                    package: None,
                 });
                 // No canonical equivalent and no recursion into `args` --
                 // matches BOTH legacy's current behavior and
@@ -5828,6 +5963,7 @@ impl IndexVisitor {
                                 uri: self.uri.clone(),
                                 range: self.node_to_range(lhs),
                                 kind: ReferenceKind::Read,
+                                package: None,
                             },
                         );
                     }
@@ -5835,6 +5971,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(lhs),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                     // Canonical (today, via generic recursion + the
                     // `Variable` arm) classifies an assignment target as a
@@ -5906,6 +6043,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(variable),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                 }
                 // Matches legacy's EXISTING (quirky but unchanged) behavior:
@@ -5959,13 +6097,15 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: location,
                             kind: ReferenceKind::Usage,
+                            package: None,
                         },
                     );
                 }
                 file_index.references.entry(method.clone()).or_default().push(SymbolReference {
                     uri: self.uri.clone(),
                     range: location,
-                    kind: ReferenceKind::Usage,
+                    kind: ReferenceKind::MethodCall,
+                    package: None,
                 });
 
                 if method == "import"
@@ -5976,6 +6116,7 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: self.node_to_range(node),
                             kind: ReferenceKind::Import,
+                            package: None,
                         });
                     }
                     file_index.dependencies.insert(normalize_dependency_module_name(module_name));
@@ -6013,12 +6154,14 @@ impl IndexVisitor {
                             uri: self.uri.clone(),
                             range: self.node_to_range(operand),
                             kind: ReferenceKind::Read,
+                            package: None,
                         },
                     );
                     file_index.references.entry(var_name).or_default().push(SymbolReference {
                         uri: self.uri.clone(),
                         range: self.node_to_range(operand),
                         kind: ReferenceKind::Write,
+                        package: None,
                     });
                     // Mirrors the `Assignment` arm above: canonical (today,
                     // via generic recursion) classifies an increment target
@@ -6045,6 +6188,7 @@ impl IndexVisitor {
                         uri: self.uri.clone(),
                         range: self.node_to_range(node),
                         kind: ReferenceKind::Usage,
+                        package: None,
                     });
                     symbol_refs.push(symbol_ref);
                 } else {
@@ -6087,6 +6231,7 @@ impl IndexVisitor {
                                         uri: self.uri.clone(),
                                         range: self.node_to_range(operand),
                                         kind: ReferenceKind::Read,
+                                        package: None,
                                     },
                                 );
                             }
@@ -6110,12 +6255,14 @@ impl IndexVisitor {
                                         uri: self.uri.clone(),
                                         range: location,
                                         kind: ReferenceKind::Usage,
+                                        package: Some(pkg.to_string()),
                                     });
                                 file_index.references.entry(qualified).or_default().push(
                                     SymbolReference {
                                         uri: self.uri.clone(),
                                         range: location,
                                         kind: ReferenceKind::Usage,
+                                        package: None,
                                     },
                                 );
                             }
@@ -7097,6 +7244,50 @@ has display_name => (is => 'rw');
     }
 
     #[test]
+    fn has_symbols_true_for_fact_shard_only_index() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/Generated/FactOnly.pm"));
+        must(
+            index.index_file(
+                uri,
+                r#"package Generated::FactOnly;
+use Moo;
+has status => (is => 'rw');
+1;
+"#
+                .to_string(),
+            ),
+        );
+
+        assert!(index.has_symbols(), "fact-shard-only indexes must still be treated as populated");
+        Ok(())
+    }
+
+    #[test]
+    fn package_members_include_generated_framework_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/Generated/PackageMembers.pm"));
+        must(
+            index.index_file(
+                uri,
+                r#"package Generated::PackageMembers;
+use Moo;
+has status => (is => 'rw', predicate => 1);
+1;
+"#
+                .to_string(),
+            ),
+        );
+
+        let members = index.get_generated_package_members("Generated::PackageMembers");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"status"), "generated reader must be exposed: {names:?}");
+        assert!(names.contains(&"has_status"), "generated predicate must be exposed: {names:?}");
+        Ok(())
+    }
+
+    #[test]
     fn search_symbols_returns_labeled_predicate_generated_members()
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
@@ -7491,6 +7682,125 @@ RefDemo::helper();
         assert!(
             bare_refs.len() >= qualified_refs.len(),
             "bare-name reference lookup should include qualified calls"
+        );
+    }
+
+    #[test]
+    fn test_find_references_qualified_excludes_cross_package_bare() {
+        let index = WorkspaceIndex::new();
+        let uri_a = "file:///PkgA.pm";
+        let uri_b = "file:///PkgB.pm";
+        let code_a = r#"
+package PkgA;
+sub foo { return 1; }
+PkgA::foo();
+"#;
+        let code_b = r#"
+package PkgB;
+sub other { foo(); return 1; }
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+        must(index.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        let refs = index.find_references("PkgA::foo");
+        assert!(
+            !refs.iter().any(|location| location.uri == uri_b),
+            "bare foo() in PkgB must not appear in PkgA::foo references"
+        );
+        assert!(!refs.is_empty(), "PkgA::foo references must include same-package sites");
+    }
+
+    #[test]
+    fn test_find_refs_qualified_retains_inherited_method_dispatch() {
+        let index = WorkspaceIndex::new();
+        let base_uri = "file:///Base.pm";
+        let child_uri = "file:///Child.pm";
+        let unrelated_uri = "file:///UnrelatedReceiver.pm";
+        let base = r#"
+package Base;
+sub shared { return 1; }
+"#;
+        let child = r#"
+package Child;
+use parent 'Base';
+sub run {
+    my ($self) = @_;
+    return $self->shared;
+}
+"#;
+        let unrelated_receiver = r#"
+package Base;
+sub call_on_other {
+    my ($other) = @_;
+    return $other->shared;
+}
+"#;
+
+        must(index.index_file(must(url::Url::parse(base_uri)), base.to_string()));
+        must(index.index_file(must(url::Url::parse(child_uri)), child.to_string()));
+        must(
+            index.index_file(must(url::Url::parse(unrelated_uri)), unrelated_receiver.to_string()),
+        );
+
+        let key = SymbolKey {
+            pkg: Arc::from("Base"),
+            name: Arc::from("shared"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+        let refs = index.find_refs(&key);
+
+        assert!(
+            refs.iter().any(|location| location.uri == child_uri),
+            "qualified method lookup must retain inherited arrow dispatch; got {refs:?}"
+        );
+        assert!(
+            !refs.iter().any(|location| location.uri == unrelated_uri),
+            "qualified method lookup must not retain an arbitrary receiver; got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_references_qualified_includes_same_package_bare() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///PkgA.pm";
+        let code = r#"
+package PkgA;
+sub foo { return 1; }
+foo();
+PkgA::foo();
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let refs = index.find_references("PkgA::foo");
+        let usage_sites = refs.iter().filter(|location| location.uri == uri).count();
+        assert!(usage_sites >= 2, "same-package bare and qualified calls must both be returned");
+    }
+
+    #[test]
+    fn test_count_usages_qualified_excludes_cross_package_bare() {
+        let index = WorkspaceIndex::new();
+        let uri_a = "file:///PkgA.pm";
+        let uri_b = "file:///PkgB.pm";
+        let code_a = r#"
+package PkgA;
+sub foo { return 1; }
+PkgA::foo();
+"#;
+        let code_b = r#"
+package PkgB;
+sub other { foo(); return 1; }
+"#;
+
+        must(index.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+        must(index.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        assert_eq!(
+            index.count_usages("PkgA::foo"),
+            1,
+            "cross-package bare foo() must not inflate PkgA::foo usage count"
         );
     }
 
@@ -8949,8 +9259,9 @@ sub hello {
     /// task (`LspServer::run_post_parse_side_effects`'s `spawn_blocking`)
     /// completing after a later generation was merely attempted, not
     /// after it committed. Without rollback, the early guard's high-water
-    /// check (`existing.generation.max(existing.pending_generation) = 10
-    /// > 7`) rejects generation 7 outright -- `index_file_with_generation`
+    /// check (`existing.generation.max(existing.pending_generation) = 10,
+    /// which is greater than 7`) rejects generation 7 outright --
+    /// `index_file_with_generation`
     /// returns `Ok(())` but SILENTLY skips indexing it, permanently
     /// stranding the index at generation 3 even though generation 7's
     /// content was never anything but valid. With the rollback (this PR's
@@ -9267,19 +9578,19 @@ Utils::process_data();
     /// for the same symbol, where definition_count is the number of locations that
     /// coincide with the definition site.
     #[test]
-    fn test_count_usages_parity_with_find_references() {
+    fn test_count_usages_parity_with_find_references() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let lib_uri = "file:///parity/lib/Parity.pm";
         let caller_uri = "file:///parity/bin/main.pl";
 
-        must(index.index_file(
-            must(url::Url::parse(lib_uri)),
+        index.index_file(
+            url::Url::parse(lib_uri)?,
             "package Parity;\nsub greet { return 1; }\n1;\n".to_string(),
-        ));
-        must(index.index_file(
-            must(url::Url::parse(caller_uri)),
+        )?;
+        index.index_file(
+            url::Url::parse(caller_uri)?,
             "use Parity;\nParity::greet();\nParity::greet();\n".to_string(),
-        ));
+        )?;
 
         let usages = index.count_usages("Parity::greet");
         let all_refs = index.find_references("Parity::greet");
@@ -9287,32 +9598,42 @@ Utils::process_data();
         // find_references includes the definition site; count_usages excludes it.
         // Both read from the same global_references store, so they must agree on
         // the total reference count modulo the definition filter.
-        assert!(!all_refs.is_empty(), "find_references should return at least the definition site");
-        assert_eq!(
-            usages, 2,
-            "count_usages should return the two call sites (not the definition), got {usages}"
-        );
+        if all_refs.is_empty() {
+            return Err("find_references should return at least the definition site".into());
+        }
+        if usages != 2 {
+            return Err(format!(
+                "count_usages should return the two call sites (not the definition), got {usages}"
+            )
+            .into());
+        }
         // The total references reported by find_references must be at least usages
         // (it includes definitions too).
-        assert!(
-            all_refs.len() >= usages,
-            "find_references ({}) must be >= count_usages ({usages})",
-            all_refs.len()
-        );
+        if all_refs.len() < usages {
+            return Err(format!(
+                "find_references ({}) must be >= count_usages ({usages})",
+                all_refs.len()
+            )
+            .into());
+        }
         // Both methods now read the same data store, so their combined view must
         // be self-consistent: usages + definition_entries == all_refs.len().
         // We verify this by counting definition-site locations in find_references.
-        let def_locs = index.find_definition("Parity::greet");
-        if let Some(def_loc) = def_locs {
-            let def_count = all_refs.iter().filter(|loc| **loc == def_loc).count();
-            assert_eq!(
-                usages + def_count,
-                all_refs.len(),
-                "count_usages ({usages}) + definition entries ({def_count}) \
-                 must equal find_references total ({})",
-                all_refs.len()
+        let def_loc = index
+            .find_definition("Parity::greet")
+            .ok_or("find_definition should return the Parity::greet definition")?;
+        let def_count = all_refs.iter().filter(|loc| **loc == def_loc).count();
+        if usages + def_count != all_refs.len() {
+            return Err(
+                format!(
+                    "count_usages ({usages}) + definition entries ({def_count}) must equal find_references total ({})",
+                    all_refs.len()
+                )
+                .into(),
             );
         }
+
+        Ok(())
     }
 
     #[test]
@@ -10004,10 +10325,8 @@ helper_one();
     }
 
     /// Verify that `incremental_remove_symbols` correctly retains candidates owned by
-    /// other files when the removed file had BOTH exclusively-owned names (triggering the
-    /// full-rebuild path) AND shared names. Before this fix, the full-rebuild path cleared
-    /// all candidates and relied on the subsequent rebuild to re-add shared ones — correct
-    /// in effect, but the test documents the expected observable behavior.
+    /// other files when the removed file had BOTH exclusively-owned names (emptying a
+    /// key bucket) AND shared names.
     #[test]
     fn test_definition_candidates_shared_symbol_survives_removal_of_sole_owner_of_other_symbol() {
         let index = WorkspaceIndex::new();
@@ -10045,9 +10364,8 @@ helper_one();
         );
     }
 
-    /// #5016 item 3: when `incremental_remove_symbols` triggers its collision
-    /// full-rebuild path, `search_index` must take the same path so
-    /// `search_source_symbols` and `find_definition` cannot diverge.
+    /// #5016 item 3: per-name retain on removal must keep `symbols` and `search_index`
+    /// aligned without an O(workspace) full rebuild.
     #[test]
     fn test_search_index_parity_after_collision_rebuild_on_remove() {
         let index = WorkspaceIndex::new();
@@ -10097,6 +10415,71 @@ helper_one();
             "search_index must match symbols after re-index collision rebuild; got: {:?}",
             shared_after_reindex.iter().map(|s| &s.uri).collect::<Vec<_>>()
         );
+    }
+
+    /// #5016 post-#6169: case-distinct packages must survive per-name retain when the
+    /// removed file empties a key bucket. A full-index clear would still pass many
+    /// assertions; this discriminates retain surgery on case-sensitive keys.
+    #[test]
+    fn incremental_remove_retains_case_distinct_package_after_collision() {
+        let index = WorkspaceIndex::new();
+        let upper_uri = must(url::Url::parse("file:///lib/Foo/Bar.pm"));
+        let lower_uri = must(url::Url::parse("file:///lib/foo/bar.pm"));
+
+        must(index.index_file(
+            upper_uri.clone(),
+            "package Foo::Bar;\nsub upper_only { 1 }\nsub shared_bare { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            lower_uri.clone(),
+            "package foo::bar;\nsub lower_only { 2 }\nsub shared_bare { 2 }\n1;\n".to_string(),
+        ));
+
+        // Removing the upper package empties Foo::Bar keys but must not disturb foo::bar.
+        INCREMENTAL_SEARCH_ADD_CALLS.with(|calls| calls.set(0));
+        REBUILD_SEARCH_INDEX_CALLS.with(|calls| calls.set(0));
+        index.remove_file(upper_uri.as_str());
+        let search_add_calls_after_remove = INCREMENTAL_SEARCH_ADD_CALLS.with(Cell::get);
+        let rebuild_search_calls_after_remove = REBUILD_SEARCH_INDEX_CALLS.with(Cell::get);
+        assert_eq!(
+            search_add_calls_after_remove, 0,
+            "removing one file must not re-add every remaining file to the search index"
+        );
+        assert_eq!(
+            rebuild_search_calls_after_remove, 0,
+            "removing one file must not call rebuild_search_index (O(workspace) full rebuild)"
+        );
+
+        assert!(
+            index.definition_candidates("Foo::Bar::upper_only").is_empty(),
+            "removed package symbols must disappear from symbols cache"
+        );
+        assert!(
+            index.definition_candidates("foo::bar::lower_only").len() == 1,
+            "case-distinct package must survive removal of the other; got: {:?}",
+            index.definition_candidates("foo::bar::lower_only")
+        );
+
+        let lower_search = index.search_source_symbols("foo::bar::lower", None);
+        assert!(
+            lower_search.iter().any(|s| s.name == "lower_only"),
+            "search_index must retain foo::bar after Foo::Bar removal; got: {:?}",
+            lower_search.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        let upper_search = index.search_source_symbols("Foo::Bar::upper", None);
+        assert!(
+            !upper_search.iter().any(|s| s.name == "upper_only"),
+            "search_index must not retain removed Foo::Bar symbols; got: {:?}",
+            upper_search.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        // Shared bare name: both packages had `shared_bare`; lower's copy must remain.
+        assert_eq!(
+            index.definition_candidates("shared_bare").len(),
+            1,
+            "retain must keep the surviving file's bare-name candidate"
+        );
+        assert_eq!(index.definition_candidates("shared_bare")[0].uri, lower_uri.as_str());
     }
 
     #[test]

@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added a fail-closed Zed upstream submission fan-in with exact subject fields, changed-file authority, blocked PR material, and validation that prevents submission-ready status until settings, managed assets, dormant defaults, and actual-host evidence converge."
+time: 2026-08-13T12:05:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-upstream-submission-fanin
+  Breaking: "no"

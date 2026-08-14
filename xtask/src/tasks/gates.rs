@@ -1831,6 +1831,22 @@ fn select_scope_base(root: &Path) -> String {
     }
 }
 
+/// Gate-policy command string routed to the in-process `check-version-sync`
+/// task instead of a subprocess.
+///
+/// Spawning `bash scripts/check-version-sync.sh` from inside `xtask` starts a
+/// nested `cargo xtask` build, which in turn started a second nested
+/// `cargo run -p perl-ci-hygiene` build — two extra Cargo invocations
+/// contending for the same target-dir lock as the `xtask` process already
+/// holding it. The in-process branch calls the identical terminal function
+/// (`perl_ci_hygiene::version_sync::check`) with the repo root, so the check
+/// itself is unchanged.
+///
+/// `.ci/gate-policy.yaml` must spell the command exactly this way or the
+/// branch silently stops matching and the nested build returns. That binding
+/// is enforced by `version_sync_gate_command_matches_gate_policy`.
+const VERSION_SYNC_GATE_COMMAND: &str = "bash scripts/check-version-sync.sh";
+
 /// Run a single gate and capture its result
 fn run_single_gate(
     gate: &GateDefinition,
@@ -1904,6 +1920,12 @@ fn run_single_gate(
         });
     }
 
+    if command == VERSION_SYNC_GATE_COMMAND {
+        return run_internal_xtask_gate(gate, &log_path, command, start, || {
+            super::check_version_sync::run()
+        });
+    }
+
     if command == "just ci-publish-closure" || command == "cargo xtask publish-closure" {
         return run_internal_xtask_gate(gate, &log_path, command, start, || {
             super::publish_closure::run(None)
@@ -1932,16 +1954,13 @@ fn run_single_gate(
     }
 
     if command
-        == "cargo build --release -p perl-lsp-rs --bin perl-lsp --locked && cargo xtask smoke inline-completion --binary target/release/perl-lsp"
+        == "cargo build --release -p perllsp --bin perllsp --locked && cargo xtask smoke inline-completion --binary target/release/perllsp"
     {
         return run_internal_xtask_gate(gate, &log_path, command, start, || {
-            cmd(
-                "cargo",
-                ["build", "--release", "-p", "perl-lsp-rs", "--bin", "perl-lsp", "--locked"],
-            )
-            .run()
-            .context("Failed to build release perl-lsp binary for inline-completion smoke")?;
-            super::inline_completion_smoke::run(PathBuf::from("target/release/perl-lsp"))
+            cmd("cargo", ["build", "--release", "-p", "perllsp", "--bin", "perllsp", "--locked"])
+                .run()
+                .context("Failed to build release perllsp binary for inline-completion smoke")?;
+            super::inline_completion_smoke::run(PathBuf::from("target/release/perllsp"))
         });
     }
 
@@ -2911,15 +2930,16 @@ mod tests {
         DiffResult, FirstFailure, GateDefinition, GateMetrics, GatePlanningConfig,
         GatePlanningRole, GatePolicy, GateResult, GateRunnerConfig, GateTier, GlobalSettings,
         MAX_GATE_OUTPUT_BYTES, MetricChange, OutputFormat, PackageTargetIndex, Receipt,
-        blocking_failure_gate_names, build_agent_receipt, build_pr_fast_plan_from_scope,
-        build_pr_fast_plan_from_scope_with_targets, commit_advisories, compare_receipts,
-        determine_overall_status, extend_plan_with_non_pr_fast_static_gates,
-        extend_plan_with_static_tiers, extract_output_summary, failure_guidance, filter_gates,
-        is_blocking_gate_status, is_cargo_test_command, is_latest_commit,
-        load_policy_for_inspection, load_receipt, output_diff, parse_first_failure,
-        parse_test_metrics, plan_gates, read_gate_output, run_internal_commit_check,
-        run_shell_command_with_timeout, run_single_gate, selects_commit_tier_gate,
-        staged_guard_violation, static_gate_plan, write_receipt,
+        VERSION_SYNC_GATE_COMMAND, blocking_failure_gate_names, build_agent_receipt,
+        build_pr_fast_plan_from_scope, build_pr_fast_plan_from_scope_with_targets,
+        commit_advisories, compare_receipts, determine_overall_status,
+        extend_plan_with_non_pr_fast_static_gates, extend_plan_with_static_tiers,
+        extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
+        is_cargo_test_command, is_latest_commit, load_policy_for_inspection, load_receipt,
+        output_diff, parse_first_failure, parse_test_metrics, plan_gates, read_gate_output,
+        run_internal_commit_check, run_internal_xtask_gate, run_shell_command_with_timeout,
+        run_single_gate, selects_commit_tier_gate, staged_guard_violation, static_gate_plan,
+        write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -5369,5 +5389,112 @@ error: aborting due to previous error
         }"#;
         let result: GateResult = serde_json::from_str(json).expect("backward compat deserialize");
         assert!(result.first_failure.is_none(), "first_failure must be None when absent from JSON");
+    }
+
+    #[test]
+    fn version_sync_gate_command_matches_gate_policy() -> color_eyre::eyre::Result<()> {
+        // `run_single_gate` routes version sync in-process by exact string
+        // match. If `.ci/gate-policy.yaml` is reworded, the branch stops
+        // matching, the gate silently falls back to `bash
+        // scripts/check-version-sync.sh`, and the nested Cargo builds return
+        // with nothing red to show for it. Bind the two here.
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let routed: Vec<&str> = policy
+            .gates
+            .iter()
+            .filter(|gate| gate.command == VERSION_SYNC_GATE_COMMAND)
+            .map(|gate| gate.name.as_str())
+            .collect();
+
+        if routed.is_empty() {
+            let declared: Vec<&str> = policy
+                .gates
+                .iter()
+                .filter(|gate| gate.command.contains("check-version-sync"))
+                .map(|gate| gate.command.as_str())
+                .collect();
+            color_eyre::eyre::bail!(
+                "no gate declares command `{VERSION_SYNC_GATE_COMMAND}`, so the in-process \
+                 dispatch in run_single_gate is dead and version sync would run through a \
+                 nested Cargo build; check-version-sync commands actually declared: {declared:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn run_single_gate_dispatches_version_sync_in_process() -> color_eyre::eyre::Result<()> {
+        // Reaches the production dispatch branch itself, rather than the helper
+        // it delegates to. If the branch were dropped, this gate would be
+        // spawned as `bash scripts/check-version-sync.sh` and restart the
+        // nested Cargo builds this change removes -- observable here as a
+        // subprocess exit code and a captured-output summary.
+        let gate = tier_gate("version_sync", "release", VERSION_SYNC_GATE_COMMAND);
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        let summary = result.output_summary.clone().unwrap_or_default();
+        assert!(
+            summary == "Executed internally via xtask task dispatch"
+                || summary.starts_with("Internal xtask execution failed:"),
+            "version sync must run through the internal dispatch, got: {summary}"
+        );
+        // The verdict itself belongs to the gate, not to this test; what this
+        // test owns is that no subprocess was spawned to produce it.
+        assert_eq!(result.exit_code, None, "an in-process gate reports no subprocess exit code");
+        Ok(())
+    }
+
+    #[test]
+    fn run_internal_xtask_gate_maps_error_to_fail_status() -> color_eyre::eyre::Result<()> {
+        // The in-process path replaces a subprocess whose exit code failed the
+        // gate. A version sync that stops reporting drift is worse than a slow
+        // one, so prove the error propagates to a failing gate status rather
+        // than being swallowed into a pass.
+        let gate = tier_gate("version_sync", "merge_gate", VERSION_SYNC_GATE_COMMAND);
+        let tmp = tempdir()?;
+        let log_path = tmp.path().join("version_sync.log");
+
+        let result = run_internal_xtask_gate(
+            &gate,
+            &log_path,
+            VERSION_SYNC_GATE_COMMAND,
+            std::time::Instant::now(),
+            || color_eyre::eyre::bail!("features.toml [meta] version is 0.1.0, workspace is 0.2.0"),
+        )?;
+
+        assert_eq!(result.status, "fail", "an Err from the internal task must fail the gate");
+        let logged = fs::read_to_string(&log_path)?;
+        assert!(
+            logged.contains("features.toml [meta] version is 0.1.0"),
+            "the underlying drift message must survive into the gate log, got: {logged}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_internal_xtask_gate_maps_ok_to_pass_status() -> color_eyre::eyre::Result<()> {
+        // Counterpart to the error case: proves the fail above is discriminating
+        // rather than an always-fail path.
+        let gate = tier_gate("version_sync", "merge_gate", VERSION_SYNC_GATE_COMMAND);
+        let tmp = tempdir()?;
+        let log_path = tmp.path().join("version_sync.log");
+
+        let result = run_internal_xtask_gate(
+            &gate,
+            &log_path,
+            VERSION_SYNC_GATE_COMMAND,
+            std::time::Instant::now(),
+            || Ok(()),
+        )?;
+
+        assert_eq!(result.status, "pass");
+        assert_eq!(result.command, VERSION_SYNC_GATE_COMMAND);
+        Ok(())
     }
 }

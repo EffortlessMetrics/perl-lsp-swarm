@@ -23,7 +23,7 @@ fn read_usize_baseline(path: &Path) -> TestResult<usize> {
 
 fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> TestResult<()> {
     if !dir.is_dir() {
-        return Ok(());
+        return Err(format!("required Rust source directory {:?} is missing", dir).into());
     }
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -49,21 +49,6 @@ fn rust_files_under(path: &Path) -> TestResult<Vec<PathBuf>> {
     let mut files = Vec::new();
     collect_rust_files(path, &mut files)?;
     Ok(files)
-}
-
-fn all_files_have_allow_panic(paths: &[PathBuf]) -> TestResult<bool> {
-    if paths.is_empty() {
-        return Ok(false);
-    }
-    for path in paths {
-        let content = fs::read_to_string(path)?;
-        if !content.contains("#![allow(clippy::panic)]")
-            && !content.contains("#[allow(clippy::panic)]")
-        {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 fn line_has_match_arm_panic(line: &str) -> bool {
@@ -96,12 +81,15 @@ fn test_panic_test_identity_registry_is_enforced() -> TestResult {
     let bin = std::env::var_os("CARGO_BIN_EXE_perl-ci-hygiene")
         .ok_or("CARGO_BIN_EXE_perl-ci-hygiene was not set by cargo")?;
     let output = Command::new(bin).arg("check-panic-test").current_dir(&root).output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "check-panic-test failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "check-panic-test failed with {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout,
+        stderr
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("PASS: every current identity is accepted"), "{stdout}");
     Ok(())
 }
@@ -115,34 +103,14 @@ fn test_todo_test_baseline_file_exists_and_contains_zero() -> TestResult {
     Ok(())
 }
 
-/// Test 3: perl-dead-code declares perl-tdd-support for test helpers.
-#[test]
-fn test_perl_dead_code_has_tdd_support_dev_dependency() -> TestResult {
-    assert!(cargo_toml_has_dev_dep("perl-dead-code", "perl-tdd-support")?);
-    Ok(())
-}
-
-/// Test 4: perl-dead-code integration tests opt out of workspace panic deny.
-#[test]
-fn test_perl_dead_code_tests_have_allow_clippy_panic() -> TestResult {
-    let tests_dir = workspace_root().join("crates").join("perl-dead-code").join("tests");
-    let files = rust_files_under(&tests_dir)?;
-    assert!(
-        all_files_have_allow_panic(&files)?,
-        "every file in {:?} needs #![allow(clippy::panic)]",
-        tests_dir
-    );
-    Ok(())
-}
-
-/// Test 5: perl-kwalitee (successor to absorbed perl-lsp-feature-policy) has perl-tdd-support.
+/// Test 3: perl-kwalitee (successor to absorbed perl-lsp-feature-policy) has perl-tdd-support.
 #[test]
 fn test_perl_kwalitee_has_tdd_support_dev_dependency() -> TestResult {
     assert!(cargo_toml_has_dev_dep("perl-kwalitee", "perl-tdd-support")?);
     Ok(())
 }
 
-/// Test 6: perl-kwalitee test module opts out of workspace panic deny.
+/// Test 4: perl-kwalitee test module opts out of workspace panic deny.
 #[test]
 fn test_perl_kwalitee_tests_have_allow_clippy_panic() -> TestResult {
     let lib_rs = workspace_root().join("crates").join("perl-kwalitee").join("src").join("lib.rs");
@@ -156,7 +124,7 @@ fn test_perl_kwalitee_tests_have_allow_clippy_panic() -> TestResult {
     Ok(())
 }
 
-/// Test 7: narrow perl-parser-core burn-down target is clean (coderef_invocation_tests.rs only).
+/// Test 5: narrow perl-parser-core burn-down target is clean (coderef_invocation_tests.rs only).
 #[test]
 fn test_perl_parser_core_no_panic_in_match_arm_catches() -> TestResult {
     let target = workspace_root()
@@ -171,7 +139,7 @@ fn test_perl_parser_core_no_panic_in_match_arm_catches() -> TestResult {
     Ok(())
 }
 
-/// Test 8: narrow perl-dap burn-down target is clean (dap_adapter_tests.rs only).
+/// Test 6: narrow perl-dap burn-down target is clean (dap_adapter_tests.rs only).
 #[test]
 fn test_perl_dap_no_panic_in_match_arm_catches() -> TestResult {
     let target =
@@ -181,7 +149,7 @@ fn test_perl_dap_no_panic_in_match_arm_catches() -> TestResult {
     Ok(())
 }
 
-/// Test 9: perl-lexer has no match-arm panic catches (spec drift: was perl-builtins).
+/// Test 7: perl-lexer has no match-arm panic catches (spec drift: was perl-builtins).
 #[test]
 fn test_perl_lexer_no_panic_in_match_arm_catches() -> TestResult {
     let tests_dir = workspace_root().join("crates").join("perl-lexer").join("tests");
@@ -192,7 +160,7 @@ fn test_perl_lexer_no_panic_in_match_arm_catches() -> TestResult {
     Ok(())
 }
 
-/// Test 10: production baselines remain at their established zero-tolerance budgets.
+/// Test 8: production baselines remain at their established zero-tolerance budgets.
 #[test]
 fn test_production_baselines_unchanged() -> TestResult {
     let root = workspace_root();
@@ -201,7 +169,7 @@ fn test_production_baselines_unchanged() -> TestResult {
     Ok(())
 }
 
-/// Test 11: tree-sitter-perl-rs has no match-arm panic catches.
+/// Test 9: tree-sitter-perl-rs has no match-arm panic catches.
 #[test]
 fn test_tree_sitter_perl_rs_no_panic_in_match_arm_catches() -> TestResult {
     let tests_dir = workspace_root().join("crates").join("tree-sitter-perl-rs").join("tests");

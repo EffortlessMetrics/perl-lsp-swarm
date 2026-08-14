@@ -1,4 +1,8 @@
-import { parseSubtestResults, parseTapOutput } from '../testAdapter';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import type { ChildProcess } from 'child_process';
+import { parseSubtestResults, parseTapOutput, runBoundedProcess } from '../testAdapter';
 
 describe('test adapter TAP parsing', () => {
   test('summarizes top-level TAP without counting indented subtests', () => {
@@ -69,4 +73,234 @@ describe('test adapter TAP parsing', () => {
       ['fails', { ok: false, diagnostic: "# Failed test 'assertion'", duration: 0 }],
     ]);
   });
+});
+
+describe('bounded prove process execution', () => {
+  test('returns normal output without truncation', async () => {
+    const result = await runBoundedProcess(process.execPath, ['-e', 'process.stdout.write("ok")'], {
+      shell: false,
+      timeoutMs: 5_000,
+      maxOutputBytes: 32,
+      terminationGraceMs: 25,
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'completed',
+      stdout: 'ok',
+      stderr: '',
+      exitCode: 0,
+    });
+  }, 30_000);
+
+  test('terminates a process that exceeds the wall-clock deadline', async () => {
+    const result = await runBoundedProcess(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], {
+      shell: false,
+      timeoutMs: 100,
+      maxOutputBytes: 32,
+      terminationGraceMs: 25,
+    });
+
+    expect(result.outcome).toBe('timed_out');
+    expect(result.diagnostic).toContain('deadline');
+  }, 30_000);
+
+  test('terminates a process that exceeds the combined output ceiling', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.stdout.write("x".repeat(4096))'],
+      {
+        shell: false,
+        timeoutMs: 5_000,
+        maxOutputBytes: 128,
+        terminationGraceMs: 25,
+      },
+    );
+
+    expect(result.outcome).toBe('output_limit');
+    expect(result.capturedOutputBytes).toBe(128);
+    expect(result.stdout.length).toBeLessThanOrEqual(128);
+    expect(result.diagnostic).toContain('capture limit');
+  }, 30_000);
+
+  test('enforces the combined stdout/stderr byte ceiling across both streams', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.stdout.write("a".repeat(80)); process.stderr.write("b".repeat(80));'],
+      {
+        shell: false,
+        timeoutMs: 5_000,
+        maxOutputBytes: 100,
+        terminationGraceMs: 25,
+        terminationWatchdogMs: 1_000,
+      },
+    );
+
+    expect(result.outcome).toBe('output_limit');
+    expect(result.capturedOutputBytes).toBe(100);
+    expect(result.stdout.length + result.stderr.length).toBeLessThanOrEqual(100);
+    expect(result.stdout.includes('b')).toBe(false);
+    expect(result.stderr.includes('a')).toBe(false);
+  }, 30_000);
+
+  test('keeps stdout and stderr separate while streaming', async () => {
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.stdout.write("out"); process.stderr.write("err");'],
+      {
+        shell: false,
+        timeoutMs: 5_000,
+        maxOutputBytes: 64,
+        terminationGraceMs: 25,
+      },
+    );
+
+    expect(result).toMatchObject({
+      outcome: 'completed',
+      stdout: 'out',
+      stderr: 'err',
+    });
+  }, 30_000);
+
+  test('waits for close after escalating past an ignored SIGTERM', async () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+
+    const started = Date.now();
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 5000);'],
+      {
+        shell: false,
+        timeoutMs: 100,
+        maxOutputBytes: 32,
+        terminationGraceMs: 50,
+        terminationWatchdogMs: 2_000,
+      },
+    );
+
+    expect(result.outcome).toBe('timed_out');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(140);
+    expect(result.diagnostic).toContain('deadline');
+  }, 30_000);
+
+  test('surfaces termination_failed when forced kill never yields close', async () => {
+    const live: ChildProcess[] = [];
+    try {
+      const result = await runBoundedProcess(
+        process.execPath,
+        ['-e', 'setTimeout(() => {}, 5000)'],
+        {
+          shell: false,
+          timeoutMs: 50,
+          maxOutputBytes: 32,
+          terminationGraceMs: 25,
+          terminationWatchdogMs: 150,
+          killProcess: (proc) => {
+            live.push(proc);
+            return false;
+          },
+        },
+      );
+
+      expect(result.outcome).toBe('termination_failed');
+      expect(result.diagnostic).toContain('forced termination');
+    } finally {
+      for (const proc of live) {
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          // Best-effort cleanup for the intentionally unkillable seam.
+        }
+      }
+    }
+  }, 30_000);
+
+  test('resolves only after a delayed SIGKILL close is observed', async () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+
+    let killCount = 0;
+    const started = Date.now();
+    const result = await runBoundedProcess(
+      process.execPath,
+      ['-e', 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 5000);'],
+      {
+        shell: false,
+        timeoutMs: 50,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+        terminationWatchdogMs: 2_000,
+        killProcess: (proc, signal) => {
+          killCount += 1;
+          if (signal === 'SIGKILL') {
+            setTimeout(() => {
+              try {
+                proc.kill('SIGKILL');
+              } catch {
+                // Child may have exited while the delayed kill was queued.
+              }
+            }, 150);
+            return true;
+          }
+          return false;
+        },
+      },
+    );
+
+    expect(result.outcome).toBe('timed_out');
+    expect(killCount).toBeGreaterThanOrEqual(2);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(200);
+  }, 30_000);
+
+  test('terminates a process when the caller aborts', async () => {
+    const controller = new AbortController();
+    const resultPromise = runBoundedProcess(
+      process.execPath,
+      ['-e', 'setTimeout(() => {}, 5000)'],
+      {
+        shell: false,
+        signal: controller.signal,
+        timeoutMs: 5_000,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+      },
+    );
+    controller.abort();
+
+    const result = await resultPromise;
+    expect(result.outcome).toBe('cancelled');
+    expect(result.diagnostic).toContain('cancelled');
+  }, 30_000);
+
+  test('terminates the Windows shell child, not only cmd.exe', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const marker = path.join(os.tmpdir(), `perl-lsp-test-adapter-${process.pid}.txt`);
+    const script = path.join(os.tmpdir(), `perl-lsp-test-adapter-${process.pid}.js`);
+    fs.writeFileSync(
+      script,
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 1000);\n` +
+        'setTimeout(() => {}, 5000);\n',
+      'utf8',
+    );
+    try {
+      const result = await runBoundedProcess(process.execPath, [script], {
+        shell: true,
+        timeoutMs: 100,
+        maxOutputBytes: 32,
+        terminationGraceMs: 25,
+      });
+
+      expect(result.outcome).toBe('timed_out');
+      await new Promise((resolve) => setTimeout(resolve, 1_250));
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      fs.rmSync(script, { force: true });
+      fs.rmSync(marker, { force: true });
+    }
+  }, 30_000);
 });
