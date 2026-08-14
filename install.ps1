@@ -679,21 +679,22 @@ try {
         Write-Warn "Could not verify installation"
     }
 
-    # Check PATH
+    # Check PATH - persist only the user scope; never copy the merged process PATH.
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($UserPath -like "*$InstallDir*") {
-        Write-Success "$InstallDir is already in your PATH"
+    if (Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir) {
+        Add-InstallDirToCurrentProcessPath
+        Write-Success "$InstallDir is already persisted in the user PATH"
     } else {
-        Write-Warn "$InstallDir is not in your PATH"
-        Write-Host ""
-        Write-Host "To add it to your PATH permanently, run:" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"`$env:Path;$InstallDir`", 'User')" -ForegroundColor White
-        Write-Host ""
-        Write-Host "Or add it temporarily for this session:" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  `$env:Path += `";$InstallDir`"" -ForegroundColor White
-        Write-Host ""
+        try {
+            Ensure-InstallDirOnUserPath | Out-Null
+            Add-InstallDirToCurrentProcessPath
+            Write-Success "Added $InstallDir to the persistent user PATH"
+            Write-Warn "Restart already-running terminals and editors so they inherit the persisted PATH."
+        } catch {
+            Add-InstallDirToCurrentProcessPath
+            Write-Warn "Could not persist $InstallDir on the user PATH: $($_.Exception.Message)"
+            Write-ManualPathGuidance
+        }
     }
 
     Write-Host ""
@@ -939,21 +940,22 @@ try {
         Write-Warn "Could not verify installation"
     }
 
-    # Check PATH
+    # Check PATH - persist only the user scope; never copy the merged process PATH.
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($UserPath -like "*$InstallDir*") {
-        Write-Success "$InstallDir is already in your PATH"
+    if (Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir) {
+        Add-InstallDirToCurrentProcessPath
+        Write-Success "$InstallDir is already persisted in the user PATH"
     } else {
-        Write-Warn "$InstallDir is not in your PATH"
-        Write-Host ""
-        Write-Host "To add it to your PATH permanently, run:" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"`$env:Path;$InstallDir`", 'User')" -ForegroundColor White
-        Write-Host ""
-        Write-Host "Or add it temporarily for this session:" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  `$env:Path += `";$InstallDir`"" -ForegroundColor White
-        Write-Host ""
+        try {
+            Ensure-InstallDirOnUserPath | Out-Null
+            Add-InstallDirToCurrentProcessPath
+            Write-Success "Added $InstallDir to the persistent user PATH"
+            Write-Warn "Restart already-running terminals and editors so they inherit the persisted PATH."
+        } catch {
+            Add-InstallDirToCurrentProcessPath
+            Write-Warn "Could not persist $InstallDir on the user PATH: $($_.Exception.Message)"
+            Write-ManualPathGuidance
+        }
     }
 
     Write-Host ""
