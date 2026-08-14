@@ -87,3 +87,36 @@ fn embedded_region_end(bytes: &[u8], start: usize, kind: EmbeddedCodeKind) -> us
 
     bytes.len()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_immediate_and_deferred_openers_once() {
+        let findings = find_code_executions(r#"(?{ my $s = '(?{'; }) (??{ later })"#);
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].kind, EmbeddedCodeKind::Immediate);
+        assert_eq!(findings[0].offset, 0);
+        assert!(findings[0].end > findings[0].offset);
+        assert_eq!(findings[1].kind, EmbeddedCodeKind::Deferred);
+    }
+
+    #[test]
+    fn advances_over_balanced_body_with_nested_braces_and_quotes() {
+        let pattern = r#"(?{ my $x = { nested => "}" }; })tail"#;
+        let findings = find_code_executions(pattern);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            &pattern[findings[0].offset..findings[0].end],
+            r#"(?{ my $x = { nested => "}" }; })"#
+        );
+        assert_eq!(&pattern[findings[0].end..], "tail");
+    }
+
+    #[test]
+    fn ignores_lookalike_text_outside_code_constructs() {
+        assert!(find_code_executions(r"(?:not code) (?x) {").is_empty());
+        assert!(find_code_executions(r"\(?{escaped}").is_empty());
+    }
+}

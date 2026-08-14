@@ -92,3 +92,43 @@ pub(crate) fn quoted_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
     }
     Some(bytes.len())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skip_escape_advances_two_bytes() {
+        let mut cursor = RegexCursor::new(r"\Q");
+        assert!(cursor.skip_escape());
+        assert_eq!(cursor.position(), 2);
+        assert!(!RegexCursor::new("a").skip_escape());
+    }
+
+    #[test]
+    fn skip_char_class_handles_escaped_brackets() {
+        let mut cursor = RegexCursor::new(r"[a\]b]x");
+        assert!(cursor.skip_char_class());
+        assert_eq!(cursor.position(), 6);
+        assert_eq!(cursor.current(), Some(b'x'));
+    }
+
+    #[test]
+    fn skip_comment_stops_at_first_closing_paren() {
+        let mut cursor = RegexCursor::new(r"(?#comment\)more)rest");
+        assert!(cursor.skip_comment());
+        // Literal comment ends at the first `)`; backslash does not escape it.
+        assert_eq!(cursor.position(), 12);
+        assert_eq!(cursor.current(), Some(b'm'));
+        assert_eq!(&r"(?#comment\)more)rest"[cursor.position()..], "more)rest");
+    }
+
+    #[test]
+    fn skip_quoted_literal_consumes_q_e_span() {
+        let mut cursor = RegexCursor::new(r"\Qa+)+\Ex");
+        assert!(cursor.skip_quoted_literal());
+        assert_eq!(cursor.position(), 8);
+        assert_eq!(cursor.current(), Some(b'x'));
+        assert_eq!(quoted_literal_end(br"\Qopen", 0), Some(6));
+    }
+}

@@ -175,3 +175,53 @@ fn policy_diagnostic(
     RegexRange::anchored(offset, width, input_len)
         .map(|range| RegexDiagnostic::new(code, range, Some(limit)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::validator::config::RegexValidationConfig;
+
+    fn cfg() -> RegexValidationConfig {
+        RegexValidationConfig {
+            max_nesting: 1,
+            max_unicode_properties: 1,
+            max_branch_reset_branches: 1,
+        }
+    }
+
+    #[test]
+    fn emits_unicode_property_limit_outside_excluded_ranges() {
+        let diagnostics = find_complexity_diagnostics(r"\p{L}\p{N}", &cfg(), &[]);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, RegexDiagnosticCode::UnicodePropertyLimit);
+    }
+
+    #[test]
+    fn skips_excluded_dynamic_span_before_live_limit() {
+        let excluded = [RegexRange::new(0, 10).expect("range")];
+        let diagnostics =
+            find_complexity_diagnostics(r"(?{ \p{L}\p{N} })\p{L}\p{N}", &cfg(), &excluded);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].range.start >= excluded[0].end);
+    }
+
+    #[test]
+    fn emits_lookbehind_and_branch_reset_limits() {
+        let lookbehind = find_complexity_diagnostics(r"(?<=a(?<=b))", &cfg(), &[]);
+        assert!(
+            lookbehind.iter().any(|d| d.code == RegexDiagnosticCode::LookbehindNestingLimit),
+            "{lookbehind:?}"
+        );
+        let branches = find_complexity_diagnostics(r"(?|a|b|c)", &cfg(), &[]);
+        assert!(
+            branches.iter().any(|d| d.code == RegexDiagnosticCode::BranchResetBranchLimit),
+            "{branches:?}"
+        );
+    }
+
+    #[test]
+    fn quoted_literals_and_char_classes_do_not_count_as_properties() {
+        let diagnostics = find_complexity_diagnostics(r"\Q\p{L}\E[\p{N}]", &cfg(), &[]);
+        assert!(diagnostics.is_empty());
+    }
+}

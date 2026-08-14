@@ -130,3 +130,44 @@ fn is_special_variable(sigil: u8, ch: u8) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_identifier_braced_and_special_forms() {
+        let ranges = find_interpolations(r"pre$name${expr{nested}}@_$!post", &[]);
+        assert_eq!(ranges.len(), 4);
+        assert_eq!(&r"pre$name${expr{nested}}@_$!post"[ranges[0].start..ranges[0].end], "$name");
+        assert_eq!(
+            &r"pre$name${expr{nested}}@_$!post"[ranges[1].start..ranges[1].end],
+            "${expr{nested}}"
+        );
+        assert_eq!(&r"pre$name${expr{nested}}@_$!post"[ranges[2].start..ranges[2].end], "@_");
+        assert_eq!(&r"pre$name${expr{nested}}@_$!post"[ranges[3].start..ranges[3].end], "$!");
+    }
+
+    #[test]
+    fn skips_escapes_comments_classes_and_excluded_ranges() {
+        assert!(find_interpolations(r"(?# $skip )$live", &[]).len() == 1);
+        assert_eq!(
+            &r"(?# $skip )$live"[find_interpolations(r"(?# $skip )$live", &[])[0].start
+                ..find_interpolations(r"(?# $skip )$live", &[])[0].end],
+            "$live"
+        );
+        assert!(find_interpolations(r"\Q$name\E$live", &[]).len() == 1);
+        assert!(find_interpolations(r"[$no]$live", &[]).len() == 1);
+        let excluded = [RegexRange::new(0, 5).expect("prefix")];
+        let ranges = find_interpolations(r"$hide$live", &excluded);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(&r"$hide$live"[ranges[0].start..ranges[0].end], "$live");
+    }
+
+    #[test]
+    fn rejects_non_interpolating_sigil_neighbors() {
+        assert!(find_interpolations("$ ", &[]).is_empty());
+        assert!(find_interpolations(r"\$name", &[]).is_empty());
+        assert!(find_interpolations("@!", &[]).is_empty());
+    }
+}
