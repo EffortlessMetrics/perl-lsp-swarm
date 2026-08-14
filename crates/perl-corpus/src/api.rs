@@ -1,3 +1,5 @@
+mod topology;
+
 pub use crate::cases::{
     ComplexDataStructureCase, EdgeCase, EdgeCaseGenerator, complex_data_structure_cases,
     edge_cases, find_complex_case, get_complex_data_structure_tests, sample_complex_case,
@@ -30,4 +32,8 @@ pub use crate::sidecar::*;
 pub use crate::tie_interface::{
     TieInterfaceCase, find_tie_case, tie_cases_by_tag, tie_cases_by_tags_all,
     tie_cases_by_tags_any, tie_interface_cases,
+};
+pub use topology::{
+    AssetRequirement, CORPUS_TOPOLOGY_SCHEMA_VERSION, CorpusAsset, CorpusAssetKind,
+    CorpusAssetLayer, CorpusTopology, CorpusTopologyError,
 };

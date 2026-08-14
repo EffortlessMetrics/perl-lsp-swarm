@@ -1388,14 +1388,6 @@
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/triage-issues.yml",
       "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "if [ \"${{ steps.lint.outputs.exit_code }}\" = \"0\" ]; then",
-      "fingerprint": "a0f5e344c95574d20c6ca7f12f378810a58bf437b9be8dd42826e6c8083bd19a",
-      "line": 52,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/workflow-trigger-lint.yml",
-      "rule": "expression_in_run_source"
     }
   ],
   "schema_version": 1
