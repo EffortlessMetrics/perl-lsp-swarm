@@ -32,7 +32,8 @@ fn read(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn checked_typescript_projection_contains_every_current_literal() -> Result<(), Box<dyn std::error::Error>> {
+fn checked_typescript_projection_contains_every_current_literal()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = repository_root()?;
     let typescript = read(&root.join("vscode-extension/src/binaryIdentityProtocol.generated.ts"))?;
 
@@ -53,7 +54,9 @@ fn checked_typescript_projection_contains_every_current_literal() -> Result<(), 
         );
     }
     assert!(
-        typescript.contains(&format!("BINARY_IDENTITY_FEATURE_VERSION = {BINARY_IDENTITY_FEATURE_VERSION}")),
+        typescript.contains(&format!(
+            "BINARY_IDENTITY_FEATURE_VERSION = {BINARY_IDENTITY_FEATURE_VERSION}"
+        )),
         "TypeScript feature-family version drifted"
     );
 
@@ -126,7 +129,8 @@ fn checked_typescript_projection_contains_every_current_literal() -> Result<(), 
 }
 
 #[test]
-fn response_schema_preserves_mismatch_and_redaction_semantics() -> Result<(), Box<dyn std::error::Error>> {
+fn response_schema_preserves_mismatch_and_redaction_semantics()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = repository_root()?;
     let schema: Value = serde_json::from_str(&read(
         &root.join("schemas/binary_identity_protocol.v1.schema.json"),
@@ -134,23 +138,18 @@ fn response_schema_preserves_mismatch_and_redaction_semantics() -> Result<(), Bo
 
     assert_eq!(schema["properties"]["feature_version"]["const"], BINARY_IDENTITY_FEATURE_VERSION);
     assert_eq!(schema["properties"]["redacted"]["type"], "boolean");
+    assert_eq!(schema["properties"]["reasons"]["items"]["$ref"], "#/$defs/reasonToken");
     assert_eq!(
-        schema["properties"]["reasons"]["items"]["$ref"],
-        "#/$defs/reasonToken"
+        schema["$defs"]["extensionIdentity"]["properties"]["id"]["$ref"],
+        "#/$defs/extensionId"
     );
-    assert_eq!(schema["$defs"]["extensionIdentity"]["properties"]["id"]["$ref"], "#/$defs/extensionId");
 
     let required = schema["$defs"]["extensionIdentity"]["required"]
         .as_array()
         .ok_or("extension identity required set must be an array")?;
-    for field in [
-        "publisher",
-        "package_name",
-        "id",
-        "version",
-        "binary_artifact_role",
-        "authority_identity",
-    ] {
+    for field in
+        ["publisher", "package_name", "id", "version", "binary_artifact_role", "authority_identity"]
+    {
         assert!(
             required.iter().any(|value| value == field),
             "schema extension identity is missing required field {field:?}"

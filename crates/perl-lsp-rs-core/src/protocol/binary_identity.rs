@@ -301,11 +301,7 @@ fn evaluate_compatibility(
     state: &BinaryIdentityTransportStateV1,
     request: &BinaryIdentityRequestV1,
     payload_unchanged: bool,
-) -> (
-    BinaryCompatibilityState,
-    Vec<BinaryCompatibilityReason>,
-    Vec<String>,
-) {
+) -> (BinaryCompatibilityState, Vec<BinaryCompatibilityReason>, Vec<String>) {
     if request.feature_version != BINARY_IDENTITY_FEATURE_VERSION {
         return (
             BinaryCompatibilityState::Unsupported,
@@ -694,16 +690,8 @@ fn safe_packet_projection(packet: &BinaryIdentityPacketV1) -> SafePacket {
     sanitize_optional(&mut projected.build.target, is_target, &mut unchanged);
     sanitize_optional(&mut projected.build.profile, is_general_token, &mut unchanged);
     sanitize_optional(&mut projected.artifact.digest, is_sha256, &mut unchanged);
-    sanitize_optional(
-        &mut projected.artifact.candidate_identity,
-        is_general_token,
-        &mut unchanged,
-    );
-    sanitize_required(
-        &mut projected.compatibility.dap_posture,
-        is_general_token,
-        &mut unchanged,
-    );
+    sanitize_optional(&mut projected.artifact.candidate_identity, is_general_token, &mut unchanged);
+    sanitize_required(&mut projected.compatibility.dap_posture, is_general_token, &mut unchanged);
     projected.limitations.retain(|value| {
         let safe = is_reason_token(value);
         unchanged &= safe;
@@ -734,11 +722,7 @@ fn safe_expected_extension_projection(
     sanitize_optional(&mut identity.package_sha256, is_sha256, &mut unchanged);
     sanitize_optional(&mut identity.server_sha256, is_sha256, &mut unchanged);
     sanitize_optional(&mut identity.dap_sha256, is_sha256, &mut unchanged);
-    sanitize_required(
-        &mut identity.authority_identity,
-        is_general_token,
-        &mut unchanged,
-    );
+    sanitize_required(&mut identity.authority_identity, is_general_token, &mut unchanged);
     SafeExpectedExtension { identity, unchanged }
 }
 
@@ -822,16 +806,17 @@ fn is_general_token(value: &str) -> bool {
         && !value.contains('\\')
         && !value.split('/').any(|segment| segment == "." || segment == "..")
         && value.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | ':' | '@' | '+')
+            character.is_ascii_alphanumeric()
+                || matches!(character, '_' | '-' | '.' | ':' | '@' | '+')
         })
 }
 
 fn is_reason_token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_LIMITATION_LEN
-        && value
-            .chars()
-            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_')
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
 }
 
 #[cfg(test)]
@@ -887,10 +872,7 @@ mod tests {
     fn state() -> BinaryIdentityTransportStateV1 {
         BinaryIdentityTransportStateV1 {
             server: BinaryIdentityPacketV1::server("0.18.0", exact_input("rc1", &digest('c'))),
-            dap: Some(BinaryIdentityPacketV1::dap(
-                "0.18.0",
-                exact_input("rc1", &digest('d')),
-            )),
+            dap: Some(BinaryIdentityPacketV1::dap("0.18.0", exact_input("rc1", &digest('d')))),
             server_instance_id: "server-1".to_owned(),
             environment_snapshot_id: "env-1".to_owned(),
         }
@@ -916,11 +898,7 @@ mod tests {
         ));
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
-        assert!(
-            response
-                .reasons
-                .contains(&BinaryCompatibilityReason::SourceTreeDigestMismatch)
-        );
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::SourceTreeDigestMismatch));
     }
 
     #[test]
@@ -930,11 +908,7 @@ mod tests {
         state.server.compatibility.expected_product_identity_version = 99;
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
-        assert!(
-            response
-                .reasons
-                .contains(&BinaryCompatibilityReason::ProductRepositoryMismatch)
-        );
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::ProductRepositoryMismatch));
     }
 
     #[test]
@@ -943,11 +917,7 @@ mod tests {
         state.server = BinaryIdentityPacketV1::server("0.18.0", BinaryIdentityInput::default());
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::NotProven);
-        assert!(
-            response
-                .reasons
-                .contains(&BinaryCompatibilityReason::BuildIdentityNotProven)
-        );
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::BuildIdentityNotProven));
     }
 
     #[test]
@@ -956,11 +926,7 @@ mod tests {
         request.expected_extension.server_sha256 = Some(digest('f'));
         let response = state().respond(request);
         assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
-        assert!(
-            response
-                .reasons
-                .contains(&BinaryCompatibilityReason::ArtifactDigestMismatch)
-        );
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::ArtifactDigestMismatch));
     }
 
     #[test]
@@ -982,13 +948,9 @@ mod tests {
         request.expected_extension.binary_artifact_role = ArtifactRole::UserSupplied;
         request.expected_extension.server_sha256 = None;
         request.expected_extension.dap_sha256 = None;
-        let response = state.respond(request());
+        let response = state.respond(request);
         assert_eq!(response.compatibility, BinaryCompatibilityState::CompatiblePartial);
-        assert!(
-            response
-                .reasons
-                .contains(&BinaryCompatibilityReason::ArtifactDigestNotProven)
-        );
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::ArtifactDigestNotProven));
     }
 
     #[test]
@@ -1000,11 +962,7 @@ mod tests {
         assert_eq!(response.compatibility, BinaryCompatibilityState::NotProven);
         assert!(!response.redacted, "source payload required a redaction");
         assert_eq!(response.server.build.target, None);
-        assert!(
-            response
-                .reasons
-                .contains(&BinaryCompatibilityReason::PayloadNotRedacted)
-        );
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::PayloadNotRedacted));
         let raw = serde_json::to_string(&response).expect("response serialization must succeed");
         assert!(!raw.contains("/home/user"), "response leaked a private path: {raw}");
     }
@@ -1016,11 +974,7 @@ mod tests {
         let response = state().respond(request);
         assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
         assert_eq!(response.expected_extension.id, "Other.extension");
-        assert!(
-            response
-                .reasons
-                .contains(&BinaryCompatibilityReason::ExtensionIdentityMismatch)
-        );
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::ExtensionIdentityMismatch));
     }
 
     #[test]
@@ -1030,11 +984,7 @@ mod tests {
         dap.schema_version = "perl_lsp.binary_identity.v2".to_owned();
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::NotProven);
-        assert!(
-            response
-                .reasons
-                .contains(&BinaryCompatibilityReason::PacketSchemaUnsupported)
-        );
+        assert!(response.reasons.contains(&BinaryCompatibilityReason::PacketSchemaUnsupported));
     }
 
     #[test]

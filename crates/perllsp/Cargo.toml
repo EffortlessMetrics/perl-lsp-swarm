@@ -29,7 +29,11 @@ path = "src/main.rs"
 
 [dependencies]
 perl-lsp-rs = { workspace = true }
-perl-lsp-rs-core = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+tempfile = { workspace = true }
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

@@ -13,6 +13,8 @@
 ///   2. Opens a document with a specific construct.
 ///   3. Requests `textDocument/semanticTokens/full`.
 ///   4. Verifies emitted indices and bitmasks decode correctly through the ADVERTISED legend.
+mod support;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 
@@ -112,8 +114,8 @@ fn semantic_tokens_for_source(
     uri: &str,
     source: &str,
 ) -> Result<Vec<(usize, usize, usize, String)>, BoxError> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut child = Command::new(bin)
+    let bin = support::product_binary_path()?;
+    let mut child = Command::new(&bin)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -193,8 +195,8 @@ fn semantic_tokens_for_source(
 
 #[test]
 fn semantic_token_label_type_decodes_for_perl_labels() -> Result<(), BoxError> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut child = Command::new(bin)
+    let bin = support::product_binary_path()?;
+    let mut child = Command::new(&bin)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -326,8 +328,8 @@ fn semantic_token_label_type_decodes_for_perl_labels() -> Result<(), BoxError> {
 
 #[test]
 fn semantic_token_result_indexes_stay_within_advertised_legend_bounds() -> Result<(), BoxError> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut child = Command::new(bin)
+    let bin = support::product_binary_path()?;
+    let mut child = Command::new(&bin)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -438,8 +440,8 @@ fn semantic_token_result_indexes_stay_within_advertised_legend_bounds() -> Resul
 
 #[test]
 fn semantic_token_indices_match_advertised_legend() -> Result<(), BoxError> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut child = Command::new(bin)
+    let bin = support::product_binary_path()?;
+    let mut child = Command::new(&bin)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -673,8 +675,8 @@ fn semantic_tokens_do_not_emit_function_name_for_anonymous_sub() -> Result<(), B
 /// advertised legend, so it decodes correctly.
 #[test]
 fn sql_string_index_decodes_correctly_via_advertised_legend() -> Result<(), BoxError> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut child = Command::new(bin)
+    let bin = support::product_binary_path()?;
+    let mut child = Command::new(&bin)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -803,8 +805,8 @@ fn sql_string_index_decodes_correctly_via_advertised_legend() -> Result<(), BoxE
 #[test]
 fn default_library_modifier_bitmask_decodes_correctly_via_advertised_legend() -> Result<(), BoxError>
 {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut child = Command::new(bin)
+    let bin = support::product_binary_path()?;
+    let mut child = Command::new(&bin)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -951,8 +953,8 @@ fn default_library_modifier_bitmask_decodes_correctly_via_advertised_legend() ->
 /// decode as a wrong type for every LSP client.
 #[test]
 fn sql_heredoc_keyword_index_decodes_correctly_via_advertised_legend() -> Result<(), BoxError> {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut child = Command::new(bin)
+    let bin = support::product_binary_path()?;
+    let mut child = Command::new(&bin)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

@@ -530,7 +530,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: perl-lsp-rust-small-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -602,7 +602,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: perl-lsp-rust-small-fallback-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
