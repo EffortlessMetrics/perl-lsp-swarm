@@ -43,26 +43,9 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
     notification!("$/cancelRequest", ClientToServer, Lsp317, cancel_params),
     notification!("$/progress", ClientToServer, Lsp317, progress_params),
     notification!("exit", ClientToServer, Lsp317, null_or_empty_object),
-    request!(
-        "initialize",
-        ClientToServer,
-        Lsp317,
-        initialize_params,
-        initialize_result
-    ),
-    notification!(
-        "initialized",
-        ClientToServer,
-        Lsp317,
-        null_or_empty_object
-    ),
-    request!(
-        "shutdown",
-        ClientToServer,
-        Lsp317,
-        null_only,
-        null_only
-    ),
+    request!("initialize", ClientToServer, Lsp317, initialize_params, initialize_result),
+    notification!("initialized", ClientToServer, Lsp317, null_or_empty_object),
+    request!("shutdown", ClientToServer, Lsp317, null_only, null_only),
     request!(
         "textDocument/completion",
         ClientToServer,
@@ -91,30 +74,10 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
         text_document_params,
         diagnostic_result
     ),
-    notification!(
-        "textDocument/didChange",
-        ClientToServer,
-        Lsp317,
-        did_change_params
-    ),
-    notification!(
-        "textDocument/didClose",
-        ClientToServer,
-        Lsp317,
-        text_document_params
-    ),
-    notification!(
-        "textDocument/didOpen",
-        ClientToServer,
-        Lsp317,
-        did_open_params
-    ),
-    notification!(
-        "textDocument/didSave",
-        ClientToServer,
-        Lsp317,
-        did_save_params
-    ),
+    notification!("textDocument/didChange", ClientToServer, Lsp317, did_change_params),
+    notification!("textDocument/didClose", ClientToServer, Lsp317, text_document_params),
+    notification!("textDocument/didOpen", ClientToServer, Lsp317, did_open_params),
+    notification!("textDocument/didSave", ClientToServer, Lsp317, did_save_params),
     request!(
         "textDocument/formatting",
         ClientToServer,
@@ -164,13 +127,7 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
         reference_params,
         references_result
     ),
-    request!(
-        "textDocument/rename",
-        ClientToServer,
-        Lsp317,
-        rename_params,
-        workspace_edit_result
-    ),
+    request!("textDocument/rename", ClientToServer, Lsp317, rename_params, workspace_edit_result),
     request!(
         "textDocument/semanticTokens/full",
         ClientToServer,
@@ -186,13 +143,7 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
         location_result
     ),
     notification!("$/progress", ServerToClient, Lsp317, progress_params),
-    request!(
-        "client/registerCapability",
-        ServerToClient,
-        Lsp317,
-        registration_params,
-        null_only
-    ),
+    request!("client/registerCapability", ServerToClient, Lsp317, registration_params, null_only),
     request!(
         "client/unregisterCapability",
         ServerToClient,
@@ -206,12 +157,7 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
         Lsp317,
         publish_diagnostics_params
     ),
-    notification!(
-        "window/logMessage",
-        ServerToClient,
-        Lsp317,
-        log_message_params
-    ),
+    notification!("window/logMessage", ServerToClient, Lsp317, log_message_params),
     request!(
         "window/showDocument",
         ServerToClient,
@@ -233,34 +179,10 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
         progress_create_params,
         null_only
     ),
-    request!(
-        "workspace/applyEdit",
-        ServerToClient,
-        Lsp317,
-        apply_edit_params,
-        apply_edit_result
-    ),
-    request!(
-        "workspace/configuration",
-        ServerToClient,
-        Lsp317,
-        configuration_params,
-        array_result
-    ),
-    request!(
-        "workspace/diagnostic/refresh",
-        ServerToClient,
-        Lsp317,
-        null_only,
-        null_only
-    ),
-    request!(
-        "workspace/semanticTokens/refresh",
-        ServerToClient,
-        Lsp317,
-        null_only,
-        null_only
-    ),
+    request!("workspace/applyEdit", ServerToClient, Lsp317, apply_edit_params, apply_edit_result),
+    request!("workspace/configuration", ServerToClient, Lsp317, configuration_params, array_result),
+    request!("workspace/diagnostic/refresh", ServerToClient, Lsp317, null_only, null_only),
+    request!("workspace/semanticTokens/refresh", ServerToClient, Lsp317, null_only, null_only),
 ];
 
 pub(super) fn schema_for(
@@ -302,12 +224,9 @@ fn inline_completion_result(method: &str, value: &Value) -> Result<(), SchemaErr
                 value,
             )
         })?;
-        let items = object
-            .get("items")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                SchemaError::new(Some(method), "$.result.items", "array", "missing or non-array")
-            })?;
+        let items = object.get("items").and_then(Value::as_array).ok_or_else(|| {
+            SchemaError::new(Some(method), "$.result.items", "array", "missing or non-array")
+        })?;
         (items, "$.result.items")
     };
 
@@ -381,12 +300,9 @@ mod tests {
 
     #[test]
     fn response_lookup_uses_the_originating_request_direction() {
-        let initialize = schema_for(
-            "initialize",
-            Direction::ServerToClient,
-            MessageKind::SuccessResponse,
-        )
-        .expect("initialize response must resolve its client-originated request schema");
+        let initialize =
+            schema_for("initialize", Direction::ServerToClient, MessageKind::SuccessResponse)
+                .expect("initialize response must resolve its client-originated request schema");
         assert_eq!(initialize.direction, Direction::ClientToServer);
 
         let configuration = schema_for(
@@ -397,12 +313,9 @@ mod tests {
         .expect("configuration response must resolve its server-originated request schema");
         assert_eq!(configuration.direction, Direction::ServerToClient);
 
-        let request = schema_for(
-            "textDocument/hover",
-            Direction::ClientToServer,
-            MessageKind::Request,
-        )
-        .expect("request direction must remain unchanged");
+        let request =
+            schema_for("textDocument/hover", Direction::ClientToServer, MessageKind::Request)
+                .expect("request direction must remain unchanged");
         assert_eq!(request.direction, Direction::ClientToServer);
     }
 

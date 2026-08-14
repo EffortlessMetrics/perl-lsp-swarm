@@ -117,11 +117,7 @@ pub struct ValidationLimits {
 
 impl Default for ValidationLimits {
     fn default() -> Self {
-        Self {
-            max_depth: 64,
-            max_nodes: 200_000,
-            max_string_bytes: 1 << 20,
-        }
+        Self { max_depth: 64, max_nodes: 200_000, max_string_bytes: 1 << 20 }
     }
 }
 
@@ -228,12 +224,7 @@ impl ProtocolSchemaValidator {
                 if let Some(expected) = context.method
                     && expected != method
                 {
-                    return Err(SchemaError::new(
-                        Some(method),
-                        "$.method",
-                        expected,
-                        method,
-                    ));
+                    return Err(SchemaError::new(Some(method), "$.method", expected, method));
                 }
                 method
             }
@@ -256,11 +247,8 @@ impl ProtocolSchemaValidator {
         // direction. A response frame travels in the opposite direction, so
         // lookup must invert only for responses while preserving the actual
         // captured direction in the validated result.
-        let schema_direction = if kind.is_response() {
-            context.direction.opposite()
-        } else {
-            context.direction
-        };
+        let schema_direction =
+            if kind.is_response() { context.direction.opposite() } else { context.direction };
         let Some(schema) = methods::schema_for(method, schema_direction, kind) else {
             if is_project_extension(method) {
                 validate_extension_payload(method, kind, object)?;
@@ -297,12 +285,7 @@ impl ProtocolSchemaValidator {
             }
             MessageKind::SuccessResponse => {
                 let result = object.get("result").ok_or_else(|| {
-                    SchemaError::new(
-                        Some(method),
-                        "$.result",
-                        "required success result",
-                        "missing",
-                    )
+                    SchemaError::new(Some(method), "$.result", "required success result", "missing")
                 })?;
                 let validator = schema.result.ok_or_else(|| {
                     SchemaError::new(
@@ -346,9 +329,7 @@ fn classify_envelope(object: &Map<String, Value>) -> Result<MessageKind, SchemaE
             None,
             "$",
             "one request, notification, success-response, or error-response envelope",
-            format!(
-                "method={has_method},id={has_id},result={has_result},error={has_error}"
-            ),
+            format!("method={has_method},id={has_id},result={has_result},error={has_error}"),
         )),
     }
 }
@@ -364,23 +345,13 @@ fn validate_id(method: &str, kind: MessageKind, id: Option<&Value>) -> Result<()
                 "integer or string request ID",
                 value,
             )),
-            None => Err(SchemaError::new(
-                Some(method),
-                "$.id",
-                "request ID",
-                "missing",
-            )),
+            None => Err(SchemaError::new(Some(method), "$.id", "request ID", "missing")),
         },
         MessageKind::Notification => {
             if id.is_none() {
                 Ok(())
             } else {
-                Err(SchemaError::new(
-                    Some(method),
-                    "$.id",
-                    "no notification ID",
-                    "present",
-                ))
+                Err(SchemaError::new(Some(method), "$.id", "no notification ID", "present"))
             }
         }
         MessageKind::SuccessResponse | MessageKind::ErrorResponse => match id {
@@ -392,12 +363,7 @@ fn validate_id(method: &str, kind: MessageKind, id: Option<&Value>) -> Result<()
                 "integer, string, or null response ID",
                 value,
             )),
-            None => Err(SchemaError::new(
-                Some(method),
-                "$.id",
-                "response ID",
-                "missing",
-            )),
+            None => Err(SchemaError::new(Some(method), "$.id", "response ID", "missing")),
         },
     }
 }
@@ -521,9 +487,7 @@ pub(super) fn expect_object<'a>(
     path: &str,
     value: &'a Value,
 ) -> Result<&'a Map<String, Value>, SchemaError> {
-    value
-        .as_object()
-        .ok_or_else(|| SchemaError::at_value(method, path, "object", value))
+    value.as_object().ok_or_else(|| SchemaError::at_value(method, path, "object", value))
 }
 
 pub(super) fn expect_array<'a>(
@@ -531,9 +495,7 @@ pub(super) fn expect_array<'a>(
     path: &str,
     value: &'a Value,
 ) -> Result<&'a Vec<Value>, SchemaError> {
-    value
-        .as_array()
-        .ok_or_else(|| SchemaError::at_value(method, path, "array", value))
+    value.as_array().ok_or_else(|| SchemaError::at_value(method, path, "array", value))
 }
 
 pub(super) fn expect_string<'a>(
@@ -542,9 +504,7 @@ pub(super) fn expect_string<'a>(
     value: Option<&'a Value>,
 ) -> Result<&'a str, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "string", "missing"))?;
-    value
-        .as_str()
-        .ok_or_else(|| SchemaError::at_value(method, path, "string", value))
+    value.as_str().ok_or_else(|| SchemaError::at_value(method, path, "string", value))
 }
 
 pub(super) fn expect_exact_string(
@@ -567,9 +527,7 @@ pub(super) fn expect_boolean(
     value: Option<&Value>,
 ) -> Result<bool, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "boolean", "missing"))?;
-    value
-        .as_bool()
-        .ok_or_else(|| SchemaError::at_value(method, path, "boolean", value))
+    value.as_bool().ok_or_else(|| SchemaError::at_value(method, path, "boolean", value))
 }
 
 pub(super) fn expect_integer(
@@ -578,9 +536,7 @@ pub(super) fn expect_integer(
     value: Option<&Value>,
 ) -> Result<i64, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "integer", "missing"))?;
-    value
-        .as_i64()
-        .ok_or_else(|| SchemaError::at_value(method, path, "integer", value))
+    value.as_i64().ok_or_else(|| SchemaError::at_value(method, path, "integer", value))
 }
 
 pub(super) fn expect_uinteger(
@@ -589,9 +545,7 @@ pub(super) fn expect_uinteger(
     value: Option<&Value>,
 ) -> Result<u64, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "uinteger", "missing"))?;
-    value
-        .as_u64()
-        .ok_or_else(|| SchemaError::at_value(method, path, "uinteger", value))
+    value.as_u64().ok_or_else(|| SchemaError::at_value(method, path, "uinteger", value))
 }
 
 pub(super) fn expect_null(
@@ -599,11 +553,7 @@ pub(super) fn expect_null(
     path: &str,
     value: &Value,
 ) -> Result<(), SchemaError> {
-    if value.is_null() {
-        Ok(())
-    } else {
-        Err(SchemaError::at_value(method, path, "null", value))
-    }
+    if value.is_null() { Ok(()) } else { Err(SchemaError::at_value(method, path, "null", value)) }
 }
 
 pub(super) fn observed(value: &Value) -> String {

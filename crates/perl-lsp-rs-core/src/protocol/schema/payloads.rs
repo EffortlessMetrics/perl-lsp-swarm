@@ -12,12 +12,7 @@ pub(super) fn null_or_empty_object(method: &str, value: &Value) -> Result<(), Sc
     if value.is_null() || value.as_object().is_some_and(Map::is_empty) {
         Ok(())
     } else {
-        Err(SchemaError::at_value(
-            Some(method),
-            "$.params",
-            "null or empty object",
-            value,
-        ))
+        Err(SchemaError::at_value(Some(method), "$.params", "null or empty object", value))
     }
 }
 
@@ -30,12 +25,7 @@ pub(super) fn nullable_object_result(method: &str, value: &Value) -> Result<(), 
     if value.is_null() || value.is_object() {
         Ok(())
     } else {
-        Err(SchemaError::at_value(
-            Some(method),
-            "$.result",
-            "null or object",
-            value,
-        ))
+        Err(SchemaError::at_value(Some(method), "$.result", "null or object", value))
     }
 }
 
@@ -45,12 +35,7 @@ pub(super) fn initialize_params(method: &str, value: &Value) -> Result<(), Schem
         Some(method),
         "$.params.capabilities",
         object.get("capabilities").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.params.capabilities",
-                "object",
-                "missing",
-            )
+            SchemaError::new(Some(method), "$.params.capabilities", "object", "missing")
         })?,
     )?;
     if let Some(process_id) = object.get("processId")
@@ -95,12 +80,7 @@ pub(super) fn initialize_result(method: &str, value: &Value) -> Result<(), Schem
         Some(method),
         "$.result.capabilities",
         object.get("capabilities").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.result.capabilities",
-                "object",
-                "missing",
-            )
+            SchemaError::new(Some(method), "$.result.capabilities", "object", "missing")
         })?,
     )?;
     for key in object.keys() {
@@ -190,9 +170,9 @@ pub(super) fn range_formatting_params(method: &str, value: &Value) -> Result<(),
     let object = expect_object(Some(method), "$.params", value)?;
     validate_range(
         method,
-        object.get("range").ok_or_else(|| {
-            SchemaError::new(Some(method), "$.params.range", "range", "missing")
-        })?,
+        object
+            .get("range")
+            .ok_or_else(|| SchemaError::new(Some(method), "$.params.range", "range", "missing"))?,
         "$.params.range",
     )
 }
@@ -203,9 +183,9 @@ pub(super) fn ranges_formatting_params(method: &str, value: &Value) -> Result<()
     let ranges = expect_array(
         Some(method),
         "$.params.ranges",
-        object.get("ranges").ok_or_else(|| {
-            SchemaError::new(Some(method), "$.params.ranges", "array", "missing")
-        })?,
+        object
+            .get("ranges")
+            .ok_or_else(|| SchemaError::new(Some(method), "$.params.ranges", "array", "missing"))?,
     )?;
     for (index, range) in ranges.iter().enumerate() {
         validate_range(method, range, &format!("$.params.ranges[{index}]"))?;
@@ -228,34 +208,17 @@ pub(super) fn did_open_params(method: &str, value: &Value) -> Result<(), SchemaE
         Some(method),
         "$.params.textDocument",
         object.get("textDocument").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.params.textDocument",
-                "object",
-                "missing",
-            )
+            SchemaError::new(Some(method), "$.params.textDocument", "object", "missing")
         })?,
     )?;
-    let _ = expect_string(
-        Some(method),
-        "$.params.textDocument.uri",
-        document.get("uri"),
-    )?;
+    let _ = expect_string(Some(method), "$.params.textDocument.uri", document.get("uri"))?;
     let _ = expect_string(
         Some(method),
         "$.params.textDocument.languageId",
         document.get("languageId"),
     )?;
-    let _ = expect_integer(
-        Some(method),
-        "$.params.textDocument.version",
-        document.get("version"),
-    )?;
-    let _ = expect_string(
-        Some(method),
-        "$.params.textDocument.text",
-        document.get("text"),
-    )?;
+    let _ = expect_integer(Some(method), "$.params.textDocument.version", document.get("version"))?;
+    let _ = expect_string(Some(method), "$.params.textDocument.text", document.get("text"))?;
     Ok(())
 }
 
@@ -265,19 +228,10 @@ pub(super) fn did_change_params(method: &str, value: &Value) -> Result<(), Schem
         Some(method),
         "$.params.textDocument",
         object.get("textDocument").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.params.textDocument",
-                "object",
-                "missing",
-            )
+            SchemaError::new(Some(method), "$.params.textDocument", "object", "missing")
         })?,
     )?;
-    let _ = expect_string(
-        Some(method),
-        "$.params.textDocument.uri",
-        document.get("uri"),
-    )?;
+    let _ = expect_string(Some(method), "$.params.textDocument.uri", document.get("uri"))?;
     if let Some(version) = document.get("version")
         && !version.is_null()
         && version.as_i64().is_none()
@@ -293,22 +247,13 @@ pub(super) fn did_change_params(method: &str, value: &Value) -> Result<(), Schem
         Some(method),
         "$.params.contentChanges",
         object.get("contentChanges").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.params.contentChanges",
-                "array",
-                "missing",
-            )
+            SchemaError::new(Some(method), "$.params.contentChanges", "array", "missing")
         })?,
     )?;
     for (index, change) in changes.iter().enumerate() {
         let path = format!("$.params.contentChanges[{index}]");
         let change = expect_object(Some(method), &path, change)?;
-        let _ = expect_string(
-            Some(method),
-            &format!("{path}.text"),
-            change.get("text"),
-        )?;
+        let _ = expect_string(Some(method), &format!("{path}.text"), change.get("text"))?;
         if let Some(range) = change.get("range") {
             validate_range(method, range, &format!("{path}.range"))?;
         }
@@ -323,12 +268,7 @@ pub(super) fn did_save_params(method: &str, value: &Value) -> Result<(), SchemaE
         && !text.is_null()
         && !text.is_string()
     {
-        return Err(SchemaError::at_value(
-            Some(method),
-            "$.params.text",
-            "string or null",
-            text,
-        ));
+        return Err(SchemaError::at_value(Some(method), "$.params.text", "string or null", text));
     }
     Ok(())
 }
@@ -344,16 +284,12 @@ pub(super) fn completion_result(method: &str, value: &Value) -> Result<(), Schem
     let items = expect_array(
         Some(method),
         "$.result.items",
-        object.get("items").ok_or_else(|| {
-            SchemaError::new(Some(method), "$.result.items", "array", "missing")
-        })?,
+        object
+            .get("items")
+            .ok_or_else(|| SchemaError::new(Some(method), "$.result.items", "array", "missing"))?,
     )?;
     validate_object_array(method, items, "$.result.items")?;
-    let _ = expect_boolean(
-        Some(method),
-        "$.result.isIncomplete",
-        object.get("isIncomplete"),
-    )?;
+    let _ = expect_boolean(Some(method), "$.result.isIncomplete", object.get("isIncomplete"))?;
     if let Some(defaults) = object.get("itemDefaults") {
         let _ = expect_object(Some(method), "$.result.itemDefaults", defaults)?;
     }
@@ -366,12 +302,7 @@ pub(super) fn hover_result(method: &str, value: &Value) -> Result<(), SchemaErro
     }
     let object = expect_object(Some(method), "$.result", value)?;
     let contents = object.get("contents").ok_or_else(|| {
-        SchemaError::new(
-            Some(method),
-            "$.result.contents",
-            "hover contents",
-            "missing",
-        )
+        SchemaError::new(Some(method), "$.result.contents", "hover contents", "missing")
     })?;
     if !contents.is_string() && !contents.is_object() && !contents.is_array() {
         return Err(SchemaError::at_value(
@@ -438,20 +369,11 @@ pub(super) fn semantic_tokens_result(method: &str, value: &Value) -> Result<(), 
         Some(method),
         "$.result.data",
         object.get("data").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.result.data",
-                "uinteger array",
-                "missing",
-            )
+            SchemaError::new(Some(method), "$.result.data", "uinteger array", "missing")
         })?,
     )?;
     for (index, token) in data.iter().enumerate() {
-        let _ = expect_uinteger(
-            Some(method),
-            &format!("$.result.data[{index}]"),
-            Some(token),
-        )?;
+        let _ = expect_uinteger(Some(method), &format!("$.result.data[{index}]"), Some(token))?;
     }
     if data.len() % 5 != 0 {
         return Err(SchemaError::new(
@@ -482,11 +404,7 @@ pub(super) fn diagnostic_result(method: &str, value: &Value) -> Result<(), Schem
             validate_object_array(method, diagnostics, "$.result.items")?;
         }
         "unchanged" => {
-            let _ = expect_string(
-                Some(method),
-                "$.result.resultId",
-                object.get("resultId"),
-            )?;
+            let _ = expect_string(Some(method), "$.result.resultId", object.get("resultId"))?;
         }
         other => {
             return Err(SchemaError::new(
@@ -505,18 +423,10 @@ pub(super) fn cancel_params(method: &str, value: &Value) -> Result<(), SchemaErr
     match object.get("id") {
         Some(Value::Number(number)) if number.as_i64().is_some() => Ok(()),
         Some(Value::String(_)) => Ok(()),
-        Some(value) => Err(SchemaError::at_value(
-            Some(method),
-            "$.params.id",
-            "integer or string",
-            value,
-        )),
-        None => Err(SchemaError::new(
-            Some(method),
-            "$.params.id",
-            "request ID",
-            "missing",
-        )),
+        Some(value) => {
+            Err(SchemaError::at_value(Some(method), "$.params.id", "integer or string", value))
+        }
+        None => Err(SchemaError::new(Some(method), "$.params.id", "request ID", "missing")),
     }
 }
 
@@ -524,12 +434,7 @@ pub(super) fn progress_params(method: &str, value: &Value) -> Result<(), SchemaE
     let object = expect_object(Some(method), "$.params", value)?;
     validate_progress_token(method, object.get("token"), "$.params.token")?;
     if object.get("value").is_none() {
-        return Err(SchemaError::new(
-            Some(method),
-            "$.params.value",
-            "progress value",
-            "missing",
-        ));
+        return Err(SchemaError::new(Some(method), "$.params.value", "progress value", "missing"));
     }
     Ok(())
 }
@@ -545,27 +450,14 @@ pub(super) fn registration_params(method: &str, value: &Value) -> Result<(), Sch
         Some(method),
         "$.params.registrations",
         object.get("registrations").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.params.registrations",
-                "array",
-                "missing",
-            )
+            SchemaError::new(Some(method), "$.params.registrations", "array", "missing")
         })?,
     )?;
     for (index, registration) in registrations.iter().enumerate() {
         let path = format!("$.params.registrations[{index}]");
         let registration = expect_object(Some(method), &path, registration)?;
-        let _ = expect_string(
-            Some(method),
-            &format!("{path}.id"),
-            registration.get("id"),
-        )?;
-        let _ = expect_string(
-            Some(method),
-            &format!("{path}.method"),
-            registration.get("method"),
-        )?;
+        let _ = expect_string(Some(method), &format!("{path}.id"), registration.get("id"))?;
+        let _ = expect_string(Some(method), &format!("{path}.method"), registration.get("method"))?;
         if let Some(options) = registration.get("registerOptions")
             && !options.is_null()
             && !options.is_object()
@@ -586,30 +478,20 @@ pub(super) fn unregistration_params(method: &str, value: &Value) -> Result<(), S
     // corrected spelling is intentionally not accepted without an explicit
     // compatibility decision and separate contract proof.
     let object = expect_object(Some(method), "$.params", value)?;
-    let values = object
-        .get("unregisterations")
-        .ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.params.unregisterations",
-                "unregistration array",
-                "missing",
-            )
-        })?;
+    let values = object.get("unregisterations").ok_or_else(|| {
+        SchemaError::new(
+            Some(method),
+            "$.params.unregisterations",
+            "unregistration array",
+            "missing",
+        )
+    })?;
     let values = expect_array(Some(method), "$.params.unregisterations", values)?;
     for (index, item) in values.iter().enumerate() {
         let path = format!("$.params.unregisterations[{index}]");
         let item = expect_object(Some(method), &path, item)?;
-        let _ = expect_string(
-            Some(method),
-            &format!("{path}.id"),
-            item.get("id"),
-        )?;
-        let _ = expect_string(
-            Some(method),
-            &format!("{path}.method"),
-            item.get("method"),
-        )?;
+        let _ = expect_string(Some(method), &format!("{path}.id"), item.get("id"))?;
+        let _ = expect_string(Some(method), &format!("{path}.method"), item.get("method"))?;
     }
     Ok(())
 }
@@ -619,9 +501,9 @@ pub(super) fn configuration_params(method: &str, value: &Value) -> Result<(), Sc
     let items = expect_array(
         Some(method),
         "$.params.items",
-        object.get("items").ok_or_else(|| {
-            SchemaError::new(Some(method), "$.params.items", "array", "missing")
-        })?,
+        object
+            .get("items")
+            .ok_or_else(|| SchemaError::new(Some(method), "$.params.items", "array", "missing"))?,
     )?;
     for (index, item) in items.iter().enumerate() {
         let path = format!("$.params.items[{index}]");
@@ -660,12 +542,7 @@ pub(super) fn apply_edit_params(method: &str, value: &Value) -> Result<(), Schem
     validate_workspace_edit(
         method,
         object.get("edit").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.params.edit",
-                "workspace edit",
-                "missing",
-            )
+            SchemaError::new(Some(method), "$.params.edit", "workspace edit", "missing")
         })?,
         "$.params.edit",
     )
@@ -673,11 +550,7 @@ pub(super) fn apply_edit_params(method: &str, value: &Value) -> Result<(), Schem
 
 pub(super) fn apply_edit_result(method: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), "$.result", value)?;
-    let _ = expect_boolean(
-        Some(method),
-        "$.result.applied",
-        object.get("applied"),
-    )?;
+    let _ = expect_boolean(Some(method), "$.result.applied", object.get("applied"))?;
     if let Some(reason) = object.get("failureReason") {
         let _ = expect_string(Some(method), "$.result.failureReason", Some(reason))?;
     }
@@ -687,17 +560,10 @@ pub(super) fn apply_edit_result(method: &str, value: &Value) -> Result<(), Schem
     Ok(())
 }
 
-pub(super) fn show_message_request_params(
-    method: &str,
-    value: &Value,
-) -> Result<(), SchemaError> {
+pub(super) fn show_message_request_params(method: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), "$.params", value)?;
     let _ = expect_integer(Some(method), "$.params.type", object.get("type"))?;
-    let _ = expect_string(
-        Some(method),
-        "$.params.message",
-        object.get("message"),
-    )?;
+    let _ = expect_string(Some(method), "$.params.message", object.get("message"))?;
     if let Some(actions) = object.get("actions") {
         validate_object_array(
             method,
@@ -716,30 +582,18 @@ pub(super) fn show_document_params(method: &str, value: &Value) -> Result<(), Sc
 
 pub(super) fn show_document_result(method: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), "$.result", value)?;
-    let _ = expect_boolean(
-        Some(method),
-        "$.result.success",
-        object.get("success"),
-    )?;
+    let _ = expect_boolean(Some(method), "$.result.success", object.get("success"))?;
     Ok(())
 }
 
-pub(super) fn publish_diagnostics_params(
-    method: &str,
-    value: &Value,
-) -> Result<(), SchemaError> {
+pub(super) fn publish_diagnostics_params(method: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), "$.params", value)?;
     let _ = expect_string(Some(method), "$.params.uri", object.get("uri"))?;
     let diagnostics = expect_array(
         Some(method),
         "$.params.diagnostics",
         object.get("diagnostics").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                "$.params.diagnostics",
-                "array",
-                "missing",
-            )
+            SchemaError::new(Some(method), "$.params.diagnostics", "array", "missing")
         })?,
     )?;
     validate_object_array(method, diagnostics, "$.params.diagnostics")?;
@@ -760,11 +614,7 @@ pub(super) fn publish_diagnostics_params(
 pub(super) fn log_message_params(method: &str, value: &Value) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), "$.params", value)?;
     let _ = expect_integer(Some(method), "$.params.type", object.get("type"))?;
-    let _ = expect_string(
-        Some(method),
-        "$.params.message",
-        object.get("message"),
-    )?;
+    let _ = expect_string(Some(method), "$.params.message", object.get("message"))?;
     Ok(())
 }
 
@@ -776,30 +626,18 @@ fn validate_text_document(
     let document = expect_object(
         Some(method),
         path,
-        object.get("textDocument").ok_or_else(|| {
-            SchemaError::new(Some(method), path, "object", "missing")
-        })?,
+        object
+            .get("textDocument")
+            .ok_or_else(|| SchemaError::new(Some(method), path, "object", "missing"))?,
     )?;
-    let _ = expect_string(
-        Some(method),
-        &format!("{path}.uri"),
-        document.get("uri"),
-    )?;
+    let _ = expect_string(Some(method), &format!("{path}.uri"), document.get("uri"))?;
     Ok(())
 }
 
 fn validate_position(method: &str, value: &Value, path: &str) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), path, value)?;
-    let _ = expect_uinteger(
-        Some(method),
-        &format!("{path}.line"),
-        object.get("line"),
-    )?;
-    let _ = expect_uinteger(
-        Some(method),
-        &format!("{path}.character"),
-        object.get("character"),
-    )?;
+    let _ = expect_uinteger(Some(method), &format!("{path}.line"), object.get("line"))?;
+    let _ = expect_uinteger(Some(method), &format!("{path}.character"), object.get("character"))?;
     Ok(())
 }
 
@@ -808,24 +646,14 @@ fn validate_range(method: &str, value: &Value, path: &str) -> Result<(), SchemaE
     validate_position(
         method,
         object.get("start").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                format!("{path}.start"),
-                "position",
-                "missing",
-            )
+            SchemaError::new(Some(method), format!("{path}.start"), "position", "missing")
         })?,
         &format!("{path}.start"),
     )?;
     validate_position(
         method,
         object.get("end").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                format!("{path}.end"),
-                "position",
-                "missing",
-            )
+            SchemaError::new(Some(method), format!("{path}.end"), "position", "missing")
         })?,
         &format!("{path}.end"),
     )
@@ -833,48 +661,26 @@ fn validate_range(method: &str, value: &Value, path: &str) -> Result<(), SchemaE
 
 fn validate_location(method: &str, value: &Value, path: &str) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), path, value)?;
-    let _ = expect_string(
-        Some(method),
-        &format!("{path}.uri"),
-        object.get("uri"),
-    )?;
+    let _ = expect_string(Some(method), &format!("{path}.uri"), object.get("uri"))?;
     validate_range(
         method,
         object.get("range").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                format!("{path}.range"),
-                "range",
-                "missing",
-            )
+            SchemaError::new(Some(method), format!("{path}.range"), "range", "missing")
         })?,
         &format!("{path}.range"),
     )
 }
 
-fn validate_location_or_link(
-    method: &str,
-    value: &Value,
-    path: &str,
-) -> Result<(), SchemaError> {
+fn validate_location_or_link(method: &str, value: &Value, path: &str) -> Result<(), SchemaError> {
     let object = expect_object(Some(method), path, value)?;
     if object.get("uri").is_some() {
         return validate_location(method, value, path);
     }
-    let _ = expect_string(
-        Some(method),
-        &format!("{path}.targetUri"),
-        object.get("targetUri"),
-    )?;
+    let _ = expect_string(Some(method), &format!("{path}.targetUri"), object.get("targetUri"))?;
     validate_range(
         method,
         object.get("targetRange").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                format!("{path}.targetRange"),
-                "range",
-                "missing",
-            )
+            SchemaError::new(Some(method), format!("{path}.targetRange"), "range", "missing")
         })?,
         &format!("{path}.targetRange"),
     )?;
@@ -897,20 +703,11 @@ fn validate_text_edit(method: &str, value: &Value, path: &str) -> Result<(), Sch
     validate_range(
         method,
         object.get("range").ok_or_else(|| {
-            SchemaError::new(
-                Some(method),
-                format!("{path}.range"),
-                "range",
-                "missing",
-            )
+            SchemaError::new(Some(method), format!("{path}.range"), "range", "missing")
         })?,
         &format!("{path}.range"),
     )?;
-    let _ = expect_string(
-        Some(method),
-        &format!("{path}.newText"),
-        object.get("newText"),
-    )?;
+    let _ = expect_string(Some(method), &format!("{path}.newText"), object.get("newText"))?;
     Ok(())
 }
 
@@ -927,17 +724,9 @@ fn validate_workspace_edit(method: &str, value: &Value, path: &str) -> Result<()
                     "empty",
                 ));
             }
-            let edits = expect_array(
-                Some(method),
-                &format!("{path}.changes.{uri}"),
-                edits,
-            )?;
+            let edits = expect_array(Some(method), &format!("{path}.changes.{uri}"), edits)?;
             for (index, edit) in edits.iter().enumerate() {
-                validate_text_edit(
-                    method,
-                    edit,
-                    &format!("{path}.changes.{uri}[{index}]"),
-                )?;
+                validate_text_edit(method, edit, &format!("{path}.changes.{uri}[{index}]"))?;
             }
         }
     }
@@ -945,11 +734,7 @@ fn validate_workspace_edit(method: &str, value: &Value, path: &str) -> Result<()
         let _ = expect_array(Some(method), &format!("{path}.documentChanges"), changes)?;
     }
     if let Some(annotations) = object.get("changeAnnotations") {
-        let _ = expect_object(
-            Some(method),
-            &format!("{path}.changeAnnotations"),
-            annotations,
-        )?;
+        let _ = expect_object(Some(method), &format!("{path}.changeAnnotations"), annotations)?;
     }
     Ok(())
 }
@@ -968,12 +753,7 @@ fn validate_progress_token(
             "integer or string progress token",
             value,
         )),
-        None => Err(SchemaError::new(
-            Some(method),
-            path,
-            "progress token",
-            "missing",
-        )),
+        None => Err(SchemaError::new(Some(method), path, "progress token", "missing")),
     }
 }
 

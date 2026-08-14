@@ -6,11 +6,7 @@ fn context<'a>(
     method: Option<&'a str>,
     allow_lsp_318_development: bool,
 ) -> ValidationContext<'a> {
-    ValidationContext {
-        direction,
-        method,
-        allow_lsp_318_development,
-    }
+    ValidationContext { direction, method, allow_lsp_318_development }
 }
 
 fn validate(
@@ -32,22 +28,13 @@ fn pinned_manifest_and_rust_registry_are_consistent() {
         source.pointer("/upstream/commit").and_then(Value::as_str),
         Some(UPSTREAM_PROTOCOL_COMMIT)
     );
+    assert_eq!(source.pointer("/upstream/lsp_3_17/status").and_then(Value::as_str), Some("stable"));
     assert_eq!(
-        source
-            .pointer("/upstream/lsp_3_17/status")
-            .and_then(Value::as_str),
-        Some("stable")
-    );
-    assert_eq!(
-        source
-            .pointer("/upstream/lsp_3_18/status")
-            .and_then(Value::as_str),
+        source.pointer("/upstream/lsp_3_18/status").and_then(Value::as_str),
         Some("under_development")
     );
     assert_eq!(
-        source
-            .pointer("/base_protocol/batch_supported")
-            .and_then(Value::as_bool),
+        source.pointer("/base_protocol/batch_supported").and_then(Value::as_bool),
         Some(false)
     );
 
@@ -55,12 +42,7 @@ fn pinned_manifest_and_rust_registry_are_consistent() {
         .as_array()
         .expect("source registry must be an array")
         .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .expect("source registry entry must be a string")
-                .to_string()
-        })
+        .map(|value| value.as_str().expect("source registry entry must be a string").to_string())
         .collect::<Vec<_>>();
     assert_eq!(registered_schema_identities(), declared);
 }
@@ -78,12 +60,8 @@ fn unregistration_params_require_the_pinned_historical_field_name() {
             }]
         }
     });
-    validate(
-        &historical,
-        Direction::ServerToClient,
-        Some("client/unregisterCapability"),
-    )
-    .expect("the pinned historical LSP field name should validate");
+    validate(&historical, Direction::ServerToClient, Some("client/unregisterCapability"))
+        .expect("the pinned historical LSP field name should validate");
 
     let corrected = json!({
         "jsonrpc": "2.0",
@@ -96,12 +74,9 @@ fn unregistration_params_require_the_pinned_historical_field_name() {
             }]
         }
     });
-    let error = validate(
-        &corrected,
-        Direction::ServerToClient,
-        Some("client/unregisterCapability"),
-    )
-    .expect_err("the corrected spelling is outside the pinned schema contract");
+    let error =
+        validate(&corrected, Direction::ServerToClient, Some("client/unregisterCapability"))
+            .expect_err("the corrected spelling is outside the pinned schema contract");
     assert_eq!(error.path, "$.params.unregisterations");
     assert_eq!(error.expected, "unregistration array");
     assert_eq!(error.observed, "missing");
@@ -120,12 +95,8 @@ fn initialize_request_and_response_validate_in_actual_wire_directions() {
             "workspaceFolders": null
         }
     });
-    let request_validated = validate(
-        &request,
-        Direction::ClientToServer,
-        Some("initialize"),
-    )
-    .expect("initialize request should validate");
+    let request_validated = validate(&request, Direction::ClientToServer, Some("initialize"))
+        .expect("initialize request should validate");
     assert_eq!(request_validated.kind, MessageKind::Request);
     assert_eq!(request_validated.direction, Direction::ClientToServer);
     assert_eq!(request_validated.version, ProtocolVersion::Lsp317);
@@ -143,12 +114,8 @@ fn initialize_request_and_response_validate_in_actual_wire_directions() {
             "serverInfo": { "name": "perllsp" }
         }
     });
-    let response_validated = validate(
-        &response,
-        Direction::ServerToClient,
-        Some("initialize"),
-    )
-    .expect("initialize response should use the opposite registered direction");
+    let response_validated = validate(&response, Direction::ServerToClient, Some("initialize"))
+        .expect("initialize response should use the opposite registered direction");
     assert_eq!(response_validated.kind, MessageKind::SuccessResponse);
     assert_eq!(response_validated.direction, Direction::ServerToClient);
     assert_eq!(response_validated.version, ProtocolVersion::Lsp317);
@@ -166,12 +133,9 @@ fn server_request_and_client_response_use_opposite_schema_directions() {
             ]
         }
     });
-    let request_validated = validate(
-        &request,
-        Direction::ServerToClient,
-        Some("workspace/configuration"),
-    )
-    .expect("server-originated request should validate");
+    let request_validated =
+        validate(&request, Direction::ServerToClient, Some("workspace/configuration"))
+            .expect("server-originated request should validate");
     assert_eq!(request_validated.direction, Direction::ServerToClient);
 
     let response = json!({
@@ -179,12 +143,9 @@ fn server_request_and_client_response_use_opposite_schema_directions() {
         "id": 7,
         "result": [{ "formatting": { "enabled": true } }]
     });
-    let response_validated = validate(
-        &response,
-        Direction::ClientToServer,
-        Some("workspace/configuration"),
-    )
-    .expect("client response should resolve the originating server-request schema");
+    let response_validated =
+        validate(&response, Direction::ClientToServer, Some("workspace/configuration"))
+            .expect("client response should resolve the originating server-request schema");
     assert_eq!(response_validated.kind, MessageKind::SuccessResponse);
     assert_eq!(response_validated.direction, Direction::ClientToServer);
 }
@@ -217,12 +178,8 @@ fn batch_and_invalid_request_ids_fail_at_the_envelope_boundary() {
         "method": "shutdown",
         "params": null
     });
-    let id_error = validate(
-        &invalid_id,
-        Direction::ClientToServer,
-        Some("shutdown"),
-    )
-    .expect_err("request IDs cannot be null");
+    let id_error = validate(&invalid_id, Direction::ClientToServer, Some("shutdown"))
+        .expect_err("request IDs cannot be null");
     assert_eq!(id_error.path, "$.id");
     assert!(id_error.expected.contains("integer or string"));
 }
@@ -238,12 +195,8 @@ fn known_field_type_errors_report_the_exact_json_path() {
             "capabilities": "not-an-object"
         }
     });
-    let error = validate(
-        &message,
-        Direction::ClientToServer,
-        Some("initialize"),
-    )
-    .expect_err("wrong known-field type must fail");
+    let error = validate(&message, Direction::ClientToServer, Some("initialize"))
+        .expect_err("wrong known-field type must fail");
     assert_eq!(error.method.as_deref(), Some("initialize"));
     assert_eq!(error.path, "$.params.capabilities");
     assert_eq!(error.expected, "object");
@@ -262,12 +215,8 @@ fn wrong_location_union_variant_is_rejected() {
             }
         }
     });
-    let error = validate(
-        &response,
-        Direction::ServerToClient,
-        Some("textDocument/definition"),
-    )
-    .expect_err("object must be a Location or LocationLink");
+    let error = validate(&response, Direction::ServerToClient, Some("textDocument/definition"))
+        .expect_err("object must be a Location or LocationLink");
     assert_eq!(error.path, "$.result.targetUri");
 }
 
@@ -286,11 +235,7 @@ fn selected_318_methods_require_explicit_development_opt_in() {
     let denied = ProtocolSchemaValidator::default()
         .validate(
             &request,
-            context(
-                Direction::ClientToServer,
-                Some("textDocument/inlineCompletion"),
-                false,
-            ),
+            context(Direction::ClientToServer, Some("textDocument/inlineCompletion"), false),
         )
         .expect_err("3.18-development method must fail closed by default");
     assert_eq!(denied.path, "$.method");
@@ -299,11 +244,7 @@ fn selected_318_methods_require_explicit_development_opt_in() {
     let allowed = ProtocolSchemaValidator::default()
         .validate(
             &request,
-            context(
-                Direction::ClientToServer,
-                Some("textDocument/inlineCompletion"),
-                true,
-            ),
+            context(Direction::ClientToServer, Some("textDocument/inlineCompletion"), true),
         )
         .expect("explicitly selected 3.18-development method should validate");
     assert_eq!(allowed.version, ProtocolVersion::Lsp318Development);
@@ -343,12 +284,8 @@ fn initialize_extensions_are_confined_to_capabilities_experimental() {
             "perlLsp": { "schemaVersion": 1 }
         }
     });
-    let error = validate(
-        &forbidden,
-        Direction::ServerToClient,
-        Some("initialize"),
-    )
-    .expect_err("project metadata must not occupy a standard top-level field");
+    let error = validate(&forbidden, Direction::ServerToClient, Some("initialize"))
+        .expect_err("project metadata must not occupy a standard top-level field");
     assert_eq!(error.path, "$.result.perlLsp");
 
     let allowed = json!({
@@ -362,12 +299,8 @@ fn initialize_extensions_are_confined_to_capabilities_experimental() {
             }
         }
     });
-    validate(
-        &allowed,
-        Direction::ServerToClient,
-        Some("initialize"),
-    )
-    .expect("experimental extension surface should remain available");
+    validate(&allowed, Direction::ServerToClient, Some("initialize"))
+        .expect("experimental extension surface should remain available");
 }
 
 #[test]
@@ -377,12 +310,9 @@ fn semantic_token_data_is_a_complete_five_integer_stream() {
         "id": 3,
         "result": { "data": [0, 0, 3, 1] }
     });
-    let error = validate(
-        &invalid,
-        Direction::ServerToClient,
-        Some("textDocument/semanticTokens/full"),
-    )
-    .expect_err("incomplete semantic token tuple must fail");
+    let error =
+        validate(&invalid, Direction::ServerToClient, Some("textDocument/semanticTokens/full"))
+            .expect_err("incomplete semantic token tuple must fail");
     assert_eq!(error.path, "$.result.data");
     assert!(error.expected.contains("divisible by 5"));
 
@@ -391,12 +321,8 @@ fn semantic_token_data_is_a_complete_five_integer_stream() {
         "id": 3,
         "result": { "resultId": "current-1", "data": [0, 0, 3, 1, 0] }
     });
-    validate(
-        &valid,
-        Direction::ServerToClient,
-        Some("textDocument/semanticTokens/full"),
-    )
-    .expect("complete semantic token tuple should validate");
+    validate(&valid, Direction::ServerToClient, Some("textDocument/semanticTokens/full"))
+        .expect("complete semantic token tuple should validate");
 }
 
 #[test]
@@ -410,12 +336,8 @@ fn apply_edit_rejection_result_preserves_typed_failure_fields() {
             "failedChange": 2
         }
     });
-    let validated = validate(
-        &response,
-        Direction::ClientToServer,
-        Some("workspace/applyEdit"),
-    )
-    .expect("typed ApplyWorkspaceEditResult rejection should validate");
+    let validated = validate(&response, Direction::ClientToServer, Some("workspace/applyEdit"))
+        .expect("typed ApplyWorkspaceEditResult rejection should validate");
     assert_eq!(validated.direction, Direction::ClientToServer);
     assert_eq!(validated.kind, MessageKind::SuccessResponse);
 }
@@ -423,12 +345,8 @@ fn apply_edit_rejection_result_preserves_typed_failure_fields() {
 #[test]
 fn null_success_and_error_response_remain_distinct() {
     let shutdown = json!({ "jsonrpc": "2.0", "id": 1, "result": null });
-    let success = validate(
-        &shutdown,
-        Direction::ServerToClient,
-        Some("shutdown"),
-    )
-    .expect("shutdown success must be null");
+    let success = validate(&shutdown, Direction::ServerToClient, Some("shutdown"))
+        .expect("shutdown success must be null");
     assert_eq!(success.kind, MessageKind::SuccessResponse);
 
     let error = json!({
@@ -440,12 +358,8 @@ fn null_success_and_error_response_remain_distinct() {
             "data": { "path": "$.params" }
         }
     });
-    let validated_error = validate(
-        &error,
-        Direction::ServerToClient,
-        Some("initialize"),
-    )
-    .expect("well-formed error response should validate");
+    let validated_error = validate(&error, Direction::ServerToClient, Some("initialize"))
+        .expect("well-formed error response should validate");
     assert_eq!(validated_error.kind, MessageKind::ErrorResponse);
 }
 
