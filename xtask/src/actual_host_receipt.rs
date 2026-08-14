@@ -66,7 +66,33 @@ pub fn validate_receipt_with_policy(
     let root = as_object(receipt, "receipt")?;
 
     require_exact_string(root, "schema_version", SCHEMA_VERSION, "receipt.schema_version")?;
-    require_u64(root, "receipt_version", "receipt.receipt_version")?;
+    let receipt_version = require_u64(root, "receipt_version", "receipt.receipt_version")?;
+    if receipt_version != 1 {
+        return Err(ReceiptValidationError::new(format!(
+            "receipt.receipt_version: expected `1`, found `{receipt_version}`"
+        )));
+    }
+    reject_unknown_keys(
+        root,
+        &[
+            "schema_version",
+            "receipt_version",
+            "run_id",
+            "timestamp",
+            "editor",
+            "client",
+            "server",
+            "platform",
+            "workspace",
+            "profile",
+            "registration_state",
+            "artifacts",
+            "features",
+            "state_machine",
+            "extensions",
+        ],
+        "receipt",
+    )?;
     require_nonempty_string(root, "run_id", "receipt.run_id")?;
     require_nonempty_string(root, "timestamp", "receipt.timestamp")?;
 
@@ -221,6 +247,19 @@ fn validate_extensions(root: &Map<String, Value>) -> Result<(), ReceiptValidatio
             return Err(ReceiptValidationError::new(format!(
                 "receipt.extensions: key `{key}` must be namespaced"
             )));
+        }
+    }
+    Ok(())
+}
+
+fn reject_unknown_keys(
+    object: &Map<String, Value>,
+    allowed: &[&str],
+    path: &str,
+) -> Result<(), ReceiptValidationError> {
+    for key in object.keys() {
+        if !allowed.iter().any(|allowed_key| *allowed_key == key) {
+            return Err(ReceiptValidationError::new(format!("{path}: unknown field `{key}`")));
         }
     }
     Ok(())

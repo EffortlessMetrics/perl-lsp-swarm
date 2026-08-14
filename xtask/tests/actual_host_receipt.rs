@@ -87,3 +87,49 @@ fn manual_registration_cannot_satisfy_released_builtin_evidence() -> Result<(), 
     );
     Ok(())
 }
+
+#[test]
+fn receipt_version_must_be_one() -> Result<(), Box<dyn Error>> {
+    let mut receipt = valid_fixture()?;
+    receipt["receipt_version"] = Value::from(2);
+
+    assert_eq!(
+        validation_error(validate_receipt(&receipt))?,
+        "receipt.receipt_version: expected `1`, found `2`"
+    );
+    Ok(())
+}
+
+#[test]
+fn unknown_top_level_fields_are_rejected() -> Result<(), Box<dyn Error>> {
+    let mut receipt = valid_fixture()?;
+    receipt["major_mode"] = Value::String("perl-mode".into());
+
+    assert_eq!(
+        validation_error(validate_receipt(&receipt))?,
+        "receipt: unknown field `major_mode`"
+    );
+    Ok(())
+}
+
+#[test]
+fn single_character_extension_suffix_is_accepted() -> Result<(), Box<dyn Error>> {
+    let mut receipt = valid_fixture()?;
+    receipt["extensions"] = serde_json::json!({ "x.y": "ok" });
+    validate_receipt(&receipt)?;
+    Ok(())
+}
+
+#[test]
+fn observed_without_advertised_is_rejected() -> Result<(), Box<dyn Error>> {
+    let mut receipt = valid_fixture()?;
+    receipt["features"]["diagnostics"]["advertised"] = Value::Bool(false);
+    receipt["features"]["diagnostics"]["observed"] = Value::Bool(true);
+    receipt["features"]["diagnostics"]["outcome"] = Value::String("failed".into());
+
+    assert_eq!(
+        validation_error(validate_receipt(&receipt))?,
+        "receipt.features.diagnostics: observed=true contradicts advertised=false"
+    );
+    Ok(())
+}

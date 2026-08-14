@@ -28,7 +28,7 @@
     "state_machine": { "$ref": "#/$defs/stateMachine" },
     "extensions": {
       "type": "object",
-      "propertyNames": { "pattern": "^[^.]+\\..+[^.]$" },
+      "propertyNames": { "pattern": "^[^.]+\\.[^.]+$" },
       "additionalProperties": true
     }
   },
@@ -76,7 +76,8 @@
       },
       "allOf": [
         { "if": { "properties": { "outcome": { "const": "skipped" } }, "required": ["outcome"] }, "then": { "required": ["skip_classification", "reason"] } },
-        { "if": { "properties": { "outcome": { "const": "passed" } }, "required": ["outcome"] }, "then": { "properties": { "observed": { "const": true } } } }
+        { "if": { "properties": { "outcome": { "const": "passed" } }, "required": ["outcome"] }, "then": { "properties": { "observed": { "const": true } } } },
+        { "if": { "properties": { "observed": { "const": true } }, "required": ["observed"] }, "then": { "properties": { "advertised": { "const": true } } } }
       ]
     },
     "terminalEvent": {
