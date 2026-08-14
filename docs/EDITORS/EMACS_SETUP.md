@@ -5,7 +5,8 @@ This guide shows how to use `perllsp` from Emacs.
 ## Recommended Support Posture
 
 - **Primary path:** Eglot, especially on Emacs 29 or later
-- **Alternative path:** `lsp-mode`, for users already using that stack
+- **Alternative path:** `lsp-mode`, for users already using that stack; current
+  `lsp-mode` 10.0.1 requires Emacs 29.1
 
 Both clients launch the same server command:
 
@@ -19,8 +20,10 @@ perllsp --stdio
 - `perllsp` installed and available to Emacs
 - A Perl project opened from the project root
 
-Emacs 29 includes Eglot. If you use Emacs 28 or older, install Eglot separately
-or use `lsp-mode`.
+Emacs 29 includes Eglot. If you use an older Emacs release, choose an Eglot or
+`lsp-mode` release that explicitly supports that Emacs version, or upgrade
+Emacs. In particular, current `lsp-mode` 10.0.1 requires Emacs 29.1 and is not
+a drop-in path for Emacs 28.
 
 Install `perllsp` using the project installation guide or README.
 
@@ -58,7 +61,9 @@ file associations:
 
 ## 1. Minimal Eglot Setup
 
-For Emacs 29+, add this to your Emacs config:
+For Emacs 29+, add this to your Emacs config. Current stock Eglot does not yet
+discover `perllsp` automatically for Perl, so the explicit server mapping below
+is the current documented setup path:
 
 ```elisp
 (use-package eglot
@@ -163,7 +168,10 @@ built-in include paths are `lib`, `.`, and `local/lib/perl5`.
 
 ## 3. lsp-mode Alternative
 
-Use this path if you already prefer `lsp-mode`.
+Use this path if you already prefer `lsp-mode`. Current stock `lsp-mode` does
+not yet ship a built-in `perllsp` client, so the manual client registration
+below is the current documented setup path. For the currently tested package
+line, `lsp-mode` 10.0.1 requires Emacs 29.1.
 
 ```elisp
 (use-package lsp-mode
@@ -308,9 +316,15 @@ use an absolute path:
 
 ### Emacs starts the wrong Perl language server
 
-`lsp-mode` has existing Perl clients for other Perl language servers. If another
-Perl server starts instead of `perllsp`, raise the custom client's priority,
-disable the other Perl clients, or remove the other server binary from `PATH`.
+`lsp-mode` has existing Perl clients for other Perl language servers. Use
+`M-x lsp-describe-session` to identify the client/server that actually owns the
+workspace. If another Perl client wins, explicitly disable that client or
+select `perllsp` using the supported lsp-mode client-selection controls for your
+configuration. Treat `:priority` as a default selection mechanism, not as a
+value to increase indefinitely.
+
+For Eglot, inspect `M-x eglot-events-buffer` and `M-x eglot-stderr-buffer` to
+confirm the selected server process is `perllsp --stdio`.
 
 ### No diagnostics
 
