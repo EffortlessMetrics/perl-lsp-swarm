@@ -2,7 +2,7 @@
 //! Differential tests for the incremental native parse-output contract.
 
 use perl_parser::incremental::MAX_EDIT_SIZE;
-use perl_parser::{Edit, IncrementalState, ParseOutput, Parser, apply_edits};
+use perl_parser::{apply_edits, Edit, IncrementalState, ParseOutput, Parser};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -16,22 +16,10 @@ fn assert_output_equivalent(actual: &ParseOutput, expected: &ParseOutput) {
     assert_eq!(actual.diagnostics, expected.diagnostics);
     assert_eq!(actual.terminated_early, expected.terminated_early);
     assert_eq!(actual.recovered_count, expected.recovered_count);
-    assert_eq!(
-        actual.budget_usage.errors_emitted,
-        expected.budget_usage.errors_emitted
-    );
-    assert_eq!(
-        actual.budget_usage.current_depth,
-        expected.budget_usage.current_depth
-    );
-    assert_eq!(
-        actual.budget_usage.max_depth_reached,
-        expected.budget_usage.max_depth_reached
-    );
-    assert_eq!(
-        actual.budget_usage.tokens_skipped,
-        expected.budget_usage.tokens_skipped
-    );
+    assert_eq!(actual.budget_usage.errors_emitted, expected.budget_usage.errors_emitted);
+    assert_eq!(actual.budget_usage.current_depth, expected.budget_usage.current_depth);
+    assert_eq!(actual.budget_usage.max_depth_reached, expected.budget_usage.max_depth_reached);
+    assert_eq!(actual.budget_usage.tokens_skipped, expected.budget_usage.tokens_skipped);
     assert_eq!(
         actual.budget_usage.recoveries_attempted,
         expected.budget_usage.recoveries_attempted

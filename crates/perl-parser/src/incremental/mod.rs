@@ -48,8 +48,7 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
                 source.len()
             );
         }
-        if !source.is_char_boundary(edit.start_byte)
-            || !source.is_char_boundary(edit.old_end_byte)
+        if !source.is_char_boundary(edit.start_byte) || !source.is_char_boundary(edit.old_end_byte)
         {
             anyhow::bail!(
                 "incremental edit range {}..{} is not on UTF-8 boundaries",
