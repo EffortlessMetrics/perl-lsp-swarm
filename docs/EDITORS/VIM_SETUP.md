@@ -23,9 +23,10 @@ Client-specific notes:
   compatibility is broader than the set of Vim builds that perl-lsp has
   directly verified; do not treat the plugin's minimum Vim version as a
   perl-lsp support guarantee.
-- current `coc.nvim` upstream requires Vim 9.0.0438+ and Node.js 20.19.0+.
-  Those are Coc runtime prerequisites, not a statement that every such Vim
-  build is independently proven with `perllsp`.
+- `coc.nvim` should be installed from a pinned release or commit. Follow the
+  Vim and Node.js prerequisites documented for that exact subject; this guide
+  does not assert a moving current-upstream floor or independently prove every
+  host with `perllsp`.
 
 Verify `perllsp` before changing Vim configuration:
 
@@ -61,10 +62,11 @@ If a particular Perl-bearing file is not detected correctly, first confirm the
 current buffer manually:
 
 ```vim
-:setfiletype perl
+:setlocal filetype=perl
 ```
 
-Then add a persistent rule only when it is narrow enough for your project and
+This unconditional, buffer-local override is diagnostic only. Then add a
+persistent rule only when it is narrow enough for your project and
 does not override an ambiguous file family globally. Do not force `.t`, `.cgi`,
 or `.fcgi` to Perl solely from the extension.
 
@@ -77,7 +79,7 @@ after the plugin is loaded.
 function! s:perl_lsp_root_uri(server_info) abort
   let l:root = lsp#utils#find_nearest_parent_file_directory(
         \ expand('%:p'),
-        \ ['.perl-lsp.toml', 'Makefile.PL', 'Build.PL', 'cpanfile', 'dist.ini', '.git']
+        \ ['.perl-lsp.toml', 'Makefile.PL', 'Build.PL', 'cpanfile', 'dist.ini', '.git/']
         \ )
 
   if empty(l:root)
@@ -321,8 +323,11 @@ If it is empty or wrong, set it manually for the current buffer while
 diagnosing the problem:
 
 ```vim
-:setfiletype perl
+:setlocal filetype=perl
 ```
+
+This unconditional, buffer-local override is diagnostic only; it changes the
+current buffer without making a persistent detection rule.
 
 Before making that persistent, determine why Vim's native detector chose its
 current result. Persistent rules should be project-specific or otherwise narrow
