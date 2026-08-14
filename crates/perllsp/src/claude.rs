@@ -13,7 +13,7 @@
 //! so CLI parsing, tests, installers, and future presentation adapters consume
 //! one control plane instead of reimplementing Claude state discovery.
 
-use perllsp::claude_compat::{CompatibilityResult, embedded_catalog};
+use perllsp::claude_compat::embedded_catalog;
 use serde_json::{Map, Value, json};
 use std::env;
 use std::io;
@@ -735,20 +735,19 @@ fn finish_status(
     } else if unknown_observed_state {
         Verdict::Degraded
     } else if reasons.is_empty() {
-        // Structural probes alone do not prove plugin/server compatibility. The
-        // catalog starts empty, so Ready is reserved for Compatible evidence.
-        let compatibility = embedded_catalog().decision_for_observation(None, None, None);
-        match compatibility.result {
-            CompatibilityResult::Compatible => Verdict::Ready,
-            CompatibilityResult::Incompatible => {
-                reasons.push("plugin_server_compatibility_incompatible");
-                next_actions.push("resolve_claude_plugin_server_compatibility");
-                Verdict::ActionRequired
-            }
-            CompatibilityResult::NotProven => {
+        // Structural probes alone do not prove plugin/server compatibility.
+        // Ready stays gated on #7924 Compatible evidence. This slice does not
+        // invent plugin/server digests from host probes, so incomplete subjects
+        // remain not_proven without extending the landed compatibility API.
+        match embedded_catalog().validate() {
+            Ok(()) => {
                 reasons.push("plugin_server_compatibility_not_proven");
                 next_actions.push("establish_claude_plugin_server_compatibility_evidence");
                 Verdict::Degraded
+            }
+            Err(_) => {
+                reasons.push("plugin_server_compatibility_catalog_invalid");
+                Verdict::InstrumentError
             }
         }
     } else {

@@ -59,7 +59,9 @@ fn embedded_catalog_is_conservative_and_valid() -> Result<()> {
 
     let plugin = plugin("0.18.0", '1');
     let server = server("0.18.0", 'a', '2');
-    let decision = catalog.decision_for(&plugin, &server, Some(&host("2.1.205")));
+    let decision = catalog
+        .decision_for(&plugin, &server, Some(&host("2.1.205")))
+        .map_err(anyhow::Error::msg)?;
     ensure!(decision.result == CompatibilityResult::NotProven);
     ensure!(decision.reason == CompatibilityReason::ExactPairNotEstablished);
     Ok(())
@@ -73,7 +75,7 @@ fn matching_version_numbers_without_evidence_are_not_proven() -> Result<()> {
 
     let plugin = plugin("0.18.0", '1');
     let server = server("0.18.0", 'a', '2');
-    let decision = catalog.decision_for(&plugin, &server, None);
+    let decision = catalog.decision_for(&plugin, &server, None).map_err(anyhow::Error::msg)?;
     ensure!(decision.result == CompatibilityResult::NotProven);
     ensure!(decision.reason == CompatibilityReason::ExactPairNotEstablished);
     Ok(())
@@ -89,7 +91,7 @@ fn direct_evidence_can_prove_different_numeric_versions() -> Result<()> {
     };
     catalog.validate().map_err(anyhow::Error::msg)?;
 
-    let decision = catalog.decision_for(&plugin, &server, None);
+    let decision = catalog.decision_for(&plugin, &server, None).map_err(anyhow::Error::msg)?;
     ensure!(decision.result == CompatibilityResult::Compatible);
     ensure!(decision.reason == CompatibilityReason::ExactEvidence);
     Ok(())
@@ -105,7 +107,7 @@ fn known_bad_exact_pair_is_incompatible() -> Result<()> {
     };
     catalog.validate().map_err(anyhow::Error::msg)?;
 
-    let decision = catalog.decision_for(&plugin, &server, None);
+    let decision = catalog.decision_for(&plugin, &server, None).map_err(anyhow::Error::msg)?;
     ensure!(decision.result == CompatibilityResult::Incompatible);
     ensure!(decision.reason == CompatibilityReason::ExactKnownBad);
     Ok(())
@@ -124,13 +126,15 @@ fn stale_plugin_tree_or_wrong_server_build_cannot_reuse_row() -> Result<()> {
     let mut stale_plugin = plugin.clone();
     stale_plugin.tree_digest = sha256('3');
     ensure!(
-        catalog.decision_for(&stale_plugin, &server, None).result == CompatibilityResult::NotProven
+        catalog.decision_for(&stale_plugin, &server, None).map_err(anyhow::Error::msg)?.result
+            == CompatibilityResult::NotProven
     );
 
     let mut wrong_build = server.clone();
     wrong_build.build_revision = "b".repeat(40);
     ensure!(
-        catalog.decision_for(&plugin, &wrong_build, None).result == CompatibilityResult::NotProven
+        catalog.decision_for(&plugin, &wrong_build, None).map_err(anyhow::Error::msg)?.result
+            == CompatibilityResult::NotProven
     );
     Ok(())
 }
@@ -152,14 +156,66 @@ fn host_coupled_rows_do_not_transfer_to_another_host() -> Result<()> {
     catalog.validate().map_err(anyhow::Error::msg)?;
 
     ensure!(
-        catalog.decision_for(&plugin, &server, Some(&tested_host)).result
+        catalog
+            .decision_for(&plugin, &server, Some(&tested_host))
+            .map_err(anyhow::Error::msg)?
+            .result
             == CompatibilityResult::Compatible
     );
     ensure!(
-        catalog.decision_for(&plugin, &server, Some(&host("2.2.0"))).result
+        catalog
+            .decision_for(&plugin, &server, Some(&host("2.2.0")))
+            .map_err(anyhow::Error::msg)?
+            .result
             == CompatibilityResult::NotProven
     );
-    ensure!(catalog.decision_for(&plugin, &server, None).result == CompatibilityResult::NotProven);
+    ensure!(
+        catalog.decision_for(&plugin, &server, None).map_err(anyhow::Error::msg)?.result
+            == CompatibilityResult::NotProven
+    );
+    Ok(())
+}
+
+#[test]
+fn host_specific_row_outranks_host_independent_overlap() -> Result<()> {
+    let plugin = plugin("0.3.0", '1');
+    let server = server("0.18.0", 'a', '2');
+    let observed = host("2.1.205");
+    let catalog = CompatibilityCatalog {
+        schema_version: SCHEMA_VERSION.to_string(),
+        rows: vec![
+            row(plugin.clone(), server.clone(), None, CompatibilityResult::Compatible),
+            row(
+                plugin.clone(),
+                server.clone(),
+                Some(observed.clone()),
+                CompatibilityResult::Incompatible,
+            ),
+        ],
+    };
+    catalog.validate().map_err(anyhow::Error::msg)?;
+
+    let decision =
+        catalog.decision_for(&plugin, &server, Some(&observed)).map_err(anyhow::Error::msg)?;
+    ensure!(decision.result == CompatibilityResult::Incompatible);
+    ensure!(decision.reason == CompatibilityReason::ExactKnownBad);
+    Ok(())
+}
+
+#[test]
+fn decision_for_rejects_invalid_catalog() -> Result<()> {
+    let plugin = plugin("0.3.0", '1');
+    let server = server("0.18.0", 'a', '2');
+    let mut bad_plugin = plugin.clone();
+    bad_plugin.slug = "perl-lsp".to_string();
+    let catalog = CompatibilityCatalog {
+        schema_version: SCHEMA_VERSION.to_string(),
+        rows: vec![row(bad_plugin, server.clone(), None, CompatibilityResult::Compatible)],
+    };
+
+    let err =
+        catalog.decision_for(&plugin, &server, None).expect_err("invalid catalog must fail closed");
+    ensure!(err.contains("plugin.slug"));
     Ok(())
 }
 
@@ -189,26 +245,5 @@ fn validation_rejects_duplicate_rows_and_unsupported_subjects() -> Result<()> {
         rows: vec![row(plugin, wrong_server, None, CompatibilityResult::Compatible)],
     };
     ensure!(catalog.validate().is_err(), "another server executable was accepted");
-    Ok(())
-}
-
-#[test]
-fn catalog_machine_projection_is_deterministic() -> Result<()> {
-    let catalog = CompatibilityCatalog {
-        schema_version: SCHEMA_VERSION.to_string(),
-        rows: vec![row(
-            plugin("0.3.0", '1'),
-            server("0.18.0", 'a', '2'),
-            None,
-            CompatibilityResult::Compatible,
-        )],
-    };
-    catalog.validate().map_err(anyhow::Error::msg)?;
-
-    let first = serde_json::to_string_pretty(&catalog.to_json())?;
-    let second = serde_json::to_string_pretty(&catalog.to_json())?;
-    ensure!(first == second);
-    ensure!(first.contains("\"result\": \"compatible\""));
-    ensure!(first.contains("\"schema_version\": \"claude_plugin_server_compat.v1\""));
     Ok(())
 }

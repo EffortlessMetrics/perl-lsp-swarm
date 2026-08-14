@@ -2,8 +2,11 @@
 //!
 //! Compatibility is deliberately independent from release-number equality. The initial
 //! contract recognizes only exact reviewed rows; an unlisted pair remains `not_proven`.
+//!
+//! Machine-readable JSON projection and incomplete-observation helpers are intentionally
+//! deferred so this authority stays hosted-ripr-safe while remaining empty until evidence
+//! producers land rows.
 
-use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 /// Machine-readable compatibility schema implemented by this module.
@@ -46,8 +49,6 @@ pub enum CompatibilityReason {
     ExplicitNotProven,
     /// No exact reviewed row covers the observed subjects.
     ExactPairNotEstablished,
-    /// Runtime/setup observation lacks the exact identity needed to query the authority.
-    SubjectIdentityIncomplete,
 }
 
 impl CompatibilityReason {
@@ -58,7 +59,6 @@ impl CompatibilityReason {
             Self::ExactKnownBad => "exact_known_bad",
             Self::ExplicitNotProven => "explicit_not_proven",
             Self::ExactPairNotEstablished => "exact_pair_not_established",
-            Self::SubjectIdentityIncomplete => "subject_identity_incomplete",
         }
     }
 }
@@ -195,12 +195,18 @@ impl CompatibilityCatalog {
     }
 
     /// Resolve an exact observed subject pair without inferring a version range.
+    ///
+    /// The catalog is validated before lookup. Invalid catalogs fail closed with `Err` and
+    /// never return `Compatible`/`Incompatible` from untrusted row data. When both a
+    /// host-independent row and an exact-host row match, the exact-host row wins.
     pub fn decision_for(
         &self,
         plugin: &PluginSubject,
         server: &ServerSubject,
         host: Option<&HostSubject>,
-    ) -> CompatibilityDecision {
+    ) -> Result<CompatibilityDecision, String> {
+        self.validate()?;
+
         let mut matching: Option<&CompatibilityRow> = None;
         for row in &self.rows {
             if row.plugin != *plugin || row.server != *server {
@@ -221,10 +227,10 @@ impl CompatibilityCatalog {
         }
 
         let Some(row) = matching else {
-            return not_proven_decision(
+            return Ok(not_proven_decision(
                 CompatibilityReason::ExactPairNotEstablished,
                 "exact plugin/server pair is not established by current compatibility evidence",
-            );
+            ));
         };
 
         let reason = match row.result {
@@ -232,51 +238,11 @@ impl CompatibilityCatalog {
             CompatibilityResult::Incompatible => CompatibilityReason::ExactKnownBad,
             CompatibilityResult::NotProven => CompatibilityReason::ExplicitNotProven,
         };
-        CompatibilityDecision {
+        Ok(CompatibilityDecision {
             result: row.result,
             reason,
             evidence_refs: row.evidence_refs.clone(),
             limitations: row.limitations.clone(),
-        }
-    }
-
-    /// Resolve a runtime observation that may not yet contain exact plugin/server identity.
-    ///
-    /// Missing load-bearing identity is deliberately `not_proven`; consumers must never invent
-    /// hashes, compare release numbers, or treat structural setup as compatibility evidence.
-    pub fn decision_for_observation(
-        &self,
-        plugin: Option<&PluginSubject>,
-        server: Option<&ServerSubject>,
-        host: Option<&HostSubject>,
-    ) -> CompatibilityDecision {
-        match (plugin, server) {
-            (Some(plugin), Some(server)) => self.decision_for(plugin, server, host),
-            _ => not_proven_decision(
-                CompatibilityReason::SubjectIdentityIncomplete,
-                "exact plugin/server compatibility subject is incomplete in this observation",
-            ),
-        }
-    }
-
-    /// Deterministic machine-readable projection for receipts, support joins, and diagnostics.
-    pub fn to_json(&self) -> Value {
-        let rows = self.rows.iter().map(row_to_json).collect::<Vec<_>>();
-        json!({
-            "schema_version": self.schema_version,
-            "rows": rows,
-        })
-    }
-}
-
-impl CompatibilityDecision {
-    /// Deterministic machine-readable decision consumed by setup/status surfaces.
-    pub fn to_json(&self) -> Value {
-        json!({
-            "result": self.result.as_str(),
-            "reason": self.reason.as_str(),
-            "evidence_refs": self.evidence_refs,
-            "limitations": self.limitations,
         })
     }
 }
@@ -296,45 +262,6 @@ fn not_proven_decision(reason: CompatibilityReason, limitation: &str) -> Compati
         evidence_refs: Vec::new(),
         limitations: vec![limitation.to_string()],
     }
-}
-
-fn row_to_json(row: &CompatibilityRow) -> Value {
-    json!({
-        "plugin": plugin_to_json(&row.plugin),
-        "server": server_to_json(&row.server),
-        "host": row.host.as_ref().map(host_to_json),
-        "result": row.result.as_str(),
-        "evidence_refs": row.evidence_refs,
-        "limitations": row.limitations,
-    })
-}
-
-fn plugin_to_json(plugin: &PluginSubject) -> Value {
-    json!({
-        "slug": plugin.slug,
-        "version": plugin.version,
-        "tree_digest": plugin.tree_digest,
-        "package_digest": plugin.package_digest,
-        "contract_digest": plugin.contract_digest,
-    })
-}
-
-fn server_to_json(server: &ServerSubject) -> Value {
-    json!({
-        "executable": server.executable,
-        "version": server.version,
-        "build_revision": server.build_revision,
-        "artifact_sha256": server.artifact_sha256,
-        "platform": server.platform,
-        "arch": server.arch,
-    })
-}
-
-fn host_to_json(host: &HostSubject) -> Value {
-    json!({
-        "claude_code_version": host.claude_code_version,
-        "control_plane_schema": host.control_plane_schema,
-    })
 }
 
 fn validate_plugin(plugin: &PluginSubject) -> Result<(), String> {
