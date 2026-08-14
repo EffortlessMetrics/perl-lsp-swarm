@@ -23,13 +23,14 @@ fn current_emacs_guide_does_not_route_emacs_28_to_current_lsp_mode() {
         "the active Emacs guide must pin the current tested lsp-mode/Emacs boundary"
     );
     assert!(
-        guide.contains("current `lsp-mode` 10.0.1 requires Emacs 29.1 and is not\na drop-in path for Emacs 28"),
+        guide.contains(
+            "current `lsp-mode` 10.0.1 requires Emacs 29.1 and is not\na drop-in path for Emacs 28"
+        ),
         "older-Emacs guidance must distinguish current lsp-mode from compatible historical releases"
     );
     assert!(
-        !guide.contains(
-            "If you use Emacs 28 or older, install Eglot separately\nor use `lsp-mode`."
-        ),
+        !guide
+            .contains("If you use Emacs 28 or older, install Eglot separately\nor use `lsp-mode`."),
         "the stale Emacs 28 -> unqualified lsp-mode guidance must not return"
     );
 }
@@ -39,7 +40,9 @@ fn active_emacs_guide_keeps_manual_and_stock_discovery_distinct() {
     let guide = read("docs/EDITORS/EMACS_SETUP.md");
 
     assert!(
-        guide.contains("Current stock Eglot does not yet\ndiscover `perllsp` automatically for Perl"),
+        guide.contains(
+            "Current stock Eglot does not yet\ndiscover `perllsp` automatically for Perl"
+        ),
         "Eglot manual registration must not be rendered as stock discovery"
     );
     assert!(
