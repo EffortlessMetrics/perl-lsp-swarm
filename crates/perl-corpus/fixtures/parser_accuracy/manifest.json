@@ -4656,9 +4656,9 @@
       "recovery_expectations": [
         {
           "id": "unterminated_heredoc_reports_recovery",
-          "first_error_line": 4,
+          "first_error_line": 3,
           "error_region": {
-            "start": 4,
+            "start": 3,
             "end": 4
           },
           "recovery_line": 4
@@ -4729,10 +4729,10 @@
       "recovery_expectations": [
         {
           "id": "bad_heredoc_terminator_reports_recovery",
-          "first_error_line": 5,
+          "first_error_line": 3,
           "error_region": {
-            "start": 5,
-            "end": 5
+            "start": 3,
+            "end": 4
           },
           "recovery_line": 5
         }
