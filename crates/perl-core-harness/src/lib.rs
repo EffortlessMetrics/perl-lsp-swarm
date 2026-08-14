@@ -9,6 +9,7 @@
 
 mod normalization;
 mod series;
+pub mod transition;
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};

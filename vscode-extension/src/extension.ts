@@ -1161,6 +1161,7 @@ function createLanguageClientLifecycle(
         languageClientStartupMetrics.finishBinaryResolution(
           resolution.path ? 'ok' : 'unavailable',
           resolution.source,
+          resolution.path,
         );
         return resolution.path;
       } catch (error: unknown) {
