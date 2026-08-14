@@ -201,11 +201,10 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
 /// Recovery fixtures whose live `parse_with_recovery` diagnostic geometry still
 /// diverges from the manifest contract.
 ///
-/// `malformed_heredoc_recovery` currently reports its diagnostic at EOF
-/// (`offset == source.len()`, one line past the final newline) rather than at
-/// the heredoc opener (`first_error_line = 3`). Keep that gap explicit and
-/// exact so it cannot hide inside a hardcoded allowlist again.
-const RECOVERY_GEOMETRY_FOLLOWUPS: &[&str] = &["malformed_heredoc_recovery"];
+/// Empty after #9153 pinned unterminated-heredoc diagnostics to the opener.
+/// Keep the exact-set ratchet so a future parked fixture cannot silently
+/// vanish from both the allowlist and the hard oracle.
+const RECOVERY_GEOMETRY_FOLLOWUPS: &[&str] = &[];
 
 #[test]
 fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {

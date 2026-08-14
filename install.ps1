@@ -163,6 +163,36 @@ $HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
 
 $IsArm64Host = $HostArch -eq "ARM64"
 
+function Get-ExpectedAssetHash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ChecksumPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Asset
+    )
+
+    $HashPattern = [regex]'^[0-9a-f]{64}$'
+    $Rows = @(
+        Get-Content -LiteralPath $ChecksumPath | ForEach-Object {
+            $Parts = $_ -split '\s+', 2
+            if ($Parts.Count -eq 2 -and $Parts[0] -and $Parts[1]) {
+                [pscustomobject]@{ Hash = $Parts[0]; Name = $Parts[1].Trim().TrimStart('*') }
+            }
+        } | Where-Object { $_.Name -ceq $Asset }
+    )
+
+    if ($Rows.Count -eq 0) {
+        throw "SHA256SUMS contains no exact entry for $Asset"
+    }
+    if ($Rows.Count -ne 1) {
+        throw "SHA256SUMS contains duplicate entries for $Asset"
+    }
+    if (-not $HashPattern.IsMatch($Rows[0].Hash)) {
+        throw "SHA256SUMS entry for $Asset is not an exact lowercase SHA-256 hash"
+    }
+    return $Rows[0].Hash
+}
+
 function Get-WindowsBuildNumber {
     try {
         $build = [int](Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "CurrentBuildNumber")
@@ -292,36 +322,36 @@ Write-Info "Downloading $Name $Tag for $Target"
 $TempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
 
 try {
+    # Integrity metadata is required and validated before the archive download.
+    $ChecksumUrl = "$ReleaseBaseUrl/SHA256SUMS"
+    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
+    try {
+        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
+    } catch {
+        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
+        throw
+    }
+
+    $ExpectedHash = Get-ExpectedAssetHash -ChecksumPath $ChecksumPath -Asset $Asset
+
     # Download binary
     $ZipPath = Join-Path $TempDir $Asset
     Write-Info "Downloading from $Url"
-    
     try {
         Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
     } catch {
         Write-Error "Failed to download from $Url : $_"
+        throw
     }
-    
-    # Download and verify checksum (optional)
-    $ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS"
-    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
-    
-    try {
-        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
-        
-        # Verify checksum
-        $ExpectedHash = (Get-Content $ChecksumPath | Select-String $Asset).Line.Split(" ")[0]
-        $ActualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
-        
-        if ($ExpectedHash -eq $ActualHash) {
-            Write-Success "Checksum verified"
-        } else {
-            Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
-        }
-    } catch {
-        Write-Warn "Could not download or verify checksums"
+
+    # Verify checksum
+    $ActualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
+    if ($ExpectedHash -ne $ActualHash) {
+        Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
+        throw
     }
-    
+    Write-Success "Checksum verified"
+
     # Extract archive
     Write-Info "Extracting archive"
     $ExtractDir = Join-Path $TempDir "extract"
