@@ -23,8 +23,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
-          # ref: main activates after this guard lands on main (bootstrap: the
-          # script does not exist on the trusted base yet)
+          ref: main
       - name: Classify merge-gate target
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
