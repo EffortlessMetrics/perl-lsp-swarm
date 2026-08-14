@@ -67,8 +67,12 @@ jobs:
           package-path: target/LSP-perllsp-package
           sublime-text-version: 4
           install-package-control: false
+          # The UnitTesting setup action resolves refs against tags/heads
+          # only, so pin the tag whose commit is the exact-source SHA:
+          # 4070-2.13.0 -> cc9f5201d9f053d9ab67aa0ea575b494fd133803 (see
+          # PERLLSP_LSP_REF above).
           extra-packages: |
-            LSP:sublimelsp/LSP@cc9f5201d9f053d9ab67aa0ea575b494fd133803
+            LSP:sublimelsp/LSP@4070-2.13.0
 
       - name: Run the real Sublime interoperability journey
         uses: SublimeText/UnitTesting/actions/run-tests@b8abedefd5fbc0f64a8c6082506ebd1e24203164
