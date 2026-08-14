@@ -1298,16 +1298,35 @@ impl Node {
     /// `None` identifies an intentionally unnamed child. Repeated children in
     /// list-like fields use the same [`FieldId`] for each element.
     #[inline]
-    pub fn try_for_each_child_with_field<'a, F, B>(&'a self, mut f: F) -> ControlFlow<B>
+    pub fn try_for_each_child_with_field<'a, F, B>(&'a self, f: F) -> ControlFlow<B>
     where
         F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
     {
+        self.try_for_each_child_with_field_observed(|_, _| {}, f)
+    }
+
+    /// Visit direct children with short-circuiting while observing each source pull.
+    ///
+    /// The observer runs inside child enumeration, immediately before the child
+    /// is passed to `f`. This makes early-break behavior measurable without
+    /// materializing an intermediate child collection.
+    #[inline]
+    pub fn try_for_each_child_with_field_observed<'a, P, F, B>(
+        &'a self,
+        mut observe_pull: P,
+        mut f: F,
+    ) -> ControlFlow<B>
+    where
+        P: FnMut(Option<FieldId>, &'a Node),
+        F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
+    {
         macro_rules! emit {
-            ($field:expr, $child:expr) => {
+            ($field:expr, $child:expr) => {{
+                observe_pull(Some($field), $child);
                 if let ControlFlow::Break(b) = f(Some($field), $child) {
                     return ControlFlow::Break(b);
                 }
-            };
+            }};
         }
 
         match &self.kind {
@@ -4035,6 +4054,35 @@ mod depth_guard_tests {
             Some("Number"),
             "deepest node at offset 4 must be Number"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_child_traversal_stops_source_pulls_on_break() -> TestResult {
+        let statements = (0..512)
+            .map(|index| {
+                Node::new(
+                    NodeKind::Number { value: index.to_string() },
+                    SourceLocation { start: 0, end: 0 },
+                )
+            })
+            .collect();
+        let program =
+            Node::new(NodeKind::Program { statements }, SourceLocation { start: 0, end: 0 });
+        let mut pulls = 0usize;
+        let mut visits = 0usize;
+
+        let result = program.try_for_each_child_with_field_observed(
+            |_, _| pulls = pulls.saturating_add(1),
+            |_, _| {
+                visits = visits.saturating_add(1);
+                ControlFlow::Break("stop")
+            },
+        );
+
+        assert_eq!(result, ControlFlow::Break("stop"));
+        assert_eq!(pulls, 1, "the source must not pull later wide-node children after break");
+        assert_eq!(visits, 1, "the consumer must receive only the first child");
         Ok(())
     }
 }
