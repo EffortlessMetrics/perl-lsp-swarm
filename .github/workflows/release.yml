@@ -66,13 +66,16 @@ jobs:
           fi
 
           VERSION="${TAG#v}"
-          PRERELEASE="$PRERELEASE_INPUT"
-          if [ -z "$PRERELEASE" ]; then
-            if [[ "$VERSION" == *-* ]]; then
-              PRERELEASE="true"
-            else
-              PRERELEASE="false"
-            fi
+          # SemVer prerelease tags (hyphenated) are never package-channel
+          # stable. The boolean workflow_dispatch input defaults to false, so
+          # empty-input inference alone would miss vX.Y.Z-rc.N and still fan
+          # out Scoop/Chocolatey/WinGet stable refreshes.
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE="true"
+          elif [ -z "$PRERELEASE_INPUT" ]; then
+            PRERELEASE="false"
+          else
+            PRERELEASE="$PRERELEASE_INPUT"
           fi
 
           printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
