@@ -376,7 +376,6 @@ impl CriticAlias {
     pub const fn observed(self) -> CriticObservedIdentity<'static> {
         CriticObservedIdentity::reviewed(self.origin, self.code, self.shape)
     }
-
 }
 
 /// Canonical identity shared by approved critic aliases.
@@ -811,9 +810,10 @@ impl CriticIdentityRegistry {
         shape: CriticFindingShape,
     ) -> Option<&'static CriticIdentityEntry> {
         IDENTITIES.iter().find(|entry| {
-            entry.aliases.iter().any(|alias| {
-                alias.origin == origin && alias.code == code && alias.shape == shape
-            })
+            entry
+                .aliases
+                .iter()
+                .any(|alias| alias.origin == origin && alias.code == code && alias.shape == shape)
         })
     }
 

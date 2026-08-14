@@ -244,10 +244,8 @@ impl NormalizedCriticFinding {
             .explanation
             .as_ref()
             .map_or(u8::MAX, |_| explanation_rank(candidate.identity.origin()));
-        let explanation_code = candidate
-            .explanation
-            .as_ref()
-            .map(|_| candidate.identity.code.clone());
+        let explanation_code =
+            candidate.explanation.as_ref().map(|_| candidate.identity.code.clone());
         let contributor = CriticFindingContributor::from_candidate(&candidate);
 
         Self {
@@ -281,11 +279,8 @@ impl NormalizedCriticFinding {
             candidate_presentation_rank,
             candidate.identity.code.as_str(),
             candidate.message.as_str(),
-        ) < (
-            self.presentation_rank,
-            self.public_code.as_str(),
-            self.message.as_str(),
-        ) {
+        ) < (self.presentation_rank, self.public_code.as_str(), self.message.as_str())
+        {
             self.presentation_rank = candidate_presentation_rank;
             self.public_code = candidate.identity.code.clone();
             self.message = candidate.message.clone();
@@ -293,23 +288,17 @@ impl NormalizedCriticFinding {
 
         if let Some(candidate_explanation) = candidate.explanation.as_deref() {
             let candidate_explanation_rank = explanation_rank(candidate.identity.origin());
-            let candidate_precedes = match (
-                self.explanation.as_deref(),
-                self.explanation_code.as_deref(),
-            ) {
-                (Some(current_explanation), Some(current_code)) => {
-                    (
-                        candidate_explanation_rank,
-                        candidate_explanation,
-                        candidate.identity.code.as_str(),
-                    ) < (
-                        self.explanation_rank,
-                        current_explanation,
-                        current_code,
-                    )
-                }
-                _ => true,
-            };
+            let candidate_precedes =
+                match (self.explanation.as_deref(), self.explanation_code.as_deref()) {
+                    (Some(current_explanation), Some(current_code)) => {
+                        (
+                            candidate_explanation_rank,
+                            candidate_explanation,
+                            candidate.identity.code.as_str(),
+                        ) < (self.explanation_rank, current_explanation, current_code)
+                    }
+                    _ => true,
+                };
             if candidate_precedes {
                 self.explanation_rank = candidate_explanation_rank;
                 self.explanation = candidate.explanation.clone();
@@ -498,24 +487,15 @@ fn compare_contributors(
     left: &CriticFindingContributor,
     right: &CriticFindingContributor,
 ) -> Ordering {
-    (
-        &left.identity,
-        severity_score(left.severity),
-        &left.message,
-        &left.explanation,
-    )
-        .cmp(&(
-            &right.identity,
-            severity_score(right.severity),
-            &right.message,
-            &right.explanation,
-        ))
+    (&left.identity, severity_score(left.severity), &left.message, &left.explanation).cmp(&(
+        &right.identity,
+        severity_score(right.severity),
+        &right.message,
+        &right.explanation,
+    ))
 }
 
-fn compare_normalized(
-    left: &NormalizedCriticFinding,
-    right: &NormalizedCriticFinding,
-) -> Ordering {
+fn compare_normalized(left: &NormalizedCriticFinding, right: &NormalizedCriticFinding) -> Ordering {
     left.source_identity
         .cmp(&right.source_identity)
         .then_with(|| RangeIdentity::from(left.range).cmp(&RangeIdentity::from(right.range)))
@@ -598,14 +578,7 @@ mod tests {
         explanation: Option<&str>,
     ) -> Option<CriticFindingCandidate> {
         CriticObservedIdentity::general(origin, code).ok().map(|identity| {
-            candidate(
-                identity,
-                source_identity,
-                source_range,
-                severity,
-                message,
-                explanation,
-            )
+            candidate(identity, source_identity, source_range, severity, message, explanation)
         })
     }
 
@@ -644,15 +617,11 @@ mod tests {
         assert_eq!(normalized[0].canonical_id(), Some("critic.testing.require_use_strict"));
         assert_eq!(normalized[0].public_code(), "PL100");
         assert_eq!(normalized[0].message(), "Missing use strict");
-        assert_eq!(
-            normalized[0].explanation(),
-            Some("Always use strict to catch common mistakes")
-        );
+        assert_eq!(normalized[0].explanation(), Some("Always use strict to catch common mistakes"));
         assert_eq!(normalized[0].contributors().len(), 2);
-        assert!(normalized[0]
-            .contributors()
-            .iter()
-            .any(|contributor| contributor.identity().origin() == CriticFindingOrigin::NativeCritic));
+        assert!(normalized[0].contributors().iter().any(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::NativeCritic
+        }));
     }
 
     #[test]
