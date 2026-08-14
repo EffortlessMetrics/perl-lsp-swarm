@@ -297,8 +297,8 @@ fn invalid_multi_range_geometry_rejects_atomically() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn overlapping_multi_ranges_are_rejected_before_formatting(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn overlapping_multi_ranges_are_rejected_before_formatting()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::Ranges);
     let uri = "file:///overlapping-ranges.pl";
@@ -359,8 +359,8 @@ fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
     let document_uri = "file:///live-formatting.pl";
@@ -434,8 +434,8 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy(
 }
 
 #[test]
-fn live_external_partial_range_returns_typed_refusal_not_native_edits(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn live_external_partial_range_returns_typed_refusal_not_native_edits()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
     server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
@@ -468,8 +468,8 @@ fn live_external_partial_range_returns_typed_refusal_not_native_edits(
 }
 
 #[test]
-fn live_stale_request_returns_content_modified_not_successful_empty(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn live_stale_request_returns_content_modified_not_successful_empty()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
     let uri = "file:///live-stale-formatting.pl";

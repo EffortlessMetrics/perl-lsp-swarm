@@ -76,8 +76,8 @@ mod tests {
     }
 
     #[test]
-    fn every_formatting_method_is_intercepted_after_initialize(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn every_formatting_method_is_intercepted_after_initialize()
+    -> Result<(), Box<dyn std::error::Error>> {
         for (offset, method) in [
             "textDocument/formatting",
             "textDocument/rangeFormatting",
