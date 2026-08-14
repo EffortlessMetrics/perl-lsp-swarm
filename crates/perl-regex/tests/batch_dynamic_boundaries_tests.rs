@@ -124,8 +124,7 @@ fn complexity_offsets_anchor_following_groups_after_dynamic_regions()
     assert!(
         analysis.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == RegexDiagnosticCode::LookbehindNestingLimit
-                && diagnostic.range.start
-                    >= analysis.facts.dynamic_regions[0].range.end
+                && diagnostic.range.start >= analysis.facts.dynamic_regions[0].range.end
         }),
         "{:?}",
         analysis.diagnostics
