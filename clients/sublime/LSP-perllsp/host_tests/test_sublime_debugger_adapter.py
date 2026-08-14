@@ -11,7 +11,11 @@ import sublime
 from Debugger.modules import dap
 from unittesting import DeferrableTestCase
 
-TIMEOUT_MS = 120_000
+# The pinned UnitTesting runner allows ~30s per Sublime launch for the whole
+# deferred journey to finish and write its result file; keep every internal
+# condition budget strictly below that window so a stuck journey fails with
+# output instead of the runner timing out silently.
+TIMEOUT_MS = 25_000
 
 
 class TestLog:

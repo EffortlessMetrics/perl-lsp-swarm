@@ -2,7 +2,7 @@
   "tests_dir": "host_tests",
   "pattern": "test_sublime_debugger_adapter.py",
   "deferred": true,
-  "condition_timeout": 120000,
+  "condition_timeout": 25000,
   "failfast": true,
   "capture_console": true,
   "reload_package_on_testing": false
