@@ -27,6 +27,8 @@
     "step_over",
     "continue_to_end",
     "debuggee_output_visible",
+    "vimspector_log_retained",
+    "adapter_trace_retained",
     "clean_shutdown",
     "os_process_cleanup"
   ],
@@ -36,6 +38,7 @@
   ],
   "required_artifacts": [
     "vim_version",
+    "driver",
     "vimspector_log",
     "adapter_identity",
     "adapter_stderr",
