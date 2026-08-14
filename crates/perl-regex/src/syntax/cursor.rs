@@ -131,4 +131,16 @@ mod tests {
         assert_eq!(cursor.current(), Some(b'x'));
         assert_eq!(quoted_literal_end(br"\Qopen", 0), Some(6));
     }
+
+    #[test]
+    fn quoted_literal_end_boundaries_are_exact() {
+        assert_eq!(quoted_literal_end(b"", 0), None);
+        assert_eq!(quoted_literal_end(br"\", 0), None);
+        assert_eq!(quoted_literal_end(br"\Q", 0), Some(2));
+        assert_eq!(quoted_literal_end(br"\QE", 0), Some(3));
+        assert_eq!(quoted_literal_end(br"\Q\E", 0), Some(4));
+        assert_eq!(quoted_literal_end(br"x\Qy\Ez", 1), Some(6));
+        assert_eq!(quoted_literal_end(br"x\Qy\Ez", 0), None);
+        assert!(!RegexCursor::new("Q").skip_quoted_literal());
+    }
 }

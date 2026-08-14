@@ -134,7 +134,15 @@ fn brace_quantifier_len(bytes: &[u8], start: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Quantifier, quantifier_at};
+    use super::{Quantifier, find_nested_quantifiers, quantifier_at};
+
+    #[test]
+    fn nested_group_repeat_emits_exact_offsets() {
+        assert_eq!(find_nested_quantifiers("(a+)+", &[]), vec![4]);
+        assert_eq!(find_nested_quantifiers("(a+)*", &[]), vec![4]);
+        assert!(find_nested_quantifiers("(a+)?", &[]).is_empty());
+        assert!(find_nested_quantifiers("a+", &[]).is_empty());
+    }
 
     #[test]
     fn question_quantifier_is_not_repeatable() {

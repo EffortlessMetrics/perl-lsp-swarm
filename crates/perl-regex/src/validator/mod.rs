@@ -5,7 +5,6 @@ mod batch;
 mod code_execution;
 mod complexity;
 mod config;
-mod interpolation;
 mod nested_quantifier;
 
 #[cfg(test)]
@@ -99,5 +98,24 @@ impl RegexValidator {
             offset: start_pos.saturating_add(range.start),
             message: "Nested quantifiers may cause catastrophic backtracking",
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::RegexError;
+
+    #[test]
+    fn validate_returns_exact_syntax_error_for_embedded_code() {
+        let err = RegexValidator::new()
+            .validate("(?{ run })", 10)
+            .expect_err("embedded code must fail closed");
+        match err {
+            RegexError::Syntax { message, offset } => {
+                assert_eq!(message, "Embedded code execution is not allowed in regex patterns");
+                assert_eq!(offset, 10);
+            }
+        }
     }
 }

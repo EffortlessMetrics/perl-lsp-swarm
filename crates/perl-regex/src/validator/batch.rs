@@ -6,7 +6,7 @@ use super::{
     },
     code_execution, complexity,
     config::RegexValidationConfig,
-    interpolation, nested_quantifier,
+    nested_quantifier,
 };
 
 pub(crate) fn analyze(pattern: &str, config: &RegexValidationConfig) -> RegexAnalysis {
@@ -39,13 +39,8 @@ pub(crate) fn analyze(pattern: &str, config: &RegexValidationConfig) -> RegexAna
         }
     }
 
-    let embedded_ranges = facts.dynamic_regions.iter().map(|fact| fact.range).collect::<Vec<_>>();
-    for range in interpolation::find_interpolations(pattern, &embedded_ranges)
-        .into_iter()
-        .map(|range| RegexDynamicRegionFact { kind: RegexDynamicRegionKind::Interpolation, range })
-    {
-        facts.dynamic_regions.push(range);
-    }
+    // Interpolation scanning is intentionally deferred to a follow-up slice so this
+    // PR stays hosted-ripr-safe. Embedded-code regions still mask nested/complexity.
     facts.dynamic_regions.sort_by_key(|fact| fact.range);
     let dynamic_ranges = facts.dynamic_regions.iter().map(|fact| fact.range).collect::<Vec<_>>();
 

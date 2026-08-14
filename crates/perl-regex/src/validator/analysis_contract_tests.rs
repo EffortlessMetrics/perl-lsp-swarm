@@ -1,6 +1,13 @@
 use super::analysis::RegexRange;
 
 #[test]
+fn regex_range_new_accepts_equal_and_ordered_bounds() {
+    assert_eq!(RegexRange::new(3, 3), Some(RegexRange { start: 3, end: 3 }));
+    assert_eq!(RegexRange::new(2, 5), Some(RegexRange { start: 2, end: 5 }));
+    assert_eq!(RegexRange::new(5, 2), None);
+}
+
+#[test]
 fn anchored_range_preserves_present_and_rejects_absent_ranges() {
     assert_eq!(RegexRange::anchored(2, 3, 5), Some(RegexRange { start: 2, end: 5 }));
     assert_eq!(RegexRange::anchored(6, 0, 5), None);

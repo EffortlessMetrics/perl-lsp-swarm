@@ -119,4 +119,23 @@ mod tests {
         assert!(find_code_executions(r"(?:not code) (?x) {").is_empty());
         assert!(find_code_executions(r"\(?{escaped}").is_empty());
     }
+
+    #[test]
+    fn peek_boundaries_distinguish_immediate_deferred_and_non_code() {
+        let immediate = find_code_executions("(?{x})");
+        assert_eq!(immediate.len(), 1);
+        assert_eq!(immediate[0].kind, EmbeddedCodeKind::Immediate);
+        assert_eq!(immediate[0].offset, 0);
+        assert_eq!(immediate[0].end, 6);
+
+        let deferred = find_code_executions("(??{x})");
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].kind, EmbeddedCodeKind::Deferred);
+        assert_eq!(deferred[0].offset, 0);
+        assert_eq!(deferred[0].end, 7);
+
+        assert!(find_code_executions("(?=").is_empty());
+        assert!(find_code_executions("(?").is_empty());
+        assert!(find_code_executions("(").is_empty());
+    }
 }
