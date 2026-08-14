@@ -38,9 +38,28 @@ def _path_entries(path_value: str) -> list[str]:
     entries: list[str] = []
     for raw in path_value.split(";"):
         entry = raw.strip().strip('"')
-        if entry:
-            entries.append(entry)
+        if not entry:
+            continue
+        # Live Windows registry PATH values often contain %SystemRoot% / %USERPROFILE%.
+        expanded = os.path.expandvars(entry)
+        entries.append(expanded)
     return entries
+
+
+def is_absolute_command(command: str) -> bool:
+    """True when *command* is a path, not a bare name for PATH lookup."""
+    if not command:
+        return False
+    if os.path.isabs(command):
+        return True
+    # Windows drive-absolute and UNC forms, plus POSIX absolute.
+    if len(command) >= 3 and command[1] == ":" and command[2] in "\\/":
+        return True
+    if command.startswith("\\\\") or command.startswith("//"):
+        return True
+    if "/" in command or "\\" in command:
+        return True
+    return False
 
 
 def candidate_names(command: str, pathext: Optional[str]) -> list[str]:
@@ -88,7 +107,13 @@ def resolve_on_rebuilt_path(
     user_path: Optional[str],
     pathext: Optional[str] = None,
 ) -> Optional[Path]:
-    """Resolve *command* using only Machine+User rebuilt PATH."""
+    """Resolve a bare *command* using only Machine+User rebuilt PATH.
+
+    Absolute or path-shaped command names are rejected: absolute-path launches
+    cannot satisfy fresh-process PATH visibility.
+    """
+    if is_absolute_command(command):
+        return None
     rebuilt = join_machine_user_path(machine_path, user_path)
     names = candidate_names(command, pathext)
     for entry in _path_entries(rebuilt):
@@ -167,25 +192,36 @@ def build_receipt(
 
     identity_ok = False
     resolved_sha: Optional[str] = None
+    hash_unavailable = False
     if resolved is not None:
         try:
             resolved_sha = file_sha256(resolved)
         except OSError:
             resolved_sha = None
+            hash_unavailable = True
         if expected_path is not None:
             try:
                 identity_ok = resolved.resolve() == expected_path.resolve()
             except OSError:
                 identity_ok = False
-            if expected_sha256 is not None and resolved_sha is not None:
-                identity_ok = identity_ok and resolved_sha == expected_sha256
-        elif expected_sha256 is not None and resolved_sha is not None:
-            identity_ok = resolved_sha == expected_sha256
+        if expected_sha256 is not None:
+            # When a hash is required, fail closed if it cannot be read/compared.
+            if resolved_sha is None:
+                identity_ok = False
+                hash_unavailable = True
+            else:
+                identity_ok = (
+                    (True if expected_path is None else identity_ok)
+                    and resolved_sha == expected_sha256
+                )
 
     if resolved is None:
         result = "command_not_found_on_rebuilt_path"
     elif expected_path is not None or expected_sha256 is not None:
-        result = "exact_identity_match" if identity_ok else "wrong_ambient_binary"
+        if hash_unavailable and expected_sha256 is not None:
+            result = "identity_hash_unavailable"
+        else:
+            result = "exact_identity_match" if identity_ok else "wrong_ambient_binary"
     else:
         result = "resolved"
 
@@ -242,18 +278,25 @@ def run_self_test() -> int:
         expected_sha = file_sha256(expected)
         script = str(Path(__file__).resolve())
 
-        def spawn(machine: str, user: str, polluted: str) -> tuple[int, dict]:
+        def spawn(
+            machine: str,
+            user: str,
+            polluted: str,
+            *,
+            command: str = "perllsp",
+        ) -> tuple[int, dict]:
             env = {
                 "PATH": polluted,
                 "SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"),
                 "WINDIR": os.environ.get("WINDIR", r"C:\Windows"),
+                "PLSP_ORACLE_FIXTURE_HOME": str(install_dir),
             }
             completed = subprocess.run(
                 [
                     sys.executable,
                     script,
                     "--command",
-                    "perllsp",
+                    command,
                     "--machine-path",
                     machine,
                     "--user-path",
@@ -313,6 +356,33 @@ def run_self_test() -> int:
             and receipt.get("result") == "command_not_found_on_rebuilt_path"
             and receipt.get("rebuilt_path_entry_count") == 0,
             json.dumps(receipt),
+        )
+
+        rc, receipt = spawn(
+            str(unrelated_dir),
+            str(unrelated_dir),
+            f"/usr/bin",
+            command=str(expected),
+        )
+        check(
+            "absolute command cannot satisfy fresh-process PATH lookup",
+            rc != 0
+            and receipt.get("result") == "command_not_found_on_rebuilt_path"
+            and receipt.get("resolved_executable") is None,
+            json.dumps(receipt),
+        )
+
+        os.environ["PLSP_ORACLE_FIXTURE_HOME"] = str(install_dir)
+        expanded = resolve_on_rebuilt_path(
+            "perllsp",
+            machine_path="",
+            user_path="%PLSP_ORACLE_FIXTURE_HOME%",
+            pathext=".COM;.EXE;.BAT;.CMD",
+        )
+        check(
+            "expandable User PATH entries resolve after expandvars",
+            expanded is not None and expanded.resolve() == expected,
+            str(expanded),
         )
 
     print(f"\nFresh-process PATH oracle: self-test failures={failures}")
