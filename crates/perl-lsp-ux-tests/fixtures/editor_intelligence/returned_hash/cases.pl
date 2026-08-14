@@ -1,3 +1,5 @@
 # case: returned_hash_shape_same_file
+# gap-matrix: completion_returned_hash_shape_same_file completion_returned_hash_shape_cross_module
+# gap-matrix: returned_shape_not_propagated cross_module_shape_unavailable
 # case: returned_hash_shape_cross_module
 # control: dynamic_keys_remain_unproven

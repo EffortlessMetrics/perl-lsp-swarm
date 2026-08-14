@@ -1,4 +1,6 @@
 use strict;
+# gap-matrix: completion_array_index_receiver
+# gap-matrix: array_index_not_promoted
 use warnings;
 
 package HttpClient;

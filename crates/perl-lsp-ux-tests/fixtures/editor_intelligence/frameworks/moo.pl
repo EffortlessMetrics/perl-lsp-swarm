@@ -1,4 +1,6 @@
 use strict;
+# gap-matrix: completion_constructor_assignment_control completion_typed_accessor_return
+# gap-matrix: none accessor_return_not_promoted
 use warnings;
 
 package Example::Database;
