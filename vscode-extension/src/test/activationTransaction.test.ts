@@ -8,19 +8,25 @@ describe('ActivationTransaction', () => {
       id: 'status',
       phase: 'base',
       resource_class: 'mandatory_for_activation',
-      cleanup: () => cleanupOrder.push('status'),
+      cleanup: () => {
+        cleanupOrder.push('status');
+      },
     });
     transaction.registerResource({
       id: 'commands',
       phase: 'commands',
       resource_class: 'mandatory_for_activation',
-      cleanup: () => cleanupOrder.push('commands'),
+      cleanup: () => {
+        cleanupOrder.push('commands');
+      },
     });
     transaction.registerResource({
       id: 'client',
       phase: 'language_client',
       resource_class: 'mandatory_for_activation',
-      cleanup: () => cleanupOrder.push('client'),
+      cleanup: () => {
+        cleanupOrder.push('client');
+      },
     });
 
     const receipt = await transaction.rollback();
@@ -38,7 +44,9 @@ describe('ActivationTransaction', () => {
       id: 'base',
       phase: 'base',
       resource_class: 'mandatory_for_activation',
-      cleanup: () => cleanupOrder.push('base'),
+      cleanup: () => {
+        cleanupOrder.push('base');
+      },
     });
     transaction.registerResource({
       id: 'broken',
@@ -53,7 +61,9 @@ describe('ActivationTransaction', () => {
       id: 'client',
       phase: 'language_client',
       resource_class: 'mandatory_for_activation',
-      cleanup: () => cleanupOrder.push('client'),
+      cleanup: () => {
+        cleanupOrder.push('client');
+      },
     });
 
     const receipt = await transaction.rollback();
@@ -100,13 +110,17 @@ describe('ActivationTransaction', () => {
       id: 'commands',
       phase: 'commands',
       resource_class: 'mandatory_for_activation',
-      cleanup: () => cleanupOrder.push('commands'),
+      cleanup: () => {
+        cleanupOrder.push('commands');
+      },
     });
     transaction.registerResource({
       id: 'watchdog',
       phase: 'background',
       resource_class: 'mandatory_for_activation',
-      cleanup: () => cleanupOrder.push('watchdog'),
+      cleanup: () => {
+        cleanupOrder.push('watchdog');
+      },
     });
 
     const runtime = transaction.commit();
