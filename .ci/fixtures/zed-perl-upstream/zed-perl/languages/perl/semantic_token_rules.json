@@ -1,0 +1,14 @@
+[
+  {
+    "token_type": "sql_string",
+    "style": ["string"]
+  },
+  {
+    "token_type": "sql_heredoc_keyword",
+    "style": ["keyword"]
+  },
+  {
+    "token_type": "json_heredoc_key",
+    "style": ["property"]
+  }
+]
