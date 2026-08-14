@@ -7,7 +7,7 @@
 
 use crate::protocol::JsonRpcError;
 use crate::runtime::LspServer;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[cfg(feature = "workspace")]
 use crate::runtime::workspace::{module_name_appears_in_text, path_to_module_name};
@@ -281,7 +281,12 @@ mod tests {
             .document_store()
             .all_documents()
             .into_iter()
-            .map(|document| (document.uri, document.version, document.text().len()))
+            .map(|document| {
+                let uri = document.uri.clone();
+                let version = document.version;
+                let text_len = document.text().len();
+                (uri, version, text_len)
+            })
             .collect::<Vec<_>>();
         indexed_document_identities.sort();
 
@@ -452,12 +457,14 @@ mod tests {
         );
         let _ =
             will_outcome.map_err(|error| format!("willRenameFiles preflight failed: {error}"))?;
-        assert!(!server
-            .coordinator()
-            .ok_or("workspace coordinator unavailable")?
-            .index()
-            .file_symbols(&old_uri)
-            .is_empty());
+        assert!(
+            !server
+                .coordinator()
+                .ok_or("workspace coordinator unavailable")?
+                .index()
+                .file_symbols(&old_uri)
+                .is_empty()
+        );
 
         std::fs::rename(&old_path, &new_path)?;
         std::fs::write(&new_path, source)?;
