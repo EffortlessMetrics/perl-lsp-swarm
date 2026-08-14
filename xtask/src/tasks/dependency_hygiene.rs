@@ -19,10 +19,9 @@
 //! install tools as a side effect.
 //!
 //! ## Accepted output format
-//! cargo-machete text output is parsed line-by-line against its stable
-//! human-readable format. If a future version introduces `--with-metadata`
-//! structured output, this module should prefer that path and isolate the
-//! text parser behind a version gate.
+//! The active command uses cargo-machete's structured `--json` output. The
+//! parser accepts the documented `{}` clean result and the documented
+//! `crates` result shape only; all other successful output is `NOT_PROVEN`.
 
 use std::fs;
 use std::path::Path;
@@ -37,6 +36,7 @@ use serde::{Deserialize, Serialize};
 const SCHEMA_VERSION: u32 = 1;
 const INSTRUMENT_NAME: &str = "cargo-machete";
 const FINDING_CODE_UNUSED_DEP: &str = "UNUSED_DEP";
+const COMMAND_IDENTITY: &str = "cargo machete --json --skip-target-dir";
 const OUTPUT_SUBDIR: &str = "target/dependency-hygiene";
 const NATIVE_OUTPUT_FILENAME: &str = "machete-output.txt";
 const REPORT_FILENAME: &str = "report.json";
@@ -94,7 +94,8 @@ pub struct DependencyFinding {
     /// Name of the unused dependency as declared in Cargo.toml.
     pub dep_name: String,
     /// Dependency section ([dependencies] / [dev-dependencies] / [build-dependencies]),
-    /// when derivable from instrument output. `None` in text-output mode.
+    /// when derivable from instrument output. `None` for cargo-machete JSON,
+    /// which does not expose this context.
     pub dep_section: Option<String>,
     /// Instrument that produced this finding.
     pub instrument: String,
@@ -181,13 +182,13 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
     }
 
     // 3. Record the command identity.
-    let command_identity = "cargo machete --skip-target-dir".to_string();
+    let command_identity = COMMAND_IDENTITY.to_string();
     let native_path = output_dir.join(NATIVE_OUTPUT_FILENAME);
     let native_ref = native_path.to_string_lossy().into_owned();
 
     // 4. Run cargo-machete. Never install tools as a side effect.
     let output = match Command::new("cargo")
-        .args(["machete", "--skip-target-dir"])
+        .args(["machete", "--json", "--skip-target-dir"])
         .current_dir(root)
         .output()
     {
@@ -237,33 +238,35 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
         }
     }
 
-    // 7. Parse text output into item-level findings.
-    let text_for_parse = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let findings =
-        match parse_machete_text(&text_for_parse, &native_ref, &version, &command_identity) {
-            Ok(f) => f,
-            Err(parse_err) => {
-                return DependencyHygieneResult {
-                    schema_version: SCHEMA_VERSION,
-                    timestamp: Utc::now().to_rfc3339(),
-                    outcome: DependencyHygieneOutcome::NotProven,
-                    outcome_detail: Some(format!(
-                        "failed to parse cargo-machete output: {parse_err}; \
-                     native output saved to {native_ref}"
-                    )),
-                    findings: vec![],
-                    instrument_version: Some(version),
-                    native_output_ref: native_ref,
-                    command_identity,
-                };
-            }
-        };
+    // 7. Parse structured stdout and require an output shape that matches the
+    // selected cargo-machete contract. Stderr is retained above but is not
+    // parsed as data because diagnostics are not the JSON result.
+    let findings = match classify_machete_output(
+        exit_code,
+        &String::from_utf8_lossy(&output.stdout),
+        &native_ref,
+        &version,
+        &command_identity,
+    ) {
+        Ok(f) => f,
+        Err(parse_err) => {
+            return DependencyHygieneResult {
+                schema_version: SCHEMA_VERSION,
+                timestamp: Utc::now().to_rfc3339(),
+                outcome: DependencyHygieneOutcome::NotProven,
+                outcome_detail: Some(format!(
+                    "failed to parse cargo-machete output: {parse_err}; \
+                 native output saved to {native_ref}"
+                )),
+                findings: vec![],
+                instrument_version: Some(version),
+                native_output_ref: native_ref,
+                command_identity,
+            };
+        }
+    };
 
-    // 8. Consistency check: exit 1 must yield at least one finding.
+    // 8. Classify only after the parser has established a recognized result.
     if exit_code == Some(1) && findings.is_empty() {
         return DependencyHygieneResult {
             schema_version: SCHEMA_VERSION,
@@ -315,7 +318,7 @@ fn not_proven(root: &Path, reason: String, version: Option<String>) -> Dependenc
             .join(NATIVE_OUTPUT_FILENAME)
             .to_string_lossy()
             .into_owned(),
-        command_identity: "cargo machete --skip-target-dir".to_string(),
+        command_identity: COMMAND_IDENTITY.to_string(),
     }
 }
 
@@ -424,7 +427,97 @@ pub fn classify_probe_output(exit_code: Option<i32>, stdout: &str, stderr: &str)
     ProbeOutcome::ProbeFailed(stderr.to_string())
 }
 
-// ─── Text output parser ───────────────────────────────────────────────────────
+// ─── Structured cargo-machete output ─────────────────────────────────────────
+
+/// One crate entry from cargo-machete's documented JSON output.
+#[derive(Debug, Deserialize)]
+struct MacheteJsonCrate {
+    package_name: String,
+    manifest_path: String,
+    #[serde(default)]
+    unused: Vec<String>,
+    #[serde(default)]
+    ignored_used: Vec<String>,
+}
+
+/// Parse and classify cargo-machete's documented JSON result.
+///
+/// The current tool emits `{}` for a clean run and a `crates` array when it
+/// has results. `ignored_used` is accepted and deliberately does not create a
+/// finding: it is tool-native suppression metadata, not an unused dependency.
+/// The parser rejects every other top-level shape so an exit-0 diagnostic or
+/// future incompatible format cannot become `SUCCESS` with zero findings.
+pub fn classify_machete_output(
+    exit_code: Option<i32>,
+    stdout: &str,
+    native_ref: &str,
+    instrument_version: &str,
+    command_identity: &str,
+) -> Result<Vec<DependencyFinding>, String> {
+    let value: serde_json::Value = serde_json::from_str(stdout)
+        .map_err(|error| format!("cargo-machete JSON is malformed: {error}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "cargo-machete JSON result is not an object".to_string())?;
+
+    if object.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if object.len() != 1 || !object.contains_key("crates") {
+        return Err("cargo-machete JSON result must be {} or contain only crates".to_string());
+    }
+
+    let crates_value = object
+        .get("crates")
+        .ok_or_else(|| "cargo-machete JSON result is missing crates".to_string())?;
+    if !crates_value.is_array() {
+        return Err("cargo-machete JSON crates must be an array".to_string());
+    }
+
+    let crates: Vec<MacheteJsonCrate> = serde_json::from_value(crates_value.clone())
+        .map_err(|error| format!("cargo-machete JSON crate entry is malformed: {error}"))?;
+
+    let mut findings = Vec::new();
+    for crate_result in crates {
+        if crate_result.package_name.trim().is_empty() {
+            return Err("cargo-machete JSON package_name must not be empty".to_string());
+        }
+        if crate_result.manifest_path.trim().is_empty() {
+            return Err("cargo-machete JSON manifest_path must not be empty".to_string());
+        }
+        for dependency in crate_result.ignored_used.iter().chain(&crate_result.unused) {
+            if !is_valid_dep_name(dependency) {
+                return Err(format!(
+                    "cargo-machete JSON contains invalid dependency name `{dependency}`"
+                ));
+            }
+        }
+
+        for dependency in crate_result.unused {
+            findings.push(DependencyFinding {
+                crate_name: crate_result.package_name.clone(),
+                manifest_path: crate_result.manifest_path.clone(),
+                dep_name: dependency,
+                dep_section: None,
+                instrument: INSTRUMENT_NAME.to_string(),
+                instrument_version: Some(instrument_version.to_string()),
+                command_identity: command_identity.to_string(),
+                finding_code: FINDING_CODE_UNUSED_DEP.to_string(),
+                native_output_ref: native_ref.to_string(),
+                limitations: standard_limitations(),
+            });
+        }
+    }
+
+    if exit_code == Some(1) && findings.is_empty() {
+        return Err("cargo-machete exited 1 without unused dependencies".to_string());
+    }
+
+    Ok(findings)
+}
+
+// ─── Legacy text parser ───────────────────────────────────────────────────────
 
 /// Parse cargo-machete human-readable text output into item-level findings.
 ///
@@ -505,7 +598,8 @@ pub fn parse_machete_text(
 fn standard_limitations() -> Vec<String> {
     vec![
         "cargo-machete may flag dependencies used only in proc-macros or build scripts".to_string(),
-        "dep_section is unavailable in text output mode".to_string(),
+        "cargo-machete JSON does not expose dependency section or target/feature context"
+            .to_string(),
     ]
 }
 
@@ -609,6 +703,11 @@ pub fn extract_crate_name(manifest_path: &str) -> String {
 mod tests {
     use super::*;
 
+    const REAL_MACHETE_OUTPUT: &str =
+        include_str!("../../tests/fixtures/dependency-hygiene/machete-findings.json");
+    const MALFORMED_MACHETE_OUTPUT: &str =
+        include_str!("../../tests/fixtures/dependency-hygiene/machete-malformed.json");
+
     // ── Outcome display ───────────────────────────────────────────────────────
 
     #[test]
@@ -697,6 +796,65 @@ mod tests {
         // stdout is empty but exit 0 → version becomes "unknown"
         let outcome = classify_probe_output(Some(0), "", "");
         assert_eq!(outcome, ProbeOutcome::Available("unknown".to_string()));
+    }
+
+    #[test]
+    fn test_classify_current_json_finding_fixture() {
+        let findings = classify_machete_output(
+            Some(1),
+            REAL_MACHETE_OUTPUT,
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        )
+        .expect("documented cargo-machete JSON should parse");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].crate_name, "fixture-crate");
+        assert_eq!(findings[0].manifest_path, "crates/fixture-crate/Cargo.toml");
+        assert_eq!(findings[0].dep_name, "unused-dependency");
+        assert_eq!(findings[0].dep_section, None);
+        assert_eq!(findings[0].command_identity, COMMAND_IDENTITY);
+    }
+
+    #[test]
+    fn test_classify_current_json_clean_result() {
+        let findings = classify_machete_output(
+            Some(0),
+            "{}",
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        )
+        .expect("documented clean JSON should parse");
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn test_malformed_exit_zero_json_is_not_proven() {
+        let result = classify_machete_output(
+            Some(0),
+            MALFORMED_MACHETE_OUTPUT,
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        );
+
+        assert!(result.is_err(), "malformed exit-0 output must fail closed");
+    }
+
+    #[test]
+    fn test_unrecognized_exit_zero_json_is_not_proven() {
+        let result = classify_machete_output(
+            Some(0),
+            "{\"diagnostic\":\"clean\"}",
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        );
+
+        assert!(result.is_err(), "unrecognized exit-0 output must fail closed");
     }
 
     /// Negative control #1 (variant): probe with a non-existent binary → NOT_PROVEN path.
