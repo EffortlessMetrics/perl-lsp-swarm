@@ -7,7 +7,7 @@
 
 use crate::protocol::JsonRpcError;
 use crate::runtime::LspServer;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 #[cfg(feature = "workspace")]
 use crate::runtime::workspace::{module_name_appears_in_text, path_to_module_name};
@@ -24,10 +24,8 @@ impl LspServer {
     ) -> Result<Option<Value>, JsonRpcError> {
         #[cfg(feature = "workspace")]
         {
-            let Some(files) = params
-                .as_ref()
-                .and_then(|value| value.get("files"))
-                .and_then(Value::as_array)
+            let Some(files) =
+                params.as_ref().and_then(|value| value.get("files")).and_then(Value::as_array)
             else {
                 return Ok(Some(empty_workspace_edit()));
             };
@@ -71,7 +69,7 @@ impl LspServer {
                     );
                 }
 
-                trace_unhandled_open_document_references(
+                warn_unhandled_open_document_references(
                     self,
                     old_uri,
                     &old_module,
@@ -152,7 +150,7 @@ fn read_workspace_text(server: &LspServer, uri: &str) -> Option<String> {
 }
 
 #[cfg(feature = "workspace")]
-fn trace_unhandled_open_document_references(
+fn warn_unhandled_open_document_references(
     server: &LspServer,
     renamed_uri: &str,
     old_module: &str,
@@ -165,11 +163,15 @@ fn trace_unhandled_open_document_references(
             && !updated_uris.contains(uri.as_str())
             && module_name_appears_in_text(&document.text, old_module)
     });
+    drop(documents);
     if unhandled {
-        tracing::debug!(
-            old_module,
-            "Rename preflight found references outside the safely planned edit set"
+        let message = format!(
+            "Some references to '{old_module}' may not have been updated. \
+             String literals, comments, and dynamic method calls \
+             are not automatically rewritten. \
+             Use find-and-replace to update them manually."
         );
+        server.show_message_or_log(crate::runtime::window::MessageType::Warning, &message);
     }
 }
 
@@ -257,7 +259,8 @@ mod tests {
         })
     }
 
-    fn indexed_rename_fixture() -> TestResult<(LspServer, tempfile::TempDir, String, String, String)> {
+    fn indexed_rename_fixture() -> TestResult<(LspServer, tempfile::TempDir, String, String, String)>
+    {
         let server = LspServer::new();
         let directory = tempfile::tempdir()?;
         let old_path = directory.path().join("OldModule.pm");
