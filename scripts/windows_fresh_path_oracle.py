@@ -34,6 +34,18 @@ def join_machine_user_path(machine: Optional[str], user: Optional[str]) -> str:
     return ";".join(parts)
 
 
+def expand_windows_path_entry(entry: str) -> str:
+    """Expand %VAR% (Windows) and $VAR/${VAR} forms in a PATH entry."""
+    import re
+
+    def repl_percent(match: re.Match[str]) -> str:
+        name = match.group(1)
+        return os.environ.get(name, match.group(0))
+
+    expanded = re.sub(r"%([^%]+)%", repl_percent, entry)
+    return os.path.expandvars(expanded)
+
+
 def _path_entries(path_value: str) -> list[str]:
     entries: list[str] = []
     for raw in path_value.split(";"):
@@ -41,8 +53,7 @@ def _path_entries(path_value: str) -> list[str]:
         if not entry:
             continue
         # Live Windows registry PATH values often contain %SystemRoot% / %USERPROFILE%.
-        expanded = os.path.expandvars(entry)
-        entries.append(expanded)
+        entries.append(expand_windows_path_entry(entry))
     return entries
 
 
