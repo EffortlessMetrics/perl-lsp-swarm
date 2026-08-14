@@ -431,8 +431,29 @@ fn canonical_runtime_root(root: &Path) -> Result<PathBuf, CorpusTopologyError> {
             .join(root)
     };
     validate_runtime_root_components(&absolute)?;
-    fs::canonicalize(&absolute)
-        .map_err(|error| CorpusTopologyError::Io { path: absolute, message: error.to_string() })
+    let canonical = fs::canonicalize(&absolute)
+        .map_err(|error| CorpusTopologyError::Io { path: absolute, message: error.to_string() })?;
+    Ok(strip_verbatim_prefix(canonical))
+}
+
+/// Remove the Windows verbatim (`\\?\`) prefix that `fs::canonicalize` produces.
+///
+/// The prefix must not leak into serialized or returned payload paths: callers
+/// build expected paths from ordinary absolute roots, and downstream joins and
+/// comparisons in this repository operate on plain absolute paths. Non-verbatim
+/// and non-UTF-8 paths pass through unchanged; on non-Windows hosts this is the
+/// identity function.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path
 }
 
 fn validate_runtime_root_components(root: &Path) -> Result<(), CorpusTopologyError> {
@@ -750,7 +771,8 @@ mod tests {
         let relative = root.path().strip_prefix(&current).expect("root below current directory");
         let topology =
             topology_with(Vec::new()).with_root(relative).expect("bind relative runtime root");
-        let expected = fs::canonicalize(root.path()).expect("canonical runtime root");
+        let expected =
+            strip_verbatim_prefix(fs::canonicalize(root.path()).expect("canonical runtime root"));
 
         assert_eq!(topology.root(), Some(expected.as_path()));
     }
@@ -1040,6 +1062,61 @@ mod tests {
             .expect("bind topology root");
 
         assert_eq!(topology.asset_path(&optional), Ok(root.path().join("test_corpus/optional.pl")));
+    }
+
+    #[test]
+    fn discover_pins_the_real_corpus_population() {
+        let raw_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let repo_root =
+            strip_verbatim_prefix(fs::canonicalize(&raw_root).expect("canonical repository root"));
+        let topology = CorpusTopology::from_paths(&CorpusPaths::from_root(repo_root))
+            .expect("discover real corpus");
+
+        let test_assets = topology
+            .assets
+            .iter()
+            .filter(|asset| asset.layer == CorpusAssetLayer::TestCorpus)
+            .count();
+        let fuzz_assets =
+            topology.assets.iter().filter(|asset| asset.layer == CorpusAssetLayer::Fuzz).count();
+        assert!(
+            test_assets > 1000,
+            "expected the full checked-in test_corpus population, found {test_assets}"
+        );
+        assert!(fuzz_assets > 0, "expected checked-in fuzz fixtures, found {fuzz_assets}");
+        assert!(
+            topology.assets.iter().any(|asset| asset.kind == CorpusAssetKind::TextFixture),
+            "fuzz .txt validation fixtures must be part of the population"
+        );
+        assert!(
+            topology.assets.iter().any(|asset| {
+                asset.kind == CorpusAssetKind::PerlSource
+                    && Path::new(&asset.relative_path).extension().is_none()
+            }),
+            "extensionless crash-* fuzz reproducers must be part of the population"
+        );
+        assert!(
+            topology.assets.iter().all(|asset| {
+                Path::new(&asset.relative_path).file_name().map(|name| name != "README.md")
+                    != Some(false)
+            }),
+            "fuzz metadata like README.md must stay excluded from the population"
+        );
+    }
+
+    #[test]
+    fn discovery_rejects_directories_named_like_assets() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        fs::create_dir_all(root.path().join("test_corpus/sneaky.pl"))
+            .expect("create directory named like a test asset");
+        fs::create_dir_all(root.path().join("crates/perl-corpus/fuzz")).expect("create fuzz layer");
+
+        assert_eq!(
+            CorpusTopology::from_paths(&CorpusPaths::from_root(root.path().to_path_buf())),
+            Err(CorpusTopologyError::UnsupportedFileType {
+                path: root.path().join("test_corpus/sneaky.pl")
+            })
+        );
     }
 
     #[cfg(unix)]
