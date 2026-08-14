@@ -32,10 +32,14 @@ grep -Fq '[Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")' "
 if grep -F 'SetEnvironmentVariable' "$WINDOWS_INSTALLER" | grep -Fq '$env:Path'; then
     fail "Windows installer must not copy merged process PATH into persistent User PATH"
 fi
+grep -Fq 'path_visible_current_process' "$WINDOWS_INSTALLER" \
+    || fail "Windows installer must expose the current-process PATH disposition"
 grep -Fq 'manual_path_action_required' "$WINDOWS_INSTALLER" \
     || fail "Windows installer must expose an explicit manual PATH disposition"
 grep -Fq 'persisted_user_path_restart_required' "$WINDOWS_INSTALLER" \
     || fail "Windows installer must expose the persisted/restart disposition"
+grep -Fq 'InUserPath' "$WINDOWS_INSTALLER" \
+    || fail "Windows installer must distinguish User PATH from process PATH"
 grep -Fq 'PATH status:' "$WINDOWS_INSTALLER" \
     || fail "Windows installer must render the PATH disposition"
 pass "Windows installer owns a bounded persistent user-PATH contract"

@@ -68,11 +68,13 @@ function Normalize-PathEntry {
     }
 
     $Expanded = [Environment]::ExpandEnvironmentVariables($PathEntry.Trim())
-    try {
-        $Expanded = [IO.Path]::GetFullPath($Expanded)
-    } catch {
-        # Keep the expanded value when the entry is intentionally not a normal
-        # filesystem path; it still participates in exact string comparison.
+    if ([IO.Path]::IsPathRooted($Expanded)) {
+        try {
+            $Expanded = [IO.Path]::GetFullPath($Expanded)
+        } catch {
+            # Keep the expanded value when the entry is intentionally not a normal
+            # filesystem path; it still participates in exact string comparison.
+        }
     }
 
     return $Expanded.TrimEnd([char[]]"\/")
@@ -127,6 +129,10 @@ function Ensure-InstallDirOnUserPath {
     }
     [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
     return $true
+}
+
+function Write-ManualPathGuidance {
+    Write-Host "Add this directory to your user PATH before starting a new editor/Claude process: $InstallDir" -ForegroundColor Cyan
 }
 
 # Detect architecture.
@@ -383,27 +389,44 @@ try {
     # command that copied the merged process/system/user `$env:Path` back into
     # the User PATH, permanently duplicating system entries. This path updates
     # only the User scope and keeps an explicit opt-out for managed machines.
+    #
+    # Process-only visibility is not persistence: a prior temporary-session
+    # PATH edit must still write User PATH so fresh terminals inherit it.
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if (Test-PathContainsEntry -PathValue $env:Path -Entry $InstallDir) {
-        $PathDisposition = "path_visible_current_process"
-        Write-Success "$InstallDir is already visible on PATH"
-    } elseif (Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir) {
+    $InUserPath = Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir
+    $InProcessPath = Test-PathContainsEntry -PathValue $env:Path -Entry $InstallDir
+
+    if ($InUserPath) {
         Add-InstallDirToCurrentProcessPath
-        $PathDisposition = "persisted_user_path_restart_required"
-        Write-Info "$InstallDir is already persisted in the user PATH"
-        Write-Warn "Restart already-running terminals, editors, and Claude Code so they inherit the persisted PATH."
+        if ($InProcessPath) {
+            $PathDisposition = "path_visible_current_process"
+            Write-Success "$InstallDir is already persisted and visible on PATH"
+        } else {
+            $PathDisposition = "persisted_user_path_restart_required"
+            Write-Info "$InstallDir is already persisted in the user PATH"
+            Write-Warn "Restart already-running terminals, editors, and Claude Code so they inherit the persisted PATH."
+        }
     } elseif ($NoModifyPath) {
         $PathDisposition = "manual_path_action_required"
-        Write-Warn "$InstallDir is not in PATH and -NoModifyPath was requested"
-        Write-Host "Add this directory to your user PATH before starting a new editor/Claude process: $InstallDir" -ForegroundColor Cyan
+        Write-Warn "$InstallDir is not in the user PATH and -NoModifyPath was requested"
+        Write-ManualPathGuidance
     } else {
-        $Changed = Ensure-InstallDirOnUserPath
-        Add-InstallDirToCurrentProcessPath
-        $PathDisposition = "persisted_user_path_restart_required"
-        if ($Changed) {
-            Write-Success "Added $InstallDir to the persistent user PATH"
+        try {
+            $Changed = Ensure-InstallDirOnUserPath
+            Add-InstallDirToCurrentProcessPath
+            $PathDisposition = "persisted_user_path_restart_required"
+            if ($Changed) {
+                Write-Success "Added $InstallDir to the persistent user PATH"
+            } elseif ($InProcessPath) {
+                Write-Info "$InstallDir was process-visible; confirmed user PATH persistence"
+            }
+            Write-Warn "Restart already-running terminals, editors, and Claude Code so they inherit the persisted PATH."
+        } catch {
+            Add-InstallDirToCurrentProcessPath
+            $PathDisposition = "manual_path_action_required"
+            Write-Warn "Could not persist $InstallDir on the user PATH: $($_.Exception.Message)"
+            Write-ManualPathGuidance
         }
-        Write-Warn "Restart already-running terminals, editors, and Claude Code so they inherit the persisted PATH."
     }
     Write-Info "PATH status: $PathDisposition"
     
