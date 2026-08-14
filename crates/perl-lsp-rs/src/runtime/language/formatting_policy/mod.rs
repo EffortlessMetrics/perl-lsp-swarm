@@ -148,10 +148,10 @@ fn cancellation_token(
 
 fn sanitized_outcome(decision: &FormattingDecision) -> Value {
     let mut outcome = value(&decision.outcome);
-    if let Some(identity) = outcome.get_mut("identity").and_then(Value::as_object_mut) {
-        if let Some(Value::String(source_id)) = identity.remove("source_id") {
-            identity.insert("source_id_hash".to_string(), json!(digest(&source_id)));
-        }
+    if let Some(identity) = outcome.get_mut("identity").and_then(Value::as_object_mut)
+        && let Some(Value::String(source_id)) = identity.remove("source_id")
+    {
+        identity.insert("source_id_hash".to_string(), json!(digest(&source_id)));
     }
     outcome
 }

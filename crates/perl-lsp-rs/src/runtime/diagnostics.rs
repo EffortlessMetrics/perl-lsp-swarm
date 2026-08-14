@@ -954,6 +954,8 @@ impl LspServer {
                     crate::error::ParseError::Recovered { location, .. } => {
                         (*location, e.to_string())
                     }
+                    // Forward-compatible fallback for future variants (#2898)
+                    _ => (0, e.to_string()),
                 };
                 let message =
                     match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(

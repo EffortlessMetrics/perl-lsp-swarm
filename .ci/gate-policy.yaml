@@ -700,7 +700,12 @@ gates:
     # regression in an untouched crate's `tests/` directory sails through pr_fast
     # and is only caught at the merge-gate full suite. This deferral is the
     # structural reason false-confidence patterns in `tests/` went undetected.
-    command: cargo test --locked --tests {package_args}
+    # Build the server binary first: binary_version_test (and every suite
+    # that spawns perllsp) resolves the binary through PERL_LSP_BIN ->
+    # CARGO_BIN_EXE -> target/debug/perllsp -> PATH -> cargo-run fallback;
+    # without a prebuilt binary the fallback compile exceeds the test's own
+    # initialize timeout and reds the gate nondeterministically (#9464).
+    command: cargo build -p perllsp --locked && cargo test --locked --tests {package_args}
     # PR #1585 produced timeout-only receipts at 600s and 900s for the
     # perl-lsp-rs/perl-lsp-rs-core/xtask route. Keep the required --tests proof
     # bounded while matching the PR Smoke watchdog for the heavier routed path.
