@@ -56,7 +56,8 @@ The gate checks lint inheritance, active Cargo lint levels, tracked lint metadat
 
 ## Protected-field planning
 
-The planned `clippy::disallowed_fields` rail has a separate design anchor in
-[`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md). It documents candidate
-architectural seams without activating the lint; concrete field selectors and
-accessors belong to the later DF-2 through DF-4 slices in the Rust 1.95 rollout.
+The `clippy::disallowed_fields` rail is **activated** (#6114) with an empty
+denylist in `clippy.toml` (`disallowed-fields = []`). The design anchor lives in
+[`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md). Concrete field
+selectors and accessors will be added incrementally via the DF-2 through DF-4
+slices in the Rust 1.95 rollout.

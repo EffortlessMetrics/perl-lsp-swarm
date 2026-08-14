@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 /// ServerCapabilities with a typed struct that can be serialized
 /// directly, preventing field name drift.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TextDocumentSyncOptions {
     open_close: bool,
     change: i32,
@@ -22,6 +23,7 @@ struct TextDocumentSyncOptions {
 
 /// Save options for TextDocumentSyncOptions.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SaveOptions {
     include_text: bool,
 }
@@ -42,10 +44,8 @@ impl TextDocumentSyncOptions {
 /// extensions (#4995).
 fn workspace_capabilities(workspace_folders_support: bool) -> Value {
     let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
-    let filters: Vec<Value> = perl_globs
-        .iter()
-        .map(|glob| json!({ "pattern": { "glob": glob } }))
-        .collect();
+    let filters: Vec<Value> =
+        perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
 
     json!({
         "workspaceFolders": {
@@ -357,6 +357,27 @@ impl LspServer {
                     .and_then(|b| b.as_bool())
                     .unwrap_or(false);
 
+                // Check if client supports markdown in MarkupContent (hover,
+                // completion, signature help). LSP 3.17 general.markup.contentFormat
+                // is the canonical source; textDocument.hover.contentFormat is the
+                // legacy fallback. Default to true since most clients support
+                // markdown (#1724).
+                caps.markdown_support = {
+                    let general_format = params
+                        .pointer("/capabilities/general/markup/contentFormat")
+                        .and_then(|v| v.as_array());
+                    let hover_format = params
+                        .pointer("/capabilities/textDocument/hover/contentFormat")
+                        .and_then(|v| v.as_array());
+                    let format = general_format.or(hover_format);
+                    match format {
+                        Some(arr) => {
+                            arr.iter().any(|v| v.as_str().is_some_and(|s| s == "markdown"))
+                        }
+                        None => true, // Default: assume markdown support
+                    }
+                };
+
                 // Check if client supports refresh requests for various features
                 if let Some(cap_val) = params.get("capabilities") {
                     // workspace/codeLens/refresh
@@ -621,21 +642,22 @@ impl LspServer {
         // and subsequent workspace/configuration responses override both.
         if let Some(params) = params.as_ref()
             && let Some(init_options) = params.get("initializationOptions")
-                && let Some(perl) = super::super::workspace::extract_perl_settings(init_options) {
-                    tracing::debug!("Applying initializationOptions.perl.* as base config layer");
-                    {
-                        let mut config = self.config.lock();
-                        config.update_from_value(perl);
-                    }
-                    {
-                        let mut workspace_config = self.workspace_config.lock();
-                        workspace_config.update_from_value(perl);
-                    }
-                    if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
-                        limits.update_from_value(perl);
-                    }
-                    *self.initialization_options_perl_settings.lock() = Some(perl.clone());
-                }
+            && let Some(perl) = super::super::workspace::extract_perl_settings(init_options)
+        {
+            tracing::debug!("Applying initializationOptions.perl.* as base config layer");
+            {
+                let mut config = self.config.lock();
+                config.update_from_value(perl);
+            }
+            {
+                let mut workspace_config = self.workspace_config.lock();
+                workspace_config.update_from_value(perl);
+            }
+            if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+                limits.update_from_value(perl);
+            }
+            *self.initialization_options_perl_settings.lock() = Some(perl.clone());
+        }
 
         // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
         self.load_and_apply_project_config();
@@ -753,8 +775,9 @@ impl LspServer {
             }
         }
         // Override text document sync with typed struct (#4995)
-        capabilities["textDocumentSync"] = serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
-            .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
+        capabilities["textDocumentSync"] =
+            serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
+                .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
 
         // Workspace capabilities: typed helper for file operations (#4995)
         let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;

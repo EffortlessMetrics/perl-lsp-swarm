@@ -41,6 +41,11 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "ripr.yml must produce and upload diff-scoped RIPR PR receipts"
     );
     assert!(
+        workflow.contains("PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}")
+            && workflow.matches("--pr-head \"$PR_HEAD_SHA\"").count() >= 8,
+        "every receipt generation/check route must carry the PR head separately from evaluated HEAD"
+    );
+    assert!(
         workflow.contains("cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json")
             && workflow.contains(
                 "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check"

@@ -328,6 +328,7 @@ jobs:
               cargo fetch --locked
               cargo check --workspace --locked
               cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+              cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
               cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
               scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
               test "$scorecard_tests" -gt 0
@@ -485,6 +486,7 @@ jobs:
               cargo fetch --locked
               cargo check --workspace --locked
               cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+              cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
               cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
               scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | awk "/: test\$/{count++} END {print count+0}")
               test "$scorecard_tests" -gt 0
@@ -528,7 +530,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: perl-lsp-rust-small-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -540,6 +542,7 @@ jobs:
           cargo fetch --locked
           cargo check --workspace --locked
           cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
           cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
           scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
           test "$scorecard_tests" -gt 0
@@ -599,7 +602,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: perl-lsp-rust-small-fallback-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -611,6 +614,7 @@ jobs:
           cargo fetch --locked
           cargo check --workspace --locked
           cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-parser --test parser_accuracy_e2e -- --nocapture
           cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
           scorecard_tests=$(cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --list | grep -c -F ": test" || true)
           test "$scorecard_tests" -gt 0

@@ -26,6 +26,10 @@ import {
   diagnoseConfiguredServerPath,
   explainDiagnosticCommand,
   explainProviderDecisionCommand,
+  presentFormattingProviderError,
+  presentFormattingProviderOutcome,
+  presentLspProviderError,
+  presentLspProviderOutcome,
   previewPackageRenameCommand,
   previewSafeDeleteCommand,
   runPerlCriticOnActiveFile,
@@ -40,6 +44,66 @@ import {
   validateIncludePaths,
   warnAboutPerlExtensionConflicts,
 } from '../extensionWorkspaceGuidance';
+
+describe('formatting provider experience projection', () => {
+  test('distinguishes edits from an already-current document', () => {
+    expect(presentFormattingProviderOutcome(2)).toEqual({
+      providerOutcome: 'exact_current',
+      detail: 'Formatter produced 2 document edits.',
+      reasonCode: 'formatting_edits_available',
+    });
+    expect(presentFormattingProviderOutcome(0)).toEqual({
+      providerOutcome: 'legitimate_empty',
+      detail: 'Formatter reported no edits; the document is already formatted.',
+      reasonCode: 'formatting_already_current',
+    });
+  });
+
+  test('keeps range formatting and failures actionable', () => {
+    expect(presentFormattingProviderOutcome(1, true)).toEqual({
+      providerOutcome: 'exact_current',
+      detail: 'Formatter produced 1 range edit.',
+      reasonCode: 'range_formatting_edits_available',
+    });
+    expect(presentFormattingProviderError('perltidy unavailable', true)).toEqual({
+      providerOutcome: 'product_or_instrument_error',
+      detail: 'Range formatting failed: perltidy unavailable',
+      action: 'Check the formatter configuration or run the Health Check.',
+      reasonCode: 'range_formatting_error',
+    });
+  });
+});
+
+describe('production LSP provider experience projection', () => {
+  test('distinguishes readiness, exact answers, and legitimate empties', () => {
+    expect(presentLspProviderOutcome('Completion', [], false)).toMatchObject({
+      providerOutcome: 'not_ready',
+      reasonCode: 'completion_before_readiness',
+    });
+    expect(presentLspProviderOutcome('Completion', [{ label: 'new' }], true)).toMatchObject({
+      providerOutcome: 'exact_current',
+      reasonCode: 'completion_result_available',
+    });
+    expect(presentLspProviderOutcome('References', [], true)).toMatchObject({
+      providerOutcome: 'legitimate_empty',
+      reasonCode: 'references_legitimate_empty',
+    });
+  });
+
+  test('projects safe refusal and provider failure as actionable states', () => {
+    expect(presentLspProviderOutcome('Rename', undefined, true, 'safe_refusal')).toMatchObject({
+      providerOutcome: 'safe_refusal',
+      action: 'Review the provider decision before applying changes.',
+      reasonCode: 'rename_safe_refusal',
+    });
+    expect(presentLspProviderError('Hover', 'server unavailable')).toEqual({
+      providerOutcome: 'product_or_instrument_error',
+      detail: 'Hover failed: server unavailable',
+      action: 'Run the Health Check or inspect the provider decision explanation.',
+      reasonCode: 'hover_provider_error',
+    });
+  });
+});
 
 interface MockMemento {
   get: jest.Mock;

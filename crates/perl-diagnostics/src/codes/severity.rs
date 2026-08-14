@@ -6,6 +6,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum DiagnosticSeverity {
     /// Critical error that prevents parsing/execution.
     #[default]

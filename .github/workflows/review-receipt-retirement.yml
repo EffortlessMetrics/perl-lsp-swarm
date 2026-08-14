@@ -1,0 +1,54 @@
+name: Review Receipt Retirement
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/ci/check-pr-claim-currentness'
+      - 'scripts/reviews/claim-digest'
+      - 'scripts/reviews/claim_digest.py'
+      - 'tests/test_review_claim_currentness.py'
+      - 'tests/test_review_claim_fail_closed.py'
+      - 'tests/test_retired_review_receipt_commands.py'
+      - '.github/workflows/review-receipt-retirement.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ci/check-pr-claim-currentness'
+      - 'scripts/reviews/claim-digest'
+      - 'scripts/reviews/claim_digest.py'
+      - 'tests/test_review_claim_currentness.py'
+      - 'tests/test_review_claim_fail_closed.py'
+      - 'tests/test_retired_review_receipt_commands.py'
+      - '.github/workflows/review-receipt-retirement.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-receipt-retirement-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check retired review receipt commands
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Check command retirement and fixture compatibility
+        run: |
+          python3 -m unittest \
+            tests.test_retired_review_receipt_commands \
+            tests.test_review_claim_currentness.ClaimDigestTests.test_currentness_checker_matches_trusted_head_and_claim \
+            tests.test_review_claim_currentness.ClaimDigestTests.test_currentness_checker_rejects_changed_claim \
+            tests.test_review_claim_currentness.ClaimDigestTests.test_currentness_checker_rejects_untrusted_forged_receipt \
+            tests.test_review_claim_currentness.ClaimDigestTests.test_currentness_checker_rejects_copied_receipt_marker \
+            tests.test_review_claim_currentness.ClaimDigestTests.test_currentness_checker_rejects_malformed_trusted_receipt \
+            tests.test_review_claim_currentness.ClaimDigestTests.test_legacy_receipt_without_claim_digest_is_valid_but_not_current \
+            tests.test_review_claim_currentness.ClaimDigestTests.test_currentness_checker_is_not_applicable_without_review_receipts \
+            tests.test_review_claim_currentness.ClaimDigestTests.test_currentness_checker_rejects_moved_candidate_snapshot \
+            tests.test_review_claim_fail_closed

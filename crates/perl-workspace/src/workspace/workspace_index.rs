@@ -82,6 +82,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use url::Url;
 
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static INCREMENTAL_SEARCH_ADD_CALLS: Cell<usize> = const { Cell::new(0) };
+    static REBUILD_SEARCH_INDEX_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
 use crate::semantic::facts::PRODUCER_SCHEMA_VERSION;
 use crate::semantic::imports::ImportExportIndex;
 pub use crate::semantic::invalidation::ShardReplaceResult;
@@ -149,6 +158,7 @@ pub use perl_uri::{is_file_uri, is_special_scheme, uri_extension, uri_key};
 /// };
 /// ```
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum IndexState {
     /// Index is being constructed (workspace scan in progress)
     Building {
@@ -946,6 +956,7 @@ impl Default for IndexCoordinator {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 /// Symbol kinds for cross-file indexing during Index/Navigate workflows.
+#[non_exhaustive]
 pub enum SymKind {
     /// Variable symbol ($, @, or % sigil)
     Var,
@@ -1105,6 +1116,7 @@ pub struct SymbolReference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Classification of how a symbol is referenced in Navigate/Analyze workflows.
+#[non_exhaustive]
 pub enum ReferenceKind {
     /// Symbol definition site (sub declaration, variable declaration)
     Definition,
@@ -1481,6 +1493,9 @@ impl WorkspaceIndex {
         files: &HashMap<String, FileIndex>,
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
     ) {
+        #[cfg(test)]
+        REBUILD_SEARCH_INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
+
         search_index.clear();
         for file_index in files.values() {
             for symbol in &file_index.symbols {
@@ -1497,6 +1512,9 @@ impl WorkspaceIndex {
         search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
         file_index: &FileIndex,
     ) {
+        #[cfg(test)]
+        INCREMENTAL_SEARCH_ADD_CALLS.with(|calls| calls.set(calls.get() + 1));
+
         for symbol in &file_index.symbols {
             search_index.entry(symbol.name.clone()).or_default().push(symbol.clone());
             if let Some(ref qname) = symbol.qualified_name {
@@ -3823,7 +3841,12 @@ impl WorkspaceIndex {
     /// ```
     pub fn has_symbols(&self) -> bool {
         let files = self.files.read();
-        files.values().any(|file_index| !file_index.symbols.is_empty())
+        if files.values().any(|file_index| !file_index.symbols.is_empty()) {
+            return true;
+        }
+
+        let shards = self.fact_shards.read();
+        shards.values().any(|shard| !shard.entities.is_empty())
     }
 
     /// Search for symbols by query
@@ -4472,6 +4495,63 @@ impl WorkspaceIndex {
             }
         }
 
+        members
+    }
+
+    /// Return framework-generated members for one package from semantic fact shards.
+    ///
+    /// Legacy package members remain available through get_package_members.
+    /// This companion query exposes generated accessors and similar framework
+    /// members using the same source anchor range used by workspace-symbol
+    /// responses, so completion can traverse indexed generated members without
+    /// treating them as source-defined methods.
+    pub fn get_generated_package_members(&self, package_name: &str) -> Vec<WorkspaceSymbol> {
+        let shards = self.fact_shards.read();
+        let mut members = Vec::new();
+
+        for shard in shards.values() {
+            for entity in &shard.entities {
+                if entity.kind != EntityKind::GeneratedMember
+                    || !is_framework_generated_member_entity(entity)
+                {
+                    continue;
+                }
+
+                let Some((container_name, bare_name)) =
+                    split_qualified_symbol_name(&entity.canonical_name)
+                else {
+                    continue;
+                };
+                if container_name != package_name {
+                    continue;
+                }
+
+                let Some(anchor_id) = entity.anchor_id else {
+                    continue;
+                };
+                let Some(range) = self.generated_member_anchor_range(shard, anchor_id) else {
+                    continue;
+                };
+
+                members.push(WorkspaceSymbol {
+                    name: bare_name.to_string(),
+                    kind: SymbolKind::Method,
+                    uri: shard.source_uri.clone(),
+                    range,
+                    qualified_name: Some(entity.canonical_name.clone()),
+                    documentation: Some(
+                        "Generated/framework member; virtual symbol anchored to source declaration"
+                            .to_string(),
+                    ),
+                    container_name: Some(container_name.to_string()),
+                    has_body: false,
+                    workspace_folder_uri: self.determine_folder_uri(&shard.source_uri),
+                    is_lexical: false,
+                });
+            }
+        }
+
+        sort_workspace_symbols(&mut members);
         members
     }
 
@@ -7164,6 +7244,50 @@ has display_name => (is => 'rw');
     }
 
     #[test]
+    fn has_symbols_true_for_fact_shard_only_index() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/Generated/FactOnly.pm"));
+        must(
+            index.index_file(
+                uri,
+                r#"package Generated::FactOnly;
+use Moo;
+has status => (is => 'rw');
+1;
+"#
+                .to_string(),
+            ),
+        );
+
+        assert!(index.has_symbols(), "fact-shard-only indexes must still be treated as populated");
+        Ok(())
+    }
+
+    #[test]
+    fn package_members_include_generated_framework_members()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/Generated/PackageMembers.pm"));
+        must(
+            index.index_file(
+                uri,
+                r#"package Generated::PackageMembers;
+use Moo;
+has status => (is => 'rw', predicate => 1);
+1;
+"#
+                .to_string(),
+            ),
+        );
+
+        let members = index.get_generated_package_members("Generated::PackageMembers");
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(names.contains(&"status"), "generated reader must be exposed: {names:?}");
+        assert!(names.contains(&"has_status"), "generated predicate must be exposed: {names:?}");
+        Ok(())
+    }
+
+    #[test]
     fn search_symbols_returns_labeled_predicate_generated_members()
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
@@ -7584,7 +7708,7 @@ sub other { foo(); return 1; }
             !refs.iter().any(|location| location.uri == uri_b),
             "bare foo() in PkgB must not appear in PkgA::foo references"
         );
-        assert!(refs.len() >= 1, "PkgA::foo references must include same-package sites");
+        assert!(!refs.is_empty(), "PkgA::foo references must include same-package sites");
     }
 
     #[test]
@@ -9135,8 +9259,9 @@ sub hello {
     /// task (`LspServer::run_post_parse_side_effects`'s `spawn_blocking`)
     /// completing after a later generation was merely attempted, not
     /// after it committed. Without rollback, the early guard's high-water
-    /// check (`existing.generation.max(existing.pending_generation) = 10
-    /// > 7`) rejects generation 7 outright -- `index_file_with_generation`
+    /// check (`existing.generation.max(existing.pending_generation) = 10,
+    /// which is greater than 7`) rejects generation 7 outright --
+    /// `index_file_with_generation`
     /// returns `Ok(())` but SILENTLY skips indexing it, permanently
     /// stranding the index at generation 3 even though generation 7's
     /// content was never anything but valid. With the rollback (this PR's
@@ -10311,7 +10436,19 @@ helper_one();
         ));
 
         // Removing the upper package empties Foo::Bar keys but must not disturb foo::bar.
+        INCREMENTAL_SEARCH_ADD_CALLS.with(|calls| calls.set(0));
+        REBUILD_SEARCH_INDEX_CALLS.with(|calls| calls.set(0));
         index.remove_file(upper_uri.as_str());
+        let search_add_calls_after_remove = INCREMENTAL_SEARCH_ADD_CALLS.with(Cell::get);
+        let rebuild_search_calls_after_remove = REBUILD_SEARCH_INDEX_CALLS.with(Cell::get);
+        assert_eq!(
+            search_add_calls_after_remove, 0,
+            "removing one file must not re-add every remaining file to the search index"
+        );
+        assert_eq!(
+            rebuild_search_calls_after_remove, 0,
+            "removing one file must not call rebuild_search_index (O(workspace) full rebuild)"
+        );
 
         assert!(
             index.definition_candidates("Foo::Bar::upper_only").is_empty(),

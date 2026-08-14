@@ -141,6 +141,15 @@ from different ones.
 6. **Classify GitHub facts separately.** Record checks, threads, draft state,
    mergeability, rulesets, queue state, and prerequisites as a snapshot. They inform
    integration but do not create substantive review.
+
+   Two snapshot facts are routinely misread as candidate defects. Before recording a
+   failing check against the candidate, confirm it ran on the **live head** — a
+   failure anchored to a superseded SHA is not evidence about the current candidate,
+   and cancelled lanes commonly say so in their own logs. Before recording a failure
+   at the live head, confirm it does not reproduce on the base; a gate that is already
+   red on `main` is a repository condition to name and file, not a candidate finding.
+   Attributing either to the candidate sends the author to fix code that is not
+   broken.
 7. **Publish the review.** Post file/line-anchored findings and the cumulative
    conclusion as one submitted review with
    `scripts/reviews/inline --pr <n> --body <summary> [--findings <file>]`, which takes
@@ -238,6 +247,13 @@ dispositions, and one cumulative review because those survive the review context
 ## Semantic currentness
 
 - later commit alone does not invalidate review;
+- **base movement alone is not a finding.** This repository squash-merges. A
+  conflict-free candidate whose base is behind `main` needs no rebase, branch
+  update, empty commit, CI replay, or review refresh. "Behind by N", "targets
+  `<sha>` while live main is `<sha>`", and "rebuild on current main before
+  promotion" are not review findings and must not be raised as blockers. Only a
+  **real** conflict, or a combined-tree interaction that actually failed, changes
+  this — and then the finding names the conflicting seam, not the distance;
 - finding repair requires checking that finding, proof, and changed seam;
 - material claim, production-route, authority, proof, compatibility, risk, or rollback
   change requires affected review;
