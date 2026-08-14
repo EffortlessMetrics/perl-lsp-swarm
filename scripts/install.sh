@@ -463,6 +463,14 @@ configure_claude() {
         return 0
     fi
 
+    # User-scoped Claude reconciliation must not run as root. Elevated installs
+    # (`sudo INSTALL_DIR=...`) remain supported for the binary stage only.
+    if [ "$(id -u)" -eq 0 ]; then
+        CLAUDE_SETUP_RESULT="skipped_elevated"
+        warn "skipping Claude reconciliation under elevated privileges; install kept the binary and the invoking user should rerun '$BIN_NAME setup claude' without sudo"
+        return 2
+    fi
+
     local _bin="$INSTALL_DIR/$BIN_NAME"
     local _status=0
     info "reconciling Claude Code through '$BIN_NAME setup claude'"

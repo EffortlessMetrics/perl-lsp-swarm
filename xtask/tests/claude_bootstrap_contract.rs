@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -93,6 +93,27 @@ fn claude_failure_preserves_the_installed_binary_and_returns_stage_result() -> R
     ensure!(
         function.contains("return \"$_status\""),
         "combined result must retain Claude-stage exit status"
+    );
+    Ok(())
+}
+
+#[test]
+fn elevated_with_claude_skips_user_scoped_reconciliation() -> Result<()> {
+    let source = installer_source()?;
+    let start = source.find("configure_claude() {").context("configure_claude function missing")?;
+    let end = source[start..]
+        .find("# ── Main")
+        .map(|offset| start + offset)
+        .context("configure_claude function boundary missing")?;
+    let function = &source[start..end];
+
+    ensure!(
+        function.contains("id -u") && function.contains("skipped_elevated"),
+        "elevated --with-claude must skip user-scoped Claude reconciliation"
+    );
+    ensure!(
+        function.contains("without sudo"),
+        "elevated skip path must tell the invoking user to rerun setup without sudo"
     );
     Ok(())
 }
