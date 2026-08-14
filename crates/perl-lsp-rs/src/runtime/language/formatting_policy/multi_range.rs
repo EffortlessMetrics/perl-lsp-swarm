@@ -1,10 +1,10 @@
 use serde::Serialize;
 
 use super::{
-    CodeFormatter, FormatContext, FormatDisposition, FormatTextEdit, JsonRpcError, JsonRpcId,
-    LspServer, RequestCleanupGuard, Snapshot, Surface, Value, WirePosition, WireRange,
-    actual_engine_for_mode, cancellation_token, digest, invalid_params, json, parse_range,
-    sanitized_outcome,
+    CodeFormatter, FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision,
+    JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Snapshot, Surface, Value,
+    WirePosition, WireRange, actual_engine_for_mode, cancellation_token, default_options, digest,
+    invalid_params, json, parse_range, sanitized_outcome,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -384,6 +384,64 @@ fn plan_evidence(
     })
 }
 
+fn plan_outcomes(plan: &RangePlan, decisions: &[FormattingDecision]) -> Vec<Value> {
+    decisions
+        .iter()
+        .zip(plan.normalized_ranges.iter().zip(&plan.range_provenance))
+        .map(|(decision, (admitted, provenance))| {
+            json!({
+                "original_index": provenance.original_index,
+                "normalized_range": admitted,
+                "outcome": sanitized_outcome(decision),
+            })
+        })
+        .collect()
+}
+
+fn blocked_decision(decisions: &[FormattingDecision]) -> Option<&FormattingDecision> {
+    decisions.iter().find(|decision| {
+        matches!(
+            decision.outcome.disposition,
+            FormatDisposition::Refused | FormatDisposition::FailedOrNotProven
+        )
+    })
+}
+
+fn typed_outcome_error(
+    server: &LspServer,
+    snapshot: &Snapshot,
+    plan: &RangePlan,
+    outcomes: Vec<Value>,
+    decision: &FormattingDecision,
+    message: &str,
+) -> JsonRpcError {
+    let outcome = sanitized_outcome(decision);
+    let reason = outcome.get("reason").cloned().unwrap_or_else(|| json!("unknown"));
+    let engine =
+        outcome.pointer("/identity/actual_engine").and_then(Value::as_str).unwrap_or("unknown");
+    let evidence = plan_evidence(plan, outcomes, None);
+    let receipt = server.record_formatting_receipt(
+        snapshot,
+        "blocked",
+        reason.clone(),
+        engine,
+        "no_edit",
+        0,
+        Some(evidence),
+    );
+    JsonRpcError {
+        code: -32603,
+        message: message.to_string(),
+        data: Some(json!({
+            "error_kind": "formatting_outcome_contract",
+            "reason": reason,
+            "identity": outcome.get("identity").cloned().unwrap_or(Value::Null),
+            "formatting_outcome": outcome,
+            "formatting_receipt": receipt,
+        })),
+    }
+}
+
 fn plan_error(
     server: &LspServer,
     snapshot: &Snapshot,
@@ -475,10 +533,12 @@ pub(super) fn handle(
                     .range_provenance
                     .get(normalized_index)
                     .map_or(normalized_index, |provenance| provenance.original_index);
-                return Err(server.formatting_failure(
+                let outcomes = plan_outcomes(&plan, &decisions);
+                return Err(server.formatting_failure_with_evidence(
                     &snapshot,
                     &format!("Range formatting failed for ranges[{original_index}]"),
                     error,
+                    Some(plan_evidence(&plan, outcomes, None)),
                 ));
             }
         };
@@ -492,34 +552,30 @@ pub(super) fn handle(
         Some(actual_engine_for_mode(snapshot.config.mode)),
     )?;
     server.ensure_current(&snapshot)?;
-    let outcomes = decisions
-        .iter()
-        .zip(plan.normalized_ranges.iter().zip(&plan.range_provenance))
-        .map(|(decision, (admitted, provenance))| {
-            json!({
-                "original_index": provenance.original_index,
-                "normalized_range": admitted,
-                "outcome": sanitized_outcome(decision),
-            })
-        })
-        .collect::<Vec<_>>();
+    let outcomes = plan_outcomes(&plan, &decisions);
 
-    if let Some(refused) =
-        decisions.iter().find(|decision| decision.outcome.disposition == FormatDisposition::Refused)
-    {
+    if let Some(blocked) = blocked_decision(&decisions) {
         if decisions.iter().any(|decision| !decision.document.edits.is_empty()) {
-            let evidence = plan_evidence(&plan, outcomes, None);
-            return Err(plan_error(
+            return Err(typed_outcome_error(
                 server,
                 &snapshot,
-                PlanError::new(
-                    "partial_success_blocked",
-                    "one range refused after another produced edits; no edits were returned",
-                ),
-                Some(evidence),
+                &plan,
+                outcomes,
+                blocked,
+                "one range was blocked after another produced edits; no edits were returned",
             ));
         }
-        let outcome = sanitized_outcome(refused);
+        if blocked.outcome.disposition == FormatDisposition::FailedOrNotProven {
+            return Err(typed_outcome_error(
+                server,
+                &snapshot,
+                &plan,
+                outcomes,
+                blocked,
+                "formatting returned an unproven successful value; no edits were returned",
+            ));
+        }
+        let outcome = sanitized_outcome(blocked);
         let reason = outcome.get("reason").cloned().unwrap_or_else(|| json!("unknown"));
         let engine = outcome
             .pointer("/identity/actual_engine")
@@ -587,6 +643,7 @@ pub(super) fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_lsp_rs_core::tooling::perltidy::native::FormatReasonCode;
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
         json!({
@@ -664,27 +721,106 @@ mod tests {
     }
 
     #[test]
-    fn conflict_detector_rejects_overlapping_enclosing_edits()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = "abcdef\nghijkl\n";
-        let plan = build_plan(source, &[range(0, 0, 0, 6), range(1, 0, 1, 6)])?;
+    fn conflict_detector_rejects_adjacent_boundary_edits() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "abcdef\n";
+        let plan = build_plan(source, &[range(0, 0, 0, 3), range(0, 3, 0, 6)])?;
         let edits = vec![
             vec![FormatTextEdit {
                 range: crate::features::formatting::FormatRange::new(
-                    crate::features::formatting::FormatPosition::new(0, 0),
-                    crate::features::formatting::FormatPosition::new(1, 2),
+                    crate::features::formatting::FormatPosition::new(0, 3),
+                    crate::features::formatting::FormatPosition::new(0, 3),
                 ),
                 new_text: "left".to_string(),
             }],
             vec![FormatTextEdit {
                 range: crate::features::formatting::FormatRange::new(
-                    crate::features::formatting::FormatPosition::new(1, 0),
-                    crate::features::formatting::FormatPosition::new(1, 6),
+                    crate::features::formatting::FormatPosition::new(0, 3),
+                    crate::features::formatting::FormatPosition::new(0, 4),
                 ),
                 new_text: "right".to_string(),
             }],
         ];
-        assert!(compose_edits(source, &plan, edits, 1, "cfg").is_err());
+        let conflict = compose_edits(source, &plan, edits, 1, "cfg")
+            .err()
+            .ok_or("adjacent edits were not rejected")?;
+        assert_eq!(conflict.reason, "edit_conflict");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_range_after_edit_is_atomic_with_typed_plan_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my$x=1;\nmy $y = 2;\n";
+        let uri = "file:///multi-range-failed-outcome.pl";
+        let plan = build_plan(source, &[range(0, 0, 0, 7), range(1, 0, 1, 10)])?;
+        let formatter = CodeFormatter::new();
+        let context = FormatContext::new(Some(uri.to_string()), Some(1));
+        let first = formatter.format_range_decision(
+            source,
+            &plan.normalized_ranges[0].wire(),
+            &default_options(),
+            &context,
+        )?;
+        assert_eq!(first.outcome.disposition, FormatDisposition::Applied);
+        assert!(!first.document.edits.is_empty());
+
+        let mut second = formatter.format_range_decision(
+            source,
+            &plan.normalized_ranges[1].wire(),
+            &default_options(),
+            &context,
+        )?;
+        second.outcome.disposition = FormatDisposition::FailedOrNotProven;
+        second.outcome.reason = FormatReasonCode::InstrumentFailure;
+        assert!(second.document.edits.is_empty());
+
+        let decisions = vec![first, second];
+        let blocked = blocked_decision(&decisions).ok_or("failed outcome was not blocked")?;
+        assert_eq!(blocked.outcome.disposition, FormatDisposition::FailedOrNotProven);
+        assert_eq!(blocked.outcome.reason, FormatReasonCode::InstrumentFailure);
+        assert!(decisions.iter().any(|decision| !decision.document.edits.is_empty()));
+
+        let server = LspServer::new();
+        server.advertised_feature_ids.lock().push(Surface::Ranges.feature_id());
+        server.test_apply_did_open(uri, source, 1)?;
+        let snapshot = server.admit(
+            Surface::Ranges,
+            &json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            }),
+        )?;
+        let error = typed_outcome_error(
+            &server,
+            &snapshot,
+            &plan,
+            plan_outcomes(&plan, &decisions),
+            blocked,
+            "one range was blocked after another produced edits; no edits were returned",
+        );
+        let data = error.data.ok_or("missing failed-outcome data")?;
+        assert_eq!(error.code, -32603);
+        assert_eq!(data["reason"], "instrument_failure");
+        assert_eq!(data["identity"]["source_id_hash"], digest(uri));
+        assert_eq!(data["formatting_outcome"]["reason"], "instrument_failure");
+
+        let receipt = data["formatting_receipt"].clone();
+        assert_eq!(receipt["decision"], "blocked");
+        assert_eq!(receipt["result_count"], 0);
+        let evidence = &receipt["format_outcome"];
+        assert_eq!(evidence["plan_digest"], plan.plan_digest);
+        assert_eq!(evidence["requested_ranges"].as_array().map(Vec::len), Some(2));
+        assert_eq!(evidence["normalized_ranges"].as_array().map(Vec::len), Some(2));
+        assert_eq!(evidence["range_provenance"].as_array().map(Vec::len), Some(2));
+        assert_eq!(evidence["per_range_outcomes"].as_array().map(Vec::len), Some(2));
+        assert_eq!(evidence["per_range_outcomes"][0]["original_index"], 0);
+        assert_eq!(evidence["per_range_outcomes"][1]["original_index"], 1);
+        assert_eq!(evidence["per_range_outcomes"][1]["outcome"]["reason"], "instrument_failure");
+        assert_eq!(
+            evidence["per_range_outcomes"][1]["outcome"]["identity"]["source_id_hash"],
+            digest(uri)
+        );
         Ok(())
     }
 
