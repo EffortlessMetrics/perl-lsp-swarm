@@ -1,0 +1,30 @@
+{
+  "schema_version": "actual_host_receipt.v1",
+  "receipt_version": 1,
+  "run_id": "invalid-missing-orphan",
+  "timestamp": "2026-08-13T10:00:00Z",
+  "editor": { "family": "emacs", "version": "30.2", "source": "gnu-release" },
+  "client": { "family": "eglot", "version": "1.24", "source": "bundled" },
+  "server": { "path": "/subject/perllsp", "sha256": "0123456789abcdef", "version": "perllsp 0.18.0" },
+  "platform": { "os": "linux", "arch": "x86_64" },
+  "workspace": { "root": "/fixture/project", "identity": "fixture:git-root" },
+  "profile": { "identity": "clean-home-001", "source": "hermetic-runner" },
+  "registration_state": "manual_client_registration",
+  "artifacts": { "client_log": "logs/eglot-events.log", "server_stderr": "logs/perllsp.stderr" },
+  "features": {
+    "diagnostics": { "advertised": true, "observed": true, "outcome": "passed" }
+  },
+  "state_machine": {
+    "initialize": { "outcome": "ok" },
+    "initialized": { "outcome": "ok" },
+    "position_encoding": "utf-16",
+    "diagnostics_mode": "pull",
+    "diagnostics_response_form": "full",
+    "workspace_configuration": { "outcome": "ok" },
+    "register_capability": { "outcome": "ok" },
+    "watcher_behavior": { "outcome": "ok" },
+    "refresh": { "outcome": "unsupported", "reason": "not advertised" },
+    "shutdown": { "outcome": "ok" },
+    "exit": { "outcome": "ok" }
+  }
+}
