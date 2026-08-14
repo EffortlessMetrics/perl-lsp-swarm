@@ -924,7 +924,8 @@ jobs:
   check-all-targets:
     name: Compile All Targets (bit-rot guard)
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # +5m headroom for the focused emacs docs contract after workspace check.
+    timeout-minutes: 15
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
@@ -953,6 +954,12 @@ jobs:
 
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
+
+      # Required merge surface for #7767/#7796: unit_routed_full only executes via
+      # advisory pr-smoke, so stale Emacs guidance could otherwise merge while this
+      # contract merely compiles. Keep the oracle on Compile All Targets.
+      - name: Emacs docs contract (required merge surface)
+        run: cargo test -p xtask --test emacs_docs_contract --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
