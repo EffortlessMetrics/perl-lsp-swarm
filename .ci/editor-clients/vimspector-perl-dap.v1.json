@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "receipt_schema_version": 2,
   "subject": {
     "host": "vim",
     "client": "puremourning/vimspector",
@@ -11,25 +12,52 @@
     "repository": "puremourning/vimspector",
     "commit": "34099d18d8957bb3db5f396c8ca993ffb246a437"
   },
-  "required_host_features": ["python3"],
+  "required_host_features": [
+    "python3"
+  ],
   "required_cells": [
+    "adapter_identity_bound",
     "adapter_launch",
     "initialize_launch",
     "verified_breakpoint",
     "stopped_source_line",
+    "source_discriminator",
     "stack_trace_visible",
     "variables_visible",
     "step_over",
     "continue_to_end",
-    "clean_shutdown"
+    "debuggee_output_visible",
+    "clean_shutdown",
+    "os_process_cleanup"
   ],
-  "optional_cells": ["evaluate_watch", "attach"],
-  "evidence_stages": ["exact_source_local", "public_artifact"],
+  "optional_cells": [
+    "evaluate_watch",
+    "attach"
+  ],
+  "required_artifacts": [
+    "vim_version",
+    "vimspector_log",
+    "adapter_identity",
+    "adapter_stderr",
+    "adapter_trace",
+    "debuggee_output",
+    "fixture_manifest",
+    "process_ledger"
+  ],
+  "evidence_stages": [
+    "exact_source_local",
+    "public_artifact"
+  ],
   "claim_rules": {
     "lsp_receipt_cannot_satisfy_dap": true,
     "local_binary_cannot_satisfy_public_artifact": true,
-    "configured_breakpoint_without_stopped_event_is_failure": true,
+    "public_artifact_requires_external_sha256": true,
+    "configured_breakpoint_without_server_verification_is_failure": true,
+    "verified_breakpoint_without_stopped_event_is_failure": true,
     "adapter_response_not_consumed_by_vim_is_not_host_proof": true,
-    "attach_does_not_inherit_launch": true
+    "same_named_source_negative_control_required": true,
+    "client_session_cleanup_is_not_os_process_cleanup": true,
+    "attach_does_not_inherit_launch": true,
+    "downstream_registry_requires_passing_real_host_receipt": true
   }
 }
