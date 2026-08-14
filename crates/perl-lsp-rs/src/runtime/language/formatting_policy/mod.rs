@@ -5,8 +5,8 @@
 //! snapshot, binds cancellation, and projects that typed result onto LSP.
 
 use super::super::{
-    json, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, Value,
-    GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST,
+    GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
+    PerlLspCancellationToken, Value, json,
 };
 use crate::cancellation::RequestCleanupGuard;
 use crate::convert::{WirePosition, WireRange};
@@ -14,10 +14,10 @@ use crate::features::formatting::{
     CodeFormatter, FormatContext, FormatTextEdit, FormattingDecision, FormattingError,
     FormattingOptions, PerlTidyConfig,
 };
-use crate::protocol::{invalid_params, req_position, req_uri, CONTENT_MODIFIED, REQUEST_CANCELLED};
+use crate::protocol::{CONTENT_MODIFIED, REQUEST_CANCELLED, invalid_params, req_position, req_uri};
 use perl_lsp_rs_core::config::FormatterMode;
 use perl_lsp_rs_core::features::ids::{
-    LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGES_FORMATTING, LSP_RANGE_FORMATTING,
+    LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGE_FORMATTING, LSP_RANGES_FORMATTING,
 };
 use perl_lsp_rs_core::tooling::perltidy::native::FormatDisposition;
 use serde::Serialize;
@@ -180,10 +180,10 @@ fn cancellation_token(
 
 fn sanitized_outcome(decision: &FormattingDecision) -> Value {
     let mut outcome = value(&decision.outcome);
-    if let Some(identity) = outcome.get_mut("identity").and_then(Value::as_object_mut) {
-        if let Some(Value::String(source_id)) = identity.remove("source_id") {
-            identity.insert("source_id_hash".to_string(), json!(digest(&source_id)));
-        }
+    if let Some(identity) = outcome.get_mut("identity").and_then(Value::as_object_mut)
+        && let Some(Value::String(source_id)) = identity.remove("source_id")
+    {
+        identity.insert("source_id_hash".to_string(), json!(digest(&source_id)));
     }
     outcome
 }
@@ -201,6 +201,14 @@ impl LspServer {
             Surface::Document | Surface::OnType => advertised.formatting,
             Surface::Range | Surface::Ranges => advertised.range_formatting,
         }
+    }
+
+    /// Fail closed with method-not-advertised before parameter validation.
+    fn ensure_surface_advertised(&self, surface: Surface) -> Result<(), JsonRpcError> {
+        if self.surface_advertised(surface) {
+            return Ok(());
+        }
+        Err(crate::protocol::method_not_advertised())
     }
 
     fn effective_formatting_config(&self) -> Result<EffectiveConfig, JsonRpcError> {
@@ -248,9 +256,7 @@ impl LspServer {
     }
 
     fn admit(&self, surface: Surface, params: &Value) -> Result<Snapshot, JsonRpcError> {
-        if !self.surface_advertised(surface) {
-            return Err(crate::protocol::method_not_advertised());
-        }
+        self.ensure_surface_advertised(surface)?;
 
         let uri = req_uri(params)?.to_string();
         let (text, version, generation) = {

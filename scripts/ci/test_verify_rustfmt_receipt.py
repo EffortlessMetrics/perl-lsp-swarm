@@ -40,7 +40,9 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
         self._git("commit", "-m", "fixture")
         self.sha = self._git("rev-parse", "HEAD").stdout.strip()
         self.tree = self._git("rev-parse", "HEAD^{tree}").stdout.strip()
-        self.cargo = self._tool("cargo", "cargo 1.95.0 (fixture)")
+        self.metadata = Path(self.temp.name, "metadata.json")
+        self._write_metadata(self._metadata_payload())
+        self.cargo = self._cargo_tool()
         self.rustfmt = self._tool("rustfmt", "rustfmt 1.8.0-stable (fixture)")
         self.rustc_output = "rustc 1.95.0 (fixture 2026-08-01)\nbinary: rustc\ncommit-hash: 0123456789abcdef0123456789abcdef01234567\ncommit-date: 2026-08-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 20.1.0"
         self.rustc = self._tool("rustc", self.rustc_output)
@@ -66,6 +68,57 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
             path.write_text(f'@"{sys.executable}" "{implementation}" %*\n', encoding="utf-8")
         else:
             path.write_text(f"#!/bin/sh\necho '{version}'\n", encoding="utf-8")
+            path.chmod(0o755)
+        return path
+
+    def _metadata_payload(self) -> dict[str, object]:
+        package_id = "path+file:///fixture/pkg#0.1.0"
+        return {
+            "packages": [
+                {
+                    "id": package_id,
+                    "name": "pkg",
+                    "manifest_path": str(self.root / "pkg/Cargo.toml"),
+                    "targets": [
+                        {
+                            "name": "pkg",
+                            "kind": ["lib"],
+                            "src_path": str(self.root / "pkg/src/lib.rs"),
+                        }
+                    ],
+                }
+            ],
+            "workspace_members": [package_id],
+            "workspace_root": str(self.root),
+        }
+
+    def _write_metadata(self, payload: dict[str, object]) -> None:
+        self.metadata.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _cargo_tool(self) -> Path:
+        suffix = ".cmd" if os.name == "nt" else ""
+        path = Path(self.temp.name, "cargo" + suffix)
+        implementation = path.with_suffix(".py") if os.name == "nt" else path
+        implementation.write_text(
+            """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("cargo 1.95.0 (fixture)")
+elif args == ["metadata", "--no-deps", "--locked", "--format-version", "1"]:
+    print(pathlib.Path(%r).read_text(encoding="utf-8"))
+else:
+    print(f"unexpected cargo invocation: {args}", file=sys.stderr)
+    raise SystemExit(2)
+"""
+            % str(self.metadata),
+            encoding="utf-8",
+        )
+        if os.name == "nt":
+            path.write_text(f'@"{sys.executable}" "{implementation}" %*\n', encoding="utf-8")
+        else:
             path.chmod(0o755)
         return path
 
@@ -225,6 +278,101 @@ class VerifyRustfmtReceiptTests(unittest.TestCase):
         self.assert_rejected(lambda value: value.update(findings=[{"path": "pkg/src/lib.rs"}]))
         self.payload = self._valid_payload()
         self.assert_rejected(lambda value: value.update(findings_truncated=True))
+
+    def test_canonically_resigned_target_omission_is_rejected(self) -> None:
+        metadata = self._metadata_payload()
+        extra_target = {
+            "name": "pkg-bin",
+            "kind": ["bin"],
+            "src_path": str(self.root / "pkg/src/main.rs"),
+        }
+        (self.root / "pkg/src/main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        self._git("add", "pkg/src/main.rs")
+        self._git("commit", "-m", "add second target")
+        self.sha = self._git("rev-parse", "HEAD").stdout.strip()
+        self.tree = self._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        metadata["packages"][0]["targets"].append(extra_target)
+        self._write_metadata(metadata)
+        self.payload["subject"] = {
+            "repository_sha": self.sha,
+            "repository_tree_sha": self.tree,
+        }
+        receipt_target = {
+            "package": "pkg",
+            "name": "pkg-bin",
+            "kind": ["bin"],
+            "source": "pkg/src/main.rs",
+            "manifest": "pkg/Cargo.toml",
+        }
+        self.payload["workspace"]["targets"].append(receipt_target)
+        self.payload["workspace"]["target_count"] = 2
+        self.payload["workspace"]["targets"].pop()
+        self.payload["workspace"]["target_count"] = 1
+        self._resign(self.payload)
+        self._write(self.payload)
+        with self.assertRaisesRegex(verifier.VerificationError, "targets do not match"):
+            verifier.verify(self._args())
+
+    def test_canonically_resigned_manifest_run_and_targets_omission_is_rejected(self) -> None:
+        for path, content in {
+            "other/Cargo.toml": '[package]\nname="other"\nversion="0.1.0"\n',
+            "other/src/lib.rs": "pub fn other() {}\n",
+        }.items():
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        self._git("add", "other")
+        self._git("commit", "-m", "add second package")
+        self.sha = self._git("rev-parse", "HEAD").stdout.strip()
+        self.tree = self._git("rev-parse", "HEAD^{tree}").stdout.strip()
+        metadata = self._metadata_payload()
+        other_id = "path+file:///fixture/other#0.1.0"
+        metadata["workspace_members"].append(other_id)
+        metadata["packages"].append(
+            {
+                "id": other_id,
+                "name": "other",
+                "manifest_path": str(self.root / "other/Cargo.toml"),
+                "targets": [
+                    {
+                        "name": "other",
+                        "kind": ["lib"],
+                        "src_path": str(self.root / "other/src/lib.rs"),
+                    }
+                ],
+            }
+        )
+        self._write_metadata(metadata)
+        self.payload["subject"] = {
+            "repository_sha": self.sha,
+            "repository_tree_sha": self.tree,
+        }
+        self.payload["workspace"]["manifests"].append(
+            {"manifest": "other/Cargo.toml", "package": "other"}
+        )
+        self.payload["workspace"]["targets"].append(
+            {
+                "package": "other",
+                "name": "other",
+                "kind": ["lib"],
+                "source": "other/src/lib.rs",
+                "manifest": "other/Cargo.toml",
+            }
+        )
+        self.payload["runs"].append(
+            {"manifest": "other/Cargo.toml", "package": "other", "status": "pass"}
+        )
+        self.payload["workspace"]["manifest_count"] = 2
+        self.payload["workspace"]["target_count"] = 2
+        self.payload["workspace"]["manifests"].pop()
+        self.payload["workspace"]["targets"].pop()
+        self.payload["runs"].pop()
+        self.payload["workspace"]["manifest_count"] = 1
+        self.payload["workspace"]["target_count"] = 1
+        self._resign(self.payload)
+        self._write(self.payload)
+        with self.assertRaisesRegex(verifier.VerificationError, "manifests do not match"):
+            verifier.verify(self._args())
 
     def test_dirty_tree_is_rejected(self) -> None:
         (self.root / "pkg/src/lib.rs").write_text("dirty\n", encoding="utf-8")

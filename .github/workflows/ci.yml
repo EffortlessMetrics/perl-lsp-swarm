@@ -348,8 +348,9 @@ jobs:
       - name: Upload PR-fast test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
         with:
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/pr-fast-junit.xml
         env:
@@ -546,8 +547,9 @@ jobs:
       - name: Upload gate shard test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
         with:
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/gate-shard-${{ matrix.name }}-junit.xml
         env:
@@ -867,8 +869,9 @@ jobs:
       - name: Upload UX regression test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3  # v1
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
         with:
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/ux-regression-junit.xml
         env:
