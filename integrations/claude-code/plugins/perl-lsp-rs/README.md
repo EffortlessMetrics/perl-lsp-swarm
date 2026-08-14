@@ -1,6 +1,6 @@
 # Perl LSP for Claude Code
 
-This plugin connects Claude Code's native LSP integration to the separately installed `perllsp` server from EffortlessMetrics.
+This `perl-lsp-rs` plugin connects Claude Code's native LSP integration to the separately installed `perllsp` server from EffortlessMetrics.
 
 It is an LSP package only. It does not bundle a language-server binary, use MCP, or proxy another Perl language server.
 
@@ -30,7 +30,7 @@ From a checkout containing the root `.claude-plugin/marketplace.json`:
 
 ```bash
 claude plugin marketplace add . --scope local
-claude plugin install perl-lsp@effortlessmetrics --scope local
+claude plugin install perl-lsp-rs@effortlessmetrics --scope local
 ```
 
 ### Public marketplace
@@ -39,7 +39,7 @@ After this package has been promoted and proven from `EffortlessMetrics/perl-lsp
 
 ```bash
 claude plugin marketplace add EffortlessMetrics/perl-lsp
-claude plugin install perl-lsp@effortlessmetrics
+claude plugin install perl-lsp-rs@effortlessmetrics
 ```
 
 The public route is a support claim only after the repository's public-artifact Claude receipt is current. The package itself does not silently download or replace `perllsp`.
