@@ -7,7 +7,7 @@
 
 use crate::protocol::JsonRpcError;
 use crate::runtime::LspServer;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 #[cfg(feature = "workspace")]
 use crate::runtime::workspace::{module_name_appears_in_text, path_to_module_name};
@@ -229,14 +229,29 @@ mod tests {
     #[derive(Debug, PartialEq, Eq)]
     struct RetainedStateFingerprint {
         open_documents: usize,
+        open_document_identities: Vec<(String, i32, u32, usize)>,
+        indexed_document_identities: Vec<(String, i32, usize)>,
         indexed_files: usize,
         indexed_symbols: usize,
+        semantic_facts: Vec<String>,
+        dependency_facts: Vec<(String, Vec<String>)>,
         old_file_symbols: usize,
         new_file_symbols: usize,
         old_document_stored: bool,
         new_document_stored: bool,
-        pending_index_tasks: usize,
+        index_state: String,
+        readiness: String,
+        memory: crate::runtime::MemoryStateSnapshot,
+        pressure: crate::runtime::RuntimePressureSnapshot,
+        semantic_tokens_cache_entries: usize,
+        provider_decision_trace_entries: usize,
+        progress_tokens: Vec<String>,
+        progress_requests: Vec<String>,
+        cancelled_requests: usize,
+        pending_request_ids: usize,
+        parse_cancel_uris: Vec<String>,
         indexing_invocations: usize,
+        indexing_in_progress: bool,
     }
 
     fn fingerprint(
@@ -246,16 +261,99 @@ mod tests {
     ) -> TestResult<RetainedStateFingerprint> {
         let coordinator = server.coordinator().ok_or("workspace coordinator unavailable")?;
         let index = coordinator.index();
+
+        let mut open_document_identities = server
+            .documents
+            .lock()
+            .iter()
+            .map(|(uri, document)| {
+                (
+                    uri.clone(),
+                    document.version,
+                    document.generation.load(Ordering::SeqCst),
+                    document.text.len(),
+                )
+            })
+            .collect::<Vec<_>>();
+        open_document_identities.sort();
+
+        let mut indexed_document_identities = index
+            .document_store()
+            .all_documents()
+            .into_iter()
+            .map(|document| (document.uri, document.version, document.text().len()))
+            .collect::<Vec<_>>();
+        indexed_document_identities.sort();
+
+        let mut semantic_facts = index
+            .all_symbols()
+            .into_iter()
+            .map(|symbol| serde_json::to_string(&symbol))
+            .collect::<Result<Vec<_>, _>>()?;
+        semantic_facts.sort();
+
+        let mut dependency_facts = indexed_document_identities
+            .iter()
+            .map(|(uri, _, _)| {
+                let mut dependencies = index.file_dependencies(uri).into_iter().collect::<Vec<_>>();
+                dependencies.sort();
+                (uri.clone(), dependencies)
+            })
+            .collect::<Vec<_>>();
+        let mut dependents = index.find_dependents(&path_to_module_name(old_uri));
+        dependents.sort();
+        dependency_facts.push(("<dependents>".to_string(), dependents));
+        dependency_facts.sort();
+
+        let mut progress_tokens = server.progress_tokens.lock().iter().cloned().collect::<Vec<_>>();
+        progress_tokens.sort();
+        let mut progress_requests =
+            server.progress_token_to_request.lock().keys().cloned().collect::<Vec<_>>();
+        progress_requests.sort();
+        let mut parse_cancel_uris =
+            server.parse_cancel_flags.lock().keys().cloned().collect::<Vec<_>>();
+        parse_cancel_uris.sort();
+
+        let index_state = {
+            let state = coordinator.state();
+            format!(
+                "kind={:?};phase={:?};files={};symbols={}",
+                state.kind(),
+                state.phase(),
+                index.file_count(),
+                index.symbol_count()
+            )
+        };
+        let readiness =
+            serde_json::to_string(&server.workspace_readiness_receipt.lock().summary_json())?;
+        let memory = server.memory_state_snapshot();
+        let pressure = server.runtime_pressure_snapshot();
+
         Ok(RetainedStateFingerprint {
             open_documents: server.documents.lock().len(),
+            open_document_identities,
+            indexed_document_identities,
             indexed_files: index.file_count(),
             indexed_symbols: index.symbol_count(),
+            semantic_facts,
+            dependency_facts,
             old_file_symbols: index.file_symbols(old_uri).len(),
             new_file_symbols: index.file_symbols(new_uri).len(),
             old_document_stored: index.document_store().get(old_uri).is_some(),
             new_document_stored: index.document_store().get(new_uri).is_some(),
-            pending_index_tasks: server.pending_index_task_count.load(Ordering::SeqCst),
+            index_state,
+            readiness,
+            memory,
+            pressure,
+            semantic_tokens_cache_entries: server.semantic_tokens_cache.lock().len(),
+            provider_decision_trace_entries: server.provider_decision_traces.lock().len(),
+            progress_tokens,
+            progress_requests,
+            cancelled_requests: server.cancelled.lock().len(),
+            pending_request_ids: server.pending_request_ids.lock().len(),
+            parse_cancel_uris,
             indexing_invocations: server.workspace_indexing_invocation_count.load(Ordering::SeqCst),
+            indexing_in_progress: server.indexing_in_progress.load(Ordering::SeqCst),
         })
     }
 
@@ -310,14 +408,12 @@ mod tests {
         let _ = server.handle_will_rename_files_dispatch(Some(json!({
             "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
         })))?;
-        assert!(
-            !server
-                .coordinator()
-                .ok_or("workspace coordinator unavailable")?
-                .index()
-                .file_symbols(&old_uri)
-                .is_empty()
-        );
+        assert!(!server
+            .coordinator()
+            .ok_or("workspace coordinator unavailable")?
+            .index()
+            .file_symbols(&old_uri)
+            .is_empty());
 
         std::fs::rename(&old_path, &new_path)?;
         std::fs::write(&new_path, source)?;
@@ -340,13 +436,13 @@ mod tests {
         let create_uri = Url::from_file_path(directory.path().join("Created.pm"))
             .map_err(|_| "invalid create path")?
             .to_string();
-        let _ = server.handle_will_create_files(Some(json!({
+        let _ = server.handle_will_create_files_dispatch(Some(json!({
             "files": [{ "uri": create_uri }]
         })))?;
         assert_eq!(fingerprint(&server, &old_uri, &new_uri)?, before_create);
 
         let before_delete = fingerprint(&server, &old_uri, &new_uri)?;
-        let _ = server.handle_will_delete_files(Some(json!({
+        let _ = server.handle_will_delete_files_dispatch(Some(json!({
             "files": [{ "uri": old_uri.clone() }]
         })))?;
         assert_eq!(fingerprint(&server, &old_uri, &new_uri)?, before_delete);
@@ -354,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn routed_preflight_implementation_has_no_commit_operations() {
+    fn routed_preflight_implementation_has_no_commit_operations() -> TestResult {
         let source = include_str!("file_preflight.rs");
         let implementation = source.split("#[cfg(all(test").next().unwrap_or(source);
         for forbidden in [
@@ -366,6 +462,17 @@ mod tests {
             "documents.remove(",
             "documents.insert(",
             "refresh_all(",
+            "refresh_controller",
+            "progress_tokens",
+            "progress_token_to_request",
+            "pending_index_task_count",
+            "workspace_readiness_receipt",
+            "ast_cache",
+            "pod_cache",
+            "semantic_tokens_cache",
+            "module_scan_cache",
+            "use_lib_hir_cache",
+            "provider_decision_traces",
         ] {
             assert!(
                 !implementation.contains(forbidden),
@@ -374,7 +481,64 @@ mod tests {
         }
 
         let dispatch = include_str!("../workspace.rs");
-        assert!(dispatch.contains("self.handle_will_rename_files_pure(params)"));
-        assert!(!dispatch.contains("self.handle_will_rename_files(params)"));
+        for (handler, target) in [
+            (
+                "pub(super) fn handle_will_rename_files_dispatch(",
+                "self.handle_will_rename_files_pure(params)",
+            ),
+            (
+                "pub(super) fn handle_will_delete_files_dispatch(",
+                "self.handle_will_delete_files(params)",
+            ),
+            (
+                "pub(super) fn handle_will_create_files_dispatch(",
+                "self.handle_will_create_files(params)",
+            ),
+        ] {
+            let route = source_function(dispatch, handler).ok_or("missing will*Files route")?;
+            assert!(route.contains(target), "route `{handler}` must call `{target}`");
+        }
+
+        let workspace = include_str!("../../workspace.rs");
+        for handler in
+            ["pub(super) fn handle_will_delete_files(", "pub(super) fn handle_will_create_files("]
+        {
+            let implementation =
+                source_function(workspace, handler).ok_or("missing direct handler")?;
+            for forbidden in [
+                ".notify_change(",
+                ".notify_parse_complete(",
+                ".remove_file(",
+                ".clear_file(",
+                ".index_file(",
+                "documents.remove(",
+                "documents.insert(",
+                "refresh_all(",
+                "pending_index_task_count.fetch_",
+                "progress_tokens.lock().",
+                "workspace_readiness_receipt.lock().",
+                "ast_cache",
+                "pod_cache",
+                "semantic_tokens_cache",
+                "module_scan_cache",
+                "use_lib_hir_cache",
+                "provider_decision_traces",
+            ] {
+                assert!(
+                    !implementation.contains(forbidden),
+                    "routed will*Files handler `{handler}` must not contain commit operation `{forbidden}`"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn source_function<'a>(source: &'a str, marker: &str) -> Option<&'a str> {
+        let start = source.find(marker)?;
+        let remainder = &source[start..];
+        let next_function = remainder[marker.len()..]
+            .find("\n    pub(super) fn ")
+            .map(|offset| marker.len() + offset);
+        Some(&remainder[..next_function.unwrap_or(remainder.len())])
     }
 }
