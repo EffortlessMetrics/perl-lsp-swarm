@@ -45,25 +45,24 @@ fn parse_heredoc_delimiter(s: &str) -> (String, bool, bool, bool) {
     // `EOF`, and the body is not interpolated. The lexer accepts this spelling
     // and includes the leading backslash in token text, so normalize it here
     // before the AST node and collector are populated.
-    let (delimiter, interpolated, command) =
-        if let Some(label) = rest.strip_prefix('\\') {
-            (label.to_string(), false, false)
-        } else if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
-            // Double-quoted: interpolated body, but the delimiter label itself is
-            // literal (Perl 5.38 keeps escape sequences like \n as two bytes).
-            (rest[1..rest.len() - 1].to_string(), true, false)
-        } else if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() >= 2 {
-            // Single-quoted: not interpolated, no unescape
-            (rest[1..rest.len() - 1].to_string(), false, false)
-        } else if rest.starts_with('`') && rest.ends_with('`') && rest.len() >= 2 {
-            // Backtick: interpolated command body; delimiter label stays literal.
-            (rest[1..rest.len() - 1].to_string(), true, true)
-        } else {
-            // Bare word: interpolated, no unescape (except maybe explicit escapes?)
-            // Bare identifiers don't usually have escapes, but can have weird chars?
-            // "EOF" -> EOF.
-            (rest.to_string(), true, false)
-        };
+    let (delimiter, interpolated, command) = if let Some(label) = rest.strip_prefix('\\') {
+        (label.to_string(), false, false)
+    } else if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
+        // Double-quoted: interpolated body, but the delimiter label itself is
+        // literal (Perl 5.38 keeps escape sequences like \n as two bytes).
+        (rest[1..rest.len() - 1].to_string(), true, false)
+    } else if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() >= 2 {
+        // Single-quoted: not interpolated, no unescape
+        (rest[1..rest.len() - 1].to_string(), false, false)
+    } else if rest.starts_with('`') && rest.ends_with('`') && rest.len() >= 2 {
+        // Backtick: interpolated command body; delimiter label stays literal.
+        (rest[1..rest.len() - 1].to_string(), true, true)
+    } else {
+        // Bare word: interpolated, no unescape (except maybe explicit escapes?)
+        // Bare identifiers don't usually have escapes, but can have weird chars?
+        // "EOF" -> EOF.
+        (rest.to_string(), true, false)
+    };
 
     (delimiter, interpolated, indented, command)
 }
@@ -126,7 +125,10 @@ impl<'a> Parser<'a> {
     /// they complete, but cannot consume the parent's placeholder before its AST node
     /// exists. Keeping the prefix also prevents sequential block statements from
     /// accumulating against the global depth cap.
-    #[allow(clippy::print_stderr, reason = "debug-only diagnostic — conditional on debug_assertions, cannot use #[expect]")]
+    #[allow(
+        clippy::print_stderr,
+        reason = "debug-only diagnostic — conditional on debug_assertions, cannot use #[expect]"
+    )]
     fn drain_pending_heredocs_from(&mut self, pending_start: usize, root: &mut Node) {
         if pending_start >= self.pending_heredocs.len() {
             return;
@@ -166,10 +168,24 @@ impl<'a> Parser<'a> {
 
             if !body.terminated {
                 let label = if decl.label.is_empty() { "<empty>" } else { decl.label.as_ref() };
+                // Pin diagnostics to the opener and unterminated body — never EOF.
+                // EOF geometry spills past recovered trailing statements and made
+                // `malformed_heredoc_recovery` diverge from its manifest region
+                // contract (`first_error_line = 3`, region 3..=4) (#9153).
+                // Body-line evidence is required so the recovery oracle can keep
+                // region 3..=4 without treating UnknownRest (which swallows the
+                // recovered `sub`) as an Error-node span.
                 self.errors.push(ParseError::SyntaxError {
                     message: format!("Unterminated heredoc: {}", label),
-                    location: self.src_bytes.len(),
+                    location: decl.decl_span.start,
                 });
+                if decl.body_start < self.src_bytes.len() && decl.body_start != decl.decl_span.start
+                {
+                    self.errors.push(ParseError::SyntaxError {
+                        message: format!("Unterminated heredoc body: {}", label),
+                        location: decl.body_start,
+                    });
+                }
             }
 
             // Defensive guardrail: warn if heredoc node wasn't found at expected span
@@ -203,7 +219,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Try to attach heredoc content at this node or its children
-    #[allow(clippy::print_stderr, reason = "debug-only diagnostic — conditional on debug_assertions, cannot use #[expect]")]
+    #[allow(
+        clippy::print_stderr,
+        reason = "debug-only diagnostic — conditional on debug_assertions, cannot use #[expect]"
+    )]
     fn try_attach_at_node(
         &self,
         node: &mut Node,
@@ -234,10 +253,7 @@ impl<'a> Parser<'a> {
 
                 // Store body span for breakpoint detection
                 *body_span = if body.full_span.start < body.full_span.end {
-                    Some(SourceLocation {
-                        start: body.full_span.start,
-                        end: body.full_span.end,
-                    })
+                    Some(SourceLocation { start: body.full_span.start, end: body.full_span.end })
                 } else {
                     None // Empty heredoc
                 };
@@ -292,10 +308,7 @@ impl<'a> Parser<'a> {
 
                 *content = text;
                 *body_span = if body.full_span.start < body.full_span.end {
-                    Some(SourceLocation {
-                        start: body.full_span.start,
-                        end: body.full_span.end,
-                    })
+                    Some(SourceLocation { start: body.full_span.start, end: body.full_span.end })
                 } else {
                     None
                 };
@@ -311,7 +324,6 @@ impl<'a> Parser<'a> {
         });
         found
     }
-
 }
 
 #[cfg(test)]
@@ -361,22 +373,13 @@ mod heredoc_branch_tests {
     #[test]
     fn parses_empty_and_semicolon_terminated_labels() {
         assert_eq!(parse_heredoc_delimiter("<<"), (String::new(), true, false, false));
-        assert_eq!(
-            parse_heredoc_delimiter("<<;"),
-            (String::new(), true, false, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<;"), (String::new(), true, false, false));
     }
 
     #[test]
     fn parses_indented_and_quoted_labels() {
-        assert_eq!(
-            parse_heredoc_delimiter("<<~EOF"),
-            ("EOF".to_string(), true, true, false)
-        );
-        assert_eq!(
-            parse_heredoc_delimiter("<<'EOF'"),
-            ("EOF".to_string(), false, false, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~EOF"), ("EOF".to_string(), true, true, false));
+        assert_eq!(parse_heredoc_delimiter("<<'EOF'"), ("EOF".to_string(), false, false, false));
         // <<"E\nOF" keeps the backslash-n pair literal in the delimiter name;
         // quoting controls body interpolation, not label unescaping.
         assert_eq!(
@@ -387,40 +390,19 @@ mod heredoc_branch_tests {
 
     #[test]
     fn parses_literal_and_command_labels() {
-        assert_eq!(
-            parse_heredoc_delimiter(r"<<\EOF"),
-            ("EOF".to_string(), false, false, false)
-        );
+        assert_eq!(parse_heredoc_delimiter(r"<<\EOF"), ("EOF".to_string(), false, false, false));
         let command = format!("<<{}echo EOF{}", 96 as char, 96 as char);
-        assert_eq!(
-            parse_heredoc_delimiter(&command),
-            ("echo EOF".to_string(), true, false, true)
-        );
+        assert_eq!(parse_heredoc_delimiter(&command), ("echo EOF".to_string(), true, false, true));
     }
 
     #[test]
     fn maps_quote_kinds_for_supported_delimiters() {
-        assert!(matches!(
-            map_heredoc_quote_kind(r"<<\EOF", false),
-            QuoteKind::Single
-        ));
-        assert!(matches!(
-            map_heredoc_quote_kind("<<'EOF'", false),
-            QuoteKind::Single
-        ));
-        assert!(matches!(
-            map_heredoc_quote_kind("<<\"EOF\"", true),
-            QuoteKind::Double
-        ));
+        assert!(matches!(map_heredoc_quote_kind(r"<<\EOF", false), QuoteKind::Single));
+        assert!(matches!(map_heredoc_quote_kind("<<'EOF'", false), QuoteKind::Single));
+        assert!(matches!(map_heredoc_quote_kind("<<\"EOF\"", true), QuoteKind::Double));
         let command = format!("<<{}EOF{}", 96 as char, 96 as char);
-        assert!(matches!(
-            map_heredoc_quote_kind(&command, true),
-            QuoteKind::Backtick
-        ));
-        assert!(matches!(
-            map_heredoc_quote_kind("<<EOF", true),
-            QuoteKind::Unquoted
-        ));
+        assert!(matches!(map_heredoc_quote_kind(&command, true), QuoteKind::Backtick));
+        assert!(matches!(map_heredoc_quote_kind("<<EOF", true), QuoteKind::Unquoted));
     }
 
     #[test]
@@ -443,16 +425,10 @@ mod heredoc_branch_tests {
     #[test]
     fn parses_indented_combined_with_every_quote_style() {
         // <<~'EOF'  — indented + single-quoted → not interpolated, not command
-        assert_eq!(
-            parse_heredoc_delimiter("<<~'EOF'"),
-            ("EOF".to_string(), false, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~'EOF'"), ("EOF".to_string(), false, true, false));
 
         // <<~"EOF"  — indented + double-quoted → interpolated, not command
-        assert_eq!(
-            parse_heredoc_delimiter("<<~\"EOF\""),
-            ("EOF".to_string(), true, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~\"EOF\""), ("EOF".to_string(), true, true, false));
 
         // <<~`cmd`  — indented + backtick → interpolated, command execution
         let indented_backtick = format!("<<~{}cmd{}", 96u8 as char, 96u8 as char);
@@ -462,10 +438,7 @@ mod heredoc_branch_tests {
         );
 
         // <<~\EOF  — indented + backslash-quoted → not interpolated, not command
-        assert_eq!(
-            parse_heredoc_delimiter("<<~\\EOF"),
-            ("EOF".to_string(), false, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~\\EOF"), ("EOF".to_string(), false, true, false));
     }
 
     /// `<<~;` and `<<~` (empty after the tilde) must trigger the early-return
@@ -475,15 +448,9 @@ mod heredoc_branch_tests {
     #[test]
     fn parses_indented_empty_and_semicolon_labels() {
         // <<~   — nothing after the tilde
-        assert_eq!(
-            parse_heredoc_delimiter("<<~"),
-            (String::new(), true, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~"), (String::new(), true, true, false));
         // <<~;  — semicolon acts as the statement terminator, not part of the label
-        assert_eq!(
-            parse_heredoc_delimiter("<<~;"),
-            (String::new(), true, true, false)
-        );
+        assert_eq!(parse_heredoc_delimiter("<<~;"), (String::new(), true, true, false));
     }
 
     // --- map_heredoc_quote_kind indented-prefix branch coverage ---
@@ -495,30 +462,15 @@ mod heredoc_branch_tests {
     #[test]
     fn maps_quote_kinds_for_indented_delimiters() {
         // <<~'EOF' → Single (same as <<\EOF and <<'EOF')
-        assert!(matches!(
-            map_heredoc_quote_kind("<<~'EOF'", false),
-            QuoteKind::Single
-        ));
+        assert!(matches!(map_heredoc_quote_kind("<<~'EOF'", false), QuoteKind::Single));
         // <<~"EOF" → Double
-        assert!(matches!(
-            map_heredoc_quote_kind("<<~\"EOF\"", true),
-            QuoteKind::Double
-        ));
+        assert!(matches!(map_heredoc_quote_kind("<<~\"EOF\"", true), QuoteKind::Double));
         // <<~`EOF` → Backtick
         let indented_backtick = format!("<<~{}EOF{}", 96u8 as char, 96u8 as char);
-        assert!(matches!(
-            map_heredoc_quote_kind(&indented_backtick, true),
-            QuoteKind::Backtick
-        ));
+        assert!(matches!(map_heredoc_quote_kind(&indented_backtick, true), QuoteKind::Backtick));
         // <<~EOF   → Unquoted (bare word)
-        assert!(matches!(
-            map_heredoc_quote_kind("<<~EOF", true),
-            QuoteKind::Unquoted
-        ));
+        assert!(matches!(map_heredoc_quote_kind("<<~EOF", true), QuoteKind::Unquoted));
         // <<~\EOF  → Single (backslash-quoted is mapped to Single)
-        assert!(matches!(
-            map_heredoc_quote_kind("<<~\\EOF", false),
-            QuoteKind::Single
-        ));
+        assert!(matches!(map_heredoc_quote_kind("<<~\\EOF", false), QuoteKind::Single));
     }
 }
