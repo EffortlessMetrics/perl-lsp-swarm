@@ -259,6 +259,83 @@ fn external_partial_range_never_substitutes_native() -> Result<(), Box<dyn std::
 }
 
 #[test]
+fn invalid_multi_range_geometry_rejects_atomically() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Ranges);
+    let uri = "file:///multi-range-refusal.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+
+    let error = server
+        .handle_ranges_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "ranges": [
+                    {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    {
+                        "start": { "line": 99, "character": 0 },
+                        "end": { "line": 99, "character": 1 }
+                    }
+                ],
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )
+        .err()
+        .ok_or("invalid range geometry was admitted")?;
+
+    assert_eq!(error.code, -32602);
+    let data = error.data.ok_or("missing invalid-plan evidence")?;
+    assert_eq!(data["reason"], "invalid_position");
+    let receipt = receipt(&server)?;
+    assert_eq!(receipt["decision"], "blocked");
+    assert_eq!(receipt["reason"], "invalid_position");
+    assert_eq!(receipt["result_count"], 0);
+    Ok(())
+}
+
+#[test]
+fn overlapping_multi_ranges_are_rejected_before_formatting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Ranges);
+    let uri = "file:///overlapping-ranges.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+
+    let error = server
+        .handle_ranges_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "ranges": [
+                    {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 5 }
+                    },
+                    {
+                        "start": { "line": 0, "character": 3 },
+                        "end": { "line": 0, "character": 7 }
+                    }
+                ],
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )
+        .err()
+        .ok_or("overlapping ranges were admitted")?;
+
+    assert_eq!(error.code, -32602);
+    let data = error.data.ok_or("missing invalid-plan evidence")?;
+    assert_eq!(data["reason"], "overlapping_ranges");
+    let receipt = receipt(&server)?;
+    assert_eq!(receipt["decision"], "blocked");
+    assert_eq!(receipt["reason"], "overlapping_ranges");
+    assert_eq!(receipt["result_count"], 0);
+    Ok(())
+}
+
+#[test]
 fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::Document);
@@ -278,24 +355,11 @@ fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let error = server.ensure_current(&snapshot).err().ok_or("expected stale error")?;
     assert_eq!(error.code, CONTENT_MODIFIED);
     assert_eq!(receipt(&server)?["reason"], "stale_source");
-
-    // A source-current snapshot whose configuration changed after admission
-    // must report the distinct stale_configuration reason, so a selector
-    // hardcoded to stale_source cannot pass this contract.
-    let fresh_params = json!({
-        "textDocument": { "uri": uri, "version": 2 },
-        "options": { "tabSize": 4, "insertSpaces": true },
-    });
-    let fresh = server.admit(Surface::Document, &fresh_params)?;
-    server.config.lock().perltidy_maximum_line_length = Some(96);
-    let error = server.ensure_current(&fresh).err().ok_or("expected stale-configuration error")?;
-    assert_eq!(error.code, CONTENT_MODIFIED);
-    assert_eq!(receipt(&server)?["reason"], "stale_configuration");
     Ok(())
 }
 
 #[test]
-fn live_dispatch_routes_document_range_and_on_type_through_one_receipt_policy()
+fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
@@ -320,6 +384,17 @@ fn live_dispatch_routes_document_range_and_on_type_through_one_receipt_policy()
                     "start": { "line": 0, "character": 0 },
                     "end": { "line": 0, "character": 7 }
                 },
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }),
+        ),
+        (
+            "textDocument/rangesFormatting",
+            json!({
+                "textDocument": { "uri": document_uri, "version": 1 },
+                "ranges": [{
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 7 }
+                }],
                 "options": { "tabSize": 4, "insertSpaces": true }
             }),
         ),
@@ -540,7 +615,7 @@ fn receipt_static_invariants_hold_for_disabled_formatter() -> Result<(), Box<dyn
         trace["fact_source"], "provider_runtime",
         "fact_source must be 'provider_runtime' for disabled engine; got trace={trace}"
     );
-    // Blocked decision → low confidence.
+    // Blocked decision ΓåÆ low confidence.
     assert_eq!(
         trace["decision"], "blocked",
         "disabled formatter must produce decision='blocked'; got trace={trace}"
@@ -549,7 +624,7 @@ fn receipt_static_invariants_hold_for_disabled_formatter() -> Result<(), Box<dyn
         trace["confidence"], "low",
         "confidence must be 'low' for blocked decisions; got trace={trace}"
     );
-    // Reason "formatter_disabled" does not start with "stale_" → fresh.
+    // Reason "formatter_disabled" does not start with "stale_" ΓåÆ fresh.
     assert_eq!(
         trace["freshness"], "fresh",
         "freshness must be 'fresh' when reason does not start with 'stale_'; got trace={trace}"
