@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Static cross-platform contract test for installer PATH behavior (#7832).
 # Windows PowerShell cannot run on the Linux gate host, so source invariants are
-# checked here; actual fresh-process Windows proof remains in #5903/#7746.
+# checked here. Fresh-process Machine+User rebuild proof lives in
+# scripts/tests/test-windows-fresh-path-oracle.sh (fixture scopes; not live-host
+# install proof).
 
 set -euo pipefail
 
