@@ -209,7 +209,7 @@ pub fn log_server_startup(
 #[derive(Args, Debug, Clone)]
 pub struct TransportArgs {
     /// Use stdio for communication (default)
-    #[arg(long, visible_alias = "mcp", default_value_t = false, conflicts_with = "socket")]
+    #[arg(long, default_value_t = false, conflicts_with = "socket")]
     pub stdio: bool,
 
     /// Use TCP socket for communication
@@ -513,6 +513,8 @@ pub enum LaunchParseError {
         /// Closest known option, when the parser can name one.
         suggestion: Option<String>,
     },
+    /// The retired `--mcp` spelling was used for the LSP stdio transport.
+    McpAliasRejected,
     /// A parse failure other than an unknown option — an argument conflict, an
     /// invalid value, or a missing value.
     ///
@@ -567,6 +569,10 @@ impl fmt::Display for LaunchParseError {
                 }
                 None => write!(f, "Unknown option: {option}"),
             },
+            Self::McpAliasRejected => write!(
+                f,
+                "`--mcp` is not an LSP transport alias.\nUse `perllsp --stdio` for LSP.\nUse `perllsp mcp --stdio` only when the native MCP adapter is available."
+            ),
             Self::ParserDiagnostic { rendered } => write!(f, "{rendered}"),
             Self::MissingValue { option } => {
                 write!(f, "Missing value for {option}")
@@ -603,6 +609,7 @@ impl perl_parser_core::ErrorClass for LaunchParseError {
         // infrastructure, protocol, or transient failures.
         match self {
             Self::UnknownOption { .. }
+            | Self::McpAliasRejected
             | Self::ParserDiagnostic { .. }
             | Self::MissingValue { .. }
             | Self::InvalidFeatureProfile { .. }
@@ -761,6 +768,10 @@ fn prevalidate_cli_values(args: &[std::ffi::OsString]) -> Result<(), LaunchParse
     while index < args.len() {
         let token = args[index].to_string_lossy();
 
+        if token == "--mcp" || token.starts_with("--mcp=") {
+            return Err(LaunchParseError::McpAliasRejected);
+        }
+
         if token == "--port" {
             let next = args.get(index + 1).map(|value| value.to_string_lossy().to_string());
             let Some(raw_port) = next else {
@@ -850,7 +861,7 @@ pub fn help_text() -> String {
     out.push_str("       perllsp --doctor [dir]\n");
     out.push('\n');
     out.push_str("Server options:\n");
-    out.push_str("  --stdio, --mcp       Use stdio for communication (default)\n");
+    out.push_str("  --stdio              Use stdio for communication (default)\n");
     out.push_str("  --socket             Use TCP socket for communication\n");
     out.push_str(&format!(
         "  --port <port>        Port to listen on (default: {DEFAULT_LSP_PORT})\n"
@@ -910,7 +921,6 @@ pub fn help_text() -> String {
     out.push('\n');
     out.push_str("Examples:\n");
     out.push_str("  perllsp --stdio                         # stdio mode (default)\n");
-    out.push_str("  perllsp --mcp                           # stdio mode alias for MCP clients\n");
     out.push_str("  perllsp --stdio --log                   # with logging\n");
     out.push_str("  perllsp --socket --port 9257            # TCP socket mode\n");
     out.push_str("  perllsp --stdio --feature-profile=prod  # production profile\n");
@@ -977,7 +987,7 @@ const BASH_COMPLETION: &str = r#"_perl_lsp() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="--stdio --mcp --socket --port --log --health --info --check --check-project --doctor --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
+    opts="--stdio --socket --port --log --health --info --check --check-project --doctor --json --version --features-json --perltidy-compat-report --perlcritic-compat-report --feature-profile --completion --help --runtime-mode --diagnostic-mode --diagnostic-debounce-ms --eager-workspace-indexing --file-watchers --ripr-facts --ripr-schema --ripr-root --ripr-base --ripr-head --ripr-fact-classes --ripr-out"
 
     case "${prev}" in
         --port)
@@ -1030,7 +1040,6 @@ const ZSH_COMPLETION: &str = r#"#compdef perl-lsp
 _perl-lsp() {
     _arguments \
         '--stdio[Use stdio for communication (default)]' \
-        '--mcp[Alias for stdio mode (MCP clients)]' \
         '--socket[Use TCP socket for communication]' \
         '--port[Port to listen on]:port:' \
         '--log[Enable logging to stderr]' \
@@ -1065,7 +1074,6 @@ _perl-lsp "$@"
 "#;
 
 const FISH_COMPLETION: &str = r#"complete -c perl-lsp -l stdio -d 'Use stdio for communication (default)'
-complete -c perl-lsp -l mcp -d 'Alias for stdio mode (MCP clients)'
 complete -c perl-lsp -l socket -d 'Use TCP socket for communication'
 complete -c perl-lsp -l port -x -d 'Port to listen on'
 complete -c perl-lsp -l log -d 'Enable logging to stderr'
@@ -1100,7 +1108,6 @@ const POWERSHELL_COMPLETION: &str = r#"Register-ArgumentCompleter -Native -Comma
 
     $options = @(
         [CompletionResult]::new('--stdio', '--stdio', 'ParameterName', 'Use stdio for communication (default)')
-        [CompletionResult]::new('--mcp', '--mcp', 'ParameterName', 'Alias for stdio mode (MCP clients)')
         [CompletionResult]::new('--socket', '--socket', 'ParameterName', 'Use TCP socket for communication')
         [CompletionResult]::new('--port', '--port', 'ParameterName', 'Port to listen on')
         [CompletionResult]::new('--log', '--log', 'ParameterName', 'Enable logging to stderr')
@@ -1284,12 +1291,13 @@ mod tests {
         RuntimeTuning, TransportMode, parse_args,
     };
     use perl_parser_core::{ErrorCategory, ErrorClass};
-    use perl_tdd_support::{must, must_some};
+    use perl_tdd_support::{must, must_err, must_some};
 
     #[test]
     fn launch_parse_errors_are_user_errors_for_every_variant() {
         let errors = [
             LaunchParseError::UnknownOption { option: "--wat".into(), suggestion: None },
+            LaunchParseError::McpAliasRejected,
             LaunchParseError::ParserDiagnostic { rendered: "conflict".into() },
             LaunchParseError::MissingValue { option: "--port".into() },
             LaunchParseError::InvalidFeatureProfile { raw_profile: "bad".into() },
@@ -1355,36 +1363,32 @@ mod tests {
     }
 
     #[test]
-    fn parse_mcp_alias_uses_stdio_transport() {
-        let plan = must(parse_args(["perl-lsp", "--mcp"]));
-        assert_eq!(plan.config.transport, TransportMode::Stdio);
+    fn parse_mcp_alias_is_rejected() {
+        let error = must_err(parse_args(["perl-lsp", "--mcp"]));
+        assert!(matches!(error, LaunchParseError::McpAliasRejected));
     }
 
     #[test]
-    fn mcp_alias_documented_consistently_across_surfaces() {
-        // Help text, every shell completion, and the CLI parser must all
-        // advertise --mcp. If any surface is forgotten when a future rename
-        // lands, this test catches it before users hit broken tab-completion
-        // or stale docs.
+    fn retired_mcp_alias_is_absent_from_all_lsp_surfaces() {
+        // Help text and every shell completion must not advertise the retired
+        // alias, while the parser returns protocol guidance if it is used.
         let help = super::help_text();
-        assert!(help.contains("--mcp"), "help_text is missing --mcp: {help}");
-        assert!(
-            help.contains("perllsp --mcp"),
-            "help_text examples are missing a --mcp invocation: {help}"
-        );
+        assert!(!help.contains("--mcp"), "help_text advertises retired alias: {help}");
 
-        // Fish uses `-l mcp` (long-option form without double-dashes);
-        // other shells embed `--mcp` literally. Pick the right token per shell.
-        for (shell, needle) in
-            [("bash", "--mcp"), ("zsh", "--mcp"), ("fish", "-l mcp"), ("powershell", "--mcp")]
-        {
+        for shell in ["bash", "zsh", "fish", "powershell"] {
             let script = must_some(super::shell_completion(shell));
-            assert!(script.contains(needle), "{shell} completion is missing {needle}: {script}");
+            assert!(
+                !script.contains("--mcp"),
+                "{shell} completion advertises retired alias: {script}"
+            );
+            assert!(
+                !script.contains("-l mcp"),
+                "{shell} completion advertises retired alias: {script}"
+            );
         }
 
-        // Parser side: --mcp must still resolve to stdio (alias semantics).
-        let plan = must(parse_args(["perl-lsp", "--mcp"]));
-        assert_eq!(plan.config.transport, TransportMode::Stdio);
+        let error = must_err(parse_args(["perl-lsp", "--mcp"]));
+        assert!(matches!(error, LaunchParseError::McpAliasRejected));
     }
 
     #[test]
