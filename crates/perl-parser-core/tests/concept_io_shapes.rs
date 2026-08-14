@@ -159,9 +159,9 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
         "printf $fh \"%s\", $value;\n",
     );
     let ast = parse_clean(source)?;
-    let mut scalar_handle_print = Vec::new();
-    let mut braced_handle_print = Vec::new();
-    let mut scalar_handle_printf = Vec::new();
+    let mut scalar_handle_print: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    let mut braced_handle_print: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    let mut scalar_handle_printf: Vec<(Option<String>, Vec<String>)> = Vec::new();
 
     walk(&ast, &mut |node| {
         if let NodeKind::IndirectCall { method, object, args } = &node.kind {
@@ -180,9 +180,12 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
                     );
                     assert!(matches!(&args[0].kind, NodeKind::String { .. }));
                     assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"hello\""));
-                    if let Some(text) = source_text(source, node) {
-                        scalar_handle_print.push(text);
-                    }
+                    // Claim is handle/output-list ownership, not IndirectCall parent-span
+                    // completeness for bare `print $fh LIST` (current main ends at `$fh`).
+                    scalar_handle_print.push((
+                        source_text(source, object),
+                        args.iter().filter_map(|arg| source_text(source, arg)).collect::<Vec<_>>(),
+                    ));
                 }
                 "print" if matches!(&object.kind, NodeKind::Block { .. }) => {
                     assert_eq!(source_text(source, object).as_deref(), Some("{ $fh }"));
@@ -192,14 +195,18 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
                     let [statement] = statements.as_slice() else {
                         return;
                     };
-                    let NodeKind::ExpressionStatement { expression } = &statement.kind else {
-                        return;
+                    // Current main keeps the braced handle as a direct Variable child,
+                    // not an ExpressionStatement wrapper.
+                    let handle = match &statement.kind {
+                        NodeKind::Variable { .. } => statement,
+                        NodeKind::ExpressionStatement { expression } => expression.as_ref(),
+                        _ => return,
                     };
                     assert!(matches!(
-                        &expression.kind,
+                        &handle.kind,
                         NodeKind::Variable { sigil, name } if sigil == "$" && name == "fh"
                     ));
-                    assert_eq!(source_text(source, expression).as_deref(), Some("$fh"));
+                    assert_eq!(source_text(source, handle).as_deref(), Some("$fh"));
                     assert_eq!(
                         args.len(),
                         1,
@@ -207,9 +214,10 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
                     );
                     assert!(matches!(&args[0].kind, NodeKind::String { .. }));
                     assert_eq!(source_text(source, &args[0]).as_deref(), Some("\"hello\""));
-                    if let Some(text) = source_text(source, node) {
-                        braced_handle_print.push(text);
-                    }
+                    braced_handle_print.push((
+                        source_text(source, object),
+                        args.iter().filter_map(|arg| source_text(source, arg)).collect::<Vec<_>>(),
+                    ));
                 }
                 "printf"
                     if matches!(
@@ -226,17 +234,31 @@ fn indirect_filehandle_forms_keep_handle_and_output_list_boundaries() -> Result<
                         NodeKind::Variable { sigil, name } if sigil == "$" && name == "value"
                     ));
                     assert_eq!(source_text(source, &args[1]).as_deref(), Some("$value"));
-                    if let Some(text) = source_text(source, node) {
-                        scalar_handle_printf.push(text);
-                    }
+                    scalar_handle_printf.push((
+                        source_text(source, object),
+                        args.iter().filter_map(|arg| source_text(source, arg)).collect::<Vec<_>>(),
+                    ));
                 }
                 _ => {}
             }
         }
     });
 
-    assert_eq!(scalar_handle_print, vec!["print $fh \"hello\""]);
-    assert_eq!(braced_handle_print, vec!["print { $fh } \"hello\""]);
-    assert_eq!(scalar_handle_printf, vec!["printf $fh \"%s\", $value"]);
+    assert_eq!(
+        scalar_handle_print,
+        vec![(Some("$fh".to_string()), vec!["\"hello\"".to_string()])]
+    );
+    assert_eq!(
+        braced_handle_print,
+        vec![(Some("{ $fh }".to_string()), vec!["\"hello\"".to_string()])]
+    );
+    assert_eq!(
+        scalar_handle_printf,
+        vec![(
+            Some("$fh".to_string()),
+            vec!["\"%s\"".to_string(), "$value".to_string()],
+        )]
+    );
     Ok(())
 }
+
