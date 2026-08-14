@@ -345,11 +345,14 @@ impl RenameProvider {
             return None;
         }
         if let NodeKind::Binary { op, left, .. } = &node.kind
-            && op == expected_op && offset >= left.location.start && offset <= left.location.end
-                && let NodeKind::Variable { sigil, .. } = &left.kind
-                    && sigil == "$" {
-                        return Some(());
-                    }
+            && op == expected_op
+            && offset >= left.location.start
+            && offset <= left.location.end
+            && let NodeKind::Variable { sigil, .. } = &left.kind
+            && sigil == "$"
+        {
+            return Some(());
+        }
         for child in node.children() {
             if Self::find_subscript_at(child, offset, expected_op).is_some() {
                 return Some(());

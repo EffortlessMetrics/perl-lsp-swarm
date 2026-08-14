@@ -10,11 +10,11 @@ Run the commands in this order:
 
 ```bash
 just devex
+just status-update   # when the source contract changed
+just status-check
 just pr-fast
 nix develop -c just ci-gate
 just ci-full
-just status-update
-just status-check
 just release-check
 ```
 
@@ -25,11 +25,11 @@ shell is only there to make the toolchain and external helpers reproducible.
 
 - `just devex` checks the local environment and highlights missing tools.
 - `just pr-fast` is the quick edit loop for normal PR iteration.
+- `just status-update` refreshes generated status docs when their source contract changed.
+- `just status-check` verifies that generated status docs are synchronized before a gate reads them.
 - `nix develop -c just ci-gate` is the canonical full local merge gate.
 - `just ci-full` is the broader validation pass for large refactors or release
   confidence.
-- `just status-update` and `just status-check` keep generated status docs in
-  sync.
 - `just release-check` is the release-prep gate before tagging or publishing.
 
 If a change is security-sensitive, also run `just security-audit`. If it touches
@@ -45,6 +45,21 @@ already have the Rust toolchain and project tools installed locally.
 replacement for `nix develop -c just ci-gate`.
 
 ---
+
+## Dependency order and ownership
+
+The commands above are intentionally ordered from cheap local environment checks to broader repository proof. The status pair is conditional: run `just status-update` before `just status-check` when a source contract changed; for docs-only edits, run `just status-check` when the touched surface depends on generated status. The ownership boundary is:
+
+| Concern | Primary authority | Local consequence |
+| --- | --- | --- |
+| Toolchain and helper availability | `just devex` / `xtask devex-doctor` | Repair the environment before interpreting test failures |
+| Formatting and fast regressions | `just pr-fast` | Stop and fix the changed surface before pushing |
+| Merge-gate behavior | `just ci-gate` and `.ci/gate-policy.yaml` | Treat failures as gate evidence, not as a release verdict |
+| Generated status | `docs/project/CURRENT_STATUS.md` and `features.toml` | Regenerate only when the source contract changed |
+| Release and channel claims | `docs/project/status/release.md` and release receipts | Do not infer publication from the workspace version |
+| Release preparation | `just release-check` and the release runbook | Keep out of ordinary feature PRs |
+
+Run a downstream check only after its prerequisites pass. If an earlier gate fails because the environment or instrumentation is unavailable, record that as `NOT_PROVEN`; do not widen a docs or feature PR to absorb an unrelated baseline failure.
 
 ## Gate Tiers
 
@@ -584,5 +599,5 @@ nix develop -c cargo mutants -p perl-parser --timeout 60
 
 ---
 
-**Last Updated:** 2026-03-29
+**Last Updated:** 2026-08-10
 **Status:** Local validation and CI command flow aligned with the current gate model

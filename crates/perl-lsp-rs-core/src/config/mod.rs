@@ -16,6 +16,8 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 use std::{fs::File, io::Read};
 
+use crate::tooling::perl_critic::NativeCriticProfile;
+
 mod dependency_detection;
 mod metadata_dependencies;
 mod native_build_hints;
@@ -497,13 +499,13 @@ impl ServerConfig {
                 }
             }
             if let Some(profile) = critic.get("profile").and_then(|v| v.as_str()) {
-                match parse_native_critic_profile(profile) {
+                match NativeCriticProfile::parse(profile) {
                     Some(profile) => self.native_critic_profile = profile.to_string(),
                     None => tracing::warn!(
                         target: "perl_lsp::config",
                         setting = "critic.profile",
                         value = %profile,
-                        valid = NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                        valid = NativeCriticProfile::VALID_OPTIONS,
                         "unrecognized critic.profile value; keeping current setting",
                     ),
                 }
@@ -689,34 +691,33 @@ impl ServerConfig {
             if let Some(profile) = critic.get("profile") {
                 let invalid_profile = profile
                     .as_str()
-                    .map(|value| parse_native_critic_profile(value).is_none())
+                    .map(|value| NativeCriticProfile::parse(value).is_none())
                     .unwrap_or(true);
                 if invalid_profile {
                     invalid.push(InvalidClientSetting {
                         setting: "critic.profile",
                         value: client_setting_display_value(profile),
                         value_type: client_setting_value_type(profile),
-                        valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                        valid_options: NativeCriticProfile::VALID_OPTIONS,
                     });
                 }
             }
         }
 
         if let Some(formatting) = settings.get("formatting")
-            && let Some(engine) = formatting.get("engine") {
-                let invalid_engine = engine
-                    .as_str()
-                    .map(|value| parse_formatter_mode(value).is_none())
-                    .unwrap_or(true);
-                if invalid_engine {
-                    invalid.push(InvalidClientSetting {
-                        setting: "formatting.engine",
-                        value: client_setting_display_value(engine),
-                        value_type: client_setting_value_type(engine),
-                        valid_options: FORMATTER_MODE_VALID_OPTIONS,
-                    });
-                }
+            && let Some(engine) = formatting.get("engine")
+        {
+            let invalid_engine =
+                engine.as_str().map(|value| parse_formatter_mode(value).is_none()).unwrap_or(true);
+            if invalid_engine {
+                invalid.push(InvalidClientSetting {
+                    setting: "formatting.engine",
+                    value: client_setting_display_value(engine),
+                    value_type: client_setting_value_type(engine),
+                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                });
             }
+        }
 
         invalid
     }
@@ -803,14 +804,6 @@ fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
     }
 }
 
-fn parse_native_critic_profile(value: &str) -> Option<&'static str> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "recommended" => Some("recommended"),
-        "strict" => Some("strict"),
-        _ => None,
-    }
-}
-
 /// Human-readable list of accepted `formatting.engine` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_formatter_mode`].
@@ -826,11 +819,6 @@ const CRITIC_ENGINE_VALID_OPTIONS: &str = "native, legacy (external, perlcritic)
 /// channel. Legacy subprocess aliases remain available only through trusted
 /// project configuration.
 const CLIENT_CRITIC_ENGINE_VALID_OPTIONS: &str = "native";
-
-/// Human-readable list of accepted `critic.profile` values, used in
-/// `tracing::warn!` messages when a user supplies an unrecognized value.
-/// Kept in sync with [`parse_native_critic_profile`].
-const NATIVE_CRITIC_PROFILE_VALID_OPTIONS: &str = "recommended, strict";
 
 /// Which config channel supplied a critic rule-ID list.
 ///
@@ -1465,11 +1453,11 @@ impl WorkspaceConfig {
             if context.apply_external_include_paths
                 && let Some(paths) =
                     workspace.get("externalIncludePaths").and_then(|v| v.as_array())
-                {
-                    let (accepted, external_rejected) = parse_external_include_paths(paths);
-                    self.external_include_paths = accepted;
-                    rejected.extend(external_rejected);
-                }
+            {
+                let (accepted, external_rejected) = parse_external_include_paths(paths);
+                self.external_include_paths = accepted;
+                rejected.extend(external_rejected);
+            }
             if let Some(extensions) = string_array(workspace.get("discoveryExtensions")) {
                 self.discovery_extra_extensions = extensions;
             }
@@ -1979,9 +1967,10 @@ fn discover_perltidy_profile_from(
     }
 
     if let Some(env_profile) = env_profile
-        && env_profile.is_file() {
-            return env_profile.to_str().map(ToOwned::to_owned);
-        }
+        && env_profile.is_file()
+    {
+        return env_profile.to_str().map(ToOwned::to_owned);
+    }
 
     if let Some(home) = home {
         let candidate = home.join(".perltidyrc");
@@ -2116,13 +2105,13 @@ impl ProjectConfig {
             }
         }
         if let Some(ref profile) = self.critic.profile {
-            match parse_native_critic_profile(profile) {
+            match NativeCriticProfile::parse(profile) {
                 Some(profile) => config.native_critic_profile = profile.to_string(),
                 None => tracing::warn!(
                     target: "perl_lsp::config",
                     setting = "critic.profile",
                     value = %profile,
-                    valid = NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                    valid = NativeCriticProfile::VALID_OPTIONS,
                     "unrecognized critic.profile value in .perl-lsp.toml; \
                      keeping current setting",
                 ),
@@ -3620,6 +3609,26 @@ profile = "recommended"
     }
 
     #[test]
+    fn native_critic_config_boundary_agrees_with_profile_authority() {
+        for raw in ["recommended", " RECOMMENDED ", "strict", " STRICT "] {
+            let expected = NativeCriticProfile::parse(raw)
+                .expect("boundary fixture must be accepted by the profile authority");
+            let mut config = ServerConfig::default();
+            config.update_from_value(&serde_json::json!({
+                "critic": { "profile": raw }
+            }));
+
+            assert_eq!(config.native_critic_profile, expected.as_str(), "profile token: {raw:?}");
+        }
+
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "critic": { "profile": "recomended" }
+        }));
+        assert_eq!(config.native_critic_profile, NativeCriticProfile::default().as_str());
+    }
+
+    #[test]
     fn server_config_accepts_native_critic_include_and_exclude_filters() {
         let mut config = ServerConfig::default();
 
@@ -3896,7 +3905,7 @@ profile = "recommended"
                     setting: "critic.profile",
                     value: "recomended".to_string(),
                     value_type: "string",
-                    valid_options: NATIVE_CRITIC_PROFILE_VALID_OPTIONS,
+                    valid_options: NativeCriticProfile::VALID_OPTIONS,
                 },
                 InvalidClientSetting {
                     setting: "formatting.engine",

@@ -36,38 +36,38 @@ fn loc(start: usize, end: usize) -> SourceLocation {
 }
 
 fn use_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Use {
+    Node::new(
+        NodeKind::Use {
             module: module.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn no_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::No {
+    Node::new(
+        NodeKind::No {
             module: module.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn block(stmts: Vec<Node>, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Block { statements: stmts }, location: loc(start, end) }
+    Node::new(NodeKind::Block { statements: stmts }, loc(start, end))
 }
 
 fn program(stmts: Vec<Node>) -> Node {
     let end = stmts.last().map_or(0, |n| n.location.end);
-    Node { kind: NodeKind::Program { statements: stmts }, location: loc(0, end) }
+    Node::new(NodeKind::Program { statements: stmts }, loc(0, end))
 }
 
 fn dummy_node(start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::MissingExpression, location: loc(start, end) }
+    Node::new(NodeKind::MissingExpression, loc(start, end))
 }
 
 // ===========================================================================
@@ -257,10 +257,10 @@ fn labeled_statement_with_use_strict_is_tracked() -> Result<(), Box<dyn std::err
     // LABEL: use strict;
     // The walk.rs handler for LabeledStatement recurses into the inner statement.
     let inner = use_node("strict", &[], 8, 20);
-    let labeled = Node {
-        kind: NodeKind::LabeledStatement { label: "LOOP".to_string(), statement: Box::new(inner) },
-        location: loc(0, 20),
-    };
+    let labeled = Node::new(
+        NodeKind::LabeledStatement { label: "LOOP".to_string(), statement: Box::new(inner) },
+        loc(0, 20),
+    );
     let ast = program(vec![labeled]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 15);
@@ -280,14 +280,14 @@ fn statement_modifier_with_use_strict_in_statement_is_tracked()
     // `use strict if $cond;` — as a StatementModifier node
     // walk.rs recurses into both `statement` and `condition`.
     let inner_use = use_node("strict", &[], 0, 12);
-    let modifier = Node {
-        kind: NodeKind::StatementModifier {
+    let modifier = Node::new(
+        NodeKind::StatementModifier {
             statement: Box::new(inner_use),
             modifier: "if".to_string(),
             condition: Box::new(dummy_node(16, 21)),
         },
-        location: loc(0, 21),
-    };
+        loc(0, 21),
+    );
     let ast = program(vec![modifier]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 10);
@@ -301,14 +301,14 @@ fn statement_modifier_with_use_warnings_in_condition_is_tracked()
     // StatementModifier where the condition itself contains a use pragma.
     // walk.rs also recurses into `condition`.
     let inner_use = use_node("warnings", &[], 15, 30);
-    let modifier = Node {
-        kind: NodeKind::StatementModifier {
+    let modifier = Node::new(
+        NodeKind::StatementModifier {
             statement: Box::new(dummy_node(0, 10)),
             modifier: "if".to_string(),
             condition: Box::new(inner_use),
         },
-        location: loc(0, 30),
-    };
+        loc(0, 30),
+    );
     let ast = program(vec![modifier]);
     let map = PragmaTracker::build(&ast);
     let state = PragmaTracker::state_for_offset(&map, 20);

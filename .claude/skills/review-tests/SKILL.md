@@ -14,6 +14,29 @@ realistic wrong implementations, and verified by execution or competent authorit
 A clean review is valid. An unexecuted draft or failed instrument is `NOT_PROVEN`, not
 proof-ready.
 
+## Narrowing a detector requires proof in both directions
+
+When a change narrows a gate, lint, scanner, filter, or predicate to remove false
+positives, silence is the expected outcome either way: the fix and an over-broad cut
+look identical in CI. Require both directions before accepting it.
+
+```text
+the reported false positive no longer fires
+a known true positive still fires against the narrowed detector
+```
+
+The second is the load-bearing one and is the one usually skipped. Supply it as a
+retention control the narrowed detector must still catch — a real prior finding where
+one exists, otherwise a constructed case matching the shape the detector owns. Where the
+narrowing folds, joins, strips, or normalizes input before matching, construct the case
+that survives the transformation, since that is where a narrowed detector goes silent.
+
+The retained case must traverse the specific predicate or transformation being narrowed, not merely trigger an unaffected rule in the same scanner.
+
+A detector that no longer fires is not evidence that it works. Converting a noisy
+control into a quiet one is worse than the false positives, because nothing downstream
+can tell the difference.
+
 ## Orchestration affordances
 
 ### Lane-root decisions

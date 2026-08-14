@@ -339,49 +339,51 @@ impl LspServer {
         for (line_num, line) in lines.iter().enumerate() {
             // Check for subroutines
             if let Some(captures) = sub_regex.captures(line)
-                && let Some(name_match) = captures.get(1) {
-                    let name = name_match.as_str().to_string();
-                    // Convert byte positions to UTF-16 code units for LSP compliance
-                    let start_char = byte_to_utf16_col(line, name_match.start());
-                    let end_char = byte_to_utf16_col(line, name_match.end());
-                    let line_end_utf16 = byte_to_utf16_col(line, line.len());
+                && let Some(name_match) = captures.get(1)
+            {
+                let name = name_match.as_str().to_string();
+                // Convert byte positions to UTF-16 code units for LSP compliance
+                let start_char = byte_to_utf16_col(line, name_match.start());
+                let end_char = byte_to_utf16_col(line, name_match.end());
+                let line_end_utf16 = byte_to_utf16_col(line, line.len());
 
-                    symbols.push(json!({
-                        "name": name,
-                        "kind": 12, // Function
-                        "range": {
-                            "start": { "line": line_num, "character": 0 },
-                            "end": { "line": line_num, "character": line_end_utf16 }
-                        },
-                        "selectionRange": {
-                            "start": { "line": line_num, "character": start_char },
-                            "end": { "line": line_num, "character": end_char }
-                        }
-                    }));
-                }
+                symbols.push(json!({
+                    "name": name,
+                    "kind": 12, // Function
+                    "range": {
+                        "start": { "line": line_num, "character": 0 },
+                        "end": { "line": line_num, "character": line_end_utf16 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": line_num, "character": start_char },
+                        "end": { "line": line_num, "character": end_char }
+                    }
+                }));
+            }
 
             // Check for packages
             if let Some(captures) = package_regex.captures(line)
-                && let Some(name_match) = captures.get(1) {
-                    let name = name_match.as_str().to_string();
-                    // Convert byte positions to UTF-16 code units for LSP compliance
-                    let start_char = byte_to_utf16_col(line, name_match.start());
-                    let end_char = byte_to_utf16_col(line, name_match.end());
-                    let line_end_utf16 = byte_to_utf16_col(line, line.len());
+                && let Some(name_match) = captures.get(1)
+            {
+                let name = name_match.as_str().to_string();
+                // Convert byte positions to UTF-16 code units for LSP compliance
+                let start_char = byte_to_utf16_col(line, name_match.start());
+                let end_char = byte_to_utf16_col(line, name_match.end());
+                let line_end_utf16 = byte_to_utf16_col(line, line.len());
 
-                    symbols.push(json!({
-                        "name": name,
-                        "kind": 4, // Module
-                        "range": {
-                            "start": { "line": line_num, "character": 0 },
-                            "end": { "line": line_num, "character": line_end_utf16 }
-                        },
-                        "selectionRange": {
-                            "start": { "line": line_num, "character": start_char },
-                            "end": { "line": line_num, "character": end_char }
-                        }
-                    }));
-                }
+                symbols.push(json!({
+                    "name": name,
+                    "kind": 4, // Module
+                    "range": {
+                        "start": { "line": line_num, "character": 0 },
+                        "end": { "line": line_num, "character": line_end_utf16 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": line_num, "character": start_char },
+                        "end": { "line": line_num, "character": end_char }
+                    }
+                }));
+            }
         }
 
         symbols

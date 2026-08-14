@@ -146,17 +146,15 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
             if !starts_heredoc_label(after) {
                 return None;
             }
-            let end =
-                after.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(after.len());
+            let end = after.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after.len());
             after[..end].to_string()
         }
-        // An *unquoted* heredoc label is an identifier, so it must start with an
-        // ASCII letter or `_`. Accepting a leading digit made `my $y = $x << 2;`
+        // An *unquoted* heredoc label is an identifier, so it must start with a
+        // Unicode letter or `_`. Accepting a leading digit made `my $y = $x << 2;`
         // parse as a heredoc opener whose body then swallowed the rest of the
         // file.
         _ if starts_heredoc_label(rest) => {
-            let end =
-                rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(rest.len());
+            let end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
             rest[..end].to_string()
         }
         _ => return None,
@@ -166,7 +164,7 @@ fn heredoc_opener_on_line(line: &str) -> Option<(String, bool)> {
 
 /// Whether `rest` starts an unquoted heredoc label, i.e. a Perl identifier.
 fn starts_heredoc_label(rest: &str) -> bool {
-    rest.starts_with(|character: char| character.is_ascii_alphabetic() || character == '_')
+    rest.starts_with(|character: char| character.is_alphabetic() || character == '_')
 }
 
 /// Whether `prefix` (the text before a candidate `<<` heredoc opener) contains
@@ -981,6 +979,16 @@ mod tests {
             "<<~ allows an indented terminator and skips spaces before the label"
         );
         assert_eq!(
+            heredoc_opener_on_line("my $x = <<~\tEOF;"),
+            Some(("EOF".to_string(), true)),
+            "<<~ allows tabs before an indented terminator label"
+        );
+        assert_eq!(
+            heredoc_opener_on_line("my $x = <<~;"),
+            None,
+            "<<~ without a label is not a heredoc opener"
+        );
+        assert_eq!(
             heredoc_opener_on_line("my $x = <<'END OF';"),
             Some(("END OF".to_string(), false)),
             "a single-quoted label may contain spaces"
@@ -1013,6 +1021,11 @@ mod tests {
             heredoc_opener_on_line("my $x = <<'unterminated;"),
             None,
             "an unterminated quoted label is rejected"
+        );
+        assert_eq!(
+            heredoc_opener_on_line("my $x = <<é;"),
+            Some(("é".to_string(), false)),
+            "a Unicode identifier can start an unquoted label"
         );
     }
 
@@ -1578,6 +1591,11 @@ mod tests {
             super::heredoc_opener_on_line("my $m = '#'; print <<END;"),
             Some(("END".to_string(), false)),
             "heredoc opener after a quoted # must still be found"
+        );
+        assert_eq!(
+            super::heredoc_opener_on_line("my $m = \"a\\\"# still quoted\"; print <<END;"),
+            Some(("END".to_string(), false)),
+            "an escaped quote must not end the string before its #"
         );
     }
 }
