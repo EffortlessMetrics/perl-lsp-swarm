@@ -279,13 +279,51 @@ mod tests {
     }
 
     #[test]
+    fn missing_files_params_return_empty_workspace_edit_call_observation() -> TestResult {
+        let (server, _directory, old_uri, new_uri, _source) = indexed_rename_fixture()?;
+        let before = fingerprint(&server, &old_uri, &new_uri)?;
+
+        for params in [None, Some(json!({})), Some(json!({ "files": null }))] {
+            let outcome = server.handle_will_rename_files_dispatch(params);
+            assert!(
+                matches!(outcome, Ok(Some(_))),
+                "missing/invalid files must succeed with a WorkspaceEdit, got {outcome:?}"
+            );
+            let edit =
+                outcome.map_err(|error| format!("missing-files preflight failed: {error}"))?;
+            let changes = edit
+                .as_ref()
+                .and_then(|value| value.get("changes"))
+                .and_then(Value::as_object)
+                .ok_or("missing-files preflight must return a WorkspaceEdit changes map")?;
+            assert!(
+                changes.is_empty(),
+                "missing/invalid files must return an empty changes map, got {changes:?}"
+            );
+        }
+
+        assert_eq!(
+            fingerprint(&server, &old_uri, &new_uri)?,
+            before,
+            "missing-files preflight must not commit retained state"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn routed_will_rename_is_read_only_and_returns_edits() -> TestResult {
         let (server, _directory, old_uri, new_uri, _source) = indexed_rename_fixture()?;
         let before = fingerprint(&server, &old_uri, &new_uri)?;
 
-        let result = server.handle_will_rename_files_dispatch(Some(json!({
+        let outcome = server.handle_will_rename_files_dispatch(Some(json!({
             "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
-        })))?;
+        })));
+        assert!(
+            matches!(outcome, Ok(Some(_))),
+            "willRenameFiles preflight must succeed with a WorkspaceEdit, got {outcome:?}"
+        );
+        let result =
+            outcome.map_err(|error| format!("willRenameFiles preflight failed: {error}"))?;
 
         let after = fingerprint(&server, &old_uri, &new_uri)?;
         assert_eq!(after, before, "willRenameFiles must not commit retained state");
@@ -307,9 +345,15 @@ mod tests {
         let old_path = directory.path().join("OldModule.pm");
         let new_path = directory.path().join("NewModule.pm");
 
-        let _ = server.handle_will_rename_files_dispatch(Some(json!({
+        let will_outcome = server.handle_will_rename_files_dispatch(Some(json!({
             "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
-        })))?;
+        })));
+        assert!(
+            matches!(will_outcome, Ok(Some(_))),
+            "willRenameFiles before didRename must succeed, got {will_outcome:?}"
+        );
+        let _ =
+            will_outcome.map_err(|error| format!("willRenameFiles preflight failed: {error}"))?;
         assert!(
             !server
                 .coordinator()
@@ -321,9 +365,11 @@ mod tests {
 
         std::fs::rename(&old_path, &new_path)?;
         std::fs::write(&new_path, source)?;
-        server.handle_did_rename_files(Some(json!({
+        let did_outcome = server.handle_did_rename_files(Some(json!({
             "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
-        })))?;
+        })));
+        assert!(did_outcome.is_ok(), "didRenameFiles commit must succeed, got {did_outcome:?}");
+        did_outcome.map_err(|error| format!("didRenameFiles commit failed: {error}"))?;
 
         let committed = fingerprint(&server, &old_uri, &new_uri)?;
         assert_eq!(committed.old_file_symbols, 0);
@@ -340,15 +386,27 @@ mod tests {
         let create_uri = Url::from_file_path(directory.path().join("Created.pm"))
             .map_err(|_| "invalid create path")?
             .to_string();
-        let _ = server.handle_will_create_files(Some(json!({
+        let create_outcome = server.handle_will_create_files(Some(json!({
             "files": [{ "uri": create_uri }]
-        })))?;
+        })));
+        assert!(
+            matches!(create_outcome, Ok(Some(_)) | Ok(None)),
+            "willCreateFiles must succeed without committing state, got {create_outcome:?}"
+        );
+        let _ =
+            create_outcome.map_err(|error| format!("willCreateFiles preflight failed: {error}"))?;
         assert_eq!(fingerprint(&server, &old_uri, &new_uri)?, before_create);
 
         let before_delete = fingerprint(&server, &old_uri, &new_uri)?;
-        let _ = server.handle_will_delete_files(Some(json!({
+        let delete_outcome = server.handle_will_delete_files(Some(json!({
             "files": [{ "uri": old_uri.clone() }]
-        })))?;
+        })));
+        assert!(
+            matches!(delete_outcome, Ok(Some(_)) | Ok(None)),
+            "willDeleteFiles must succeed without committing state, got {delete_outcome:?}"
+        );
+        let _ =
+            delete_outcome.map_err(|error| format!("willDeleteFiles preflight failed: {error}"))?;
         assert_eq!(fingerprint(&server, &old_uri, &new_uri)?, before_delete);
         Ok(())
     }
