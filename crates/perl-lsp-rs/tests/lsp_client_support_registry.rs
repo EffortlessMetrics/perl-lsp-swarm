@@ -485,7 +485,9 @@ fn validate_execution_receipt(
             && receipt.server_command.iter().all(|argument| !argument.trim().is_empty()),
         "receipt server_command must contain non-empty arguments"
     );
-    let executable = receipt.server_command[0].replace('\\', "/");
+    let launched =
+        receipt.server_command.first().context("receipt server_command must name an executable")?;
+    let executable = launched.replace('\\', "/");
     let executable = executable.rsplit('/').next().unwrap_or(executable.as_str());
     let executable = executable.strip_suffix(".exe").unwrap_or(executable);
     ensure!(

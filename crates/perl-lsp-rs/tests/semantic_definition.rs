@@ -13,6 +13,18 @@
 
 mod common;
 
+// `semantic_definition` is the integration target executed by the required
+// `lsp_smoke` merge gate. Include the client-support authority here so path
+// safety, evidence schemas, and generated-status drift are merge-blocking.
+//
+// Do not drop this include without moving the suite to another gate that runs
+// unconditionally. `policy/lsp-client-support.toml` and
+// `docs/receipts/lsp-clients/` resolve to no crate in `xtask` ci-scope, so the
+// scope-aware `unit_routed_full` gate does not execute
+// `tests/lsp_client_support_registry.rs` for a registry-only promotion diff.
+#[path = "lsp_client_support_registry.rs"]
+mod client_support_registry;
+
 #[cfg(test)]
 mod semantic_definition_tests {
     use crate::common::test_utils::TestServerBuilder;

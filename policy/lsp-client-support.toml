@@ -71,7 +71,7 @@ claim_boundary = "Shared extension protocol facts do not prove Trae-specific ins
 
 [[client]]
 id = "intellij_lsp4ij"
-display_name = "IntelliJ IDEA / JetBrains IDEs"
+display_name = "IntelliJ IDEA / LSP4IJ"
 integration_mode = "lsp4ij_plugin"
 tier = "configuration_documented"
 owner_issue = 6739

@@ -7,7 +7,7 @@
 | VS Code | `managed_extension_or_stdio` | `configuration_documented` | The extension and stdio setup are documented. Packaged product proof remains owned by #6056. |
 | Cursor | `vscode_compatible_host` | `configuration_documented` | Shared extension protocol facts do not prove Cursor-specific installation, activation, or update behavior. |
 | Trae (ByteDance) | `vscode_compatible_host` | `configuration_documented` | Shared extension protocol facts do not prove Trae-specific installation or activation. |
-| IntelliJ IDEA / JetBrains IDEs | `lsp4ij_plugin` | `configuration_documented` | The repository proves an LSP4IJ-shaped inline-completion profile, not an actual IntelliJ/LSP4IJ launch or the complete client journey. |
+| IntelliJ IDEA / LSP4IJ | `lsp4ij_plugin` | `configuration_documented` | The repository proves an LSP4IJ-shaped inline-completion profile, not an actual IntelliJ/LSP4IJ launch or the complete client journey. |
 | Neovim | `generic_stdio_client` | `configuration_documented` | The current UX trace is a hand-authored Neovim-shaped capability profile; it does not launch Neovim. |
 | Vim | `vim_lsp_plugin` | `configuration_documented` | Configuration is documented; no current actual Vim/vim-lsp receipt is registered. |
 | coc.nvim | `coc_language_server` | `configuration_documented` | Configuration is documented; no current actual coc.nvim receipt is registered. |
