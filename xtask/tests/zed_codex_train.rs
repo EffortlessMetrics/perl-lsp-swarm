@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 const TRAIN_PATH: &str = ".ci/fixtures/zed-perl-upstream/codex-train.v1.json";
-const REGISTRY_MANIFEST_PATH: &str = ".ci/fixtures/zed-perl-upstream/registry/manifest.toml";
 const TRAIN_DOC_PATH: &str = "docs/integrations/ZED_CODEX_IMPLEMENTATION_TRAIN.md";
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
@@ -23,237 +22,96 @@ fn load_train() -> Result<Value, Box<dyn Error>> {
     Ok(serde_json::from_slice(&fs::read(root.join(TRAIN_PATH))?)?)
 }
 
-fn load_registry_manifest() -> Result<toml::Value, Box<dyn Error>> {
-    let root = repo_root()?;
-    Ok(toml::from_str(&fs::read_to_string(root.join(REGISTRY_MANIFEST_PATH))?)?)
-}
-
-fn stages(train: &Value) -> Result<&[Value], Box<dyn Error>> {
-    train
-        .get("stages")
+fn array<'a>(value: &'a Value, key: &str) -> Result<&'a [Value], Box<dyn Error>> {
+    value
+        .get(key)
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .ok_or_else(|| io::Error::other("Zed Codex train lacks stages").into())
+        .ok_or_else(|| io::Error::other(format!("value lacks array `{key}`")).into())
 }
 
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Box<dyn Error>> {
     value
         .get(key)
         .and_then(Value::as_str)
-        .ok_or_else(|| io::Error::other(format!("stage lacks string `{key}`")).into())
+        .ok_or_else(|| io::Error::other(format!("value lacks string `{key}`")).into())
 }
 
-fn dependency_ids(stage: &Value) -> Result<Vec<&str>, Box<dyn Error>> {
-    stage
-        .get("depends_on")
-        .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::other("stage lacks depends_on array"))?
+fn boolean(value: &Value, key: &str) -> Result<bool, Box<dyn Error>> {
+    value
+        .get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| io::Error::other(format!("value lacks bool `{key}`")).into())
+}
+
+fn string_set<'a>(value: &'a Value, key: &str) -> Result<BTreeSet<&'a str>, Box<dyn Error>> {
+    array(value, key)?
         .iter()
         .map(|entry| {
-            entry.as_str().ok_or_else(|| io::Error::other("dependency id is not a string").into())
+            entry
+                .as_str()
+                .ok_or_else(|| io::Error::other(format!("`{key}` entry is not a string")).into())
         })
         .collect()
 }
 
-fn index_by_id<'a>(train: &'a Value) -> Result<BTreeMap<&'a str, &'a Value>, Box<dyn Error>> {
+fn core_stages(train: &Value) -> Result<&[Value], Box<dyn Error>> {
+    array(train, "stages")
+}
+
+fn core_index<'a>(train: &'a Value) -> Result<BTreeMap<&'a str, &'a Value>, Box<dyn Error>> {
     let mut index = BTreeMap::new();
-    for stage in stages(train)? {
+    for stage in core_stages(train)? {
         let id = string(stage, "id")?;
         if index.insert(id, stage).is_some() {
-            return Err(io::Error::other(format!("duplicate train stage `{id}`")).into());
+            return Err(io::Error::other(format!("duplicate core stage `{id}`")).into());
         }
     }
     Ok(index)
 }
 
-fn set_stage_state(train: &mut Value, id: &str, state: &str) -> Result<(), Box<dyn Error>> {
-    let stage = train
-        .get_mut("stages")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| io::Error::other("Zed Codex train lacks mutable stages"))?
-        .iter_mut()
-        .find(|stage| stage.get("id").and_then(Value::as_str) == Some(id))
-        .ok_or_else(|| io::Error::other(format!("missing train stage `{id}`")))?;
-    stage["state"] = Value::String(state.to_string());
-    Ok(())
+fn dap_sidecar(train: &Value) -> Result<&Value, Box<dyn Error>> {
+    array(train, "non_blocking_sidecars")?
+        .iter()
+        .find(|sidecar| sidecar.get("id").and_then(Value::as_str) == Some("zed_dap"))
+        .ok_or_else(|| io::Error::other("train lacks the Zed DAP sidecar").into())
 }
 
 fn dap_stages(train: &Value) -> Result<&[Value], Box<dyn Error>> {
-    train
-        .get("non_blocking_sidecars")
-        .and_then(Value::as_array)
-        .and_then(|sidecars| {
-            sidecars
-                .iter()
-                .find(|sidecar| sidecar.get("id").and_then(Value::as_str) == Some("zed_dap"))
-        })
-        .and_then(|sidecar| sidecar.get("stages"))
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .ok_or_else(|| io::Error::other("Zed DAP sidecar lacks stages").into())
+    array(dap_sidecar(train)?, "stages")
 }
 
-fn dap_stage<'a>(train: &'a Value, id: &str) -> Result<&'a Value, Box<dyn Error>> {
-    dap_stages(train)?
-        .iter()
-        .find(|stage| stage.get("id").and_then(Value::as_str) == Some(id))
-        .ok_or_else(|| io::Error::other(format!("missing DAP stage `{id}`")).into())
-}
-
-fn set_dap_stage_state(train: &mut Value, id: &str, state: &str) -> Result<(), Box<dyn Error>> {
-    train
-        .get_mut("non_blocking_sidecars")
-        .and_then(Value::as_array_mut)
-        .and_then(|sidecars| {
-            sidecars
-                .iter_mut()
-                .find(|sidecar| sidecar.get("id").and_then(Value::as_str) == Some("zed_dap"))
-        })
-        .and_then(|sidecar| sidecar.get_mut("stages"))
-        .and_then(Value::as_array_mut)
-        .and_then(|stages| {
-            stages.iter_mut().find(|stage| stage.get("id").and_then(Value::as_str) == Some(id))
-        })
-        .map(|stage| stage["state"] = Value::String(state.to_string()))
-        .ok_or_else(|| io::Error::other(format!("missing DAP stage `{id}`")).into())
-}
-
-fn merged_upstream_subject_is_accepted(
-    train: &Value,
-    registry: &toml::Value,
-) -> Result<bool, Box<dyn Error>> {
-    let index = index_by_id(train)?;
-    index.get("P18").ok_or_else(|| io::Error::other("missing P18"))?;
-    let m01_complete =
-        index.get("M01").and_then(|stage| stage.get("state")).and_then(Value::as_str)
-            == Some("complete");
-    let upstream_acceptance_complete =
-        index.get("U01").and_then(|stage| stage.get("state")).and_then(Value::as_str)
-            == Some("complete");
-    let acceptance = index
-        .get("U01")
-        .copied()
-        .ok_or_else(|| io::Error::other("missing U01"))?
-        .get("upstream_acceptance")
-        .and_then(Value::as_object)
-        .ok_or_else(|| io::Error::other("U01 lacks upstream_acceptance"))?;
-    let extension = registry.get("extension").and_then(toml::Value::as_table);
-    let validation = registry.get("validation").and_then(toml::Value::as_table);
-    let string_field = |table: Option<&toml::map::Map<String, toml::Value>>, key: &str| {
-        table
-            .and_then(|table| table.get(key))
-            .and_then(toml::Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-    };
-
-    let new_commit = extension.and_then(|table| table.get("new_commit"));
-    let current_commit = extension.and_then(|table| table.get("current_commit"));
-    let new_version = extension.and_then(|table| table.get("new_version"));
-    let current_version = extension.and_then(|table| table.get("current_version"));
-    Ok(m01_complete
-        && upstream_acceptance_complete
-        && acceptance.get("repository").and_then(Value::as_str)
-            == Some("tree-sitter-perl/zed-perl")
-        && string_field(extension, "new_commit")
-        && string_field(extension, "new_version")
-        && string_field(extension, "current_commit")
-        && string_field(extension, "current_version")
-        && string_field(extension, "upstream_branch_containing_commit")
-        && new_commit != current_commit
-        && new_version != current_version
-        && validation
-            .and_then(|table| table.get("submodule_commit_branch_reachable"))
-            .and_then(toml::Value::as_bool)
-            == Some(true)
-        && validation
-            .and_then(|table| table.get("manifest_version_matches"))
-            .and_then(toml::Value::as_bool)
-            == Some(true))
-}
-
-fn released_dap_subject_is_accepted(
-    train: &Value,
-    registry: &toml::Value,
-) -> Result<bool, Box<dyn Error>> {
-    let dm01_complete =
-        dap_stage(train, "DM01")?.get("state").and_then(Value::as_str) == Some("complete");
-    let du01 = dap_stage(train, "DU01")?;
-    let du01_complete = du01.get("state").and_then(Value::as_str) == Some("complete");
-    let acceptance = du01
-        .get("upstream_acceptance")
-        .and_then(Value::as_object)
-        .ok_or_else(|| io::Error::other("DU01 lacks upstream_acceptance"))?;
-    let required_fields = acceptance
-        .get("required_fields")
-        .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::other("DU01 lacks required_fields"))?;
-    let required_validation = acceptance
-        .get("required_validation")
-        .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::other("DU01 lacks required_validation"))?;
-    let contract_requires = |fields: &[Value], required: &str| {
-        fields.iter().any(|field| field.as_str() == Some(required))
-    };
-    let extension = registry.get("extension").and_then(toml::Value::as_table);
-    let validation = registry.get("validation").and_then(toml::Value::as_table);
-    let string_field = |table: Option<&toml::map::Map<String, toml::Value>>, key: &str| {
-        table
-            .and_then(|table| table.get(key))
-            .and_then(toml::Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-    };
-    let new_commit = extension.and_then(|table| table.get("new_commit"));
-    let current_commit = extension.and_then(|table| table.get("current_commit"));
-    let new_version = extension.and_then(|table| table.get("new_version"));
-    let current_version = extension.and_then(|table| table.get("current_version"));
-
-    Ok(dm01_complete
-        && du01_complete
-        && acceptance.get("repository").and_then(Value::as_str)
-            == Some("tree-sitter-perl/zed-perl")
-        && acceptance.get("requires_changed_subject").and_then(Value::as_bool) == Some(true)
-        && acceptance.get("requires_released_build").and_then(Value::as_bool) == Some(true)
-        && contract_requires(required_fields, "extension.new_commit")
-        && contract_requires(required_fields, "extension.new_version")
-        && contract_requires(required_fields, "extension.upstream_branch_containing_commit")
-        && contract_requires(required_validation, "validation.submodule_commit_branch_reachable")
-        && contract_requires(required_validation, "validation.manifest_version_matches")
-        && contract_requires(required_validation, "validation.released_build_contains_commit")
-        && string_field(extension, "current_commit")
-        && string_field(extension, "new_commit")
-        && string_field(extension, "current_version")
-        && string_field(extension, "new_version")
-        && string_field(extension, "upstream_branch_containing_commit")
-        && new_commit != current_commit
-        && new_version != current_version
-        && validation
-            .and_then(|table| table.get("submodule_commit_branch_reachable"))
-            .and_then(toml::Value::as_bool)
-            == Some(true)
-        && validation
-            .and_then(|table| table.get("manifest_version_matches"))
-            .and_then(toml::Value::as_bool)
-            == Some(true)
-        && validation
-            .and_then(|table| table.get("released_build_contains_commit"))
-            .and_then(toml::Value::as_bool)
-            == Some(true))
+fn dap_index<'a>(train: &'a Value) -> Result<BTreeMap<&'a str, &'a Value>, Box<dyn Error>> {
+    let mut index = BTreeMap::new();
+    for stage in dap_stages(train)? {
+        let id = string(stage, "id")?;
+        if index.insert(id, stage).is_some() {
+            return Err(io::Error::other(format!("duplicate DAP stage `{id}`")).into());
+        }
+    }
+    Ok(index)
 }
 
 #[test]
-fn train_is_topologically_ordered_and_has_unique_stages() -> Result<(), Box<dyn Error>> {
+fn core_train_is_topologically_ordered_and_unique() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
-    assert_eq!(train.get("schema_version").and_then(Value::as_str), Some("zed_codex_train.v1"));
-    assert_eq!(train.get("programme_issue").and_then(Value::as_u64), Some(7759));
+    assert_eq!(
+        train.get("schema_version").and_then(Value::as_str),
+        Some("zed_codex_train.v1")
+    );
+    assert_eq!(
+        train.get("programme_issue").and_then(Value::as_u64),
+        Some(7759)
+    );
 
     let mut seen = BTreeSet::new();
-    for stage in stages(&train)? {
+    for stage in core_stages(&train)? {
         let id = string(stage, "id")?;
-        assert!(seen.insert(id), "duplicate train stage `{id}`");
-        for dependency in dependency_ids(stage)? {
+        assert!(seen.insert(id), "duplicate core stage `{id}`");
+        for dependency in string_set(stage, "depends_on")? {
             assert!(
                 seen.contains(dependency),
-                "stage `{id}` appears before dependency `{dependency}`"
+                "core stage `{id}` appears before dependency `{dependency}`"
             );
         }
     }
@@ -261,301 +119,209 @@ fn train_is_topologically_ordered_and_has_unique_stages() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn external_writes_are_maintainer_only_stop_points() -> Result<(), Box<dyn Error>> {
+fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
-    let mut external = BTreeSet::new();
-    for stage in stages(&train)? {
-        let id = string(stage, "id")?;
-        let actor = string(stage, "actor")?;
-        let kind = string(stage, "kind")?;
-        let writes_external = stage
-            .get("external_write")
-            .and_then(Value::as_bool)
-            .ok_or_else(|| io::Error::other(format!("stage `{id}` lacks external_write")))?;
-        if writes_external {
-            assert_eq!(actor, "maintainer");
-            assert_eq!(kind, "manual_checkpoint");
-            assert!(stage.get("issue").is_some_and(Value::is_null));
-            external.insert(id);
-        } else {
-            assert_ne!(actor, "maintainer");
-        }
+    let rules = train
+        .get("rules")
+        .ok_or_else(|| io::Error::other("train lacks rules"))?;
+    assert_eq!(
+        string_set(rules, "current_core_frontier")?,
+        BTreeSet::from(["C01", "P02", "P06", "P09"])
+    );
+    assert_eq!(
+        string_set(rules, "current_dap_frontier")?,
+        BTreeSet::from(["D01"])
+    );
+
+    let core = core_index(&train)?;
+    assert_eq!(
+        string(core["P00"], "state")?,
+        "complete_static_substrate_execution_not_proven"
+    );
+    assert_eq!(
+        core["P00"].get("pull_request").and_then(Value::as_u64),
+        Some(8023)
+    );
+    assert_eq!(
+        string(core["P01"], "state")?,
+        "authority_merged_execution_not_proven"
+    );
+    assert_eq!(
+        core["P01"].get("pull_request").and_then(Value::as_u64),
+        Some(8365)
+    );
+    assert_eq!(string(core["P02"], "state")?, "implementation_pr_open");
+    assert_eq!(
+        core["P02"].get("pull_request").and_then(Value::as_u64),
+        Some(8369)
+    );
+    for ready in ["P06", "P09", "C01"] {
+        assert_eq!(string(core[ready], "state")?, "ready");
     }
-    assert_eq!(external, BTreeSet::from(["M01", "M02"]));
+
+    let dap = dap_index(&train)?;
+    assert_eq!(string(dap["D01"], "state")?, "ready");
     Ok(())
 }
 
 #[test]
-fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Box<dyn Error>> {
+fn external_writes_are_maintainer_only_stop_points() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
-    let index = index_by_id(&train)?;
+    let mut core_external = BTreeSet::new();
+    for stage in core_stages(&train)? {
+        let id = string(stage, "id")?;
+        if boolean(stage, "external_write")? {
+            assert_eq!(string(stage, "actor")?, "maintainer");
+            assert_eq!(string(stage, "kind")?, "manual_checkpoint");
+            assert!(stage.get("issue").is_some_and(Value::is_null));
+            core_external.insert(id);
+        } else {
+            assert_ne!(string(stage, "actor")?, "maintainer");
+        }
+    }
+    assert_eq!(core_external, BTreeSet::from(["M01", "M02"]));
 
-    let required_dependencies = BTreeMap::from([
+    let mut dap_external = BTreeSet::new();
+    for stage in dap_stages(&train)? {
+        let id = string(stage, "id")?;
+        if boolean(stage, "external_write")? {
+            assert_eq!(string(stage, "actor")?, "maintainer");
+            assert_eq!(string(stage, "kind")?, "manual_checkpoint");
+            assert!(stage.get("issue").is_some_and(Value::is_null));
+            dap_external.insert(id);
+        }
+    }
+    assert_eq!(dap_external, BTreeSet::from(["DM01", "DM02"]));
+    Ok(())
+}
+
+#[test]
+fn core_authority_evidence_and_public_gates_remain_separate() -> Result<(), Box<dyn Error>> {
+    let train = load_train()?;
+    let core = core_index(&train)?;
+    let expected = BTreeMap::from([
+        ("P07", BTreeSet::from(["P01", "P02"])),
         ("P10", BTreeSet::from(["C01", "P01", "P06"])),
         ("P11", BTreeSet::from(["C01", "P02", "P03"])),
         ("P12", BTreeSet::from(["P04", "P11"])),
         ("P13", BTreeSet::from(["P05", "P11"])),
         ("P14", BTreeSet::from(["P07", "P10", "P11"])),
-        ("P15", BTreeSet::from(["P10", "P11", "P12", "P13", "P14"])),
+        (
+            "P15",
+            BTreeSet::from(["P10", "P11", "P12", "P13", "P14"]),
+        ),
         ("P16", BTreeSet::from(["P15"])),
         ("P17", BTreeSet::from(["P13"])),
         ("U01", BTreeSet::from(["M01"])),
         ("P18", BTreeSet::from(["M01", "U01"])),
-        ("P19", BTreeSet::from(["C01", "M02", "P08", "P10", "P13", "P14"])),
+        (
+            "P19",
+            BTreeSet::from(["C01", "M02", "P08", "P10", "P13", "P14"]),
+        ),
         ("P20", BTreeSet::from(["P09", "P19"])),
         ("P21", BTreeSet::from(["P20"])),
     ]);
 
-    for (id, expected) in required_dependencies {
-        let stage = index
-            .get(id)
-            .copied()
-            .ok_or_else(|| io::Error::other(format!("missing required train stage `{id}`")))?;
-        let actual = dependency_ids(stage)?.into_iter().collect::<BTreeSet<_>>();
-        assert_eq!(actual, expected, "train dependencies drifted for `{id}`");
-    }
-
-    assert_eq!(
-        index.get("P08").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
-        Some(9467)
-    );
-    assert_eq!(
-        index.get("P09").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
-        Some(9468)
-    );
-    assert_eq!(
-        index.get("C01").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
-        Some(9483)
-    );
-    assert_eq!(
-        index.get("P19").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
-        Some(7912)
-    );
-    assert_eq!(
-        index.get("P20").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
-        Some(8000)
-    );
-    assert_eq!(string(index["P00"], "state")?, "static_substrate_complete_execution_not_proven");
-    assert_eq!(string(index["P01"], "state")?, "ready_after_dependency");
-    assert_eq!(string(index["P02"], "state")?, "ready_after_dependency");
-    let acceptance = index["U01"]
-        .get("upstream_acceptance")
-        .and_then(Value::as_object)
-        .ok_or_else(|| io::Error::other("U01 lacks upstream_acceptance"))?;
-    assert_eq!(acceptance.get("source_of_truth").and_then(Value::as_array).map(Vec::len), Some(2));
-    assert_eq!(
-        acceptance.get("repository").and_then(Value::as_str),
-        Some("tree-sitter-perl/zed-perl")
-    );
-    assert_eq!(
-        acceptance
-            .get("required_fields")
-            .and_then(Value::as_array)
-            .map(|fields| fields.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()),
-        Some(BTreeSet::from([
-            "extension.new_commit",
-            "extension.new_version",
-            "extension.upstream_branch_containing_commit",
-        ]))
-    );
-    assert_eq!(
-        acceptance
-            .get("required_validation")
-            .and_then(Value::as_array)
-            .map(|fields| fields.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()),
-        Some(BTreeSet::from([
-            "validation.manifest_version_matches",
-            "validation.submodule_commit_branch_reachable",
-        ]))
-    );
-    assert_eq!(acceptance.get("requires_changed_subject").and_then(Value::as_bool), Some(true));
-    assert_ne!(
-        index.get("P08").and_then(|stage| stage.get("phase")),
-        index.get("P19").and_then(|stage| stage.get("phase"))
-    );
-    Ok(())
-}
-
-#[test]
-fn p18_rejects_m01_without_merged_upstream_acceptance() -> Result<(), Box<dyn Error>> {
-    let mut train = load_train()?;
-    set_stage_state(&mut train, "M01", "complete")?;
-    let blocked_registry = load_registry_manifest()?;
-
-    assert_eq!(string(index_by_id(&train)?["U01"], "state")?, "blocked_on_external_subject");
-    assert!(!merged_upstream_subject_is_accepted(&train, &blocked_registry)?);
-
-    set_stage_state(&mut train, "U01", "complete")?;
-    assert!(!merged_upstream_subject_is_accepted(&train, &blocked_registry)?);
-
-    let mut merged_registry = blocked_registry.clone();
-    let extension = merged_registry
-        .get_mut("extension")
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| io::Error::other("registry manifest lacks extension table"))?;
-    extension.insert(
-        "new_commit".to_string(),
-        toml::Value::String("0123456789abcdef0123456789abcdef01234567".to_string()),
-    );
-    extension.insert("new_version".to_string(), toml::Value::String("0.5.0".to_string()));
-    extension.insert(
-        "upstream_branch_containing_commit".to_string(),
-        toml::Value::String("master".to_string()),
-    );
-    let validation = merged_registry
-        .get_mut("validation")
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?;
-    validation.insert("submodule_commit_branch_reachable".to_string(), toml::Value::Boolean(true));
-    validation.insert("manifest_version_matches".to_string(), toml::Value::Boolean(true));
-
-    for missing_field in ["current_commit", "current_version"] {
-        let mut missing_captured_subject = merged_registry.clone();
-        missing_captured_subject
-            .get_mut("extension")
-            .and_then(toml::Value::as_table_mut)
-            .ok_or_else(|| io::Error::other("registry manifest lacks extension table"))?
-            .remove(missing_field);
-        assert!(
-            !merged_upstream_subject_is_accepted(&train, &missing_captured_subject)?,
-            "missing captured subject field `{missing_field}` was accepted"
+    for (id, dependencies) in expected {
+        assert_eq!(
+            string_set(core[id], "depends_on")?,
+            dependencies,
+            "core dependencies drifted for `{id}`"
         );
     }
 
-    assert!(merged_upstream_subject_is_accepted(&train, &merged_registry)?);
+    assert_eq!(string(core["P01"], "kind")?, "authority");
+    assert_eq!(string(core["P10"], "kind")?, "evidence");
+    assert_eq!(string(core["P19"], "kind")?, "public_evidence");
+    assert_eq!(string(core["P20"], "kind")?, "projection");
+    assert_eq!(string(core["P21"], "kind")?, "closeout");
     Ok(())
 }
 
 #[test]
-fn du01_requires_released_dap_subject_evidence() -> Result<(), Box<dyn Error>> {
-    let train = load_train()?;
-    let blocked_registry = load_registry_manifest()?;
-    assert_eq!(string(dap_stage(&train, "DU01")?, "state")?, "blocked_on_external_subject");
-    assert!(!released_dap_subject_is_accepted(&train, &blocked_registry)?);
-
-    let mut complete_train = train.clone();
-    set_dap_stage_state(&mut complete_train, "DM01", "complete")?;
-    set_dap_stage_state(&mut complete_train, "DU01", "complete")?;
-
-    let mut released_registry = blocked_registry.clone();
-    let extension = released_registry
-        .get_mut("extension")
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| io::Error::other("registry manifest lacks extension table"))?;
-    extension.insert(
-        "new_commit".to_string(),
-        toml::Value::String("0123456789abcdef0123456789abcdef01234567".to_string()),
-    );
-    extension.insert("new_version".to_string(), toml::Value::String("0.5.0".to_string()));
-    extension.insert(
-        "upstream_branch_containing_commit".to_string(),
-        toml::Value::String("master".to_string()),
-    );
-    let validation = released_registry
-        .get_mut("validation")
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?;
-    validation.insert("submodule_commit_branch_reachable".to_string(), toml::Value::Boolean(true));
-    validation.insert("manifest_version_matches".to_string(), toml::Value::Boolean(true));
-    validation.insert("released_build_contains_commit".to_string(), toml::Value::Boolean(true));
-
-    assert!(released_dap_subject_is_accepted(&complete_train, &released_registry)?);
-
-    let mut missing_released_build_evidence = released_registry.clone();
-    missing_released_build_evidence
-        .get_mut("validation")
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?
-        .remove("released_build_contains_commit");
-    assert!(!released_dap_subject_is_accepted(&complete_train, &missing_released_build_evidence)?);
-
-    let mut false_released_build_evidence = released_registry.clone();
-    false_released_build_evidence
-        .get_mut("validation")
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?
-        .insert("released_build_contains_commit".to_string(), toml::Value::Boolean(false));
-    assert!(!released_dap_subject_is_accepted(&complete_train, &false_released_build_evidence)?);
-
-    for incomplete_stage in ["DM01", "DU01"] {
-        let mut incomplete_train = complete_train.clone();
-        set_dap_stage_state(&mut incomplete_train, incomplete_stage, "blocked")?;
-        assert!(
-            !released_dap_subject_is_accepted(&incomplete_train, &released_registry)?,
-            "incomplete DAP stage `{incomplete_stage}` was accepted"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn prose_dependency_edges_match_the_machine_checked_fan_in() -> Result<(), Box<dyn Error>> {
-    let root = repo_root()?;
-    let prose = fs::read_to_string(root.join(TRAIN_DOC_PATH))?;
-    for (dependency, stage) in [
-        ("P01", "P07"),
-        ("P07", "P14"),
-        ("P11", "P12"),
-        ("P11", "P13"),
-        ("P11", "P14"),
-        ("M01", "U01"),
-        ("U01", "P18"),
-    ] {
-        let edge = format!("`{dependency} -> {stage}`");
-        assert!(prose.contains(&edge), "prose graph lacks dependency edge {edge}");
-    }
-    Ok(())
-}
-
-#[test]
-fn support_and_closeout_cannot_precede_public_receipt() -> Result<(), Box<dyn Error>> {
+fn support_and_closeout_require_public_receipt_and_projection() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
     let rules = train
         .get("rules")
-        .and_then(Value::as_object)
         .ok_or_else(|| io::Error::other("train lacks rules"))?;
-    assert_eq!(rules.get("templates_are_evidence").and_then(Value::as_bool), Some(false));
-    assert_eq!(rules.get("external_writes_are_manual").and_then(Value::as_bool), Some(true));
-    assert_eq!(rules.get("dap_in_scope").and_then(Value::as_bool), Some(false));
+    assert!(!boolean(rules, "templates_are_evidence")?);
+    assert!(boolean(rules, "external_writes_are_manual")?);
+    assert!(!boolean(rules, "dap_in_scope")?);
+    assert_eq!(
+        string_set(rules, "public_support_requires")?,
+        BTreeSet::from(["P19", "P20"])
+    );
 
-    let support = rules
-        .get("public_support_requires")
-        .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::other("train lacks public_support_requires"))?
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<BTreeSet<_>>();
-    assert_eq!(support, BTreeSet::from(["P19", "P20"]));
-
-    let index = index_by_id(&train)?;
-    assert_eq!(string(index["P19"], "kind")?, "public_evidence");
-    assert_eq!(string(index["P20"], "kind")?, "projection");
-    assert_eq!(string(index["P21"], "kind")?, "closeout");
-    assert_eq!(index["P21"].get("closes_issue").and_then(Value::as_bool), Some(true));
+    let core = core_index(&train)?;
+    assert_eq!(string_set(core["P20"], "depends_on")?, BTreeSet::from(["P09", "P19"]));
+    assert_eq!(string_set(core["P21"], "depends_on")?, BTreeSet::from(["P20"]));
+    assert!(boolean(core["P21"], "closes_issue")?);
     Ok(())
 }
 
 #[test]
-fn dap_sidecar_is_explicitly_non_blocking_and_has_manual_publication_stops()
+fn upstream_acceptance_contracts_fail_closed() -> Result<(), Box<dyn Error>> {
+    let train = load_train()?;
+    let core = core_index(&train)?;
+    let core_acceptance = core["U01"]
+        .get("upstream_acceptance")
+        .ok_or_else(|| io::Error::other("U01 lacks upstream_acceptance"))?;
+    assert_eq!(
+        string(core_acceptance, "repository")?,
+        "tree-sitter-perl/zed-perl"
+    );
+    assert!(boolean(core_acceptance, "requires_changed_subject")?);
+    assert_eq!(
+        string_set(core_acceptance, "required_fields")?,
+        BTreeSet::from([
+            "extension.new_commit",
+            "extension.new_version",
+            "extension.upstream_branch_containing_commit",
+        ])
+    );
+    assert_eq!(
+        string_set(core_acceptance, "required_validation")?,
+        BTreeSet::from([
+            "validation.manifest_version_matches",
+            "validation.submodule_commit_branch_reachable",
+        ])
+    );
+
+    let dap = dap_index(&train)?;
+    let dap_acceptance = dap["DU01"]
+        .get("upstream_acceptance")
+        .ok_or_else(|| io::Error::other("DU01 lacks upstream_acceptance"))?;
+    assert_eq!(
+        string(dap_acceptance, "repository")?,
+        "tree-sitter-perl/zed-perl"
+    );
+    assert!(boolean(dap_acceptance, "requires_changed_subject")?);
+    assert!(boolean(dap_acceptance, "requires_released_build")?);
+    assert_eq!(
+        string_set(dap_acceptance, "required_validation")?,
+        BTreeSet::from([
+            "validation.manifest_version_matches",
+            "validation.released_build_contains_commit",
+            "validation.submodule_commit_branch_reachable",
+        ])
+    );
+    Ok(())
+}
+
+#[test]
+fn dap_sidecar_is_non_blocking_and_has_independent_asset_evidence()
 -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
-    let sidecars = train
-        .get("non_blocking_sidecars")
-        .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::other("train lacks non_blocking_sidecars"))?;
-    assert_eq!(sidecars.len(), 1);
+    let sidecar = dap_sidecar(&train)?;
+    assert_eq!(
+        sidecar.get("controller_issue").and_then(Value::as_u64),
+        Some(9484)
+    );
+    assert!(!boolean(sidecar, "blocks_programme_closeout")?);
 
-    let dap = &sidecars[0];
-    assert_eq!(dap.get("id").and_then(Value::as_str), Some("zed_dap"));
-    assert_eq!(dap.get("controller_issue").and_then(Value::as_u64), Some(9484));
-    assert_eq!(dap.get("blocks_programme_closeout").and_then(Value::as_bool), Some(false));
-
-    let dap_stages = dap
-        .get("stages")
-        .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::other("zed_dap sidecar lacks stages"))?;
-    let expected = BTreeMap::from([
+    let expected_issues = BTreeMap::from([
         ("D01", Some(9485)),
+        ("DA01", Some(9516)),
         ("D02", Some(9486)),
         ("D03", Some(9490)),
         ("DM01", None),
@@ -566,83 +332,85 @@ fn dap_sidecar_is_explicitly_non_blocking_and_has_manual_publication_stops()
         ("D06", Some(9489)),
         ("D07", Some(9484)),
     ]);
-    let mut seen = BTreeSet::new();
-    let mut external = BTreeSet::new();
 
-    for stage in dap_stages {
+    let mut seen = BTreeSet::new();
+    for stage in dap_stages(&train)? {
         let id = string(stage, "id")?;
-        assert!(seen.insert(id), "duplicate DAP sidecar stage `{id}`");
+        assert!(seen.insert(id), "duplicate DAP stage `{id}`");
         assert_eq!(
             stage.get("issue").and_then(Value::as_u64),
-            expected.get(id).copied().flatten(),
-            "DAP sidecar issue drifted for `{id}`"
+            expected_issues[id],
+            "DAP issue drifted for `{id}`"
         );
-
-        for dependency in
-            stage.get("depends_on_sidecar").and_then(Value::as_array).ok_or_else(|| {
-                io::Error::other(format!("DAP stage `{id}` lacks sidecar dependencies"))
-            })?
-        {
-            let dependency = dependency
-                .as_str()
-                .ok_or_else(|| io::Error::other("DAP dependency is not a string"))?;
+        for dependency in string_set(stage, "depends_on_sidecar")? {
             assert!(
                 seen.contains(dependency),
                 "DAP stage `{id}` appears before dependency `{dependency}`"
             );
         }
-
-        let writes_external = stage
-            .get("external_write")
-            .and_then(Value::as_bool)
-            .ok_or_else(|| io::Error::other(format!("DAP stage `{id}` lacks external_write")))?;
-        if writes_external {
-            assert_eq!(string(stage, "actor")?, "maintainer");
-            assert_eq!(string(stage, "kind")?, "manual_checkpoint");
-            external.insert(id);
-        }
     }
+    assert_eq!(seen.len(), expected_issues.len());
 
-    let dap_index = dap_stages
-        .iter()
-        .map(|stage| Ok((string(stage, "id")?, stage)))
-        .collect::<Result<BTreeMap<_, _>, Box<dyn Error>>>()?;
-    assert_eq!(string(dap_index["DU01"], "kind")?, "acceptance");
-    assert_eq!(string(dap_index["DU01"], "state")?, "blocked_on_external_subject");
+    let dap = dap_index(&train)?;
+    assert_eq!(string(dap["DA01"], "kind")?, "evidence");
     assert_eq!(
-        dap_index["DU01"].get("depends_on_sidecar").and_then(Value::as_array).map(|dependencies| {
-            dependencies.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()
-        }),
-        Some(BTreeSet::from(["DM01"]))
+        string(dap["DA01"], "phase")?,
+        "public_perl_dap_asset_receipts"
     );
     assert_eq!(
-        dap_index["DU01"]
-            .get("upstream_acceptance")
-            .and_then(Value::as_object)
-            .and_then(|acceptance| acceptance.get("requires_released_build"))
-            .and_then(Value::as_bool),
-        Some(true)
+        string_set(dap["DA01"], "depends_on_sidecar")?,
+        BTreeSet::from(["D01"])
     );
     assert_eq!(
-        dap_index["DU01"]
-            .get("upstream_acceptance")
-            .and_then(Value::as_object)
-            .and_then(|acceptance| acceptance.get("required_validation"))
-            .and_then(Value::as_array)
-            .map(|fields| fields.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()),
-        Some(BTreeSet::from([
-            "validation.manifest_version_matches",
-            "validation.released_build_contains_commit",
-            "validation.submodule_commit_branch_reachable",
-        ]))
+        string_set(dap["D02"], "depends_on_core")?,
+        BTreeSet::from(["P02", "P03"])
     );
     assert_eq!(
-        dap_index["D04"].get("depends_on_sidecar").and_then(Value::as_array).map(|dependencies| {
-            dependencies.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()
-        }),
-        Some(BTreeSet::from(["DU01"]))
+        string_set(dap["D05"], "depends_on_sidecar")?,
+        BTreeSet::from(["D02", "DA01", "DM02"])
     );
-    assert_eq!(external, BTreeSet::from(["DM01", "DM02"]));
-    assert_eq!(expected.len(), dap_stages.len());
+    assert_eq!(
+        string_set(dap["D05"], "depends_on_core")?,
+        BTreeSet::from(["C01"])
+    );
+    assert_eq!(
+        string_set(dap["D06"], "depends_on_sidecar")?,
+        BTreeSet::from(["D05"])
+    );
+    assert_eq!(
+        string_set(dap["D06"], "depends_on_core")?,
+        BTreeSet::from(["P09"])
+    );
+    Ok(())
+}
+
+#[test]
+fn prose_and_machine_train_preserve_critical_edges() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let prose = fs::read_to_string(root.join(TRAIN_DOC_PATH))?;
+    for edge in [
+        "`P01 -> P07`",
+        "`P07 -> P14`",
+        "`P11 -> P12`",
+        "`P11 -> P13`",
+        "`P11 -> P14`",
+        "`M01 -> U01`",
+        "`U01 -> P18`",
+        "`D01 -> DA01`",
+        "`DA01 -> D05`",
+        "`D02 -> D05`",
+        "`DM02 -> D05`",
+        "`C01 -> D05`",
+        "`D05 -> D06`",
+        "`P09 -> D06`",
+    ] {
+        assert!(prose.contains(edge), "prose train lacks edge {edge}");
+    }
+    for required in ["#8369", "#8661", "#9468", "#9483", "#9485", "#9516"] {
+        assert!(
+            prose.contains(required),
+            "prose train lacks current frontier reference {required}"
+        );
+    }
     Ok(())
 }
