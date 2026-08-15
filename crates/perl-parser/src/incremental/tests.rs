@@ -18,8 +18,7 @@ fn apply_edit_to_ground_truth(source: &mut String, edit: &FuzzEdit) {
 
 #[test]
 fn test_incremental_state_small_edit_reuses_tokens_before_full_parse() -> Result<()> {
-    let source =
-        (0..30usize).map(|i| format!("my $var_{i} = {i};")).collect::<Vec<_>>().join("\n");
+    let source = (0..30usize).map(|i| format!("my $var_{i} = {i};")).collect::<Vec<_>>().join("\n");
     let mut state = IncrementalState::new(source.clone());
     assert!(state.lex_checkpoints.len() > 1);
     let edit_start =

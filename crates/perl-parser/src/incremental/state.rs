@@ -181,7 +181,9 @@ impl IncrementalState {
     }
 
     /// Compatibility AST view for the current generation.
-    #[deprecated(note = "Use snapshot().parse_output.ast; this compatibility view will be removed.")]
+    #[deprecated(
+        note = "Use snapshot().parse_output.ast; this compatibility view will be removed."
+    )]
     #[must_use]
     pub fn ast(&self) -> &Node {
         &self.read_view.snapshot.parse_output.ast

@@ -111,6 +111,8 @@ def main() -> int:
             "--features",
             "incremental",
             "--test",
+            "incremental_parsing_tests",
+            "--test",
             "incremental_parser_accuracy",
             "--test",
             "incremental_parse_output",

@@ -11,12 +11,7 @@ fn committed_edits_advance_one_generation_and_bind_exact_source() -> anyhow::Res
 
     let result = apply_edits(
         &mut state,
-        &[Edit {
-            start_byte: 8,
-            old_end_byte: 9,
-            new_end_byte: 8,
-            new_text: String::new(),
-        }],
+        &[Edit { start_byte: 8, old_end_byte: 9, new_end_byte: 8, new_text: String::new() }],
     )?;
 
     assert_eq!(state.generation().get(), 1);
@@ -37,12 +32,7 @@ fn recovery_to_clean_publishes_a_new_clean_generation() -> anyhow::Result<()> {
 
     apply_edits(
         &mut state,
-        &[Edit {
-            start_byte: 8,
-            old_end_byte: 8,
-            new_end_byte: 9,
-            new_text: "1".to_string(),
-        }],
+        &[Edit { start_byte: 8, old_end_byte: 8, new_end_byte: 9, new_text: "1".to_string() }],
     )?;
 
     assert_eq!(state.generation().get(), 1);
@@ -61,18 +51,8 @@ fn invalid_transaction_preserves_the_previous_snapshot_exactly() {
     let result = apply_edits(
         &mut state,
         &[
-            Edit {
-                start_byte: 0,
-                old_end_byte: 4,
-                new_end_byte: 1,
-                new_text: "x".to_string(),
-            },
-            Edit {
-                start_byte: 2,
-                old_end_byte: 5,
-                new_end_byte: 3,
-                new_text: "y".to_string(),
-            },
+            Edit { start_byte: 0, old_end_byte: 4, new_end_byte: 1, new_text: "x".to_string() },
+            Edit { start_byte: 2, old_end_byte: 5, new_end_byte: 3, new_text: "y".to_string() },
         ],
     );
 
