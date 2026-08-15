@@ -58,13 +58,9 @@ pub(crate) fn find_complexity_diagnostics(
                     RegexGroupKind::BranchReset => {
                         let depth = stack
                             .iter()
-                            .filter(|candidate| {
-                                matches!(candidate, GroupType::BranchReset { .. })
-                            })
+                            .filter(|candidate| matches!(candidate, GroupType::BranchReset { .. }))
                             .count();
-                        if depth >= config.max_nesting
-                            && !emitted_branch_reset_nesting_limit
-                        {
+                        if depth >= config.max_nesting && !emitted_branch_reset_nesting_limit {
                             diagnostics.push(RegexDiagnostic::new(
                                 RegexDiagnosticCode::BranchResetNestingLimit,
                                 event.range,

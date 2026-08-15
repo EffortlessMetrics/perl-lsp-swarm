@@ -1,0 +1,61 @@
+name: Documentation Build (PR)
+
+# Exercise the documentation production build on pull requests without Pages,
+# OIDC, environment, artifact-upload, or deployment authority.
+on:
+  pull_request:
+    paths:
+      - 'CONTRIBUTING.md'
+      - 'docs/**'
+      - 'book/**'
+      - 'scripts/populate-book.sh'
+      - 'scripts/tests/test-populate-book-roadmap-links.sh'
+      - '.github/workflows/docs-deploy.yml'
+      - '.github/workflows/docs-pr-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: stable
+
+      - name: Cache mdBook
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/mdbook
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-mdbook-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mdbook-
+
+      - name: Install mdBook
+        run: |
+          cargo install mdbook --version 0.4.40 --locked || true
+          mdbook --version
+
+      - name: Populate documentation
+        run: |
+          bash scripts/tests/test-populate-book-roadmap-links.sh
+          bash scripts/populate-book.sh
+
+      - name: Build mdBook
+        run: |
+          mdbook build book

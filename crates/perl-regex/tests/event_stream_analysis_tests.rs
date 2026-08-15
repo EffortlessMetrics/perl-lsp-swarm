@@ -1,8 +1,8 @@
-use perl_regex::{RegexAnalyzer, RegexValidator};
 use perl_regex::analyzer::{
     FeatureState, ModifierSequence, PerlVersion, RegexLanguageProfile, RegexOperator,
 };
 use perl_regex::validator::{RegexDiagnosticCode, RegexValidationConfig};
+use perl_regex::{RegexAnalyzer, RegexValidator};
 
 fn effective(
     operator: RegexOperator,
@@ -10,10 +10,7 @@ fn effective(
 ) -> Result<perl_regex::analyzer::EffectiveModifiers, Box<dyn std::error::Error>> {
     let sequence = ModifierSequence::new(raw, 0)
         .ok_or_else(|| format!("modifier range overflow for {raw:?}"))?;
-    let profile = RegexLanguageProfile::new(
-        Some(PerlVersion::new(5, 44)),
-        FeatureState::Enabled,
-    );
+    let profile = RegexLanguageProfile::new(Some(PerlVersion::new(5, 44)), FeatureState::Enabled);
     Ok(RegexAnalyzer::analyze_modifiers(operator, sequence, profile).effective)
 }
 
@@ -26,10 +23,7 @@ fn extended_line_comments_are_excluded_from_every_analysis()
         max_unicode_properties: 1,
         max_branch_reset_branches: 50,
     });
-    let analysis = validator.analyze_with_modifiers(
-        pattern,
-        effective(RegexOperator::Match, "x")?,
-    );
+    let analysis = validator.analyze_with_modifiers(pattern, effective(RegexOperator::Match, "x")?);
 
     assert!(analysis.facts.embedded_code.is_empty());
     assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
@@ -44,6 +38,59 @@ fn extended_line_comments_are_excluded_from_every_analysis()
     assert_eq!(
         analysis.facts.nested_quantifiers[0].start,
         pattern.rfind('+').ok_or("missing live outer quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
+fn pattern_whitespace_does_not_hide_nbsp_as_trivia() -> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(a+)\u{00a0}+";
+    let analysis = RegexValidator::new()
+        .analyze_with_modifiers(pattern, effective(RegexOperator::Match, "x")?);
+
+    assert!(analysis.facts.nested_quantifiers.is_empty());
+    Ok(())
+}
+
+#[test]
+fn nested_quantifier_state_survives_extended_comments() -> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(a+) # ignored\n +";
+    let analysis = RegexValidator::new()
+        .analyze_with_modifiers(pattern, effective(RegexOperator::Match, "x")?);
+
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.rfind('+').ok_or("missing live outer quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
+fn omitted_lower_bound_brace_quantifier_is_structurally_normalized()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(a+){,3}";
+    let analysis = RegexValidator::new().analyze(pattern);
+
+    assert_eq!(analysis.facts.nested_quantifiers.len(), 1);
+    assert_eq!(
+        analysis.facts.nested_quantifiers[0].start,
+        pattern.find("{,3}").ok_or("missing omitted-lower-bound quantifier")?
+    );
+    Ok(())
+}
+
+#[test]
+fn caret_modifier_scope_resets_extended_mode_for_embedded_code()
+-> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "(?^:#(?{ live }))";
+    let analysis = RegexValidator::new()
+        .analyze_with_modifiers(pattern, effective(RegexOperator::Match, "x")?);
+
+    assert_eq!(analysis.facts.embedded_code.len(), 1);
+    assert_eq!(
+        analysis.facts.embedded_code[0].range.start,
+        pattern.find("(?{").ok_or("missing live embedded-code opener")?
     );
     Ok(())
 }
@@ -78,10 +125,8 @@ fn local_x_scope_hides_structure_and_minus_x_restores_literal_hash_behavior()
     );
 
     let locally_literal = "(?-x:#(?{ live }))";
-    let literal = validator.analyze_with_modifiers(
-        locally_literal,
-        effective(RegexOperator::Match, "x")?,
-    );
+    let literal =
+        validator.analyze_with_modifiers(locally_literal, effective(RegexOperator::Match, "x")?);
     assert_eq!(literal.facts.embedded_code.len(), 1);
     assert_eq!(
         literal.facts.embedded_code[0].range.start,
@@ -105,10 +150,7 @@ fn persistent_inline_x_changes_apply_to_the_remaining_pattern()
     );
 
     let disable = "(?-x)#(?{ live })";
-    let disabled = validator.analyze_with_modifiers(
-        disable,
-        effective(RegexOperator::Match, "x")?,
-    );
+    let disabled = validator.analyze_with_modifiers(disable, effective(RegexOperator::Match, "x")?);
     assert_eq!(disabled.facts.embedded_code.len(), 1);
     assert_eq!(
         disabled.facts.embedded_code[0].range.start,
@@ -179,11 +221,7 @@ fn policy_limits_consume_the_same_group_and_unicode_events()
     });
     let pattern = r"(?<=(?<=x))(?|a|b)\p{L}\p{N}";
     let analysis = validator.analyze(pattern);
-    let codes = analysis
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code)
-        .collect::<Vec<_>>();
+    let codes = analysis.diagnostics.iter().map(|diagnostic| diagnostic.code).collect::<Vec<_>>();
 
     assert!(codes.contains(&RegexDiagnosticCode::LookbehindNestingLimit));
     assert!(codes.contains(&RegexDiagnosticCode::BranchResetBranchLimit));

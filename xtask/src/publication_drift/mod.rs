@@ -46,10 +46,8 @@ pub fn run_from_env() -> Result<()> {
 
 pub fn run_with_paths(input: PathBuf, repo_root: PathBuf, out: PathBuf) -> Result<()> {
     let observation = load_observation(&input)?;
-    let authority_path = observation
-        .manifest
-        .as_ref()
-        .map(|manifest| repo_root.join(&manifest.path));
+    let authority_path =
+        observation.manifest.as_ref().map(|manifest| repo_root.join(&manifest.path));
     prepare_output_parent(&out)?;
     ensure_safe_output(&out, &input, authority_path.as_deref())?;
 
@@ -59,12 +57,15 @@ pub fn run_with_paths(input: PathBuf, repo_root: PathBuf, out: PathBuf) -> Resul
 
     match receipt.verdict {
         Verdict::Clean => {
-            println!(
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            writeln!(
+                handle,
                 "publication-drift: clean comparison {} -> {} at version {}",
                 receipt.swarm.sha,
                 receipt.public.sha,
                 receipt.comparison_version.as_deref().unwrap_or("not-proven")
-            );
+            )?;
             Ok(())
         }
         Verdict::Drift => bail!("publication-drift: product drift detected; see {}", out.display()),
@@ -82,10 +83,8 @@ fn load_observation(path: &Path) -> Result<Observation> {
 }
 
 fn prepare_output_parent(path: &Path) -> Result<()> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+    let parent =
+        path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
     fs::create_dir_all(parent)
         .wrap_err_with(|| format!("creating publication drift output {}", parent.display()))
 }
@@ -125,8 +124,9 @@ fn ensure_safe_output(out: &Path, input: &Path, authority: Option<&Path>) -> Res
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(error)
-                .wrap_err_with(|| format!("inspecting publication drift output {}", out.display()));
+            return Err(error).wrap_err_with(|| {
+                format!("inspecting publication drift output {}", out.display())
+            });
         }
     }
     Ok(())
@@ -144,12 +144,11 @@ fn resolved_candidate_path(path: &Path) -> Result<PathBuf> {
     let file_name = path
         .file_name()
         .ok_or_else(|| eyre!("publication drift path has no file name: {}", path.display()))?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let canonical_parent = fs::canonicalize(parent)
-        .wrap_err_with(|| format!("canonicalizing publication drift parent {}", parent.display()))?;
+    let parent =
+        path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let canonical_parent = fs::canonicalize(parent).wrap_err_with(|| {
+        format!("canonicalizing publication drift parent {}", parent.display())
+    })?;
     normalize_lexically(&canonical_parent.join(file_name))
 }
 
@@ -175,14 +174,16 @@ fn normalize_lexically(path: &Path) -> Result<PathBuf> {
 fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
 
-    let output = fs::metadata(output)
-        .wrap_err_with(|| format!("reading publication drift output metadata {}", output.display()))?;
+    let output = fs::metadata(output).wrap_err_with(|| {
+        format!("reading publication drift output metadata {}", output.display())
+    })?;
     let source = match fs::metadata(source) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
-            return Err(error)
-                .wrap_err_with(|| format!("reading protected evidence metadata {}", source.display()));
+            return Err(error).wrap_err_with(|| {
+                format!("reading protected evidence metadata {}", source.display())
+            });
         }
     };
     Ok(output.dev() == source.dev() && output.ino() == source.ino())
@@ -199,9 +200,13 @@ fn same_file_identity(output: &Path, source: &Path) -> Result<bool> {
 fn windows_file_identity(path: &Path) -> Result<Option<(u32, u32, u32)>> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::null_mut;
-    use winapi::um::fileapi::{BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING};
+    use winapi::um::fileapi::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING,
+    };
     use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-    use winapi::um::winnt::{FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+    use winapi::um::winnt::{
+        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
 
     let display_path = path.display().to_string();
     let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -251,26 +256,20 @@ fn same_file_identity(_output: &Path, _source: &Path) -> Result<bool> {
 }
 
 fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+    let parent =
+        path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let raw = serde_json::to_string_pretty(receipt).wrap_err("serializing drift receipt")?;
-    let mut temporary = NamedTempFile::new_in(parent)
-        .wrap_err_with(|| format!("creating atomic publication drift receipt in {}", parent.display()))?;
-    temporary
-        .write_all(format!("{raw}\n").as_bytes())
-        .wrap_err_with(|| format!("writing temporary publication drift receipt for {}", path.display()))?;
-    temporary
-        .as_file_mut()
-        .sync_all()
-        .wrap_err_with(|| format!("syncing temporary publication drift receipt for {}", path.display()))?;
+    let mut temporary = NamedTempFile::new_in(parent).wrap_err_with(|| {
+        format!("creating atomic publication drift receipt in {}", parent.display())
+    })?;
+    temporary.write_all(format!("{raw}\n").as_bytes()).wrap_err_with(|| {
+        format!("writing temporary publication drift receipt for {}", path.display())
+    })?;
+    temporary.as_file_mut().sync_all().wrap_err_with(|| {
+        format!("syncing temporary publication drift receipt for {}", path.display())
+    })?;
     temporary.persist(path).map_err(|error| {
-        eyre!(
-            "atomically persisting publication drift receipt {}: {}",
-            path.display(),
-            error.error
-        )
+        eyre!("atomically persisting publication drift receipt {}: {}", path.display(), error.error)
     })?;
     Ok(())
 }

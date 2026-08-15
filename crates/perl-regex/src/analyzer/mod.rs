@@ -1,6 +1,4 @@
-#[allow(clippy::too_many_arguments)]
 mod capture;
-mod capture_compat;
 mod control;
 mod hover;
 mod modifier_analysis;
@@ -31,7 +29,7 @@ pub struct RegexAnalyzer;
 impl RegexAnalyzer {
     /// Project named captures through the legacy compatibility shape.
     pub fn extract_named_captures(pattern: &str) -> Vec<CaptureGroup> {
-        capture_compat::extract_named_captures(pattern)
+        capture::extract_named_captures(pattern)
     }
 
     /// Analyze every source-backed capture declaration using explicit suffix

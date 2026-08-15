@@ -1,8 +1,8 @@
-use perl_regex::{RegexAnalyzer, validator::RegexDiagnosticCode};
 use perl_regex::analyzer::{
     CaptureMode, CharacterSetMode, ExtendedMode, FeatureState, ModifierRequirementKind,
     ModifierSequence, PerlVersion, RegexLanguageProfile, RegexOperator, RequirementDisposition,
 };
+use perl_regex::{RegexAnalyzer, validator::RegexDiagnosticCode};
 
 fn sequence(raw: &str, start: usize) -> Result<ModifierSequence, Box<dyn std::error::Error>> {
     ModifierSequence::new(raw, start)
@@ -14,8 +14,8 @@ fn profile(minor: u16, enhanced_xx: FeatureState) -> RegexLanguageProfile {
 }
 
 #[test]
-fn raw_order_repetition_and_source_ranges_are_preserved()
--> Result<(), Box<dyn std::error::Error>> {
+fn raw_order_repetition_and_source_ranges_are_preserved() -> Result<(), Box<dyn std::error::Error>>
+{
     let analysis = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Substitution,
         sequence("ixxaiiee", 20)?,
@@ -25,10 +25,7 @@ fn raw_order_repetition_and_source_ranges_are_preserved()
     assert_eq!(analysis.sequence.raw, "ixxaiiee");
     assert_eq!(analysis.sequence.range.start, 20);
     assert_eq!(analysis.sequence.range.end, 28);
-    assert_eq!(
-        analysis.tokens.iter().map(|token| token.value).collect::<String>(),
-        "ixxaiiee"
-    );
+    assert_eq!(analysis.tokens.iter().map(|token| token.value).collect::<String>(), "ixxaiiee");
     assert_eq!(analysis.tokens[0].range.start, 20);
     assert_eq!(analysis.tokens[2].range.start, 22);
     assert_eq!(analysis.tokens[7].range.end, 28);
@@ -45,8 +42,7 @@ fn raw_order_repetition_and_source_ranges_are_preserved()
 }
 
 #[test]
-fn x_and_xx_have_distinct_versioned_effective_states()
--> Result<(), Box<dyn std::error::Error>> {
+fn x_and_xx_have_distinct_versioned_effective_states() -> Result<(), Box<dyn std::error::Error>> {
     let x = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Match,
         sequence("x", 0)?,
@@ -60,15 +56,12 @@ fn x_and_xx_have_distinct_versioned_effective_states()
         sequence("xx", 10)?,
         profile(24, FeatureState::Disabled),
     );
-    assert_eq!(
-        xx_too_old.effective.extended,
-        ExtendedMode::ExtraExtended { enhanced: FeatureState::Disabled }
-    );
+    // Pre-5.26 Perl cannot compile `/xx`, so the admitted behavior is plain
+    // `/x`; reporting ExtraExtended here would let a consumer apply semantics
+    // the selected Perl does not have.
+    assert_eq!(xx_too_old.effective.extended, ExtendedMode::Extended);
     assert_eq!(xx_too_old.diagnostics.len(), 1);
-    assert_eq!(
-        xx_too_old.diagnostics[0].code,
-        RegexDiagnosticCode::ModifierRequiresPerlVersion
-    );
+    assert_eq!(xx_too_old.diagnostics[0].code, RegexDiagnosticCode::ModifierRequiresPerlVersion);
     assert_eq!(xx_too_old.diagnostics[0].range.start, 11);
 
     let xx = RegexAnalyzer::analyze_modifiers(
@@ -99,8 +92,7 @@ fn x_and_xx_have_distinct_versioned_effective_states()
 }
 
 #[test]
-fn enhanced_xx_cannot_be_claimed_before_perl_544()
--> Result<(), Box<dyn std::error::Error>> {
+fn enhanced_xx_cannot_be_claimed_before_perl_544() -> Result<(), Box<dyn std::error::Error>> {
     let analysis = RegexAnalyzer::analyze_modifiers(
         RegexOperator::QuoteRegex,
         sequence("xx", 30)?,
@@ -138,16 +130,17 @@ fn unknown_profile_preserves_unknown_requirements_without_false_rejection()
     );
     assert_eq!(analysis.effective.character_set, CharacterSetMode::Ascii);
     assert_eq!(analysis.effective.captures, CaptureMode::NonCapturingByDefault);
-    assert!(analysis
-        .requirements
-        .iter()
-        .any(|requirement| requirement.disposition == RequirementDisposition::Unknown));
+    assert!(
+        analysis
+            .requirements
+            .iter()
+            .any(|requirement| requirement.disposition == RequirementDisposition::Unknown)
+    );
     Ok(())
 }
 
 #[test]
-fn a_aa_and_character_set_conflicts_are_not_collapsed()
--> Result<(), Box<dyn std::error::Error>> {
+fn a_aa_and_character_set_conflicts_are_not_collapsed() -> Result<(), Box<dyn std::error::Error>> {
     let a = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Match,
         sequence("a", 0)?,
@@ -176,14 +169,16 @@ fn a_aa_and_character_set_conflicts_are_not_collapsed()
 }
 
 #[test]
-fn n_and_post_514_modifiers_are_version_qualified()
--> Result<(), Box<dyn std::error::Error>> {
+fn n_and_post_514_modifiers_are_version_qualified() -> Result<(), Box<dyn std::error::Error>> {
     let old_n = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Match,
         sequence("n", 4)?,
         profile(20, FeatureState::Disabled),
     );
-    assert_eq!(old_n.effective.captures, CaptureMode::NonCapturingByDefault);
+    // The requirement fails, so the effect is withheld: `effective` stays at the
+    // capturing default while the raw `n` remains in the preserved sequence.
+    assert_eq!(old_n.effective.captures, CaptureMode::CapturingByDefault);
+    assert_eq!(old_n.sequence.raw, "n");
     assert_eq!(old_n.diagnostics[0].code, RegexDiagnosticCode::ModifierRequiresPerlVersion);
 
     let current_n = RegexAnalyzer::analyze_modifiers(
@@ -212,8 +207,7 @@ fn n_and_post_514_modifiers_are_version_qualified()
 }
 
 #[test]
-fn e_ee_and_r_remain_substitution_specific()
--> Result<(), Box<dyn std::error::Error>> {
+fn e_ee_and_r_remain_substitution_specific() -> Result<(), Box<dyn std::error::Error>> {
     let substitution = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Substitution,
         sequence("eer", 0)?,
@@ -244,8 +238,7 @@ fn e_ee_and_r_remain_substitution_specific()
 }
 
 #[test]
-fn c_d_s_and_r_have_operator_specific_meanings()
--> Result<(), Box<dyn std::error::Error>> {
+fn c_d_s_and_r_have_operator_specific_meanings() -> Result<(), Box<dyn std::error::Error>> {
     let matching = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Match,
         sequence("gc", 0)?,
@@ -261,8 +254,15 @@ fn c_d_s_and_r_have_operator_specific_meanings()
         profile(44, FeatureState::Disabled),
     );
     assert!(substitution.effective.global);
-    assert!(substitution.effective.keep_match_position);
-    assert!(substitution.diagnostics.is_empty());
+    // Perl warns that `/c` is meaningless in `s///`: it does not preserve a
+    // substitution match position, so this must differ from the match case above.
+    assert!(!substitution.effective.keep_match_position);
+    assert!(
+        substitution
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == RegexDiagnosticCode::ModifierHasNoEffect)
+    );
 
     let transliteration = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Transliteration,
@@ -280,8 +280,7 @@ fn c_d_s_and_r_have_operator_specific_meanings()
 }
 
 #[test]
-fn unknown_modifiers_keep_exact_identity_and_range()
--> Result<(), Box<dyn std::error::Error>> {
+fn unknown_modifiers_keep_exact_identity_and_range() -> Result<(), Box<dyn std::error::Error>> {
     let analysis = RegexAnalyzer::analyze_modifiers(
         RegexOperator::Match,
         sequence("iz", 100)?,
@@ -298,8 +297,209 @@ fn unknown_modifiers_keep_exact_identity_and_range()
 }
 
 #[test]
-fn sequence_constructor_refuses_offset_overflow()
--> Result<(), Box<dyn std::error::Error>> {
+fn sequence_constructor_refuses_offset_overflow() -> Result<(), Box<dyn std::error::Error>> {
     assert!(ModifierSequence::new("xx", usize::MAX).is_none());
+    Ok(())
+}
+
+#[test]
+fn repeated_character_set_modifiers_are_rejected_at_the_exact_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Perl allows `/a` at most twice and `/d`, `/l`, `/u` only once.
+    for (raw, offending) in [("aaa", 2usize), ("dd", 1), ("ll", 1), ("uu", 1)] {
+        let analysis = RegexAnalyzer::analyze_modifiers(
+            RegexOperator::Match,
+            sequence(raw, 0)?,
+            profile(44, FeatureState::Enabled),
+        );
+        let repeats = analysis
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == RegexDiagnosticCode::RepeatedCharacterSetModifier
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(repeats.len(), 1, "/{raw} must report exactly one repetition");
+        assert_eq!(repeats[0].range.start, offending, "/{raw} must diagnose the offending token");
+    }
+
+    // Controls: the legal single and double forms stay clean, including the
+    // separated double `a` in `/aia`.
+    for raw in ["a", "aa", "aia", "d", "l", "u"] {
+        let analysis = RegexAnalyzer::analyze_modifiers(
+            RegexOperator::Match,
+            sequence(raw, 0)?,
+            profile(44, FeatureState::Enabled),
+        );
+        assert!(
+            !analysis.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == RegexDiagnosticCode::RepeatedCharacterSetModifier
+            }),
+            "/{raw} is legal and must not report repetition"
+        );
+    }
+    assert_eq!(
+        RegexAnalyzer::analyze_modifiers(
+            RegexOperator::Match,
+            sequence("aia", 0)?,
+            profile(44, FeatureState::Enabled),
+        )
+        .effective
+        .character_set,
+        CharacterSetMode::AsciiRestricted
+    );
+    Ok(())
+}
+
+#[test]
+fn unsatisfied_version_requirements_withhold_the_effective_behavior()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A consumer reading `effective` must not be able to apply behavior the
+    // selected Perl cannot compile.
+    let n_on_520 = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Match,
+        sequence("n", 0)?,
+        profile(20, FeatureState::Disabled),
+    );
+    assert!(
+        n_on_520
+            .diagnostics
+            .iter()
+            .any(|d| d.code == RegexDiagnosticCode::ModifierRequiresPerlVersion)
+    );
+    assert_eq!(n_on_520.effective.captures, CaptureMode::CapturingByDefault);
+
+    let a_on_512 = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Match,
+        sequence("a", 0)?,
+        profile(12, FeatureState::Disabled),
+    );
+    assert_eq!(a_on_512.effective.character_set, CharacterSetMode::Default);
+
+    let r_on_512 = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Substitution,
+        sequence("r", 0)?,
+        profile(12, FeatureState::Disabled),
+    );
+    assert!(!r_on_512.effective.non_destructive);
+
+    // Pre-5.26 the second `x` is not `/xx`; admitted behavior stays plain `/x`.
+    let xx_on_520 = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Match,
+        sequence("xx", 0)?,
+        profile(20, FeatureState::Disabled),
+    );
+    assert_eq!(xx_on_520.effective.extended, ExtendedMode::Extended);
+
+    // Control: on a satisfying profile the same forms do take effect.
+    let modern = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Match,
+        sequence("n", 0)?,
+        profile(44, FeatureState::Enabled),
+    );
+    assert_eq!(modern.effective.captures, CaptureMode::NonCapturingByDefault);
+    Ok(())
+}
+
+#[test]
+fn unknown_perl_version_cannot_prove_enhanced_xx() -> Result<(), Box<dyn std::error::Error>> {
+    // Version unknown but the feature pragma is enabled: the 5.44 boundary is
+    // unestablished, so enhanced state must stay Unknown, not Enabled.
+    let analysis = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Match,
+        sequence("xx", 0)?,
+        RegexLanguageProfile::new(None, FeatureState::Enabled),
+    );
+    assert_eq!(
+        analysis.effective.extended,
+        ExtendedMode::ExtraExtended { enhanced: FeatureState::Unknown },
+        "an enabling pragma alone must not select newest semantics"
+    );
+    assert!(analysis.requirements.iter().any(|requirement| {
+        matches!(requirement.kind, ModifierRequirementKind::Feature(_))
+            && requirement.disposition == RequirementDisposition::Unknown
+    }));
+
+    // A known-disabled feature stays disabled even with an unknown version.
+    let disabled = RegexAnalyzer::analyze_modifiers(
+        RegexOperator::Match,
+        sequence("xx", 0)?,
+        RegexLanguageProfile::new(None, FeatureState::Disabled),
+    );
+    assert_eq!(
+        disabled.effective.extended,
+        ExtendedMode::ExtraExtended { enhanced: FeatureState::Disabled }
+    );
+    Ok(())
+}
+
+#[test]
+fn raw_sequences_round_trip_losslessly_across_operators_and_profiles()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The headline claim is losslessness: whatever a diagnostic or derived mode
+    // says, the exact raw spelling, order, repetition, and per-token source
+    // ranges must survive for every operator and profile, including sequences
+    // that are illegal, conflicting, version-gated, or unknown.
+    let raws = [
+        "", "i", "xx", "xxx", "aa", "aaa", "adlu", "dd", "gc", "cg", "ee", "eee", "r", "n",
+        "ixxaiiee", "gcer", "cdsr", "iZq", "xXx",
+    ];
+    let operators = [
+        RegexOperator::BareMatch,
+        RegexOperator::Match,
+        RegexOperator::QuoteRegex,
+        RegexOperator::Substitution,
+        RegexOperator::Transliteration,
+        RegexOperator::TransliterationAlias,
+    ];
+    let profiles = [
+        RegexLanguageProfile::unknown(),
+        profile(12, FeatureState::Disabled),
+        profile(26, FeatureState::Unknown),
+        profile(44, FeatureState::Enabled),
+        RegexLanguageProfile::new(None, FeatureState::Enabled),
+    ];
+
+    for raw in raws {
+        for operator in operators {
+            for language in profiles {
+                let start = 7usize;
+                let analysis =
+                    RegexAnalyzer::analyze_modifiers(operator, sequence(raw, start)?, language);
+
+                assert_eq!(analysis.sequence.raw, raw, "raw spelling for /{raw}");
+                assert_eq!(
+                    analysis.tokens.iter().map(|token| token.value).collect::<String>(),
+                    raw,
+                    "token order and repetition for /{raw}"
+                );
+                assert_eq!(
+                    analysis.tokens.len(),
+                    raw.chars().count(),
+                    "no modifier may be normalized away for /{raw}"
+                );
+                assert_eq!(analysis.sequence.range.start, start);
+                assert_eq!(analysis.sequence.range.end, start + raw.len());
+                assert_eq!(analysis.operator, operator);
+
+                // Token ranges stay contiguous and inside the sequence range.
+                let mut cursor = start;
+                for token in &analysis.tokens {
+                    assert_eq!(token.range.start, cursor, "token start for /{raw}");
+                    assert_eq!(token.range.end, cursor + token.value.len_utf8());
+                    cursor = token.range.end;
+                }
+                assert_eq!(cursor, analysis.sequence.range.end);
+
+                // Every diagnostic points inside the sequence it came from.
+                for diagnostic in &analysis.diagnostics {
+                    assert!(
+                        diagnostic.range.start >= start && diagnostic.range.end <= cursor,
+                        "diagnostic range escapes the sequence for /{raw}"
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }

@@ -72,10 +72,7 @@ pub struct RegexLanguageProfile {
 impl RegexLanguageProfile {
     /// Construct a profile with explicit version and feature state.
     #[must_use]
-    pub const fn new(
-        perl_version: Option<PerlVersion>,
-        enhanced_xx: FeatureState,
-    ) -> Self {
+    pub const fn new(perl_version: Option<PerlVersion>, enhanced_xx: FeatureState) -> Self {
         Self { perl_version, enhanced_xx }
     }
 
@@ -197,7 +194,10 @@ pub struct EffectiveModifiers {
     pub compile_once: bool,
     /// `/g` global matching/substitution.
     pub global: bool,
-    /// `/c` match-position preservation for match and substitution operators.
+    /// `/c` match-position preservation, set only for `m//gc`.
+    ///
+    /// Substitution `/c` and match `/c` without `/g` are accepted by Perl but have
+    /// no effect, so they leave this `false` and report `ModifierHasNoEffect`.
     pub keep_match_position: bool,
     /// Number of `/e` evaluation layers for substitution.
     pub substitution_evaluation_depth: usize,
@@ -290,15 +290,12 @@ pub(crate) fn analyze_modifiers(
     let mut diagnostics = Vec::new();
     let mut x_count = 0usize;
     let mut character_tokens = Vec::new();
+    let mut keep_position_tokens = Vec::new();
 
     for token in &tokens {
         let modifier = token.value;
         if !is_known_modifier(modifier) {
-            push_diagnostic(
-                &mut diagnostics,
-                RegexDiagnosticCode::UnknownModifier,
-                token.range,
-            );
+            push_diagnostic(&mut diagnostics, RegexDiagnosticCode::UnknownModifier, token.range);
             continue;
         }
         if !is_allowed(operator, modifier) {
@@ -339,83 +336,98 @@ pub(crate) fn analyze_modifiers(
                 match x_count {
                     1 => effective.extended = ExtendedMode::Extended,
                     2 => {
-                        record_version_requirement(
+                        // Before 5.26 the second `x` is not `/xx`; the admitted
+                        // behavior stays plain `/x` rather than extra-extended.
+                        if record_version_requirement(
                             token.range,
                             PERL_5_26,
                             profile,
                             &mut requirements,
                             &mut diagnostics,
-                        );
-                        effective.extended = ExtendedMode::ExtraExtended {
-                            enhanced: enhanced_xx_state(
-                                token.range,
-                                profile,
-                                &mut requirements,
-                                &mut diagnostics,
-                            ),
-                        };
+                        ) {
+                            effective.extended = ExtendedMode::ExtraExtended {
+                                enhanced: enhanced_xx_state(
+                                    token.range,
+                                    profile,
+                                    &mut requirements,
+                                    &mut diagnostics,
+                                ),
+                            };
+                        }
                     }
                     _ => {}
                 }
             }
             'a' | 'd' | 'l' | 'u' => {
-                character_tokens.push(*token);
-                record_version_requirement(
+                if record_version_requirement(
                     token.range,
                     PERL_5_14,
                     profile,
                     &mut requirements,
                     &mut diagnostics,
-                );
+                ) {
+                    character_tokens.push(*token);
+                }
             }
             'n' => {
-                effective.captures = CaptureMode::NonCapturingByDefault;
-                record_version_requirement(
+                if record_version_requirement(
                     token.range,
                     PERL_5_22,
                     profile,
                     &mut requirements,
                     &mut diagnostics,
-                );
+                ) {
+                    effective.captures = CaptureMode::NonCapturingByDefault;
+                }
             }
             'p' => effective.preserve_match = true,
             'o' => effective.compile_once = true,
             'g' => effective.global = true,
-            'c' => effective.keep_match_position = true,
+            // `/c` is resolved after the sequence is known: it only preserves a
+            // match position on match operators, and only together with `/g`.
+            'c' => keep_position_tokens.push(*token),
             'e' => {
                 effective.substitution_evaluation_depth =
                     effective.substitution_evaluation_depth.saturating_add(1);
             }
             'r' => {
-                effective.non_destructive = true;
-                record_version_requirement(
+                if record_version_requirement(
                     token.range,
                     PERL_5_14,
                     profile,
                     &mut requirements,
                     &mut diagnostics,
-                );
+                ) {
+                    effective.non_destructive = true;
+                }
             }
             _ => {}
         }
     }
 
-    effective.character_set = character_set_mode(&character_tokens, &mut diagnostics);
-    diagnostics.sort_by_key(|diagnostic| {
-        (diagnostic.range.start, diagnostic.range.end, diagnostic.code)
-    });
-    diagnostics.dedup_by(|left, right| {
-        left.code == right.code && left.range == right.range
-    });
-
-    ModifierAnalysis {
-        operator,
-        sequence,
-        tokens,
-        effective,
-        requirements,
-        diagnostics,
+    // Perl only preserves `pos` for `m//gc`. `s///c` is accepted with a
+    // "meaningless" warning and does not keep a substitution match position, and
+    // match `/c` without `/g` is likewise inert. Transliteration `/c` never
+    // reaches here: it is complement, modeled in `effective.transliteration`.
+    let keeps_position =
+        matches!(operator, RegexOperator::BareMatch | RegexOperator::Match) && effective.global;
+    effective.keep_match_position = keeps_position && !keep_position_tokens.is_empty();
+    if !keeps_position {
+        for token in &keep_position_tokens {
+            push_diagnostic(
+                &mut diagnostics,
+                RegexDiagnosticCode::ModifierHasNoEffect,
+                token.range,
+            );
+        }
     }
+
+    effective.character_set = character_set_mode(&character_tokens, &mut diagnostics);
+    diagnostics
+        .sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end, diagnostic.code));
+    diagnostics.dedup_by(|left, right| left.code == right.code && left.range == right.range);
+
+    ModifierAnalysis { operator, sequence, tokens, effective, requirements, diagnostics }
 }
 
 fn tokenize(sequence: &ModifierSequence) -> Vec<ModifierToken> {
@@ -426,10 +438,7 @@ fn tokenize(sequence: &ModifierSequence) -> Vec<ModifierToken> {
             let start = sequence.range.start.saturating_add(relative);
             ModifierToken {
                 value,
-                range: RegexRange {
-                    start,
-                    end: start.saturating_add(value.len_utf8()),
-                },
+                range: RegexRange { start, end: start.saturating_add(value.len_utf8()) },
             }
         })
         .collect()
@@ -438,8 +447,7 @@ fn tokenize(sequence: &ModifierSequence) -> Vec<ModifierToken> {
 fn is_known_modifier(modifier: char) -> bool {
     matches!(
         modifier,
-        'i' | 'm' | 's' | 'x' | 'g' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'r' | 'c'
-            | 'o' | 'e'
+        'i' | 'm' | 's' | 'x' | 'g' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'r' | 'c' | 'o' | 'e'
     )
 }
 
@@ -447,17 +455,14 @@ fn is_allowed(operator: RegexOperator, modifier: char) -> bool {
     match operator {
         RegexOperator::BareMatch | RegexOperator::Match => matches!(
             modifier,
-            'i' | 'm' | 's' | 'x' | 'g' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'c'
-                | 'o'
+            'i' | 'm' | 's' | 'x' | 'g' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'c' | 'o'
         ),
-        RegexOperator::QuoteRegex => matches!(
-            modifier,
-            'i' | 'm' | 's' | 'x' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'o'
-        ),
+        RegexOperator::QuoteRegex => {
+            matches!(modifier, 'i' | 'm' | 's' | 'x' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'o')
+        }
         RegexOperator::Substitution => matches!(
             modifier,
-            'i' | 'm' | 's' | 'x' | 'g' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'r'
-                | 'c' | 'o' | 'e'
+            'i' | 'm' | 's' | 'x' | 'g' | 'a' | 'd' | 'l' | 'u' | 'n' | 'p' | 'r' | 'c' | 'o' | 'e'
         ),
         RegexOperator::Transliteration | RegexOperator::TransliterationAlias => {
             matches!(modifier, 'c' | 'd' | 's' | 'r')
@@ -465,6 +470,12 @@ fn is_allowed(operator: RegexOperator, modifier: char) -> bool {
     }
 }
 
+/// Derive the effective character-set mode from the `/a`, `/d`, `/l`, and `/u` tokens.
+///
+/// Perl constrains both variety and multiplicity: the modes are mutually exclusive,
+/// `/a` may appear at most twice (`/aa`), and `/d`, `/l`, and `/u` may appear only
+/// once. Each violation is reported at the exact token that introduces it, so a
+/// third `a` or a second `d`/`l`/`u` is diagnosed rather than silently deduplicated.
 fn character_set_mode(
     tokens: &[ModifierToken],
     diagnostics: &mut Vec<RegexDiagnostic>,
@@ -473,9 +484,22 @@ fn character_set_mode(
     let mut a_count = 0usize;
 
     for token in tokens {
-        if token.value == 'a' {
+        let repetition_limit = if token.value == 'a' { 2 } else { 1 };
+        let seen = tokens
+            .iter()
+            .take_while(|earlier| earlier.range.start < token.range.start)
+            .filter(|earlier| earlier.value == token.value)
+            .count();
+        if seen >= repetition_limit {
+            push_diagnostic(
+                diagnostics,
+                RegexDiagnosticCode::RepeatedCharacterSetModifier,
+                token.range,
+            );
+        } else if token.value == 'a' {
             a_count = a_count.saturating_add(1);
         }
+
         if !distinct.contains(&token.value) {
             if !distinct.is_empty() {
                 push_diagnostic(
@@ -501,13 +525,19 @@ fn character_set_mode(
     }
 }
 
+/// Record a version requirement and report whether the selected profile admits it.
+///
+/// Returns `true` when the effect may be applied to [`EffectiveModifiers`]. An
+/// unsatisfied requirement withholds the effect so a consumer reading `effective`
+/// cannot apply behavior the selected Perl could not compile. The requested form is
+/// never lost: it remains in [`ModifierAnalysis::sequence`] and the token stream.
 fn record_version_requirement(
     range: RegexRange,
     minimum: PerlVersion,
     profile: RegexLanguageProfile,
     requirements: &mut Vec<ModifierRequirement>,
     diagnostics: &mut Vec<RegexDiagnostic>,
-) {
+) -> bool {
     let disposition = match profile.perl_version {
         Some(version) if version >= minimum => RequirementDisposition::Satisfied,
         Some(_) => RequirementDisposition::Unsatisfied,
@@ -519,12 +549,10 @@ fn record_version_requirement(
         disposition,
     });
     if disposition == RequirementDisposition::Unsatisfied {
-        push_diagnostic(
-            diagnostics,
-            RegexDiagnosticCode::ModifierRequiresPerlVersion,
-            range,
-        );
+        push_diagnostic(diagnostics, RegexDiagnosticCode::ModifierRequiresPerlVersion, range);
+        return false;
     }
+    true
 }
 
 fn enhanced_xx_state(
@@ -541,11 +569,7 @@ fn enhanced_xx_state(
                     kind: ModifierRequirementKind::Feature(ENHANCED_XX_FEATURE),
                     disposition: RequirementDisposition::Unsatisfied,
                 });
-                push_diagnostic(
-                    diagnostics,
-                    RegexDiagnosticCode::ModifierRequiresFeature,
-                    range,
-                );
+                push_diagnostic(diagnostics, RegexDiagnosticCode::ModifierRequiresFeature, range);
             }
             FeatureState::Disabled
         }
@@ -576,7 +600,13 @@ fn enhanced_xx_state(
                     disposition: RequirementDisposition::Unknown,
                 });
             }
-            profile.enhanced_xx
+            // An enabling pragma alone does not prove enhanced `/xx`: the 5.44
+            // version boundary is unestablished, so the state stays `Unknown`
+            // rather than silently selecting the newest semantics.
+            match profile.enhanced_xx {
+                FeatureState::Disabled => FeatureState::Disabled,
+                FeatureState::Enabled | FeatureState::Unknown => FeatureState::Unknown,
+            }
         }
     }
 }

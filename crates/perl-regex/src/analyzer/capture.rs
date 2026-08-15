@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use crate::{
     analyzer::{CaptureMode, EffectiveModifiers, ExtendedMode, FeatureState, RegexLanguageProfile},
     syntax::event::{
-        RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexExtendedMode,
-        RegexGroupKind, RegexModeState, parse_regex_events,
+        RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexExtendedMode, RegexGroupKind,
+        RegexModeState, parse_regex_events,
     },
     validator::{RegexAnalysisBudget, RegexRange},
 };
@@ -182,6 +182,8 @@ impl CaptureLanguageProfile {
 pub struct CaptureAnalysisStatus {
     /// Runtime-supplied/interpolated pattern text made later numbering unknown.
     pub dynamic: bool,
+    /// Structural uncertainty made capture numbering incomplete.
+    pub numbering_unknown: bool,
     /// Malformed or truncated group structure was observed.
     pub malformed: bool,
     /// Deterministic structural analysis stopped at a declared budget.
@@ -192,7 +194,7 @@ impl CaptureAnalysisStatus {
     /// Whether capture declarations and numbering are complete for the modeled subset.
     #[must_use]
     pub const fn is_complete(self) -> bool {
-        !self.dynamic && !self.malformed && self.exhausted.is_none()
+        !self.dynamic && !self.numbering_unknown && !self.malformed && self.exhausted.is_none()
     }
 }
 
@@ -221,10 +223,7 @@ pub struct CaptureGroup {
 #[derive(Debug, Clone, Copy)]
 enum OpenFrame {
     Capture { declaration_index: usize },
-    BranchReset {
-        base: Option<u32>,
-        max_next: Option<u32>,
-    },
+    BranchReset { base: Option<u32>, max_next: Option<u32> },
     Other,
 }
 
@@ -268,14 +267,13 @@ pub(crate) fn analyze_captures(
                     stack.push(OpenFrame::Capture { declaration_index });
                 }
                 RegexGroupKind::NamedCapture { name_range } => {
-                    let raw_name = pattern.get(name_range.start..name_range.end).unwrap_or_default();
+                    let raw_name =
+                        pattern.get(name_range.start..name_range.end).unwrap_or_default();
                     let syntax = named_syntax(pattern, name_range);
-                    let profile_confidence = named_capture_profile(
-                        raw_name,
-                        name_range,
-                        profile,
-                        &mut diagnostics,
-                    );
+                    // The name shape decides whether a declaration exists at all, so it
+                    // is checked before the profile projection. Running the projection
+                    // first would leave version/source diagnostics behind for a name
+                    // that is then discarded as invalid.
                     if raw_name.is_empty() || !structural_name_shape(raw_name) {
                         diagnostics.push(CaptureDiagnostic {
                             code: CaptureDiagnosticCode::InvalidName,
@@ -287,6 +285,8 @@ pub(crate) fn analyze_captures(
                         stack.push(OpenFrame::Other);
                         malformed = true;
                     } else {
+                        let profile_confidence =
+                            named_capture_profile(raw_name, name_range, profile, &mut diagnostics);
                         let declaration_index = declarations.len();
                         declarations.push(new_declaration(
                             declaration_index,
@@ -303,19 +303,13 @@ pub(crate) fn analyze_captures(
                     }
                 }
                 RegexGroupKind::BranchReset => {
-                    let profile_confidence = form_version_confidence(
-                        event.range,
-                        profile,
-                        &mut diagnostics,
-                    );
+                    let profile_confidence =
+                        form_version_confidence(event.range, profile, &mut diagnostics);
                     if profile_confidence == CaptureProfileConfidence::Incompatible {
                         next_number = None;
                         numbering_uncertainty = NumberingUncertainty::Structural;
                     }
-                    stack.push(OpenFrame::BranchReset {
-                        base: next_number,
-                        max_next: next_number,
-                    });
+                    stack.push(OpenFrame::BranchReset { base: next_number, max_next: next_number });
                 }
                 _ => stack.push(OpenFrame::Other),
             },
@@ -343,10 +337,7 @@ pub(crate) fn analyze_captures(
                 }
             }
             RegexEventKind::Interpolation
-            | RegexEventKind::EmbeddedCode {
-                kind: RegexEmbeddedCodeKind::Deferred,
-                ..
-            } => {
+            | RegexEventKind::EmbeddedCode { kind: RegexEmbeddedCodeKind::Deferred, .. } => {
                 dynamic = true;
                 next_number = None;
                 numbering_uncertainty = NumberingUncertainty::Dynamic;
@@ -362,20 +353,13 @@ pub(crate) fn analyze_captures(
         }
     }
 
-    for frame in stack {
-        if let OpenFrame::Capture { declaration_index } = frame
-            && let Some(declaration) = declarations.get_mut(declaration_index)
-        {
-            declaration.confidence.source = CaptureSourceConfidence::Recovered;
-        }
-    }
+    // A declaration still on `stack` was never closed, so it keeps the `Recovered`
+    // source confidence that `new_declaration` installs; only a matching
+    // `GroupClose` above upgrades it to `Exact`. No fixup pass is needed here.
 
-    diagnostics.sort_by_key(|diagnostic| {
-        (diagnostic.range.start, diagnostic.range.end, diagnostic.code)
-    });
-    diagnostics.dedup_by(|left, right| {
-        left.code == right.code && left.range == right.range
-    });
+    diagnostics
+        .sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end, diagnostic.code));
+    diagnostics.dedup_by(|left, right| left.code == right.code && left.range == right.range);
 
     CaptureAnalysis {
         named_families: named_families(&declarations),
@@ -383,6 +367,7 @@ pub(crate) fn analyze_captures(
         diagnostics,
         status: CaptureAnalysisStatus {
             dynamic,
+            numbering_unknown: numbering_uncertainty != NumberingUncertainty::None,
             malformed,
             exhausted: stream.exhausted.map(map_budget),
         },
@@ -390,30 +375,29 @@ pub(crate) fn analyze_captures(
 }
 
 pub(crate) fn extract_named_captures(pattern: &str) -> Vec<CaptureGroup> {
-    analyze_captures(
-        pattern,
-        EffectiveModifiers::default(),
-        CaptureLanguageProfile::unknown(),
-    )
-    .declarations
-    .into_iter()
-    .filter_map(|declaration| {
-        let name = declaration.name?;
-        let number = declaration.number?;
-        if declaration.confidence.source != CaptureSourceConfidence::Exact
-            || declaration.confidence.profile == CaptureProfileConfidence::Incompatible
-        {
-            return None;
-        }
-        let index = usize::try_from(number).ok()?;
-        let subpattern = pattern
-            .get(declaration.body_range.start..declaration.body_range.end)?
-            .to_string();
-        Some(CaptureGroup { name, index, pattern: subpattern })
-    })
-    .collect()
+    analyze_captures(pattern, EffectiveModifiers::default(), CaptureLanguageProfile::unknown())
+        .declarations
+        .into_iter()
+        .filter_map(|declaration| {
+            let name = declaration.name?;
+            let number = declaration.number?;
+            if declaration.confidence.source != CaptureSourceConfidence::Exact
+                || declaration.confidence.profile == CaptureProfileConfidence::Incompatible
+            {
+                return None;
+            }
+            let index = usize::try_from(number).ok()?;
+            let subpattern =
+                pattern.get(declaration.body_range.start..declaration.body_range.end)?.to_string();
+            Some(CaptureGroup { name, index, pattern: subpattern })
+        })
+        .collect()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site builds a declaration from independent source facts"
+)]
 fn new_declaration(
     index: usize,
     name: Option<String>,
@@ -470,14 +454,13 @@ fn named_families(declarations: &[CaptureDeclaration]) -> Vec<NamedCaptureFamily
             None => {
                 let index = families.len();
                 family_indexes.insert(name.clone(), index);
-                families.push(NamedCaptureFamily {
-                    name: name.clone(),
-                    declarations: Vec::new(),
-                });
+                families.push(NamedCaptureFamily { name: name.clone(), declarations: Vec::new() });
                 index
             }
         };
-        families[family_index].declarations.push(declaration.id);
+        if let Some(family) = families.get_mut(family_index) {
+            family.declarations.push(declaration.id);
+        }
     }
     families
 }
@@ -490,9 +473,7 @@ fn named_syntax(pattern: &str, name_range: RegexRange) -> CaptureSyntax {
     {
         CaptureSyntax::PythonNamed
     } else if name_range.start >= 3
-        && pattern
-            .get(name_range.start - 3..name_range.start)
-            .is_some_and(|prefix| prefix == "(?'")
+        && pattern.get(name_range.start - 3..name_range.start).is_some_and(|prefix| prefix == "(?'")
     {
         CaptureSyntax::NamedQuote
     } else {
@@ -561,9 +542,7 @@ fn structural_name_shape(name: &str) -> bool {
         return false;
     }
     chars.all(|ch| {
-        ch == '_'
-            || ch.is_alphanumeric()
-            || (!ch.is_ascii() && !ch.is_whitespace() && ch != '-')
+        ch == '_' || ch.is_alphanumeric() || (!ch.is_ascii() && !ch.is_whitespace() && ch != '-')
     })
 }
 
@@ -572,8 +551,7 @@ fn conservative_unicode_name(name: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    (first == '_' || first.is_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+    (first == '_' || first.is_alphabetic()) && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
 }
 
 fn number_confidence(uncertainty: NumberingUncertainty) -> CaptureNumberConfidence {

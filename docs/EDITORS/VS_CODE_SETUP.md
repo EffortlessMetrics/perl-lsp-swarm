@@ -54,6 +54,7 @@ Use manual installation for offline/pinned environments, or when
 ```bash
 cargo install perllsp --locked
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 #### Option 2: Download Pre-built Binary
 
