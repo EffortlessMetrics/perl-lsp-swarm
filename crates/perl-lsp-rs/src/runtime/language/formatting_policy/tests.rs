@@ -380,7 +380,7 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
     initialize(&server)?;
     let document_uri = "file:///live-formatting.pl";
     let on_type_uri = "file:///live-on-type.pl";
-    server.test_apply_did_open(document_uri, "my$x=1;\n", 1)?;
+    server.test_apply_did_open(document_uri, "my$x=1;\nmy$y=2;\n", 1)?;
     server.test_apply_did_open(on_type_uri, "if ($ok) {\n\n", 1)?;
 
     let cases = [
@@ -412,8 +412,8 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
                         "end": { "line": 0, "character": 7 }
                     },
                     {
-                        "start": { "line": 0, "character": 7 },
-                        "end": { "line": 0, "character": 7 }
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 1, "character": 7 }
                     }
                 ],
                 "options": { "tabSize": 4, "insertSpaces": true }

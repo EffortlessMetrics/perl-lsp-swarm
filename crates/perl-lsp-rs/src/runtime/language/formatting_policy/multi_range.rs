@@ -7,8 +7,8 @@ use serde::Serialize;
 use super::super::{
     CodeFormatter, FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision,
     JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Snapshot, Surface, Value,
-    WirePosition, WireRange, actual_engine_for_mode, cancellation_token, digest, invalid_params,
-    json, parse_range, sanitized_outcome,
+    WirePosition, WireRange, actual_engine_for_decisions, actual_engine_for_mode,
+    cancellation_token, digest, invalid_params, json, parse_range, sanitized_outcome,
 };
 use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
 
@@ -555,7 +555,9 @@ pub(super) fn handle(
             Surface::Ranges,
             token.as_ref(),
             Some(&snapshot),
-            formatter_started.then_some(actual_engine_for_mode(snapshot.config.mode)),
+            actual_engine_for_decisions(&decisions).or_else(|| {
+                formatter_started.then_some(actual_engine_for_mode(snapshot.config.mode))
+            }),
         )?;
         formatter_started = true;
         let decision = match formatter.format_range_decision(
@@ -570,7 +572,9 @@ pub(super) fn handle(
                     Surface::Ranges,
                     token.as_ref(),
                     Some(&snapshot),
-                    Some(actual_engine_for_mode(snapshot.config.mode)),
+                    actual_engine_for_decisions(&decisions).or_else(|| {
+                        formatter_started.then_some(actual_engine_for_mode(snapshot.config.mode))
+                    }),
                 )?;
                 let original_index = plan
                     .range_provenance
@@ -588,16 +592,9 @@ pub(super) fn handle(
         decisions.push(decision);
     }
 
-    server.ensure_not_cancelled(
-        Surface::Ranges,
-        token.as_ref(),
-        Some(&snapshot),
-        Some(actual_engine_for_mode(snapshot.config.mode)),
-    )?;
-    server.ensure_current_with_engine(
-        &snapshot,
-        formatter_started.then_some(actual_engine_for_mode(snapshot.config.mode)),
-    )?;
+    let actual_engine = actual_engine_for_decisions(&decisions);
+    server.ensure_not_cancelled(Surface::Ranges, token.as_ref(), Some(&snapshot), actual_engine)?;
+    server.ensure_current_with_engine(&snapshot, actual_engine)?;
     let outcomes = plan_outcomes(&plan, &decisions);
 
     if let Some(blocked) = blocked_decision(&decisions) {
@@ -659,7 +656,7 @@ pub(super) fn handle(
                 &snapshot,
                 error,
                 Some(plan_evidence(&plan, outcomes.clone(), None)),
-                actual_engine_for_mode(snapshot.config.mode),
+                actual_engine.unwrap_or("not_started"),
             )
         })?;
     let (edits, final_edit_digest) = compose_edits(
@@ -675,25 +672,17 @@ pub(super) fn handle(
             &snapshot,
             error,
             Some(plan_evidence(&plan, outcomes.clone(), None)),
-            actual_engine_for_mode(snapshot.config.mode),
+            actual_engine.unwrap_or("not_started"),
         )
     })?;
 
-    server.ensure_not_cancelled(
-        Surface::Ranges,
-        token.as_ref(),
-        Some(&snapshot),
-        Some(actual_engine_for_mode(snapshot.config.mode)),
-    )?;
-    server.ensure_current_with_engine(
-        &snapshot,
-        formatter_started.then_some(actual_engine_for_mode(snapshot.config.mode)),
-    )?;
+    server.ensure_not_cancelled(Surface::Ranges, token.as_ref(), Some(&snapshot), actual_engine)?;
+    server.ensure_current_with_engine(&snapshot, actual_engine)?;
     server.record_formatting_receipt(
         &snapshot,
         "acted",
         if edits.is_empty() { json!("already_formatted") } else { json!("applied") },
-        actual_engine_for_mode(snapshot.config.mode),
+        actual_engine.unwrap_or("not_started"),
         "none",
         edits.len(),
         Some(plan_evidence(&plan, outcomes, Some(final_edit_digest))),

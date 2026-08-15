@@ -30,18 +30,26 @@ impl LspServer {
         let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
         let decision =
             formatter.format_document_decision(&snapshot.text, &snapshot.options, &context);
+        let decision = match decision {
+            Ok(decision) => decision,
+            Err(error) => {
+                self.ensure_not_cancelled(
+                    Surface::Document,
+                    token.as_ref(),
+                    Some(&snapshot),
+                    Some(actual_engine_for_mode(snapshot.config.mode)),
+                )?;
+                return Err(self.formatting_failure(&snapshot, "Formatting failed", error));
+            }
+        };
+        let actual_engine = super::actual_engine_for_decision(&decision);
         self.ensure_not_cancelled(
             Surface::Document,
             token.as_ref(),
             Some(&snapshot),
-            Some(actual_engine_for_mode(snapshot.config.mode)),
+            Some(actual_engine),
         )?;
-        let decision = decision
-            .map_err(|error| self.formatting_failure(&snapshot, "Formatting failed", error))?;
-        self.ensure_current_with_engine(
-            &snapshot,
-            Some(actual_engine_for_mode(snapshot.config.mode)),
-        )?;
+        self.ensure_current_with_engine(&snapshot, Some(actual_engine))?;
         self.project(&snapshot, decision)
     }
 
@@ -72,19 +80,26 @@ impl LspServer {
         let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
         let decision =
             formatter.format_range_decision(&snapshot.text, &range, &snapshot.options, &context);
+        let decision = match decision {
+            Ok(decision) => decision,
+            Err(error) => {
+                self.ensure_not_cancelled(
+                    Surface::Range,
+                    token.as_ref(),
+                    Some(&snapshot),
+                    Some(actual_engine_for_mode(snapshot.config.mode)),
+                )?;
+                return Err(self.formatting_failure(&snapshot, "Range formatting failed", error));
+            }
+        };
+        let actual_engine = super::actual_engine_for_decision(&decision);
         self.ensure_not_cancelled(
             Surface::Range,
             token.as_ref(),
             Some(&snapshot),
-            Some(actual_engine_for_mode(snapshot.config.mode)),
+            Some(actual_engine),
         )?;
-        let decision = decision.map_err(|error| {
-            self.formatting_failure(&snapshot, "Range formatting failed", error)
-        })?;
-        self.ensure_current_with_engine(
-            &snapshot,
-            Some(actual_engine_for_mode(snapshot.config.mode)),
-        )?;
+        self.ensure_current_with_engine(&snapshot, Some(actual_engine))?;
         self.project(&snapshot, decision)
     }
 

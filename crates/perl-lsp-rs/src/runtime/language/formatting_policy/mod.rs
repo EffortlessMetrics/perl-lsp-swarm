@@ -22,7 +22,7 @@ use perl_lsp_rs_core::config::FormatterMode;
 use perl_lsp_rs_core::features::ids::{
     LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGE_FORMATTING, LSP_RANGES_FORMATTING,
 };
-use perl_lsp_rs_core::tooling::perltidy::native::FormatDisposition;
+use perl_lsp_rs_core::tooling::perltidy::native::{FormatDisposition, FormatEngine};
 use serde::Serialize;
 
 const PROVIDER: &str = "formatting";
@@ -165,6 +165,25 @@ fn actual_engine_for_mode(mode: FormatterMode) -> &'static str {
         FormatterMode::Native | FormatterMode::Compat => "native",
         FormatterMode::ExternalLegacy => "external_legacy",
         FormatterMode::Off => "disabled",
+    }
+}
+
+fn actual_engine_for_decision(decision: &FormattingDecision) -> &'static str {
+    match decision.outcome.identity.actual_engine {
+        FormatEngine::Native => "native",
+        FormatEngine::ExternalLegacy => "external_legacy",
+        FormatEngine::Disabled => "disabled",
+        FormatEngine::Unknown => "unknown",
+    }
+}
+
+fn actual_engine_for_decisions(decisions: &[FormattingDecision]) -> Option<&'static str> {
+    let mut iter = decisions.iter();
+    let first = actual_engine_for_decision(iter.next()?);
+    if iter.all(|decision| actual_engine_for_decision(decision) == first) {
+        Some(first)
+    } else {
+        Some("unknown")
     }
 }
 
