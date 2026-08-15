@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 const MARKETPLACE_PATH: &str = ".claude-plugin/marketplace.json";
-const PLUGIN_ROOT: &str = "integrations/claude-code/plugins/perl-lsp";
+const PLUGIN_ROOT: &str = "integrations/claude-code/plugins/perl-lsp-rs";
 const EXPECTED_EXTENSIONS: &[&str] = &[".PL", ".cgi", ".fcgi", ".pl", ".pm", ".psgi", ".t"];
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
@@ -49,7 +49,7 @@ fn claude_marketplace_points_at_the_single_plugin_package() -> Result<(), Box<dy
     assert_eq!(plugins.len(), 1, "marketplace must publish one Perl plugin");
 
     let entry = object(&plugins[0], "marketplace plugin entry")?;
-    assert_eq!(string_field(entry, "name")?, "perl-lsp");
+    assert_eq!(string_field(entry, "name")?, "perl-lsp-rs");
     assert_eq!(string_field(entry, "source")?, format!("./{PLUGIN_ROOT}"));
     assert!(entry.get("version").is_none(), "plugin version must be single-sourced in plugin.json");
     assert!(
@@ -65,7 +65,7 @@ fn claude_plugin_manifest_owns_identity_and_lsp_component() -> Result<(), Box<dy
     let manifest = read_json(&root.join(".claude-plugin/plugin.json"))?;
     let manifest = object(&manifest, "plugin manifest")?;
 
-    assert_eq!(string_field(manifest, "name")?, "perl-lsp");
+    assert_eq!(string_field(manifest, "name")?, "perl-lsp-rs");
     assert_eq!(string_field(manifest, "version")?, "0.1.0");
     assert_eq!(string_field(manifest, "lspServers")?, "./.lsp.json");
     assert_eq!(

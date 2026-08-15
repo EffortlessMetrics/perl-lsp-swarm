@@ -77,6 +77,102 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
+id = "non-rust-product-7821-changelog-fragment"
+path = ".changes/unreleased/product-7821-Changed-101512.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7902-changelog-fragment"
+path = ".changes/unreleased/product-7902-Added-115000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7903-changelog-fragment"
+path = ".changes/unreleased/product-7903-Added-114500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7909-changelog-fragment"
+path = ".changes/unreleased/product-7909-Added-120500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7975-changelog-fragment"
+path = ".changes/unreleased/product-7975-Changed-213500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7980-changelog-fragment"
+path = ".changes/unreleased/product-7980-Added-220800.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
 id = "non-rust-license-files"
 glob = "**/LICENSE-*"
 kind = "license"
@@ -1041,7 +1137,6 @@ broad_glob_reason = ".config/ holds per-tool XDG-style config as a tree."
 created = "2026-05-07"
 review_after = "2026-08-07"
 
-
 # =============================================================================
 # Sublime Text helper package
 # =============================================================================
@@ -1063,3 +1158,88 @@ covered_by = [
 broad_glob_reason = "The helper is a Package Control-style tree of Python, JSON settings/schema, messages, licenses, tests, and deterministic export tooling that must ship and be reviewed together."
 created = "2026-08-13"
 review_after = "2026-11-13"
+
+# =============================================================================
+# Compiler concept ledger (perl_compiler_concepts.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-compiler-concepts-contract"
+path = "contracts/compiler/perl_compiler_concepts.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Versioned semantic concept ledger contract for the compiler programme (#6657); validated by cargo xtask --bin compiler-concepts -- --check."
+covered_by = [
+  "cargo run -p xtask --bin compiler-concepts -- --check",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
+
+[[allow]]
+id = "non-rust-compiler-concepts-schema"
+path = "schemas/perl_compiler_concepts.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the perl_compiler_concepts.v1 contract; schema-leg ratchet lives in the binary identity contract test family."
+covered_by = [
+  "cargo run -p xtask --bin compiler-concepts -- --check",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
+
+# =============================================================================
+# Editor-intelligence gap-matrix fixture tree
+# =============================================================================
+
+[[allow]]
+id = "non-rust-editor-intelligence-perl-fixtures"
+glob = "crates/perl-lsp-ux-tests/fixtures/editor_intelligence/**/*.pl"
+kind = "test_fixture"
+language = "perl"
+surface = "ux-tests"
+classification = "test"
+owner = "ux-tests"
+reason = "Perl source subjects for the editor-intelligence semantic gap matrix (#7430)."
+covered_by = [
+  "cargo test -p perl-lsp-ux-tests --test editor_intelligence_gap_matrix",
+]
+broad_glob_reason = "Gap-matrix Perl subjects are intentionally tree-shaped; the gap-matrix test binds every applicable row to its fixture file and fails when a fixture or its row marker is missing. The matcher is extension-bound so non-Perl additions still hit the unclassified-file gate."
+created = "2026-08-14"
+review_after = "2026-11-14"
+
+[[allow]]
+id = "non-rust-editor-intelligence-perl-module-fixtures"
+glob = "crates/perl-lsp-ux-tests/fixtures/editor_intelligence/**/*.pm"
+kind = "test_fixture"
+language = "perl"
+surface = "ux-tests"
+classification = "test"
+owner = "ux-tests"
+reason = "Perl module dependencies for the editor-intelligence semantic gap matrix (#7430)."
+covered_by = [
+  "cargo test -p perl-lsp-ux-tests --test editor_intelligence_gap_matrix",
+]
+broad_glob_reason = "Same tree-shaped fixture rationale as the .pl entry; extension-bound so non-Perl additions still hit the unclassified-file gate."
+created = "2026-08-14"
+review_after = "2026-11-14"
+
+[[allow]]
+id = "non-rust-editor-intelligence-readme"
+path = "crates/perl-lsp-ux-tests/fixtures/editor_intelligence/README.md"
+kind = "documentation"
+language = "markdown"
+surface = "ux-tests"
+classification = "documentation"
+owner = "ux-tests"
+reason = "Fixture-tree README describing the editor-intelligence gap-matrix subjects (#7430)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
