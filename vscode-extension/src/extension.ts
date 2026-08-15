@@ -508,7 +508,9 @@ export async function activate(context: vscode.ExtensionContext) {
   // traceOutputChannel. Messages are routed through level-aware methods
   // (debug/info/warn/error) so the VS Code Output panel level filter works.
   outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
-  const mcpDisposable = featureActivationMetrics.measure('mcp', true, () =>
+  // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
+  // longer activation-critical: it registers nothing and returns no disposable.
+  const mcpDisposable = featureActivationMetrics.measure('mcp', false, () =>
     registerMcpSupport(outputChannel),
   );
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -1161,6 +1163,7 @@ function createLanguageClientLifecycle(
         languageClientStartupMetrics.finishBinaryResolution(
           resolution.path ? 'ok' : 'unavailable',
           resolution.source,
+          resolution.path,
         );
         return resolution.path;
       } catch (error: unknown) {

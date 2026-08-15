@@ -1,13 +1,144 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "targets": [
-    {"package": "perl-ast", "target": "ast_behavior_spec_tests"},
-    {"package": "perl-parser-core", "target": "error_recovery_regression"},
-    {"package": "perl-parser-core", "target": "fix_incomplete_brace_recovery_marker_1911"},
-    {"package": "perl-parser-core", "target": "pir_a_branch_body_test"},
-    {"package": "perl-parser-core", "target": "pir_a_loop_body_test"},
-    {"package": "perl-parser", "target": "incremental_integration_test"},
-    {"package": "perl-parser", "target": "incremental_parser_accuracy"},
-    {"package": "perl-parser", "target": "semantic_smoke_tests"}
+    {
+      "id": "parser.ast.behavior",
+      "package": "perl-ast",
+      "target": "ast_behavior_spec_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6714",
+      "reason": "Prove canonical AST behavior and child traversal contracts used by parser consumers.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.recovery.regression",
+      "package": "perl-parser-core",
+      "target": "error_recovery_regression",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6629",
+      "reason": "Keep the admitted malformed-source recovery regression bank executable.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.recovery.incomplete_brace",
+      "package": "perl-parser-core",
+      "target": "fix_incomplete_brace_recovery_marker_1911",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6629",
+      "reason": "Protect the incomplete-brace recovery marker and source geometry contract.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.pir.branch_body",
+      "package": "perl-parser-core",
+      "target": "pir_a_branch_body_test",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6698",
+      "reason": "Exercise parser output consumed by PIR-A branch-body lowering.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.pir.loop_body",
+      "package": "perl-parser-core",
+      "target": "pir_a_loop_body_test",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6698",
+      "reason": "Exercise parser output consumed by PIR-A loop-body lowering.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.integration",
+      "package": "perl-parser",
+      "target": "incremental_integration_test",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#2327",
+      "reason": "Execute the feature-gated incremental document integration suite rather than compiling an empty target.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.accuracy",
+      "package": "perl-parser",
+      "target": "incremental_parser_accuracy",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#2327",
+      "reason": "Run the manifest-backed fresh-versus-incremental accuracy slice with its required feature.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.semantic.smoke",
+      "package": "perl-parser",
+      "target": "semantic_smoke_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6698",
+      "reason": "Keep the parser-to-semantic consumer seam executable in the bounded merge gate.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.authority",
+      "package": "perl-parser",
+      "target": "incremental_authority_contract",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6701",
+      "reason": "Prove the single incremental authority ledger contract so parser incremental ownership cannot silently fork.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    }
   ]
 }
