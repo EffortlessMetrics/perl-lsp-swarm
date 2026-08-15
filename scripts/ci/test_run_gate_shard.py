@@ -487,7 +487,7 @@ class GateShardTests(unittest.TestCase):
 
     def test_process_group_cleanup_is_cross_platform(self) -> None:
         posix_process = RunningFakeProcess()
-        with mock.patch.object(shard.os, "killpg") as killpg:
+        with mock.patch.object(shard.os, "killpg", create=True) as killpg:
             shard._terminate_process_group(
                 posix_process, signal.SIGTERM, platform_name="posix"
             )
