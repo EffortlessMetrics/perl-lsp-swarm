@@ -1135,6 +1135,11 @@ fn measure_files(
                 total_dirty_files += 1;
                 files_with_catastrophic_parse_failure += 1;
             }
+            // Forward-compatible fallback for future variants (#2898)
+            _ => {
+                files_with_errors += 1;
+                total_dirty_files += 1;
+            }
         }
         progress.inc(1);
     }
