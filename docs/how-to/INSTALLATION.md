@@ -135,13 +135,16 @@ perllsp-0.17.0-x86_64-pc-windows-msvc.zip   -> 200
 perl-lsp-0.17.0-x86_64-pc-windows-msvc.zip  -> 404
 ```
 
-[`install.ps1`](../../install.ps1) in this repository already carries the fix,
+[`install.ps1`](../../install.ps1) in this repository already carries the asset-name fix,
 but the publication repo has not been synced
 ([#4348](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4348)).
-Once it is, the script will download the matching release zip, verify it
-against `SHA256SUMS` when that file downloads successfully (warning and
-continuing if it does not), and install `perllsp.exe` into
-`%USERPROFILE%\.local\bin`.
+Once it is, the script will require `SHA256SUMS` before downloading the release
+zip, require exactly one lowercase SHA-256 row for the exact selected asset,
+and verify the downloaded archive before extraction. Missing, duplicate,
+malformed, or mismatched checksum evidence fails closed. This proves archive
+integrity against the co-hosted manifest; it does not independently prove
+publisher provenance, safe archive members, atomic replacement, or rollback.
+The script installs into `%USERPROFILE%\.local\bin` by default.
 
 Two further limits apply to the script even after that sync:
 

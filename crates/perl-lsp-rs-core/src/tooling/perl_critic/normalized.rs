@@ -52,79 +52,7 @@ impl OwnedCriticObservedIdentity {
     }
 
     fn resolve(&self) -> Option<&'static CriticIdentityEntry> {
-        let observed = match (self.origin, self.code.as_str(), self.shape) {
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL404",
-                CriticFindingShape::LiteralUndefComparison,
-            ) => Some(CriticObservedIdentity::built_in_literal_undef_comparison()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL404",
-                CriticFindingShape::PotentiallyUndefComparison,
-            ) => Some(CriticObservedIdentity::built_in_potentially_undef_comparison()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL601",
-                CriticFindingShape::Backtick,
-            ) => Some(CriticObservedIdentity::built_in_backtick_exec()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL601",
-                CriticFindingShape::Qx,
-            ) => Some(CriticObservedIdentity::built_in_qx_exec()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL606",
-                CriticFindingShape::Readpipe,
-            ) => Some(CriticObservedIdentity::built_in_readpipe_exec()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL603",
-                CriticFindingShape::SystemCall,
-            ) => Some(CriticObservedIdentity::built_in_system_call()),
-            (
-                CriticFindingOrigin::BuiltInDiagnostic,
-                "PL604",
-                CriticFindingShape::ExecCall,
-            ) => Some(CriticObservedIdentity::built_in_exec_call()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.common.undef_comparison",
-                CriticFindingShape::LiteralUndefComparison,
-            ) => Some(CriticObservedIdentity::native_literal_undef_comparison()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.backtick_exec",
-                CriticFindingShape::Backtick,
-            ) => Some(CriticObservedIdentity::native_backtick_exec()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.qx_readpipe",
-                CriticFindingShape::Qx,
-            ) => Some(CriticObservedIdentity::native_qx_exec()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.qx_readpipe",
-                CriticFindingShape::Readpipe,
-            ) => Some(CriticObservedIdentity::native_readpipe_exec()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.system_exec",
-                CriticFindingShape::SystemCall,
-            ) => Some(CriticObservedIdentity::native_system_call()),
-            (
-                CriticFindingOrigin::NativeCritic,
-                "native.security.system_exec",
-                CriticFindingShape::ExecCall,
-            ) => Some(CriticObservedIdentity::native_exec_call()),
-            (_, _, CriticFindingShape::General) => {
-                CriticObservedIdentity::general(self.origin, &self.code).ok()
-            }
-            _ => None,
-        }?;
-
-        CriticIdentityRegistry::resolve(&observed)
+        CriticIdentityRegistry::resolve_parts(self.origin, &self.code, self.shape)
     }
 }
 
@@ -316,10 +244,8 @@ impl NormalizedCriticFinding {
             .explanation
             .as_ref()
             .map_or(u8::MAX, |_| explanation_rank(candidate.identity.origin()));
-        let explanation_code = candidate
-            .explanation
-            .as_ref()
-            .map(|_| candidate.identity.code.clone());
+        let explanation_code =
+            candidate.explanation.as_ref().map(|_| candidate.identity.code.clone());
         let contributor = CriticFindingContributor::from_candidate(&candidate);
 
         Self {
@@ -353,11 +279,8 @@ impl NormalizedCriticFinding {
             candidate_presentation_rank,
             candidate.identity.code.as_str(),
             candidate.message.as_str(),
-        ) < (
-            self.presentation_rank,
-            self.public_code.as_str(),
-            self.message.as_str(),
-        ) {
+        ) < (self.presentation_rank, self.public_code.as_str(), self.message.as_str())
+        {
             self.presentation_rank = candidate_presentation_rank;
             self.public_code = candidate.identity.code.clone();
             self.message = candidate.message.clone();
@@ -365,23 +288,17 @@ impl NormalizedCriticFinding {
 
         if let Some(candidate_explanation) = candidate.explanation.as_deref() {
             let candidate_explanation_rank = explanation_rank(candidate.identity.origin());
-            let candidate_precedes = match (
-                self.explanation.as_deref(),
-                self.explanation_code.as_deref(),
-            ) {
-                (Some(current_explanation), Some(current_code)) => {
-                    (
-                        candidate_explanation_rank,
-                        candidate_explanation,
-                        candidate.identity.code.as_str(),
-                    ) < (
-                        self.explanation_rank,
-                        current_explanation,
-                        current_code,
-                    )
-                }
-                _ => true,
-            };
+            let candidate_precedes =
+                match (self.explanation.as_deref(), self.explanation_code.as_deref()) {
+                    (Some(current_explanation), Some(current_code)) => {
+                        (
+                            candidate_explanation_rank,
+                            candidate_explanation,
+                            candidate.identity.code.as_str(),
+                        ) < (self.explanation_rank, current_explanation, current_code)
+                    }
+                    _ => true,
+                };
             if candidate_precedes {
                 self.explanation_rank = candidate_explanation_rank;
                 self.explanation = candidate.explanation.clone();
@@ -476,11 +393,11 @@ impl NormalizedCriticFinding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct RangeIdentity {
     start_byte: usize,
-    start_line: usize,
-    start_column: usize,
+    start_line: u32,
+    start_column: u32,
     end_byte: usize,
-    end_line: usize,
-    end_column: usize,
+    end_line: u32,
+    end_column: u32,
 }
 
 impl From<Range> for RangeIdentity {
@@ -570,24 +487,15 @@ fn compare_contributors(
     left: &CriticFindingContributor,
     right: &CriticFindingContributor,
 ) -> Ordering {
-    (
-        &left.identity,
-        severity_score(left.severity),
-        &left.message,
-        &left.explanation,
-    )
-        .cmp(&(
-            &right.identity,
-            severity_score(right.severity),
-            &right.message,
-            &right.explanation,
-        ))
+    (&left.identity, severity_score(left.severity), &left.message, &left.explanation).cmp(&(
+        &right.identity,
+        severity_score(right.severity),
+        &right.message,
+        &right.explanation,
+    ))
 }
 
-fn compare_normalized(
-    left: &NormalizedCriticFinding,
-    right: &NormalizedCriticFinding,
-) -> Ordering {
+fn compare_normalized(left: &NormalizedCriticFinding, right: &NormalizedCriticFinding) -> Ordering {
     left.source_identity
         .cmp(&right.source_identity)
         .then_with(|| RangeIdentity::from(left.range).cmp(&RangeIdentity::from(right.range)))
@@ -604,10 +512,11 @@ mod tests {
     use perl_parser_core::position::{Position, Range};
 
     use super::{
-        CriticFindingCandidate, CriticSourceIdentity, normalize_critic_findings,
+        CriticFindingCandidate, CriticSourceIdentity, OwnedCriticObservedIdentity,
+        normalize_critic_findings,
     };
     use crate::tooling::perl_critic::{
-        CriticFindingOrigin, CriticObservedIdentity, Severity,
+        CriticFindingOrigin, CriticIdentityRegistry, CriticObservedIdentity, Severity,
     };
 
     fn source(document: u8, generation: u64) -> CriticSourceIdentity {
@@ -617,16 +526,23 @@ mod tests {
     }
 
     fn range(start: usize, end: usize) -> Range {
-        range_with_positions(start, 0, start, end, 0, end)
+        range_with_positions(
+            start,
+            0,
+            u32::try_from(start).unwrap_or(u32::MAX),
+            end,
+            0,
+            u32::try_from(end).unwrap_or(u32::MAX),
+        )
     }
 
     fn range_with_positions(
         start_byte: usize,
-        start_line: usize,
-        start_column: usize,
+        start_line: u32,
+        start_column: u32,
         end_byte: usize,
-        end_line: usize,
-        end_column: usize,
+        end_line: u32,
+        end_column: u32,
     ) -> Range {
         Range {
             start: Position { byte: start_byte, line: start_line, column: start_column },
@@ -662,14 +578,7 @@ mod tests {
         explanation: Option<&str>,
     ) -> Option<CriticFindingCandidate> {
         CriticObservedIdentity::general(origin, code).ok().map(|identity| {
-            candidate(
-                identity,
-                source_identity,
-                source_range,
-                severity,
-                message,
-                explanation,
-            )
+            candidate(identity, source_identity, source_range, severity, message, explanation)
         })
     }
 
@@ -708,15 +617,11 @@ mod tests {
         assert_eq!(normalized[0].canonical_id(), Some("critic.testing.require_use_strict"));
         assert_eq!(normalized[0].public_code(), "PL100");
         assert_eq!(normalized[0].message(), "Missing use strict");
-        assert_eq!(
-            normalized[0].explanation(),
-            Some("Always use strict to catch common mistakes")
-        );
+        assert_eq!(normalized[0].explanation(), Some("Always use strict to catch common mistakes"));
         assert_eq!(normalized[0].contributors().len(), 2);
-        assert!(normalized[0]
-            .contributors()
-            .iter()
-            .any(|contributor| contributor.identity().origin() == CriticFindingOrigin::NativeCritic));
+        assert!(normalized[0].contributors().iter().any(|contributor| {
+            contributor.identity().origin() == CriticFindingOrigin::NativeCritic
+        }));
     }
 
     #[test]
@@ -955,5 +860,20 @@ mod tests {
         let mut reverse = forward.clone();
         reverse.reverse();
         assert_eq!(normalize_critic_findings(forward), normalize_critic_findings(reverse));
+    }
+
+    #[test]
+    fn every_registered_alias_resolves_through_owned_identity() {
+        for entry in CriticIdentityRegistry::entries() {
+            for alias in entry.aliases() {
+                let owned = OwnedCriticObservedIdentity::from(alias.observed());
+                assert_eq!(
+                    owned.resolve().map(|resolved| resolved.canonical_id()),
+                    Some(entry.canonical_id()),
+                    "registered alias must remain resolvable through normalization: {:?}",
+                    alias,
+                );
+            }
+        }
     }
 }
