@@ -125,6 +125,27 @@ class SublimeHostContractTests(unittest.TestCase):
         self.assertIn("windows-latest", workflow)
         self.assertNotIn("Package Control: Install Package", workflow)
 
+    def test_lsp_package_is_installed_by_tag_and_asserted_against_the_commit(self) -> None:
+        """`extra-packages` cannot pin a commit, so the tag carries a drift guard.
+
+        The UnitTesting setup action resolves an `extra-packages` ref through
+        `gitResolvePrefixToTag`, which matches only tags and branches and then
+        runs `git clone --branch`. Passing a raw commit SHA there resolves to
+        nothing and aborts the install with "No ref found". Installing by tag is
+        the only mechanism the action offers, so the exact-source claim is held
+        by asserting that the tag still points at the reviewed commit rather
+        than by the clone ref itself.
+        """
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertIn("PERLLSP_LSP_TAG: 4070-2.13.0", workflow)
+        self.assertIn("LSP:sublimelsp/LSP@${{ env.PERLLSP_LSP_TAG }}", workflow)
+        # A commit SHA must never be used as the install ref again.
+        self.assertNotIn(
+            "LSP:sublimelsp/LSP@cc9f5201d9f053d9ab67aa0ea575b494fd133803", workflow
+        )
+        self.assertIn('"refs/tags/$PERLLSP_LSP_TAG^{}"', workflow)
+        self.assertIn('if [[ "$resolved" != "$PERLLSP_LSP_REF" ]]; then', workflow)
+
     def test_job_level_env_uses_no_runner_context(self) -> None:
         """The host lane must survive GitHub's workflow validation.
 

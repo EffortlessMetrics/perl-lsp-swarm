@@ -35,6 +35,12 @@ jobs:
       # bound in the first step instead, where $RUNNER_OS is real.
       PERLLSP_SUBLIME_FIXTURE: ${{ github.workspace }}/clients/sublime/host-fixture
       PERLLSP_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # The UnitTesting setup action resolves `extra-packages` refs through
+      # `gitResolvePrefixToTag`, which matches only tags and branches and then
+      # clones with `git clone --branch`. A raw commit SHA can never resolve, so
+      # the package is installed by its tag and the tag is asserted to still
+      # point at the exact reviewed commit below.
+      PERLLSP_LSP_TAG: 4070-2.13.0
       PERLLSP_LSP_REF: cc9f5201d9f053d9ab67aa0ea575b494fd133803
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +60,18 @@ jobs:
             "$GITHUB_WORKSPACE/target/sublime-host/$RUNNER_OS.json" >> "$GITHUB_ENV"
           mkdir -p "$GITHUB_WORKSPACE/target/sublime-host"
 
+      - name: Reject sublimelsp/LSP tag drift from the reviewed commit
+        shell: bash
+        run: |
+          resolved=$(git ls-remote https://github.com/sublimelsp/LSP \
+            "refs/tags/$PERLLSP_LSP_TAG^{}" | cut -f1)
+          if [[ "$resolved" != "$PERLLSP_LSP_REF" ]]; then
+            echo "sublimelsp/LSP tag $PERLLSP_LSP_TAG resolves to ${resolved:-<none>}," >&2
+            echo "but the reviewed exact-source commit is $PERLLSP_LSP_REF." >&2
+            exit 1
+          fi
+          echo "sublimelsp/LSP $PERLLSP_LSP_TAG is $PERLLSP_LSP_REF"
+
       - name: Stage the exact helper-package source
         shell: bash
         run: |
@@ -72,7 +90,7 @@ jobs:
           sublime-text-version: 4
           install-package-control: false
           extra-packages: |
-            LSP:sublimelsp/LSP@cc9f5201d9f053d9ab67aa0ea575b494fd133803
+            LSP:sublimelsp/LSP@${{ env.PERLLSP_LSP_TAG }}
 
       - name: Run the real Sublime interoperability journey
         uses: SublimeText/UnitTesting/actions/run-tests@b8abedefd5fbc0f64a8c6082506ebd1e24203164
