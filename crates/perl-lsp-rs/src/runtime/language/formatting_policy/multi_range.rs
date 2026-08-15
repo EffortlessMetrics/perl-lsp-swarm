@@ -5,11 +5,12 @@
 use serde::Serialize;
 
 use super::super::{
-    CodeFormatter, FormatContext, FormatDisposition, FormatPosition, FormatRange, FormatTextEdit,
-    FormattingDecision, JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Snapshot, Surface,
-    Value, WirePosition, WireRange, actual_engine_for_mode, cancellation_token, digest,
-    invalid_params, json, parse_range, sanitized_outcome,
+    CodeFormatter, FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision,
+    JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Snapshot, Surface, Value,
+    WirePosition, WireRange, actual_engine_for_mode, cancellation_token, digest, invalid_params,
+    json, parse_range, sanitized_outcome,
 };
+use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct PositionRecord {
