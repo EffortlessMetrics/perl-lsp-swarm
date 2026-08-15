@@ -202,7 +202,7 @@ All settings are under the `perl-lsp.*` namespace. Open settings with `Ctrl+,` a
 | `perl-lsp.trace.server`          | `"off"`                      | LSP trace level for debugging: `off`, `messages`, `verbose`                                                                                                              |
 | `perl-lsp.featureProfile`        | `"auto"`                     | Runtime capability profile. Keep `auto` unless you need a specific compatibility profile                                                                                 |
 | `perl-lsp.downloadBaseUrl`       | `""`                         | Internal mirror URL for air-gapped deployments                                                                                                                           |
-| `perl-lsp.mcp.servers`           | `[]`                         | Optional MCP stdio server definitions (`label`, `command`, `args`, `cwd`, `env`, `version`, `enabled`) published to VS Code language models                              |
+| `perl-lsp.mcp.servers`           | `[]`                         | **Removed and inert.** The generic configured-command MCP passthrough is disabled; existing values are read by nothing and start no process                              |
 
 ### Internal / Air-Gapped Deployment
 
