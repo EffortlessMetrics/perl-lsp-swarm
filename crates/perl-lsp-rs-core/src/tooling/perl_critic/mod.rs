@@ -35,7 +35,7 @@ pub use normalized::{
 };
 pub use quick_fix::{QuickFix, TextEdit};
 pub use result_identity::{
-    DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION, CriticPolicyIdentity, DiagnosticFactIdentity,
+    CriticPolicyIdentity, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity,
     DiagnosticResultIdentity, DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions,
     DiagnosticSourceIdentity,
 };

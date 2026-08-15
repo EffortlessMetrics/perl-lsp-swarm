@@ -95,13 +95,7 @@ impl DiagnosticResultSchemaVersions {
         projection: u16,
         remediation: u16,
     ) -> Self {
-        Self {
-            rule_catalog,
-            alias_catalog,
-            suppression_contract,
-            projection,
-            remediation,
-        }
+        Self { rule_catalog, alias_catalog, suppression_contract, projection, remediation }
     }
 }
 
@@ -139,16 +133,8 @@ impl DiagnosticResultIdentityInput {
             u64::from(DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION),
         );
         push_str(&mut canonical, "source_digest", &self.source.content_digest);
-        push_optional_u64(
-            &mut canonical,
-            "document_generation",
-            self.source.document_generation,
-        );
-        push_u64(
-            &mut canonical,
-            "configuration_generation",
-            self.policy.configuration_generation,
-        );
+        push_optional_u64(&mut canonical, "document_generation", self.source.document_generation);
+        push_u64(&mut canonical, "configuration_generation", self.policy.configuration_generation);
         push_str(
             &mut canonical,
             "critic_engine",
@@ -162,31 +148,15 @@ impl DiagnosticResultIdentityInput {
         push_set(&mut canonical, "include", &self.policy.include);
         push_set(&mut canonical, "exclude", &self.policy.exclude);
         push_fact_identity(&mut canonical, &self.facts);
-        push_u64(
-            &mut canonical,
-            "rule_catalog",
-            u64::from(self.schemas.rule_catalog),
-        );
-        push_u64(
-            &mut canonical,
-            "alias_catalog",
-            u64::from(self.schemas.alias_catalog),
-        );
+        push_u64(&mut canonical, "rule_catalog", u64::from(self.schemas.rule_catalog));
+        push_u64(&mut canonical, "alias_catalog", u64::from(self.schemas.alias_catalog));
         push_u64(
             &mut canonical,
             "suppression_contract",
             u64::from(self.schemas.suppression_contract),
         );
-        push_u64(
-            &mut canonical,
-            "projection_schema",
-            u64::from(self.schemas.projection),
-        );
-        push_u64(
-            &mut canonical,
-            "remediation_schema",
-            u64::from(self.schemas.remediation),
-        );
+        push_u64(&mut canonical, "projection_schema", u64::from(self.schemas.projection));
+        push_u64(&mut canonical, "remediation_schema", u64::from(self.schemas.remediation));
 
         let digest = fnv1a_128(canonical.as_bytes());
         DiagnosticResultIdentity(format!(
@@ -460,9 +430,10 @@ mod tests {
         assert!(id.as_str().starts_with("diagnostic-result.v1-"));
         assert_eq!(id.as_str().len(), "diagnostic-result.v1-".len() + 32);
         assert!(!id.as_str().contains("private"));
-        assert!(id
-            .as_str()
-            .strip_prefix("diagnostic-result.v1-")
-            .is_some_and(|digest| digest.chars().all(|character| character.is_ascii_hexdigit())));
+        assert!(
+            id.as_str().strip_prefix("diagnostic-result.v1-").is_some_and(|digest| digest
+                .chars()
+                .all(|character| character.is_ascii_hexdigit()))
+        );
     }
 }
