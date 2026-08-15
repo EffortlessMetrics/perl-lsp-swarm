@@ -1,3 +1,10 @@
+// Shared test support module: `mod support;` is compiled fresh per
+// integration-test binary (`agent_client_compat_contract.rs` and
+// `claude_code_host_smoke.rs`), and not every binary uses every item —
+// the unused ones are false-positive dead code, not unreachable production
+// code.
+#![allow(dead_code)]
+
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
