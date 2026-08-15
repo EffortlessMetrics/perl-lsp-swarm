@@ -6,12 +6,9 @@ use std::collections::BTreeMap;
 
 pub const TARGET_SELECTION_SCHEMA_VERSION: &str = "perl_core_harness.target_selection.v1";
 pub const TARGET_MATRIX_SCHEMA_VERSION: &str = "perl_core_harness.target_matrix.v1";
-pub const TARGET_MATRIX_INDEX_SCHEMA_VERSION: &str =
-    "perl_core_harness.target_matrix_index.v1";
-pub const TARGET_MATRIX_PART_SCHEMA_VERSION: &str =
-    "perl_core_harness.target_matrix_part.v1";
-pub const TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION: &str =
-    "perl_core_harness.target_topology_drift.v1";
+pub const TARGET_MATRIX_INDEX_SCHEMA_VERSION: &str = "perl_core_harness.target_matrix_index.v1";
+pub const TARGET_MATRIX_PART_SCHEMA_VERSION: &str = "perl_core_harness.target_matrix_part.v1";
+pub const TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION: &str = "perl_core_harness.target_topology_drift.v1";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -167,10 +164,7 @@ impl Serialize for TargetSelectionContract {
         state.serialize_field("preparation", &self.preparation)?;
         state.serialize_field("variant_of", &self.variant_of)?;
         state.serialize_field("composite_members", &self.composite_members)?;
-        state.serialize_field(
-            "composite_overlap_policy",
-            &self.composite_overlap_policy,
-        )?;
+        state.serialize_field("composite_overlap_policy", &self.composite_overlap_policy)?;
         state.serialize_field("runner_switches", &self.runner_switches)?;
         state.serialize_field("variant_parameters", &self.variant_parameters)?;
         state.serialize_field("environment", &self.environment)?;

@@ -1,7 +1,7 @@
 {
   "schema_version": "perl_core_harness.target_topology_drift.v1",
   "status": "not_proven",
-  "pinned_matrix_fingerprint": "00dec1e0847ad8bcf7c37d842d700338e85853430d3b621724f3a6aa0e142a78",
+  "pinned_matrix_fingerprint": "4182b36d39baa378790619cbf9d674de40cd895507a412750bd0e5fb0fa583fa",
   "observed_matrix_fingerprint": null,
   "observed_perl_ref": "blead",
   "observed_perl_resolved_ref": "5355a72c746fa5146541d790aece53b22737afee",

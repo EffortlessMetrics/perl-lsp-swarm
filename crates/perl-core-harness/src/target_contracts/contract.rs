@@ -18,10 +18,7 @@ impl TargetSelectionContract {
         validate_nonempty(&self.upstream_name, "upstream name")?;
         validate_sorted_unique_strings(&self.aliases, "target alias")?;
         if self.aliases.iter().any(|alias| alias == &self.upstream_name) {
-            return Err(format!(
-                "target {} repeats its upstream name as an alias",
-                self.target_id
-            ));
+            return Err(format!("target {} repeats its upstream name as an alias", self.target_id));
         }
         validate_nonempty(&self.display_name, "display name")?;
         validate_nonempty(&self.perl_version_row, "Perl version row")?;
@@ -214,10 +211,9 @@ impl TargetSelectionContract {
 
 fn validate_selector(selector: &TargetSelector) -> Result<(), String> {
     match selector {
-        TargetSelector::RecursiveRoot { path } => validate_literal_local_selector(
-            path,
-            "recursive-root selector",
-        ),
+        TargetSelector::RecursiveRoot { path } => {
+            validate_literal_local_selector(path, "recursive-root selector")
+        }
         TargetSelector::ExactFile { path } => {
             validate_literal_local_selector(path, "exact-file selector")
         }
@@ -247,9 +243,7 @@ fn validate_nonrecursive_glob(value: &str) -> Result<(), String> {
 }
 
 fn contains_glob_metacharacter(value: &str) -> bool {
-    value
-        .bytes()
-        .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
+    value.bytes().any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
 }
 
 fn validate_local_selector(value: &str) -> Result<(), String> {
@@ -304,10 +298,7 @@ pub(crate) fn validate_unique_strings_in_order(
     Ok(())
 }
 
-pub(crate) fn validate_sorted_unique_strings(
-    values: &[String],
-    label: &str,
-) -> Result<(), String> {
+pub(crate) fn validate_sorted_unique_strings(values: &[String], label: &str) -> Result<(), String> {
     for value in values {
         validate_nonempty(value, label)?;
     }
@@ -317,10 +308,7 @@ pub(crate) fn validate_sorted_unique_strings(
     Ok(())
 }
 
-pub(crate) fn validate_optional_stable_id(
-    value: Option<&str>,
-    label: &str,
-) -> Result<(), String> {
+pub(crate) fn validate_optional_stable_id(value: Option<&str>, label: &str) -> Result<(), String> {
     if let Some(value) = value {
         validate_stable_id(value, label)?;
     }
@@ -339,11 +327,7 @@ pub(crate) fn validate_stable_id(value: &str, label: &str) -> Result<(), String>
 }
 
 pub(crate) fn validate_nonempty(value: &str, label: &str) -> Result<(), String> {
-    if value.trim().is_empty() {
-        Err(format!("{label} cannot be empty"))
-    } else {
-        Ok(())
-    }
+    if value.trim().is_empty() { Err(format!("{label} cannot be empty")) } else { Ok(()) }
 }
 
 #[cfg(test)]

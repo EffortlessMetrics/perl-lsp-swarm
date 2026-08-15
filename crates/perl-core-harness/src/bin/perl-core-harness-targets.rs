@@ -2,14 +2,14 @@
 
 //! Validate the versioned upstream Perl target matrix without executing Perl.
 
-#[path = "../target_contracts/model.rs"]
-mod model;
 #[path = "../target_contracts/contract.rs"]
 mod contract;
-#[path = "../target_contracts/matrix.rs"]
-mod matrix;
 #[path = "../target_contracts/io.rs"]
 mod io;
+#[path = "../target_contracts/matrix.rs"]
+mod matrix;
+#[path = "../target_contracts/model.rs"]
+mod model;
 
 use color_eyre::eyre::{ContextCompat, Result, bail};
 use io::{read_drift, read_matrix};
@@ -28,10 +28,8 @@ fn main() -> Result<()> {
     if command.as_os_str() != OsStr::new("check") {
         bail!("unsupported command {:?}; expected check", command);
     }
-    let matrix_path = args
-        .next()
-        .map(PathBuf::from)
-        .context("check requires a pinned target matrix path")?;
+    let matrix_path =
+        args.next().map(PathBuf::from).context("check requires a pinned target matrix path")?;
     let drift_path = args.next().map(PathBuf::from);
     let observed_matrix_path = args.next().map(PathBuf::from);
     if let Some(extra) = args.next() {
@@ -39,15 +37,10 @@ fn main() -> Result<()> {
     }
 
     let matrix = read_matrix(&matrix_path)?;
-    let fingerprint = matrix
-        .fingerprint()
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let fingerprint = matrix.fingerprint().map_err(|error| color_eyre::eyre::eyre!(error))?;
     if let Some(path) = drift_path.as_deref() {
         let drift = read_drift(path)?;
-        let observed = observed_matrix_path
-            .as_deref()
-            .map(read_matrix)
-            .transpose()?;
+        let observed = observed_matrix_path.as_deref().map(read_matrix).transpose()?;
         drift
             .validate_against(&matrix, &fingerprint, observed.as_ref())
             .map_err(|error| color_eyre::eyre::eyre!(error))?;

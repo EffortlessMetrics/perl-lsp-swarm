@@ -1,20 +1,20 @@
 //! Review falsifiers for target-selector decoding and legacy composite partitioning.
 
-#[path = "../src/target_contracts/model.rs"]
-mod model;
 #[path = "../src/target_contracts/contract.rs"]
 mod contract;
-#[path = "../src/target_contracts/matrix.rs"]
-mod matrix;
 #[path = "../src/target_contracts/io.rs"]
 mod io;
+#[path = "../src/target_contracts/matrix.rs"]
+mod matrix;
+#[path = "../src/target_contracts/model.rs"]
+mod model;
 
 use model::{
     CompositeOverlapPolicy, TARGET_MATRIX_SCHEMA_VERSION, TARGET_SELECTION_SCHEMA_VERSION,
-    TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetAuthority, TargetAuthorityKind,
-    TargetDisposition, TargetKind, TargetMatrixEntry, TargetPerlRuntime, TargetPreparation,
-    TargetScriptForm, TargetSelectionContract, TargetSelector, TargetTerminalPolicy,
-    TargetTopologyDrift, TargetTopologyDriftStatus, UpstreamTargetMatrix,
+    TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetAuthority, TargetAuthorityKind, TargetDisposition,
+    TargetKind, TargetMatrixEntry, TargetPerlRuntime, TargetPreparation, TargetScriptForm,
+    TargetSelectionContract, TargetSelector, TargetTerminalPolicy, TargetTopologyDrift,
+    TargetTopologyDriftStatus, UpstreamTargetMatrix,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,9 +22,7 @@ use std::path::{Path, PathBuf};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn repo_file(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(relative)
 }
 
 fn physical_contract(display_name: &str) -> TargetSelectionContract {
@@ -44,9 +42,7 @@ fn physical_contract(display_name: &str) -> TargetSelectionContract {
             kind: TargetAuthorityKind::Test,
             entrypoint: "t/TEST".to_string(),
         }),
-        selectors: vec![TargetSelector::RecursiveRoot {
-            path: "base".to_string(),
-        }],
+        selectors: vec![TargetSelector::RecursiveRoot { path: "base".to_string() }],
         script_forms: vec![TargetScriptForm::DotT],
         preparation: TargetPreparation {
             make_target: Some("test_prep".to_string()),
@@ -116,16 +112,13 @@ fn selector_payloads_reject_unknown_fields() {
     let misspelled_path = r#"{"kind":"recursive_root","pth":"base"}"#;
     assert!(serde_json::from_str::<TargetSelector>(misspelled_path).is_err());
 
-    let silently_extra_field =
-        r#"{"kind":"recursive_root","path":"base","scope":"recursive"}"#;
+    let silently_extra_field = r#"{"kind":"recursive_root","path":"base","scope":"recursive"}"#;
     assert!(serde_json::from_str::<TargetSelector>(silently_extra_field).is_err());
 }
 
 #[test]
 fn legacy_composites_are_partitioned_by_runner() -> TestResult {
-    let matrix = io::read_matrix(&repo_file(
-        ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
-    ))?;
+    let matrix = io::read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
 
     let find = |target_id: &str| {
         matrix
@@ -144,68 +137,42 @@ fn legacy_composites_are_partitioned_by_runner() -> TestResult {
     let op_hook = find("component_op_hook")?;
 
     for composite in [core_harness, core_test, full_harness, full_test] {
-        assert_eq!(
-            composite.composite_overlap_policy,
-            Some(CompositeOverlapPolicy::RejectOverlap)
-        );
+        assert_eq!(composite.composite_overlap_policy, Some(CompositeOverlapPolicy::RejectOverlap));
     }
-    assert!(
-        core_harness
-            .composite_members
-            .iter()
-            .any(|member| member == "component_op")
-    );
-    assert!(
-        !core_harness
-            .composite_members
-            .iter()
-            .any(|member| member == "component_op_hook")
-    );
-    assert!(
-        core_test
-            .composite_members
-            .iter()
-            .any(|member| member == "component_op")
-    );
-    assert!(
-        core_test
-            .composite_members
-            .iter()
-            .any(|member| member == "component_op_hook")
-    );
+    assert!(core_harness.composite_members.iter().any(|member| member == "component_op"));
+    assert!(!core_harness.composite_members.iter().any(|member| member == "component_op_hook"));
+    assert!(core_test.composite_members.iter().any(|member| member == "component_op"));
+    assert!(core_test.composite_members.iter().any(|member| member == "component_op_hook"));
     assert_eq!(
         full_harness.composite_members,
-        vec![
-            "component_uni".to_string(),
-            "legacy_custom_core_harness".to_string(),
-        ]
+        vec!["component_uni".to_string(), "legacy_custom_core_harness".to_string(),]
     );
     assert_eq!(
         full_test.composite_members,
-        vec![
-            "component_uni".to_string(),
-            "legacy_custom_core_test".to_string(),
-        ]
+        vec!["component_uni".to_string(), "legacy_custom_core_test".to_string(),]
     );
-    assert_eq!(
-        core_harness.variant_parameters,
-        BTreeMap::from([("runner".to_string(), "harness".to_string())])
-    );
-    assert_eq!(
-        core_test.variant_parameters,
-        BTreeMap::from([("runner".to_string(), "test".to_string())])
-    );
+    // A composite carries no parameters of its own: its denominator is exactly
+    // its members and overlap policy. The runner a composite belongs to is
+    // therefore read from its declared authority, not from a second copy in
+    // `variant_parameters`, which `validate_composite` rejects outright.
+    for composite in [core_harness, core_test, full_harness, full_test] {
+        assert!(
+            composite.variant_parameters.is_empty(),
+            "composite {} must not restate authority as variant parameters",
+            composite.target_id
+        );
+    }
+    assert_eq!(core_harness.authority.entrypoint, "HarnessProfile::Core / HarnessRunner::Harness");
+    assert_eq!(core_test.authority.entrypoint, "HarnessProfile::Core / HarnessRunner::Test");
+    assert_eq!(full_harness.authority.entrypoint, "HarnessProfile::Full / HarnessRunner::Harness");
+    assert_eq!(full_test.authority.entrypoint, "HarnessProfile::Full / HarnessRunner::Test");
     assert_eq!(
         direct_op.selectors,
-        vec![TargetSelector::NonRecursiveGlob {
-            pattern: "op/*.t".to_string(),
-        }]
+        vec![TargetSelector::NonRecursiveGlob { pattern: "op/*.t".to_string() }]
     );
     assert_eq!(
         op_hook.selectors,
-        vec![TargetSelector::RecursiveRoot {
-            path: "op/hook".to_string(),
-        }]
+        vec![TargetSelector::RecursiveRoot { path: "op/hook".to_string() }]
     );
     Ok(())
 }
@@ -231,6 +198,127 @@ fn target_names_are_globally_unambiguous() -> TestResult {
     });
 
     assert!(matrix.validate().is_err());
+    Ok(())
+}
+
+/// Build a two-row matrix whose rows share `t/TEST --utf16` as their upstream
+/// name, letting each caller decide how (or whether) the rows discriminate.
+fn shared_upstream_name_matrix(
+    decorate_second: impl FnOnce(&mut TargetSelectionContract),
+) -> UpstreamTargetMatrix {
+    let mut first = physical_contract("first variant");
+    first.target_id = "variant_utf16_be_bom".to_string();
+    first.upstream_name = "t/TEST --utf16".to_string();
+    first.target_kind = TargetKind::EnvironmentVariant;
+    first.selection_authority = None;
+    first.selectors.clear();
+    first.script_forms.clear();
+    first.preparation.make_target = None;
+    first.preparation.perl_runtime = TargetPerlRuntime::Inherited;
+    first.variant_of = Some("component_base".to_string());
+    first.runner_switches = vec!["--utf16".to_string()];
+    first.variant_parameters = BTreeMap::from([("bom".to_string(), "present".to_string())]);
+
+    let mut second = first.clone();
+    second.target_id = "variant_utf16_be_no_bom".to_string();
+    second.display_name = "second variant".to_string();
+    decorate_second(&mut second);
+
+    let base = physical_contract("denominator");
+    let mut matrix = matrix_with_contract(
+        "fixture",
+        "1111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222",
+        base,
+    );
+    // A second real denominator, so a cross-parent fixture points at a row that
+    // actually exists and is rejected by the namespace rule rather than by the
+    // missing-parent check.
+    let mut other_base = physical_contract("other denominator");
+    other_base.target_id = "component_comp".to_string();
+    other_base.upstream_name = "t/comp".to_string();
+    other_base.perl_version_row = "fixture".to_string();
+    other_base.selectors = vec![TargetSelector::RecursiveRoot { path: "comp".to_string() }];
+    matrix.targets.push(TargetMatrixEntry {
+        contract: other_base,
+        disposition: TargetDisposition::Implemented,
+        owner_issue: Some(6660),
+        claim_boundary: "variant fixture".to_string(),
+    });
+    for contract in [first, second] {
+        matrix.targets.push(TargetMatrixEntry {
+            contract,
+            disposition: TargetDisposition::Implemented,
+            owner_issue: Some(6660),
+            claim_boundary: "variant fixture".to_string(),
+        });
+    }
+    matrix
+}
+
+#[test]
+fn sibling_variants_may_share_one_upstream_invocation() -> TestResult {
+    // Upstream exposes a single `t/TEST --utf16` invocation for both BOM
+    // states; the rows are discriminated by their parameters, not their name.
+    let matrix = shared_upstream_name_matrix(|second| {
+        second.variant_parameters = BTreeMap::from([("bom".to_string(), "absent".to_string())]);
+    });
+    matrix.validate()?;
+    Ok(())
+}
+
+#[test]
+fn shared_upstream_name_requires_distinct_variant_parameters() -> TestResult {
+    // Same name, same parameters: nothing tells the two rows apart.
+    let matrix = shared_upstream_name_matrix(|_| {});
+    let Err(error) = matrix.validate() else {
+        return Err("identical parameters must be rejected".into());
+    };
+    if !error.contains("identical parameters") {
+        return Err(format!("unexpected rejection reason: {error}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn shared_upstream_name_requires_a_common_parent() -> TestResult {
+    // Same name, different parents: the rows do not parameterize one invocation.
+    let matrix = shared_upstream_name_matrix(|second| {
+        second.variant_parameters = BTreeMap::from([("bom".to_string(), "absent".to_string())]);
+        second.variant_of = Some("component_comp".to_string());
+    });
+    let Err(error) = matrix.validate() else {
+        return Err("cross-parent sharing must be rejected".into());
+    };
+    if !error.contains("variants of different parents") {
+        return Err(format!("unexpected rejection reason: {error}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn non_variant_rows_may_not_share_an_upstream_name() -> TestResult {
+    // A plain row has no parameters to disambiguate it, so the equivalence
+    // must not extend to it.
+    let matrix = shared_upstream_name_matrix(|second| {
+        // A physical row may not carry variant parameters at all, so it has
+        // nothing that could discriminate it from the row it shares a name with.
+        second.variant_parameters = BTreeMap::new();
+        second.variant_of = None;
+        second.target_kind = TargetKind::PhysicalSeries;
+        second.selection_authority = Some(TargetAuthority {
+            kind: TargetAuthorityKind::Test,
+            entrypoint: "t/TEST".to_string(),
+        });
+        second.selectors = vec![TargetSelector::RecursiveRoot { path: "comp".to_string() }];
+        second.script_forms = vec![TargetScriptForm::DotT];
+    });
+    let Err(error) = matrix.validate() else {
+        return Err("non-variant sharing must be rejected".into());
+    };
+    if !error.contains("is not a variant") {
+        return Err(format!("unexpected rejection reason: {error}").into());
+    }
     Ok(())
 }
 
@@ -271,11 +359,7 @@ fn invocation_changes_remain_topology_drift() -> TestResult {
         "4444444444444444444444444444444444444444",
         changed,
     );
-    let drift = compared_drift(
-        &pinned,
-        &observed,
-        vec!["component_base".to_string()],
-    )?;
+    let drift = compared_drift(&pinned, &observed, vec!["component_base".to_string()])?;
     let pinned_fingerprint = pinned.fingerprint()?;
 
     drift.validate_against(&pinned, &pinned_fingerprint, Some(&observed))?;

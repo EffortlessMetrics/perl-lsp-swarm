@@ -1,8 +1,6 @@
 //! Cross-target, ownership, fingerprint, and drift validation.
 
-use crate::contract::{
-    validate_nonempty, validate_sorted_unique_strings,
-};
+use crate::contract::{validate_nonempty, validate_sorted_unique_strings};
 use crate::model::{
     TARGET_MATRIX_INDEX_SCHEMA_VERSION, TARGET_MATRIX_PART_SCHEMA_VERSION,
     TARGET_MATRIX_SCHEMA_VERSION, TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetDisposition,
@@ -68,27 +66,15 @@ const PINNED_PERL_5422_TARGET_IDS: &[&str] = &[
     "variant_utf8",
 ];
 const PINNED_PERL_5422_TOPOLOGY_SOURCES: &[(&str, &str)] = &[
-    (
-        "Makefile.SH",
-        "8732bb922b4f3365ce48f3979f29b30df850f885",
-    ),
-    (
-        "t/TEST",
-        "60c3f01b66a2c82062dc288aa3d336d5531d3b12",
-    ),
-    (
-        "t/harness",
-        "c038ad3c96a5e3e9450f3d3fe91ba932356ebfa4",
-    ),
+    ("Makefile.SH", "8732bb922b4f3365ce48f3979f29b30df850f885"),
+    ("t/TEST", "60c3f01b66a2c82062dc288aa3d336d5531d3b12"),
+    ("t/harness", "c038ad3c96a5e3e9450f3d3fe91ba932356ebfa4"),
 ];
 
 impl TargetMatrixIndex {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != TARGET_MATRIX_INDEX_SCHEMA_VERSION {
-            return Err(format!(
-                "unsupported target matrix index schema {}",
-                self.schema_version
-            ));
+            return Err(format!("unsupported target matrix index schema {}", self.schema_version));
         }
         validate_nonempty(&self.perl_version_row, "matrix Perl version row")?;
         validate_nonempty(&self.perl_requested_ref, "matrix requested Perl ref")?;
@@ -142,17 +128,16 @@ impl TargetMatrixIndex {
 impl TargetMatrixPart {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != TARGET_MATRIX_PART_SCHEMA_VERSION {
-            return Err(format!(
-                "unsupported target matrix part schema {}",
-                self.schema_version
-            ));
+            return Err(format!("unsupported target matrix part schema {}", self.schema_version));
         }
         if self.targets.is_empty() {
             return Err("target matrix part contains no rows".to_string());
         }
-        if self.targets.windows(2).any(|pair| {
-            pair[0].contract.target_id.as_str() >= pair[1].contract.target_id.as_str()
-        }) {
+        if self
+            .targets
+            .windows(2)
+            .any(|pair| pair[0].contract.target_id.as_str() >= pair[1].contract.target_id.as_str())
+        {
             return Err("target matrix part rows must be strictly sorted by target ID".to_string());
         }
         Ok(())
@@ -185,9 +170,11 @@ impl UpstreamTargetMatrix {
         if self.targets.is_empty() {
             return Err("target matrix contains no targets".to_string());
         }
-        if self.targets.windows(2).any(|pair| {
-            pair[0].contract.target_id.as_str() >= pair[1].contract.target_id.as_str()
-        }) {
+        if self
+            .targets
+            .windows(2)
+            .any(|pair| pair[0].contract.target_id.as_str() >= pair[1].contract.target_id.as_str())
+        {
             return Err("target matrix rows must be strictly sorted by target ID".to_string());
         }
 
@@ -281,17 +268,11 @@ impl UpstreamTargetMatrix {
                 "Perl 5.42.2 target matrix must bind {PINNED_PERL_5422_REF} at {PINNED_PERL_5422_SHA}"
             ));
         }
-        let actual_ids = self
-            .targets
-            .iter()
-            .map(|entry| entry.contract.target_id.as_str())
-            .collect::<Vec<_>>();
+        let actual_ids =
+            self.targets.iter().map(|entry| entry.contract.target_id.as_str()).collect::<Vec<_>>();
         if actual_ids.as_slice() != PINNED_PERL_5422_TARGET_IDS {
             let actual = actual_ids.iter().copied().collect::<BTreeSet<_>>();
-            let expected = PINNED_PERL_5422_TARGET_IDS
-                .iter()
-                .copied()
-                .collect::<BTreeSet<_>>();
+            let expected = PINNED_PERL_5422_TARGET_IDS.iter().copied().collect::<BTreeSet<_>>();
             let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
             let unexpected = actual.difference(&expected).copied().collect::<Vec<_>>();
             return Err(format!(
@@ -319,18 +300,12 @@ impl TargetTopologyDrift {
         if self.schema_version != TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION {
             return Err(format!("unsupported topology drift schema {}", self.schema_version));
         }
-        validate_sha256(
-            &self.pinned_matrix_fingerprint,
-            "pinned matrix fingerprint",
-        )?;
+        validate_sha256(&self.pinned_matrix_fingerprint, "pinned matrix fingerprint")?;
         if self.pinned_matrix_fingerprint != pinned_fingerprint {
             return Err("topology drift references a different pinned matrix".to_string());
         }
         validate_nonempty(&self.observed_perl_ref, "observed Perl ref")?;
-        validate_git_sha(
-            &self.observed_perl_resolved_ref,
-            "observed resolved Perl ref",
-        )?;
+        validate_git_sha(&self.observed_perl_resolved_ref, "observed resolved Perl ref")?;
         if self.observed_topology_sources.is_empty() {
             return Err("topology drift requires observed source identities".to_string());
         }
@@ -339,10 +314,7 @@ impl TargetTopologyDrift {
             validate_git_sha(digest, "observed topology source blob SHA")?;
         }
         let pinned_source_paths = pinned.topology_sources.keys().collect::<BTreeSet<_>>();
-        let observed_source_paths = self
-            .observed_topology_sources
-            .keys()
-            .collect::<BTreeSet<_>>();
+        let observed_source_paths = self.observed_topology_sources.keys().collect::<BTreeSet<_>>();
         if observed_source_paths != pinned_source_paths {
             return Err(format!(
                 "topology drift source set differs from pinned authorities: expected {pinned_source_paths:?}, observed {observed_source_paths:?}"
@@ -390,7 +362,7 @@ impl TargetTopologyDrift {
                     != Some(observed_fingerprint.as_str())
                 {
                     return Err(
-                        "topology drift references a different observed target matrix".to_string(),
+                        "topology drift references a different observed target matrix".to_string()
                     );
                 }
                 if self.observed_perl_ref != observed.perl_requested_ref
@@ -404,7 +376,7 @@ impl TargetTopologyDrift {
                 }
                 if self.not_proven_reason.is_some() {
                     return Err(
-                        "compared topology drift cannot retain a not-proven reason".to_string(),
+                        "compared topology drift cannot retain a not-proven reason".to_string()
                     );
                 }
                 let (added, removed, changed) = compute_topology_drift(pinned, observed)?;
@@ -422,23 +394,90 @@ impl TargetTopologyDrift {
     }
 }
 
+/// Target IDs and aliases are globally unique: they are our own spellings, so a
+/// collision is always an authoring error.
+///
+/// `upstream_name` is the one exception, and only under an explicit
+/// equivalence. It records the upstream invocation a row measures, and upstream
+/// genuinely exposes a single invocation for several distinct denominators —
+/// `t/TEST --utf16` covers both byte orders and both BOM states. Those rows are
+/// discriminated by `variant_parameters`, not by name, so requiring a unique
+/// upstream name would force us to invent spellings upstream does not have.
+///
+/// The equivalence is therefore narrow: rows may share an upstream name only
+/// when they are sibling variants of the same parent and each carries a
+/// distinct, nonempty parameter set. Anything else — a shared name across
+/// unrelated rows, siblings with identical parameters, or a shared name that
+/// also collides with some row's ID or alias — remains ambiguous and is
+/// rejected.
 fn validate_global_target_namespace(entries: &[TargetMatrixEntry]) -> Result<(), String> {
     let mut owners = BTreeMap::<&str, &str>::new();
     for entry in entries {
         let owner = entry.contract.target_id.as_str();
-        let names = std::iter::once(owner)
-            .chain(std::iter::once(entry.contract.upstream_name.as_str()))
-            .chain(entry.contract.aliases.iter().map(String::as_str));
+        let names = std::iter::once(owner).chain(entry.contract.aliases.iter().map(String::as_str));
         for name in names {
-            if let Some(existing_owner) = owners.get(name) {
-                if *existing_owner != owner {
-                    return Err(format!(
-                        "target name {name} is ambiguous between {existing_owner} and {owner}"
-                    ));
-                }
-            } else {
-                owners.insert(name, owner);
+            if let Some(existing_owner) = owners.insert(name, owner)
+                && existing_owner != owner
+            {
+                return Err(format!(
+                    "target name {name} is ambiguous between {existing_owner} and {owner}"
+                ));
             }
+        }
+    }
+
+    let mut by_upstream_name = BTreeMap::<&str, Vec<&TargetMatrixEntry>>::new();
+    for entry in entries {
+        by_upstream_name.entry(entry.contract.upstream_name.as_str()).or_default().push(entry);
+    }
+    for (name, sharers) in by_upstream_name {
+        // An upstream name may never collide with a different row's ID or alias.
+        if let Some(existing_owner) = owners.get(name)
+            && !sharers.iter().any(|entry| entry.contract.target_id == *existing_owner)
+        {
+            let owner = sharers[0].contract.target_id.as_str();
+            return Err(format!(
+                "target name {name} is ambiguous between {existing_owner} and {owner}"
+            ));
+        }
+        if sharers.len() == 1 {
+            continue;
+        }
+        let mut parents = BTreeSet::new();
+        let mut parameter_sets = BTreeSet::new();
+        for entry in &sharers {
+            let Some(parent) = entry.contract.variant_of.as_deref() else {
+                return Err(format!(
+                    "upstream name {name} is shared by {}, which is not a variant",
+                    entry.contract.target_id
+                ));
+            };
+            if entry.contract.variant_parameters.is_empty() {
+                return Err(format!(
+                    "upstream name {name} is shared by {} without discriminating variant parameters",
+                    entry.contract.target_id
+                ));
+            }
+            parents.insert(parent);
+            parameter_sets.insert(
+                entry
+                    .contract
+                    .variant_parameters
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+        if parents.len() != 1 {
+            return Err(format!(
+                "upstream name {name} is shared across variants of different parents: {parents:?}"
+            ));
+        }
+        if parameter_sets.len() != sharers.len() {
+            return Err(format!(
+                "upstream name {name} is shared by variants with identical parameters"
+            ));
         }
     }
     Ok(())
@@ -454,10 +493,7 @@ fn validate_variant_base_kinds(entries: &[TargetMatrixEntry]) -> Result<(), Stri
             continue;
         };
         let base = by_id.get(base_id).ok_or_else(|| {
-            format!(
-                "target {} references missing base target {base_id}",
-                entry.contract.target_id
-            )
+            format!("target {} references missing base target {base_id}", entry.contract.target_id)
         })?;
         let direct_allowed = match entry.contract.target_kind {
             TargetKind::SelectorVariant => base.contract.target_kind == TargetKind::PhysicalSeries,
@@ -511,9 +547,10 @@ fn resolve_executable_root<'a>(
         match entry.contract.target_kind {
             TargetKind::PhysicalSeries | TargetKind::SelectorVariant => return Ok(entry),
             TargetKind::EnvironmentVariant => {
-                current = entry.contract.variant_of.as_deref().ok_or_else(|| {
-                    format!("environment variant {current} has no base target")
-                })?;
+                current =
+                    entry.contract.variant_of.as_deref().ok_or_else(|| {
+                        format!("environment variant {current} has no base target")
+                    })?;
             }
             other => {
                 return Err(format!(
@@ -579,20 +616,14 @@ fn compute_topology_drift(
         .targets
         .iter()
         .map(|entry| {
-            Ok((
-                entry.contract.target_id.clone(),
-                target_topology_digest(&entry.contract)?,
-            ))
+            Ok((entry.contract.target_id.clone(), target_topology_digest(&entry.contract)?))
         })
         .collect::<Result<BTreeMap<_, _>, String>>()?;
     let observed_contracts = observed
         .targets
         .iter()
         .map(|entry| {
-            Ok((
-                entry.contract.target_id.clone(),
-                target_topology_digest(&entry.contract)?,
-            ))
+            Ok((entry.contract.target_id.clone(), target_topology_digest(&entry.contract)?))
         })
         .collect::<Result<BTreeMap<_, _>, String>>()?;
     let pinned_ids = pinned_contracts.keys().cloned().collect::<BTreeSet<_>>();
@@ -618,10 +649,7 @@ fn target_topology_digest(contract: &TargetSelectionContract) -> Result<String, 
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn validate_disjoint_drift_lists(drift: &TargetTopologyDrift) -> Result<(), String> {

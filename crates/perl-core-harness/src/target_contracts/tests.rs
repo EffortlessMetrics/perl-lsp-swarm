@@ -3,11 +3,11 @@
 use super::*;
 use crate::contract::{validate_external_selector_for_test, validate_selector_for_test};
 use crate::model::{
-    TARGET_MATRIX_SCHEMA_VERSION, TARGET_SELECTION_SCHEMA_VERSION,
-    TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, CompositeOverlapPolicy, ManifestPopulation,
-    TargetAuthority, TargetAuthorityKind, TargetDisposition, TargetKind, TargetMatrixEntry,
-    TargetPerlRuntime, TargetPreparation, TargetScriptForm, TargetSelectionContract,
-    TargetSelector, TargetTerminalPolicy, TargetTopologyDrift, TargetTopologyDriftStatus,
+    CompositeOverlapPolicy, ManifestPopulation, TARGET_MATRIX_SCHEMA_VERSION,
+    TARGET_SELECTION_SCHEMA_VERSION, TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetAuthority,
+    TargetAuthorityKind, TargetDisposition, TargetKind, TargetMatrixEntry, TargetPerlRuntime,
+    TargetPreparation, TargetScriptForm, TargetSelectionContract, TargetSelector,
+    TargetTerminalPolicy, TargetTopologyDrift, TargetTopologyDriftStatus, UpstreamTargetMatrix,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -33,9 +33,7 @@ fn physical_contract() -> TargetSelectionContract {
             kind: TargetAuthorityKind::Test,
             entrypoint: "t/TEST".to_string(),
         }),
-        selectors: vec![TargetSelector::RecursiveRoot {
-            path: "base".to_string(),
-        }],
+        selectors: vec![TargetSelector::RecursiveRoot { path: "base".to_string() }],
         script_forms: vec![TargetScriptForm::DotT],
         preparation: TargetPreparation {
             make_target: Some("test_prep".to_string()),
@@ -61,9 +59,7 @@ fn physical_contract_with_id(target_id: &str, root: &str) -> TargetSelectionCont
     contract.target_id = target_id.to_string();
     contract.upstream_name = format!("t/{root}");
     contract.display_name = format!("fixture {target_id}");
-    contract.selectors = vec![TargetSelector::RecursiveRoot {
-        path: root.to_string(),
-    }];
+    contract.selectors = vec![TargetSelector::RecursiveRoot { path: root.to_string() }];
     contract
 }
 
@@ -103,10 +99,7 @@ fn composite_contract(target_id: &str, members: &[&str]) -> TargetSelectionContr
     contract.script_forms.clear();
     contract.preparation.make_target = None;
     contract.preparation.perl_runtime = TargetPerlRuntime::Inherited;
-    contract.composite_members = members
-        .iter()
-        .map(|member| (*member).to_string())
-        .collect();
+    contract.composite_members = members.iter().map(|member| (*member).to_string()).collect();
     contract.composite_members.sort();
     contract.composite_overlap_policy = Some(CompositeOverlapPolicy::RejectOverlap);
     contract
@@ -162,86 +155,57 @@ fn instrumentation_contract(target_id: &str, base: &str) -> TargetSelectionContr
 
 #[test]
 fn checked_in_target_matrix_is_valid_and_stable() -> Result<()> {
-    let matrix = read_matrix(&repo_file(
-        ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
-    ))?;
+    let matrix = read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
     assert_eq!(matrix.schema_version, TARGET_MATRIX_SCHEMA_VERSION);
-    let first = matrix
-        .fingerprint()
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    let second = matrix
-        .fingerprint()
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    // The denominator is part of the claim, so state it here rather than
+    // leaving it implicit in the fingerprint. Splitting the two runner-agnostic
+    // legacy rows into four runner-bound composites moved this from 48 to 50;
+    // any further move must be a deliberate edit to this number.
+    assert_eq!(matrix.targets.len(), 50);
+    let first = matrix.fingerprint().map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let second = matrix.fingerprint().map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(first, second);
-    assert_eq!(
-        first,
-        "00dec1e0847ad8bcf7c37d842d700338e85853430d3b621724f3a6aa0e142a78"
-    );
+    assert_eq!(first, "4182b36d39baa378790619cbf9d674de40cd895507a412750bd0e5fb0fa583fa");
     Ok(())
 }
 
 #[test]
 fn checked_in_blead_drift_is_explicitly_not_proven() -> Result<()> {
-    let matrix = read_matrix(&repo_file(
-        ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
-    ))?;
-    let drift = read_drift(&repo_file(
-        ".ci/perl-core-harness/upstream-targets-blead-drift.v1.json",
-    ))?;
+    let matrix = read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
+    let drift =
+        read_drift(&repo_file(".ci/perl-core-harness/upstream-targets-blead-drift.v1.json"))?;
     assert_eq!(drift.schema_version, TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION);
     assert_eq!(drift.status, TargetTopologyDriftStatus::NotProven);
     assert_eq!(drift.observed_topology_sources.len(), 3);
-    let fingerprint = matrix
-        .fingerprint()
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let fingerprint = matrix.fingerprint().map_err(|error| color_eyre::eyre::eyre!(error))?;
     drift
         .validate_against(&matrix, &fingerprint, None)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
 
     let mut incomplete = drift.clone();
     incomplete.observed_topology_sources.remove("t/harness");
-    assert!(
-        incomplete
-            .validate_against(&matrix, &fingerprint, None)
-            .is_err()
-    );
+    assert!(incomplete.validate_against(&matrix, &fingerprint, None).is_err());
 
     let mut false_conclusion = drift.clone();
-    false_conclusion
-        .changed_target_ids
-        .push("component_base".to_string());
-    assert!(
-        false_conclusion
-            .validate_against(&matrix, &fingerprint, None)
-            .is_err()
-    );
+    false_conclusion.changed_target_ids.push("component_base".to_string());
+    assert!(false_conclusion.validate_against(&matrix, &fingerprint, None).is_err());
     Ok(())
 }
 
 #[test]
 fn compared_drift_is_recomputed_from_the_observed_matrix() -> Result<()> {
     let pinned = matrix_fixture(vec![
-        entry(
-            physical_contract_with_id("component_base", "base"),
-            TargetDisposition::Implemented,
-        ),
-        entry(
-            physical_contract_with_id("component_comp", "comp"),
-            TargetDisposition::Implemented,
-        ),
+        entry(physical_contract_with_id("component_base", "base"), TargetDisposition::Implemented),
+        entry(physical_contract_with_id("component_comp", "comp"), TargetDisposition::Implemented),
     ]);
-    let pinned_fingerprint = pinned
-        .fingerprint()
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let pinned_fingerprint =
+        pinned.fingerprint().map_err(|error| color_eyre::eyre::eyre!(error))?;
 
     let mut changed = physical_contract_with_id("component_base", "base");
     changed.runner_switches = vec!["--changed".to_string()];
     let mut observed = matrix_fixture(vec![
         entry(changed, TargetDisposition::Implemented),
-        entry(
-            physical_contract_with_id("component_run", "run"),
-            TargetDisposition::Implemented,
-        ),
+        entry(physical_contract_with_id("component_run", "run"), TargetDisposition::Implemented),
     ]);
     observed.perl_requested_ref = "blead".to_string();
     observed.perl_resolved_ref = "2222222222222222222222222222222222222222".to_string();
@@ -249,9 +213,8 @@ fn compared_drift_is_recomputed_from_the_observed_matrix() -> Result<()> {
         "t/TEST".to_string(),
         "3333333333333333333333333333333333333333".to_string(),
     )]);
-    let observed_fingerprint = observed
-        .fingerprint()
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let observed_fingerprint =
+        observed.fingerprint().map_err(|error| color_eyre::eyre::eyre!(error))?;
 
     let drift = TargetTopologyDrift {
         schema_version: TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION.to_string(),
@@ -273,22 +236,14 @@ fn compared_drift_is_recomputed_from_the_observed_matrix() -> Result<()> {
 
     let mut false_result = drift.clone();
     false_result.changed_target_ids.clear();
-    assert!(
-        false_result
-            .validate_against(&pinned, &pinned_fingerprint, Some(&observed))
-            .is_err()
-    );
+    assert!(false_result.validate_against(&pinned, &pinned_fingerprint, Some(&observed)).is_err());
     Ok(())
 }
 
 #[test]
 fn pinned_inventory_rejects_silent_row_omission() -> Result<()> {
-    let mut matrix = read_matrix(&repo_file(
-        ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
-    ))?;
-    matrix
-        .targets
-        .retain(|entry| entry.contract.target_id != "component_class");
+    let mut matrix = read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
+    matrix.targets.retain(|entry| entry.contract.target_id != "component_class");
     let error = match matrix.validate() {
         Ok(()) => return Err(color_eyre::eyre::eyre!("missing target was accepted")),
         Err(error) => error,
@@ -299,37 +254,27 @@ fn pinned_inventory_rejects_silent_row_omission() -> Result<()> {
 
 #[test]
 fn upstream_core_uses_the_filtered_manifest_population() -> Result<()> {
-    let matrix = read_matrix(&repo_file(
-        ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
-    ))?;
+    let matrix = read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
     let contract = matrix
         .targets
         .iter()
         .find(|entry| entry.contract.target_id == "selector_test_core")
         .map(|entry| &entry.contract)
         .ok_or_else(|| color_eyre::eyre::eyre!("missing upstream core target"))?;
+    assert!(contract.selectors.contains(&TargetSelector::ManifestPopulation {
+        component: ManifestPopulation::CoreRootLib,
+    }));
     assert!(
-        contract
-            .selectors
-            .contains(&TargetSelector::ManifestPopulation {
-                component: ManifestPopulation::CoreRootLib,
-            })
-    );
-    assert!(
-        !contract
-            .selectors
-            .contains(&TargetSelector::ManifestPopulation {
-                component: ManifestPopulation::RootLib,
-            })
+        !contract.selectors.contains(&TargetSelector::ManifestPopulation {
+            component: ManifestPopulation::RootLib,
+        })
     );
     Ok(())
 }
 
 #[test]
 fn upstream_default_test_is_a_physical_invocation() -> Result<()> {
-    let matrix = read_matrix(&repo_file(
-        ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
-    ))?;
+    let matrix = read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
     let contract = matrix
         .targets
         .iter()
@@ -338,19 +283,14 @@ fn upstream_default_test_is_a_physical_invocation() -> Result<()> {
         .ok_or_else(|| color_eyre::eyre::eyre!("missing upstream default test target"))?;
     assert_eq!(contract.target_kind, TargetKind::PhysicalSeries);
     assert_eq!(
-        contract
-            .selection_authority
-            .as_ref()
-            .map(|authority| authority.kind),
+        contract.selection_authority.as_ref().map(|authority| authority.kind),
         Some(TargetAuthorityKind::Test)
     );
     assert!(contract.composite_members.is_empty());
     assert!(
         contract
             .selectors
-            .contains(&TargetSelector::ManifestPopulation {
-                component: ManifestPopulation::Cpan,
-            })
+            .contains(&TargetSelector::ManifestPopulation { component: ManifestPopulation::Cpan })
     );
     Ok(())
 }
@@ -377,38 +317,44 @@ fn external_selector_allows_one_parent_boundary() {
 
 #[test]
 fn selector_kind_grammar_accepts_valid_shapes() {
-    assert!(validate_selector_for_test(&TargetSelector::ExactFile {
-        path: "op/basic.t".to_string(),
-    })
-    .is_ok());
-    assert!(validate_selector_for_test(&TargetSelector::RecursiveRoot {
-        path: "op/hook".to_string(),
-    })
-    .is_ok());
-    assert!(validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
-        pattern: "op/*.t".to_string(),
-    })
-    .is_ok());
+    assert!(
+        validate_selector_for_test(&TargetSelector::ExactFile { path: "op/basic.t".to_string() })
+            .is_ok()
+    );
+    assert!(
+        validate_selector_for_test(&TargetSelector::RecursiveRoot { path: "op/hook".to_string() })
+            .is_ok()
+    );
+    assert!(
+        validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
+            pattern: "op/*.t".to_string(),
+        })
+        .is_ok()
+    );
 }
 
 #[test]
 fn selector_kind_grammar_rejects_wrong_pattern_shapes() {
-    assert!(validate_selector_for_test(&TargetSelector::ExactFile {
-        path: "op/*.t".to_string(),
-    })
-    .is_err());
-    assert!(validate_selector_for_test(&TargetSelector::RecursiveRoot {
-        path: "op/*".to_string(),
-    })
-    .is_err());
-    assert!(validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
-        pattern: "op/**/*.t".to_string(),
-    })
-    .is_err());
-    assert!(validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
-        pattern: "op/hook".to_string(),
-    })
-    .is_err());
+    assert!(
+        validate_selector_for_test(&TargetSelector::ExactFile { path: "op/*.t".to_string() })
+            .is_err()
+    );
+    assert!(
+        validate_selector_for_test(&TargetSelector::RecursiveRoot { path: "op/*".to_string() })
+            .is_err()
+    );
+    assert!(
+        validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
+            pattern: "op/**/*.t".to_string(),
+        })
+        .is_err()
+    );
+    assert!(
+        validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
+            pattern: "op/hook".to_string(),
+        })
+        .is_err()
+    );
 }
 
 #[test]
@@ -422,14 +368,8 @@ fn matrix_rejects_missing_variant_parent() {
 #[test]
 fn environment_variant_cannot_inherit_from_preparation() {
     let matrix = matrix_fixture(vec![
-        entry(
-            preparation_contract("prep_target"),
-            TargetDisposition::PreparationOnly,
-        ),
-        entry(
-            environment_variant("variant_target", "prep_target"),
-            TargetDisposition::Planned,
-        ),
+        entry(preparation_contract("prep_target"), TargetDisposition::PreparationOnly),
+        entry(environment_variant("variant_target", "prep_target"), TargetDisposition::Planned),
     ]);
     assert!(matrix.validate().is_err());
 }
@@ -437,10 +377,7 @@ fn environment_variant_cannot_inherit_from_preparation() {
 #[test]
 fn instrumentation_cannot_inherit_from_instrumentation() {
     let matrix = matrix_fixture(vec![
-        entry(
-            physical_contract_with_id("component_base", "base"),
-            TargetDisposition::Implemented,
-        ),
+        entry(physical_contract_with_id("component_base", "base"), TargetDisposition::Implemented),
         entry(
             instrumentation_contract("instrument_first", "component_base"),
             TargetDisposition::InstrumentationOnly,
