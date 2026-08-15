@@ -22,30 +22,7 @@ impl<'a> Parser<'a> {
             // Parse comma-separated list of variables with their individual attributes
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
                 let var = self.parse_variable_list_item()?;
-
-                // Parse optional attributes for this specific variable
-                let var_attributes = if self.peek_kind() == Some(TokenKind::Colon) {
-                    self.parse_variable_attributes()?
-                } else {
-                    Vec::new()
-                };
-
-                // Create a node that includes both the variable and its attributes
-                let var_with_attrs = if var_attributes.is_empty() {
-                    var
-                } else {
-                    let start = var.location.start;
-                    let end = self.previous_position();
-                    Node::new(
-                        NodeKind::VariableWithAttributes {
-                            variable: Box::new(var),
-                            attributes: var_attributes,
-                        },
-                        SourceLocation { start, end },
-                    )
-                };
-
-                variables.push(var_with_attrs);
+                variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
                     self.consume_token()?; // consume comma
@@ -267,6 +244,30 @@ impl<'a> Parser<'a> {
             }
             _ => self.parse_ternary(),
         }
+    }
+
+    /// Attach optional per-item attributes after a list-declaration slot.
+    ///
+    /// Shared by statement-form `my ($x :shared, $y)` and declaration-as-argument
+    /// forms (`Readonly my (...)`, `const my (...)`) so both paths stay in lockstep.
+    fn with_optional_list_item_attributes(&mut self, var: Node) -> ParseResult<Node> {
+        let var_attributes = if self.peek_kind() == Some(TokenKind::Colon) {
+            self.parse_variable_attributes()?
+        } else {
+            Vec::new()
+        };
+        if var_attributes.is_empty() {
+            return Ok(var);
+        }
+        let start = var.location.start;
+        let end = self.previous_position();
+        Ok(Node::new(
+            NodeKind::VariableWithAttributes {
+                variable: Box::new(var),
+                attributes: var_attributes,
+            },
+            SourceLocation { start, end },
+        ))
     }
 
     /// Consume an optional legacy type constraint in lexical declarations.

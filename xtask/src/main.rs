@@ -755,6 +755,18 @@ enum Commands {
         #[arg(long)]
         check: bool,
 
+        /// Format only the staged Rust diff and re-stage it.
+        ///
+        /// The apply half of the `rustfmt_staged` commit gate: that check
+        /// blocks a commit whose staged Rust would be reformatted, and this
+        /// fixes exactly those files instead of the whole workspace. Files
+        /// that are staged *and* separately modified in the worktree are left
+        /// untouched, so formatting never sweeps unstaged work into a commit.
+        ///
+        /// Cannot be combined with --check or --package.
+        #[arg(long, conflicts_with_all = ["check", "package"])]
+        staged: bool,
+
         /// Restrict formatting to one or more package names.
         ///
         /// Accepts repeated flags (`--package xtask --package perl-parser`) or
@@ -4219,7 +4231,13 @@ fn run_cli(cli: Cli) -> Result<()> {
         ),
         Commands::Doc { open, all_features } => doc::run(open, all_features),
         Commands::Check { clippy, fmt, all } => check::run(clippy, fmt, all),
-        Commands::Fmt { check, package } => fmt::run(check, package),
+        Commands::Fmt { check, package, staged } => {
+            if staged {
+                fmt::run_staged()
+            } else {
+                fmt::run(check, package)
+            }
+        }
         #[cfg(feature = "legacy")]
         Commands::Corpus { path, scanner, diagnose, test } => {
             corpus::run(path, scanner, diagnose, test)

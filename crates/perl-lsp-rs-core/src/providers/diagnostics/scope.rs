@@ -41,6 +41,7 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             | IssueKind::UninitializedVariable
             | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
+            _ => DiagnosticSeverity::Error, // Forward-compatible fallback (#2898)
         };
 
         let code = match issue.kind {
@@ -62,6 +63,7 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             // keeps both `say` diagnostics under one consistent code.
             IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
             IssueKind::UnresolvedQualifiedCall => DiagnosticCode::UnresolvedQualifiedCall,
+            _ => DiagnosticCode::ParseError, // Forward-compatible fallback (#2898)
         };
 
         let related_info = build_scope_related_info(&issue);
@@ -233,6 +235,7 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             | IssueKind::UninitializedVariable
             | IssueKind::FeatureNotEnabled => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
+            _ => DiagnosticSeverity::Error, // Forward-compatible fallback (#2898)
         };
 
         let code = match issue.kind {
@@ -254,6 +257,7 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             // keeps both `say` diagnostics under one consistent code.
             IssueKind::FeatureNotEnabled => DiagnosticCode::VersionIncompatFeature,
             IssueKind::UnresolvedQualifiedCall => DiagnosticCode::UnresolvedQualifiedCall,
+            _ => DiagnosticCode::ParseError, // Forward-compatible fallback (#2898)
         };
 
         let mut related_info = build_scope_related_info(&issue);
@@ -477,6 +481,7 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
                 message: format!("💡 Define sub '{}' in its package or correct the call", issue.variable_name),
             },
         ],
+        _ => Vec::new(), // Forward-compatible fallback (#2898)
     }
 }
 
@@ -706,33 +711,33 @@ mod tests {
     // ── Helper ──
 
     fn undeclared_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-        ScopeIssue {
-            kind: IssueKind::UndeclaredVariable,
-            variable_name: name.to_string(),
-            line: 1,
+        ScopeIssue::new(
+            IssueKind::UndeclaredVariable,
+            name,
+            1,
             range,
-            description: format!("Variable '{}' not declared", name),
-        }
+            format!("Variable '{}' not declared", name),
+        )
     }
 
     fn unused_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-        ScopeIssue {
-            kind: IssueKind::UnusedVariable,
-            variable_name: name.to_string(),
-            line: 1,
+        ScopeIssue::new(
+            IssueKind::UnusedVariable,
+            name,
+            1,
             range,
-            description: format!("Variable '{}' unused", name),
-        }
+            format!("Variable '{}' unused", name),
+        )
     }
 
     fn bareword_issue(name: &str, range: (usize, usize)) -> ScopeIssue {
-        ScopeIssue {
-            kind: IssueKind::UnquotedBareword,
-            variable_name: name.to_string(),
-            line: 1,
+        ScopeIssue::new(
+            IssueKind::UnquotedBareword,
+            name,
+            1,
             range,
-            description: format!("Bareword '{}' not allowed under 'use strict'", name),
-        }
+            format!("Bareword '{}' not allowed under 'use strict'", name),
+        )
     }
 
     /// Stub that returns `Some` from `dynamic_callable_may_be_visible_at`
