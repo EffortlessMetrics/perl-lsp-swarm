@@ -26,7 +26,7 @@ fn host_receipt_loader(receipt_dir: &Path, relative: &str) -> Result<Vec<u8>, St
     if relative.trim().is_empty()
         || relative_path.is_absolute()
         || relative_path.components().any(|component| {
-            matches!(component, Component::ParentDir | Component::Prefix | Component::RootDir)
+            matches!(component, Component::ParentDir | Component::Prefix(_) | Component::RootDir)
         })
     {
         return Err("host receipt paths must stay inside the run directory".to_string());
