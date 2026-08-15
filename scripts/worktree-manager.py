@@ -11,9 +11,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 
 # ---------------------------------------------------------------------------
@@ -30,34 +31,36 @@ from typing import Any
 def _resolve_primary_repo_root() -> Path:
     """Return the shared Git repository root, independent of which linked worktree invokes this script.
 
-    In a linked worktree ``git rev-parse --git-common-dir`` returns the
-    absolute path to the shared ``.git`` directory inside the *primary*
-    checkout.  Taking its parent yields the primary working tree regardless
-    of the invocation site.  Falls back to the script-location heuristic
-    (original behavior) if git is unavailable or the script is not inside
-    a repository.
+    ``git worktree list --porcelain`` always reports the *main* working tree
+    as its first ``worktree`` record, from any linked worktree and from any
+    subdirectory.  Asking git directly for the main working tree is more
+    robust than deriving it from ``--git-common-dir``, which yields a
+    repository directory whose layout varies: it is not named ``.git`` for a
+    bare repository or when ``GIT_DIR``/``GIT_COMMON_DIR`` override the
+    default, and for a submodule it points into ``<super>/.git/modules/...``
+    rather than anywhere near the working tree.
+
+    Falls back to the script-location heuristic (the original behavior) when
+    git is unavailable, the script is not inside a repository, or the
+    repository has no working tree at all (bare).
     """
     script_dir = Path(__file__).resolve().parent
     try:
         proc = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
+            ["git", "worktree", "list", "--porcelain"],
             cwd=str(script_dir),
             capture_output=True,
             text=True,
             check=False,
         )
         if proc.returncode == 0:
-            raw = proc.stdout.strip()
-            if raw:
-                git_common = Path(raw)
-                if not git_common.is_absolute():
-                    git_common = (script_dir / git_common).resolve()
-                else:
-                    git_common = git_common.resolve()
-                # git-common-dir is the .git directory; its parent is the
-                # primary working tree.
-                if git_common.name == ".git":
-                    return git_common.parent
+            for line in proc.stdout.splitlines():
+                # The first `worktree <path>` record is the main working tree.
+                if line.startswith("worktree "):
+                    raw = line[len("worktree ") :].strip()
+                    if raw:
+                        return Path(raw).resolve()
+                    break
     except Exception:
         pass
     # Fallback: script-location heuristic (same as original code).
@@ -81,6 +84,28 @@ OWNER_ENV_VARS = (
     "SUBAGENT_NAME",
 )
 
+# State-lock wait bound.  `allocate` fetches from origin while holding the
+# lock, so the default is generous enough for a slow network but still finite.
+LOCK_TIMEOUT_ENV_VAR = "WORKTREE_MANAGER_LOCK_TIMEOUT"
+DEFAULT_LOCK_TIMEOUT_SECONDS = 120.0
+LOCK_POLL_SECONDS = 0.1
+
+
+def lock_timeout_seconds() -> float:
+    """Return the state-lock wait bound, overridable for tests and slow links.
+
+    A non-numeric or negative override is ignored in favor of the default
+    rather than failing the command outright.
+    """
+    raw = os.environ.get(LOCK_TIMEOUT_ENV_VAR)
+    if raw is None:
+        return DEFAULT_LOCK_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_LOCK_TIMEOUT_SECONDS
+    return value if value >= 0 else DEFAULT_LOCK_TIMEOUT_SECONDS
+
 
 # ---------------------------------------------------------------------------
 # State-transaction lock (defect 3)
@@ -96,15 +121,29 @@ OWNER_ENV_VARS = (
 # function* so this module can be imported on any platform without error.
 
 
+class _StateLock(Protocol):
+    """Exclusive-lock contract shared by every platform backend.
+
+    ``try_acquire`` must not block: it returns ``True`` when the lock is held
+    and ``False`` when another process holds it, so the caller can bound its
+    own wait (see ``_state_transaction``).
+    """
+
+    def try_acquire(self) -> bool: ...
+
+    def release(self) -> None: ...
+
+
 class _NoopLock:
     """Fallback when no native locking backend is available."""
 
-    def acquire(self) -> None:
+    def try_acquire(self) -> bool:
         print(
             "WARNING: no file-locking backend (fcntl/msvcrt) is available; "
             "concurrent state mutations are not serialized",
             file=sys.stderr,
         )
+        return True
 
     def release(self) -> None:
         pass
@@ -116,10 +155,14 @@ class _FcntlLock:
     def __init__(self, fh: Any) -> None:
         self._fh = fh
 
-    def acquire(self) -> None:
+    def try_acquire(self) -> bool:
         import fcntl as _fcntl  # noqa: PLC0415
 
-        _fcntl.flock(self._fh, _fcntl.LOCK_EX)
+        try:
+            _fcntl.flock(self._fh, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except OSError:
+            return False
+        return True
 
     def release(self) -> None:
         import fcntl as _fcntl  # noqa: PLC0415
@@ -130,8 +173,11 @@ class _FcntlLock:
 class _MsvcrtLock:
     """Windows exclusive file lock (msvcrt.locking).
 
-    ``msvcrt.locking`` locks a byte range rather than the whole file, so we
-    write one sentinel byte and lock that range.
+    ``msvcrt.locking`` locks a byte range rather than the whole file, so the
+    lock file carries one sentinel byte and that single-byte range is locked.
+    The sentinel is written only when the file is empty: the lock file is
+    opened in read/write (not append) mode, but writing unconditionally would
+    still rewrite the same byte on every acquisition for no benefit.
     """
 
     _NBYTES = 1
@@ -139,14 +185,20 @@ class _MsvcrtLock:
     def __init__(self, fh: Any) -> None:
         self._fh = fh
 
-    def acquire(self) -> None:
+    def try_acquire(self) -> bool:
         import msvcrt as _msvcrt  # noqa: PLC0415
 
+        if os.fstat(self._fh.fileno()).st_size == 0:
+            self._fh.seek(0)
+            self._fh.write(b"L")
+            self._fh.flush()
         self._fh.seek(0)
-        self._fh.write(b"L")
-        self._fh.flush()
-        self._fh.seek(0)
-        _msvcrt.locking(self._fh.fileno(), _msvcrt.LK_LOCK, self._NBYTES)
+        try:
+            # LK_NBLCK fails immediately instead of retrying for ~10s.
+            _msvcrt.locking(self._fh.fileno(), _msvcrt.LK_NBLCK, self._NBYTES)
+        except OSError:
+            return False
+        return True
 
     def release(self) -> None:
         import msvcrt as _msvcrt  # noqa: PLC0415
@@ -155,7 +207,7 @@ class _MsvcrtLock:
         _msvcrt.locking(self._fh.fileno(), _msvcrt.LK_UNLCK, self._NBYTES)
 
 
-def _make_lock(fh: Any) -> _NoopLock:
+def _make_lock(fh: Any) -> _StateLock:
     """Return the best available exclusive-lock implementation for *fh*."""
     try:
         import fcntl  # noqa: F401, PLC0415
@@ -180,6 +232,14 @@ def _state_transaction(state_path: Path):
     exclusive lock, and yields.  The caller is responsible for loading,
     mutating, and saving state inside the context.
 
+    The wait is *bounded*.  ``main`` holds this lock for the whole command,
+    and ``allocate`` runs ``git ls-remote`` and ``git fetch`` inside it, so a
+    holder that stalls on an unreachable origin or a credential prompt would
+    otherwise wedge every other manager invocation — including read-only
+    ``query`` — with no output at all.  Instead each backend polls
+    non-blockingly until ``LOCK_TIMEOUT_SECONDS``, reports that it is waiting,
+    and then fails with an actionable error naming the lock file.
+
     Lock acquisition uses the platform-native mechanism (``fcntl.flock`` on
     POSIX, ``msvcrt.locking`` on Windows).  Both modules are imported lazily
     so this file can be imported cleanly on any platform.  Windows locking
@@ -187,9 +247,32 @@ def _state_transaction(state_path: Path):
     """
     lock_path = state_path.with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+b") as lock_fh:
+    timeout = lock_timeout_seconds()
+    # Read/write, not append: append mode ignores seek(0), so the Windows
+    # sentinel write would extend the lock file on every acquisition.
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+b") as lock_fh:
         lock = _make_lock(lock_fh)
-        lock.acquire()
+        deadline = time.monotonic() + timeout
+        announced = False
+        while not lock.try_acquire():
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"timed out after {timeout:g}s waiting for the worktree-manager "
+                    f"state lock at {lock_path}. Another manager process is still "
+                    "holding it (an allocate that is fetching from origin can hold it "
+                    "for a while). Wait for it to finish, or if no manager is running, "
+                    f"remove {lock_path} and retry. Set "
+                    f"{LOCK_TIMEOUT_ENV_VAR} to change the timeout."
+                )
+            if not announced:
+                announced = True
+                print(
+                    f"waiting for the state lock at {lock_path} "
+                    f"(held by another manager process; timeout {timeout:g}s)",
+                    file=sys.stderr,
+                )
+            time.sleep(LOCK_POLL_SECONDS)
         try:
             yield
         finally:
@@ -273,16 +356,35 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
     Writes to a sibling temporary file first, flushes, fsyncs, then renames.
     An interrupted write (crash, OOM, power loss) leaves the previous
     *path* content intact.
+
+    The destination's existing permission bits are carried onto the temporary
+    file before the rename.  ``mkstemp`` creates files 0600, and ``replace``
+    keeps the *source* mode, so without this the first atomic write would
+    silently tighten a shared state file to owner-only.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        prior_mode: int | None = path.stat().st_mode & 0o777
+    except OSError:
+        prior_mode = None
     fd, tmp_path_str = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     tmp_path = Path(tmp_path_str)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # newline="\n" keeps the state file LF-terminated on every platform.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
+        if prior_mode is not None:
+            os.chmod(tmp_path, prior_mode)
         tmp_path.replace(path)  # atomic on POSIX; best-effort on Windows
+        # fsync the directory so the rename itself survives a crash.
+        with contextlib.suppress(OSError, AttributeError):
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     except Exception:
         with contextlib.suppress(OSError):
             tmp_path.unlink()

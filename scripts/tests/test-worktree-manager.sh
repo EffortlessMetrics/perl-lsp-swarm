@@ -13,14 +13,19 @@
 # Additional cases (#5444 — root, owner, concurrency, atomicity):
 #   Case 4: invocation from a linked worktree resolves the same primary
 #           repository root as the main checkout.
-#   Case 5: a recorded owner rejects missing or different owners unless
-#           --force is explicit; the correct owner succeeds.
-#   Case 6: two concurrent state mutations retain both updates (serialization).
+#   Case 5: a recorded owner rejects missing or different owners; the correct
+#           owner succeeds; an explicit --force bypasses the guard.
+#   Case 6: state mutations serialize on the lock file — proven by holding
+#           that lock externally and asserting the manager blocks, fails at
+#           its bound, and proceeds once released; plus an end-to-end check
+#           that two concurrent allocations both survive.
 #   Case 7: an injected write failure leaves the previous JSON readable
 #           (atomic temp-file + rename write).
 #   Case 8: the module imports cleanly on a platform without fcntl.
 #   Case 9: Windows locking behavior — NOT_PROVEN on this platform; must be
 #           exercised by Windows release-preparation CI.
+#   Case 10: the atomic write preserves the destination file's permission
+#           mode instead of tightening it to mkstemp's 0600.
 #
 # This suite is fully hermetic: it builds a throwaway bare "origin" repo plus
 # a clone under a tmpdir, copies the worktree-manager script under test into
@@ -273,10 +278,15 @@ PYEOF
   # Root resolved from linked worktree
   LINKED_ROOT="$(cd "${LINKED_WT}" && python3 "${CASE4_SCRIPT}" "${LINKED_WT}/scripts/worktree-manager.py" 2>&1)"
 
-  if [[ "${PRIMARY_ROOT}" == "${LINKED_ROOT}" ]]; then
-    pass "linked worktree invocation resolves same primary repository root as main checkout (${PRIMARY_ROOT})"
+  # Assert against the canonical primary checkout, not merely that the two
+  # invocations agree: an implementation returning one consistently WRONG
+  # shared path would satisfy a self-comparison.
+  CANONICAL_ROOT="$(cd "${AGENT_ONE}" && pwd -P)"
+
+  if [[ "${PRIMARY_ROOT}" == "${CANONICAL_ROOT}" && "${LINKED_ROOT}" == "${CANONICAL_ROOT}" ]]; then
+    pass "linked worktree invocation resolves the canonical primary repository root (${CANONICAL_ROOT})"
   else
-    fail "linked worktree root: primary=${PRIMARY_ROOT} linked=${LINKED_ROOT} — linked invocation uses wrong root"
+    fail "linked worktree root: expected=${CANONICAL_ROOT} primary=${PRIMARY_ROOT} linked=${LINKED_ROOT}"
   fi
 
   # Clean up
@@ -334,16 +344,39 @@ else
   else
     fail "owner guard: correct-owner release failed: ${CASE5C_OUT}"
   fi
+
+  # 5d: --force must actually bypass the guard.  Without this case the guard
+  # could reject or ignore --force entirely and 5a-5c would still all pass.
+  CASE5D_SETUP_EXIT=0
+  run_manager5 allocate --slot case5-forced --branch test/case5-forced --owner alice \
+    >/dev/null 2>&1 || CASE5D_SETUP_EXIT=$?
+  if [[ "${CASE5D_SETUP_EXIT}" -ne 0 ]]; then
+    fail "Case 5d setup: allocate case5-forced with --owner alice failed (exit ${CASE5D_SETUP_EXIT})"
+  else
+    CASE5D_EXIT=0
+    CASE5D_OUT="$(run_manager5 release --slot case5-forced --owner bob --force 2>&1)" || CASE5D_EXIT=$?
+    if [[ "${CASE5D_EXIT}" -eq 0 ]]; then
+      pass "owner guard: wrong-owner release with --force is permitted"
+    else
+      fail "owner guard: --force did not bypass the owner check: ${CASE5D_OUT}"
+    fi
+  fi
 fi
 
-# ── Case 6: concurrent state mutations retain both updates (issue #5444
+# ── Case 6: state mutations serialize on the lock file (issue #5444
 #    defect 3 — serialization). ─────────────────────────────────────────────
 #
-# Two background allocations target different slots on the same state file.
-# With the file lock they serialize; both must survive in the final state.
-# Without the lock, one could overwrite the other's slot record.
+# Racing two background allocations does NOT prove serialization: the OS is
+# free to schedule them sequentially, so an unlocked implementation passes
+# that check too.  Instead we create *deterministic* contention — an external
+# holder takes the very lock file the manager uses and keeps it — and assert
+# the manager genuinely blocks on it, gives up at its bound, and proceeds once
+# the holder lets go.
 CASE6_STATE="${TMPDIR_BASE}/case6-state.json"
 CASE6_MANAGED="${TMPDIR_BASE}/case6-worktrees"
+CASE6_LOCK="${TMPDIR_BASE}/case6-state.lock"   # state_path.with_suffix(".lock")
+CASE6_READY="${TMPDIR_BASE}/case6-holder-ready"
+CASE6_RELEASE="${TMPDIR_BASE}/case6-holder-release"
 
 run_manager6() {
   local subcommand="$1"
@@ -356,6 +389,70 @@ run_manager6() {
   )
 }
 
+# Seed the state file so `query` has something to read, and so the lock path
+# the holder grabs is exactly the one the manager will open.
+run_manager6 query >/dev/null 2>&1 || true
+
+# External holder: takes an exclusive flock on the manager's lock file and
+# holds it until told to let go.
+CASE6_HOLDER_SCRIPT="${TMPDIR_BASE}/case6_hold_lock.py"
+cat > "${CASE6_HOLDER_SCRIPT}" << PYEOF
+import fcntl, pathlib, time
+
+lock_path = pathlib.Path('${CASE6_LOCK}')
+lock_path.touch(exist_ok=True)
+with open(lock_path, 'r+b') as fh:
+    fcntl.flock(fh, fcntl.LOCK_EX)
+    pathlib.Path('${CASE6_READY}').write_text('held\n')
+    deadline = time.monotonic() + 60
+    while not pathlib.Path('${CASE6_RELEASE}').exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    fcntl.flock(fh, fcntl.LOCK_UN)
+PYEOF
+
+rm -f "${CASE6_READY}" "${CASE6_RELEASE}"
+python3 "${CASE6_HOLDER_SCRIPT}" &
+CASE6_HOLDER_PID=$!
+
+# Wait for the holder to actually own the lock before probing.
+CASE6_WAITED=0
+while [[ ! -f "${CASE6_READY}" && "${CASE6_WAITED}" -lt 100 ]]; do
+  sleep 0.05
+  CASE6_WAITED=$((CASE6_WAITED + 1))
+done
+
+if [[ ! -f "${CASE6_READY}" ]]; then
+  fail "Case 6 setup: external lock holder never acquired ${CASE6_LOCK}"
+  kill "${CASE6_HOLDER_PID}" 2>/dev/null || true
+else
+  # 6a: with the lock held, the manager must NOT proceed. It must wait and
+  # then fail at its bound with an actionable message naming the lock file.
+  # An implementation that skips locking would return 0 immediately here.
+  CASE6A_EXIT=0
+  CASE6A_OUT="$(WORKTREE_MANAGER_LOCK_TIMEOUT=1 run_manager6 query 2>&1)" || CASE6A_EXIT=$?
+  if [[ "${CASE6A_EXIT}" -eq 0 ]]; then
+    fail "serialization: manager completed while the state lock was held by another process — not serialized"
+  elif [[ "${CASE6A_OUT}" == *"${CASE6_LOCK}"* ]]; then
+    pass "serialization: manager blocks on a held state lock and fails at its bound naming the lock file"
+  else
+    fail "serialization: manager failed while lock was held, but without citing ${CASE6_LOCK}: ${CASE6A_OUT}"
+  fi
+
+  # 6b: once the holder releases, the same command must succeed — the bound
+  # must not leave the manager permanently wedged.
+  touch "${CASE6_RELEASE}"
+  wait "${CASE6_HOLDER_PID}" 2>/dev/null || true
+
+  CASE6B_EXIT=0
+  CASE6B_OUT="$(run_manager6 query 2>&1)" || CASE6B_EXIT=$?
+  if [[ "${CASE6B_EXIT}" -eq 0 ]]; then
+    pass "serialization: manager proceeds once the state lock is released"
+  else
+    fail "serialization: manager still blocked after the lock was released: ${CASE6B_OUT}"
+  fi
+fi
+
+# 6c: end-to-end outcome check — two concurrent allocations must both survive.
 (run_manager6 allocate --slot conc-slot-a --branch concurrent/alpha 2>/dev/null) &
 PID_A=$!
 (run_manager6 allocate --slot conc-slot-b --branch concurrent/beta 2>/dev/null) &
@@ -479,9 +576,11 @@ except Exception as exc:
     print(f'FAIL: unexpected import error: {type(exc).__name__}: {exc}')
     sys.exit(1)
 
-# Verify _make_lock falls back gracefully without fcntl.
-import io
-dummy_fh = open('/dev/null', 'a+b')
+# Verify _make_lock falls back gracefully without fcntl.  Use a temporary
+# file rather than '/dev/null', which does not exist on the very platforms
+# this case simulates.
+import tempfile
+dummy_fh = tempfile.TemporaryFile(mode='w+b')
 lock = wm._make_lock(dummy_fh)
 dummy_fh.close()
 if isinstance(lock, (wm._MsvcrtLock, wm._NoopLock)):
@@ -505,6 +604,56 @@ fi
 # NOT_PROVEN: msvcrt.locking behavior must be exercised by Windows
 # release-preparation CI.  This runner is Linux; no attempt is made here.
 echo "NOT_PROVEN: Case 9 — Windows msvcrt locking (requires Windows CI lane)"
+
+# ── Case 10: the atomic write preserves the destination's permission mode. ──
+#
+# `tempfile.mkstemp` creates files 0600 and `Path.replace` carries the SOURCE
+# mode onto the destination, so a naive atomic write silently tightens a
+# previously group/world-readable state file to owner-only.
+CASE10_STATE="${TMPDIR_BASE}/case10-state.json"
+CASE10_SCRIPT="${TMPDIR_BASE}/case10_mode_preserved.py"
+
+cat > "${CASE10_SCRIPT}" << PYEOF
+import importlib.util, json, os, pathlib, stat, sys
+
+spec = importlib.util.spec_from_file_location(
+    'worktree_manager_mode',
+    '${AGENT_ONE}/scripts/worktree-manager.py',
+)
+wm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(wm)
+
+state_file = pathlib.Path('${CASE10_STATE}')
+state_file.parent.mkdir(parents=True, exist_ok=True)
+state_file.write_text(json.dumps({'version': 1, 'slots': []}) + '\n', encoding='utf-8')
+os.chmod(state_file, 0o644)
+before = stat.S_IMODE(state_file.stat().st_mode)
+
+wm.save_json(state_file, {'version': 1, 'slots': [{'slot_id': 'after'}]})
+after = stat.S_IMODE(state_file.stat().st_mode)
+
+if after != before:
+    print(f'FAIL: mode changed across atomic write: {before:04o} -> {after:04o}')
+    sys.exit(1)
+
+# The write must still have landed.
+payload = json.loads(state_file.read_text(encoding='utf-8'))
+if not payload.get('slots'):
+    print('FAIL: payload was not written')
+    sys.exit(1)
+
+print(f'PASS: mode {before:04o} preserved across atomic write')
+sys.exit(0)
+PYEOF
+
+CASE10_EXIT=0
+CASE10_OUT="$(python3 "${CASE10_SCRIPT}" 2>&1)" || CASE10_EXIT=$?
+
+if [[ "${CASE10_EXIT}" -eq 0 && "${CASE10_OUT}" == *"PASS"* ]]; then
+  pass "atomic write preserves the destination state file's permission mode"
+else
+  fail "atomic write mode preservation: ${CASE10_OUT}"
+fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 TOTAL=$((PASS_COUNT + FAIL_COUNT))
