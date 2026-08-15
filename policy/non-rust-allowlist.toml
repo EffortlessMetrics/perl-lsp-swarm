@@ -1370,7 +1370,7 @@ review_after = "2026-11-13"
 
 [[allow]]
 id = "non-rust-product-7990-changelog-fragment"
-path = ".changes/unreleased/product-7990-Added-090500.yaml"
+path = ".changes/unreleased/product-7990-Added-233000.yaml"
 kind = "release_metadata"
 language = "yaml"
 surface = "release"
