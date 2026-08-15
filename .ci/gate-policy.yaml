@@ -546,10 +546,10 @@ gates:
     description: "Inline-completion provider registration tests (lsp_inline_completion_registration_tests)"
     required: true
     command: cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests
-    timeout_seconds: 180
+    timeout_seconds: 150
     retry_count: 0
     budgets:
-      max_duration_ms: 120000
+      max_duration_ms: 135000
     quarantine: false
     tags:
       - test
@@ -560,16 +560,17 @@ gates:
       role: rust_package_scoped
       packages:
         - perl-lsp-rs
+        - perl-lsp-rs-core
 
   - name: lsp_registration_contract
     tier: pr_fast
     description: "LSP capability registration contract (lsp_registration_tests)"
     required: true
     command: cargo test -p perl-lsp-rs --locked --test lsp_registration_tests
-    timeout_seconds: 180
+    timeout_seconds: 150
     retry_count: 0
     budgets:
-      max_duration_ms: 120000
+      max_duration_ms: 135000
     quarantine: false
     tags:
       - test
@@ -580,16 +581,17 @@ gates:
       role: rust_package_scoped
       packages:
         - perl-lsp-rs
+        - perl-lsp-rs-core
 
   - name: lsp_capability_snapshots
     tier: pr_fast
     description: "LSP capability snapshot contract — detects capability-negotiation drift (lsp_cap_snap)"
     required: true
     command: cargo test -p perl-lsp-rs --locked --test lsp_cap_snap
-    timeout_seconds: 180
+    timeout_seconds: 150
     retry_count: 0
     budgets:
-      max_duration_ms: 120000
+      max_duration_ms: 135000
     quarantine: false
     tags:
       - test
@@ -600,16 +602,17 @@ gates:
       role: rust_package_scoped
       packages:
         - perl-lsp-rs
+        - perl-lsp-rs-core
 
   - name: inline_completion_core
     tier: pr_fast
     description: "Core inline-completion provider lib tests (perl-lsp-rs-core::inline_completion)"
     required: true
     command: cargo test -p perl-lsp-rs-core --locked --lib inline_completion
-    timeout_seconds: 180
+    timeout_seconds: 150
     retry_count: 0
     budgets:
-      max_duration_ms: 120000
+      max_duration_ms: 135000
     quarantine: false
     tags:
       - test
@@ -619,6 +622,7 @@ gates:
     planning:
       role: rust_package_scoped
       packages:
+        - perl-lsp-rs
         - perl-lsp-rs-core
 
   - name: inline_completion_quality_receipt

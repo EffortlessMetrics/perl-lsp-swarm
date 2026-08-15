@@ -2937,9 +2937,9 @@ mod tests {
         extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
         is_cargo_test_command, is_latest_commit, load_policy_for_inspection, load_receipt,
         output_diff, parse_first_failure, parse_test_metrics, plan_gates, read_gate_output,
-        run_internal_commit_check, run_internal_xtask_gate, run_shell_command_with_timeout,
-        run_single_gate, selects_commit_tier_gate, staged_guard_violation, static_gate_plan,
-        write_receipt,
+        run_gate_plan, run_internal_commit_check, run_internal_xtask_gate,
+        run_shell_command_with_timeout, run_single_gate, selects_commit_tier_gate,
+        staged_guard_violation, static_gate_plan, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -5596,54 +5596,33 @@ error: aborting due to previous error
     }
 
     #[test]
-    fn inline_completion_gates_are_required_and_package_scoped() -> color_eyre::eyre::Result<()> {
-        // Each gate must be required (non-advisory) and scoped to its owning
-        // package(s).  Advisory enforcement or an absent scope degrades the
-        // split to a cosmetic change without real coverage guarantees.
+    fn inline_completion_gates_are_required_within_tier_and_family_scoped()
+    -> color_eyre::eyre::Result<()> {
         let root = crate::utils::project_root()?;
         let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
 
-        // Expected (gate_name, packages) pairs.
-        let expected: &[(&str, &[&str])] = &[
-            ("inline_completion_registration", &["perl-lsp-rs"]),
-            ("lsp_registration_contract", &["perl-lsp-rs"]),
-            ("lsp_capability_snapshots", &["perl-lsp-rs"]),
-            ("inline_completion_core", &["perl-lsp-rs-core"]),
-        ];
-
-        for &(gate_name, expected_packages) in expected {
+        for &gate_name in INLINE_COMPLETION_GATE_NAMES {
             let gate = policy
                 .gates
                 .iter()
-                .find(|g| g.name == gate_name)
+                .find(|gate| gate.name == gate_name)
                 .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
 
             assert!(
                 gate.required,
-                "Gate '{gate_name}' must be required=true; advisory gates do not \
-                 block PRs and defeat the contract enforcement purpose"
+                "Gate '{gate_name}' must remain required within the pr_fast runner; \
+                 this field does not claim that GitHub protects the containing PR Smoke job"
             );
-
             let planning = gate.planning.as_ref().ok_or_else(|| {
-                color_eyre::eyre::eyre!(
-                    "Gate '{gate_name}' must have a planning field \
-                     (rust_package_scoped with correct packages)"
-                )
+                color_eyre::eyre::eyre!("Gate '{gate_name}' must have planning metadata")
             })?;
-
+            assert_eq!(planning.role, GatePlanningRole::RustPackageScoped);
+            let packages: Vec<_> = planning.packages.iter().map(String::as_str).collect();
             assert_eq!(
-                planning.role,
-                GatePlanningRole::RustPackageScoped,
-                "Gate '{gate_name}' must use rust_package_scoped role"
+                packages,
+                vec!["perl-lsp-rs", "perl-lsp-rs-core"],
+                "every split child must preserve the former family's selection on either package"
             );
-
-            for &pkg in expected_packages {
-                assert!(
-                    planning.packages.iter().any(|p| p == pkg),
-                    "Gate '{gate_name}' planning.packages must include '{pkg}', got: {:?}",
-                    planning.packages
-                );
-            }
         }
 
         Ok(())
@@ -5684,37 +5663,40 @@ error: aborting due to previous error
     }
 
     #[test]
-    fn gate_runner_reports_independent_results_when_a_peer_fails()
-    -> color_eyre::eyre::Result<()> {
-        // Proves the runner behaviour that the policy split relies on: when
-        // gate A fails, gate B (sharing only a log directory) still produces
-        // its own result.  This is the runtime counterpart to the structural
-        // tests above — the split is only useful if each gate is executed
-        // independently.
-        //
-        // Uses `true`/`false` shell builtins so the test never builds Cargo
-        // artefacts.  Platform note: both builtins are available on every
-        // target the project CI runs on (Linux/macOS).
-        let tmp = tempdir()?;
-
-        let policy = policy_with_gates(vec![]);
-        let config = GateRunnerConfig::default();
-
-        let failing_gate = tier_gate("gate_a_fails", "pr_fast", "false");
-        let passing_gate = tier_gate("gate_b_still_runs", "pr_fast", "true");
-
-        let result_a = run_single_gate(&failing_gate, &policy, tmp.path(), &config, None)?;
-        let result_b = run_single_gate(&passing_gate, &policy, tmp.path(), &config, None)?;
-
-        assert_eq!(
-            result_a.status, "fail",
-            "gate_a_fails must report fail when the command exits non-zero"
+    fn gate_runner_reports_independent_results_when_a_peer_fails() -> color_eyre::eyre::Result<()> {
+        let failing_gate = tier_gate("gate_a_fails", "pr_fast", "exit 1");
+        let passing_gate = tier_gate("gate_b_still_runs", "pr_fast", "exit 0");
+        let policy = policy_with_gates(vec![failing_gate.clone(), passing_gate.clone()]);
+        let plan = static_gate_plan(
+            GateTier::PrFast,
+            "HEAD".to_string(),
+            vec![failing_gate, passing_gate],
+            None,
         );
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            output_format: OutputFormat::Summary,
+            fail_fast: false,
+            ..GateRunnerConfig::default()
+        };
+
+        let receipt = run_gate_plan(&plan, &policy, &config)?;
+
+        assert_eq!(receipt.gates.len(), 2, "the real plan must emit both terminal rows");
+        assert_eq!(receipt.gates[0].gate_name, "gate_a_fails");
+        assert_eq!(receipt.gates[0].status, "fail");
+        assert_eq!(receipt.gates[1].gate_name, "gate_b_still_runs");
+        assert_eq!(receipt.gates[1].status, "pass");
+        assert!(
+            receipt.gates.iter().all(|gate| gate.log_path.is_some()),
+            "each terminal row must retain its independent log path"
+        );
+        assert_eq!(receipt.summary.total_gates, 2);
+        assert_eq!(receipt.summary.failed, 1);
+        assert_eq!(receipt.summary.passed, 1);
         assert_eq!(
-            result_b.status, "pass",
-            "gate_b_still_runs must report pass independently of gate_a's failure; \
-             if this is 'fail' the runner is propagating failure state across gate \
-             boundaries (the bug this split fixes)"
+            receipt.summary.blocking_failures.as_deref(),
+            Some(&["gate_a_fails".to_string()][..])
         );
 
         Ok(())
