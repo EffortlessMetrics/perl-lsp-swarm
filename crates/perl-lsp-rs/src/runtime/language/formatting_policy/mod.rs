@@ -294,6 +294,14 @@ impl LspServer {
     }
 
     fn ensure_current(&self, snapshot: &Snapshot) -> Result<(), JsonRpcError> {
+        self.ensure_current_with_engine(snapshot, None)
+    }
+
+    fn ensure_current_with_engine(
+        &self,
+        snapshot: &Snapshot,
+        actual_engine: Option<&str>,
+    ) -> Result<(), JsonRpcError> {
         let current = {
             let documents = self.documents_guard();
             self.get_document(&documents, &snapshot.uri).is_some_and(|document| {
@@ -302,17 +310,19 @@ impl LspServer {
             })
         };
         if !current {
-            return Err(self.stale_error(
+            return Err(self.stale_error_with_engine(
                 snapshot,
                 "stale_source",
                 "Document changed while formatting was running; no edits were returned.",
+                actual_engine,
             ));
         }
         if self.effective_formatting_config()?.fingerprint != snapshot.config.fingerprint {
-            return Err(self.stale_error(
+            return Err(self.stale_error_with_engine(
                 snapshot,
                 "stale_configuration",
                 "Formatting configuration changed while the request was running; no edits were returned.",
+                actual_engine,
             ));
         }
         Ok(())

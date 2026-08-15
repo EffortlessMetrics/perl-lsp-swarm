@@ -38,7 +38,10 @@ impl LspServer {
         )?;
         let decision = decision
             .map_err(|error| self.formatting_failure(&snapshot, "Formatting failed", error))?;
-        self.ensure_current(&snapshot)?;
+        self.ensure_current_with_engine(
+            &snapshot,
+            Some(actual_engine_for_mode(snapshot.config.mode)),
+        )?;
         self.project(&snapshot, decision)
     }
 
@@ -78,7 +81,10 @@ impl LspServer {
         let decision = decision.map_err(|error| {
             self.formatting_failure(&snapshot, "Range formatting failed", error)
         })?;
-        self.ensure_current(&snapshot)?;
+        self.ensure_current_with_engine(
+            &snapshot,
+            Some(actual_engine_for_mode(snapshot.config.mode)),
+        )?;
         self.project(&snapshot, decision)
     }
 

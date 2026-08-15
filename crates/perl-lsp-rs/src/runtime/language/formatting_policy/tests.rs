@@ -406,10 +406,16 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
             "textDocument/rangesFormatting",
             json!({
                 "textDocument": { "uri": document_uri, "version": 1 },
-                "ranges": [{
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 7 }
-                }],
+                "ranges": [
+                    {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    {
+                        "start": { "line": 0, "character": 7 },
+                        "end": { "line": 0, "character": 7 }
+                    }
+                ],
                 "options": { "tabSize": 4, "insertSpaces": true }
             }),
         ),

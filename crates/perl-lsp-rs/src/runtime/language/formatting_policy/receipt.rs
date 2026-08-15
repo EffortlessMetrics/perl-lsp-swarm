@@ -11,11 +11,21 @@ impl LspServer {
         reason: &'static str,
         message: &'static str,
     ) -> JsonRpcError {
+        self.stale_error_with_engine(snapshot, reason, message, None)
+    }
+
+    pub(super) fn stale_error_with_engine(
+        &self,
+        snapshot: &Snapshot,
+        reason: &'static str,
+        message: &'static str,
+        actual_engine: Option<&str>,
+    ) -> JsonRpcError {
         let receipt = self.record_formatting_receipt(
             snapshot,
             "blocked",
             json!(reason),
-            "not_started",
+            actual_engine.unwrap_or("not_started"),
             "no_edit",
             0,
             None,
