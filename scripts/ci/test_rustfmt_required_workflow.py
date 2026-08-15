@@ -177,7 +177,16 @@ def validate_contract(workflow: dict[str, Any], policy: dict[str, object]) -> No
     entry = entries[0]
     if entry.get("workflow") != ".github/workflows/ci.yml":
         raise AssertionError("formatter policy must name the owning workflow")
-    if entry.get("required") is not False or entry.get("enforcement") != "advisory":
+    if entry.get("job") != JOB_ID:
+        raise AssertionError("formatter policy must name the owning job")
+    # Policy schema v2 separates merge-policy role from live GitHub enforcement.
+    # "advisory" is a `policy_role`; the enforcement source must stay unclaimed
+    # until a reviewed settings change actually protects the context.
+    if (
+        entry.get("required") is not False
+        or entry.get("policy_role") != "advisory"
+        or entry.get("enforcement") != "neither"
+    ):
         raise AssertionError("formatter policy must remain advisory before post-merge promotion")
     if "post-merge promotion target" not in str(entry.get("reason", "")).lower():
         raise AssertionError("formatter policy must retain the post-merge promotion target")
@@ -250,6 +259,7 @@ class RustfmtRequiredWorkflowTests(unittest.TestCase):
         broken = copy.deepcopy(self.policy)
         entry = next(item for item in broken["checks"] if item.get("name") == CONTEXT_NAME)
         entry["required"] = True
+        entry["policy_role"] = "required"
         entry["enforcement"] = "github-ruleset"
         with self.assertRaisesRegex(AssertionError, "remain advisory"):
             validate_contract(self.workflow, broken)
