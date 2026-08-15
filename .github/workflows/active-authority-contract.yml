@@ -11,6 +11,10 @@ on:
       - '.github/copilot-instructions.md'
       - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'justfile'
+      - '.gitignore'
       - 'tests/test_active_authority_contract.py'
       - '.github/workflows/active-authority-contract.yml'
   push:
@@ -20,6 +24,10 @@ on:
       - '.github/copilot-instructions.md'
       - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'justfile'
+      - '.gitignore'
       - 'tests/test_active_authority_contract.py'
       - '.github/workflows/active-authority-contract.yml'
 
