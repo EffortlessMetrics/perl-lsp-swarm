@@ -541,8 +541,8 @@ fn package_from_type(ty: &PerlType) -> Option<String> {
 /// Collects every distinct package name reachable from a type fact.
 ///
 /// For a plain `Object(Foo)` this returns `["Foo"]`.  For a
-/// `Union(Object(Foo), Object(Bar), Scalar(Int))` it returns `["Foo", "Bar"]`
-/// (non-object union arms are silently skipped).
+/// `Union(Object(Foo), Object(Bar), Scalar(Int))` returns an empty vec because
+/// a mixed union cannot safely dispatch object methods.
 ///
 /// Duplicates are removed; the first occurrence wins.  When the type fact
 /// carries no package (e.g. `Any`, `Scalar`, or a pure shape fact without an
@@ -551,7 +551,7 @@ fn all_packages_from_type_fact(fact: &TypeFact) -> Vec<String> {
     let mut packages: Vec<String> = all_packages_from_type(&fact.ty);
 
     // If no package was found from the type itself, check the shape field.
-    if packages.is_empty() {
+    if packages.is_empty() && !contains_union(&fact.ty) {
         if let Some(ShapeFact::Object(shape)) = &fact.shape {
             packages.push(shape.package.clone());
         }
@@ -563,24 +563,34 @@ fn all_packages_from_type_fact(fact: &TypeFact) -> Vec<String> {
 /// Recursively collects all distinct package names from a Perl type.
 fn all_packages_from_type(ty: &PerlType) -> Vec<String> {
     let mut packages: Vec<String> = vec![];
-    collect_packages_from_type(ty, &mut packages);
+    if !collect_packages_from_type(ty, &mut packages) {
+        packages.clear();
+    }
     packages
 }
 
-fn collect_packages_from_type(ty: &PerlType, packages: &mut Vec<String>) {
+fn collect_packages_from_type(ty: &PerlType, packages: &mut Vec<String>) -> bool {
     match ty {
         PerlType::Object(package) => {
             if !packages.contains(package) {
                 packages.push(package.clone());
             }
+            true
         }
         PerlType::Reference(inner) => collect_packages_from_type(inner, packages),
         PerlType::Union(types) => {
-            for inner in types {
-                collect_packages_from_type(inner, packages);
-            }
+            !types.is_empty()
+                && types.iter().all(|inner| collect_packages_from_type(inner, packages))
         }
-        _ => {}
+        _ => false,
+    }
+}
+
+fn contains_union(ty: &PerlType) -> bool {
+    match ty {
+        PerlType::Reference(inner) => contains_union(inner),
+        PerlType::Union(_) => true,
+        _ => false,
     }
 }
 

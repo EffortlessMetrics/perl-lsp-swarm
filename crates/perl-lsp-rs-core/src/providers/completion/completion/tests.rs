@@ -99,16 +99,12 @@ fn custom_union_method_labels(completions: &[CompletionItem]) -> Vec<&str> {
 }
 
 #[test]
-fn production_completion_routes_union_receiver_fact_to_workspace_methods()
+fn production_completion_routes_inferred_union_receiver_to_workspace_methods()
 -> Result<(), Box<dyn std::error::Error>> {
-    use perl_semantic_analyzer::analysis::type_inference::PerlType;
-
-    let fact = object_receiver_fact(PerlType::Union(vec![
-        PerlType::Object("Foo".to_string()),
-        PerlType::Object("Bar".to_string()),
-    ]));
-    let source = "my $obj;\n$obj->";
-    let provider = completion_provider_with_receiver_fact(source, Some(fact))?;
+    // The provider's normal AST inference derives this union from the two
+    // source-backed constructor branches; no test-only fact injection is used.
+    let source = "my $obj = 1 ? Foo->new() : Bar->new();\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, None)?;
     let completions = provider.get_completions(source, source.len());
 
     let shared: Vec<_> = completions.iter().filter(|item| item.label == "shared_method").collect();
@@ -208,6 +204,27 @@ fn production_completion_object_plus_non_object_union_is_not_a_union_receiver()
     assert!(
         custom_union_method_labels(&completions).is_empty(),
         "object-plus-non-object union must not claim a precise union receiver"
+    );
+    Ok(())
+}
+
+#[test]
+fn production_completion_mixed_multi_object_union_stays_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_semantic_analyzer::analysis::type_inference::{PerlType, ScalarType};
+
+    let fact = object_receiver_fact(PerlType::Union(vec![
+        PerlType::Object("Foo".to_string()),
+        PerlType::Object("Bar".to_string()),
+        PerlType::Scalar(ScalarType::String),
+    ]));
+    let source = "my $obj;\n$obj->";
+    let provider = completion_provider_with_receiver_fact(source, Some(fact))?;
+    let completions = provider.get_completions(source, source.len());
+
+    assert!(
+        custom_union_method_labels(&completions).is_empty(),
+        "mixed union with multiple object arms must not dispatch object methods"
     );
     Ok(())
 }
