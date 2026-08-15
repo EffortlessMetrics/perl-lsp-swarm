@@ -369,20 +369,18 @@ fn validate_pass_shape(
     Ok(())
 }
 
-fn validate_public_pass_shape(
-    top: &Map<String, Value>,
-    perllsp: &Map<String, Value>,
-    profile: &Map<String, Value>,
-) -> Result<(), String> {
+/// Structural contract for a public-registry pass.
+///
+/// Value-level publication policy (`resolution_route=managed_download`, absent prior
+/// extension, absent prior managed cache) is owned by [`validate_public_registry_pass`]
+/// so each violation keeps its own specific diagnostic. Duplicating it here would
+/// shadow those messages behind a generic schema error.
+fn validate_public_pass_shape(top: &Map<String, Value>) -> Result<(), String> {
     let subject =
         top.get("public_subject").ok_or_else(|| "public pass lacks public_subject".to_string())?;
     validate_public_subject(subject)?;
     let subject = object(subject, "public_subject")?;
-    if !subject.get("sha256").and_then(Value::as_str).is_some_and(is_sha256_digest)
-        || perllsp.get("resolution_route").and_then(Value::as_str) != Some("managed_download")
-        || profile.get("prior_extension_absent").and_then(Value::as_bool) != Some(true)
-        || profile.get("prior_managed_cache_absent").and_then(Value::as_bool) != Some(true)
-    {
+    if !subject.get("sha256").and_then(Value::as_str).is_some_and(is_sha256_digest) {
         return Err("public pass violates public-registry schema conditions".to_string());
     }
     Ok(())
@@ -513,7 +511,7 @@ pub fn validate_schema(receipt: &Value) -> Result<(), String> {
     if top.get("evidence_stage").and_then(Value::as_str) == Some("public_registry_install")
         && top.get("result").and_then(Value::as_str) == Some("pass")
     {
-        validate_public_pass_shape(top, perllsp, profile)?;
+        validate_public_pass_shape(top)?;
     }
     Ok(())
 }
