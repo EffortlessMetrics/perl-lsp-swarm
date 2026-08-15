@@ -33,6 +33,7 @@ name belongs to a different project. Use:
 ```bash
 cargo install perllsp
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 Verify the server before changing Emacs configuration:
 
