@@ -1104,6 +1104,21 @@ covered_by = [
 created = "2026-08-08"
 review_after = "2026-11-08"
 
+[[allow]]
+id = "non-rust-changelog-fragment-6844"
+path = ".changes/unreleased/product-6844-Added-204043.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Changie fragment for PR #6844; merged into generated release notes."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-11"
+review_after = "2026-11-11"
+
 # =============================================================================
 # Receipts / status / metrics
 # =============================================================================
