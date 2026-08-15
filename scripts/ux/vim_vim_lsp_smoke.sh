@@ -113,6 +113,20 @@ capture_matching_processes() {
   ' | sort -n >"${output}"
 }
 
+# Run one Vim stage with stdin closed and a wall-clock bound, so a Vim that
+# blocks before any s:WaitFor guard fails the stage instead of wedging the job.
+# Mirrors the invocation already landed in vim_vimspector_dap_smoke.sh.
+run_vim_stage() {
+  local stage=$1
+  local -a vim_cmd=("${vim_bin}" -Nu NONE -n -es -S "${driver}")
+  if command -v timeout >/dev/null 2>&1; then
+    vim_cmd=(timeout --signal=TERM --kill-after=30s "${VIM_STAGE_TIMEOUT:-300}" "${vim_cmd[@]}")
+  else
+    echo "vim/vim-lsp smoke: timeout(1) unavailable; ${stage} stage runs unbounded" >&2
+  fi
+  "${vim_cmd[@]}" </dev/null
+}
+
 extract_wire_evidence() {
   local log=$1
   local prefix=$2
@@ -258,7 +272,15 @@ export PERLLSP_VIM_SERVER_TRACE="${baseline_trace_prefix}"
 export PERLLSP_VIM_MODE=baseline
 
 baseline_rc=0
-"${vim_bin}" -Nu NONE -n -es -S "${driver}" || baseline_rc=$?
+# The receipt directory persists between runs, so a receipt left by an earlier
+# invocation would satisfy the -f check below even if this Vim run wrote nothing.
+# Remove it first so the check is genuinely fail-closed.
+rm -f "${receipt}"
+run_vim_stage baseline || baseline_rc=$?
+if [[ ${baseline_rc} -ne 0 ]]; then
+  echo "vim/vim-lsp smoke FAILED: baseline driver exited ${baseline_rc}" >&2
+  [[ -f ${baseline_log} ]] && cat "${baseline_log}" >&2
+fi
 if [[ ! -f ${receipt} ]]; then
   echo "vim/vim-lsp smoke FAILED: baseline receipt was not written" >&2
   [[ -f ${baseline_log} ]] && cat "${baseline_log}" >&2
@@ -339,9 +361,17 @@ export PERLLSP_VIM_SERVER_CAPABILITIES="${workspace_caps}"
 export PERLLSP_VIM_SERVER_TRACE="${workspace_trace_prefix}"
 export PERLLSP_VIM_MODE=workspace_folders
 workspace_rc=0
-"${vim_bin}" -Nu NONE -n -es -S "${driver}" || workspace_rc=$?
+# Same fail-closed requirement as the baseline receipt above: clear any receipt
+# left by a previous run so this existence check proves the current run wrote it.
+rm -f "${workspace_receipt}"
+run_vim_stage workspace_folders || workspace_rc=$?
+if [[ ${workspace_rc} -ne 0 ]]; then
+  echo "vim/vim-lsp smoke FAILED: workspace-folder driver exited ${workspace_rc}" >&2
+  [[ -f ${workspace_log} ]] && cat "${workspace_log}" >&2
+fi
 if [[ ! -f ${workspace_receipt} ]]; then
   echo "vim/vim-lsp smoke FAILED: workspace-folder observation receipt missing" >&2
+  [[ -f ${workspace_log} ]] && cat "${workspace_log}" >&2
   exit 2
 fi
 workspace_client_log="${out}/vim-lsp.workspace-folders.log"
@@ -361,9 +391,14 @@ process_ledger="${out}/process-ledger.txt"
   echo "--- after ---"
   cat "${process_after}"
 } >"${process_ledger}"
-awk '{print $1}' "${process_before}" | sort -n >"${tmpdir}/before.pids"
-awk '{print $1}' "${process_after}" | sort -n >"${tmpdir}/after.pids"
-leaked_pids=$(comm -13 "${tmpdir}/before.pids" "${tmpdir}/after.pids" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+# `comm` compares byte-wise, so both inputs must use the default collation.
+# Numeric sort (e.g. 812 before 1490) makes `comm` report bogus differences and
+# exit non-zero, which under `set -e` aborts the run before the
+# os_process_cleanup evidence is ever written. Matches the resolution already
+# landed in scripts/ux/vim_vimspector_dap_smoke.sh.
+awk '{print $1}' "${process_before}" | LC_ALL=C sort >"${tmpdir}/before.pids"
+awk '{print $1}' "${process_after}" | LC_ALL=C sort >"${tmpdir}/after.pids"
+leaked_pids=$(LC_ALL=C comm -13 "${tmpdir}/before.pids" "${tmpdir}/after.pids" | LC_ALL=C sort -n | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 os_cleanup=true
 [[ -z ${leaked_pids} ]] || os_cleanup=false
 

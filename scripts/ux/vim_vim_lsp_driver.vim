@@ -146,6 +146,11 @@ let s:sync = get(s:server_capabilities, 'textDocumentSync', v:null)
 let s:cells.text_sync_change = type(s:sync) == type({}) ? get(s:sync, 'change', v:null) : s:sync
 
 if s:mode ==# 'workspace_folders'
+  " An autoload script is not sourced until one of its functions is called, so a
+  " bare exists('*lsp#capabilities#...') returns 0 for a helper that is present
+  " and working - recording a false negative in the receipt. Source the script
+  " first, then test.
+  silent! runtime autoload/lsp/capabilities.vim
   let s:helper_support = exists('*lsp#capabilities#has_workspace_folders_change_notifications')
         \ ? lsp#capabilities#has_workspace_folders_change_notifications('perllsp-under-test')
         \ : v:false
