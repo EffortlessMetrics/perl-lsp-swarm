@@ -12,6 +12,8 @@
 //!
 //! - A typed [`ProjectModel`] with per-fact records for files, packages, and
 //!   symbols, plus explicit [`DynamicBoundary`]s and [`ModelLimitation`]s.
+//! - A pure, versioned [`ProjectEnvironmentSnapshot`] authority for project,
+//!   interpreter, include-root, build-system, and tool input decisions.
 //! - Deterministic, host-path-free identity ([`FileId`], [`PackageId`],
 //!   [`SymbolId`]) and content [`Digest`]s.
 //! - One internal range format ([`SourceRange`]): byte offsets + 0-based UTF-8
@@ -49,6 +51,7 @@ pub mod boundary;
 pub mod builder;
 pub mod dist;
 pub mod effects;
+pub mod environment;
 pub mod error;
 pub mod export;
 pub mod fact_classes;
@@ -76,6 +79,16 @@ pub use boundary::{DynamicBoundary, DynamicBoundaryKind};
 pub use builder::{ProjectModelRequest, build_project_model};
 pub use dist::{DistMetadataFacts, DistMetadataSource, Prereq};
 pub use effects::CompileEffectFacts;
+pub use environment::{
+    BuildSystemFactRef, BuildSystemKind, EnvironmentBuildError, EnvironmentFingerprint,
+    EnvironmentInput, EnvironmentInputAuthority, EnvironmentInputId, EnvironmentInputState,
+    EnvironmentLimitation, EnvironmentPathRef, IncludeEntry, IncludeEntryRole,
+    InterpreterIdentityRef, PROJECT_ENVIRONMENT_SCHEMA_VERSION, ProjectEnvironmentSnapshot,
+    ProjectEnvironmentSnapshotBuilder, ProjectRoot, ProjectRootRole, PublicBuildSystemFactRef,
+    PublicEnvironmentInput, PublicInterpreterIdentityRef, PublicPathEntry,
+    PublicProjectEnvironmentReceipt, PublicToolCandidate, ToolCandidate, ToolCandidateRole,
+    WorkspaceTrust,
+};
 pub use error::{ModelLimitation, WorkspaceCoreError};
 pub use export::{ExportFact, ExportKind};
 pub use fact_classes::FactClasses;

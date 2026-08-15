@@ -76,14 +76,14 @@ pub(crate) fn classify(observation: Observation, authority_source: AuthoritySour
     let classified_invariants =
         classify_invariants(observed_invariants, authority.as_ref(), &mut state);
 
-    if state.drift {
-        if let Some(version) = comparison_version.as_deref() {
-            state.push_blocker(
-                "same_version_divergent_product",
-                format!("version {version} has behavior or invariant drift"),
-                "release-engineering",
-            );
-        }
+    if state.drift
+        && let Some(version) = comparison_version.as_deref()
+    {
+        state.push_blocker(
+            "same_version_divergent_product",
+            format!("version {version} has behavior or invariant drift"),
+            "release-engineering",
+        );
     }
 
     state.blockers.sort();

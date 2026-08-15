@@ -34,3 +34,11 @@ Automatic format-on-save is intentionally absent from the LSP4IJ settings projec
 ## Local proof
 
 A supported released LSP4IJ build can use this directory through **Import from custom template...** once the installer material from #7876 is composed with it. That local-import subject is distinct from both the currently released built-in Perl template and any future upstream-released corrected template.
+
+## Maintainer workflow
+
+The desired integration is downstream product state, not an independent source of truth. Changes to configuration, CLI identity, release topology, file-family evidence, or LSP4IJ upstream state must be reconciled through their canonical authorities before this directory is refreshed.
+
+See [`docs/development/LSP4IJ_MAINTENANCE.md`](../../../docs/development/LSP4IJ_MAINTENANCE.md) for the status/check/refresh/prepare-delta contract, evidence invalidation rules, manual upstream handoff, and the distinction between local-ready, submitted, merged, released, and released-and-receipted states.
+
+External submission remains a deliberate maintainer action. Repository automation may prepare a bounded local delta; it must not create or push an upstream branch, open/comment on an upstream issue or PR, or merge anything upstream.
