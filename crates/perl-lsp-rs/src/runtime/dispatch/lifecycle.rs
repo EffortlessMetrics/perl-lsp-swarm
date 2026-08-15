@@ -220,6 +220,76 @@ mod tests {
         Ok(())
     }
 
+    /// ripr seam `7fdf6b0aeeedd6af`: `folder_count == 0` single-file ready path.
+    #[test]
+    fn ripr_seam_proof_complete_initialization_folder_count_zero_single_file() -> TestResult {
+        let server = LspServer::new();
+        assert_eq!(
+            server.workspace_folder_count(),
+            0,
+            "fresh server must start in single-file mode (zero folders)"
+        );
+
+        server
+            .handle_initialize(None)
+            .map_err(|e| format!("initialize request should succeed: {e}"))?;
+        server
+            .handle_initialized_dispatch()
+            .map_err(|e| format!("initialized notification should succeed: {e}"))?;
+
+        assert!(server.is_initialized(), "initialized must complete with zero folders");
+        assert_eq!(
+            server.workspace_folder_count(),
+            0,
+            "complete_initialization must preserve the folder_count == 0 boundary"
+        );
+        Ok(())
+    }
+
+    /// ripr seam `856578f70679627c`: exact `Err(-32600)` on duplicate initialize.
+    #[test]
+    fn ripr_seam_proof_lifecycle_model_duplicate_initialize_invalid_request() {
+        let mut model = LifecycleModel::default();
+        assert_eq!(model.initialize(), Ok(()), "first initialize must succeed");
+        assert_eq!(
+            model.initialize(),
+            Err(-32600),
+            "second initialize must return exact InvalidRequest (-32600)"
+        );
+    }
+
+    /// Discriminator for the #7708 shutdown clear of in-flight configuration pulls.
+    #[test]
+    fn ripr_seam_proof_shutdown_clears_pending_workspace_configuration_requests() -> TestResult {
+        let server = LspServer::new();
+        server
+            .handle_initialize(None)
+            .map_err(|e| format!("initialize request should succeed: {e}"))?;
+        server
+            .handle_initialized_dispatch()
+            .map_err(|e| format!("initialized notification should succeed: {e}"))?;
+
+        server.pending_workspace_configuration_requests.lock().insert(
+            super::super::super::ServerRequestId::for_test(77),
+            super::super::super::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec!["file:///tmp/workspace".to_string()],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+        assert_eq!(server.pending_workspace_configuration_requests.lock().len(), 1);
+
+        server
+            .handle_shutdown_dispatch()
+            .map_err(|e| format!("shutdown should succeed: {e}"))?;
+
+        assert!(
+            server.pending_workspace_configuration_requests.lock().is_empty(),
+            "shutdown must clear pending workspace/configuration requests (#7708)"
+        );
+        Ok(())
+    }
+
     #[test]
     fn given_initialized_server_when_initialized_notification_sent_twice_then_second_request_is_invalid()
     -> TestResult {
