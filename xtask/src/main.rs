@@ -1118,6 +1118,22 @@ enum Commands {
     /// Run version-sync checks from `perl-ci-hygiene`.
     CheckVersionSync,
 
+    /// Classify an exact-SHA publication-drift observation.
+    #[command(name = "publication-drift")]
+    PublicationDrift {
+        /// Comparison observation JSON.
+        #[arg(long)]
+        input: PathBuf,
+
+        /// Repository root used to resolve the authority manifest.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/publication-drift.json")]
+        out: PathBuf,
+    },
+
     /// Sync active release narrative docs from workspace version and publish count.
     SyncReleaseDocs {
         /// Write synced files (omit to run a dry check).
@@ -2229,6 +2245,12 @@ enum Commands {
         command: NonRustCommand,
     },
 
+    /// Read-only policy obligation tooling.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
+
     /// Check non-Rust files against the policy allowlist and report violations.
     ///
     /// Equivalent to `non-rust check`. Default mode is `advisory` (always
@@ -2290,8 +2312,8 @@ enum Commands {
         #[arg(long)]
         reason: Option<String>,
 
-        /// Also check binary freshness: verify that target/debug/perl-lsp and
-        /// target/release/perl-lsp are newer than the HEAD commit timestamp.
+        /// Also check binary freshness: verify that target/debug/perllsp and
+        /// target/release/perllsp are newer than the HEAD commit timestamp.
         /// Exits non-zero when a binary exists and is stale. Missing binaries
         /// are reported but do not cause a non-zero exit.
         #[arg(long)]
@@ -2425,6 +2447,25 @@ enum NonRustCommand {
         /// Override the workspace root used for `git ls-files`. Test seam only.
         #[arg(long, hide = true)]
         root: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Inventory registered review and expiry obligations at an explicit date.
+    Cadence {
+        /// Evaluation date. Defaults to the current UTC date in production;
+        /// tests and evidence runs should always pass it explicitly.
+        #[arg(long)]
+        as_of: Option<String>,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.json")]
+        json: PathBuf,
+
+        /// Deterministic Markdown summary path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.md")]
+        markdown: PathBuf,
     },
 }
 
@@ -4345,6 +4386,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
         }
         Commands::CheckVersionSync => check_version_sync::run(),
+        Commands::PublicationDrift { input, repo_root, out } => {
+            xtask::publication_drift::run_with_paths(input, repo_root, out)
+        }
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
         Commands::CheckFromRaw => ci_policy::check_from_raw(),
         Commands::CheckMemoryLifecyclePolicy => ci_policy::check_memory_lifecycle(),
@@ -5208,6 +5252,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tasks::file_policy::non_rust_migration_candidates(
                     &root,
                     MigrationCandidatesConfig { format, output, limit, root_override },
+                )
+            }
+        },
+        Commands::Policy { command } => match command {
+            PolicyCommand::Cadence { as_of, json, markdown } => {
+                let root = utils::project_root()?;
+                tasks::policy_cadence::run(
+                    &root,
+                    tasks::policy_cadence::CadenceArgs { as_of, json, markdown },
                 )
             }
         },

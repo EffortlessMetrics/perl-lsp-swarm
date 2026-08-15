@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import tomllib
 import unittest
 from pathlib import Path
@@ -24,6 +25,8 @@ REQUIRED_CURRENT = {
     "docs/agents/SKILL_CONTRACT.md",
     "docs/how-to/SESSION_OPERATIONS.md",
     "docs/how-to/AGENT_CONTRIBUTING.md",
+    # Amended by PR #6863 (e9a698285f) and current on `main` since.
+    "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
 }
 REQUIRED_LEGACY = {
     "docs/reference/ORCHESTRATION_DOCTRINE.md",
@@ -37,15 +40,35 @@ REQUIRED_LEGACY = {
     ".spec/3988-merge-readiness/spec.md",
 }
 REQUIRED_TRANSITIONAL = {
-    "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
     "docs/reference/MAINTAINER_AGENT_DOCTRINE.md",
     "docs/reference/WORKTREE_PROTOCOL.md",
     "CONTRIBUTING.md",
     ".github/copilot-instructions.md",
-    "scripts/ci/check-pr-claim-currentness",
-    "scripts/reviews/claim-digest",
     "scripts/ci/check-pr-review-convergence-core",
 }
+
+# A `transitional` row asserts a fact about the document's *present* content: the
+# retired text is still live on `main`, and a named replacement is still pending.
+# Two document self-declarations contradict that assertion outright.
+#
+# A `current` self-claim catches the authority inversion this registry exists to
+# prevent -- a document that declares itself the current contract must not be
+# demoted to transitional. A `retired` self-claim catches the mirror error -- a
+# document whose replacement already landed is historical, not pending.
+CURRENT_SELF_CLAIMS = (
+    r"\bis the current durable\b",
+    r"\bis the current\b[^.]{0,80}\bcontract\b",
+    r"\bStatus:\s*current\b",
+)
+RETIRED_SELF_CLAIMS = (
+    r"\bRETIRED\b",
+    r"\bno longer has\b",
+    r"\bno longer\b[^.]{0,40}\bauthority\b",
+)
+# Retired self-claims are read from the header/docstring region only. Body prose
+# legitimately discusses the retirement of *other* things -- WORKTREE_PROTOCOL.md
+# says "is retired" about a branch -- which is not a self-declaration.
+SELF_CLAIM_HEADER_LINES = 40
 WORKFLOW_PATHS = {
     "AGENTS.md",
     "CLAUDE.md",
@@ -63,6 +86,41 @@ def load_registry() -> dict[str, Any]:
 
 def prose(path: Path) -> str:
     return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.split())
+
+
+def self_claim_contradictions(path: str, text: str) -> list[str]:
+    """Report ways a document's own content contradicts a `transitional` status.
+
+    `transitional` is the only status that makes a checkable claim about the
+    document as it stands today: the stale text is still live and a replacement
+    is still pending. This reads the document rather than the registry, so a row
+    cannot stay green merely because its status string is spelled correctly.
+    """
+    problems: list[str] = []
+    body = _normalize(text)
+    header = _normalize("\n".join(text.splitlines()[:SELF_CLAIM_HEADER_LINES]))
+
+    for pattern in CURRENT_SELF_CLAIMS:
+        if re.search(pattern, body, re.IGNORECASE):
+            problems.append(
+                f"{path}: classified transitional, but the document declares itself "
+                f"current (matched {pattern!r}); classifying it transitional would "
+                f"demote a current authority"
+            )
+            break
+    for pattern in RETIRED_SELF_CLAIMS:
+        if re.search(pattern, header):
+            problems.append(
+                f"{path}: classified transitional, but the document declares itself "
+                f"already retired (matched {pattern!r}); its replacement has landed, "
+                f"so it is historical rather than pending"
+            )
+            break
+    return problems
 
 
 def _indent(line: str) -> int:
@@ -145,6 +203,12 @@ def validate_registry(document: dict[str, Any]) -> list[str]:
             errors.append(f"{path}: notes must be non-empty")
         if not (ROOT / path).exists():
             errors.append(f"{path}: registry path does not exist")
+        elif status == "transitional":
+            errors.extend(
+                self_claim_contradictions(
+                    path, (ROOT / path).read_text(encoding="utf-8", errors="replace")
+                )
+            )
 
     for field in TOP_LEVEL_PATH_FIELDS:
         path = document.get(field)
@@ -247,11 +311,69 @@ class AgentAuthorityStatusTests(unittest.TestCase):
         document["documents"] = [
             row
             for row in document["documents"]
-            if row["path"] != "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md"
+            if row["path"] != "docs/reference/MAINTAINER_AGENT_DOCTRINE.md"
         ]
 
         errors = validate_registry(document)
         self.assertTrue(any("missing transitional paths" in error for error in errors), errors)
+
+    def test_document_declaring_itself_current_cannot_be_transitional(self) -> None:
+        """The exact row this registry shipped with, against current `main`.
+
+        Before PR #6863 landed, classifying PLSP-SPEC-0006 `transitional` was
+        true. After it landed, the amended specification retired the
+        mandatory-rebase contract itself and declares that it *is* the current
+        durable disposition contract. The status enum and the path both stayed
+        valid, so every pre-existing check stayed green while the row asserted
+        the opposite of the document -- and landing it would have demoted a
+        still-authoritative document.
+        """
+        document = copy.deepcopy(load_registry())
+        row = next(
+            item
+            for item in document["documents"]
+            if item["path"] == "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md"
+        )
+        row["status"] = "transitional"
+        row["successor"] = "issue #4560 / PR #6863"
+
+        errors = validate_registry(document)
+        self.assertTrue(
+            any("would demote a current authority" in error for error in errors),
+            errors,
+        )
+
+    def test_document_declaring_itself_retired_cannot_be_transitional(self) -> None:
+        """The mirror error, from the same `main` movement.
+
+        PR #6871 retired both review-receipt commands. A `transitional` row for
+        either one asserts a replacement is still pending when it has already
+        landed.
+        """
+        for path in ("scripts/ci/check-pr-claim-currentness", "scripts/reviews/claim-digest"):
+            with self.subTest(path=path):
+                document = copy.deepcopy(load_registry())
+                row = next(
+                    item for item in document["documents"] if item["path"] == path
+                )
+                row["status"] = "transitional"
+                row["successor"] = "issue #5778 / PR #6871"
+
+                errors = validate_registry(document)
+                self.assertTrue(
+                    any("already retired" in error for error in errors), errors
+                )
+
+    def test_self_claim_check_does_not_fire_on_genuine_transitional_rows(self) -> None:
+        """Negative control: the five rows that are still correctly transitional.
+
+        Without this, the check above could be satisfied by a rule broad enough
+        to condemn every transitional row, which would make the status useless.
+        """
+        for path in sorted(REQUIRED_TRANSITIONAL):
+            with self.subTest(path=path):
+                text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
+                self.assertEqual(self_claim_contradictions(path, text), [])
 
     def test_duplicate_path_is_rejected(self) -> None:
         document = copy.deepcopy(load_registry())

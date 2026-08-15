@@ -10,7 +10,16 @@ This page answers one bounded question:
 > When two repository documents teach different agent, review, queue, branch, or
 > orchestration rules, which one is current?
 
-Use the machine registry for the complete path-by-path classification. Internal words
+Use the machine registry for the path-by-path classification. It is not yet a closed
+inventory of every agent-facing document: it classifies the root provider routes, the
+current method contracts, the known transitional current-main defects, and the legacy
+doctrine/ADR/design graph. Ten files under `docs/agents/` remain unclassified, and
+`ORCHESTRATION_ROLES.md` is the one that matters most — it routes readers to the
+superseded `ORCHESTRATION_DOCTRINE.md` and `PIPELINE_GATES.md`. Classifying the
+remainder is named residual work on #4555. An unclassified path does not thereby become
+current; apply the reading rule below.
+
+Internal words
 such as “accepted,” “active doctrine,” “north star,” “operating contract,” or “current”
 inside a document listed as `historical`, `superseded`, or `transitional` do not override
 this index. Those words remain part of the historical record until local status banners
@@ -61,14 +70,25 @@ are classified `transitional`, not silently treated as current:
 
 | Path | Replacement |
 | --- | --- |
-| `docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md` | #4560 / PR #6863 — semantic incorporation instead of mandatory rebase |
 | `docs/reference/MAINTAINER_AGENT_DOCTRINE.md` | #4555 / PR #6868 — current ruling, review, integration, and cleanup contract |
 | `docs/reference/WORKTREE_PROTOCOL.md` | #4555 / PR #6868 — one mutation owner and concrete-purpose branch rewrite |
 | `CONTRIBUTING.md` | #4555 / PR #6868 — provider-native review and retained contributor routes |
 | `.github/copilot-instructions.md` | #4555 / PR #6868 — current route map and crate entrypoints |
-| `scripts/ci/check-pr-claim-currentness` | #5778 / PR #6871 — live exact-head verdict retirement |
-| `scripts/reviews/claim-digest` | #5778 / PR #6871 — command-line verdict retirement |
 | `scripts/ci/check-pr-review-convergence-core` | public wrapper plus #5778 — compatibility collector containment |
+
+Three rows left this table because their replacements landed on `main` while this
+candidate was open. They are reclassified rather than kept pending:
+
+| Path | Landed | New status |
+| --- | --- | --- |
+| `docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md` | #4560 / PR #6863 (`e9a698285f`) | `current` — the amended specification retired the mandatory-rebase contract itself and now declares that it *is* the current durable disposition contract |
+| `scripts/ci/check-pr-claim-currentness` | #5778 / PR #6871 (`c5c43757ed`) | `historical` — fixture-mode reader with no live review-convergence authority |
+| `scripts/reviews/claim-digest` | #5778 / PR #6871 (`c5c43757ed`) | `historical` — the CLI prints a RETIRED notice and exits |
+
+Leaving `PLSP-SPEC-0006` classified `transitional` would have demoted a
+still-authoritative document — the exact inversion this index exists to prevent. The
+validator now reads each transitional document and rejects a row the document's own
+content contradicts.
 
 Until those candidates land, use the current issue rulings and provider-native method.
 Do not “fix” the mismatch by repeatedly rebasing the candidates; unrelated `main`

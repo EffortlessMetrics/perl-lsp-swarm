@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "swarm": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tree_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "version": "0.17.0"
+  },
+  "public": {
+    "repository": "EffortlessMetrics/perl-lsp",
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "tree_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "version": "0.17.0"
+  },
+  "manifest": {
+    "path": "fixtures/publication_drift/publication_manifest.v1.json",
+    "sha256": "f308d3152ad057c21a49e3bbc74e1bd1e48a08c293ee2a58aa547c1f23a48aad",
+    "swarm_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "public_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "differences": [
+    {
+      "path": "vscode-extension/src/downloader.ts",
+      "classification": "product_drift",
+      "behavior_changed": true,
+      "manifest_rule": null,
+      "owner": "vscode-extension",
+      "evidence": [
+        "The public v0.17 VSIX requested aarch64-pc-windows-msvc while the release produced only x86_64-pc-windows-msvc."
+      ]
+    }
+  ],
+  "invariants": [
+    {
+      "id": "targets_requested_are_built",
+      "status": "fail",
+      "owner": "release-engineering",
+      "evidence": [
+        "The managed downloader requested a Windows target absent from the release matrix."
+      ]
+    },
+    {
+      "id": "archive_members_match_consumers",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "archive_members_match_consumers is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "server_dap_pairing",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "server_dap_pairing is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "extension_claims_match_vsix",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "extension_claims_match_vsix is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "public_install_docs_are_executable",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "public_install_docs_are_executable is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "support_posture_matches_claims",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "support_posture_matches_claims is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "artifact_traceable_to_public_sha",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "artifact_traceable_to_public_sha is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "product_path_coverage_complete",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "product_path_coverage_complete is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "release_repo_unique_dispositions_complete",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "release_repo_unique_dispositions_complete is proven by the exact-SHA comparison packet."
+      ]
+    }
+  ]
+}
