@@ -42,7 +42,6 @@ impl NormalizedRange {
         )
     }
 }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AdmittedRange {

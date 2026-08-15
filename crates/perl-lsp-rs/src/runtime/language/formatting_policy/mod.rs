@@ -319,7 +319,6 @@ impl LspServer {
 }
 
 mod handlers;
-mod multi_range;
 mod receipt;
 
 #[cfg(test)]
