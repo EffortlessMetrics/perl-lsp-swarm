@@ -108,8 +108,8 @@ cargo check -p perl-parser --features workspace
 echo "  ✓ Workspace build compiles"
 
 echo ""
-echo ">>> Build perl-lsp binary (ensures tests use correct version)"
-cargo build -p perl-lsp-rs $PROFILE_FLAG
+echo ">>> Build perllsp product binary (ensures tests use correct version)"
+cargo build -p perllsp --bin perllsp $PROFILE_FLAG
 
 echo ""
 echo ">>> perl-parser lib tests"

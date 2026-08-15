@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Publish the first behavior-backed generic LSP `perl.*` settings schema.
+time: 2026-08-13T10:05:40Z
+custom:
+  PR: "7811"
+  Slug: generic-settings-schema
+  Breaking: "no"

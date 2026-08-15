@@ -25,10 +25,6 @@ include = [
 name = "perl_lsp"
 path = "src/lib.rs"
 
-[[bin]]
-name = "perl-lsp"
-path = "src/main.rs"
-
 [dependencies]
 perl-dap = { workspace = true }
 # perl-incremental-parsing absorbed into perl-parser::incremental (Wave 4-Completion)
@@ -140,15 +136,10 @@ toml = "1.1.2"
 
 # Deliberately no [package.metadata.binstall].
 #
-# This crate's binary is `perl-lsp`, and the release workflow does not build or
-# publish it — .github/workflows/release.yml ships `perllsp` and `perl-dap`
-# only. The metadata that used to live here pointed at a
-# `perl-lsp-{version}-{target}` asset that has never existed, so
-# `cargo binstall perl-lsp-rs` 404'd instead of falling back.
-#
-# With no metadata, cargo-binstall builds from source, which works. Users who
-# want a prebuilt binary should install the `perllsp` crate, which is the
-# published facade and carries the correct metadata.
+# `perl-lsp-rs` is the implementation library behind the public `perllsp`
+# product and intentionally publishes no executable target. Users who want the
+# language-server command should install `perllsp`, whose release metadata maps
+# to the actual cross-platform release assets.
 
 [[bench]]
 name = "rope_performance_benchmark"
