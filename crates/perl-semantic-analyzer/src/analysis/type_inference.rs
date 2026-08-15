@@ -381,6 +381,14 @@ impl TypeInferenceEngine {
         fact
     }
 
+    /// Sets a source-backed fact in the engine's global environment.
+    ///
+    /// This is useful for provider integrations that receive richer facts from
+    /// an upstream semantic pass than the local expression walk can derive.
+    pub fn set_variable_fact(&mut self, name: String, fact: TypeFact) {
+        self.global_env.set_variable_fact(name, fact);
+    }
+
     /// Infer type for a single node
     fn infer_node(
         &mut self,
