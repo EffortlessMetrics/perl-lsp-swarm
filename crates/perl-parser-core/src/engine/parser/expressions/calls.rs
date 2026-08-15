@@ -621,8 +621,10 @@ impl<'a> Parser<'a> {
             let mut variables = Vec::new();
 
             while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
+                // Declaration-as-argument list forms share per-item attribute
+                // attachment with statement-form `my ($x :shared, $y)`.
                 let var = self.parse_variable_list_item()?;
-                variables.push(var);
+                variables.push(self.with_optional_list_item_attributes(var)?);
 
                 if self.peek_kind() == Some(TokenKind::Comma) {
                     self.consume_token()?; // consume comma

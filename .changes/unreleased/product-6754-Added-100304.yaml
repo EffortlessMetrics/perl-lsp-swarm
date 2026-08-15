@@ -1,0 +1,14 @@
+project: product
+component: Packaging and distribution
+kind: Added
+body: >-
+  Add one machine-readable identity contract for perl-lsp, the perllsp server
+  package and executable, the perl-lsp-rs implementation crate and compatibility
+  binary, the VS Code extension, and perl-dap. Validate the contract alongside
+  version synchronization so matching version strings cannot hide package,
+  executable, extension, repository, or DAP identity drift.
+time: 2026-08-11T10:03:04Z
+custom:
+  PR: "6754"
+  Slug: product-identity-contract
+  Breaking: "no"
