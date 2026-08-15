@@ -6,6 +6,7 @@ on:
       - agent/corpus-root-authority-6980
     paths:
       - .github/workflows/tmp-corpus-root-authority-6980.yml
+      - crates/perl-corpus/src/api.rs
 
 permissions:
   contents: write
