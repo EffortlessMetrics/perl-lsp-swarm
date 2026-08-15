@@ -541,8 +541,8 @@ fn package_from_type(ty: &PerlType) -> Option<String> {
 /// Collects every distinct package name reachable from a type fact.
 ///
 /// For a plain `Object(Foo)` this returns `["Foo"]`.  For a
-/// `Union(Object(Foo), Object(Bar), Scalar(Int))` it returns `["Foo", "Bar"]`
-/// (non-object union arms are silently skipped).
+/// `Union(Object(Foo), Object(Bar), Scalar(Int))` returns an empty vec because
+/// a mixed union cannot safely dispatch object methods.
 ///
 /// Duplicates are removed; the first occurrence wins.  When the type fact
 /// carries no package (e.g. `Any`, `Scalar`, or a pure shape fact without an
@@ -551,7 +551,7 @@ fn all_packages_from_type_fact(fact: &TypeFact) -> Vec<String> {
     let mut packages: Vec<String> = all_packages_from_type(&fact.ty);
 
     // If no package was found from the type itself, check the shape field.
-    if packages.is_empty() {
+    if packages.is_empty() && !contains_union(&fact.ty) {
         if let Some(ShapeFact::Object(shape)) = &fact.shape {
             packages.push(shape.package.clone());
         }
@@ -563,24 +563,34 @@ fn all_packages_from_type_fact(fact: &TypeFact) -> Vec<String> {
 /// Recursively collects all distinct package names from a Perl type.
 fn all_packages_from_type(ty: &PerlType) -> Vec<String> {
     let mut packages: Vec<String> = vec![];
-    collect_packages_from_type(ty, &mut packages);
+    if !collect_packages_from_type(ty, &mut packages) {
+        packages.clear();
+    }
     packages
 }
 
-fn collect_packages_from_type(ty: &PerlType, packages: &mut Vec<String>) {
+fn collect_packages_from_type(ty: &PerlType, packages: &mut Vec<String>) -> bool {
     match ty {
         PerlType::Object(package) => {
             if !packages.contains(package) {
                 packages.push(package.clone());
             }
+            true
         }
         PerlType::Reference(inner) => collect_packages_from_type(inner, packages),
         PerlType::Union(types) => {
-            for inner in types {
-                collect_packages_from_type(inner, packages);
-            }
+            !types.is_empty()
+                && types.iter().all(|inner| collect_packages_from_type(inner, packages))
         }
-        _ => {}
+        _ => false,
+    }
+}
+
+fn contains_union(ty: &PerlType) -> bool {
+    match ty {
+        PerlType::Reference(inner) => contains_union(inner),
+        PerlType::Union(_) => true,
+        _ => false,
     }
 }
 
@@ -900,10 +910,25 @@ mod tests {
         Ok(())
     }
 
+    /// A union mixing object and non-object arms yields **no** candidates.
+    ///
+    /// #9493 introduced `candidate_packages` with no consumer and collected
+    /// object arms while silently skipping non-object ones. #9500 adds the first
+    /// consumer — union-receiver method completion — which makes that permissive
+    /// reading unsafe: `Union(Object(Foo), Object(Bar), Scalar)` would collect two
+    /// packages, satisfy `is_union_receiver()`, and offer `Foo`/`Bar` methods on a
+    /// receiver that may hold a plain string.
+    ///
+    /// Package collection is therefore all-or-nothing: unless *every* arm resolves
+    /// to an object (through references), the candidate set is empty and the
+    /// receiver falls back to the existing bounded path. This tightens #9493's
+    /// contract rather than weakening a proof — the field's only consumer is the
+    /// completion dispatch added here, so no other behaviour depends on the old
+    /// permissive reading.
     #[test]
-    fn union_with_mixed_types_skips_non_object_arms() -> Result<(), String> {
+    fn union_with_mixed_types_yields_no_candidates() -> Result<(), String> {
         let mut env = TypeEnvironment::new();
-        // Union of Object + scalar — only object arm produces a candidate.
+        // Union of Object + scalar — mixed arms cannot safely dispatch methods.
         env.set_variable_fact(
             "obj".to_string(),
             TypeFact {
@@ -920,9 +945,46 @@ mod tests {
 
         let fact = receiver_fact_for("$obj->run();", "run", &env)?;
 
-        assert_eq!(fact.candidate_packages, vec!["My::Widget"]);
-        // Only one distinct package, so not a union receiver.
+        assert!(
+            fact.candidate_packages.is_empty(),
+            "mixed object/non-object union must fail closed, got {:?}",
+            fact.candidate_packages
+        );
         assert!(!fact.is_union_receiver());
+        Ok(())
+    }
+
+    /// The multi-object variant of the mixed union: two object arms plus a
+    /// scalar. Under #9493's permissive collection this produced two candidates
+    /// and would have satisfied `is_union_receiver()`, routing an unsafe receiver
+    /// into union method dispatch. This is the case the single-object test above
+    /// could not discriminate, because one object arm keeps the length at one.
+    #[test]
+    fn multi_object_union_with_non_object_arm_yields_no_candidates() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "obj".to_string(),
+            TypeFact {
+                ty: PerlType::Union(vec![
+                    PerlType::Object("My::Widget".to_string()),
+                    PerlType::Object("My::Gadget".to_string()),
+                    PerlType::Scalar(super::super::type_inference::ScalarType::String),
+                ]),
+                confidence: Confidence::High,
+                evidence: vec![],
+                dynamic_boundary: None,
+                shape: None,
+            },
+        );
+
+        let fact = receiver_fact_for("$obj->run();", "run", &env)?;
+
+        assert!(
+            fact.candidate_packages.is_empty(),
+            "multi-object mixed union must fail closed, got {:?}",
+            fact.candidate_packages
+        );
+        assert!(!fact.is_union_receiver(), "mixed union must never present as a union receiver");
         Ok(())
     }
 
