@@ -54,7 +54,7 @@ live_edit
   one Zed setting changes while the session is running
 ```
 
-Each role records its own settings digest and receipt digest. All roles share one `host_identity_sha256`; a receipt from another Zed build, extension tree, binary, platform, or fixture cannot satisfy the experiment.
+Each role records its own `relative_path` next to the aggregate receipt, plus its settings digest, receipt digest, and host identity digest. The validator loads and hashes each referenced receipt's exact bytes, runs the `zed_host_compat.v1` pass authority on them, and derives `settings_sha256` and `host_identity_sha256` from those bytes — fabricated summaries, byte drift, or one receipt relabeled across roles cannot promote the experiment. All roles share one derived `host_identity_sha256`; a receipt from another Zed build, extension tree, binary, platform, or fixture cannot satisfy the experiment.
 
 ## Precedence proof
 

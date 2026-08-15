@@ -5,7 +5,8 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -18,6 +19,18 @@ fn content_sha256(bytes: &[u8]) -> String {
         encoded.push_str(&format!("{byte:02x}"));
     }
     encoded
+}
+
+fn host_receipt_loader(receipt_dir: &Path, relative: &str) -> Result<Vec<u8>, String> {
+    let relative_path = Path::new(relative);
+    if relative.trim().is_empty()
+        || relative_path.is_absolute()
+        || relative_path.components().any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("host receipt paths must stay inside the run directory".to_string());
+    }
+    fs::read(receipt_dir.join(relative_path))
+        .map_err(|error| format!("failed to read host receipt `{relative}`: {error}"))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -57,7 +70,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
         }
     }
-    zed_settings_behavior::validate_receipt(&receipt, &contract).map_err(io::Error::other)?;
-    println!("Zed settings behavior receipt checks passed.");
+    let receipt_dir = receipt_path
+        .parent()
+        .ok_or_else(|| io::Error::other("receipt path has no run directory"))?;
+    let loader = |relative: &str| host_receipt_loader(receipt_dir, relative);
+    zed_settings_behavior::validate_receipt(&receipt, &contract, &loader)
+        .map_err(io::Error::other)?;
+    writeln!(io::stdout(), "Zed settings behavior receipt checks passed.")?;
     Ok(())
 }

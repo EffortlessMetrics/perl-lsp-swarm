@@ -1,3 +1,6 @@
+#[path = "zed_host_compat.rs"]
+mod zed_host_compat;
+
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -11,6 +14,31 @@ fn digest(value: &Value, pointer: &str) -> bool {
             && value.len() == 71
             && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
     })
+}
+
+/// Validate one probe value against the complete referenced schema node for
+/// every supported type, not only string enums.
+fn value_matches_schema(value: &Value, node: &Value) -> bool {
+    match node.get("type").and_then(Value::as_str) {
+        Some("boolean") => value.is_boolean(),
+        Some("string") => match node.get("enum").and_then(Value::as_array) {
+            Some(allowed) => allowed.contains(value),
+            None => value.is_string(),
+        },
+        Some("integer") => value.as_i64().is_some_and(|number| {
+            node.get("minimum").and_then(Value::as_f64).is_none_or(|bound| number as f64 >= bound)
+                && node
+                    .get("maximum")
+                    .and_then(Value::as_f64)
+                    .is_none_or(|bound| number as f64 <= bound)
+        }),
+        Some("array") => value.as_array().is_some_and(|items| {
+            node.get("items").map_or(true, |item_node| {
+                items.iter().all(|item| value_matches_schema(item, item_node))
+            })
+        }),
+        _ => false,
+    }
 }
 
 fn probes(value: &Value) -> Result<BTreeMap<String, &Value>, String> {
@@ -81,16 +109,13 @@ pub fn validate_contract(contract: &Value, schema: &Value) -> Result<(), String>
         if node.get("type").and_then(Value::as_str) != Some(expected_type) {
             return Err(format!("probe `{id}` type drift"));
         }
-        if expected_type == "string" {
-            let allowed = node
-                .get("enum")
-                .and_then(Value::as_array)
-                .ok_or_else(|| format!("probe `{id}` lacks a canonical enum"))?;
-            if !allowed.contains(row.get("project_value").unwrap_or(&Value::Null))
-                || !allowed.contains(row.get("zed_value").unwrap_or(&Value::Null))
-            {
-                return Err(format!("probe `{id}` uses a non-canonical enum value"));
-            }
+        if expected_type == "string" && node.get("enum").and_then(Value::as_array).is_none() {
+            return Err(format!("probe `{id}` lacks a canonical enum"));
+        }
+        if !value_matches_schema(row.get("project_value").unwrap_or(&Value::Null), node)
+            || !value_matches_schema(row.get("zed_value").unwrap_or(&Value::Null), node)
+        {
+            return Err(format!("probe `{id}` uses a value the canonical schema rejects"));
         }
         types.insert(expected_type);
     }
@@ -105,7 +130,45 @@ pub fn validate_contract(contract: &Value, schema: &Value) -> Result<(), String>
     Ok(())
 }
 
-pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String> {
+/// Identity fields a host receipt binds to its exact Zed build, extension
+/// tree, perllsp binary, platform, and fixture subject. The aggregate
+/// `host_identity_sha256` is derived from these loaded bytes, never trusted
+/// from the aggregate row.
+const HOST_IDENTITY_POINTERS: &[&str] = &[
+    "/zed/version",
+    "/zed/channel",
+    "/zed/build",
+    "/extension/base_commit",
+    "/extension/candidate_commit",
+    "/extension/manifest_version",
+    "/extension/wasm_sha256",
+    "/extension/install_route",
+    "/perllsp/version",
+    "/perllsp/build_commit",
+    "/perllsp/binary_sha256",
+    "/perllsp/resolution_route",
+    "/platform/os",
+    "/platform/version",
+    "/platform/architecture",
+    "/workspace/fixture_id",
+    "/workspace/fixture_sha256",
+    "/workspace/root_identity",
+];
+
+pub fn derived_host_identity(host: &Value) -> Option<String> {
+    let fields: Vec<&str> = HOST_IDENTITY_POINTERS
+        .iter()
+        .map(|pointer| host.pointer(pointer).and_then(Value::as_str))
+        .collect::<Option<Vec<_>>>()?;
+    let bytes = serde_json::to_vec(&fields).ok()?;
+    Some(zed_host_compat::content_sha256(&bytes))
+}
+
+pub fn validate_receipt(
+    receipt: &Value,
+    contract: &Value,
+    host_receipt_loader: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
     if receipt.get("schema_version").and_then(Value::as_str)
         != Some("zed_settings_behavior_receipt.v1")
     {
@@ -146,11 +209,18 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         .and_then(Value::as_array)
         .ok_or_else(|| "missing host receipts".to_string())?;
     let mut roles = BTreeSet::new();
-    let mut identity: Option<&str> = None;
+    let mut identity: Option<String> = None;
+    let mut seen_paths = BTreeSet::new();
+    let mut seen_digests = BTreeSet::new();
     for row in host_rows {
         let role = row.get("role").and_then(Value::as_str).unwrap_or_default();
         roles.insert(role);
         let current = text(row, "/host_identity_sha256");
+        let relative_path = text(row, "/relative_path")
+            .ok_or_else(|| format!("host role `{role}` lacks a referenced host receipt path"))?;
+        if !seen_paths.insert(relative_path.to_string()) {
+            return Err(format!("host role `{role}` reuses another role's host receipt path"));
+        }
         if row.get("schema_version").and_then(Value::as_str) != Some("zed_host_compat.v1")
             || row.get("evidence_stage").and_then(Value::as_str)
                 != Some("exact_source_dev_extension")
@@ -158,11 +228,52 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
             || !digest(row, "/receipt_sha256")
             || !digest(row, "/settings_sha256")
             || current.is_none()
-            || identity.is_some_and(|expected| Some(expected) != current)
         {
             return Err(format!("host role `{role}` lacks a matching exact receipt"));
         }
-        identity = current;
+        let bytes = host_receipt_loader(relative_path).map_err(|error| {
+            format!("host role `{role}` receipt `{relative_path}` could not be loaded: {error}")
+        })?;
+        let receipt_digest = zed_host_compat::content_sha256(&bytes);
+        if row.get("receipt_sha256").and_then(Value::as_str) != Some(receipt_digest.as_str()) {
+            return Err(format!(
+                "host role `{role}` receipt_sha256 does not match the referenced receipt bytes"
+            ));
+        }
+        if !seen_digests.insert(receipt_digest) {
+            return Err(format!("host role `{role}` relabels another role's host receipt bytes"));
+        }
+        let host: Value = serde_json::from_slice(&bytes).map_err(|error| {
+            format!("host role `{role}` receipt `{relative_path}` is not valid JSON: {error}")
+        })?;
+        zed_host_compat::validate_pass(&host, None).map_err(|error| {
+            format!("host role `{role}` receipt failed exact-source validation: {error}")
+        })?;
+        if host.get("schema_version") != row.get("schema_version")
+            || host.get("evidence_stage") != row.get("evidence_stage")
+            || host.get("result") != row.get("result")
+        {
+            return Err(format!(
+                "host role `{role}` summary disagrees with the loaded receipt bytes"
+            ));
+        }
+        let loaded_settings =
+            host.pointer("/configuration/settings_sha256").and_then(Value::as_str);
+        if row.get("settings_sha256").and_then(Value::as_str) != loaded_settings {
+            return Err(format!(
+                "host role `{role}` settings_sha256 is not the loaded receipt's settings digest"
+            ));
+        }
+        let derived = derived_host_identity(&host);
+        if derived.as_deref() != current {
+            return Err(format!(
+                "host role `{role}` host_identity_sha256 is not derived from its receipt bytes"
+            ));
+        }
+        if identity.as_deref().is_some_and(|expected| Some(expected) != current) {
+            return Err(format!("host role `{role}` binds a different exact host"));
+        }
+        identity = current.map(str::to_string);
     }
     let expected_roles =
         BTreeSet::from(["project_only", "zed_override", "zed_override_removed", "live_edit"]);
