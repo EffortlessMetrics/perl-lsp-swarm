@@ -133,18 +133,39 @@ fn mutation_controls_reject_flattened_or_process_mixed_examples() -> Result<(), 
         .ok_or_else(|| io::Error::other("missing perl settings"))?
         .take();
     flattened["example"]["lsp"]["perllsp"]["settings"] = perl;
+<<<<<<< HEAD
     assert!(validate_example(&flattened).is_err());
+=======
+    assert!(
+        validate_example(&flattened).is_err(),
+        "contract invariant failed: validate_example(&flattened).is_err()"
+    );
+>>>>>>> origin/main
 
     let mut process_mixed = contract.clone();
     process_mixed["example"]["lsp"]["perllsp"]["settings"]["binary"] =
         serde_json::json!({"path": "/wrong/place"});
+<<<<<<< HEAD
     assert!(validate_example(&process_mixed).is_err());
+=======
+    assert!(
+        validate_example(&process_mixed).is_err(),
+        "contract invariant failed: validate_example(&process_mixed).is_err()"
+    );
+>>>>>>> origin/main
 
     let mut init_default = contract;
     init_default["example"]["initialization_options"] = serde_json::json!({
         "perl": {"workspace": {"includePaths": ["lib"]}}
     });
+<<<<<<< HEAD
     assert!(validate_example(&init_default).is_err());
+=======
+    assert!(
+        validate_example(&init_default).is_err(),
+        "contract invariant failed: validate_example(&init_default).is_err()"
+    );
+>>>>>>> origin/main
 
     Ok(())
 }
