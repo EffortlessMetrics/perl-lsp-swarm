@@ -174,9 +174,7 @@ use crate::lexer::helpers::{
     empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast,
     is_perl_punctuation_variable, is_quote_op_word_prefix, truncate_preview,
 };
-use crate::limits::{
-    HEREDOC_TIMEOUT_MS, MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES,
-};
+use crate::limits::{MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES};
 
 impl<'a> PerlLexer<'a> {
     /// Create a new lexer that emits `HeredocBody` tokens (for LSP folding)
@@ -189,6 +187,56 @@ impl<'a> PerlLexer<'a> {
     /// Set the lexer mode (for resetting state at statement boundaries)
     pub fn set_mode(&mut self, mode: LexerMode) {
         self.mode = mode;
+    }
+
+    fn heredoc_budget_recovery(&mut self, body_start: usize) -> Token {
+        self.pending_heredocs.remove(0);
+        self.position = self.input.len();
+        Token {
+            token_type: TokenType::UnknownRest,
+            text: empty_arc(),
+            start: body_start,
+            end: self.input.len(),
+        }
+    }
+
+    fn heredoc_terminator_line_end(
+        &self,
+        line_start: usize,
+        label: &str,
+        allow_indent: bool,
+    ) -> Option<usize> {
+        // A delimiter line is not part of the body budget, but probing it must
+        // still be bounded. Reuse the body cap as the maximum delimiter-line
+        // inspection window; pathological indentation or trailing whitespace
+        // therefore cannot restore an unbounded scan.
+        let scan_end = line_start.saturating_add(MAX_HEREDOC_BYTES).min(self.input_bytes.len());
+        let mut cursor = line_start;
+
+        if allow_indent {
+            while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
+                cursor += 1;
+            }
+        }
+
+        let label_end = cursor.checked_add(label.len())?;
+        if label_end > scan_end || self.input.get(cursor..label_end) != Some(label) {
+            return None;
+        }
+        cursor = label_end;
+
+        while cursor < scan_end && matches!(self.input_bytes[cursor], b' ' | b'\t') {
+            cursor += 1;
+        }
+
+        if cursor == self.input_bytes.len()
+            || (cursor < self.input_bytes.len()
+                && matches!(self.input_bytes[cursor], b'\n' | b'\r'))
+        {
+            Some(cursor)
+        } else {
+            None
+        }
     }
 
     /// Advance the lexer and return the next token.
@@ -234,91 +282,47 @@ impl<'a> PerlLexer<'a> {
                     };
 
                 if body_start > 0 {
-                    // We're inside a heredoc body - scan for the terminator
+                    // Include exactly the first byte above the accepted body budget.
+                    // All physical-line searches use this absolute endpoint, so a
+                    // missing newline cannot scan the remainder of a large document.
+                    let body_scan_end =
+                        body_start.saturating_add(MAX_HEREDOC_BYTES + 1).min(self.input.len());
 
-                    // Scan line by line looking for the terminator
                     while self.position < self.input.len() {
-                        // Timeout protection (Issue #443)
-                        if self.start_time.elapsed().as_millis() > HEREDOC_TIMEOUT_MS as u128 {
-                            self.pending_heredocs.remove(0);
-                            self.position = self.input.len();
-                            return Some(Token {
-                                token_type: TokenType::Error(Arc::from("Heredoc parsing timeout")),
-                                text: Arc::from(&self.input[body_start..]),
-                                start: body_start,
-                                end: self.input.len(),
-                            });
-                        }
-
-                        // Budget cap for huge bodies - optimized check
                         if self.position - body_start > MAX_HEREDOC_BYTES {
-                            // Remove the pending heredoc to avoid infinite loop
-                            self.pending_heredocs.remove(0);
-                            self.position = self.input.len();
-                            return Some(Token {
-                                token_type: TokenType::UnknownRest,
-                                text: Arc::from(&self.input[body_start..]),
-                                start: body_start,
-                                end: self.input.len(),
-                            });
+                            return Some(self.heredoc_budget_recovery(body_start));
                         }
 
-                        // Skip to start of next line if not at line start
-                        // Exception: if we're at body_start exactly, we're at the heredoc body start
+                        // Skip to the next line start without crossing the body bound.
                         if !self.after_newline && self.position != body_start {
-                            while self.position < self.input.len()
+                            while self.position < body_scan_end
                                 && self.input_bytes[self.position] != b'\n'
                                 && self.input_bytes[self.position] != b'\r'
                             {
                                 self.advance();
                             }
                             self.consume_newline();
+                            if self.position - body_start > MAX_HEREDOC_BYTES {
+                                return Some(self.heredoc_budget_recovery(body_start));
+                            }
                             continue;
                         }
 
-                        // We're at line start - check if this line is the terminator
                         let line_start = self.position;
-                        let line_end = Self::find_line_end(self.input_bytes, self.position);
-                        let line = &self.input[line_start..line_end];
-                        // Strip trailing spaces/tabs (Perl allows them)
-                        let trimmed_end = line.trim_end_matches([' ', '\t']);
-
-                        // Check if this line is the terminator
-                        let is_terminator = if allow_indent {
-                            // Allow any leading spaces/tabs before the label
-                            let mut p = 0;
-                            while p < trimmed_end.len() {
-                                let b = trimmed_end.as_bytes()[p];
-                                if b == b' ' || b == b'\t' {
-                                    p += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                            trimmed_end[p..] == *label
-                        } else {
-                            // Must start at column 0 (no leading whitespace)
-                            // The terminator is just the label (already trimmed trailing whitespace)
-                            trimmed_end == &*label
-                        };
-
-                        if is_terminator {
-                            // Found the terminator!
+                        if let Some(line_end) =
+                            self.heredoc_terminator_line_end(line_start, &label, allow_indent)
+                        {
                             self.pending_heredocs.remove(0);
                             found_terminator = true;
-
-                            // Consume past the terminator line
                             self.position = line_end;
                             self.consume_newline();
 
-                            // Set body_start for the next pending heredoc (if any)
                             if let Some(next) = self.pending_heredocs.first_mut()
                                 && next.body_start == 0
                             {
                                 next.body_start = self.position;
                             }
 
-                            // Only emit HeredocBody if requested (for folding)
                             if self.emit_heredoc_body_tokens {
                                 return Some(Token {
                                     token_type: TokenType::HeredocBody(empty_arc()),
@@ -327,18 +331,25 @@ impl<'a> PerlLexer<'a> {
                                     end: line_start,
                                 });
                             }
-                            // Otherwise, continue the outer loop to get the next real token (avoiding recursion)
-                            break; // Break inner while loop, continue outer loop
+                            break;
                         }
 
-                        // Not the terminator, continue to next line
+                        let line_end =
+                            Self::find_line_end(&self.input_bytes[..body_scan_end], self.position);
+                        if line_end - body_start > MAX_HEREDOC_BYTES {
+                            return Some(self.heredoc_budget_recovery(body_start));
+                        }
+
                         self.position = line_end;
                         self.consume_newline();
+                        if self.position - body_start > MAX_HEREDOC_BYTES {
+                            return Some(self.heredoc_budget_recovery(body_start));
+                        }
                     }
 
-                    // If we didn't find a terminator, we reached EOF - emit error token
+                    // EOF inside the budget retains its bounded source payload.
+                    // Over-budget recovery is geometry-only in the helper above.
                     if !found_terminator {
-                        // Remove the pending heredoc to avoid infinite loop
                         self.pending_heredocs.remove(0);
                         self.position = self.input.len();
                         return Some(Token {
@@ -531,7 +542,6 @@ impl<'a> PerlLexer<'a> {
         let saved_line_start_offset = self.line_start_offset;
         let saved_current_quote_op = self.current_quote_op.clone();
         let saved_eof_emitted = self.eof_emitted;
-        let saved_start_time = self.start_time;
 
         let token = self.next_token();
 
@@ -551,7 +561,6 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = saved_line_start_offset;
         self.current_quote_op = saved_current_quote_op;
         self.eof_emitted = saved_eof_emitted;
-        self.start_time = saved_start_time;
 
         token
     }
@@ -592,7 +601,6 @@ impl<'a> PerlLexer<'a> {
         self.line_start_offset = 0;
         self.current_quote_op = None;
         self.eof_emitted = false;
-        self.start_time = std::time::Instant::now();
     }
 
     /// Switch the lexer into format-body parsing mode.

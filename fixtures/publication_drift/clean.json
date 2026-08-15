@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "swarm": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tree_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "version": "0.17.0"
+  },
+  "public": {
+    "repository": "EffortlessMetrics/perl-lsp",
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "tree_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "version": "0.17.0"
+  },
+  "manifest": {
+    "path": "fixtures/publication_drift/publication_manifest.v1.json",
+    "sha256": "f308d3152ad057c21a49e3bbc74e1bd1e48a08c293ee2a58aa547c1f23a48aad",
+    "swarm_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "public_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "differences": [
+    {
+      "path": "README.md",
+      "classification": "expected_publication_translation",
+      "behavior_changed": false,
+      "manifest_rule": "publication_context.repository_links",
+      "owner": "release-engineering",
+      "evidence": [
+        "Repository and branch links were translated for the public context."
+      ]
+    }
+  ],
+  "invariants": [
+    {
+      "id": "targets_requested_are_built",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "targets_requested_are_built is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "archive_members_match_consumers",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "archive_members_match_consumers is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "server_dap_pairing",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "server_dap_pairing is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "extension_claims_match_vsix",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "extension_claims_match_vsix is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "public_install_docs_are_executable",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "public_install_docs_are_executable is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "support_posture_matches_claims",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "support_posture_matches_claims is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "artifact_traceable_to_public_sha",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "artifact_traceable_to_public_sha is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "product_path_coverage_complete",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "product_path_coverage_complete is proven by the exact-SHA comparison packet."
+      ]
+    },
+    {
+      "id": "release_repo_unique_dispositions_complete",
+      "status": "pass",
+      "owner": "release-engineering",
+      "evidence": [
+        "release_repo_unique_dispositions_complete is proven by the exact-SHA comparison packet."
+      ]
+    }
+  ]
+}

@@ -7,79 +7,86 @@ source = "ruleset-conventional"
 # required by `cargo xtask merge-ready`.
 
 [[check]]
-name = "CI Gate"
-workflow = ".github/workflows/ci.yml"
-required = true
+  name = "CI Gate"
+  workflow = ".github/workflows/ci.yml"
+  required = true
 
 
 [[check]]
-name = "Methodology Gate"
-workflow = ".github/workflows/methodology-gate.yml"
-required = false
+  name = "Methodology Gate"
+  workflow = ".github/workflows/methodology-gate.yml"
+  required = false
 
 [[checks]]
-name = "Perl LSP Rust Small Result"
-workflow = ".github/workflows/em-ci-routed-rust.yml"
-required = true
-enforcement = "github-branch-protection"
-reason = "Live main protection requires the routed Rust aggregate before merge."
+  name = "Perl LSP Rust Small Result"
+  workflow = ".github/workflows/em-ci-routed-rust.yml"
+  required = true
+  enforcement = "github-branch-protection"
+  reason = "Live main protection requires the routed Rust aggregate before merge."
 
 [[checks]]
-name = "ripr+ New Gap Gate"
-workflow = ".github/workflows/ripr.yml"
-required = true
-enforcement = "github-branch-protection"
-reason = "Deterministic RIPR receipts are required; named new gaps in changed production files block, while sensor availability remains advisory."
+  name = "ripr+ New Gap Gate"
+  workflow = ".github/workflows/ripr.yml"
+  required = true
+  enforcement = "github-branch-protection"
+  reason = "Deterministic RIPR receipts are required; named new gaps in changed production files block, while sensor availability remains advisory."
 
 [[checks]]
-name = "Compile All Targets (bit-rot guard)"
-workflow = ".github/workflows/ci.yml"
-required = true
-enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, catching integration-test and bench bit-rot."
+  name = "Compile All Targets (bit-rot guard)"
+  workflow = ".github/workflows/ci.yml"
+  required = true
+  enforcement = "github-ruleset"
+  reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, catching integration-test and bench bit-rot."
 
 [[checks]]
-name = "Conflict marker check"
-workflow = ".github/workflows/ci.yml"
-required = true
-enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge."
+  name = "Conflict marker check"
+  workflow = ".github/workflows/ci.yml"
+  required = true
+  enforcement = "github-ruleset"
+  reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge."
 
 [[checks]]
-name = "validate-title"
-workflow = ".github/workflows/pr-title-check.yml"
-required = true
-enforcement = "github-ruleset"
-reason = "Live main ruleset (id 16664791) requires PR title validation before merge."
+  name = "validate-title"
+  workflow = ".github/workflows/pr-title-check.yml"
+  required = true
+  enforcement = "github-ruleset"
+  reason = "Live main ruleset (id 16664791) requires PR title validation before merge."
 
 [[checks]]
-name = "Codecov / Patch 95"
-workflow = ".github/workflows/ci-nightly.yml"
-required = false
-enforcement = "advisory-nightly-or-manual"
-reason = "Coverage is advisory and expensive; RIPR+ plus focused tests are the required PR proof."
+  name = "Rust formatting"
+  workflow = ".github/workflows/ci.yml"
+  required = false
+  enforcement = "advisory"
+  reason = "Post-merge promotion target tracked by #6202 and #7087; live ruleset promotion is deferred until the candidate lands and merge-group evidence is current."
 
 [[checks]]
-name = "codecov/patch"
-workflow = "codecov"
-required = false
-enforcement = "advisory-nightly-or-manual"
-reason = "External Codecov telemetry may report coverage, but it must not block normal PR or merge-queue flow."
+  name = "Codecov / Patch 95"
+  workflow = ".github/workflows/ci-nightly.yml"
+  required = false
+  enforcement = "advisory-nightly-or-manual"
+  reason = "Coverage is advisory and expensive; RIPR+ plus focused tests are the required PR proof."
 
 [[checks]]
-name = "tokmd Review Cockpit"
-workflow = ".github/workflows/tokmd.yml"
-# Phase 1: advisory-only (visibility gate, no merge blocking).
-# Promotion to required = true tracked in #4993 (Phase 2/3).
+  name = "codecov/patch"
+  workflow = "codecov"
+  required = false
+  enforcement = "advisory-nightly-or-manual"
+  reason = "External Codecov telemetry may report coverage, but it must not block normal PR or merge-queue flow."
 
 [[checks]]
-name = "PR Smoke"
-workflow = ".github/workflows/ci.yml"
+  name = "tokmd Review Cockpit"
+  workflow = ".github/workflows/tokmd.yml"
+  # Phase 1: advisory-only (visibility gate, no merge blocking).
+  # Promotion to required = true tracked in #4993 (Phase 2/3).
 
 [[checks]]
-name = "UX Regression Tests"
-workflow = ".github/workflows/ux-regression-gate.yml"
+  name = "PR Smoke"
+  workflow = ".github/workflows/ci.yml"
 
 [[checks]]
-name = "Merge Gate"
-workflow = ".github/workflows/ci.yml"
+  name = "UX Regression Tests"
+  workflow = ".github/workflows/ux-regression-gate.yml"
+
+[[checks]]
+  name = "Merge Gate"
+  workflow = ".github/workflows/ci.yml"

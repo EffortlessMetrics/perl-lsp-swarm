@@ -22,6 +22,8 @@ struct ParserAccuracyFixture {
     ast_expectations: Vec<AstExpectation>,
     #[serde(default)]
     forbidden_nodes: Vec<ForbiddenNode>,
+    #[serde(default)]
+    recovery_expectations: Vec<RecoveryExpectation>,
 }
 
 /// A node shape that must NOT appear at a given position.
@@ -46,6 +48,20 @@ struct ForbiddenNode {
     parent_kind: Option<String>,
     #[serde(default)]
     depth: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecoveryExpectation {
+    id: String,
+    first_error_line: usize,
+    error_region: LineRange,
+    recovery_line: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct LineRange {
+    start: usize,
+    end: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +107,7 @@ const E2E_FIXTURES: &[&str] = &[
     "medium_method_call",
     "method_decl",
     "generated_accessor",
+    "heuristic_generated_member",
     "slash_ambiguity",
     "control_flow_core",
     "dynamic_require_boundary",
@@ -179,6 +196,173 @@ fn parser_accuracy_fixtures_satisfy_manifest_ast_expectations() -> TestResult {
 
     assert!(exercised > 0, "selected parser accuracy e2e fixtures should include AST expectations");
     Ok(())
+}
+
+/// Recovery fixtures whose live `parse_with_recovery` diagnostic geometry still
+/// diverges from the manifest contract.
+///
+/// Empty after #9153 pinned unterminated-heredoc diagnostics to the opener.
+/// Keep the exact-set ratchet so a future parked fixture cannot silently
+/// vanish from both the allowlist and the hard oracle.
+const RECOVERY_GEOMETRY_FOLLOWUPS: &[&str] = &[];
+
+#[test]
+fn recovery_fixtures_report_their_expected_error_boundary() -> TestResult {
+    let workspace_root = workspace_root();
+    let manifest_json = fs::read_to_string(
+        workspace_root
+            .join("crates")
+            .join("perl-corpus")
+            .join("fixtures")
+            .join("parser_accuracy")
+            .join("manifest.json"),
+    )?;
+    let manifest: ParserAccuracyManifest = serde_json::from_str(&manifest_json)?;
+
+    // Drive from every manifest fixture that declares recovery expectations and
+    // every expectation row within them — `.first()` / hardcoded allowlists
+    // silently drop contracts such as `post_error_package_sub_recovery`.
+    let followups: std::collections::BTreeSet<&str> =
+        RECOVERY_GEOMETRY_FOLLOWUPS.iter().copied().collect();
+    let mut seen_followups = std::collections::BTreeSet::new();
+    let mut exercised = 0usize;
+    for fixture in &manifest.fixtures {
+        if fixture.recovery_expectations.is_empty() {
+            continue;
+        }
+        if followups.contains(fixture.id.as_str()) {
+            seen_followups.insert(fixture.id.as_str());
+            // Still require a nonempty diagnostic set so the follow-up fixture
+            // cannot go silent while parked.
+            let source = fs::read_to_string(workspace_root.join(&fixture.source_path))?;
+            let mut parser = Parser::new(&source);
+            let output = parser.parse_with_recovery();
+            assert!(
+                !output.diagnostics.is_empty(),
+                "follow-up recovery fixture '{}' must still emit diagnostics",
+                fixture.id
+            );
+            continue;
+        }
+
+        let source_path = workspace_root.join(&fixture.source_path);
+        let source = fs::read_to_string(&source_path)?;
+        let mut parser = Parser::new(&source);
+        let output = parser.parse_with_recovery();
+        let mut diagnostic_lines = std::collections::BTreeSet::new();
+        for diagnostic in &output.diagnostics {
+            if let Some(offset) = diagnostic.location() {
+                diagnostic_lines.insert(byte_offset_to_line(&source, offset));
+            }
+        }
+        let mut error_node_lines = std::collections::BTreeSet::new();
+        collect_error_node_line_ranges(&output.ast, &source, &mut error_node_lines);
+        assert!(
+            !diagnostic_lines.is_empty(),
+            "recovery fixture '{}' produced no diagnostics",
+            fixture.id
+        );
+
+        for expectation in &fixture.recovery_expectations {
+            exercised += 1;
+            let expected_region = expectation.error_region.start..=expectation.error_region.end;
+            let error_node_spillover: Vec<_> = error_node_lines
+                .iter()
+                .filter(|line| !expected_region.contains(line))
+                .copied()
+                .collect();
+            assert!(
+                error_node_spillover.is_empty(),
+                "recovery fixture '{}' emitted Error AST node lines outside declared region {}..={}: {:?} ({})",
+                fixture.id,
+                expectation.error_region.start,
+                expectation.error_region.end,
+                error_node_spillover,
+                expectation.id
+            );
+            let mut error_lines = diagnostic_lines.clone();
+            error_lines.extend(error_node_lines.iter().copied());
+            assert_eq!(
+                error_lines.first().copied(),
+                Some(expectation.first_error_line),
+                "recovery fixture '{}' first error boundary drifted ({})",
+                fixture.id,
+                expectation.id
+            );
+            let spillover: Vec<_> = error_lines
+                .iter()
+                .filter(|line| !expected_region.contains(line))
+                .copied()
+                .collect();
+            assert!(
+                spillover.is_empty(),
+                "recovery fixture '{}' emitted error lines outside declared region {}..={}: {:?} ({})",
+                fixture.id,
+                expectation.error_region.start,
+                expectation.error_region.end,
+                spillover,
+                expectation.id
+            );
+            let missing_region_lines: Vec<_> =
+                expected_region.clone().filter(|line| !error_lines.contains(&line)).collect();
+            assert!(
+                missing_region_lines.is_empty(),
+                "recovery fixture '{}' missing error evidence on declared region lines {:?}: observed {:?} ({})",
+                fixture.id,
+                missing_region_lines,
+                error_lines,
+                expectation.id
+            );
+            if expectation.recovery_line <= expectation.error_region.end {
+                assert!(
+                    error_lines.contains(&expectation.recovery_line),
+                    "recovery fixture '{}' missing recovery error node/diagnostic on line {} ({})",
+                    fixture.id,
+                    expectation.recovery_line,
+                    expectation.id
+                );
+            } else {
+                assert!(
+                    !error_lines.contains(&expectation.recovery_line),
+                    "recovery fixture '{}' emitted an error on post-error recovery line {} ({})",
+                    fixture.id,
+                    expectation.recovery_line,
+                    expectation.id
+                );
+            }
+        }
+    }
+    assert_eq!(
+        seen_followups, followups,
+        "RECOVERY_GEOMETRY_FOLLOWUPS must name only current divergent recovery fixtures"
+    );
+    assert!(
+        exercised > 0,
+        "parser-accuracy manifest must declare at least one recovery expectation"
+    );
+    Ok(())
+}
+
+/// Collect every line covered by each typed `Error` node's `[start, end)` span.
+///
+/// Start-line-only collection lets a recovery node begin inside the declared
+/// region while still consuming later valid declarations; requiring the full
+/// covered line range keeps spillover assertions honest.
+fn collect_error_node_line_ranges(
+    node: &Node,
+    source: &str,
+    lines: &mut std::collections::BTreeSet<usize>,
+) {
+    if matches!(node.kind, NodeKind::Error { .. }) {
+        let start_line = byte_offset_to_line(source, node.location.start);
+        // `end` is exclusive; an empty/zero-width node still contributes its start line.
+        let end_offset = node.location.end.saturating_sub(1).max(node.location.start);
+        let end_line = byte_offset_to_line(source, end_offset);
+        for line in start_line..=end_line {
+            lines.insert(line);
+        }
+    }
+    node.for_each_child(|child| collect_error_node_line_ranges(child, source, lines));
 }
 
 /// Every fixture with expectations must declare its own coverage honestly:
