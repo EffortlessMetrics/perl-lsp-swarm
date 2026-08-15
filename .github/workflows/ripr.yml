@@ -1,4 +1,4 @@
-# ripr - portable PR evidence and review guidance (advisory)
+# ripr - required receipt gate with advisory static sensor output
 #
 # Badges are repo-scoped public state. This workflow produces diff-scoped PR
 # evidence under target/ripr/ and mutation-routing receipts under target/xtask/.
@@ -22,6 +22,9 @@
 #   - IS_FORK_PR is false — merge queue only admits trusted same-repo SHAs.
 #   - ripr diff analysis uses origin/<base_ref>..HEAD; the merge-test commit HEAD
 #     is the squash of PR + base, so the diff is semantically equivalent to PR diff.
+#   - pull_request runs also record github.event.pull_request.head.sha as
+#     PR_HEAD_SHA, separately from the evaluated merge ref. merge_group runs leave
+#     PR_HEAD_SHA empty because a queue ref may contain multiple PRs.
 
 name: ripr
 
@@ -194,6 +197,7 @@ jobs:
     env:
       RIPR_VERSION: "0.9.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
       CARGO_HOME: /mnt/ci-cache/cargo-home
       SCCACHE_DIR: /mnt/ci-cache/sccache
@@ -207,7 +211,7 @@ jobs:
         shell: bash
         run: |
           # Docker writes workspace files as root. If a previous run left root-owned
-          # files behind (e.g. cleanup step missed), actions/checkout@v7 fails with
+          # files behind (e.g. cleanup step missed), actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.0 fails with
           # EACCES when it tries to 'git clean'. Use Docker (running as root) to chown
           # back and then delete the stale workspace target/ so it cannot cause
           # `mkdir target` failures on the next run. Fall back to a host-side rm -rf
@@ -224,7 +228,7 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/target" || true
 
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
 
@@ -284,6 +288,7 @@ jobs:
             --memory="28g" \
             -e RIPR_VERSION="$RIPR_VERSION" \
             -e BASE_REF="$BASE_REF" \
+            -e PR_HEAD_SHA="$PR_HEAD_SHA" \
             -e PR_LABELS="$PR_LABELS" \
             -e CARGO_HOME=/cargo-home \
             -e SCCACHE_DIR=/sccache \
@@ -322,17 +327,17 @@ jobs:
 
               # Generation phase: keep going on individual failures so we can
               # still upload whatever artifacts were produced.
-              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD || RIPR_FAILED=1
+              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
-              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210 || RIPR_FAILED=1
+              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
               cargo xtask ripr-annotations || RIPR_FAILED=1
 
               # Validation phase.
-              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
+              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
+              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
               cargo xtask ripr-pr-summary --check
               cargo xtask ripr-annotations --check
@@ -385,7 +390,7 @@ jobs:
 
       - name: Upload ripr PR evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ripr-pr-evidence
           path: |
@@ -438,6 +443,7 @@ jobs:
     env:
       RIPR_VERSION: "0.9.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
       CARGO_HOME: /mnt/ci-cache/cargo-home
       SCCACHE_DIR: /mnt/ci-cache/sccache
@@ -451,7 +457,7 @@ jobs:
         shell: bash
         run: |
           # Docker writes workspace files as root. If a previous run left root-owned
-          # files behind (e.g. cleanup step missed), actions/checkout@v7 fails with
+          # files behind (e.g. cleanup step missed), actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.0 fails with
           # EACCES when it tries to 'git clean'. Use Docker (running as root) to chown
           # back and then delete the stale workspace target/ so it cannot cause
           # `mkdir target` failures on the next run. Fall back to a host-side rm -rf
@@ -468,7 +474,7 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/target" || true
 
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
 
@@ -532,6 +538,7 @@ jobs:
             --memory="16g" \
             -e RIPR_VERSION="$RIPR_VERSION" \
             -e BASE_REF="$BASE_REF" \
+            -e PR_HEAD_SHA="$PR_HEAD_SHA" \
             -e PR_LABELS="$PR_LABELS" \
             -e CARGO_HOME=/cargo-home \
             -e SCCACHE_DIR=/sccache \
@@ -570,17 +577,17 @@ jobs:
 
               # Generation phase: keep going on individual failures so we can
               # still upload whatever artifacts were produced.
-              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD || RIPR_FAILED=1
+              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
-              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210 || RIPR_FAILED=1
+              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 210 || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
               cargo xtask ripr-annotations || RIPR_FAILED=1
 
               # Validation phase.
-              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
+              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
+              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
               cargo xtask ripr-pr-summary --check
               cargo xtask ripr-annotations --check
@@ -633,7 +640,7 @@ jobs:
 
       - name: Upload ripr PR evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ripr-pr-evidence
           path: |
@@ -680,10 +687,11 @@ jobs:
     env:
       RIPR_VERSION: "0.9.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
 
@@ -699,7 +707,7 @@ jobs:
           echo "BASE_REF=$stripped" >> "$GITHUB_ENV"
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
@@ -713,7 +721,7 @@ jobs:
         run: ripr doctor
 
       - name: Generate PR evidence
-        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD
+        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
 
       - name: Generate repo-wide RIPR+ baseline receipt
         if: always()
@@ -721,7 +729,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 600
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
 
       - name: Generate impacted evidence
         if: always()
@@ -738,9 +746,9 @@ jobs:
       - name: Validate PR evidence contracts
         if: always()
         run: |
-          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
+          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
+          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
@@ -789,7 +797,7 @@ jobs:
 
       - name: Upload ripr PR evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ripr-pr-evidence
           path: |
@@ -829,6 +837,7 @@ jobs:
     env:
       RIPR_VERSION: "0.9.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
+      PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
     steps:
       - name: Annotate failover reason
@@ -844,7 +853,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
 
@@ -858,7 +867,7 @@ jobs:
           echo "BASE_REF=$stripped" >> "$GITHUB_ENV"
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
@@ -872,7 +881,7 @@ jobs:
         run: ripr doctor
 
       - name: Generate PR evidence
-        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD
+        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA"
 
       - name: Generate repo-wide RIPR+ baseline receipt
         if: always()
@@ -880,7 +889,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 600
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
 
       - name: Generate impacted evidence
         if: always()
@@ -897,9 +906,9 @@ jobs:
       - name: Validate PR evidence contracts
         if: always()
         run: |
-          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
+          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
           cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
+          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --check
           cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
@@ -948,7 +957,7 @@ jobs:
 
       - name: Upload ripr PR evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ripr-pr-evidence-fallback
           path: |

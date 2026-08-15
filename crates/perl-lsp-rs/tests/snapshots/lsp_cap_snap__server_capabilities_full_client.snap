@@ -87,12 +87,6 @@ inlayHintProvider:
 inlineValueProvider: true
 linkedEditingRangeProvider: true
 monikerProvider: true
-notebookDocumentSync:
-  notebookSelector:
-    - cells:
-        - language: perl
-      notebook: jupyter-notebook
-  save: true
 positionEncoding: utf-16
 referencesProvider: true
 renameProvider:

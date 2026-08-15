@@ -149,12 +149,15 @@ impl LspServer {
             // documents lock across the entire format would block every
             // other concurrent handler (hover, completion, didChange, …)
             // for the full subprocess duration (#4643).
+            //
+            // Clone from text_arc rather than text to avoid the double-store
+            // overhead — text_arc is the canonical copy (#4999).
             let text = {
                 let documents = self.documents_guard();
                 let doc = self
                     .get_document(&documents, uri)
                     .ok_or_else(|| document_not_open_error(uri))?;
-                doc.text.clone()
+                doc.text_arc.to_string()
             };
             let config = self.build_perltidy_config();
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
@@ -266,7 +269,7 @@ impl LspServer {
                 let doc = self
                     .get_document(&documents, uri)
                     .ok_or_else(|| document_not_open_error(uri))?;
-                doc.text.clone()
+                doc.text_arc.to_string()
             };
             let config = self.build_perltidy_config();
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());
@@ -344,7 +347,7 @@ impl LspServer {
                 let doc = self
                     .get_document(&documents, uri)
                     .ok_or_else(|| document_not_open_error(uri))?;
-                doc.text.clone()
+                doc.text_arc.to_string()
             };
             let config = self.build_perltidy_config();
             let formatter = CodeFormatter::with_config_and_mode(config, self.formatter_mode());

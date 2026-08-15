@@ -54,6 +54,18 @@ pub fn assert_clean_parse(source: &str) {
     );
 }
 
+/// Assert that parsing does not produce a diagnostic that makes the source
+/// fail the clean-parse contract. Recovery diagnostics may be retained for
+/// editor use, so this is intentionally weaker than asserting that the parser
+/// recorded no diagnostics at all.
+pub fn assert_no_blocking_diagnostics(source: &str) {
+    let mut parser = Parser::new(source);
+    let _ = parser.parse();
+    let blocking: Vec<_> =
+        parser.get_errors().iter().filter(|error| error.blocks_clean_parse()).collect();
+    assert!(blocking.is_empty(), "expected no blocking diagnostics, got: {blocking:#?}\n{source}");
+}
+
 /// Assert that a parsed AST contains at least one Error or Missing* node
 /// whose sexp representation contains the given `needle` substring.
 ///

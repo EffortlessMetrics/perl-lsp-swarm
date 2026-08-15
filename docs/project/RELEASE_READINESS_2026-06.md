@@ -1,16 +1,18 @@
 # Release-Readiness Bundle - 2026-06 Campaign
 
-**Status**: release-staged, maintainer-held. Do not tag, publish, or dispatch a release without Steven's explicit approval.
-**Updated**: 2026-06-22
-**Release payload SHA**: `b6785e4af8af3290d4a0dcdcc1ad31b7a57f8f12`
-**Current `origin/main` SHA at refresh**: `b6785e4af8af3290d4a0dcdcc1ad31b7a57f8f12`
+> **Historical snapshot — not current release-readiness authority.** This June bundle is retained for audit provenance and is superseded by the [v0.18 release scope](../releases/v0.18.0-scope.json) and the [current release status](status/release.md). Do not infer current readiness, merge authorization, tagging, publishing, or dispatch from this file.
+
+**Status**: historical, superseded by the v0.18 release-train authority. The dispatch hold and CPAN qualification below remain historical decisions; do not tag, publish, or dispatch a release without Steven's explicit approval.
+**Snapshot captured**: 2026-06-22
+**Release payload SHA at snapshot**: `b6785e4af8af3290d4a0dcdcc1ad31b7a57f8f12`
+**`origin/main` SHA at snapshot**: `b6785e4af8af3290d4a0dcdcc1ad31b7a57f8f12`
 **Previous readiness bundle merge SHA**: `bf4217b2073a11522db771ff5923895d935ac6d9`
 **Workspace version (`Cargo.toml`)**: `0.16.0`
 **Last release tag**: `v0.16.0` at `b6d9f12b995ad8ad78ca641940bd73e4b1a3c26d` (2026-06-06)
 
-Note: the release payload SHA is the latest audited merged main commit at this refresh. It includes the earlier closeout payload through #2047 plus the post-#2047 delta through #2606: strict/warnings fixAll dedupe (#2058), missing-pragma severity alignment (#2061), printf `%*` / `%.*` diagnostic false-positive repair (#1868), package-rename fallback safety (#2070), completion quieting in heredoc/POD/string/regex contexts (#1821, #2573, #1808, #1813), DAP transport honesty and supervision (#1790, #1809), DAP conditional-breakpoint and PR-smoke receipts (#1843, PR #2590 / merge `52280ee9a9844d7de24427da18eae842653f5fcd`), shared Perl toolchain/default-DAP interpreter completion (#2026), native formatter `.perltidyrc` consumption fix (#2025), state-variable semantic-token fact-class cutover (#2030), semantic SNAPSHOT/oracle/HIR substrate (#2569, #2570, #2571), spec/corpus-doc corrections (#2597, #2598), DAP test-helper feature gating (#2596), and truthful pending-parse indexing metrics (#2606). The current release-staging refresh branch must pass its merge-blocking checks before this refreshed bundle is treated as the current release-stage artifact.
+Note: the release payload SHA is the latest audited merged main commit at this historical refresh. The historical payload includes the earlier closeout through #2047. It also includes the post-#2047 delta through #2606: strict/warnings fixAll dedupe (#2058), missing-pragma severity alignment (#2061), printf `%*` / `%.*` diagnostic false-positive repair (#1868), package-rename fallback safety (#2070), completion quieting in heredoc/POD/string/regex contexts (#1821, #2573, #1808, #1813), DAP transport honesty and supervision (#1790, #1809), DAP conditional-breakpoint and PR-smoke receipts (#1843, PR #2590 / merge `52280ee9a9844d7de24427da18eae842653f5fcd`), shared Perl toolchain/default-DAP interpreter completion (#2026), native formatter `.perltidyrc` consumption fix (#2025), state-variable semantic-token fact-class cutover (#2030), semantic SNAPSHOT/oracle/HIR substrate (#2569, #2570, #2571), spec/corpus-doc corrections (#2597, #2598), DAP test-helper feature gating (#2596), and truthful pending-parse indexing metrics (#2606). At that time, the release-staging refresh branch still needed its merge-blocking checks before this bundle could be treated as a release-stage artifact.
 
-Note: `v0.16.0` is a real tag, but it is not on current `origin/main` ancestry (`git describe origin/main` resolves from `v0.15.0`). Do not use a naive "commits since v0.16.0" count as release evidence without resolving that tag-lineage question.
+Note: `v0.16.0` is a real tag, but it was not on the `origin/main` ancestry observed at this snapshot (`git describe origin/main` resolved from `v0.15.0`). Do not use a naive "commits since v0.16.0" count as release evidence without resolving that tag-lineage question against live history.
 
 ---
 
@@ -175,7 +177,7 @@ Release wording may say "bounded CPAN top-50 profile passed" with the counts abo
 
 ## Release Channel Checklist
 
-- [x] Release payload SHA and current `origin/main` SHA at refresh recorded.
+- [x] Release payload SHA and snapshot `origin/main` SHA recorded.
 - [x] Required gate state recorded from latest merged release-scope PRs, including fresh #2596/#2606 GitHub check rollups, #2045/#2047 product, CI, coverage, routed Rust Small, RIPR, UX, LSP Memory, and advisory-review passes, plus #2046/#2050 docs-only required-gate passes/skips.
 - [x] Coverage/test gate semantics recorded after #1482/#1549 and follow-ups.
 - [x] Parser, LSP, DAP, and easy-path smoke receipts recorded.
@@ -194,4 +196,4 @@ This document does not authorize or initiate a release. No tag, no `crates.io` p
 
 ---
 
-Generated from current repo/GitHub state through release payload `b6785e4af8af3290d4a0dcdcc1ad31b7a57f8f12`, local smoke receipts on 2026-06-20, #2045/#2046/#2050/#2047 GitHub gate receipts on 2026-06-21, #2596/#2606 GitHub gate rollups on 2026-06-22, and bounded CPAN run `27931852439` on 2026-06-22. Claims above are limited to the commands and receipts named in this file. Verify the current `origin/main` SHA again before dispatch.
+Generated from repository/GitHub state observed through release payload `b6785e4af8af3290d4a0dcdcc1ad31b7a57f8f12`, local smoke receipts on 2026-06-20, #2045/#2046/#2050/#2047 GitHub gate receipts on 2026-06-21, #2596/#2606 GitHub gate rollups on 2026-06-22, and bounded CPAN run `27931852439` on 2026-06-22. Claims above are limited to the commands and receipts named in this file. Verify the live `origin/main` SHA again before any future dispatch.

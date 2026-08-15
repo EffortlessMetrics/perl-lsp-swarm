@@ -20,7 +20,7 @@ inputs:
     required: false
     default: 'true'
   clippy-args:
-    description: 'Additional arguments for clippy'
+    description: 'Additional POSIX shell-like arguments for clippy; parsed into argv without a shell'
     required: false
     default: '--workspace --lib --locked -- -D warnings -A missing_docs'
   clippy-prod:
@@ -28,7 +28,7 @@ inputs:
     required: false
     default: 'false'
   clippy-prod-args:
-    description: 'Arguments for production clippy checks'
+    description: 'POSIX shell-like arguments for production clippy; parsed into argv without a shell'
     required: false
     default: '--workspace --lib --bins --no-deps -- -D clippy::unwrap_used -D clippy::expect_used'
   test:
@@ -36,7 +36,7 @@ inputs:
     required: false
     default: 'true'
   test-args:
-    description: 'Additional arguments for test'
+    description: 'Additional POSIX shell-like arguments for test; parsed into argv without a shell'
     required: false
     default: '--workspace --lib --locked'
   test-threads:
@@ -77,10 +77,9 @@ runs:
       run: |
         set +e
         echo "::group::Format Check"
-        cargo xtask fmt --check
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind fmt
         status=$?
         echo "::endgroup::"
-        printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
         exit "$status"
 
     - name: Run clippy
@@ -90,27 +89,13 @@ runs:
       continue-on-error: ${{ inputs.continue-on-clippy-error == 'true' }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
-        CARGO_CHECK_ARGS: ${{ inputs.clippy-args }}
+        CLIPPY_ARGS: ${{ inputs.clippy-args }}
       run: |
         set +e
         echo "::group::Clippy Lint"
-        python3 - <<'PY'
-        import os
-        import shlex
-        import subprocess
-        import sys
-
-        try:
-            args = shlex.split(os.environ["CARGO_CHECK_ARGS"], posix=True)
-        except ValueError as error:
-            print(f"Invalid clippy argument string: {error}", file=sys.stderr)
-            raise SystemExit(2)
-
-        raise SystemExit(subprocess.run(["cargo", "clippy", *args], check=False).returncode)
-        PY
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind clippy
         status=$?
         echo "::endgroup::"
-        printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
         exit "$status"
 
     - name: Run production clippy (no unwrap/expect)
@@ -120,24 +105,14 @@ runs:
       continue-on-error: ${{ inputs.continue-on-clippy-error == 'true' }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
-        CARGO_CHECK_ARGS: ${{ inputs.clippy-prod-args }}
+        CLIPPY_PROD_ARGS: ${{ inputs.clippy-prod-args }}
       run: |
+        set +e
         echo "::group::Production Clippy (no unwrap/expect)"
-        python3 - <<'PY'
-        import os
-        import shlex
-        import subprocess
-        import sys
-
-        try:
-            args = shlex.split(os.environ["CARGO_CHECK_ARGS"], posix=True)
-        except ValueError as error:
-            print(f"Invalid production clippy argument string: {error}", file=sys.stderr)
-            raise SystemExit(2)
-
-        raise SystemExit(subprocess.run(["cargo", "clippy", *args], check=False).returncode)
-        PY
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind clippy-prod
+        status=$?
         echo "::endgroup::"
+        exit "$status"
 
     - name: Run tests
       id: test
@@ -148,25 +123,11 @@ runs:
         RUST_TEST_THREADS: ${{ inputs.test-threads }}
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
         RUST_BACKTRACE: '1'
-        CARGO_CHECK_ARGS: ${{ inputs.test-args }}
+        TEST_ARGS: ${{ inputs.test-args }}
       run: |
         set +e
         echo "::group::Tests"
-        python3 - <<'PY'
-        import os
-        import shlex
-        import subprocess
-        import sys
-
-        try:
-            args = shlex.split(os.environ["CARGO_CHECK_ARGS"], posix=True)
-        except ValueError as error:
-            print(f"Invalid test argument string: {error}", file=sys.stderr)
-            raise SystemExit(2)
-
-        raise SystemExit(subprocess.run(["cargo", "test", *args], check=False).returncode)
-        PY
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind test
         status=$?
         echo "::endgroup::"
-        printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
         exit "$status"

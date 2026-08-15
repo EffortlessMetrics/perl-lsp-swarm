@@ -8,113 +8,310 @@ on:
       - main
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: badge-endpoints-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  refresh:
-    runs-on: ubuntu-latest
+  generate:
+    name: Generate bounded badge payload
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout trusted source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
 
-      - name: Install ripr
-        run: cargo install ripr
+      - name: Install reviewed ripr release
+        run: cargo install ripr --version 0.9.0 --locked
 
       - name: Refresh badge endpoints
         run: cargo xtask badges
 
-      - name: Discard unrelated working tree drift
-        shell: bash
+      - name: Validate and stage exact badge snapshot
         run: |
           set -euo pipefail
-          # Earlier steps in this job (toolchain install, `cargo install ripr`,
-          # `cargo xtask badges`) have, in practice, left tracked files outside
-          # `badges/` showing as modified in the working tree (observed:
-          # policy/ub-review.toml) even though nothing in this job's own code
-          # writes that file. Whatever the upstream cause, this job's only
-          # legitimate payload is the generated JSON under `badges/` -- so
-          # make it resilient to any incidental drift rather than let it
-          # abort `git checkout -B` in the next step with "local changes
-          # would be overwritten".
-          echo "::group::git status before drift cleanup"
-          git status --porcelain
-          echo "::endgroup::"
-          git checkout -- . ':!badges'
-          git clean -fd -- . ':!badges'
-          echo "::group::git status/diff after drift cleanup (should be limited to badges/)"
-          git status --porcelain
-          git diff -- policy/ub-review.toml
-          echo "(empty diff above == policy/ub-review.toml is clean going into the next steps)"
-          echo "::endgroup::"
+          mkdir -p target/badge-payload
+          python3 - <<'PY'
+          from __future__ import annotations
 
-      - name: Reset stale automation branch to avoid a divergent checkout
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Root cause of the recurring "local changes to policy/ub-review.toml
-          # would be overwritten" failure (#3576): it is NOT this job's working
-          # tree. `automation/badge-endpoints` is a long-lived branch that
-          # create-pull-request reuses across runs. When it falls behind `main`
-          # (it was last touched at 16204f9e4 on 2026-07-03, ~173 commits
-          # behind current main -- confirmed via
-          # `git diff origin/main origin/automation/badge-endpoints -- policy/ub-review.toml`
-          # showing the branch's copy is byte-identical to that old commit and
-          # unrelated to main's current copy), create-pull-request's own
-          # internal `git checkout automation/badge-endpoints` step brings that
-          # stale committed content into the working tree. The very next
-          # internal step, `git checkout -B automation/badge-endpoints <base
-          # sha>`, then refuses to overwrite it, because git sees the
-          # newly-checked-out stale blob as a "local change" relative to the
-          # base commit it is about to reset onto.
-          #
-          # Delete the remote branch before every run so create-pull-request
-          # always builds it fresh from the current base. This only recreates
-          # the branch (and re-links any existing open PR under the same
-          # branch name) when there is an actual badges/ diff to commit; if
-          # there is nothing to update, create-pull-request is a no-op and no
-          # branch is created at all.
-          echo "::group::automation/badge-endpoints before reset"
-          git ls-remote origin refs/heads/automation/badge-endpoints || echo "(no remote ref)"
-          echo "::endgroup::"
-          git push origin --delete automation/badge-endpoints || echo "automation/badge-endpoints did not exist remotely (or delete failed); continuing -- create-pull-request will create it fresh if needed"
+          import hashlib
+          import json
+          from pathlib import Path
+          import shutil
+          import stat
+          import subprocess
 
-      - name: Open badge refresh PR
-        # Opt in only after the repository Actions setting allows the
-        # GITHUB_TOKEN to create pull requests. With the variable absent, the
-        # generated badges remain the successful payload and the PR step is
-        # reported as an intentional manual follow-up below.
-        if: vars.BADGE_ENDPOINTS_AUTO_PR == 'true'
-        uses: peter-evans/create-pull-request@v8
+          root = Path.cwd().resolve()
+          badges = root / "badges"
+          payload = root / "target" / "badge-payload" / "badges"
+          manifest_path = root / "target" / "badge-payload" / "manifest.json"
+          max_files = 200
+          max_file_bytes = 1_048_576
+          max_total_bytes = 5_242_880
+
+          changed_paths: set[str] = set()
+          commands = [
+              ["git", "diff", "--name-only", "-z"],
+              ["git", "diff", "--cached", "--name-only", "-z"],
+              ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+          ]
+          for command in commands:
+              output = subprocess.run(
+                  command,
+                  check=True,
+                  stdout=subprocess.PIPE,
+              ).stdout
+              changed_paths.update(
+                  entry.decode("utf-8", errors="surrogateescape")
+                  for entry in output.split(b"\0")
+                  if entry
+              )
+          unexpected = sorted(
+              path for path in changed_paths if not path.startswith("badges/")
+          )
+          if unexpected:
+              raise SystemExit(
+                  "badge generator changed paths outside badges/: "
+                  + ", ".join(sorted(unexpected))
+              )
+
+          if not badges.is_dir() or badges.is_symlink():
+              raise SystemExit("badges/ is missing, a symlink, or not a directory")
+
+          records: list[dict[str, object]] = []
+          total_bytes = 0
+          for path in sorted(badges.rglob("*")):
+              metadata = path.lstat()
+              if stat.S_ISDIR(metadata.st_mode):
+                  continue
+              if not stat.S_ISREG(metadata.st_mode):
+                  raise SystemExit(f"badge payload contains non-regular file: {path}")
+              relative = path.relative_to(badges).as_posix()
+              if not relative or relative.startswith("../"):
+                  raise SystemExit(f"invalid badge payload path: {relative!r}")
+              if metadata.st_size > max_file_bytes:
+                  raise SystemExit(f"badge file exceeds byte limit: {relative}")
+              data = path.read_bytes()
+              total_bytes += len(data)
+              records.append(
+                  {
+                      "path": relative,
+                      "bytes": len(data),
+                      "sha256": hashlib.sha256(data).hexdigest(),
+                  }
+              )
+
+          if not records:
+              raise SystemExit("badge generator produced no regular files")
+          if len(records) > max_files:
+              raise SystemExit("badge payload exceeds file-count limit")
+          if total_bytes > max_total_bytes:
+              raise SystemExit("badge payload exceeds aggregate byte limit")
+
+          if payload.exists():
+              shutil.rmtree(payload)
+          shutil.copytree(badges, payload, symlinks=False)
+          manifest_path.write_text(
+              json.dumps(
+                  {
+                      "schema_version": 1,
+                      "source_sha": subprocess.check_output(
+                          ["git", "rev-parse", "HEAD"], text=True
+                      ).strip(),
+                      "file_count": len(records),
+                      "total_bytes": total_bytes,
+                      "files": records,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          print(f"staged {len(records)} badge files ({total_bytes} bytes)")
+          PY
+
+      - name: Upload generated badge snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
+          name: badge-endpoints-${{ github.run_id }}
+          path: target/badge-payload
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Report automatic PR creation disabled
+        if: vars.BADGE_ENDPOINTS_AUTO_PR != 'true'
+        run: |
+          echo "::notice title=Badge PR skipped::Badges were regenerated and archived in a read-only job. Set BADGE_ENDPOINTS_AUTO_PR=true after enabling GitHub Actions pull-request creation to restore the automatic PR writer."
+
+  open-pr:
+    name: Open badge refresh PR
+    needs: generate
+    if: vars.BADGE_ENDPOINTS_AUTO_PR == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download generated payload outside the checkout
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: badge-endpoints-${{ github.run_id }}
+          path: ${{ runner.temp }}/badge-payload
+
+      - name: Verify and stage exact badge snapshot
+        env:
+          PAYLOAD_ROOT: ${{ runner.temp }}/badge-payload
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import stat
+
+          payload_root = Path(os.environ["PAYLOAD_ROOT"])
+          payload = payload_root / "badges"
+          manifest_path = payload_root / "manifest.json"
+          max_files = 200
+          max_file_bytes = 1_048_576
+          max_total_bytes = 5_242_880
+          if not payload.is_dir() or payload.is_symlink():
+              raise SystemExit("downloaded badges payload is missing or not a regular directory")
+          if not manifest_path.is_file() or manifest_path.is_symlink():
+              raise SystemExit("downloaded badge manifest is missing or not a regular file")
+
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("schema_version") != 1:
+              raise SystemExit("unsupported badge manifest schema")
+          if manifest.get("source_sha") != os.environ["EXPECTED_SOURCE_SHA"]:
+              raise SystemExit("badge manifest source SHA does not match this workflow run")
+          records = manifest.get("files")
+          if not isinstance(records, list) or not records:
+              raise SystemExit("badge manifest has no files")
+
+          expected: dict[str, tuple[int, str]] = {}
+          for record in records:
+              if not isinstance(record, dict):
+                  raise SystemExit("badge manifest contains a non-object record")
+              relative = record.get("path")
+              size = record.get("bytes")
+              digest = record.get("sha256")
+              if (
+                  not isinstance(relative, str)
+                  or not relative
+                  or relative.startswith("/")
+                  or ".." in Path(relative).parts
+                  or not isinstance(size, int)
+                  or isinstance(size, bool)
+                  or size < 0
+                  or not isinstance(digest, str)
+                  or len(digest) != 64
+                  or any(ch not in "0123456789abcdef" for ch in digest)
+              ):
+                  raise SystemExit(f"invalid badge manifest record: {record!r}")
+              if relative in expected:
+                  raise SystemExit(f"duplicate badge manifest path: {relative}")
+              expected[relative] = (size, digest)
+
+          if len(expected) > max_files:
+              raise SystemExit("badge payload exceeds file-count limit")
+          if any(size > max_file_bytes for size, _ in expected.values()):
+              raise SystemExit("badge payload contains a file exceeding byte limit")
+          if sum(size for size, _ in expected.values()) > max_total_bytes:
+              raise SystemExit("badge payload exceeds aggregate byte limit")
+
+          observed: set[str] = set()
+          for path in sorted(payload.rglob("*")):
+              metadata = path.lstat()
+              if stat.S_ISDIR(metadata.st_mode):
+                  continue
+              if not stat.S_ISREG(metadata.st_mode):
+                  raise SystemExit(f"badge artifact contains non-regular file: {path}")
+              relative = path.relative_to(payload).as_posix()
+              expected_entry = expected.get(relative)
+              if expected_entry is None:
+                  raise SystemExit(f"badge artifact contains unmanifested file: {relative}")
+              data = path.read_bytes()
+              if len(data) != expected_entry[0]:
+                  raise SystemExit(f"badge size mismatch: {relative}")
+              if hashlib.sha256(data).hexdigest() != expected_entry[1]:
+                  raise SystemExit(f"badge digest mismatch: {relative}")
+              observed.add(relative)
+
+          if observed != set(expected):
+              missing = sorted(set(expected) - observed)
+              raise SystemExit(f"badge artifact is missing manifest files: {missing}")
+          if manifest.get("file_count") != len(observed):
+              raise SystemExit("badge manifest file count is inconsistent")
+          if manifest.get("total_bytes") != sum(size for size, _ in expected.values()):
+              raise SystemExit("badge manifest byte count is inconsistent")
+
+          destination = Path("badges")
+          if destination.is_symlink():
+              raise SystemExit("repository badges path is a symbolic link")
+          if destination.exists():
+              shutil.rmtree(destination)
+          shutil.copytree(payload, destination, symlinks=False)
+          PY
+
+      - name: Reset stale automation branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api \
+            --method DELETE \
+            "repos/${GITHUB_REPOSITORY}/git/refs/heads/automation/badge-endpoints" \
+            >/dev/null 2>&1 || true
+
+      - name: Create badge refresh PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ github.token }}
           branch: automation/badge-endpoints
           add-paths: badges
           title: "chore(badges): refresh public endpoints (#8820)"
           commit-message: "chore(badges): refresh public endpoints (#8820)"
           body: |
-            Refreshes generated Shields endpoint JSON under `badges/`.
+            Refreshes the exact generated Shields endpoint snapshot under `badges/`.
 
-            Generated by:
+            Generated without repository write authority by:
 
             ```bash
             cargo xtask badges
             ```
-
-      - name: Report badge PR creation disabled
-        if: vars.BADGE_ENDPOINTS_AUTO_PR != 'true'
-        shell: bash
-        run: |
-          {
-            echo "::notice title=Badge PR skipped::Automatic badge PR creation is disabled."
-            echo "::notice::Badges were regenerated successfully. To restore automated badge PRs, set repository variable BADGE_ENDPOINTS_AUTO_PR=true after enabling 'Allow GitHub Actions to create and approve pull requests' under Settings > Actions > General."
-            echo "::notice::A maintainer can also open the PR manually from the badges/ diff."
-          }

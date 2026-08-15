@@ -1,6 +1,6 @@
 name: Release Orchestration
 
-# Master release workflow that orchestrates all release tasks
+# Default-branch release workflow that orchestrates all release tasks
 # Triggered manually after version bump PR is merged
 
 on:
@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
 
@@ -67,8 +67,10 @@ jobs:
 
       - name: Resolve and validate version
         id: resolve
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="$INPUT_VERSION"
           TAG="v${VERSION}"
 
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
@@ -94,17 +96,18 @@ jobs:
       - name: Check default branch and CI status
         env:
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-          DEFAULT_SHA=$(git rev-parse "origin/${DEFAULT_BRANCH}")
+          DEFAULT_BRANCH_VAL="$DEFAULT_BRANCH"
+          DEFAULT_SHA=$(git rev-parse "origin/$DEFAULT_BRANCH_VAL")
           HEAD_SHA="${GITHUB_SHA}"
 
           if [ "$HEAD_SHA" != "$DEFAULT_SHA" ]; then
-            echo "::error::Release must run from ${DEFAULT_BRANCH} tip. Workflow is on ${HEAD_SHA}, ${DEFAULT_BRANCH} is ${DEFAULT_SHA}"
+            echo "::error::Release must run from $DEFAULT_BRANCH_VAL tip. Workflow is on ${HEAD_SHA}, $DEFAULT_BRANCH_VAL is ${DEFAULT_SHA}"
             exit 1
           fi
 
-          # Poll combined-status with a bounded window. Master CI on a just-
+          # Poll combined-status with a bounded window. Default-branch CI on a just-
           # squash-merged commit can return `pending` for several minutes
           # before all required checks report; that is "no signal yet," not
           # "negative signal." Treat `pending` as wait-and-retry; fail fast
@@ -173,7 +176,7 @@ jobs:
       - name: Verify RELEASE_HISTORY ledger row exists
         run: |
           # Trip-wire: a missing ledger row breaks the release-history drift
-          # gate for *every* PR opened against master, not just release PRs.
+          # gate for *every* PR opened against the default branch, not just release PRs.
           # The bundling guarantee (version bump and ledger row land together)
           # is enforced both upstream by `cargo xtask bump-version` (which
           # appends the row) and here at finalization (so a manually-edited
@@ -193,14 +196,20 @@ jobs:
           echo "✅ RELEASE_HISTORY.md contains row for ${VERSION}"
 
       - name: Summary
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
+          INPUT_SKIP_CRATES: ${{ github.event.inputs.skip_crates }}
+          INPUT_SKIP_EXTENSION: ${{ github.event.inputs.skip_extension }}
+          INPUT_SKIP_DOCKER: ${{ github.event.inputs.skip_docker }}
         run: |
           echo "## Release Validation Complete :white_check_mark:" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version**: ${{ github.event.inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Prerelease**: ${{ github.event.inputs.prerelease }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Skip crates.io**: ${{ github.event.inputs.skip_crates }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Skip VSCode**: ${{ github.event.inputs.skip_extension }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Skip Docker**: ${{ github.event.inputs.skip_docker }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version**: $INPUT_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Prerelease**: $INPUT_PRERELEASE" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skip crates.io**: $INPUT_SKIP_CRATES" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skip VSCode**: $INPUT_SKIP_EXTENSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Skip Docker**: $INPUT_SKIP_DOCKER" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "All checks passed! Proceeding with release." >> "$GITHUB_STEP_SUMMARY"
 
@@ -214,7 +223,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -271,11 +280,15 @@ jobs:
       - name: Dispatch release workflows
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
+          INPUT_SKIP_CRATES: ${{ github.event.inputs.skip_crates }}
+          INPUT_SKIP_EXTENSION: ${{ github.event.inputs.skip_extension }}
+          INPUT_SKIP_DOCKER: ${{ github.event.inputs.skip_docker }}
         run: |
           TAG="${{ needs.validate.outputs.tag }}"
           VERSION="${{ needs.validate.outputs.version }}"
           REF="${TAG}"
-          PRERELEASE="${{ github.event.inputs.prerelease }}"
+          PRERELEASE="$INPUT_PRERELEASE"
 
           echo "Dispatching release workflow for ${TAG}"
           gh api \
@@ -285,7 +298,7 @@ jobs:
             -F inputs[tag]="${TAG}" \
             -F inputs[prerelease]="${PRERELEASE}"
 
-          if [ "${{ github.event.inputs.skip_crates }}" != "true" ]; then
+          if [ "$INPUT_SKIP_CRATES" != "true" ]; then
             echo "Dispatching crates publish workflow for ${VERSION}"
             gh api \
               -X POST \
@@ -297,7 +310,7 @@ jobs:
             echo "Skipping crates publish workflow due to skip_crates=true"
           fi
 
-          if [ "${{ github.event.inputs.skip_extension }}" != "true" ]; then
+          if [ "$INPUT_SKIP_EXTENSION" != "true" ]; then
             echo "Dispatching VSCode extension publish workflow for ${VERSION}"
             gh api \
               -X POST \
@@ -308,7 +321,7 @@ jobs:
             echo "Skipping VSCode publish via orchestration due to skip_extension=true"
           fi
 
-          if [ "${{ github.event.inputs.skip_docker }}" != "true" ]; then
+          if [ "$INPUT_SKIP_DOCKER" != "true" ]; then
             echo "Dispatching Docker publish workflow for ${VERSION}"
             gh api \
               -X POST \

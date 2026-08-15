@@ -49,7 +49,11 @@ pub enum LexerError {
         position: usize,
     },
 
-    /// Invalid UTF-8
+    /// Invalid UTF-8.
+    ///
+    /// **Note:** This variant is currently unreachable in production because the
+    /// lexer's `&str` API guarantees valid UTF-8 input. It is retained for API
+    /// stability and potential future use with raw byte input (#6104).
     #[error("Invalid UTF-8 at position {position}")]
     InvalidUtf8 {
         /// Byte offset of the invalid byte sequence

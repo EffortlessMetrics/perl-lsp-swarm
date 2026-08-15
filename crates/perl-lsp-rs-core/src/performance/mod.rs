@@ -31,6 +31,9 @@ struct CachedAst {
     ast: Arc<Node>,
     /// Hash of the source content for validation
     content_hash: u64,
+    /// Length of the source content when cached (fast-path pre-check
+    /// before computing the full hash, #4999 claim 4).
+    content_len: usize,
 }
 
 impl AstCache {
@@ -46,14 +49,19 @@ impl AstCache {
 
     /// Get cached AST if still valid
     pub fn get(&self, uri: &str, content: &str) -> Option<Arc<Node>> {
-        let content_hash = Self::hash_content(content);
-
+        // Fast path: if the content length differs from the cached entry,
+        // the content has definitely changed — skip the full hash (#4999).
+        let content_len = content.len();
         if let Some(cached) = self.cache.get(uri) {
-            // Check if content hash matches (skip if content changed)
+            if cached.content_len != content_len {
+                self.cache.remove(uri);
+                return None;
+            }
+            // Length matches — now check the full hash
+            let content_hash = Self::hash_content(content);
             if cached.content_hash == content_hash {
                 return Some(Arc::clone(&cached.ast));
             } else {
-                // Remove stale entry
                 self.cache.remove(uri);
             }
         }
@@ -65,7 +73,8 @@ impl AstCache {
     /// Moka handles eviction automatically when capacity is reached.
     pub fn put(&self, uri: String, content: &str, ast: Arc<Node>) {
         let content_hash = Self::hash_content(content);
-        self.cache.insert(uri, CachedAst { ast, content_hash });
+        let content_len = content.len();
+        self.cache.insert(uri, CachedAst { ast, content_hash, content_len });
     }
 
     /// Evict the cached AST for a single URI.

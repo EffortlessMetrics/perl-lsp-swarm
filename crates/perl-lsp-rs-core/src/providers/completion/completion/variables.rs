@@ -7,6 +7,7 @@
 use super::scope_distance::compute_scope_sort_key;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
+use std::borrow::Cow;
 
 /// Add variable completions with scope-distance ranking.
 ///
@@ -39,9 +40,9 @@ pub fn add_variable_completions(
                     compute_scope_sort_key(symbol_table, context.cursor_scope_id, symbol.scope_id);
 
                 completions.push(CompletionItem {
-                    label: insert_text.clone(),
+                    label: Cow::Owned(insert_text.clone()),
                     kind: super::items::CompletionItemKind::Variable,
-                    detail: Some(
+                    detail: Some(Cow::Owned(
                         format!(
                             "{} {}{}",
                             symbol.declaration.as_deref().unwrap_or(""),
@@ -50,16 +51,16 @@ pub fn add_variable_completions(
                         )
                         .trim()
                         .to_string(),
-                    ),
-                    documentation: symbol.documentation.clone(),
-                    insert_text: Some(insert_text.clone()),
-                    sort_text: Some(format!("1{scope_sort_key}_{name}")),
+                    )),
+                    documentation: symbol.documentation.clone().map(Cow::Owned),
+                    insert_text: Some(Cow::Owned(insert_text.clone())),
+                    sort_text: Some(Cow::Owned(format!("1{scope_sort_key}_{name}"))),
                     // Include the sigil in filter_text so strict-filtering
                     // clients match when the user types the sigil prefix
                     // (e.g. `$c` matching `$count`). Without it, filter_text
                     // is just "count" and the sigil prefix never matches.
                     // (#5050 item 4)
-                    filter_text: Some(insert_text),
+                    filter_text: Some(Cow::Owned(insert_text)),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
@@ -157,13 +158,13 @@ pub fn add_special_variables(
     for (var, description) in special_vars {
         if var.starts_with(&context.prefix) {
             completions.push(CompletionItem {
-                label: var.to_string(),
+                label: Cow::Owned(var.to_string()),
                 kind: super::items::CompletionItemKind::Variable,
-                detail: Some("special variable".to_string()),
-                documentation: Some(description.to_string()),
-                insert_text: Some(var.to_string()),
-                sort_text: Some(format!("0_{}", var)), // Special vars have highest priority
-                filter_text: Some(var.to_string()),
+                detail: Some(Cow::Borrowed("special variable")),
+                documentation: Some(Cow::Owned(description.to_string())),
+                insert_text: Some(Cow::Owned(var.to_string())),
+                sort_text: Some(Cow::Owned(format!("0_{}", var))), // Special vars have highest priority
+                filter_text: Some(Cow::Owned(var.to_string())),
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,
@@ -195,18 +196,18 @@ pub fn add_all_variables(
                         symbol.scope_id,
                     );
                     completions.push(CompletionItem {
-                        label: format!("{}{}", sigil, name),
+                        label: Cow::Owned(format!("{}{}", sigil, name)),
                         kind: super::items::CompletionItemKind::Variable,
-                        detail: Some(format!(
+                        detail: Some(Cow::Owned(format!(
                             "{} variable",
                             symbol.declaration.as_deref().unwrap_or("")
-                        )),
-                        documentation: symbol.documentation.clone(),
-                        insert_text: Some(format!("{}{}", sigil, name)),
-                        sort_text: Some(format!("5{scope_sort_key}_{name}")),
+                        ))),
+                        documentation: symbol.documentation.clone().map(Cow::Owned),
+                        insert_text: Some(Cow::Owned(format!("{}{}", sigil, name))),
+                        sort_text: Some(Cow::Owned(format!("5{scope_sort_key}_{name}"))),
                         // Include the sigil in filter_text so strict-filtering
                         // clients can match the typed prefix ($c → $count) (#5050 item 4).
-                        filter_text: Some(format!("{sigil}{name}")),
+                        filter_text: Some(Cow::Owned(format!("{sigil}{name}"))),
                         additional_edits: vec![],
                         text_edit_range: Some((context.prefix_start, context.position)),
                         commit_characters: None,

@@ -13,7 +13,7 @@ schema_version = 1
 policy = "ci-lanes"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-05-07"
+updated = "2026-08-07"
 
 # -----------------------------------------------------------------------------
 # Frontdoor / control lanes
@@ -284,11 +284,11 @@ duplicate_of = []
 # -----------------------------------------------------------------------------
 
 [lane.droid_auto_review]
-description = "External AI review on credible PRs."
-intent = "advisory review"
+description = "Paused historical Droid PR review lane; automatic execution is disabled."
+intent = "paused historical record"
 runner = "self_hosted_droid_review"
-base_lem = 4
-default_pr = true
+base_lem = 0
+default_pr = false
 blocking = false
-labels = ["ai-review", "full-ci"]
+labels = []
 duplicate_of = []

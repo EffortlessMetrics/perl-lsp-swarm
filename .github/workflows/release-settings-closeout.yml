@@ -1,0 +1,48 @@
+name: Release Settings Closeout
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.ci/security/release-settings-closeout.json'
+      - 'docs/security/release-settings-closeout.md'
+      - 'scripts/ci/check_release_settings_closeout.py'
+      - 'scripts/ci/test_check_release_settings_closeout.py'
+      - '.github/workflows/release-settings-closeout.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - '.ci/security/release-settings-closeout.json'
+      - 'docs/security/release-settings-closeout.md'
+      - 'scripts/ci/check_release_settings_closeout.py'
+      - 'scripts/ci/test_check_release_settings_closeout.py'
+      - '.github/workflows/release-settings-closeout.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Release settings closeout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checkout identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Run negative controls
+        run: python3 scripts/ci/test_check_release_settings_closeout.py
+
+      - name: Validate packet and generated status
+        run: python3 scripts/ci/check_release_settings_closeout.py --check

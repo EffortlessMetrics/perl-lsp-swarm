@@ -131,14 +131,16 @@ describe('OnboardingManager.checkPerlInstalled', () => {
     expect(result.detail).toContain('5.036000');
   });
 
-  test('returns error status when perl is not found', async () => {
+  test('returns warning status when optional Perl tooling is not found', async () => {
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
     mockExecCheck(mgr, () => Promise.reject(new Error('perl: command not found')));
     const result = await mgr.checkPerlInstalled();
     expect(result.ok).toBe(false);
+    expect(result.status).toBe(HealthCheckStatus.Warning);
     expect(result.detail).toContain('strawberryperl.com');
     expect(result.detail).toContain('brew install perl');
     expect(result.detail).toContain('package manager');
+    expect(result.detail).toContain('core language server does not require Perl');
     expect(result.detail).not.toContain('command not found');
   });
 });

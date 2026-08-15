@@ -356,12 +356,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
             checked_skills.push(skill.name.clone());
             for target in &skill.route_targets {
                 if !known_names.contains(target) {
-                    errors.push(format!(
-                        "{}: route from '{}' points to missing provider-local skill '{}'",
-                        skill.path.display(),
-                        skill.name,
-                        target
-                    ));
+                    errors.push(missing_route_target_message(&skill.path, &skill.name, target));
                 }
             }
         }
@@ -603,6 +598,15 @@ fn is_route_heading(heading: &str) -> bool {
         || normalized == "procedure"
 }
 
+fn missing_route_target_message(path: &Path, source: &str, target: &str) -> String {
+    format!(
+        "{}: route from '{}' points to missing provider-local skill '{}' (if this is prose or a code identifier, remove its backticks; route references should use an explicit route form)",
+        path.display(),
+        source,
+        target
+    )
+}
+
 fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
     // Metasyntactic `$placeholders` that appear in prose inside route/orchestration
     // sections but are NOT actual skill route targets (#5930).
@@ -644,6 +648,9 @@ fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
                             || character.is_ascii_digit()
                             || character == '-'
                     })
+                    // Skip metasyntactic placeholders that are prose, not route
+                    // targets — mirrors the bare-$ branch (#5930).
+                    && !METASYNTACTIC_PLACEHOLDERS.contains(&token)
                 {
                     tokens.push(token.to_owned());
                 }
@@ -684,10 +691,11 @@ fn print_human(report: &CheckReport) {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::path::Path;
 
     use super::{
         SCENARIO_FIXTURES, check_scenarios, frontmatter_metadata_chars, frontmatter_value,
-        missing_markers, route_targets, route_tokens,
+        missing_markers, missing_route_target_message, route_targets, route_tokens,
     };
 
     #[test]
@@ -726,6 +734,29 @@ mod tests {
             route_tokens("- `REVIEW_CURRENT` -> `$verify-live-ci`", true),
             vec!["verify-live-ci"]
         );
+    }
+
+    #[test]
+    fn ignores_metasyntactic_placeholders_in_backticks() {
+        // A `$skill` placeholder in prose under a route-bearing heading must
+        // not be treated as a route target — even inside backticks (#5930).
+        assert_eq!(
+            route_tokens("which `$skill` to consume. Do not ask agents.", true),
+            Vec::<String>::new()
+        );
+        // The real skill names are still extracted.
+        assert_eq!(route_tokens("- `$deliver-pr` then `$skill`", true), vec!["deliver-pr"]);
+    }
+
+    #[test]
+    fn missing_route_diagnostic_explains_backticked_prose() {
+        let message = missing_route_target_message(
+            Path::new(".agents/skills/review-tests/SKILL.md"),
+            "review-tests",
+            "clear",
+        );
+        assert!(message.contains("missing provider-local skill 'clear'"));
+        assert!(message.contains("if this is prose or a code identifier, remove its backticks"));
     }
 
     #[test]

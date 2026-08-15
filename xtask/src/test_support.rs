@@ -13,7 +13,7 @@ use std::{
 use tempfile::TempDir;
 
 #[cfg(unix)]
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(unix)]
 pub struct FakeCargo {

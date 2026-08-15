@@ -94,7 +94,7 @@ The headline catch of the session. On PR #4504 (facade-only `cargo public-api` r
 
 1. **Missing `|| true` on grep pipeline.** The justfile recipe ran `cargo public-api -p <crate> --simplified 2>/dev/null | grep "^pub "`. Under `set -euo pipefail`, `grep` exits 1 when there's no match. If any crate's `cargo public-api` invocation silently failed (stderr redirected to /dev/null), grep would get empty input and exit 1, aborting the script before the `FAILED` counter was evaluated. This means a silent cargo-public-api failure would present as "CI passed" while actually having skipped crates.
 
-2. **Toolchain mismatch (MSRV vs stable).** The baselines were captured at the workspace MSRV (1.92.0). The new CI job's checkout used `toolchain: stable`. When stable rustc advances and changes rustdoc JSON output format, the baseline check would false-positive against master for a reason unrelated to API changes.
+2. **Toolchain mismatch (historical MSRV vs stable).** The baselines were historically captured at workspace MSRV 1.92.0; the current workspace floor is 1.95.0. The new CI job's checkout used `toolchain: stable`. When stable rustc advances and changes rustdoc JSON output format, the baseline check would false-positive against master for a reason unrelated to API changes.
 
 3. **Test D's `--simplified` assertion was vacuous.** The green-TDD test asserted that `--simplified` appeared in `ci-nightly.yml`. The string appeared — but in a YAML **comment**, not in any executable code. The test would pass even if the actual step dropped the flag. Reviewer-deep replaced with a real behavioral check (asserting `set -euo pipefail`, `|| true` guard, `diff -u`, and `FAILED=1 / exit 1` in the recipe body).
 

@@ -45,23 +45,40 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    - name: Validate receipt path inputs
+      shell: bash
+      env:
+        RECEIPT_PATH: ${{ inputs.receipt-path }}
+        LOGS_PATH: ${{ inputs.logs-path }}
+        ARTIFACTS_PATH: ${{ inputs.artifacts-path }}
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_ACTION_PATH/validate_paths.py"
+
     - name: Check receipt exists
       id: check
       shell: bash
       env:
         RECEIPT_PATH: ${{ inputs.receipt-path }}
       run: |
+        set -euo pipefail
         if [ -f "$RECEIPT_PATH" ]; then
           echo "exists=true" >> "$GITHUB_OUTPUT"
           printf 'Receipt found at %s\n' "$RECEIPT_PATH"
         else
           echo "exists=false" >> "$GITHUB_OUTPUT"
-          printf '::warning::Receipt not found at %s\n' "$RECEIPT_PATH"
+          # `::warning::` is GitHub's workflow-command protocol, not plain text.
+          # Percent-encode the caller-supplied value so it cannot alter the
+          # annotation payload or terminate the command and start another one.
+          encoded=${RECEIPT_PATH//%/%25}
+          encoded=${encoded//$'\r'/%0D}
+          encoded=${encoded//$'\n'/%0A}
+          printf '::warning::Receipt not found at %s\n' "$encoded"
         fi
 
     - name: Upload gate receipt
       id: upload
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: ${{ inputs.artifact-name }}
         path: |

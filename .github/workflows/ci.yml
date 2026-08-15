@@ -41,7 +41,7 @@ jobs:
     steps:
       - name: Checkout for docs-only detection
         if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 1
 
@@ -111,10 +111,24 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
           CURRENT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" "refs/heads/${BRANCH}" | awk '{print $1}')
+          # The freshness optimization (skip CI for superseded SHAs) is only
+          # safe for push events on same-repo refs. For pull_request and
+          # merge_group events, github.head_ref is attacker-controlled: a fork
+          # author can name their branch "main" so the ls-remote resolves the
+          # upstream branch, making every fork PR look "superseded" and
+          # silently skipping all gated jobs (#5981).
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR/merge_group event — freshness optimization bypassed for safety ($CURRENT)"
+            exit 0
+          fi
+
+          LATEST=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.git" "refs/heads/${BRANCH}" 2>/dev/null | awk '{print $1}')
           if [ -z "$LATEST" ] || [ "$LATEST" = "$CURRENT" ]; then
             echo "is_latest=true" >> "$GITHUB_OUTPUT"
             echo "::notice::This SHA ($CURRENT) is latest on $BRANCH — running full CI"
@@ -162,7 +176,7 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
@@ -206,7 +220,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
       - name: Check for conflict markers
@@ -244,7 +258,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -265,12 +279,12 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
@@ -314,7 +328,7 @@ jobs:
 
       - name: Upload PR-fast receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: pr-fast-receipt-${{ github.sha }}
           path: |
@@ -334,8 +348,9 @@ jobs:
       - name: Upload PR-fast test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@v1
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
         with:
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/pr-fast-junit.xml
         env:
@@ -369,6 +384,8 @@ jobs:
             gates: fmt ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check perl_token_leaf_contract compile_all_targets clippy_full
           - name: foundation
             gates: unit_foundation_full
+          - name: parser_stack
+            gates: unit_parser_stack_full parser_integration
           - name: analysis
             gates: unit_analysis_full
           - name: lsp
@@ -378,20 +395,35 @@ jobs:
           - name: corpus
             gates: common_corpus_clean
           - name: policy
-            gates: docs_build non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
+            # msrv_authority_sync runs first: it is the cheapest gate here (~1s
+            # against a warm xtask) and the shard aborts on first failure, so
+            # ordering it behind the 137s non_rust_inventory_check would leave
+            # it unexecuted whenever that gate is red — which is chronic while
+            # #6229 stands, since the committed inventory count is invalidated
+            # by every merge that adds or removes a file.
+            gates: msrv_authority_sync docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
     # Earlier gating > label-gated gating (see #4675)
     # Frequent commits will queue; preflight skips superseded SHAs.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
           # Release-history verification compares every fetched release tag.
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Reject unsupported PR attributions in reference docs
+        if: matrix.name == 'meta'
+        run: |
+          if git grep -n -E 'PR #153|pull/153|PR #753|pull/753' -- docs/reference ':(exclude)docs/reference/archive/**'; then
+            echo "Reference documentation contains an unsupported numbered PR attribution."
+            echo "Use a source-backed implementation reference, or remove the PR attribution when the source is historical."
+            exit 1
+          fi
 
       - name: Fetch release tags from canonical repo
         run: |
@@ -405,12 +437,12 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
@@ -439,9 +471,27 @@ jobs:
             printf '::endgroup::\n'
           done
 
+      - name: Verify parser integration receipt subject
+        if: always() && matrix.name == 'parser_stack'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts/ci")
+          import run_parser_integration
+
+          run_parser_integration.validate_receipt_subject(
+              Path.cwd(),
+              Path("target/receipts/parser-integration.json"),
+              Path(".ci/parser-integration-targets.json"),
+              Path(".ci/parser-integration-targets.lock.json"),
+          )
+
       - name: Upload gate receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: gate-receipt-${{ matrix.name }}-${{ github.sha }}
           path: |
@@ -449,6 +499,15 @@ jobs:
             target/receipts/logs/*.log
             target/receipts/artifacts/*
           if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload parser integration receipt
+        if: always() && matrix.name == 'parser_stack'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: parser-integration-receipt-${{ github.sha }}
+          path: target/receipts/parser-integration.json
+          if-no-files-found: error
           retention-days: 7
 
       - name: Convert gate shard receipts to JUnit
@@ -469,6 +528,7 @@ jobs:
           mkdir -p target/ci
           python3 scripts/ci/emit_ci_actuals.py \
             --receipts-dir target/receipts/shards \
+            --lane-id merge_gate_shards \
             --workflow "${{ github.workflow }}" \
             --sha "${{ github.sha }}" \
             --pr "${{ github.event.pull_request.number || 0 }}" \
@@ -477,7 +537,7 @@ jobs:
       - name: Upload CI actuals
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: ci-actuals-${{ matrix.name }}-${{ github.sha }}
           path: target/ci/ci-actuals-${{ matrix.name }}.json
@@ -487,8 +547,9 @@ jobs:
       - name: Upload gate shard test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@v1
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
         with:
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/gate-shard-${{ matrix.name }}-junit.xml
         env:
@@ -617,7 +678,7 @@ jobs:
 
       - name: Set PR status (check)
         if: always()
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
         with:
@@ -669,10 +730,23 @@ jobs:
     # fails this job fails and merge-gate blocks. Quarantine enforcement (reading the
     # registry to generate --skip flags) is a follow-up; see .ci/ux-flakes.json.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify tested candidate identity
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse 'HEAD^{commit}')"
+          if [ "$actual_sha" != "$TESTED_SHA" ]; then
+            printf '::error::Checked-out candidate %s does not match tested SHA %s\n' \
+              "$actual_sha" "$TESTED_SHA"
+            exit 1
+          fi
+          printf 'Testing exact candidate %s\n' "$TESTED_SHA"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -680,53 +754,107 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-ux-tests-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      - name: Build perl-lsp binary
-        run: cargo build -p perl-lsp-rs
+      - name: Build perllsp binary
+        run: cargo build -p perllsp --bin perllsp
 
       - name: Run UX regression tests
         id: ux_tests
         continue-on-error: true
         env:
-          PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perl-lsp
+          PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perllsp
           RUST_TEST_THREADS: "1"
         run: |
+          set -o pipefail
           mkdir -p target/receipts
+          set +e
           just ux-tests 2>&1 | tee target/receipts/ux-regression.log
-          test_status=${PIPESTATUS[0]}
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          test_status="${pipeline_status[0]}"
+          tee_status="${pipeline_status[1]}"
           printf '%s\n' "$test_status" > target/receipts/ux-regression.exit
+          if [ "$tee_status" -ne 0 ]; then
+            printf '%s\n' "$tee_status" > target/receipts/ux-regression.instrumentation.exit
+            printf '::error::UX regression tee failed with status %s\n' "$tee_status" >&2
+            exit "$tee_status"
+          fi
+          printf '0\n' > target/receipts/ux-regression.instrumentation.exit
           exit "$test_status"
 
       - name: Emit UX regression receipt
         if: always()
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           cargo xtask ux-regression-receipt \
             --input target/receipts/ux-regression.log \
             --receipt target/receipts/ux-regression.json \
             --exit-status-file target/receipts/ux-regression.exit \
-            --sha "${{ github.sha }}"
+            --sha "$TESTED_SHA"
 
-      - name: Upload UX regression artifacts
+      - name: Verify receipt subject identity
+        id: verify_receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        env:
+          TESTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          receipt_path = Path("target/receipts/ux-regression.json")
+          instrumentation_path = Path("target/receipts/ux-regression.instrumentation.exit")
+          if not instrumentation_path.is_file() or instrumentation_path.is_symlink():
+              raise SystemExit("UX receipt instrumentation status is missing or not a regular file")
+          if instrumentation_path.read_text(encoding="utf-8").strip() != "0":
+              raise SystemExit("UX receipt instrumentation failed")
+          if not receipt_path.is_file() or receipt_path.is_symlink():
+              raise SystemExit("UX receipt is missing or not a regular file")
+          receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+          if receipt.get("sha") != os.environ["TESTED_SHA"]:
+              raise SystemExit(
+                  f"UX receipt subject {receipt.get('sha')!r} does not match "
+                  f"{os.environ['TESTED_SHA']}"
+              )
+          PY
+
+      - name: Upload UX regression evidence
+        if: always() && steps.verify_receipt.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
-          name: ux-regression-receipt-${{ github.sha }}
+          name: ux-regression-receipt-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           path: |
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
             target/receipts/ux-regression.exit
+            target/receipts/ux-regression.instrumentation.exit
             target/receipts/editor-ux/golden-editor-workload-v3.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload unverified UX diagnostics
+        if: always() && steps.verify_receipt.outcome != 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: ux-regression-unverified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/receipts/ux-regression.json
+            target/receipts/ux-regression.log
+            target/receipts/ux-regression.exit
+            target/receipts/ux-regression.instrumentation.exit
           if-no-files-found: warn
           retention-days: 7
 
@@ -741,8 +869,9 @@ jobs:
       - name: Upload UX regression test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/test-results-action@v1
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
         with:
+          report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/test-results/ux-regression-junit.xml
         env:
@@ -795,11 +924,12 @@ jobs:
   check-all-targets:
     name: Compile All Targets (bit-rot guard)
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # +5m headroom for the focused emacs docs contract after workspace check.
+    timeout-minutes: 15
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -810,12 +940,12 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
@@ -825,6 +955,12 @@ jobs:
       - name: Compile all targets (catches integration-test + bench bit-rot)
         run: just check-all-targets
 
+      # Required merge surface for #7767/#7796: unit_routed_full only executes via
+      # advisory pr-smoke, so stale Emacs guidance could otherwise merge while this
+      # contract merely compiles. Keep the oracle on Compile All Targets.
+      - name: Emacs docs contract (required merge surface)
+        run: cargo test -p xtask --test emacs_docs_contract --locked -- --nocapture
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
@@ -832,7 +968,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -843,15 +979,15 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: ci-lsp-memory-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      - name: Build perl-lsp release binary
-        run: cargo build --release -p perl-lsp-rs --bin perl-lsp --locked
+      - name: Build perllsp release binary
+        run: cargo build --release -p perllsp --bin perllsp --locked
 
       - name: Run document-churn memory smoke
         run: |
@@ -860,7 +996,7 @@ jobs:
           N_CHANGES=5 \
           DO_WORKSPACE_SYMBOL=0 \
           DELETE_AFTER_CLOSE=1 \
-          BINARY=./target/release/perl-lsp \
+          BINARY=./target/release/perllsp \
           python3 scripts/repro_lsp_storm.py \
             --json-out target/memory/pr-smoke-doc-churn.json \
             --csv-out target/memory/pr-smoke-doc-churn.csv \
@@ -916,7 +1052,7 @@ jobs:
 
       - name: Upload memory smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: lsp-memory-smoke-${{ github.sha }}
           path: |
@@ -927,3 +1063,75 @@ jobs:
             target/memory/receipts/pr-smoke-doc-churn.receipt.json
           if-no-files-found: warn
           retention-days: 14
+
+  # Standalone, candidate-bound formatter result for protected integration.
+  # Keep the existing advisory `fmt` meta-shard during the parity window tracked
+  # by #7087; this independently visible context is the ruleset promotion target.
+  rust-formatting:
+    name: Rust formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+      RECEIPT_PATH: target/receipts/rustfmt/rustfmt-check.json
+    steps:
+      - name: Checkout exact formatter subject
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ env.SUBJECT_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned formatter toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Bind formatter evidence to the checked-out tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD^{commit})"
+          test "$actual_sha" = "$SUBJECT_SHA"
+          echo "SUBJECT_TREE_SHA=$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
+
+      - name: Run candidate-bound rustfmt check
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt_bin="$(rustup which --toolchain 1.95.0 rustfmt)"
+          rustc_bin="$(rustup which --toolchain 1.95.0 rustc)"
+          python3 scripts/ci/rustfmt_check.py \
+            --root . \
+            --receipt "$RECEIPT_PATH" \
+            --cargo "$(command -v cargo)" \
+            --rustfmt "$rustfmt_bin" \
+            --rustc "$rustc_bin" \
+            --candidate-sha "$SUBJECT_SHA" \
+            --candidate-tree-sha "$SUBJECT_TREE_SHA"
+
+      - name: Verify candidate-bound rustfmt receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt_bin="$(rustup which --toolchain 1.95.0 rustfmt)"
+          rustc_bin="$(rustup which --toolchain 1.95.0 rustc)"
+          python3 scripts/ci/verify_rustfmt_receipt.py \
+            --root . \
+            --receipt "$RECEIPT_PATH" \
+            --producer scripts/ci/rustfmt_check.py \
+            --cargo "$(command -v cargo)" \
+            --rustfmt "$rustfmt_bin" \
+            --rustc "$rustc_bin" \
+            --candidate-sha "$SUBJECT_SHA" \
+            --candidate-tree-sha "$SUBJECT_TREE_SHA"
+
+      - name: Upload candidate-bound rustfmt receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: rustfmt-check-${{ env.SUBJECT_SHA }}
+          path: ${{ env.RECEIPT_PATH }}
+          if-no-files-found: error
+          retention-days: 7

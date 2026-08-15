@@ -1,173 +1,103 @@
-# Review Gates
+# Review in perl-lsp-swarm
 
-This document describes the advisory AI review gates running on PRs in this
-repository.
+## Primary review path
 
-## ub-review
+Serious review is part of the normal Claude/Codex development method. It does
+not depend on an external reviewer being available.
 
-`ub-review` builds a targeted evidence packet for unsafe/native-boundary code
-changes and posts one grouped Pull Request Review with sensor and model-lane
-findings. It is advisory: the job runs with `continue-on-error: true` and is
-not listed as a required branch-protection check. A failing or skipped
-ub-review job does not block merge.
+For substantive work, the repository expects proportionate multi-round review:
 
-### What it reviews
-
-`ub-review` targets the unsafe-boundary review surface:
-
-- `cargo-allow` — exception ledger drift (new `unsafe` blocks added without a
-  matching `deny.toml` allow entry, or existing entries silently broadened).
-- `ripr` — changed Rust behavior exposed to weak or absent test oracles.
-- `unsafe-review` — changed unsafe code without a reviewable safety contract,
-  precondition guard, layout/alignment witness, or aliasing/lifetime evidence.
-- `tokmd` — deterministic LLM-ready diff context packet.
-- `ast-grep` — cheap structural route scans on changed source.
-- `actionlint` — workflow changes.
-
-Missing sensor output is recorded as missing evidence, never as clean evidence.
-
-### The unsafe-review boundary: coverage instrument vs cockpit
-
-`unsafe-review` is a **reviewability** sensor, not a soundness prover. It asks:
-does the changed unsafe code have the artifacts a reviewer needs to assess
-safety? Those artifacts are: a `SAFETY:` comment, precondition guards, layout
-or alignment witnesses, aliasing/lifetime evidence, a local test that reaches
-the unsafe block, and a route to a meaningful oracle.
-
-This is intentionally narrower than Miri or ASAN. Miri proves a specific
-concrete execution path is UB-free; `unsafe-review` asks whether the *review*
-cockpit is equipped. A passing `unsafe-review` run means a human or model
-reviewer can assess the change; it does not mean the change is sound. A failing
-run means the safety evidence the reviewer would use is absent.
-
-Heavy witnesses (builds, tests, Miri, ASAN, mutation testing) are disabled by
-default (`allow-heavy: false`) and are never enabled in the advisory phase.
-
-### Configuration
-
-`policy/ub-review.toml` is the repo-local config passed to the action. It
-selects the `bun-ub-v0` profile as the closest available preset for Rust repos
-(a perl-lsp-specific profile is planned for PR 2 of the ub-review program).
-Runner-size profiles and per-tool sensor thresholds are PR 2 and PR 3 scope.
-
-### Invocation method
-
-The workflow uses `EffortlessMetrics/ub-review` as a GitHub composite action.
-The action's `install-mode=auto` first tries to download a Linux x64 release
-archive; if no release asset exists for the current ref, it falls back to a
-source build from the action repository. No public release asset exists for
-the current pinned SHA (`804d198b5a15a0df94bb4f43750dba71165916cd`), so first
-runs perform a source build. This is slower (~5 min extra) but deterministic.
-
-**Runner routing (temporary):** The router currently forces GitHub-hosted
-runners for all ub-review jobs. Self-hosted CX runners are Docker-only
-(no host-level Rust), so `install-mode=auto`'s source-build fallback fails
-with "cargo is unavailable and rustup is not installed" (evidence: PR #1218,
-run 27086277244, adoption datum #3). The CX job YAML is preserved in the
-workflow for a 3-line revert once EffortlessMetrics/ub-review#343 ships a
-release artifact.
-
-### Secrets
-
-`MINIMAX_API_KEY` is required for model review lanes. `OPENCODE` is an optional
-fallback. Both are org-level secrets. The `Secret preflight` step in the
-workflow fails clearly if `MINIMAX_API_KEY` is absent before any model call.
-Neither secret value is echoed in logs.
-
-### Reproducing locally
-
-```bash
-# Install ub-review (from source if no release is available):
-cargo install --git https://github.com/EffortlessMetrics/ub-review ub-review
-
-# Run the advisory sensors without model lanes:
-ub-review run \
-  --config policy/ub-review.toml \
-  --profile gh-runner \
-  --base origin/main \
-  --head HEAD \
-  --out target/ub-review \
-  --posting artifact-only \
-  --model-mode off
-
-# Read the summary:
-cat target/ub-review/running-summary.md
+```text
+issue and premise challenge
+→ proof and oracle challenge
+→ implementation self-check
+→ test hardening and simplification
+→ mutable candidate challenge
+→ findings and repair
+→ useful submitted PR review
+→ integration and landed-state reconciliation
 ```
 
-To include model lanes, set `MINIMAX_API_KEY` in the environment and pass
-`--posting review --model-mode auto`.
+Reviews should preserve useful scope, evidence and falsifiers, findings or an
+explicit clean result, prior dispositions, what is established, residual risk,
+and the next action. A later commit refreshes only affected semantic seams; it
+does not erase useful prior review merely because the SHA changed.
 
-### Program plan
+Branch protection, required deterministic checks, unresolved findings, and the
+accountable integration judgment remain authoritative. No external AI reviewer
+is a substitute for that process.
 
-The ub-review integration ships as a three-PR program:
+The RIPR boundary follows the same split: the `ripr` sensor is advisory, but the
+`ripr+ New Gap Gate` required check owns deterministic receipt integrity and
+blocks named new gaps in changed production files. A merge-test ref is recorded
+as `evaluated_head_sha`; pull-request runs separately record and validate
+`pr_head_sha`. Missing or stale identity-bearing receipts are not clean results.
 
-| PR | Scope |
-|----|-------|
-| PR 1 (this) | Advisory workflow scaffold, fork-policy gate, router, lane whitelist, docs. |
-| PR 2 | Runner-size profiles and perl-lsp-specific review profile. |
-| PR 3 | Unsafe-review sensor policy and per-tool thresholds for this repo's actual unsafe surface. |
+## Opportunistic external reviewers
 
-Promotion from advisory to a required gate requires evidence from real PR runs,
-calibration of false-positive rates, and a scope decision on which unsafe
-surfaces warrant blocking.
+CodeRabbit and Gemini are welcome extra evidence when they produce useful
+findings. They are opportunistic:
 
----
+- rate limits, quota exhaustion, unsupported files, or no response are ordinary
+  availability facts;
+- we do not wait, push empty commits, or build retry machinery for them;
+- absence of output is not approval and does not block merge;
+- useful findings are handled through the normal review/disposition path;
+- generic summaries and boilerplate carry no special authority.
 
-## Program plan and calibration (ub-review)
+## Droid / Factory
 
-### 8-PR sequence
+Automatic Droid review is paused.
 
-| PR | Scope | Status |
-|----|-------|--------|
-| PR 1 | Advisory workflow scaffold, fork-policy gate, router, lane whitelist, docs ([#1234](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1234)) | Merged |
-| PR 2 | Runner-size profiles and perl-lsp-specific review profile | Pending — calibration first |
-| PR 3 | Unsafe-review sensor policy and per-tool thresholds for this repo's actual unsafe surface | Pending |
-| PR 4–8 | Scope defined after PR 3 calibration evidence is in | Not yet scoped |
+The lane repeatedly failed or produced incomplete review state and did not earn
+a durable role in the review stack. The workflow remains as a statically skipped
+historical surface so existing policy and receipts stay readable.
 
-**Before PR 2**: classify PR runs from the calibration period as one of:
-- **True-positive (TP)** — finding is real, actionable, would have been missed by human review.
-- **Expected-quiet** — no unsafe surface changed; silent run is correct behaviour.
-- **False-positive (FP)** — finding is noise; sensor fired on safe code without safety-contract evidence.
-- **Infra-excluded** — job failed for runner/secret/build reasons, not sensor signal.
+A future bounded experiment may reconsider Droid only when a current service
+version is stable and demonstrates material review value beyond the normal
+multi-round agent process. Until then, do not spend runner/model capacity on it.
 
-### Calibration ledger (running)
+## UB Review
 
-| PR | Finding | Classification | Confidence |
-|----|---------|----------------|------------|
-| [#1243](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1243) | Fabricated-arithmetic catch | TP | High |
-| [#1247](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1247) | Test-gap identified | TP | Medium |
-| Pre-[#1245](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1245)/[#1248](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1248) CX failures | Runner/workspace recovery failures | Infra-excluded | — |
+Automatic UB Review is paused until the tool is useful.
 
-Update this ledger with each new run before PR 2 begins. The ledger is the
-evidence base for the PR-2 scope decision on sensor thresholds.
+UB Review may be relatively close to a valuable product, but the present swarm
+integration produces too much boilerplate, unreliable sensor/publication state,
+and insufficiently focused reviewer value. Running it on every PR consumes CI,
+model, and maintainer attention before the product has earned that cost.
 
-### Upstream tool loop
+Development continues in `EffortlessMetrics/ub-review`. Re-enable the swarm
+workflow only after real PR dogfood establishes all of the following:
 
-`ub-review` bundles these tools. Track upstream release cadence when planning
-PRs 2 and 3:
+1. **Useful reviewer output** — concise, relevant findings or a genuinely useful
+   clean conclusion; little irrelevant machinery narration or duplicate noise.
+2. **Good investigation** — reconstructs the PR claim, production consumers,
+   proof, negative/fallback paths, and realistic counterexamples.
+3. **Reliable operation** — sensors, models, packet assembly, and publication
+   complete consistently; failures remain visible rather than turning into
+   clean/pass results.
+4. **Separate deterministic gate** — required CI evidence is evaluated by
+   explicit receipts and rules, not solely by a model verdict.
+5. **Measured value** — representative dogfood shows acceptable precision,
+   recall, noise, latency, cost, and correction load compared with the existing
+   review-forward process.
 
-| Tool | Purpose | Upstream |
-|------|---------|---------|
-| `ub-review` | Orchestrator + model lanes | EffortlessMetrics/ub-review |
-| `unsafe-review` | Reviewability sensor | EffortlessMetrics/unsafe-review |
-| `ripr` | Test-oracle gap sensor | EffortlessMetrics/ripr |
-| `cargo-allow` | Exception ledger drift | EffortlessMetrics/cargo-allow |
-| `tokmd` | LLM-ready diff context | EffortlessMetrics/tokmd |
+Until those conditions are met, UB Review is neither advisory PR traffic nor a
+merge gate in this repository. Its upstream development and calibration are the
+work; repeatedly running the unfinished integration is not.
 
-### PR-3 conclusion shape
+## Re-enabling an external reviewer
 
-Advisory findings in PR 3 must produce **neutral conclusions** — not FAILURE —
-when the route policy says the finding is advisory. The pattern:
+Re-enabling Droid or UB Review requires one bounded PR with:
 
-- Blocking finding (route says required): conclusion = FAILURE, with evidence.
-- Advisory finding (route says advisory): conclusion = neutral summary + receipt
-  posted as PR Review comment, not as a check conclusion that blocks merge.
+- the exact tool/action version;
+- representative before/after dogfood;
+- useful-output examples;
+- failure and unavailable-state behavior;
+- cost/latency evidence;
+- a clear advisory or required boundary;
+- an explicit rollback.
 
-This keeps the advisory/required boundary explicit and prevents advisory drift
-into de-facto blocking behaviour.
-
-Note: ub-review reviewing this PR ([docs(project): convergence-to-release plan +
-queue doctrine + review-gates program]) is the program reviewing its own plan.
-The run result — whether it fires on doc-only changes, stays quiet, or produces
-an infra-excluded result — is a calibration datum for the docs-claims sensor
-surface.
+Do not create a provider-neutral review state machine merely to normalize bot
+availability. The repository already has a serious review process; external
+reviewers must add value to it rather than become another control plane.

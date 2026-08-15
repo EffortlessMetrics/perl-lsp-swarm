@@ -20,6 +20,25 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Build a typed didOpen textDocument params JSON value (#4995).
+fn did_open_params(uri: &str, language_id: &str, version: i32, text: String) -> Value {
+    json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": language_id,
+            "version": version,
+            "text": text
+        }
+    })
+}
+
+/// Build a typed didClose textDocument params JSON value (#4995).
+fn did_close_params(uri: &str) -> Value {
+    json!({
+        "textDocument": { "uri": uri }
+    })
+}
+
 /// Execution summary for a notebook cell (LSP 3.17)
 ///
 /// Tracks the execution state of a cell, including execution order
@@ -331,14 +350,9 @@ impl LspServer {
                 .unwrap_or(1);
 
             // Open cell as a text document using existing didOpen logic
-            let did_open_params = json!({
-                "textDocument": {
-                    "uri": cell_uri,
-                    "languageId": cell_doc.get("languageId").and_then(|v| v.as_str()).unwrap_or("perl"),
-                    "version": cell_version,
-                    "text": text
-                }
-            });
+            let lang_id = cell_doc.get("languageId").and_then(|v| v.as_str()).unwrap_or("perl");
+            let did_open_params =
+                did_open_params(cell_uri, lang_id, cell_version, text.to_string());
 
             // Use existing didOpen handler for the cell
             self.handle_did_open(Some(did_open_params))?;
@@ -454,14 +468,12 @@ impl LspServer {
                                 .unwrap_or(1);
 
                             // Open new cell as text document
-                            let did_open_params = json!({
-                                "textDocument": {
-                                    "uri": cell_uri,
-                                    "languageId": cell_doc.get("languageId").and_then(|v| v.as_str()).unwrap_or("perl"),
-                                    "version": cell_version,
-                                    "text": text
-                                }
-                            });
+                            let lang_id = cell_doc
+                                .get("languageId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("perl");
+                            let did_open_params =
+                                did_open_params(cell_uri, lang_id, cell_version, text.to_string());
 
                             self.handle_did_open(Some(did_open_params))?;
                             tracing::debug!(cell_uri, "New cell opened");
@@ -487,11 +499,7 @@ impl LspServer {
                                 .ok_or_else(|| invalid_params("Missing cell uri"))?;
 
                             // Close cell text document
-                            let did_close_params = json!({
-                                "textDocument": {
-                                    "uri": cell_uri
-                                }
-                            });
+                            let did_close_params = did_close_params(cell_uri);
 
                             self.handle_did_close(Some(did_close_params))?;
                             tracing::debug!(cell_uri, "Cell closed");
@@ -620,11 +628,7 @@ impl LspServer {
                     .ok_or_else(|| invalid_params("Missing cell uri"))?;
 
                 // Close cell text document
-                let did_close_params = json!({
-                    "textDocument": {
-                        "uri": cell_uri
-                    }
-                });
+                let did_close_params = did_close_params(cell_uri);
 
                 self.handle_did_close(Some(did_close_params))?;
                 tracing::debug!(cell_uri, "Cell closed");
@@ -643,6 +647,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_lsp_rs_core::governance::FeatureProfile;
     use serde_json::json;
 
     #[test]
@@ -692,7 +697,7 @@ mod tests {
 
     #[test]
     fn notebook_did_open_registers_cells_and_documents() -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new();
+        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
         let notebook_uri = "file:///open-test.ipynb";
         let cell_uri = "file:///open-test.ipynb#cell1";
 
@@ -737,7 +742,7 @@ mod tests {
     #[test]
     fn notebook_structure_change_updates_cell_mapping_and_execution_summary()
     -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new();
+        let server = LspServer::new_with_feature_profile(FeatureProfile::All);
         let notebook_uri = "file:///change-test.ipynb";
         let cell1_uri = "file:///change-test.ipynb#cell1";
         let cell2_uri = "file:///change-test.ipynb#cell2";

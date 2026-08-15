@@ -13,7 +13,7 @@ sub test($x, $y, $x) {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // Should have one error for duplicate parameter
@@ -39,7 +39,7 @@ sub increment($count) {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // Should have one warning for parameter shadowing
@@ -63,7 +63,7 @@ sub helper($x, $y, $z) {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // Should have one warning for unused parameter
@@ -89,7 +89,7 @@ my $hash = { key => value };  # These barewords should also be flagged
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // Should have errors for barewords
@@ -119,7 +119,7 @@ sub legacy_style {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // Should not flag @_ usage
@@ -141,7 +141,7 @@ sub callback($event, $_unused_data) {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // Should not flag parameters starting with underscore as unused
@@ -166,7 +166,7 @@ sub complex($a, $b, $a, $c, $b) {
     let mut parser = Parser::new(source);
     let ast = parser.parse()?;
     let ast = Arc::new(ast);
-    let diagnostics_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diagnostics_provider = DiagnosticsProvider::new();
     let diagnostics = diagnostics_provider.get_diagnostics(&ast, &[], source, None);
 
     // Should have errors for both duplicate parameters

@@ -12,6 +12,9 @@ Git and GitHub remain authoritative for repository, branch, candidate, PR, and m
 ## Rules
 
 - one writer mutates each current candidate branch/worktree at a time;
+- allocate only for a named mutation claim; read-only inspection of GitHub or source needs no worktree;
+- check host capacity before allocating and wait rather than exceeding it — a saturated host makes local timings, flake rates, and command timeouts untrustworthy, so over-allocation destroys evidence instead of merely slowing work (see `$orchestrate-work` capacity admission);
+- before removing or reusing a slot, read its status, untracked files, branch, HEAD, upstream, and lock; check for unpushed or detached commits and unique changes against current default-branch state; preserve a branch or patch for anything ambiguous, and re-read immediately before deletion;
 - query actual `git worktree list`, branch state, and GitHub before relying on cached slot metadata;
 - an absent, stale, or corrupt helper state file may be rebuilt or discarded;
 - slot names and owner labels do not establish issue/claim ownership or lifecycle stage;

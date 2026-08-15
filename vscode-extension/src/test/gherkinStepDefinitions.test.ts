@@ -98,6 +98,27 @@ describe('gherkin step definition support', () => {
     );
   });
 
+  test('treats quantified alternation as ambiguous', () => {
+    const step = parseGherkinStepLine('Then aaaaaaaaaaaaaaaaaaaa!', 1);
+    expect(step).not.toBeNull();
+
+    expect(classifyStepDefinitionStatus(step!, ['Then qr/^(a|aa)+!$/, sub { return; };'])).toBe(
+      'ambiguous',
+    );
+  });
+
+  test.each([
+    ['an escaped pipe', '^(foo\\|bar)+$'],
+    ['a character-class pipe', '^(foo[|]bar)+$'],
+  ])('does not treat quantified literal pipes as ambiguous (%s)', (_description, pattern) => {
+    const step = parseGherkinStepLine('Then foo|barfoo|bar', 1);
+    expect(step).not.toBeNull();
+
+    expect(
+      classifyStepDefinitionStatus(step!, ['Then qr/' + pattern + '/, sub { return; };']),
+    ).toBe('defined');
+  });
+
   test('does not treat named-capture groups as expensive (no false positive)', () => {
     const step = parseGherkinStepLine('Then I have 5 items in the cart', 1);
     expect(step).not.toBeNull();
@@ -128,6 +149,27 @@ describe('gherkin step definition support', () => {
         'Then qr/^the name is "([^"]+)"$/, sub { return; };',
       ]),
     ).toBe('defined');
+  });
+
+  test('disjoint quantified alternation is not flagged as expensive (#6167)', () => {
+    // `(cat|dog)+` has disjoint first characters — each position can match
+    // at most one branch, so there is no ambiguity to backtrack through.
+    // The ReDoS guard previously flagged ANY quantified group with |.
+    const step = parseGherkinStepLine('Then I see catdog', 1);
+    expect(step).not.toBeNull();
+    expect(
+      classifyStepDefinitionStatus(step!, ['Then qr/^I see (?:cat|dog)+$/, sub { return; };']),
+    ).toBe('defined');
+  });
+
+  test('overlapping quantified alternation is still flagged as expensive (#6167)', () => {
+    // `(a|aa)+` has overlapping branches (both start with 'a') — this IS
+    // catastrophic backtracking and should still be flagged.
+    const step = parseGherkinStepLine('Then aaaaaaaaaaaaaaaaaaaa!', 1);
+    expect(step).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step!, ['Then qr/^(a|aa)+$/, sub { return; };'])).toBe(
+      'ambiguous',
+    );
   });
 
   test('treats bounded inner quantifiers in quantified groups as expensive (#953)', () => {

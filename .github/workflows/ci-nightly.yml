@@ -60,8 +60,6 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -82,10 +80,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
         with: { toolchain: 1.95.0 }
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           key: ${{ runner.os }}-mutation-${{ hashFiles('Cargo.lock') }}
@@ -93,7 +93,7 @@ jobs:
       - run: cargo mutants --timeout 60 --no-shuffle || true
       - name: Upload mutation results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: mutation-results-${{ github.sha }}
           path: mutants.out/mutants.json
@@ -110,7 +110,9 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -118,13 +120,13 @@ jobs:
         toolchain: stable
 
     - name: Cache cargo dependencies
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       with:
         key: ${{ runner.os }}-bench-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
 
     - name: Install just
-      uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+      uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
       with:
         tool: just
 
@@ -137,14 +139,15 @@ jobs:
         python3 benchmarks/scripts/test_extract_criterion.py -v
         python3 benchmarks/scripts/test_benchmark_guards.py -v
 
-    - name: Build perl-lsp binary for real-repo UX perf lane
-      run: cargo build -p perl-lsp-rs --bin perl-lsp --locked
+    - name: Build perllsp binary for real-repo UX perf lane
+      run: cargo build -p perllsp --bin perllsp --locked
 
     - name: Run real-repo first-diagnostics perf lane
+      env:
+        PERL_LSP_BIN: ${{ github.workspace }}/target/debug/perllsp
       run: |
         mkdir -p benchmarks/results
-        PERL_LSP_BIN="${{ github.workspace }}/target/debug/perl-lsp" \
-          PERL_LSP_UX_REQUIRE_BINARY=1 \
+        PERL_LSP_UX_REQUIRE_BINARY=1 \
           cargo test -p perl-lsp-ux-tests --features integration-test \
           --test ux_scenario_18_real_repo_perf -- --test-threads=1 --nocapture \
           2>&1 | tee benchmarks/results/real-repo-perf.txt
@@ -292,33 +295,45 @@ jobs:
           echo "CRITICAL=0" >> $GITHUB_OUTPUT
         fi
 
-    - name: Comment on PR (performance alerts)
-      if: github.event_name == 'pull_request' && (steps.compare.outputs.REGRESSION == '1' || steps.alert.outputs.CRITICAL != '')
-      uses: actions/github-script@v9
-      with:
-        script: |
-          const fs = require('fs');
-          let body = '';
-
-          if (fs.existsSync('alert.md')) {
-            body = fs.readFileSync('alert.md', 'utf8');
-          } else if (fs.existsSync('comparison.txt')) {
-            const comparison = fs.readFileSync('comparison.txt', 'utf8');
-            body = `## Performance Regression Detected\n\n\`\`\`\n${comparison}\n\`\`\`\n\nPlease review the benchmark results and address any performance regressions.`;
-          }
-
-          if (body) {
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: body
-            });
-          }
+    - name: Summarize performance evidence
+      if: always()
+      run: |
+        # This replaces the PR comment removed by #6028. That comment was the
+        # only inline surface for these alerts, and it was the sole reason this
+        # workflow held issue and pull-request write scopes while also executing
+        # candidate code. A step summary restores the same visibility at zero
+        # permission cost.
+        #
+        # Keyed off file presence rather than the `compare`/`alert` step
+        # outputs: those are computed through a `tee` pipeline without
+        # `pipefail`, so they do not carry the real exit status. That is a
+        # pre-existing defect and is deliberately not depended on here.
+        {
+          echo "## Performance Benchmarks"
+          echo
+          if [ -s alert.md ]; then
+            cat alert.md
+            echo
+          fi
+          if [ -s comparison.txt ]; then
+            echo "<details><summary>Baseline comparison</summary>"
+            echo
+            echo '```text'
+            cat comparison.txt
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+          fi
+          if [ ! -s alert.md ] && [ ! -s comparison.txt ]; then
+            echo "No baseline comparison or alert output was produced."
+          fi
+          echo "Full benchmark artifacts are attached to this run."
+        } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload benchmark artifacts
       if: always()
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: benchmark-results-${{ github.sha }}
         path: |
@@ -345,7 +360,9 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -353,7 +370,7 @@ jobs:
         toolchain: stable
 
     - name: Cache cargo dependencies
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       with:
         key: ${{ runner.os }}-real-repo-latency-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
@@ -367,7 +384,7 @@ jobs:
 
     - name: Upload real-repo latency artifacts
       if: always()
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: real-project-latency-${{ github.sha }}
         path: |
@@ -386,7 +403,9 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -394,7 +413,7 @@ jobs:
         toolchain: stable
 
     - name: Cache cargo dependencies
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       with:
         key: ${{ runner.os }}-corpus-differential-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
@@ -408,7 +427,7 @@ jobs:
 
     - name: Upload corpus differential report
       if: always()
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: corpus-differential-${{ github.sha }}
         path: corpus-differential-report.txt
@@ -425,7 +444,9 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:memory'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -433,14 +454,14 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: nightly-lsp-memory-${{ hashFiles('Cargo.lock') }}
 
-      - name: Build perl-lsp release binary
-        run: cargo build --release -p perl-lsp-rs --bin perl-lsp --locked
+      - name: Build perllsp release binary
+        run: cargo build --release -p perllsp --bin perllsp --locked
 
       - name: Run document-churn plateau workload
         run: |
@@ -449,7 +470,7 @@ jobs:
           N_CHANGES=10 \
           DO_WORKSPACE_SYMBOL=0 \
           DELETE_AFTER_CLOSE=1 \
-          BINARY=./target/release/perl-lsp \
+          BINARY=./target/release/perllsp \
           python3 scripts/repro_lsp_storm.py \
             --json-out target/memory/nightly-doc-churn.json \
             --csv-out target/memory/nightly-doc-churn.csv \
@@ -483,7 +504,7 @@ jobs:
           N_CHANGES=10 \
           DO_WORKSPACE_SYMBOL=1 \
           DELETE_AFTER_CLOSE=1 \
-          BINARY=./target/release/perl-lsp \
+          BINARY=./target/release/perllsp \
           python3 scripts/repro_lsp_storm.py \
             --json-out target/memory/nightly-workspace-symbol.json \
             --csv-out target/memory/nightly-workspace-symbol.csv \
@@ -554,7 +575,7 @@ jobs:
 
       - name: Upload memory plateau artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: lsp-memory-plateau-${{ github.sha }}
           path: |
@@ -580,7 +601,7 @@ jobs:
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_coverage != 'false')
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -617,14 +638,14 @@ jobs:
           components: llvm-tools-preview
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ runner.os }}-coverage-${{ hashFiles('Cargo.lock') }}
           cache-targets: false
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
@@ -719,7 +740,9 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Check for tautological assertions
         run: |
@@ -753,8 +776,9 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ci:semver'))
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Install Rust
@@ -763,7 +787,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: semver-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
@@ -818,7 +842,7 @@ jobs:
 
       - name: Upload breaking changes report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: semver-breaking-changes-report
           path: target/semver-reports/breaking-changes.json
@@ -834,7 +858,9 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:public-api'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -842,7 +868,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: public-api-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
@@ -851,7 +877,7 @@ jobs:
         run: cargo install cargo-public-api --locked --version 0.50.1
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
@@ -869,7 +895,9 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:metrics-ratchet'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -877,13 +905,13 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: scorecard-ratchet-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
@@ -901,7 +929,9 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'ci:strict'))
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -909,7 +939,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ runner.os }}-clippy-strict-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
@@ -933,7 +963,9 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'ci:kwalitee'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -941,7 +973,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: ${{ runner.os }}-kwalitee-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
@@ -1003,7 +1035,7 @@ jobs:
 
       - name: Upload Kwalitee receipt
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: perl-kwalitee-${{ github.sha }}
           # Upload the whole receipt directories rather than enumerating files:
@@ -1059,7 +1091,9 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain (nightly)
       uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # nightly (master)
@@ -1068,7 +1102,7 @@ jobs:
         components: rust-src
 
     - name: Cache cargo dependencies
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       with:
         key: ${{ runner.os }}-fuzz-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
         cache-on-failure: true
@@ -1083,7 +1117,7 @@ jobs:
 
     - name: Upload crash artifacts
       if: failure()
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
       with:
         name: fuzz-artifacts-${{ matrix.target }}-${{ github.sha }}
         path: |

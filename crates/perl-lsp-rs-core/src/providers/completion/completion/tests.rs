@@ -1,6 +1,7 @@
 use super::*;
 use crate::providers::file_completion::CWD_LOCK as FILE_COMPLETION_CWD_LOCK;
 use perl_parser_core::Parser;
+use perl_semantic_analyzer::analysis::symbol::{ScopeKind, SymbolExtractor};
 use perl_tdd_support::{must, must_some};
 use perl_workspace::workspace_index::WorkspaceIndex;
 use std::fs;
@@ -696,7 +697,7 @@ Point->new(na"#;
     let constructor_labels: Vec<&str> = completions
         .iter()
         .filter(|item| item.detail.as_deref() == Some("Object::Pad constructor parameter"))
-        .map(|item| item.label.as_str())
+        .map(|item| item.label.as_ref())
         .collect();
 
     assert!(constructor_labels.contains(&"name"), "expected `name` to match prefix `na`");
@@ -726,7 +727,7 @@ Point->new(name => "#;
     let value_constructor_labels: Vec<&str> = value_completions
         .iter()
         .filter(|item| item.detail.as_deref() == Some("Object::Pad constructor parameter"))
-        .map(|item| item.label.as_str())
+        .map(|item| item.label.as_ref())
         .collect();
 
     assert!(
@@ -758,7 +759,7 @@ point->new(na"#;
     let constructor_labels: Vec<&str> = completions
         .iter()
         .filter(|item| item.detail.as_deref() == Some("Object::Pad constructor parameter"))
-        .map(|item| item.label.as_str())
+        .map(|item| item.label.as_ref())
         .collect();
 
     assert!(constructor_labels.contains(&"name"));
@@ -828,7 +829,7 @@ Person->new(na"#;
     let constructor_labels: Vec<&str> = completions
         .iter()
         .filter(|item| item.detail.as_deref() == Some("native class constructor parameter"))
-        .map(|item| item.label.as_str())
+        .map(|item| item.label.as_ref())
         .collect();
 
     assert!(constructor_labels.contains(&"name"), "expected `name` to match prefix `na`");
@@ -1454,7 +1455,7 @@ fn test_string_completion_suppresses_method_arrow_completions() {
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        !completions.iter().any(|item| matches!(item.label.as_str(), "can" | "selectrow_array")),
+        !completions.iter().any(|item| matches!(item.label.as_ref(), "can" | "selectrow_array")),
         "method completions must stay suppressed inside strings, got: {:?}",
         completions.iter().map(|item| &item.label).collect::<Vec<_>>()
     );
@@ -1530,7 +1531,7 @@ fn test_regex_completion_offers_perl_whitespace_and_linebreak_classes() {
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, code.len());
-    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
 
     for label in &["\\h", "\\H", "\\v", "\\V", "\\R"] {
         assert!(
@@ -1889,6 +1890,62 @@ $self->"#;
         "nearest ancestor should shadow a farther ancestor with the same method name (with #7918 receiver suffix)"
     );
 
+    Ok(())
+}
+
+#[test]
+fn test_method_completion_traverses_empty_intermediary_role()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/BaseRole.pm")?,
+        r#"package BaseRole;
+sub base_role_method { }
+1;
+"#
+        .to_string(),
+    )?;
+    index.index_file(
+        Url::parse("file:///workspace/IntermediateRole.pm")?,
+        r#"package IntermediateRole;
+use Moose;
+with 'BaseRole';
+1;
+"#
+        .to_string(),
+    )?;
+    index.index_file(
+        Url::parse("file:///workspace/Consumer.pm")?,
+        r#"package Consumer;
+use Moose;
+with 'IntermediateRole';
+1;
+"#
+        .to_string(),
+    )?;
+
+    let code = r#"package Consumer;
+sub run {
+my $self = shift;
+$self->"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let method = completions.iter().find(|item| item.label == "base_role_method");
+    assert!(
+        method.is_some(),
+        "completion must traverse an empty intermediary role; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+    let method = method.ok_or("base role method completion missing")?;
+    assert_eq!(
+        method.detail.as_deref(),
+        Some("inherited method from BaseRole — receiver: self/this"),
+        "completion must traverse an empty intermediary role to its base role"
+    );
     Ok(())
 }
 
@@ -2830,7 +2887,7 @@ $obj->"#;
     let bark = match completions.iter().find(|c| c.label == "bark") {
         Some(bark) => bark,
         None => {
-            let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+            let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
             return Err(format!(
                 "fallback should include imported Foo's `bark`; got labels: {labels:?}"
             )
@@ -3281,7 +3338,11 @@ sub bark { }
 // ordering — they assert on the evidence variant and confidence level.
 // -------------------------------------------------------------------------
 
-use super::workspace::{ReceiverEvidence, classify_receiver, classify_text_pattern_receiver};
+use super::workspace::{
+    ReceiverEvidence, classify_receiver, classify_text_pattern_receiver,
+    receiver_package_from_context_or_source, receiver_package_from_symbol_table_or_source,
+    source_package_fallback,
+};
 use perl_semantic_analyzer::type_inference::TypeInferenceEngine;
 use perl_semantic_facts::Confidence;
 
@@ -3298,6 +3359,82 @@ fn ctx_for(prefix: &str, current_package: &str, source_position: usize) -> Compl
         prefix_start: source_position.saturating_sub(prefix.len()),
         cursor_scope_id: 0,
     }
+}
+
+#[test]
+fn source_package_fallback_respects_closed_package_block() {
+    let source = r#"package Outer;
+package Inner {
+    sub inner {}
+}
+sub inspect {
+    my $self = shift;
+    $self->"#;
+    let context = ctx_for("$self->", "main", source.len());
+
+    assert_eq!(
+        receiver_package_from_context_or_source(&context, source).as_deref(),
+        Some("Outer"),
+        "a closed block-form package must not leak as the active source package"
+    );
+}
+
+#[test]
+fn receiver_package_reuses_prebuilt_symbol_table() {
+    let valid_source = "package Child;\nsub inspect {\n    my $self = shift;\n    $self->\n}\n";
+    let mut parser = perl_semantic_analyzer::Parser::new(valid_source);
+    let ast = must(parser.parse());
+    let analyzer =
+        perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, valid_source);
+
+    let incomplete_source = "package Child;\nsub inspect {\n    my $self = shift;\n    $self->";
+    let context = ctx_for("$self->", "main", incomplete_source.len());
+
+    assert_eq!(
+        receiver_package_from_symbol_table_or_source(
+            &context,
+            incomplete_source,
+            analyzer.symbol_table(),
+        )
+        .as_deref(),
+        Some("Child"),
+        "the prebuilt symbol table should resolve the package before source fallback"
+    );
+}
+
+#[test]
+fn source_package_fallback_ignores_non_code_braces() {
+    let source = r#"package Outer;
+package Inner {
+    sub inner {}
+}
+my $literal = "}";
+my $pattern = qr/\{ \}/;
+# {
+my $body = <<'EOF';
+}
+{
+EOF
+sub inspect {
+    my $self = shift;
+    $self->"#;
+
+    assert_eq!(
+        source_package_fallback(source, source.len()).as_deref(),
+        Some("Outer"),
+        "strings, regexes, comments, and heredocs must not change package scope"
+    );
+}
+
+#[test]
+fn source_package_fallback_restores_main_after_delayed_block_brace() {
+    let source = "package Foo\n{\n    sub inner {}\n}\nmy $self = shift;\n$self->";
+
+    assert_eq!(
+        source_package_fallback(source, source.len()),
+        None,
+        "a block package whose opening brace is delayed must end at its closing brace"
+    );
 }
 
 #[test]
@@ -4613,7 +4750,7 @@ fn test_regex_flag_completions_after_close() {
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, code.len());
-    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
     // Standard regex flags per Perl documentation
     for flag in &["g", "i", "m", "s", "x", "e", "r", "a", "p"] {
         assert!(
@@ -4631,7 +4768,7 @@ fn test_regex_flag_completions_skip_already_typed() {
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, code.len());
-    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
     assert!(!labels.contains(&"g"), "already-typed flag 'g' should be excluded");
     assert!(labels.contains(&"i"), "flag 'i' should still be offered");
 }
@@ -4644,7 +4781,7 @@ fn test_regex_tr_flag_completions() {
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, code.len());
-    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
     for flag in &["c", "d", "s"] {
         assert!(labels.contains(flag), "tr/// flag '{flag}' should be offered; got: {labels:?}");
     }
@@ -4661,7 +4798,7 @@ fn test_regex_tr_binding_operator_flag_completions() {
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, code.len());
-    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
     for flag in &["c", "d", "s"] {
         assert!(
             labels.contains(flag),
@@ -4680,7 +4817,7 @@ fn test_regex_operator_snippets_present() {
     let ast = must(parser.parse());
     let provider = CompletionProvider::new(&ast);
     let completions = provider.get_completions(code, 0);
-    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
     assert!(labels.contains(&"mregex"), "mregex snippet missing; got: {labels:?}");
     assert!(labels.contains(&"ssubst"), "ssubst snippet missing; got: {labels:?}");
     assert!(labels.contains(&"qrpat"), "qrpat snippet missing; got: {labels:?}");
@@ -5159,9 +5296,9 @@ fn test_use_module_completion_unchanged_with_empty_inc_vectors()
     let with_empty_inc_results = with_empty_inc.get_completions_with_path(code, code.len(), None);
 
     let baseline_labels: std::collections::HashSet<String> =
-        baseline.into_iter().map(|item| item.label).collect();
+        baseline.into_iter().map(|item| item.label.into_owned()).collect();
     let with_empty_labels: std::collections::HashSet<String> =
-        with_empty_inc_results.into_iter().map(|item| item.label).collect();
+        with_empty_inc_results.into_iter().map(|item| item.label.into_owned()).collect();
 
     assert_eq!(
         baseline_labels, with_empty_labels,
@@ -5211,9 +5348,9 @@ fn test_non_empty_inc_paths_keep_workspace_module_under_active_root()
     .get_completions_with_path(code, code.len(), None);
 
     let baseline_labels: std::collections::HashSet<String> =
-        baseline.into_iter().map(|item| item.label).collect();
+        baseline.into_iter().map(|item| item.label.into_owned()).collect();
     let with_inc_labels: std::collections::HashSet<String> =
-        with_inc.into_iter().map(|item| item.label).collect();
+        with_inc.into_iter().map(|item| item.label.into_owned()).collect();
 
     assert_eq!(
         baseline_labels, with_inc_labels,
@@ -7799,7 +7936,7 @@ sub helper { }
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
 
     assert!(
         completions.iter().any(|c| c.label == "PI"),
@@ -7900,7 +8037,7 @@ fn test_indirect_bareword_receiver_offers_inherited_methods()
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, pos);
-    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
 
     assert!(
         completions.iter().any(|c| c.label == "run"),
@@ -7925,7 +8062,7 @@ fn test_indirect_variable_receiver_offers_assigned_class_methods()
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, pos);
-    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
 
     assert!(
         completions.iter().any(|c| c.label == "run"),
@@ -7949,7 +8086,7 @@ fn test_arrow_method_completion_still_works_after_indirect_routing()
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
-    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
 
     assert!(
         completions.iter().any(|c| c.label == "run"),
@@ -8165,7 +8302,7 @@ fn test_indirect_infile_class_not_in_workspace_index_offers_methods()
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
     let completions = provider.get_completions(code, pos);
-    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
 
     assert!(
         completions.iter().any(|c| c.label == "baz"),
@@ -8191,8 +8328,8 @@ fn test_indirect_truly_unknown_class_no_infile_package_offers_no_methods()
     const OBJECT_DEFAULTS: &[&str] = &["isa", "can", "DOES", "VERSION", "DESTROY", "AUTOLOAD"];
     let leaked: Vec<&str> = completions
         .iter()
-        .filter(|c| OBJECT_DEFAULTS.contains(&c.label.as_str()))
-        .map(|c| c.label.as_str())
+        .filter(|c| OBJECT_DEFAULTS.contains(&c.label.as_ref()))
+        .map(|c| c.label.as_ref())
         .collect();
 
     assert!(
@@ -8264,7 +8401,7 @@ fn test_indirect_underscore_method_word_offers_methods() -> Result<(), Box<dyn s
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, pos);
-    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
 
     assert!(
         completions.iter().any(|c| c.label == "run"),
@@ -8294,7 +8431,7 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, pos);
-    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
 
     let run = must_some(completions.iter().find(|c| c.label == "run"));
     assert!(
@@ -8310,4 +8447,182 @@ fn test_indirect_midword_cursor_offers_methods_with_insert_range()
         "indirect method edit range must match the uniform (prefix_start, position) insert semantics"
     );
     Ok(())
+}
+
+/// Index the parent package separately so these tests prove the workspace
+/// inheritance edge rather than merely finding declarations in one AST.
+fn inherited_moo_parent_index() -> Result<Arc<WorkspaceIndex>, Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/Parent.pm")?,
+        r#"package Parent;
+use Moo;
+has 'name' => (is => 'ro', isa => 'Str');
+has 'status' => (
+    is => 'rw',
+    predicate => 1,
+    builder => 1,
+    clearer => 1,
+);
+1;
+"#
+        .to_string(),
+    )?;
+    Ok(index)
+}
+
+#[test]
+fn block_form_package_after_close_stays_main() {
+    let code = r#"package Child {
+    sub greet {
+        my $self = shift;
+        $self->bark;
+    }
+}
+$self->
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let pos = must_some(code.rfind("$self->")) + "$self->".len();
+    let context = provider.analyze_context(code, pos);
+    assert_eq!(
+        context.current_package, "main",
+        "after a block-form package closes, receiver package context must return to main; got {:?}",
+        context.current_package
+    );
+}
+
+#[test]
+fn block_form_package_at_scope_end_is_main() {
+    let code = "package Foo {\n    my $x;\n}\n";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let table = SymbolExtractor::new().extract(&ast);
+    let scope_end = table
+        .scopes
+        .values()
+        .filter(|scope| scope.kind == ScopeKind::Package)
+        .map(|scope| scope.location.end)
+        .max()
+        .expect("block-form package scope");
+    assert_eq!(
+        CompletionContext::detect_current_package(&table, scope_end),
+        "main",
+        "cursor at scope end (half-open) must not inherit the closed block package"
+    );
+}
+
+#[test]
+fn inherited_moo_current_package_is_child() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let context = provider.analyze_context(code, pos);
+    assert_eq!(
+        context.current_package, "Child",
+        "receiver package context must be Child, got {:?}",
+        context.current_package
+    );
+}
+
+#[test]
+fn test_inherited_moo_accessor_completion_from_parent_class() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        completions.iter().any(|item| item.label == "name"),
+        "expected inherited Moo accessor name in Child completion, got {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_inherited_moo_generated_accessor_methods_are_completed() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub inspect {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let labels: Vec<_> =
+        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+
+    for expected in ["status", "has_status", "_build_status", "clear_status"] {
+        assert!(
+            labels.iter().any(|label| label == expected),
+            "expected inherited generated accessor {} in Child completion, got {:?}",
+            expected,
+            labels
+        );
+    }
+}
+
+#[test]
+fn test_inherited_moo_open_package_survives_unrelated_bare_symbol_match() {
+    let code = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub inspect {
+    my $self = shift;
+    $self->
+}
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let index = must(inherited_moo_parent_index());
+    must(index.index_file(
+        must(Url::parse("file:///workspace/Unrelated.pm")),
+        "package Other; sub Child { 1 }".to_string(),
+    ));
+
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let pos = must_some(code.find("$self->")) + "$self->".len();
+    let labels: Vec<_> =
+        provider.get_completions(code, pos).into_iter().map(|item| item.label).collect();
+
+    assert!(
+        labels.iter().any(|label| label == "name"),
+        "open Child source must win over unrelated indexed bare symbol, got {labels:?}"
+    );
 }

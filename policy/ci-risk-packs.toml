@@ -58,7 +58,6 @@ paths = [
   "crates/perl-lsp-rs/**",
   "crates/perl-lsp-rs-core/**",
   "crates/perl-lsp-ux-tests/**",
-  "crates/perl-refactoring/**",
   "crates/perllsp/**",
 ]
 lanes = ["pr_smoke", "merge_gate_shards", "ux_tests", "ripr_advisory"]

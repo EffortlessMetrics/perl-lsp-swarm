@@ -21,6 +21,25 @@ impl LspServer {
     ) -> RoutedResponse {
         let method = request.method.clone();
         let request_start = std::time::Instant::now();
+
+        // LSP spec: after shutdown, the server must reject all requests except
+        // `exit` with -32600 InvalidRequest (#6103).
+        if method != "exit"
+            && method != "shutdown"
+            && self.shutdown_received.load(Ordering::Acquire)
+        {
+            return RoutedResponse::Handler {
+                id,
+                method: method.clone(),
+                should_respond,
+                result: Err(JsonRpcError {
+                    code: -32600, // InvalidRequest per JSON-RPC 2.0 spec
+                    message: "Server has been shutdown".to_string(),
+                    data: None,
+                }),
+            };
+        }
+
         let result = match method.as_str() {
             "initialize" => self.handle_initialize_dispatch(request.params),
             "initialized" => self.handle_initialized_dispatch(),
@@ -226,6 +245,9 @@ impl LspServer {
             // consume a worker thread for ~1 second per call (issue #4632).
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             "$/test/slowOperation" => self.handle_slow_operation_dispatch(&id, request.params),
+            // Keep the VS Code liveness probe on a constant-time server path.
+            // It must not enter provider or open-document fallback work.
+            "$/perl-lsp/watchdog" => Ok(Some(Value::Null)),
             // Tolerate unknown `$/`-prefixed methods per LSP spec:
             // Method names starting with "$/" are protocol-specific and should be
             // silently ignored (notifications) or return MethodNotFound (requests)

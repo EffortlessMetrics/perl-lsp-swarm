@@ -112,10 +112,10 @@ fn scan_path_for_perl(path_env: &str) -> Option<PathBuf> {
 ///
 /// Returns an error when perl cannot be found on PATH.
 pub fn resolve_perl_path() -> Result<PathBuf> {
-    if let Ok(path_env) = env::var("PATH") {
-        if let Some(path) = scan_path_for_perl(&path_env) {
-            return Ok(path);
-        }
+    if let Ok(path_env) = env::var("PATH")
+        && let Some(path) = scan_path_for_perl(&path_env)
+    {
+        return Ok(path);
     }
 
     for perl_path in termux_perl_candidates() {
@@ -130,10 +130,10 @@ pub fn resolve_perl_path() -> Result<PathBuf> {
 /// Candidate Perl locations used by Termux environments when PATH is minimal.
 fn termux_perl_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Ok(prefix) = env::var("PREFIX") {
-        if !prefix.is_empty() {
-            candidates.push(PathBuf::from(prefix).join("bin").join(PERL_EXECUTABLE));
-        }
+    if let Ok(prefix) = env::var("PREFIX")
+        && !prefix.is_empty()
+    {
+        candidates.push(PathBuf::from(prefix).join("bin").join(PERL_EXECUTABLE));
     }
     candidates.push(PathBuf::from("/data/data/com.termux/files/usr/bin").join(PERL_EXECUTABLE));
     candidates
@@ -147,20 +147,20 @@ fn perl_not_found_install_message() -> &'static str {
 
 /// Return the perlbrew root directory (`PERLBREW_ROOT` or `~/perl5/perlbrew`).
 fn perlbrew_root() -> PathBuf {
-    if let Ok(root) = env::var("PERLBREW_ROOT") {
-        if !root.is_empty() {
-            return PathBuf::from(root);
-        }
+    if let Ok(root) = env::var("PERLBREW_ROOT")
+        && !root.is_empty()
+    {
+        return PathBuf::from(root);
     }
     home_dir().join("perl5").join("perlbrew")
 }
 
 /// Return the plenv root directory (`PLENV_ROOT` or `~/.plenv`).
 fn plenv_root() -> PathBuf {
-    if let Ok(root) = env::var("PLENV_ROOT") {
-        if !root.is_empty() {
-            return PathBuf::from(root);
-        }
+    if let Ok(root) = env::var("PLENV_ROOT")
+        && !root.is_empty()
+    {
+        return PathBuf::from(root);
     }
     home_dir().join(".plenv")
 }
@@ -170,15 +170,15 @@ fn plenv_root() -> PathBuf {
 /// Checks `HOME` (Unix) then `USERPROFILE` (Windows) before falling back to
 /// [`std::env::temp_dir`].
 fn home_dir() -> PathBuf {
-    if let Ok(home) = env::var("HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home);
-        }
+    if let Ok(home) = env::var("HOME")
+        && !home.is_empty()
+    {
+        return PathBuf::from(home);
     }
-    if let Ok(profile) = env::var("USERPROFILE") {
-        if !profile.is_empty() {
-            return PathBuf::from(profile);
-        }
+    if let Ok(profile) = env::var("USERPROFILE")
+        && !profile.is_empty()
+    {
+        return PathBuf::from(profile);
     }
     std::env::temp_dir()
 }

@@ -1,0 +1,47 @@
+{
+  "check": "install-transition",
+  "schema_version": "install_transition.v1",
+  "status": "pass",
+  "claim_boundary": "Negative-path proof that a checksum-invalid candidate archive is rejected without replacing the known-good prior binary.",
+  "candidate": {
+    "artifact_set_id": "v0.18.0-rc1-primary",
+    "frozen_product_sha": "0123456789abcdef0123456789abcdef01234567",
+    "prepared_swarm_sha": "1111111111111111111111111111111111111111",
+    "release_repo_sha": "2222222222222222222222222222222222222222",
+    "release_topology_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "candidate_id": "v0.18.0-rc1",
+    "previous_version": "0.17.0",
+    "candidate_version": "0.18.0",
+    "extension_version": "0.18.0",
+    "server_version": "0.18.0",
+    "dap_version": "0.18.0",
+    "platform": "linux-x86_64",
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "transition": {
+    "topology_path_id": "github-archive-linux-x86_64",
+    "path": "github_archive",
+    "class": "interrupted_install",
+    "documented_primary": true,
+    "expected_asset": "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz",
+    "resolved_asset": "perllsp-0.18.0-x86_64-unknown-linux-gnu.tar.gz",
+    "intended_disposition": "rejected",
+    "observed_disposition": "rejected",
+    "outcome": "completed",
+    "observed_release_identity": "0.17.0",
+    "artifact_verified": false,
+    "artifact_sha256": null,
+    "known_good_preserved": true,
+    "partial_artifact_promoted": false,
+    "mixed_version_reported_ready": false,
+    "unsupported_target_selected": false,
+    "rollback_completed": false,
+    "candidate_process_left_running": false,
+    "compatibility_mismatch_detected": false,
+    "user_action": "Retry the download after verifying network and proxy settings.",
+    "limitations": [
+      "This fixture models checksum rejection and does not exercise an OS permission failure."
+    ]
+  },
+  "limitations": []
+}

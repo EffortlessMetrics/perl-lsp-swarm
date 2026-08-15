@@ -21,6 +21,17 @@ The live release truth is:
 | You build against the crates | [Changelog](../../CHANGELOG.md) | Bump related crate versions together and rerun tests |
 | Something broke after the upgrade | [Troubleshooting](TROUBLESHOOTING.md) | Check PATH, stale binaries, and config drift |
 
+## Compatibility expectations
+
+This is a public-beta product. Use the [stability policy](../reference/STABILITY.md) to decide what an upgrade may require:
+
+- patch releases in the same 0.Y line preserve the published API and documented behavior;
+- pre-1.0 minor releases may intentionally remove or rename public items; facade-crate breaks require a Migration section; other published support-crate changes remain governed by their release notes and crate-level documentation;
+- editor capability advertising and DAP preview behavior can change as support is measured, even when the binary still starts;
+- publication channels are independent. A GitHub Release, crates.io version, marketplace entry, and Homebrew formula are separate receipts.
+
+When crossing a minor release, read the matching release notes before changing configuration or code. When crossing several releases, read each intervening migration section rather than assuming the latest note describes every break.
+
 ## 1. Reinstall the server
 
 If you want the current published public-beta binary, reinstall it rather than
@@ -86,6 +97,17 @@ Then open a small Perl file and confirm:
 - completions and hover still work
 - no stale path or config warnings show up in the editor log
 
+## Rollback and stale-state recovery
+
+If the upgrade introduced a regression:
+
+1. record perllsp --version, the editor, OS, workspace root, and failing operation;
+2. restore the last known-good binary or pin the desired release tag;
+3. restart the editor and remove only the affected workspace cache or index if the troubleshooting guide identifies it as stale;
+4. retain the failing receipt before retrying with a different version.
+
+Do not treat --health as proof that editor capabilities or workspace indexing are correct; it only proves that the executable starts.
+
 ## 5. If something still looks wrong
 
 Check these first:
@@ -96,4 +118,4 @@ Check these first:
 - workspace config changes were saved and the project was reopened
 - the issue is not already covered in [Troubleshooting](TROUBLESHOOTING.md)
 
-If you are jumping across more than one release, read the relevant `CHANGELOG.md` sections before you retry the upgrade.
+If you are jumping across more than one release, read the relevant `CHANGELOG.md` sections before you retry the upgrade. For crate consumers, rerun the SemVer and public-API checks named in [the stability policy](../reference/STABILITY.md).
