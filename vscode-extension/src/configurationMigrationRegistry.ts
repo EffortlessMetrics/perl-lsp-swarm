@@ -30,7 +30,11 @@ export interface ConfigurationMigrationRow {
   migration_disposition: MigrationDisposition;
   automatic_read_compatibility: boolean;
   explicit_write_allowed: boolean;
-  old_plus_new_conflict_policy: 'current_wins' | 'legacy_only' | 'action_required' | 'not_applicable';
+  old_plus_new_conflict_policy:
+    | 'current_wins'
+    | 'legacy_only'
+    | 'action_required'
+    | 'not_applicable';
   security_trust_class: MigrationSecurityClass;
   warning_reason_code: string;
   expiry_version_or_issue: string;
@@ -84,7 +88,9 @@ export function normalizedMigrationRegistry(
 ): ConfigurationMigrationRegistry {
   return {
     ...registry,
-    rows: [...registry.rows].sort((left, right) => left.migration_id.localeCompare(right.migration_id)),
+    rows: [...registry.rows].sort((left, right) =>
+      left.migration_id.localeCompare(right.migration_id),
+    ),
   };
 }
 
@@ -121,10 +127,14 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
         errors.push(`removed_inert migration must not name a new authority: ${row.migration_id}`);
       }
       if (row.automatic_read_compatibility || row.explicit_write_allowed) {
-        errors.push(`removed_inert migration cannot retain read/write compatibility: ${row.migration_id}`);
+        errors.push(
+          `removed_inert migration cannot retain read/write compatibility: ${row.migration_id}`,
+        );
       }
       if (row.old_plus_new_conflict_policy !== 'not_applicable') {
-        errors.push(`removed_inert migration must use not_applicable conflict policy: ${row.migration_id}`);
+        errors.push(
+          `removed_inert migration must use not_applicable conflict policy: ${row.migration_id}`,
+        );
       }
     }
 

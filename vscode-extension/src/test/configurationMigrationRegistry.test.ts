@@ -7,7 +7,9 @@ import {
 } from '../configurationMigrationRegistry';
 
 function cloneRegistry(): ConfigurationMigrationRegistry {
-  return JSON.parse(JSON.stringify(V018_CONFIGURATION_MIGRATIONS)) as ConfigurationMigrationRegistry;
+  return JSON.parse(
+    JSON.stringify(V018_CONFIGURATION_MIGRATIONS),
+  ) as ConfigurationMigrationRegistry;
 }
 
 describe('public-beta configuration migration registry', () => {
