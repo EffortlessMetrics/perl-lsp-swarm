@@ -104,6 +104,8 @@ pub enum RegexDiagnosticCode {
     ConflictingCharacterSetModifiers,
     /// A character-set modifier was repeated more often than Perl allows.
     RepeatedCharacterSetModifier,
+    /// The modifier is accepted by Perl here but has no effect.
+    ModifierHasNoEffect,
     /// The modifier form requires a newer Perl language version.
     ModifierRequiresPerlVersion,
     /// The requested feature-qualified behavior is unavailable for the profile.
@@ -126,6 +128,7 @@ impl RegexDiagnosticCode {
             Self::ModifierNotAllowedForOperator => "modifier_not_allowed_for_operator",
             Self::ConflictingCharacterSetModifiers => "conflicting_character_set_modifiers",
             Self::RepeatedCharacterSetModifier => "repeated_character_set_modifier",
+            Self::ModifierHasNoEffect => "modifier_has_no_effect",
             Self::ModifierRequiresPerlVersion => "modifier_requires_perl_version",
             Self::ModifierRequiresFeature => "modifier_requires_feature",
         }
@@ -147,6 +150,8 @@ impl RegexDiagnosticCode {
             | Self::RepeatedCharacterSetModifier
             | Self::ModifierRequiresPerlVersion
             | Self::ModifierRequiresFeature => RegexDiagnosticClass::Syntax,
+            // Perl compiles these forms and only warns, so they stay advisory.
+            Self::ModifierHasNoEffect => RegexDiagnosticClass::RiskAdvisory,
         }
     }
 }
@@ -213,6 +218,9 @@ impl RegexDiagnostic {
             }
             RegexDiagnosticCode::RepeatedCharacterSetModifier => {
                 "Character-set regex modifier is repeated too many times".to_string()
+            }
+            RegexDiagnosticCode::ModifierHasNoEffect => {
+                "Regex modifier has no effect here".to_string()
             }
             RegexDiagnosticCode::ModifierRequiresPerlVersion => {
                 "Regex modifier requires a newer Perl version".to_string()

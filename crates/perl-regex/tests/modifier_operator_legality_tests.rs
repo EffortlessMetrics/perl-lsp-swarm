@@ -10,10 +10,7 @@ fn analyze(
 ) -> Result<perl_regex::analyzer::ModifierAnalysis, Box<dyn std::error::Error>> {
     let sequence = ModifierSequence::new(raw, 0)
         .ok_or_else(|| format!("modifier range overflow for {raw:?}"))?;
-    let profile = RegexLanguageProfile::new(
-        Some(PerlVersion::new(5, 44)),
-        FeatureState::Enabled,
-    );
+    let profile = RegexLanguageProfile::new(Some(PerlVersion::new(5, 44)), FeatureState::Enabled);
     Ok(RegexAnalyzer::analyze_modifiers(operator, sequence, profile))
 }
 
@@ -40,14 +37,46 @@ fn quote_regex_rejects_match_process_and_substitution_modifiers()
 }
 
 #[test]
-fn substitution_accepts_c_as_match_position_state_not_complement()
--> Result<(), Box<dyn std::error::Error>> {
+fn substitution_c_is_inert_and_never_complement() -> Result<(), Box<dyn std::error::Error>> {
+    // Perl accepts `s///gc` but warns that `/c` is meaningless there: unlike
+    // `m//gc` it does not preserve a match position, and it is never the
+    // transliteration complement.
     let analysis = analyze(RegexOperator::Substitution, "gc")?;
 
-    assert!(analysis.diagnostics.is_empty());
     assert!(analysis.effective.global);
-    assert!(analysis.effective.keep_match_position);
+    assert!(!analysis.effective.keep_match_position);
     assert!(!analysis.effective.transliteration.complement);
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == RegexDiagnosticCode::ModifierHasNoEffect
+                && diagnostic.range.start == 1),
+        "substitution /c must be reported as having no effect, at the c token"
+    );
+    Ok(())
+}
+
+#[test]
+fn match_c_keeps_position_only_with_g() -> Result<(), Box<dyn std::error::Error>> {
+    let global = analyze(RegexOperator::Match, "gc")?;
+    assert!(global.effective.keep_match_position);
+    assert!(
+        !global
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == RegexDiagnosticCode::ModifierHasNoEffect)
+    );
+
+    // `/c` without `/g` is inert, and token order must not change that.
+    for raw in ["c", "cg"] {
+        let analysis = analyze(RegexOperator::Match, raw)?;
+        assert_eq!(
+            analysis.effective.keep_match_position,
+            raw.contains('g'),
+            "match /{raw} match-position state"
+        );
+    }
     Ok(())
 }
 
