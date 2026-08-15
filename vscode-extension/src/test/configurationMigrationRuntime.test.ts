@@ -1,5 +1,6 @@
 import {
   type ConfigurationMigrationRegistry,
+  type ConfigurationMigrationRow,
   V018_CONFIGURATION_MIGRATIONS,
 } from '../configurationMigrationRegistry';
 import {
@@ -34,6 +35,17 @@ function compatibleRegistry(): ConfigurationMigrationRegistry {
       },
     ],
   };
+}
+
+function registryWithConflictPolicy(
+  policy: ConfigurationMigrationRow['old_plus_new_conflict_policy'],
+): ConfigurationMigrationRegistry {
+  const base = compatibleRegistry();
+  const row = base.rows[0];
+  if (row === undefined) {
+    throw new Error('compatibleRegistry must define one row');
+  }
+  return { ...base, rows: [{ ...row, old_plus_new_conflict_policy: policy }] };
 }
 
 describe('configuration migration runtime', () => {
@@ -135,6 +147,112 @@ describe('configuration migration runtime', () => {
       canonical_value_present: false,
       notice_required: false,
     });
+  });
+
+  test.each([['not_applicable' as const], ['current_wins' as const]])(
+    'a %s conflict policy never lets the legacy value silently outrank the current key',
+    (policy) => {
+      const result = interpretLegacyConfiguration(registryWithConflictPolicy(policy), {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: true,
+        current_value: 'current',
+      });
+
+      expect(result).toMatchObject({
+        status: 'compatible_current_wins',
+        canonical_value_present: true,
+        canonical_value: 'current',
+        disk_write_allowed: false,
+      });
+    },
+  );
+
+  test('an explicit legacy_only policy is the only way the legacy value wins', () => {
+    const result = interpretLegacyConfiguration(registryWithConflictPolicy('legacy_only'), {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource',
+      legacy_value_present: true,
+      legacy_value: 'legacy',
+      current_value_present: true,
+      current_value: 'current',
+    });
+
+    expect(result).toMatchObject({
+      status: 'compatible_legacy',
+      canonical_value_present: true,
+      canonical_value: 'legacy',
+      disk_write_allowed: false,
+    });
+  });
+
+  test('an action_required conflict policy coerces neither value', () => {
+    const result = interpretLegacyConfiguration(registryWithConflictPolicy('action_required'), {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource',
+      legacy_value_present: true,
+      legacy_value: 'legacy',
+      current_value_present: true,
+      current_value: 'current',
+    });
+
+    expect(result).toMatchObject({
+      status: 'action_required',
+      canonical_value_present: false,
+      canonical_value: null,
+      notice_required: true,
+    });
+  });
+
+  test('an invalid legacy key can actually surface its required notice exactly once', () => {
+    const runtime = interpretLegacyConfiguration(V018_CONFIGURATION_MIGRATIONS, {
+      old_key: 'perl-lsp.mcp.servers',
+      source_scope: 'workspace',
+      legacy_value_present: true,
+      legacy_value: [],
+      current_value_present: false,
+      current_value: null,
+    });
+    const dedupe = new MigrationNoticeDedupe();
+
+    expect(runtime).toMatchObject({ migration_id: null, notice_required: true });
+    expect(dedupe.shouldShow(runtime, 'generation-1')).toBe(true);
+    expect(dedupe.shouldShow(runtime, 'generation-1')).toBe(false);
+  });
+
+  test('distinct invalid legacy keys do not suppress each others notices', () => {
+    const dedupe = new MigrationNoticeDedupe();
+    const invalidFor = (oldKey: string) =>
+      interpretLegacyConfiguration(V018_CONFIGURATION_MIGRATIONS, {
+        old_key: oldKey,
+        source_scope: 'workspace',
+        legacy_value_present: true,
+        legacy_value: [],
+        current_value_present: false,
+        current_value: null,
+      });
+
+    expect(dedupe.shouldShow(invalidFor('perl-lsp.unknownAlpha'), 'generation-1')).toBe(true);
+    expect(dedupe.shouldShow(invalidFor('perl-lsp.unknownBeta'), 'generation-1')).toBe(true);
+    expect(dedupe.shouldShow(invalidFor('perl-lsp.unknownAlpha'), 'generation-1')).toBe(false);
+  });
+
+  test('the safe snapshot carries the legacy key but never the legacy value', () => {
+    const runtime = interpretLegacyConfiguration(V018_CONFIGURATION_MIGRATIONS, {
+      old_key: 'perl-lsp.mcp.servers',
+      source_scope: 'machine',
+      legacy_value_present: true,
+      legacy_value: [{ label: 'x', command: '/opt/secret-tool', env: { TOKEN: 'hunter2' } }],
+      current_value_present: false,
+      current_value: null,
+    });
+    const snapshot = safeMigrationRuntimeSnapshot(runtime);
+
+    expect(snapshot.legacy_key).toBe('perl-lsp.mcp.servers');
+    expect(JSON.stringify(snapshot)).not.toContain('secret-tool');
+    expect(JSON.stringify(snapshot)).not.toContain('hunter2');
   });
 
   test('deduplicates migration notices per migration and configuration generation', () => {

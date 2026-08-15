@@ -11,7 +11,6 @@ export type MigrationRuntimeStatus =
   | 'compatible_current_wins'
   | 'action_required'
   | 'inert'
-  | 'expired'
   | 'invalid';
 
 export interface MigrationRuntimeInput {
@@ -25,6 +24,8 @@ export interface MigrationRuntimeInput {
 
 export interface MigrationRuntimeResult {
   migration_id: string | null;
+  /** The legacy configuration key this result interprets. Always a setting name, never a value. */
+  legacy_key: string;
   status: MigrationRuntimeStatus;
   source_scope: MigrationScope;
   canonical_key_or_authority: string | null;
@@ -37,6 +38,7 @@ export interface MigrationRuntimeResult {
 
 export interface SafeMigrationRuntimeSnapshot {
   migration_id: string | null;
+  legacy_key: string;
   status: MigrationRuntimeStatus;
   source_scope: MigrationScope;
   canonical_key_or_authority: string | null;
@@ -55,6 +57,7 @@ function result(
 ): MigrationRuntimeResult {
   return {
     migration_id: row?.migration_id ?? null,
+    legacy_key: input.old_key,
     status,
     source_scope: input.source_scope,
     canonical_key_or_authority: row?.new_key_or_authority ?? null,
@@ -97,11 +100,16 @@ export function interpretLegacyConfiguration(
     case 'renamed_compatible':
     case 'deprecated_read_only': {
       if (input.current_value_present) {
-        if (row.old_plus_new_conflict_policy === 'current_wins') {
-          return result(input, row, 'compatible_current_wins', input.current_value);
-        }
+        // Only an explicit `legacy_only` policy lets a historical value outrank a value
+        // the user set under the current key. Every other policy — including
+        // `not_applicable`, which states no conflict rule at all — resolves toward the
+        // current key, because silently preferring the legacy value is the unsafe
+        // direction and is invisible to the user.
         if (row.old_plus_new_conflict_policy === 'action_required') {
           return result(input, row, 'action_required', MISSING_VALUE, true);
+        }
+        if (row.old_plus_new_conflict_policy !== 'legacy_only') {
+          return result(input, row, 'compatible_current_wins', input.current_value);
         }
       }
       if (!row.automatic_read_compatibility) {
@@ -128,6 +136,7 @@ export function safeMigrationRuntimeSnapshot(
 ): SafeMigrationRuntimeSnapshot {
   return {
     migration_id: runtime.migration_id,
+    legacy_key: runtime.legacy_key,
     status: runtime.status,
     source_scope: runtime.source_scope,
     canonical_key_or_authority: runtime.canonical_key_or_authority,
@@ -140,10 +149,14 @@ export class MigrationNoticeDedupe {
   private readonly shown = new Set<string>();
 
   public shouldShow(runtime: MigrationRuntimeResult, configurationGeneration: string): boolean {
-    if (!runtime.notice_required || runtime.migration_id === null) {
+    if (!runtime.notice_required) {
       return false;
     }
-    const identity = `${runtime.migration_id}\u0000${configurationGeneration}`;
+    // Unregistered or wrong-scope legacy keys still require a notice but carry no
+    // migration identity, so they dedupe on the legacy key instead. Keying only on
+    // `migration_id` made every `invalid` notice permanently unshowable.
+    const subject = runtime.migration_id ?? `legacy_key:${runtime.legacy_key}`;
+    const identity = `${subject}\u0000${configurationGeneration}`;
     if (this.shown.has(identity)) {
       return false;
     }
