@@ -238,6 +238,7 @@ pub struct DiscoveredTest {
 
 /// Machine-readable parse/compile/execute report.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RunReport {
     pub schema_version: String,
     pub commit: String,
@@ -260,6 +261,7 @@ pub struct RunReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RunSummary {
     pub files_total: usize,
     pub files_passed: usize,
@@ -269,6 +271,7 @@ pub struct RunSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RunFileResult {
     pub path: String,
     pub status: RunnerStatus,
@@ -277,6 +280,7 @@ pub struct RunFileResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RunFailure {
     pub path: String,
     pub phase: String,
@@ -1135,6 +1139,36 @@ mod tests {
             return Err("compiler compatibility schema constant changed".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn run_report_rejects_unknown_fields() {
+        let json = r#"{
+            "schema_version": "perl_core_harness.report.v1",
+            "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "timestamp": "2026-08-12T00:00:00Z",
+            "perl_ref": "perl",
+            "prepared_tree": "<prepared>",
+            "run_tree": "<run>",
+            "host_perl": "perl",
+            "runner": "test",
+            "mode": "compile",
+            "profile": "base",
+            "harness_status": 0,
+            "summary": {
+                "files_total": 0,
+                "files_passed": 0,
+                "files_failed": 0,
+                "tap_assertions_total": 0,
+                "tap_assertions_passed": 0
+            },
+            "buckets": {},
+            "file_results": [],
+            "failures": [],
+            "unexpected_authority_field": true
+        }"#;
+        let err = serde_json::from_str::<RunReport>(json).expect_err("unknown field must fail");
+        assert!(err.to_string().contains("unexpected_authority_field"));
     }
 
     #[test]

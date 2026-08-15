@@ -604,7 +604,7 @@ impl PullDiagnosticsProvider {
             ..CriticConfig::default()
         };
         let critic_context = CriticContext::new(content, ast.as_ref(), &critic_config);
-        let profile = NativeCriticProfile::parse(&context.native_critic_profile)
+        let profile = NativeCriticProfile::parse_legacy(&context.native_critic_profile)
             .unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
 
@@ -2009,6 +2009,35 @@ mod tests {
                 )
             }),
             "recommended native critic profile should omit broader variable findings: {items:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = " RECOMMENDED ".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n",
+            None,
+            &context,
+            None,
+        ));
+
+        assert!(
+            items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                )
+            }),
+            "legacy invalid profile fallback must remain strict: {items:?}"
         );
 
         Ok(())
