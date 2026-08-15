@@ -391,6 +391,25 @@ fn instrumentation_cannot_inherit_from_instrumentation() {
 }
 
 #[test]
+fn instrumentation_must_declare_an_instrument() -> Result<(), String> {
+    // Strip the environment that makes the row an instrument and it becomes a
+    // second identity for exactly the same run of its base.
+    let mut no_op = instrumentation_contract("instrument_noop", "component_base");
+    no_op.environment.clear();
+    let matrix = matrix_fixture(vec![
+        entry(physical_contract_with_id("component_base", "base"), TargetDisposition::Implemented),
+        entry(no_op, TargetDisposition::InstrumentationOnly),
+    ]);
+    let Err(error) = matrix.validate() else {
+        return Err("a no-op instrumentation row must be rejected".to_string());
+    };
+    if !error.contains("does not declare any instrument") {
+        return Err(format!("unexpected rejection reason: {error}"));
+    }
+    Ok(())
+}
+
+#[test]
 fn matrix_rejects_reference_cycles() -> Result<(), String> {
     let first = composite_contract("composite_a", &["composite_b"]);
     let second = composite_contract("composite_b", &["composite_a"]);

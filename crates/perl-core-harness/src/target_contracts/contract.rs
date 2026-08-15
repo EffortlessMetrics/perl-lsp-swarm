@@ -205,6 +205,21 @@ impl TargetSelectionContract {
                 self.target_id
             ));
         }
+        // An instrumentation row exists to observe its base under a changed
+        // process instrument. If it changes nothing, it is a second identity
+        // for the same run, so require at least one declared instrument the
+        // way an environment variant must change some invocation input.
+        let changes_instrument = !self.environment.is_empty()
+            || !self.capability_predicates.is_empty()
+            || !self.runner_switches.is_empty()
+            || !self.variant_parameters.is_empty()
+            || self.terminal_policy != TargetTerminalPolicy::Inherited;
+        if !changes_instrument {
+            return Err(format!(
+                "instrumentation target {} does not declare any instrument",
+                self.target_id
+            ));
+        }
         Ok(())
     }
 }
