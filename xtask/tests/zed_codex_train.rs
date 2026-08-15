@@ -116,6 +116,8 @@ fn merged_upstream_subject_is_accepted(
             == Some("tree-sitter-perl/zed-perl")
         && string_field(extension, "new_commit")
         && string_field(extension, "new_version")
+        && string_field(extension, "current_commit")
+        && string_field(extension, "current_version")
         && string_field(extension, "upstream_branch_containing_commit")
         && new_commit != current_commit
         && new_version != current_version
@@ -297,6 +299,20 @@ fn p18_rejects_m01_without_merged_upstream_acceptance() -> Result<(), Box<dyn Er
         .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?;
     validation.insert("submodule_commit_branch_reachable".to_string(), toml::Value::Boolean(true));
     validation.insert("manifest_version_matches".to_string(), toml::Value::Boolean(true));
+
+    for missing_field in ["current_commit", "current_version"] {
+        let mut missing_captured_subject = merged_registry.clone();
+        missing_captured_subject
+            .get_mut("extension")
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| io::Error::other("registry manifest lacks extension table"))?
+            .remove(missing_field);
+        assert!(
+            !merged_upstream_subject_is_accepted(&train, &missing_captured_subject)?,
+            "missing captured subject field `{missing_field}` was accepted"
+        );
+    }
+
     assert!(merged_upstream_subject_is_accepted(&train, &merged_registry)?);
     Ok(())
 }
@@ -372,6 +388,7 @@ fn dap_sidecar_is_explicitly_non_blocking_and_has_manual_publication_stops()
         ("D02", Some(9486)),
         ("D03", Some(9490)),
         ("DM01", None),
+        ("DU01", None),
         ("D04", Some(9491)),
         ("DM02", None),
         ("D05", Some(9487)),
@@ -415,6 +432,32 @@ fn dap_sidecar_is_explicitly_non_blocking_and_has_manual_publication_stops()
         }
     }
 
+    let dap_index = dap_stages
+        .iter()
+        .map(|stage| Ok((string(stage, "id")?, stage)))
+        .collect::<Result<BTreeMap<_, _>, Box<dyn Error>>>()?;
+    assert_eq!(string(dap_index["DU01"], "kind")?, "acceptance");
+    assert_eq!(string(dap_index["DU01"], "state")?, "blocked_on_external_subject");
+    assert_eq!(
+        dap_index["DU01"].get("depends_on_sidecar").and_then(Value::as_array).map(|dependencies| {
+            dependencies.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()
+        }),
+        Some(BTreeSet::from(["DM01"]))
+    );
+    assert_eq!(
+        dap_index["DU01"]
+            .get("upstream_acceptance")
+            .and_then(Value::as_object)
+            .and_then(|acceptance| acceptance.get("requires_released_build"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        dap_index["D04"].get("depends_on_sidecar").and_then(Value::as_array).map(|dependencies| {
+            dependencies.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()
+        }),
+        Some(BTreeSet::from(["DU01"]))
+    );
     assert_eq!(external, BTreeSet::from(["DM01", "DM02"]));
     assert_eq!(expected.len(), dap_stages.len());
     Ok(())

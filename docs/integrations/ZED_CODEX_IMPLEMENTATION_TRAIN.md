@@ -254,9 +254,14 @@ Refresh `tree-sitter-perl/zed-perl`, bind the smallest current-base DAP patch an
 **Depends on:** D03.  
 Maintainer manually submits/lands the DAP extension change. Any semantic review change returns to D01/D02.
 
+### DU01 — merged/released DAP subject acceptance
+
+**Depends on:** DM01.
+This explicit acceptance stage verifies the actual merged and released `tree-sitter-perl/zed-perl` subject: non-empty commit, version, and upstream branch; branch reachability and manifest/version validation; and a released build containing the accepted commit. A submission or landing record alone cannot satisfy DU01.
+
 ### D04 — #9491: freeze the official registry packet
 
-**Depends on:** DM01 and actual merged/released extension identity.  
+**Depends on:** DU01.
 Refresh `zed-industries/extensions`, update only the existing `perl` entry to the exact merged DAP extension version, and emit copy-ready material.
 
 ### DM02 — maintainer DAP registry submission
@@ -283,6 +288,8 @@ Reconcile the sidecar and close only the debugger programme. This never reopens 
 
 ```text
 P00 + P01 ─ D01 #9485 ─ D02 #9486 ─ D03 #9490 ─ DM01
+                                                   │
+                                                   DU01 (merged/released subject acceptance)
                                                    │
                                                    D04 #9491 ─ DM02
                                                                   │
