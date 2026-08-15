@@ -1,8 +1,6 @@
 use crate::{
     analyzer::{CaptureMode, EffectiveModifiers, ExtendedMode},
-    syntax::event::{
-        RegexEventBudget, RegexExtendedMode, RegexModeState, parse_regex_events,
-    },
+    syntax::event::{RegexEventBudget, RegexExtendedMode, RegexModeState, parse_regex_events},
 };
 
 use super::{
@@ -27,16 +25,12 @@ pub(crate) fn analyze(
 
     for finding in code_execution::find_code_executions(&stream) {
         let (kind, code, width) = match finding.kind {
-            code_execution::EmbeddedCodeKind::Immediate => (
-                EmbeddedCodeKind::Immediate,
-                RegexDiagnosticCode::EmbeddedCodeImmediate,
-                3,
-            ),
-            code_execution::EmbeddedCodeKind::Deferred => (
-                EmbeddedCodeKind::Deferred,
-                RegexDiagnosticCode::EmbeddedCodeDeferred,
-                4,
-            ),
+            code_execution::EmbeddedCodeKind::Immediate => {
+                (EmbeddedCodeKind::Immediate, RegexDiagnosticCode::EmbeddedCodeImmediate, 3)
+            }
+            code_execution::EmbeddedCodeKind::Deferred => {
+                (EmbeddedCodeKind::Deferred, RegexDiagnosticCode::EmbeddedCodeDeferred, 4)
+            }
         };
         let range = RegexRange::anchored(finding.offset, width, pattern.len());
         facts.embedded_code.push(EmbeddedCodeFact { kind, range });
@@ -58,9 +52,8 @@ pub(crate) fn analyze(
     let dynamic = !facts.embedded_code.is_empty();
     let policy_limited = !policy_diagnostics.is_empty() || exhausted.is_some();
     diagnostics.extend(policy_diagnostics);
-    diagnostics.sort_by_key(|diagnostic| {
-        (diagnostic.range.start, diagnostic.range.end, diagnostic.code)
-    });
+    diagnostics
+        .sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end, diagnostic.code));
 
     RegexAnalysis {
         diagnostics,
@@ -71,13 +64,8 @@ pub(crate) fn analyze(
     }
 }
 
-pub(crate) fn first_compatibility_diagnostic(
-    analysis: &RegexAnalysis,
-) -> Option<&RegexDiagnostic> {
-    analysis
-        .diagnostics
-        .iter()
-        .min_by_key(|diagnostic| compatibility_priority(diagnostic))
+pub(crate) fn first_compatibility_diagnostic(analysis: &RegexAnalysis) -> Option<&RegexDiagnostic> {
+    analysis.diagnostics.iter().min_by_key(|diagnostic| compatibility_priority(diagnostic))
 }
 
 fn initial_mode(modifiers: EffectiveModifiers) -> RegexModeState {
@@ -102,8 +90,7 @@ fn map_budget(budget: RegexEventBudget) -> RegexAnalysisBudget {
 
 fn compatibility_priority(diagnostic: &RegexDiagnostic) -> (u8, usize, usize, RegexDiagnosticCode) {
     let priority = match diagnostic.code {
-        RegexDiagnosticCode::EmbeddedCodeImmediate
-        | RegexDiagnosticCode::EmbeddedCodeDeferred => 0,
+        RegexDiagnosticCode::EmbeddedCodeImmediate | RegexDiagnosticCode::EmbeddedCodeDeferred => 0,
         RegexDiagnosticCode::NestedQuantifierRisk => 1,
         _ => match diagnostic.class {
             RegexDiagnosticClass::Syntax => 2,

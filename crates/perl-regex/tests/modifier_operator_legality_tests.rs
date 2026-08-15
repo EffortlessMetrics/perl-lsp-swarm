@@ -10,10 +10,7 @@ fn analyze(
 ) -> Result<perl_regex::analyzer::ModifierAnalysis, Box<dyn std::error::Error>> {
     let sequence = ModifierSequence::new(raw, 0)
         .ok_or_else(|| format!("modifier range overflow for {raw:?}"))?;
-    let profile = RegexLanguageProfile::new(
-        Some(PerlVersion::new(5, 44)),
-        FeatureState::Enabled,
-    );
+    let profile = RegexLanguageProfile::new(Some(PerlVersion::new(5, 44)), FeatureState::Enabled);
     Ok(RegexAnalyzer::analyze_modifiers(operator, sequence, profile))
 }
 

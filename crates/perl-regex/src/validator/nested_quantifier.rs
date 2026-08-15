@@ -1,6 +1,4 @@
-use crate::syntax::event::{
-    RegexEventKind, RegexEventStream, RegexGroupKind, RegexQuantifierMode,
-};
+use crate::syntax::event::{RegexEventKind, RegexEventStream, RegexGroupKind, RegexQuantifierMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GroupFrame {
@@ -36,10 +34,8 @@ pub(crate) fn find_nested_quantifiers(stream: &RegexEventStream) -> Vec<usize> {
                     if has_backtracking_quantifier && let Some(parent) = group_stack.last_mut() {
                         parent.has_backtracking_quantifier = true;
                     }
-                    last_atom = LastAtom::Group {
-                        has_backtracking_quantifier,
-                        is_atomic: frame.is_atomic,
-                    };
+                    last_atom =
+                        LastAtom::Group { has_backtracking_quantifier, is_atomic: frame.is_atomic };
                 } else {
                     last_atom = LastAtom::None;
                 }
