@@ -502,10 +502,19 @@ pub(crate) fn cargo_binary_names(
         .and_then(toml::Value::as_table)
         .ok_or_else(|| eyre!("Cargo manifest has no [package] table"))?;
     let autobins = package.get("autobins").and_then(toml::Value::as_bool).unwrap_or(true);
-    // Cargo autodiscovers src/main.rs and src/bin/* only when no explicit
-    // [[bin]] target is declared; an explicit list disables discovery, so a
-    // stray src/main.rs beside [[bin]] targets is not another binary.
-    if autobins && names.is_empty() {
+    // Cargo autodiscovers src/main.rs and src/bin/* unless suppressed:
+    // explicit `autobins = false` always suppresses, and an explicit
+    // [[bin]] list suppresses discovery only for edition-2015 manifests
+    // (the default when the edition is unspecified). From edition 2018
+    // onward an explicit [[bin]] coexists with autodiscovery - verified
+    // against cargo metadata: an edition-2015 manifest with [[bin]] plus
+    // src/main.rs and src/bin/extra.rs reports one binary, while the same
+    // manifest at edition 2018/2024 reports all three.
+    let edition_2015 = package
+        .get("edition")
+        .and_then(toml::Value::as_str)
+        .is_none_or(|edition| edition == "2015");
+    if autobins && (names.is_empty() || !edition_2015) {
         let manifest_dir = repo_root.join(
             manifest_path.parent().ok_or_else(|| eyre!("Cargo manifest path has no parent"))?,
         );
