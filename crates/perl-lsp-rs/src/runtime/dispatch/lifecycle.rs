@@ -279,9 +279,7 @@ mod tests {
         );
         assert_eq!(server.pending_workspace_configuration_requests.lock().len(), 1);
 
-        server
-            .handle_shutdown_dispatch()
-            .map_err(|e| format!("shutdown should succeed: {e}"))?;
+        server.handle_shutdown_dispatch().map_err(|e| format!("shutdown should succeed: {e}"))?;
 
         assert!(
             server.pending_workspace_configuration_requests.lock().is_empty(),
