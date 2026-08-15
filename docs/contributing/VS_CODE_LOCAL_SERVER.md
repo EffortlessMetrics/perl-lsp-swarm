@@ -1,60 +1,84 @@
-# Use a local `perllsp` in this repository
+# Use a locally built `perllsp` in this repository
 
 The checked-in `.vscode/settings.json` is intentionally product-neutral. Opening
 `perl-lsp-swarm` must not select a development binary, disable managed download,
 or point the extension at a private download service.
 
-Use an explicit local workspace file when the installed extension should run a
-binary built from this checkout. The file lives under `.tmp/`, which is already
-ignored by Git, and does not change user-level VS Code settings.
+## Why no repository file can select the binary
+
+The extension declares these settings with `scope: "machine"` in
+`vscode-extension/package.json`:
+
+<!-- machine-scoped-keys:start -->
+- `perl-lsp.serverPath`
+- `perl-lsp.autoDownload`
+- `perl-lsp.downloadBaseUrl`
+- `perl-lsp.versionTag`
+- `perl-lsp.channel`
+<!-- machine-scoped-keys:end -->
+
+Other settings are machine-scoped too; these are the ones that decide which
+binary runs and where it comes from.
+
+VS Code reads machine-scoped settings **only** from User or Machine settings. A
+value placed in `.vscode/settings.json`, in a folder settings file, or in the
+`settings` block of a `.code-workspace` file is ignored — `getConfiguration`
+never surfaces it. Such a file looks configured and does nothing.
+
+This is deliberate, not an oversight. See `.jules/sentinel.md`, entry
+`2026-01-29 - Workspace Configuration RCE`: before machine scope was applied, a
+hostile repository could execute an arbitrary binary or redirect the download
+simply by being opened. A repository must not be able to choose the executable
+the extension runs — including this repository.
+
+So a local build is selected in your own User Settings, and nothing about that
+choice is committed.
 
 ## Record the candidate
 
-Before opening VS Code, record the checkout SHA, the exact binary path, and the
-binary version. `perllsp --version` reports the binary version. These facts
-identify a development candidate; they do not make it a public release.
+Before pointing the extension at a build, record three facts:
 
-## Create the inactive local override
+- the checkout SHA the binary was built from;
+- the absolute path to the binary;
+- the version the binary reports from `perllsp --version`.
 
-Create `.tmp/perl-lsp-swarm.local.code-workspace` with the following content.
-The `..` folder path is relative to `.tmp/` and opens the repository root.
+These identify a development candidate. They do not make it a public release,
+and a candidate's behavior is not evidence about the published extension.
 
-<!-- local-workspace-example:start -->
+## Select the local build
+
+Run **Preferences: Open User Settings (JSON)** from the Command Palette and add:
+
+<!-- user-settings-example:start -->
 ```json
 {
-  "folders": [
-    {
-      "path": ".."
-    }
-  ],
-  "settings": {
-    "perl-lsp.serverPath": "__REPLACE_WITH_ABSOLUTE_PERLLSP_PATH__",
-    "perl-lsp.autoDownload": false
-  }
+  "perl-lsp.serverPath": "__REPLACE_WITH_ABSOLUTE_PERLLSP_PATH__",
+  "perl-lsp.autoDownload": false
 }
 ```
-<!-- local-workspace-example:end -->
+<!-- user-settings-example:end -->
 
-Replace the placeholder with the absolute path to the exact binary, then open
-this workspace file explicitly. A missing path is a local misconfiguration. Do
-not silently substitute another `perllsp` found on `PATH`.
+Replace the placeholder with the absolute path to the exact binary you recorded,
+then reload the window. A relative path or a missing file is a local
+misconfiguration: fix the path rather than letting another `perllsp` on `PATH`
+stand in for the candidate you meant to test.
 
-The local file records four distinct facts:
-
-- selected binary path;
-- checkout SHA used to build it;
-- repository workspace root;
-- launch behavior chosen by the extension.
-
-Task- and launch-level candidate binding belongs to the follow-on repository
-workspace train. This file is only the explicit local selection boundary.
+Because User Settings are not per-folder, this selection applies to every window
+until you remove it. Reset before evaluating the installed product.
 
 ## Return to normal extension behavior
 
-Close the local workspace, remove
-`.tmp/perl-lsp-swarm.local.code-workspace`, and reopen the repository folder.
-Because the checked-in settings do not set `serverPath` or `autoDownload`, the
-extension returns to its normal installed-product lifecycle.
+Remove both keys from User Settings JSON and reload the window. Because the
+checked-in repository settings never set `serverPath` or `autoDownload`, the
+extension returns to its normal installed-product lifecycle: managed download,
+release channel, and version selection all resume.
 
-Do not copy the checked-in `.vscode/settings.json` over itself, commit the local
-workspace file, or place a personal path in shared repository settings.
+## Do not
+
+- Do not add machine-scoped keys to `.vscode/settings.json`, to a
+  `.code-workspace` file, or to any other committed file. VS Code ignores them
+  there, which hides the misconfiguration instead of reporting it.
+- Do not put a personal absolute path in shared repository settings.
+
+Task- and launch-level candidate binding belongs to the follow-on repository
+workspace train. This file is only the explicit local selection boundary.
