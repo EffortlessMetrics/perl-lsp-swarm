@@ -3,30 +3,91 @@
 use super::super::{JsonRpcError, JsonRpcId, JsonRpcResponse, Value};
 use super::request_cancellation::finalize_cancellation_state;
 use perl_parser_core::ErrorCategory;
+use std::error::Error;
 
-/// Provisionally classify a JsonRpcError by its error code (#4980 PR-1).
+/// Product-owned classification wrapper for a language-neutral JSON-RPC error.
 ///
-/// Once JsonRpcError implements ErrorClass directly, this function should
-/// delegate to `error.error_class()`. Until then, we classify by the
-/// well-known JSON-RPC / LSP error codes so the tracing layer captures
-/// structured error category data without string sniffing.
-fn classify_jsonrpc_error(error: &JsonRpcError) -> ErrorCategory {
-    match error.code {
-        // -32700 Parse error: malformed JSON — protocol violation.
-        // -32600 Invalid Request: not a valid request — protocol violation.
-        -32700 | -32600 => ErrorCategory::Protocol,
-        // -32601 Method not found: unsupported method — protocol.
-        -32601 => ErrorCategory::Protocol,
-        // -32602 Invalid params: bad arguments — user error.
-        -32602 => ErrorCategory::UserError,
-        // -32603 Internal error: our bug.
-        -32603 => ErrorCategory::Bug,
-        // -32000 ServerNotInitialized: lifecycle protocol.
-        -32000 | -32002 => ErrorCategory::Protocol,
-        // -32800/-32801 RequestCancelled/ContentModified: transient.
-        -32800 | -32801 => ErrorCategory::Transient,
-        // Any other code: unknown, classify as Bug for visibility.
-        _ => ErrorCategory::Bug,
+/// The wire error stays free of parser/repository policy. Stable protocol codes
+/// may receive a category here, while generic `RequestFailed` and private server
+/// codes remain explicitly unclassified until their originating operation
+/// supplies one. The source error is retained rather than stringified.
+#[derive(Debug)]
+struct ClassifiedProtocolFailure {
+    error: JsonRpcError,
+    category: Option<ErrorCategory>,
+    provenance: &'static str,
+}
+
+impl ClassifiedProtocolFailure {
+    fn from_wire(error: JsonRpcError) -> Self {
+        match error.code {
+            // Stable protocol-shape errors.
+            -32700 | -32600 | -32601 | -32602 | -32000 | -32002 => {
+                Self::with_originating_category(
+                    error,
+                    ErrorCategory::Protocol,
+                    "stable_jsonrpc_protocol_code",
+                )
+            }
+            // Internal error has one stable product meaning.
+            -32603 => Self::with_originating_category(
+                error,
+                ErrorCategory::Bug,
+                "stable_jsonrpc_internal_error",
+            ),
+            // Standard cancellation/currentness outcomes are retry/timing state.
+            -32800 | -32801 | -32802 => Self::with_originating_category(
+                error,
+                ErrorCategory::Transient,
+                "stable_lsp_terminal_code",
+            ),
+            // RequestFailed is deliberately generic and cannot recover cause.
+            -32803 => Self::unclassified(
+                error,
+                "request_failed_requires_originating_category",
+            ),
+            // Private/server-specific codes likewise require construction context.
+            _ => Self::unclassified(
+                error,
+                "server_specific_code_requires_originating_category",
+            ),
+        }
+    }
+
+    fn with_originating_category(
+        error: JsonRpcError,
+        category: ErrorCategory,
+        provenance: &'static str,
+    ) -> Self {
+        Self { error, category: Some(category), provenance }
+    }
+
+    fn unclassified(error: JsonRpcError, provenance: &'static str) -> Self {
+        Self { error, category: None, provenance }
+    }
+
+    fn category(&self) -> Option<&ErrorCategory> {
+        self.category.as_ref()
+    }
+
+    fn provenance(&self) -> &'static str {
+        self.provenance
+    }
+
+    fn into_error(self) -> JsonRpcError {
+        self.error
+    }
+}
+
+impl std::fmt::Display for ClassifiedProtocolFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl Error for ClassifiedProtocolFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.error)
     }
 }
 
@@ -85,24 +146,105 @@ fn build_response(
             None
         }
         Err(error) if should_respond => {
-            let category = classify_jsonrpc_error(&error);
+            let classified = ClassifiedProtocolFailure::from_wire(error);
+            let category = classified
+                .category()
+                .map_or("unclassified", ErrorCategory::as_str);
+            let provenance = classified.provenance();
+            let error = classified.into_error();
             tracing::debug!(
                 method = %method,
                 error = ?error,
-                error_category = category.as_str(),
+                error_category = category,
+                error_category_provenance = provenance,
                 "Sending error response"
             );
             Some(JsonRpcResponse { jsonrpc: "2.0", id, result: None, error: Some(error) })
         }
         Err(error) => {
-            let category = classify_jsonrpc_error(&error);
+            let classified = ClassifiedProtocolFailure::from_wire(error);
+            let category = classified
+                .category()
+                .map_or("unclassified", ErrorCategory::as_str);
+            let provenance = classified.provenance();
+            let error = classified.into_error();
             tracing::debug!(
                 method = %method,
                 error = ?error,
-                error_category = category.as_str(),
+                error_category = category,
+                error_category_provenance = provenance,
                 "Suppressed error response for notification request"
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_wire_codes_have_owned_product_classification() {
+        for (code, expected) in [
+            (-32700, ErrorCategory::Protocol),
+            (-32600, ErrorCategory::Protocol),
+            (-32601, ErrorCategory::Protocol),
+            (-32602, ErrorCategory::Protocol),
+            (-32002, ErrorCategory::Protocol),
+            (-32603, ErrorCategory::Bug),
+            (-32800, ErrorCategory::Transient),
+            (-32801, ErrorCategory::Transient),
+            (-32802, ErrorCategory::Transient),
+        ] {
+            let classified =
+                ClassifiedProtocolFailure::from_wire(JsonRpcError::new(code, "fixture"));
+            assert_eq!(classified.category(), Some(&expected), "code {code}");
+        }
+    }
+
+    #[test]
+    fn request_failed_requires_explicit_originating_category() {
+        let classified =
+            ClassifiedProtocolFailure::from_wire(JsonRpcError::new(-32803, "request failed"));
+        assert!(classified.category().is_none());
+        assert_eq!(
+            classified.provenance(),
+            "request_failed_requires_originating_category"
+        );
+    }
+
+    #[test]
+    fn explicit_origin_preserves_category_and_source_error() {
+        let classified = ClassifiedProtocolFailure::with_originating_category(
+            JsonRpcError::new(-32803, "dependency unavailable"),
+            ErrorCategory::Infra,
+            "workspace_dependency_lookup",
+        );
+
+        assert_eq!(classified.category(), Some(&ErrorCategory::Infra));
+        assert_eq!(classified.provenance(), "workspace_dependency_lookup");
+        let source = classified.source().expect("source error must be retained");
+        let source = source
+            .downcast_ref::<JsonRpcError>()
+            .expect("source remains the typed JSON-RPC error");
+        assert_eq!(source.code, -32803);
+    }
+
+    #[test]
+    fn message_and_data_cannot_classify_private_server_codes() {
+        let first = ClassifiedProtocolFailure::from_wire(JsonRpcError::with_data(
+            -32099,
+            "transient retry please",
+            serde_json::json!({"category": "infra"}),
+        ));
+        let second = ClassifiedProtocolFailure::from_wire(JsonRpcError::new(
+            -32099,
+            "definitely a user error",
+        ));
+
+        assert!(first.category().is_none());
+        assert!(second.category().is_none());
+        assert_eq!(first.provenance(), second.provenance());
     }
 }
