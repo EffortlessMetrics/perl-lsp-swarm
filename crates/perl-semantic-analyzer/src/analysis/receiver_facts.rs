@@ -795,6 +795,234 @@ mod tests {
         assert_eq!(fact.package.as_deref(), Some("My::Service"));
         assert_eq!(fact.confidence, Confidence::High);
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        // candidate_packages must expose both union branches
+        assert_eq!(fact.candidate_packages, vec!["My::Service", "Other"]);
+        assert!(fact.is_union_receiver());
+        Ok(())
+    }
+
+    #[test]
+    fn exact_single_package_receiver_has_one_candidate() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("object".to_string(), object_fact("My::Service", Confidence::High));
+
+        let fact = receiver_fact_for("$object->run();", "run", &env)?;
+
+        assert_eq!(fact.candidate_packages, vec!["My::Service"]);
+        assert!(!fact.is_union_receiver());
+        Ok(())
+    }
+
+    #[test]
+    fn static_constructor_receiver_has_one_candidate() -> Result<(), String> {
+        let env = TypeEnvironment::new();
+        let fact = receiver_fact_for("Foo::Bar->new();", "new", &env)?;
+
+        assert_eq!(fact.candidate_packages, vec!["Foo::Bar"]);
+        assert!(!fact.is_union_receiver());
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_receiver_has_no_candidates() -> Result<(), String> {
+        let env = TypeEnvironment::new();
+        let fact = receiver_fact_for("$unknown->run();", "run", &env)?;
+
+        assert!(fact.candidate_packages.is_empty());
+        assert!(!fact.is_union_receiver());
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_key_receiver_has_no_candidates() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("services".to_string(), hash_shape_fact("mailer", "My::Mailer"));
+
+        let fact = receiver_fact_for("$services{$name}->send();", "send", &env)?;
+
+        assert!(fact.candidate_packages.is_empty());
+        assert!(!fact.is_union_receiver());
+        Ok(())
+    }
+
+    #[test]
+    fn hash_slot_receiver_has_one_candidate() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("services".to_string(), hash_shape_fact("mailer", "My::Mailer"));
+
+        let fact = receiver_fact_for("$services{mailer}->send();", "send", &env)?;
+
+        assert_eq!(fact.candidate_packages, vec!["My::Mailer"]);
+        assert!(!fact.is_union_receiver());
+        Ok(())
+    }
+
+    #[test]
+    fn triple_union_receiver_exposes_all_candidates() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "widget".to_string(),
+            TypeFact {
+                ty: PerlType::Union(vec![
+                    PerlType::Object("My::Button".to_string()),
+                    PerlType::Object("My::Label".to_string()),
+                    PerlType::Object("My::Frame".to_string()),
+                ]),
+                confidence: Confidence::High,
+                evidence: vec![],
+                dynamic_boundary: None,
+                shape: None,
+            },
+        );
+
+        let fact = receiver_fact_for("$widget->draw();", "draw", &env)?;
+
+        assert_eq!(fact.candidate_packages, vec!["My::Button", "My::Label", "My::Frame"]);
+        assert!(fact.is_union_receiver());
+        assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        Ok(())
+    }
+
+    #[test]
+    fn union_with_duplicate_packages_deduplicates() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        // Duplicate union arm: My::Foo appears twice.
+        env.set_variable_fact(
+            "obj".to_string(),
+            TypeFact {
+                ty: PerlType::Union(vec![
+                    PerlType::Object("My::Foo".to_string()),
+                    PerlType::Object("My::Foo".to_string()),
+                    PerlType::Object("My::Bar".to_string()),
+                ]),
+                confidence: Confidence::High,
+                evidence: vec![],
+                dynamic_boundary: None,
+                shape: None,
+            },
+        );
+
+        let fact = receiver_fact_for("$obj->run();", "run", &env)?;
+
+        // My::Foo should appear only once.
+        assert_eq!(fact.candidate_packages, vec!["My::Foo", "My::Bar"]);
+        assert!(fact.is_union_receiver());
+        Ok(())
+    }
+
+    /// A union mixing object and non-object arms yields **no** candidates.
+    ///
+    /// #9493 introduced `candidate_packages` with no consumer and collected
+    /// object arms while silently skipping non-object ones. #9500 adds the first
+    /// consumer — union-receiver method completion — which makes that permissive
+    /// reading unsafe: `Union(Object(Foo), Object(Bar), Scalar)` would collect two
+    /// packages, satisfy `is_union_receiver()`, and offer `Foo`/`Bar` methods on a
+    /// receiver that may hold a plain string.
+    ///
+    /// Package collection is therefore all-or-nothing: unless *every* arm resolves
+    /// to an object (through references), the candidate set is empty and the
+    /// receiver falls back to the existing bounded path. This tightens #9493's
+    /// contract rather than weakening a proof — the field's only consumer is the
+    /// completion dispatch added here, so no other behaviour depends on the old
+    /// permissive reading.
+    #[test]
+    fn union_with_mixed_types_yields_no_candidates() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        // Union of Object + scalar — mixed arms cannot safely dispatch methods.
+        env.set_variable_fact(
+            "obj".to_string(),
+            TypeFact {
+                ty: PerlType::Union(vec![
+                    PerlType::Object("My::Widget".to_string()),
+                    PerlType::Scalar(super::super::type_inference::ScalarType::String),
+                ]),
+                confidence: Confidence::High,
+                evidence: vec![],
+                dynamic_boundary: None,
+                shape: None,
+            },
+        );
+
+        let fact = receiver_fact_for("$obj->run();", "run", &env)?;
+
+        assert!(
+            fact.candidate_packages.is_empty(),
+            "mixed object/non-object union must fail closed, got {:?}",
+            fact.candidate_packages
+        );
+        assert!(!fact.is_union_receiver());
+        Ok(())
+    }
+
+    /// The multi-object variant of the mixed union: two object arms plus a
+    /// scalar. Under #9493's permissive collection this produced two candidates
+    /// and would have satisfied `is_union_receiver()`, routing an unsafe receiver
+    /// into union method dispatch. This is the case the single-object test above
+    /// could not discriminate, because one object arm keeps the length at one.
+    #[test]
+    fn multi_object_union_with_non_object_arm_yields_no_candidates() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "obj".to_string(),
+            TypeFact {
+                ty: PerlType::Union(vec![
+                    PerlType::Object("My::Widget".to_string()),
+                    PerlType::Object("My::Gadget".to_string()),
+                    PerlType::Scalar(super::super::type_inference::ScalarType::String),
+                ]),
+                confidence: Confidence::High,
+                evidence: vec![],
+                dynamic_boundary: None,
+                shape: None,
+            },
+        );
+
+        let fact = receiver_fact_for("$obj->run();", "run", &env)?;
+
+        assert!(
+            fact.candidate_packages.is_empty(),
+            "multi-object mixed union must fail closed, got {:?}",
+            fact.candidate_packages
+        );
+        assert!(
+            !fact.is_union_receiver(),
+            "mixed union must never present as a union receiver"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn array_index_receiver_has_one_candidate() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("items".to_string(), array_shape_fact(0, "My::Item"));
+
+        let fact = receiver_fact_for("$items[0]->render();", "render", &env)?;
+
+        assert_eq!(fact.candidate_packages, vec!["My::Item"]);
+        assert!(!fact.is_union_receiver());
+        Ok(())
+    }
+
+    #[test]
+    fn self_receiver_with_package_has_one_candidate() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("self".to_string(), object_fact("My::Controller", Confidence::High));
+
+        let fact = receiver_fact_for("$self->render();", "render", &env)?;
+
+        assert_eq!(fact.candidate_packages, vec!["My::Controller"]);
+        assert!(!fact.is_union_receiver());
+        Ok(())
+    }
+
+    #[test]
+    fn self_receiver_without_package_has_no_candidates() -> Result<(), String> {
+        // $self with no type environment entry.
+        let env = TypeEnvironment::new();
+        let fact = receiver_fact_for("$self->render();", "render", &env)?;
+
+        assert!(fact.candidate_packages.is_empty());
+        assert!(!fact.is_union_receiver());
         Ok(())
     }
 
@@ -905,125 +1133,4 @@ mod tests {
         Ok(())
     }
 
-    // ── candidate_packages / is_union_receiver ────────────────────────────
-
-    /// A static constructor call (`Foo::Bar->new`) must produce exactly one
-    /// candidate package and must not be flagged as a union receiver.
-    #[test]
-    fn static_constructor_receiver_has_one_candidate() -> Result<(), String> {
-        let env = TypeEnvironment::new();
-        let fact = receiver_fact_for("Foo::Bar->new();", "new", &env)?;
-
-        assert_eq!(fact.candidate_packages, vec!["Foo::Bar".to_string()]);
-        assert!(!fact.is_union_receiver(), "static receiver should not be a union receiver");
-        Ok(())
-    }
-
-    /// A `$self` receiver backed by an exact object fact must have exactly one
-    /// candidate package and must not be flagged as a union receiver.
-    #[test]
-    fn exact_single_package_receiver_has_one_candidate() -> Result<(), String> {
-        let mut env = TypeEnvironment::new();
-        env.set_variable_fact("self".to_string(), object_fact("My::Controller", Confidence::High));
-
-        let fact = receiver_fact_for("$self->render();", "render", &env)?;
-
-        assert_eq!(fact.candidate_packages, vec!["My::Controller".to_string()]);
-        assert!(!fact.is_union_receiver(), "single-package $self should not be a union receiver");
-        Ok(())
-    }
-
-    /// An unknown receiver (no type environment entry) must have no candidate
-    /// packages and must not be flagged as a union receiver.
-    #[test]
-    fn unknown_receiver_has_no_candidates() -> Result<(), String> {
-        let env = TypeEnvironment::new();
-        let fact = receiver_fact_for("$unknown->run();", "run", &env)?;
-
-        assert!(fact.candidate_packages.is_empty(), "unknown receiver should have no candidates");
-        assert!(!fact.is_union_receiver(), "unknown receiver should not be a union receiver");
-        Ok(())
-    }
-
-    /// A variable whose type is `Union(Foo, Bar)` must expose both package names
-    /// in `candidate_packages` and must be flagged as a union receiver.
-    #[test]
-    fn union_receiver_exposes_all_candidate_packages() -> Result<(), String> {
-        let mut env = TypeEnvironment::new();
-        env.set_variable_fact("object".to_string(), union_object_fact("My::Service", "Other"));
-
-        let fact = receiver_fact_for("$object->run();", "run", &env)?;
-
-        assert_eq!(
-            fact.candidate_packages,
-            vec!["My::Service".to_string(), "Other".to_string()],
-            "union receiver must list both packages in declaration order"
-        );
-        assert!(fact.is_union_receiver(), "two-arm union should be flagged as union receiver");
-        Ok(())
-    }
-
-    /// A three-arm union type must expose all three packages in `candidate_packages`.
-    #[test]
-    fn triple_union_receiver_exposes_all_candidates() -> Result<(), String> {
-        let mut env = TypeEnvironment::new();
-        env.set_variable_fact(
-            "object".to_string(),
-            TypeFact {
-                ty: PerlType::Union(vec![
-                    PerlType::Object("Alpha".to_string()),
-                    PerlType::Object("Beta".to_string()),
-                    PerlType::Object("Gamma".to_string()),
-                ]),
-                confidence: Confidence::High,
-                evidence: vec![TypeEvidence::WorkspaceSymbol { package: "Alpha".to_string() }],
-                dynamic_boundary: None,
-                shape: None,
-            },
-        );
-
-        let fact = receiver_fact_for("$object->process();", "process", &env)?;
-
-        assert_eq!(
-            fact.candidate_packages,
-            vec!["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()],
-            "three-arm union must expose all packages in declaration order"
-        );
-        assert!(fact.is_union_receiver(), "three-arm union should be flagged as union receiver");
-        Ok(())
-    }
-
-    /// A union whose branches contain the same package more than once must
-    /// deduplicate: `candidate_packages` contains each package exactly once.
-    #[test]
-    fn union_with_duplicate_packages_deduplicates() -> Result<(), String> {
-        let mut env = TypeEnvironment::new();
-        env.set_variable_fact(
-            "object".to_string(),
-            TypeFact {
-                ty: PerlType::Union(vec![
-                    PerlType::Object("Foo".to_string()),
-                    PerlType::Object("Bar".to_string()),
-                    PerlType::Object("Foo".to_string()), // duplicate
-                ]),
-                confidence: Confidence::High,
-                evidence: vec![TypeEvidence::WorkspaceSymbol { package: "Foo".to_string() }],
-                dynamic_boundary: None,
-                shape: None,
-            },
-        );
-
-        let fact = receiver_fact_for("$object->get();", "get", &env)?;
-
-        assert_eq!(
-            fact.candidate_packages,
-            vec!["Foo".to_string(), "Bar".to_string()],
-            "duplicate union branch must be removed; first occurrence wins"
-        );
-        assert!(
-            fact.is_union_receiver(),
-            "two-distinct-arm union should still be a union receiver"
-        );
-        Ok(())
-    }
 }
