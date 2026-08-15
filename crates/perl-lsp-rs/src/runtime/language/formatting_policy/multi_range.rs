@@ -760,6 +760,37 @@ mod tests {
             .err()
             .ok_or("empty-point escape was accepted")?;
         assert_eq!(escaped.reason, "edit_outside_range");
+
+        let left_escape =
+            compose_edits(source, &plan, vec![vec![edit(0, 2, 0, 3, "X")]], 1, "config")
+                .err()
+                .ok_or("empty-point span must reject lower-bound escape")?;
+        assert_eq!(left_escape.reason, "edit_outside_range");
+
+        let right_escape =
+            compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 4, "X")]], 1, "config")
+                .err()
+                .ok_or("empty-point span must reject upper-bound escape")?;
+        assert_eq!(right_escape.reason, "edit_outside_range");
+        Ok(())
+    }
+
+    #[test]
+    fn compose_edits_sorts_reverse_order_adjacent_edits() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "abcdefgh\n";
+        let plan = compose_plan(source, &[range(0, 0, 0, 8)]);
+        let (edits, digest) = compose_edits(
+            source,
+            &plan,
+            vec![vec![edit(0, 4, 0, 8, "BBBB"), edit(0, 0, 0, 4, "AAAA")]],
+            7,
+            "config-fingerprint",
+        )?;
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].new_text, "AAAA");
+        assert_eq!(edits[1].new_text, "BBBB");
+        assert!(!digest.is_empty(), "composed edit digest must be non-empty");
         Ok(())
     }
 
