@@ -13,6 +13,48 @@ SCHEMA_PATH = CLIENT_ROOT / "sublime-host-receipt.v1.schema.json"
 WORKFLOW_PATH = Path(__file__).resolve().parents[4] / ".github" / "workflows" / "sublime-real-host.yml"
 
 
+def job_level_env_blocks(workflow_text: str):
+    """Yield `(indent, lines)` for every `env:` mapping owned by a job.
+
+    Stdlib-only and deliberately structural rather than a YAML parse: the
+    package-contract runner installs a bare interpreter, so PyYAML is not
+    available. A job-level `env:` is one nested exactly two levels under the
+    top-level `jobs:` key (`jobs:` -> `<job_id>:` -> `env:`), which
+    distinguishes it from a step-level `env:` nested inside a `steps:` list
+    item, where the runner context *is* legal.
+    """
+    lines = workflow_text.splitlines()
+    in_jobs = False
+    job_indent = None
+    blocks = []
+    for index, line in enumerate(lines):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == 0:
+            in_jobs = line.startswith("jobs:")
+            job_indent = None
+            continue
+        if not in_jobs:
+            continue
+        if job_indent is None:
+            # First nested key under `jobs:` establishes the job-id indent.
+            job_indent = indent
+        if indent != job_indent + 2:
+            continue
+        if line.strip() != "env:":
+            continue
+        body = []
+        for following in lines[index + 1 :]:
+            if not following.strip() or following.lstrip().startswith("#"):
+                continue
+            if len(following) - len(following.lstrip()) <= indent:
+                break
+            body.append(following)
+        blocks.append((indent, body))
+    return blocks
+
+
 def load_validator():
     spec = importlib.util.spec_from_file_location("sublime_host_receipt_validator", VALIDATOR_PATH)
     if spec is None or spec.loader is None:
@@ -82,6 +124,34 @@ class SublimeHostContractTests(unittest.TestCase):
         self.assertIn("macos-latest", workflow)
         self.assertIn("windows-latest", workflow)
         self.assertNotIn("Package Control: Install Package", workflow)
+
+    def test_job_level_env_uses_no_runner_context(self) -> None:
+        """The host lane must survive GitHub's workflow validation.
+
+        `runner` is not an available context for `jobs.<id>.env`. A
+        `${{ runner.* }}` reference there is rejected while the run is being
+        created, so the run is marked failed with zero jobs and no logs — the
+        three-OS journey never executes and no receipt is ever produced, while
+        the red X looks like an ordinary test failure. Every receipt path must
+        therefore be bound in a step, where `$RUNNER_OS` is real.
+        """
+        for indent, block in job_level_env_blocks(WORKFLOW_PATH.read_text(encoding="utf-8")):
+            for line in block:
+                self.assertNotIn(
+                    "runner.",
+                    line,
+                    msg=(
+                        "job-level env (indent {}) references the runner context, which "
+                        "fails workflow validation before any job starts: {!r}".format(
+                            indent, line.strip()
+                        )
+                    ),
+                )
+
+    def test_host_receipt_path_is_bound_per_runner_in_a_step(self) -> None:
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertIn('PERLLSP_SUBLIME_RECEIPT=%s\\n', workflow)
+        self.assertIn('"$GITHUB_WORKSPACE/target/sublime-host/$RUNNER_OS.json"', workflow)
 
 
 if __name__ == "__main__":

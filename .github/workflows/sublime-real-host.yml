@@ -29,8 +29,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
+      # The runner context is not available to a job-level env block. Naming it
+      # here is rejected during workflow validation: the run fails before any
+      # job starts and no receipt is ever produced. Per-host receipt paths are
+      # bound in the first step instead, where $RUNNER_OS is real.
       PERLLSP_SUBLIME_FIXTURE: ${{ github.workspace }}/clients/sublime/host-fixture
-      PERLLSP_SUBLIME_RECEIPT: ${{ github.workspace }}/target/sublime-host/${{ runner.os }}.json
       PERLLSP_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PERLLSP_LSP_REF: cc9f5201d9f053d9ab67aa0ea575b494fd133803
     steps:
@@ -39,7 +42,7 @@ jobs:
       - name: Build the exact current-source server candidate
         run: cargo build --locked --release -p perllsp
 
-      - name: Bind the current-source binary identity
+      - name: Bind the current-source binary and receipt identity
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -47,6 +50,8 @@ jobs:
           else
             printf 'PERLLSP_TEST_BINARY=%s\n' "$GITHUB_WORKSPACE/target/release/perllsp" >> "$GITHUB_ENV"
           fi
+          printf 'PERLLSP_SUBLIME_RECEIPT=%s\n' \
+            "$GITHUB_WORKSPACE/target/sublime-host/$RUNNER_OS.json" >> "$GITHUB_ENV"
           mkdir -p "$GITHUB_WORKSPACE/target/sublime-host"
 
       - name: Stage the exact helper-package source
@@ -96,12 +101,13 @@ jobs:
           }
 
       - name: Validate the exact-source receipt
-        run: python clients/sublime/validate_sublime_host_receipt.py "${{ env.PERLLSP_SUBLIME_RECEIPT }}"
+        shell: bash
+        run: python clients/sublime/validate_sublime_host_receipt.py "$PERLLSP_SUBLIME_RECEIPT"
 
       - name: Publish the host receipt
         uses: actions/upload-artifact@v4
         with:
           name: sublime-real-host-${{ runner.os }}
-          path: ${{ env.PERLLSP_SUBLIME_RECEIPT }}
+          path: target/sublime-host/*.json
           if-no-files-found: error
           retention-days: 30
