@@ -35,9 +35,10 @@ new_discover = '''    /// Discover corpus paths through the historical unchecked
         Self::from_root(find_compatibility_workspace_root())
     }
 '''
-if source.count(old_discover) != 1:
-    raise SystemExit(f"expected one legacy discovery block, found {source.count(old_discover)}")
-source = source.replace(old_discover, new_discover)
+if old_discover in source:
+    source = source.replace(old_discover, new_discover)
+elif new_discover not in source:
+    raise SystemExit("could not identify compatibility discovery contract")
 
 old_layout = '''    /// Require the checked-in repository layers owned by the current topology.
     ///
@@ -68,12 +69,11 @@ new_layout = '''    /// Require the checked-in repository layer directories owne
         Ok(())
     }
 '''
-if source.count(old_layout) != 1:
-    raise SystemExit(f"expected one repository layout block, found {source.count(old_layout)}")
-source = source.replace(old_layout, new_layout)
+if old_layout in source:
+    source = source.replace(old_layout, new_layout)
+elif new_layout not in source:
+    raise SystemExit("could not identify repository layout contract")
 
-start = source.index("fn validate_readable_tree(")
-end = source.index("/// Return test corpus files", start)
 compat_helpers = '''fn find_compatibility_workspace_root() -> PathBuf {
     find_compatibility_workspace_root_from(Path::new(env!("CARGO_MANIFEST_DIR")))
 }
@@ -99,12 +99,13 @@ fn find_compatibility_workspace_root_from(start: &Path) -> PathBuf {
 }
 
 '''
-source = source[:start] + compat_helpers + source[end:]
+if "fn validate_readable_tree(" in source:
+    start = source.index("fn validate_readable_tree(")
+    end = source.index("/// Return test corpus files", start)
+    source = source[:start] + compat_helpers + source[end:]
+elif compat_helpers not in source:
+    raise SystemExit("could not identify traversal/helper contract")
 
-old_tests_start = source.index("    #[test]\n    fn nested_probe_failure_is_not_green()")
-module_end = source.rfind("\n}")
-if module_end <= old_tests_start:
-    raise SystemExit("could not locate files test-module close")
 new_tests = r'''    #[cfg(unix)]
     #[test]
     fn compatibility_workspace_discovery_preserves_symlinked_ancestor()
@@ -156,7 +157,12 @@ new_tests = r'''    #[cfg(unix)]
         Ok(())
     }
 '''
-source = source[:old_tests_start] + new_tests + source[module_end:]
+if "fn nested_probe_failure_is_not_green()" in source:
+    start = source.index("    #[test]\n    fn nested_probe_failure_is_not_green()")
+    end = source.rfind("\n}")
+    source = source[:start] + new_tests + source[end:]
+elif "fn compatibility_workspace_discovery_preserves_symlinked_ancestor()" not in source:
+    raise SystemExit("could not identify root contract tests")
 files_path.write_text(source)
 
 readme = Path("crates/perl-corpus/README.md")
@@ -169,9 +175,11 @@ new = '''`CorpusPaths::try_discover` adds strict compile-time workspace discover
 
 `require_repository_layout` proves only the bound root and required `test_corpus/` and fuzz directories. `CorpusTopology` owns selected descendant traversal and symlink/member policy; the shared opened-file authority tracked by #7693 owns the exact bytes consumed by load-bearing readers. Missing, linked, non-directory, or unreadable required layer directories fail, while excluded metadata leaves remain outside the selected denominator. The existing binary and legacy convenience consumers are migrated separately under #7025 and #7033.
 '''
-if text.count(old) != 1:
-    raise SystemExit(f"expected one README root-contract paragraph, found {text.count(old)}")
-readme.write_text(text.replace(old, new))
+if old in text:
+    text = text.replace(old, new)
+elif new not in text:
+    raise SystemExit("could not identify README root contract")
+readme.write_text(text)
 
 claude = Path("crates/perl-corpus/CLAUDE.md")
 text = claude.read_text()
