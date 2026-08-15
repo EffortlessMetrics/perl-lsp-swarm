@@ -149,6 +149,7 @@ impl CriticSuppressionMap {
                     .get(region.start..region.end)
                     .map(|comment| (line_for_offset(source, region.start), comment))
             })
+            .flat_map(|(line, comment)| comment_lines(comment, line))
             .flat_map(|(line, comment)| parse_directive_comment(line, comment))
             .collect();
         // `SourceRegionIndex::regions` is documented as sorted, so this is a
@@ -392,6 +393,58 @@ fn selectors(rules: &str) -> impl Iterator<Item = &str> {
         .filter(|rule_id| !rule_id.is_empty())
 }
 
+/// Split one proven line-comment region into its physical comment lines.
+///
+/// [`SourceRegionIndex`] coalesces adjacent regions of the same kind, so a run
+/// of comment lines that all start in column zero arrives as a **single**
+/// `LineComment` region whose text spans several lines. Directives are
+/// line-oriented, so the region has to be re-split before the prefix grammar is
+/// applied: otherwise `## no critic A` immediately followed by `## use critic`
+/// parses as one directive whose selector list has swallowed the second line,
+/// and the re-enable is silently lost.
+///
+/// `base_line` is the zero-based line of the region's first character; each
+/// returned line carries its own absolute line, counted with the same
+/// `\n` / `\r\n` / lone-`\r` convention as [`line_for_offset`].
+fn comment_lines(region: &str, base_line: u32) -> Vec<(u32, &str)> {
+    let bytes = region.as_bytes();
+    let mut lines = Vec::new();
+    let mut line = base_line;
+    let mut start = 0usize;
+    let mut cursor = 0usize;
+
+    while cursor < bytes.len() {
+        let break_len = match bytes[cursor] {
+            b'\r' if bytes.get(cursor + 1) == Some(&b'\n') => 2,
+            b'\r' | b'\n' => 1,
+            _ => {
+                cursor += 1;
+                continue;
+            }
+        };
+        lines.push((line, &region[start..cursor]));
+        line += 1;
+        cursor += break_len;
+        start = cursor;
+    }
+
+    if start < bytes.len() {
+        lines.push((line, &region[start..]));
+    }
+    lines
+}
+
+/// Zero-based line of `offset`, counting `\n`, `\r\n` and lone `\r` as breaks.
+///
+/// Directive lines are compared against `CriticFinding` positions, which are
+/// produced by `native::position_for_byte_offset` and count `\n` only. The two
+/// agree for LF and CRLF sources — every real input this ships against. They
+/// diverge only for lone-`\r` (classic Mac) line endings, where this counter
+/// runs ahead and a directive therefore covers fewer findings than the author
+/// wrote. That direction is fail-closed: a suppression can go unapplied, but a
+/// directive can never reach back and suppress a finding above itself.
+/// Unifying both on one line authority is a parser-wide change and is not in
+/// this claim.
 fn line_for_offset(source: &str, offset: usize) -> u32 {
     let bytes = source.as_bytes();
     let mut line = 0;
@@ -610,6 +663,69 @@ c;
         assert_eq!(map.suppressions()[0].line, 0);
         assert_eq!(map.suppressions()[0].scope, CriticSuppressionScope::UntilLine(4));
         assert!(!map.suppresses(&raw_finding_on_line("native.testing.require_use_strict", 5)));
+    }
+
+    /// A coalesced comment run must not swallow the re-enable.
+    ///
+    /// `SourceRegionIndex` merges adjacent column-zero comment lines into one
+    /// region, so parsing a region as a single comment loses every directive
+    /// after the first and leaves the suppression open to end of file.
+    #[test]
+    fn adjacent_directive_lines_are_parsed_independently() {
+        let source = "\
+## no critic native.testing.require_use_strict
+## use critic
+print $x;
+";
+        let map = CriticSuppressionMap::from_source(source);
+
+        assert_eq!(map.suppressions().len(), 1);
+        assert_eq!(map.suppressions()[0].rule_id, "native.testing.require_use_strict");
+        assert_eq!(map.suppressions()[0].line, 0);
+        assert_eq!(map.suppressions()[0].scope, CriticSuppressionScope::UntilLine(1));
+        assert!(!map.suppresses(&raw_finding_on_line("native.testing.require_use_strict", 2)));
+    }
+
+    /// Two stacked `## no critic` lines are two directives, not one directive
+    /// whose selector list has absorbed the second line's keywords.
+    #[test]
+    fn stacked_disable_lines_keep_their_own_selectors_and_lines() {
+        let source = "\
+## no critic native.testing.require_use_strict
+## no critic native.testing.require_use_warnings
+print $x;
+";
+        let map = CriticSuppressionMap::from_source(source);
+
+        assert_eq!(map.suppressions().len(), 2);
+        assert_eq!(map.suppressions()[0].rule_id, "native.testing.require_use_strict");
+        assert_eq!(map.suppressions()[0].line, 0);
+        assert_eq!(map.suppressions()[1].rule_id, "native.testing.require_use_warnings");
+        assert_eq!(map.suppressions()[1].line, 1);
+        assert!(map.unknown_rule_ids().is_empty());
+    }
+
+    /// Directive keywords from a following comment line must never leak into
+    /// the previous line's selector list.
+    #[test]
+    fn adjacent_comment_lines_do_not_leak_keywords_into_selectors() {
+        let map = CriticSuppressionMap::from_source(
+            "## no critic z.unknown\n## no critic a.unknown\nprint $x;\n",
+        );
+
+        assert_eq!(map.unknown_rule_ids(), vec!["a.unknown", "z.unknown"]);
+    }
+
+    /// The same re-split must hold for CRLF sources.
+    #[test]
+    fn adjacent_directive_lines_are_parsed_independently_with_crlf() {
+        let map = CriticSuppressionMap::from_source(
+            "## no critic native.testing.require_use_strict\r\n## use critic\r\nprint $x;\r\n",
+        );
+
+        assert_eq!(map.suppressions().len(), 1);
+        assert_eq!(map.suppressions()[0].line, 0);
+        assert_eq!(map.suppressions()[0].scope, CriticSuppressionScope::UntilLine(1));
     }
 
     #[test]
