@@ -21,7 +21,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 contract="${repo_root}/.ci/editor-clients/vim-vim-lsp-activation-root.v1.json"
-vim_bin=${VIM:-vim}
+vim_bin="${VIM:-vim}"
 mode=contract
 if [[ ${1:-} == "--integration" ]]; then
   mode=integration
@@ -57,6 +57,14 @@ require_features() {
   fi
 }
 require_features eval
+
+# Checked as a function, not as `has('json')`: Vim reports no `+json` feature
+# flag at all (it is 0 even on builds where `json_encode()` works), so a
+# feature-flag preflight would reject every working Vim.
+if ! "${vim_bin}" -Nu NONE -n -es -c "if !exists('*json_encode') || !exists('*json_decode') | cquit 3 | endif" -c 'qa!' >/dev/null 2>&1; then
+  echo "vim activation/root FAILED: ${vim_bin} has no json_encode()/json_decode()" >&2
+  exit 1
+fi
 
 if [[ ${mode} == integration ]]; then
   require_features job channel timers lambda reltime
