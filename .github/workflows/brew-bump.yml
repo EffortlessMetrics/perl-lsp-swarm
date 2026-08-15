@@ -249,7 +249,7 @@ jobs:
 
       - name: Cache Cargo dependencies
         if: steps.release.outputs.should_bump == 'true'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
           shared-key: homebrew-formula-${{ hashFiles('Cargo.lock') }}
@@ -341,10 +341,32 @@ jobs:
         run: |
           set -euo pipefail
           formula=homebrew-tap/Formula/perllsp.rb
+
+          # The envelope is re-enforced here, not just in `prepare`. This job is
+          # the one holding HOMEBREW_TAP_TOKEN, and the formula reached it through
+          # the artifact store rather than directly from the job that checked it.
+          # A minimal writer job must not treat an upstream job's assertions as
+          # proof about the bytes it is actually about to commit (#6013).
           if [ -L "$formula" ] || [ ! -f "$formula" ]; then
             echo "::error::Downloaded formula is not a regular file"
             exit 1
           fi
+
+          size="$(wc -c < "$formula")"
+          if [ "$size" -gt 1048576 ]; then
+            printf '::error::Downloaded formula exceeds the 1 MiB envelope (%s bytes)\n' "$size"
+            exit 1
+          fi
+          if [ "$size" -eq 0 ]; then
+            echo "::error::Downloaded formula is empty"
+            exit 1
+          fi
+
+          if grep -q '__RELEASE_VERSION__\|__SHA256_' "$formula"; then
+            echo "::error::Downloaded formula still contains unreplaced placeholders"
+            exit 1
+          fi
+
           rm -f homebrew-tap/Formula/perl-lsp.rb
           git -C homebrew-tap status --short -- Formula
 
