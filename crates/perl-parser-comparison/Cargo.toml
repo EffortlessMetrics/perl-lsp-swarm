@@ -7,13 +7,14 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Differential test suite measuring v1/v2/v3 parser gaps on constructs that historically defeated tree-sitter"
+description = "Differential test suite measuring exact current, historical, and native Perl parser subjects"
 publish = false
 
 [dependencies]
 perl-ast = { workspace = true }
 perl-parser-core = { workspace = true }
 perl-parser-pest = { workspace = true }
+ts-parser-perl = "=1.2.1"
 tree-sitter-perl-c = { workspace = true }
 tree-sitter = { workspace = true }
 walkdir = { workspace = true }

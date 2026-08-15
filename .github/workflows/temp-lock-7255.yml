@@ -1,0 +1,36 @@
+name: Temporary lock refresh for #7255
+
+on:
+  push:
+    branches:
+      - agent/exact-upstream-ts-parser-perl-7255
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-lock:
+    if: ${{ !contains(github.event.head_commit.message, 'refresh exact ts-parser-perl lockfile') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+
+      - name: Resolve the existing lockfile with the exact new dependency
+        run: cargo metadata --format-version 1 > /dev/null
+
+      - name: Commit the generated lockfile
+        shell: bash
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already current"
+            exit 0
+          fi
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add Cargo.lock
+          git commit -m "chore(lock): refresh exact ts-parser-perl lockfile (#7255)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
