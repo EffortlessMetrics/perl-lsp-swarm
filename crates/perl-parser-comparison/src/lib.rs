@@ -1,34 +1,21 @@
-//! Differential parser test harness for current, historical, and native Perl
-//! parser subjects.
+//! Differential parser test harness for exact current, historical, and native
+//! Perl parser subjects.
 //!
-//! The legacy v1/v2/v3 harness remains available while current-upstream
-//! migration proceeds. [`CurrentUpstreamAdapter`] is an additional exact-pinned
-//! subject; it does not replace the historical `tree-sitter-perl-c` lane or the
-//! native parser's Tree-sitter-style facade.
+//! Native Tree-sitter grammars are feature-isolated because the current
+//! upstream package and historical vendored snapshot export the same C symbol.
+//! A single binary may therefore select exactly one native grammar subject:
 //!
-//! # Legacy parsers
+//! ```text
+//! default / historical
+//!   cargo test -p perl-parser-comparison
 //!
-//! | Label | Crate | Description |
-//! |-------|-------|-------------|
-//! | v1 | `tree-sitter-perl-c` | Historical C Tree-sitter snapshot |
-//! | v2 | `perl-parser-pest` | Pest/PEG experimental parser |
-//! | v3 | `perl-parser-core` | Recursive-descent native parser |
-//!
-//! # Current upstream subject
-//!
-//! ```no_run
-//! use perl_parser_comparison::{
-//!     CurrentUpstreamAdapter, CurrentUpstreamExecutionDisposition,
-//! };
-//!
-//! let mut adapter = CurrentUpstreamAdapter::new()?;
-//! let result = adapter.parse_str("my $x = 42;", None)?;
-//! assert_eq!(
-//!     result.disposition(),
-//!     CurrentUpstreamExecutionDisposition::AcceptedClean,
-//! );
-//! # Ok::<(), perl_parser_comparison::CurrentUpstreamAdapterError>(())
+//! current upstream
+//!   cargo test -p perl-parser-comparison \
+//!     --no-default-features --features current-upstream
 //! ```
+//!
+//! Enabling both grammar features is rejected at compile time. This keeps the
+//! current and historical subjects distinct before worker-process migration.
 
 #![deny(unreachable_pub)]
 #![warn(rust_2018_idioms)]
@@ -43,14 +30,25 @@
 // Tests in this crate use assertion macros to preserve compact verdict receipts.
 #![cfg_attr(test, allow(clippy::panic))]
 
+#[cfg(all(feature = "historical", feature = "current-upstream"))]
+compile_error!(
+    "historical and current-upstream Tree-sitter Perl subjects export the same native symbol; build exactly one grammar feature per binary"
+);
+
+#[cfg(feature = "historical")]
 pub mod corpus_walker;
+#[cfg(feature = "current-upstream")]
 pub mod current_upstream;
+#[cfg(feature = "historical")]
 pub mod harness;
+#[cfg(feature = "historical")]
 pub mod outcomes;
 
+#[cfg(feature = "historical")]
 pub use corpus_walker::{
     AggregateStats, DisagreementKind, FileRecord, classify, format_report, walk_corpora,
 };
+#[cfg(feature = "current-upstream")]
 pub use current_upstream::{
     CurrentUpstreamAdapter, CurrentUpstreamAdapterError, CurrentUpstreamExecutionDisposition,
     CurrentUpstreamParse, CurrentUpstreamPinError, CurrentUpstreamSubjectIdentity, PACKAGE_CHECKSUM,
@@ -58,5 +56,7 @@ pub use current_upstream::{
     TREE_SITTER_LANGUAGE_VERSION, TREE_SITTER_RUNTIME_VERSION, UPSTREAM_COMMIT,
     UPSTREAM_REPOSITORY, UPSTREAM_RUST_VERSION, UPSTREAM_TAG, validate_exact_package_requirement,
 };
+#[cfg(feature = "historical")]
 pub use harness::{ParseResult, parse_v1, parse_v2, parse_v3};
+#[cfg(feature = "historical")]
 pub use outcomes::Verdict;
