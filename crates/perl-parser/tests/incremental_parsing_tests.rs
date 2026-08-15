@@ -1,6 +1,6 @@
 #![cfg(feature = "incremental")]
 
-use perl_parser::incremental::{apply_edits, Edit, IncrementalState};
+use perl_parser::incremental::{Edit, IncrementalState, apply_edits};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
