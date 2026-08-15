@@ -9,12 +9,12 @@
 //! - `IncrementalState::clone` - Clone impl is exercised
 //! - `lsp_change_to_edit` - full-document and ranged-change branches
 
-use perl_incremental_parsing::incremental::IncrementalState;
 use perl_incremental_parsing::incremental::incremental_advanced_reuse::ReuseType;
 use perl_incremental_parsing::incremental::incremental_edit::{
     IncrementalEdit, IncrementalEditBatchError, IncrementalEditSet,
 };
 use perl_incremental_parsing::incremental::incremental_integration::lsp_change_to_edit;
+use perl_incremental_parsing::incremental::{apply_edits, Edit, IncrementalState};
 use ropey::Rope;
 use serde_json::json;
 
@@ -166,8 +166,8 @@ fn normalize_and_validate_allow_overlaps_flag() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn normalize_and_validate_filter_no_ops_removes_empty_edits()
--> Result<(), Box<dyn std::error::Error>> {
+fn normalize_and_validate_filter_no_ops_removes_empty_edits(
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut set = IncrementalEditSet::new();
     // A no-op edit: same start and end, empty new_text
     set.add(IncrementalEdit::new(5, 5, String::new()));
@@ -217,8 +217,8 @@ fn normalize_for_source_out_of_bounds_returns_none() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn normalize_for_source_overlapping_non_empty_returns_none()
--> Result<(), Box<dyn std::error::Error>> {
+fn normalize_for_source_overlapping_non_empty_returns_none(
+) -> Result<(), Box<dyn std::error::Error>> {
     let source = "hello world!";
     let mut set = IncrementalEditSet::new();
     // Two overlapping non-empty edits
@@ -277,10 +277,13 @@ fn sort_reverse_deterministic_tie_break_by_old_end() -> Result<(), Box<dyn std::
 fn incremental_state_clone_is_independent() -> Result<(), Box<dyn std::error::Error>> {
     let state = IncrementalState::new("my $x = 1;".to_string());
     let mut cloned = state.clone();
-    // Modify the clone's source - the original should be unaffected
-    cloned.source = "my $y = 2;".to_string();
-    assert_eq!(state.source, "my $x = 1;", "original state unchanged after clone mutation");
-    assert_eq!(cloned.source, "my $y = 2;");
+    let edit =
+        Edit { start_byte: 3, old_end_byte: 9, new_end_byte: 9, new_text: "$y = 2".to_string() };
+
+    apply_edits(&mut cloned, &[edit])?;
+
+    assert_eq!(state.source(), "my $x = 1;", "original state unchanged after clone edit");
+    assert_eq!(cloned.source(), "my $y = 2;");
     Ok(())
 }
 
