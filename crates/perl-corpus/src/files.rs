@@ -4,7 +4,6 @@ use crate::api::root::{CorpusRoot, CorpusRootError, CorpusRootSource};
 pub use crate::api::root::CORPUS_ROOT_ENV;
 use std::env;
 use std::fs;
-use std::io;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -50,10 +49,7 @@ impl ResolvedCorpusPaths {
         &self.paths
     }
 
-    /// Consume the validated wrapper and return the unchecked compatibility path set.
-    ///
-    /// This is an explicit authority downgrade: the returned `CorpusPaths` can
-    /// be mutated and no longer carries selection provenance.
+    /// Leave the validated state and recover the compatibility path set.
     #[must_use]
     pub fn into_paths(self) -> CorpusPaths {
         self.paths
@@ -64,74 +60,16 @@ impl Deref for ResolvedCorpusPaths {
     type Target = CorpusPaths;
 
     fn deref(&self) -> &Self::Target {
-        &self.paths
+        self.as_paths()
     }
-}
-
-/// Corpus layers managed by perl-corpus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CorpusLayer {
-    /// Gap coverage test corpus files.
-    TestCorpus,
-    /// Fuzz regression fixtures.
-    Fuzz,
-}
-
-/// Corpus file with its originating layer.
-#[derive(Debug, Clone)]
-pub struct CorpusFile {
-    /// Path to the corpus file.
-    pub path: PathBuf,
-    /// Layer classification for the file.
-    pub layer: CorpusLayer,
 }
 
 impl CorpusPaths {
-    /// Discover corpus paths through the legacy developer-convenience contract.
+    /// Construct compatibility corpus paths without validation.
     ///
-    /// This non-fallible compatibility path does not preserve provenance or
-    /// validate the selected path. Use [`Self::try_discover`] for validated
-    /// developer discovery and [`Self::resolve_authoritative`] for load-bearing
-    /// work.
-    pub fn discover() -> Self {
-        if let Some(root) = env::var_os(CORPUS_ROOT_ENV) {
-            return Self::from_root(PathBuf::from(root));
-        }
-
-        match CorpusRoot::resolve_for_development(None) {
-            Ok(authority) => Self::from_root(authority.into_path()),
-            Err(_) => Self::from_root(PathBuf::from(env!("CARGO_MANIFEST_DIR"))),
-        }
-    }
-
-    /// Discover and validate corpus paths for developer use.
-    pub fn try_discover() -> Result<ResolvedCorpusPaths, CorpusRootError> {
-        CorpusRoot::resolve_for_development(None).map(resolved_from_authority)
-    }
-
-    /// Resolve and validate paths for a load-bearing operation.
-    ///
-    /// The explicit root takes precedence over [`CORPUS_ROOT_ENV`]. Workspace
-    /// discovery is intentionally unavailable on this path.
-    pub fn resolve_authoritative(
-        explicit: Option<&Path>,
-    ) -> Result<ResolvedCorpusPaths, CorpusRootError> {
-        CorpusRoot::resolve_authoritative(explicit).map(resolved_from_authority)
-    }
-
-    /// Validate an explicit root and build its common corpus paths.
-    pub fn try_from_root(
-        root: impl AsRef<Path>,
-    ) -> Result<ResolvedCorpusPaths, CorpusRootError> {
-        CorpusRoot::explicit(root).map(resolved_from_authority)
-    }
-
-    /// Build corpus paths from an unchecked root.
-    ///
-    /// This compatibility constructor preserves the pre-existing public shape
-    /// for synthetic tests and callers that perform their own validation.
-    /// Load-bearing operations should use [`Self::try_from_root`] or
-    /// [`Self::resolve_authoritative`].
+    /// This method preserves the historical path-returning API. Load-bearing
+    /// work should use [`Self::try_from_root`], [`Self::try_discover`], or
+    /// [`Self::resolve_authoritative`] and retain the validated wrapper.
     #[must_use]
     pub fn from_root(root: PathBuf) -> Self {
         Self {
@@ -141,226 +79,204 @@ impl CorpusPaths {
         }
     }
 
-    /// Require the checked-in repository layers owned by the current topology.
+    /// Discover corpus paths through the historical unchecked compatibility contract.
     ///
-    /// Missing, linked, non-directory, unreadable, or recursively unreadable
-    /// layers fail instead of becoming an empty or partial successful corpus.
+    /// This path preserves the raw environment value or compile-time workspace
+    /// path, including a symlinked workspace ancestor. It does not validate or
+    /// retain provenance and must not be used as evidence authority. Use
+    /// [`Self::try_discover`] for strict developer discovery and
+    /// [`Self::resolve_authoritative`] for load-bearing work.
+    pub fn discover() -> Self {
+        if let Some(root) = env::var_os(CORPUS_ROOT_ENV) {
+            return Self::from_root(PathBuf::from(root));
+        }
+
+        Self::from_root(find_compatibility_workspace_root())
+    }
+
+    /// Validate an explicit root and retain its authority.
+    pub fn try_from_root(root: impl AsRef<Path>) -> Result<ResolvedCorpusPaths, CorpusRootError> {
+        let authority = CorpusRoot::explicit(root)?;
+        Self::from_authority(authority)
+    }
+
+    /// Resolve the authoritative external corpus root.
+    ///
+    /// Precedence is explicit root, then [`CORPUS_ROOT_ENV`]. This method never
+    /// falls back to developer workspace discovery.
+    pub fn resolve_authoritative(
+        explicit: Option<&Path>,
+    ) -> Result<ResolvedCorpusPaths, CorpusRootError> {
+        let authority = CorpusRoot::resolve_authoritative(explicit)?;
+        Self::from_authority(authority)
+    }
+
+    /// Resolve developer-convenience corpus paths with validation.
+    ///
+    /// Precedence is explicit root, then [`CORPUS_ROOT_ENV`], then compile-time
+    /// workspace discovery. The resulting source remains visible to callers.
+    pub fn try_discover(
+        explicit: Option<&Path>,
+    ) -> Result<ResolvedCorpusPaths, CorpusRootError> {
+        let authority = CorpusRoot::resolve_for_development(explicit)?;
+        Self::from_authority(authority)
+    }
+
+    fn from_authority(authority: CorpusRoot) -> Result<ResolvedCorpusPaths, CorpusRootError> {
+        let paths = Self::from_root(authority.path().to_path_buf());
+        paths.require_repository_layout()?;
+        Ok(ResolvedCorpusPaths {
+            paths,
+            source: authority.source(),
+        })
+    }
+
+    /// Require the checked-in repository layer directories owned by the current topology.
+    ///
+    /// This validates root and required-directory authority only. Selected
+    /// descendant traversal belongs to [`crate::CorpusTopology`], and exact
+    /// opened-file bytes belong to the shared member reader tracked by #7693.
     pub fn require_repository_layout(&self) -> Result<(), CorpusRootError> {
         let authority = CorpusRoot::explicit(&self.root)?;
-        let test_corpus =
-            authority.require_directory(Path::new("test_corpus"), "test_corpus")?;
-        validate_readable_tree(&test_corpus, "test_corpus")?;
         authority.require_directory(Path::new("test_corpus"), "test_corpus")?;
-
-        let fuzz = authority.require_directory(Path::new("crates/perl-corpus/fuzz"), "fuzz")?;
-        validate_readable_tree(&fuzz, "fuzz")?;
         authority.require_directory(Path::new("crates/perl-corpus/fuzz"), "fuzz")?;
         Ok(())
     }
 }
 
-fn resolved_from_authority(authority: CorpusRoot) -> ResolvedCorpusPaths {
-    let source = authority.source();
-    let paths = CorpusPaths::from_root(authority.into_path());
-    ResolvedCorpusPaths { paths, source }
+fn find_compatibility_workspace_root() -> PathBuf {
+    find_compatibility_workspace_root_from(Path::new(env!("CARGO_MANIFEST_DIR")))
 }
 
-fn validate_readable_tree(root: &Path, layer: &'static str) -> Result<(), CorpusRootError> {
-    validate_readable_tree_with_probe(root, layer, |_| Ok(()))
-}
-
-fn validate_readable_tree_with_probe<F>(
-    root: &Path,
-    layer: &'static str,
-    mut probe: F,
-) -> Result<(), CorpusRootError>
-where
-    F: FnMut(&Path) -> io::Result<()>,
-{
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(directory) = stack.pop() {
-        validate_tree_directory(&directory, layer)?;
-        probe(&directory).map_err(|error| CorpusRootError::RequiredLayerUnreadable {
-            layer,
-            path: directory.clone(),
-            message: error.to_string(),
-        })?;
-
-        let entries = fs::read_dir(&directory).map_err(|error| {
-            CorpusRootError::RequiredLayerUnreadable {
-                layer,
-                path: directory.clone(),
-                message: error.to_string(),
-            }
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|error| CorpusRootError::RequiredLayerUnreadable {
-                layer,
-                path: directory.clone(),
-                message: error.to_string(),
-            })?;
-            let path = entry.path();
-            let file_type =
-                entry
-                    .file_type()
-                    .map_err(|error| CorpusRootError::RequiredLayerUnreadable {
-                        layer,
-                        path: path.clone(),
-                        message: error.to_string(),
-                    })?;
-            if file_type.is_symlink() {
-                return Err(CorpusRootError::RequiredLayerSymlink { layer, path });
-            }
-            if file_type.is_dir() {
-                stack.push(path);
-            }
+fn find_compatibility_workspace_root_from(start: &Path) -> PathBuf {
+    for ancestor in start.ancestors() {
+        let manifest = ancestor.join("Cargo.toml");
+        let Ok(contents) = fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let Ok(parsed) = toml::from_str::<toml::Value>(&contents) else {
+            continue;
+        };
+        if parsed
+            .get("workspace")
+            .and_then(toml::Value::as_table)
+            .is_some()
+        {
+            return ancestor.to_path_buf();
         }
-        validate_tree_directory(&directory, layer)?;
     }
-    Ok(())
+    start.to_path_buf()
 }
 
-fn validate_tree_directory(path: &Path, layer: &'static str) -> Result<(), CorpusRootError> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            CorpusRootError::RequiredLayerMissing {
-                layer,
-                path: path.to_path_buf(),
-            }
-        } else {
-            CorpusRootError::RequiredLayerUnreadable {
-                layer,
-                path: path.to_path_buf(),
-                message: error.to_string(),
-            }
-        }
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(CorpusRootError::RequiredLayerSymlink {
-            layer,
-            path: path.to_path_buf(),
-        });
-    }
-    if !metadata.is_dir() {
-        return Err(CorpusRootError::RequiredLayerNotDirectory {
-            layer,
-            path: path.to_path_buf(),
-        });
-    }
-    Ok(())
-}
-
-/// Return test corpus files (gap coverage fixtures).
+/// Return test corpus files using the compatibility discovery path.
+#[must_use]
 pub fn get_test_files() -> Vec<PathBuf> {
     get_test_files_from(&CorpusPaths::discover())
 }
 
-/// Return test corpus files using a specific root.
+/// Return test corpus files from an explicit compatibility path set.
+#[must_use]
 pub fn get_test_files_from(paths: &CorpusPaths) -> Vec<PathBuf> {
-    collect_files(&paths.test_corpus, TEST_EXTENSIONS)
+    collect_perl_files(&paths.test_corpus)
 }
 
-/// Return fuzz regression fixtures (Perl sources only).
+/// Return fuzz files using the compatibility discovery path.
+#[must_use]
 pub fn get_fuzz_files() -> Vec<PathBuf> {
-    get_fuzz_files_from(&CorpusPaths::discover())
+    collect_perl_files(&CorpusPaths::discover().fuzz)
 }
 
-/// Return fuzz regression fixtures from an explicit root.
-pub fn get_fuzz_files_from(paths: &CorpusPaths) -> Vec<PathBuf> {
-    collect_files(&paths.fuzz, &["pl"])
+/// Return all selected test and fuzz files using the compatibility path.
+#[must_use]
+pub fn get_all_test_files() -> Vec<PathBuf> {
+    let paths = CorpusPaths::discover();
+    let mut files = get_test_files_from(&paths);
+    files.extend(collect_perl_files(&paths.fuzz));
+    files.sort();
+    files
 }
 
-/// Return corpus files with their layer annotations.
+fn collect_perl_files(root: &Path) -> Vec<PathBuf> {
+    let Ok(read_dir) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+
+    let mut files = Vec::new();
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if !is_hidden_path(&path) {
+                files.extend(collect_perl_files(&path));
+            }
+            continue;
+        }
+        if file_type.is_file() && is_perl_source(&path) && !is_hidden_path(&path) {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+}
+
+fn is_perl_source(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            TEST_EXTENSIONS
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        })
+}
+
+fn is_hidden_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.') || name.starts_with('_'))
+}
+
+/// Corpus layer identifier used by compatibility inventory results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorpusLayer {
+    /// Main repository test corpus.
+    TestCorpus,
+    /// Fuzz regression fixtures.
+    Fuzz,
+}
+
+/// One compatibility corpus file and its layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorpusFile {
+    /// Source file path.
+    pub path: PathBuf,
+    /// Compatibility layer classification.
+    pub layer: CorpusLayer,
+}
+
+/// Return compatibility corpus files from the default discovered path set.
+#[must_use]
 pub fn get_corpus_files() -> Vec<CorpusFile> {
     get_corpus_files_from(&CorpusPaths::discover())
 }
 
-/// Return corpus files with layers from an explicit root.
+/// Return compatibility corpus files from an explicit compatibility path set.
+#[must_use]
 pub fn get_corpus_files_from(paths: &CorpusPaths) -> Vec<CorpusFile> {
-    let mut files: Vec<CorpusFile> = get_test_files_from(paths)
+    let mut files: Vec<_> = get_test_files_from(paths)
         .into_iter()
         .map(|path| CorpusFile {
             path,
             layer: CorpusLayer::TestCorpus,
         })
+        .chain(collect_perl_files(&paths.fuzz).into_iter().map(|path| CorpusFile {
+            path,
+            layer: CorpusLayer::Fuzz,
+        }))
         .collect();
-
-    files.extend(
-        get_fuzz_files_from(paths)
-            .into_iter()
-            .map(|path| CorpusFile {
-                path,
-                layer: CorpusLayer::Fuzz,
-            }),
-    );
-
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    files.dedup_by(|a, b| a.path == b.path);
+    files.sort_by(|left, right| left.path.cmp(&right.path));
     files
-}
-
-/// Return all available Perl sources across corpus layers.
-pub fn get_all_test_files() -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = get_corpus_files()
-        .into_iter()
-        .map(|file| file.path)
-        .collect();
-    files.sort();
-    files.dedup();
-    files
-}
-
-fn collect_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if !root.exists() {
-        return files;
-    }
-
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
-            let file_type = match entry.file_type() {
-                Ok(file_type) => file_type,
-                Err(_) => continue,
-            };
-            let path = entry.path();
-            let file_name = entry.file_name();
-            let file_name = file_name.to_string_lossy();
-
-            if file_name.starts_with('.') || file_name.starts_with('_') {
-                continue;
-            }
-
-            if file_type.is_dir() {
-                stack.push(path);
-                continue;
-            }
-
-            if file_type.is_file() && has_allowed_extension(&path, extensions) {
-                files.push(path);
-            }
-        }
-    }
-
-    files.sort();
-    files.dedup();
-    files
-}
-
-fn has_allowed_extension(path: &Path, extensions: &[&str]) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            extensions
-                .iter()
-                .any(|allowed| ext.eq_ignore_ascii_case(allowed))
-        })
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -368,213 +284,93 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_root(prefix: &str) -> io::Result<PathBuf> {
-        let mut root = std::env::temp_dir();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        root.push(format!("{}_{}_{}", prefix, std::process::id(), nanos));
+    fn temp_root(prefix: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = env::temp_dir().join(format!("{prefix}_{suffix}"));
         fs::create_dir_all(&root)?;
         Ok(root)
     }
 
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &Path) -> Self {
-            let previous = env::var_os(key);
-            // SAFETY: Tests in this module set process environment variables in a
-            // controlled way and restore them on drop.
-            unsafe { env::set_var(key, value) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(previous) => {
-                    // SAFETY: This restores the original value captured by the
-                    // guard when it was created.
-                    unsafe { env::set_var(self.key, previous) };
-                }
-                None => {
-                    // SAFETY: The guard created this variable and now removes it.
-                    unsafe { env::remove_var(self.key) };
-                }
-            }
-        }
-    }
-
     #[test]
-    fn public_corpus_paths_struct_literal_remains_valid()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_root("perl_corpus_public_shape")?;
-        let paths = CorpusPaths {
-            test_corpus: root.join("test_corpus"),
-            fuzz: root.join("crates/perl-corpus/fuzz"),
-            root: root.clone(),
-        };
+    fn from_root_preserves_public_path_shape() {
+        let root = PathBuf::from("/tmp/corpus");
+        let paths = CorpusPaths::from_root(root.clone());
         assert_eq!(paths.root, root);
-        fs::remove_dir_all(&paths.root)?;
-        Ok(())
+        assert_eq!(paths.test_corpus, PathBuf::from("/tmp/corpus/test_corpus"));
+        assert_eq!(
+            paths.fuzz,
+            PathBuf::from("/tmp/corpus/crates/perl-corpus/fuzz")
+        );
     }
 
     #[test]
-    fn resolved_paths_require_explicit_authority_downgrade_for_mutation()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_root("perl_corpus_resolved_immutability")?;
-        let resolved = CorpusPaths::try_from_root(&root)?;
-        assert_eq!(resolved.as_paths().root, root.canonicalize()?);
-        assert_eq!(resolved.root_source(), CorpusRootSource::Explicit);
-
-        let mut unchecked = resolved.into_paths();
-        unchecked.root = root.join("replacement");
-        assert_eq!(unchecked.root, root.join("replacement"));
-
-        fs::remove_dir_all(&root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn collect_files_filters_extensions_and_skips_hidden()
+    fn compatibility_collects_sorted_supported_sources()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_root("perl_corpus_files")?;
-        let keep_dir = root.join("keep");
-        fs::create_dir_all(&keep_dir)?;
-        fs::create_dir_all(root.join("_skip"))?;
-        fs::create_dir_all(root.join(".hidden_dir"))?;
-        let fixtures = [
-            root.join("case.pl"),
-            root.join("case.pm"),
-            root.join("case.plx"),
-            root.join("case.t"),
-            root.join("case.psgi"),
-            root.join("case.cgi"),
-            keep_dir.join("nested.pl"),
-        ];
-        for fixture in &fixtures {
-            fs::write(fixture, "print 1;\n")?;
-        }
-        fs::write(root.join("case.txt"), "ignore\n")?;
-        fs::write(root.join(".hidden.pl"), "ignore\n")?;
-        fs::write(root.join("_skip/inner.pl"), "ignore\n")?;
-        fs::write(root.join(".hidden_dir/inner.pm"), "ignore\n")?;
-        let files = collect_files(&root, TEST_EXTENSIONS);
-        let mut names: Vec<_> = files
-            .iter()
-            .map(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            })
-            .collect();
-        names.sort();
+        fs::create_dir_all(root.join("test_corpus/nested"))?;
+        fs::write(root.join("test_corpus/nested/case.pl"), "1;")?;
+        fs::write(root.join("test_corpus/Case.pm"), "package Case; 1;")?;
+        fs::write(root.join("test_corpus/ignored.txt"), "not selected")?;
+
+        let files = get_test_files_from(&CorpusPaths::from_root(root.clone()));
         assert_eq!(
-            names,
+            files,
             vec![
-                "case.cgi",
-                "case.pl",
-                "case.plx",
-                "case.pm",
-                "case.psgi",
-                "case.t",
-                "nested.pl",
+                root.join("test_corpus/Case.pm"),
+                root.join("test_corpus/nested/case.pl")
             ]
         );
         fs::remove_dir_all(&root)?;
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
-    fn corpus_paths_try_discover_records_environment_provenance()
+    fn compatibility_workspace_discovery_preserves_symlinked_ancestor()
     -> Result<(), Box<dyn std::error::Error>> {
-        let _lock = crate::api::root::CORPUS_ENV_TEST_LOCK
-            .lock()
-            .map_err(|_| io::Error::other("environment lock poisoned"))?;
-        let root = temp_root("perl_corpus_validated_env_root")?;
-        let _env_guard = EnvVarGuard::set(CORPUS_ROOT_ENV, &root);
-        let discovered = CorpusPaths::try_discover()?;
-        assert_eq!(discovered.root, root.canonicalize()?);
-        assert_eq!(discovered.root_source(), CorpusRootSource::Environment);
-        fs::remove_dir_all(&root)?;
-        Ok(())
-    }
+        use std::os::unix::fs::symlink;
 
-    #[test]
-    fn authoritative_paths_require_repository_layers()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_root("perl_corpus_required_layers")?;
-        let resolved = CorpusPaths::try_from_root(&root)?;
-        assert!(matches!(
-            resolved.require_repository_layout(),
-            Err(CorpusRootError::RequiredLayerMissing {
-                layer: "test_corpus",
-                ..
-            })
-        ));
-        fs::create_dir_all(root.join("test_corpus"))?;
-        assert!(matches!(
-            resolved.require_repository_layout(),
-            Err(CorpusRootError::RequiredLayerMissing { layer: "fuzz", .. })
-        ));
-        fs::create_dir_all(root.join("crates/perl-corpus/fuzz"))?;
-        resolved.require_repository_layout()?;
-        fs::remove_dir_all(&root)?;
-        Ok(())
-    }
+        let root = temp_root("perl_corpus_compat_symlink_workspace")?;
+        let real_workspace = root.join("real-workspace");
+        let crate_dir = real_workspace.join("crates/perl-corpus");
+        fs::create_dir_all(&crate_dir)?;
+        fs::write(
+            real_workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = []\n",
+        )?;
+        let linked_workspace = root.join("linked-workspace");
+        symlink(&real_workspace, &linked_workspace)?;
+        let linked_crate = linked_workspace.join("crates/perl-corpus");
 
-    #[test]
-    fn nested_probe_failure_is_not_green() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_root("perl_corpus_nested_probe")?;
-        let nested = root.join("test_corpus/nested");
-        fs::create_dir_all(&nested)?;
-        let result = validate_readable_tree_with_probe(
-            &root.join("test_corpus"),
-            "test_corpus",
-            |path| {
-                if path == nested {
-                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
-                } else {
-                    Ok(())
-                }
-            },
+        assert_eq!(
+            find_compatibility_workspace_root_from(&linked_crate),
+            linked_workspace
         );
         assert!(matches!(
-            result,
-            Err(CorpusRootError::RequiredLayerUnreadable {
-                layer: "test_corpus",
-                path,
-                ..
-            }) if path == nested
+            CorpusRoot::explicit(&linked_workspace),
+            Err(CorpusRootError::SymlinkUnsupported { .. })
         ));
+
         fs::remove_dir_all(&root)?;
         Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn nested_symlink_is_not_a_valid_readable_tree()
+    fn required_layout_leaves_excluded_metadata_symlink_to_topology()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::symlink;
-        let root = temp_root("perl_corpus_nested_symlink")?;
-        let tree = root.join("test_corpus");
-        let outside = root.join("outside");
-        fs::create_dir_all(&tree)?;
-        fs::create_dir_all(&outside)?;
-        let link = tree.join("linked");
-        symlink(&outside, &link)?;
-        assert!(matches!(
-            validate_readable_tree(&tree, "test_corpus"),
-            Err(CorpusRootError::RequiredLayerSymlink {
-                layer: "test_corpus",
-                path,
-            }) if path == link
-        ));
+
+        let root = temp_root("perl_corpus_excluded_metadata_link")?;
+        fs::create_dir_all(root.join("test_corpus"))?;
+        let fuzz = root.join("crates/perl-corpus/fuzz");
+        fs::create_dir_all(&fuzz)?;
+        let outside = root.join("outside-readme.md");
+        fs::write(&outside, "metadata only\n")?;
+        symlink(&outside, fuzz.join("README.md"))?;
+
+        CorpusPaths::try_from_root(&root)?.require_repository_layout()?;
+
         fs::remove_dir_all(&root)?;
         Ok(())
     }
