@@ -67,13 +67,9 @@ fn object_receiver_fact(
     use perl_semantic_analyzer::analysis::type_facts::TypeEvidence;
     use perl_semantic_analyzer::analysis::type_facts::TypeFact;
 
-    TypeFact {
-        ty,
-        confidence: perl_semantic_facts::Confidence::High,
-        evidence: vec![TypeEvidence::WorkspaceSymbol { package: "Foo".to_string() }],
-        dynamic_boundary: None,
-        shape: None,
-    }
+    let mut fact = TypeFact::new(ty, perl_semantic_facts::Confidence::High);
+    fact.evidence = vec![TypeEvidence::WorkspaceSymbol { package: "Foo".to_string() }];
+    fact
 }
 
 fn completion_provider_with_receiver_fact(
