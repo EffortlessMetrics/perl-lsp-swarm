@@ -201,6 +201,19 @@ fn quote_operator_and_fat_arrow_take_opposite_transitions() -> R {
     );
     assert_eq!((arrow.start, arrow.end), (2, 4));
     assert!(!fat_arrow.iter().any(|token| matches!(&token.token_type, TokenType::QuoteSingle)));
+
+    // No gap before `=>`: the whitespace rule cannot decide this one, so the
+    // fat-arrow lookahead is the only thing keeping `q` a bareword key here.
+    let tight = collect("q=>1;")?;
+    let tight_q = token_with_text(&tight, "q")?;
+    assert!(matches!(&tight_q.token_type, TokenType::Identifier(name) if name.as_ref() == "q"));
+    assert_eq!((tight_q.start, tight_q.end), (0, 1));
+    let tight_arrow = token_with_text(&tight, "=>")?;
+    assert!(
+        matches!(&tight_arrow.token_type, TokenType::Operator(operator) if operator.as_ref() == "=>")
+    );
+    assert_eq!((tight_arrow.start, tight_arrow.end), (1, 3));
+    assert!(!tight.iter().any(|token| matches!(&token.token_type, TokenType::QuoteSingle)));
     Ok(())
 }
 
