@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 
-use super::{Value, digest, json, parse_range};
+use super::{digest, json, parse_range, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct PositionRecord {
@@ -22,16 +22,34 @@ struct PositionRecord {
     byte: usize,
 }
 
+impl PositionRecord {
+    fn at(line: u32, character: u32, byte: usize) -> Self {
+        Self { line, character, byte }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct NormalizedRange {
     start: PositionRecord,
     end: PositionRecord,
 }
 
+impl NormalizedRange {
+    fn between(start: PositionRecord, end: PositionRecord) -> Self {
+        Self { start, end }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AdmittedRange {
     original_index: usize,
     normalized: NormalizedRange,
+}
+
+impl AdmittedRange {
+    fn new(original_index: usize, normalized: NormalizedRange) -> Self {
+        Self { original_index, normalized }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -65,6 +83,36 @@ impl std::error::Error for PlanError {}
 impl PlanError {
     fn new(reason: &'static str, message: impl Into<String>) -> Self {
         Self { reason, message: message.into() }
+    }
+
+    fn outside_document(line: u32) -> Self {
+        Self::new("invalid_position", format!("line {line} is outside the current document"))
+    }
+
+    fn surrogate_split(line: u32, character: u32) -> Self {
+        Self::new(
+            "invalid_position",
+            format!("UTF-16 character {character} on line {line} splits a surrogate pair"),
+        )
+    }
+
+    fn outside_line(line: u32, character: u32, length: usize) -> Self {
+        Self::new(
+            "invalid_position",
+            format!("UTF-16 character {character} is outside line {line} (length {length})"),
+        )
+    }
+
+    fn reversed_range(original_index: usize) -> Self {
+        Self::new("reversed_range", format!("ranges[{original_index}] ends before it starts"))
+    }
+
+    fn duplicate_range(right: usize, left: usize) -> Self {
+        Self::new("duplicate_range", format!("ranges[{right}] duplicates ranges[{left}]"))
+    }
+
+    fn overlapping_ranges(right: usize, left: usize) -> Self {
+        Self::new("overlapping_ranges", format!("ranges[{right}] overlaps ranges[{left}]"))
     }
 
     fn json_rpc_code(&self) -> i32 {
@@ -125,12 +173,11 @@ impl SourceGeometry {
 
     fn byte_offset(&self, source: &str, line: u32, character: u32) -> Result<usize, PlanError> {
         let line_index = line as usize;
-        let start = *self.line_starts.get(line_index).ok_or_else(|| {
-            PlanError::new(
-                "invalid_position",
-                format!("line {line} is outside the current document"),
-            )
-        })?;
+        let start = self
+            .line_starts
+            .get(line_index)
+            .copied()
+            .ok_or_else(|| PlanError::outside_document(line))?;
         let end = self.line_content_end(source, line_index);
 
         let target = character as usize;
@@ -141,20 +188,14 @@ impl SourceGeometry {
             }
             let next = units.saturating_add(ch.len_utf16());
             if target < next {
-                return Err(PlanError::new(
-                    "invalid_position",
-                    format!("UTF-16 character {character} on line {line} splits a surrogate pair"),
-                ));
+                return Err(PlanError::surrogate_split(line, character));
             }
             units = next;
         }
         if units == target {
             Ok(end)
         } else {
-            Err(PlanError::new(
-                "invalid_position",
-                format!("UTF-16 character {character} is outside line {line} (length {units})"),
-            ))
+            Err(PlanError::outside_line(line, character, units))
         }
     }
 }
@@ -170,26 +211,13 @@ pub(super) fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, Pl
         let start_byte = geometry.byte_offset(source, wire.start.line, wire.start.character)?;
         let end_byte = geometry.byte_offset(source, wire.end.line, wire.end.character)?;
         if end_byte < start_byte {
-            return Err(PlanError::new(
-                "reversed_range",
-                format!("ranges[{original_index}] ends before it starts"),
-            ));
+            return Err(PlanError::reversed_range(original_index));
         }
-        normalized_ranges.push(AdmittedRange {
-            original_index,
-            normalized: NormalizedRange {
-                start: PositionRecord {
-                    line: wire.start.line,
-                    character: wire.start.character,
-                    byte: start_byte,
-                },
-                end: PositionRecord {
-                    line: wire.end.line,
-                    character: wire.end.character,
-                    byte: end_byte,
-                },
-            },
-        });
+        let normalized = NormalizedRange::between(
+            PositionRecord::at(wire.start.line, wire.start.character, start_byte),
+            PositionRecord::at(wire.end.line, wire.end.character, end_byte),
+        );
+        normalized_ranges.push(AdmittedRange::new(original_index, normalized));
     }
 
     normalized_ranges.sort_by_key(|range| {
@@ -206,24 +234,12 @@ pub(super) fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, Pl
         if left.normalized.start.byte == right.normalized.start.byte
             && left.normalized.end.byte == right.normalized.end.byte
         {
-            return Err(PlanError::new(
-                "duplicate_range",
-                format!(
-                    "ranges[{}] duplicates ranges[{}]",
-                    right.original_index, left.original_index
-                ),
-            ));
+            return Err(PlanError::duplicate_range(right.original_index, left.original_index));
         }
         if right.normalized.start.byte < left.normalized.end.byte
             || right.normalized.start.byte == left.normalized.start.byte
         {
-            return Err(PlanError::new(
-                "overlapping_ranges",
-                format!(
-                    "ranges[{}] overlaps ranges[{}]",
-                    right.original_index, left.original_index
-                ),
-            ));
+            return Err(PlanError::overlapping_ranges(right.original_index, left.original_index));
         }
     }
 
@@ -405,8 +421,67 @@ mod tests {
     }
 
     #[test]
-    fn plan_errors_distinguish_invalid_input_from_contract_failures()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn position_record_at_preserves_wire_and_byte_fields() {
+        let record = PositionRecord::at(2, 5, 17);
+        assert_eq!(record.line, 2, "PositionRecord::at must keep line");
+        assert_eq!(record.character, 5, "PositionRecord::at must keep character");
+        assert_eq!(record.byte, 17, "PositionRecord::at must keep byte");
+        let normalized = NormalizedRange::between(record, PositionRecord::at(2, 8, 20));
+        assert_eq!(normalized.start.byte, 17, "NormalizedRange::between must keep start");
+        assert_eq!(normalized.end.byte, 20, "NormalizedRange::between must keep end");
+        let admitted = AdmittedRange::new(3, normalized);
+        assert_eq!(admitted.original_index, 3, "AdmittedRange::new must keep original_index");
+        assert_eq!(admitted.normalized.end.byte, 20, "AdmittedRange::new must keep normalized end");
+    }
+
+    #[test]
+    fn plan_error_constructors_name_geometry_failures() {
+        assert_eq!(
+            PlanError::outside_document(9).message,
+            "line 9 is outside the current document"
+        );
+        assert!(
+            PlanError::surrogate_split(0, 2).message.contains("splits a surrogate pair"),
+            "surrogate constructor must keep discriminant text"
+        );
+        assert!(
+            PlanError::outside_line(0, 99, 4).message.contains("outside line 0"),
+            "outside-line constructor must keep discriminant text"
+        );
+        assert_eq!(PlanError::reversed_range(0).message, "ranges[0] ends before it starts");
+        assert_eq!(PlanError::duplicate_range(1, 0).message, "ranges[1] duplicates ranges[0]");
+        assert_eq!(PlanError::overlapping_ranges(1, 0).message, "ranges[1] overlaps ranges[0]");
+    }
+
+    #[test]
+    fn byte_offset_observes_outside_surrogate_and_past_end(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let source = "a🦀b\n";
+        let geometry = SourceGeometry::new(source);
+        let outside = geometry
+            .byte_offset(source, 9, 0)
+            .err()
+            .ok_or("outside-document byte_offset succeeded")?;
+        assert_eq!(outside.reason, "invalid_position");
+        assert_eq!(outside.message, "line 9 is outside the current document");
+        let surrogate = geometry
+            .byte_offset(source, 0, 2)
+            .err()
+            .ok_or("surrogate-splitting byte_offset succeeded")?;
+        assert_eq!(surrogate.reason, "invalid_position");
+        assert!(surrogate.message.contains("splits a surrogate pair"));
+        let past =
+            geometry.byte_offset(source, 0, 99).err().ok_or("past-end byte_offset succeeded")?;
+        assert_eq!(past.reason, "invalid_position");
+        assert!(past.message.contains("outside line 0"));
+        assert_eq!(geometry.byte_offset(source, 0, 0)?, 0);
+        assert_eq!(geometry.byte_offset(source, 0, 1)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn plan_errors_distinguish_invalid_input_from_contract_failures(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let invalid = PlanError::new("invalid_position", "outside document");
         assert_eq!(invalid.json_rpc_code(), -32602);
         assert_eq!(invalid.error_kind(), "invalid_multi_range_plan");
