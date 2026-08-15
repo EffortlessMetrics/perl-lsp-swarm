@@ -5,6 +5,7 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use std::io;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use serde_json::Value;
