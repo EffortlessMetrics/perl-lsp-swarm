@@ -290,12 +290,13 @@ jobs:
             exit 1
           fi
 
-          while read -r asset checksum; do
-            if ! grep -qF "$checksum" "$output"; then
-              printf '::error::Formula is missing the verified checksum for %s\n' "$asset"
-              exit 1
-            fi
-          done < "$verified_checksums"
+          # Bind each verified digest to the stanza that actually ships it. A
+          # bare "does this digest appear somewhere" check passes a formula with
+          # the macOS and Linux digests swapped, which would hand users a
+          # valid-looking checksum for the wrong archive.
+          python3 scripts/ci/verify_homebrew_formula_digests.py \
+            --formula "$output" \
+            --manifest "$verified_checksums"
 
           # Published on the job-output channel so `publish` can content-bind the
           # artifact it downloads. Computed after every envelope and digest check
