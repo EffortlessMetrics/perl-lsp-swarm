@@ -102,8 +102,13 @@ fn parse_panic_site_old_style(rest: &str) -> Option<String> {
 /// Returns `true` for commands whose first word-token is `cargo` and second is `test`,
 /// ignoring leading whitespace and path prefixes.
 pub fn is_cargo_test_command(command: &str) -> bool {
-    let mut tokens = command.split_whitespace();
+    // Gate commands may chain setup steps ahead of the test invocation (for
+    // example `cargo build -p perllsp --locked && cargo test ...`). The test
+    // output whose failures must be extracted comes from the final segment,
+    // so recognition applies to the last `&&`-separated segment.
+    let final_segment = command.split("&&").last().unwrap_or("").trim();
+    let mut tokens = final_segment.split_whitespace();
     let first = tokens.next().unwrap_or("");
-    let is_cargo = first == "cargo" || first.ends_with("/cargo") || first.ends_with("\\cargo");
+    let is_cargo = first == "cargo" || first.ends_with("/cargo") || first.contains("\\cargo");
     is_cargo && tokens.next().is_some_and(|t| t == "test")
 }

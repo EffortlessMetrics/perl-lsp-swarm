@@ -86,6 +86,7 @@ Run in order for a release. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-wor
 | `check_features_invariants.py` | Validate features.toml is internally consistent |
 | `check_release_history.sh` | Check release history for consistency |
 | `validate-release-scope.py` | Validate the release-admission schema and cross-field invariants |
+| `validate_public_release_claims.py` | Validate candidate-bound public-beta claim status, authority, context, and limitations |
 | `generate-badges.sh` | Regenerate README status badges |
 | `render-docs.sh` | Build the documentation site |
 | `verify-docs-rs.sh` | Verify docs.rs links are valid |

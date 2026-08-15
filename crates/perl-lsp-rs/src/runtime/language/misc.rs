@@ -31,6 +31,11 @@ use perl_parser_core::source_file::is_perl_source_uri;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 mod debug_launch;
 mod inline_values;
 mod live_provider_trace;
@@ -427,12 +432,16 @@ impl LspServer {
                 None
             };
 
-            let documents = self.documents_guard();
-            let doc = self.get_document(&documents, uri).ok_or_else(|| JsonRpcError {
-                code: INVALID_REQUEST,
-                message: format!("Document not open: {}", uri),
-                data: None,
-            })?;
+            // Clone the current document snapshot and release the mutex before
+            // parameter-hint resolution can query the workspace index.
+            let doc = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned().ok_or_else(|| JsonRpcError {
+                    code: INVALID_REQUEST,
+                    message: format!("Document not open: {}", uri),
+                    data: None,
+                })?
+            };
             let parsed = doc.current_parsed();
             if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                 let mut hints = Vec::new();
@@ -466,7 +475,7 @@ impl LspServer {
 
                     hints.extend(crate::inlay_hints::parameter_hints_with_resolver(
                         ast,
-                        &|off| self.offset_to_pos16(doc, off),
+                        &|off| self.offset_to_pos16(&doc, off),
                         range,
                         Some(&ws_resolver),
                     ));
@@ -474,7 +483,7 @@ impl LspServer {
                 if type_hints {
                     hints.extend(crate::inlay_hints::trivial_type_hints(
                         ast,
-                        &|off| self.offset_to_pos16(doc, off),
+                        &|off| self.offset_to_pos16(&doc, off),
                         range,
                     ));
                 }
@@ -593,15 +602,13 @@ impl LspServer {
                 .map(|props| props.contains("label.location"))
                 .unwrap_or(false);
 
-            if hint.get("labelDetails").is_none() && kind == 2 && client_supports_label_location {
-                if let Some(label_location) = self.resolve_hint_label_location(&hint) {
-                    if let Some(obj) = hint.as_object_mut() {
-                        obj.insert(
-                            "labelDetails".to_string(),
-                            json!({ "location": label_location }),
-                        );
-                    }
-                }
+            if hint.get("labelDetails").is_none()
+                && kind == 2
+                && client_supports_label_location
+                && let Some(label_location) = self.resolve_hint_label_location(&hint)
+                && let Some(obj) = hint.as_object_mut()
+            {
+                obj.insert("labelDetails".to_string(), json!({ "location": label_location }));
             }
 
             Ok(Some(hint))
@@ -740,7 +747,7 @@ impl LspServer {
                 let deadline = code_lens_resolve_deadline();
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    let provider = CodeLensProvider::with_source(doc.text.clone())
+                    let provider = CodeLensProvider::with_source(doc.text_arc.to_string())
                         .with_file_path(uri.to_string());
                     let mut lenses = provider.extract(ast);
 
@@ -845,7 +852,11 @@ impl LspServer {
         deadline: Duration,
     ) -> usize {
         #[cfg(feature = "workspace")]
-        let index_count = self.coordinator().map(|coord| coord.index().count_usages(symbol_name));
+        let index_count = if self.workspace_index_stale_for_any_open_document() {
+            None
+        } else {
+            self.coordinator().map(|coord| coord.index().count_usages(symbol_name))
+        };
         #[cfg(not(feature = "workspace"))]
         let index_count: Option<usize> = None;
 
@@ -944,7 +955,7 @@ impl LspServer {
             let text = {
                 let documents = self.documents_guard();
                 match self.get_document(&documents, uri) {
-                    Some(doc) => doc.text.clone(),
+                    Some(doc) => doc.text_arc.to_string(),
                     None => {
                         return Ok(Some(json!({ "items": [] })));
                     }
@@ -959,54 +970,48 @@ impl LspServer {
                 let a = &cfg.ai_completion;
                 (a.enabled, a.fallback, a.max_output_tokens, a.timeout_ms)
             };
-            if ai_enabled {
-                if let Some(context) = provider.prepare_context(&text, line, character) {
-                    let backend_result = self.try_ai_inline_completion(
-                        &context,
-                        ai_max_output_tokens,
-                        ai_timeout_ms,
-                    );
-                    match backend_result {
-                        Ok(ref items) if !items.is_empty() => {
-                            let list = perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+            if ai_enabled && let Some(context) = provider.prepare_context(&text, line, character) {
+                let backend_result =
+                    self.try_ai_inline_completion(&context, ai_max_output_tokens, ai_timeout_ms);
+                match backend_result {
+                    Ok(ref items) if !items.is_empty() => {
+                        let list =
+                            perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
                                 items: items.clone(),
                             };
-                            let list = provider.apply_replacement_ranges_for_context(
-                                list, &context, line, character,
-                            );
-                            let list =
-                                provider.filter_parse_safe_items(list, &text, line, character);
-                            let list = constrain_inline_completions_to_selected_info(
-                                list,
-                                selected_completion.as_ref(),
-                                line,
-                                character,
-                            );
-                            let list = apply_inline_completion_trigger_policy(list, trigger_kind);
-                            if !list.items.is_empty() || !ai_fallback {
-                                return Ok(Some(serde_json::to_value(list).map_err(|e| {
-                                    crate::protocol::internal_error(&format!(
-                                        "Failed to serialize inline completions: {}",
-                                        e
-                                    ))
-                                })?));
-                            }
+                        let list = provider
+                            .apply_replacement_ranges_for_context(list, &context, line, character);
+                        let list = provider.filter_parse_safe_items(list, &text, line, character);
+                        let list = constrain_inline_completions_to_selected_info(
+                            list,
+                            selected_completion.as_ref(),
+                            line,
+                            character,
+                        );
+                        let list = apply_inline_completion_trigger_policy(list, trigger_kind);
+                        if !list.items.is_empty() || !ai_fallback {
+                            return Ok(Some(serde_json::to_value(list).map_err(|e| {
+                                crate::protocol::internal_error(&format!(
+                                    "Failed to serialize inline completions: {}",
+                                    e
+                                ))
+                            })?));
                         }
-                        Err(ref e) => {
-                            if matches!(e, BackendError::Auth(_)) {
-                                self.notify_ai_auth_failure();
-                            }
-                            tracing::debug!("AI inline completion failed: {}", e);
-                            if !ai_fallback {
-                                return Ok(Some(json!({ "items": [] })));
-                            }
-                            // Fall through to deterministic
+                    }
+                    Err(ref e) => {
+                        if matches!(e, BackendError::Auth(_)) {
+                            self.notify_ai_auth_failure();
                         }
-                        _ => {
-                            // Ok(empty) — fall through to deterministic if fallback enabled
-                            if !ai_fallback {
-                                return Ok(Some(json!({ "items": [] })));
-                            }
+                        tracing::debug!("AI inline completion failed: {}", e);
+                        if !ai_fallback {
+                            return Ok(Some(json!({ "items": [] })));
+                        }
+                        // Fall through to deterministic
+                    }
+                    _ => {
+                        // Ok(empty) — fall through to deterministic if fallback enabled
+                        if !ai_fallback {
+                            return Ok(Some(json!({ "items": [] })));
                         }
                     }
                 }
@@ -1141,10 +1146,10 @@ impl LspServer {
                 if !is_inline_workspace_module_symbol(&symbol) {
                     continue;
                 }
-                if let Some(ref context) = inc_context {
-                    if !context.symbol_uri_reachable(&symbol.uri) {
-                        continue;
-                    }
+                if let Some(ref context) = inc_context
+                    && !context.symbol_uri_reachable(&symbol.uri)
+                {
+                    continue;
                 }
 
                 let module_name = inline_workspace_module_name(&symbol);
@@ -1516,7 +1521,7 @@ impl LspServer {
             if let Some(doc) = self.get_document(&documents, uri) {
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                    let runner = TestRunner::new(doc.text.clone(), uri.to_string());
+                    let runner = TestRunner::new(doc.text_arc.to_string(), uri.to_string());
                     let tests = runner.discover_tests(ast);
 
                     // Convert test items to JSON
@@ -1571,7 +1576,7 @@ impl LspServer {
 
                     tracing::debug!(count = test_items.len(), "Found test items");
 
-                    return Ok(Some(json!(test_items)));
+                    return Ok(Some(to_json_array(&test_items)));
                 }
             }
         }
@@ -1621,12 +1626,11 @@ impl LspServer {
             {
                 let folders = self.workspace_folders.lock();
                 for folder in folders.iter() {
-                    if let Ok(parsed) = url::Url::parse(&folder.uri) {
-                        if let Ok(path) = parsed.to_file_path() {
-                            if !workspace_roots.contains(&path) {
-                                workspace_roots.push(path);
-                            }
-                        }
+                    if let Ok(parsed) = url::Url::parse(&folder.uri)
+                        && let Ok(path) = parsed.to_file_path()
+                        && !workspace_roots.contains(&path)
+                    {
+                        workspace_roots.push(path);
                     }
                 }
             }
@@ -1951,19 +1955,19 @@ impl LspServer {
     pub(crate) fn workspace_roots(&self) -> Vec<url::Url> {
         let mut results = Vec::new();
 
-        if let Some(ref path) = *self.root_path.lock() {
-            if let Ok(url) = url::Url::from_file_path(path) {
-                results.push(url);
-            }
+        if let Some(ref path) = *self.root_path.lock()
+            && let Ok(url) = url::Url::from_file_path(path)
+        {
+            results.push(url);
         }
 
         {
             let folders = self.workspace_folders.lock();
             for folder in folders.iter() {
-                if let Ok(parsed) = url::Url::parse(&folder.uri) {
-                    if !results.contains(&parsed) {
-                        results.push(parsed);
-                    }
+                if let Ok(parsed) = url::Url::parse(&folder.uri)
+                    && !results.contains(&parsed)
+                {
+                    results.push(parsed);
                 }
             }
         }
@@ -2474,5 +2478,88 @@ mod tests {
             err.message
         );
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn code_lens_skips_workspace_index_tier_when_open_document_index_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let source_uri = "file:///workspace/stale_code_lens_source.pl";
+        let caller_uri = "file:///workspace/stale_code_lens_caller.pl";
+        let source_text = "package StaleCount::Source;\nsub count_me { return 1; }\n1;\n";
+        let caller_v1 = "package StaleCount::Caller;\nsub a { count_me(); count_me(); }\n1;\n";
+        let caller_v2 =
+            "package StaleCount::Caller;\nsub a { count_me(); count_me(); count_me(); }\n1;\n";
+
+        server.test_apply_did_open(source_uri, source_text, 1)?;
+        server.test_apply_did_open(caller_uri, caller_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(caller_uri, caller_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let fresh_title = resolve_code_lens_reference_title(&server, source_uri, "count_me")?;
+        assert_eq!(
+            fresh_title, "2 references",
+            "fresh workspace index should supply tier-1 count_usages before the edit: {fresh_title}"
+        );
+
+        server
+            .test_replace_document_without_index(caller_uri, caller_v2, 2)
+            .map_err(std::io::Error::other)?;
+
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale_title = resolve_code_lens_reference_title(&server, source_uri, "count_me")?;
+        assert_ne!(
+            stale_title, "2 references",
+            "stale workspace index must not supply tier-1 count_usages; got stale index count: \
+             {stale_title}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    fn resolve_code_lens_reference_title(
+        server: &LspServer,
+        uri: &str,
+        symbol_name: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let lenses = server
+            .handle_code_lens(Some(json!({
+                "textDocument": { "uri": uri }
+            })))?
+            .ok_or("expected code lens response")?;
+        let lenses = lenses.as_array().ok_or("expected code lens array")?;
+        let lens = lenses
+            .iter()
+            .find(|lens| {
+                lens.get("data").and_then(|d| d.get("name")).and_then(|n| n.as_str())
+                    == Some(symbol_name)
+            })
+            .ok_or_else(|| format!("expected {symbol_name} code lens"))?;
+
+        let resolved = if lens.get("command").is_some() {
+            lens.clone()
+        } else {
+            server
+                .handle_code_lens_resolve(Some(lens.clone()))?
+                .ok_or("expected resolved code lens")?
+        };
+
+        resolved
+            .get("command")
+            .and_then(|c| c.get("title"))
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| "expected resolved command title".into())
     }
 }

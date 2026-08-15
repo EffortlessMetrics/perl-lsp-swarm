@@ -50,6 +50,69 @@ pub(crate) enum OutboundMessage {
     Request { id: ServerRequestId, method: String, params: Value },
 }
 
+/// Trait abstracting the outbound message channel.
+///
+/// This trait decouples LSP handlers from the concrete `OutboundSender`,
+/// enabling unit tests to use a mock sink without constructing the full
+/// 60-field `LspServer`. Production code uses `OutboundSender`; tests
+/// use `RecordingSink` or their own implementations (#5015 PR-1).
+///
+/// The trait intentionally mirrors the three `send_*` methods on
+/// `OutboundSender` so the production impl is a zero-cost passthrough.
+pub(crate) trait OutboundSink {
+    /// Send a JSON-RPC response to the client.
+    fn send_response(&self, response: JsonRpcResponse) -> io::Result<()>;
+
+    /// Send a JSON-RPC notification to the client.
+    fn send_notification(&self, method: &str, params: Value) -> io::Result<()>;
+
+    /// Send a server→client JSON-RPC request.
+    fn send_request(&self, id: ServerRequestId, method: &str, params: Value) -> io::Result<()>;
+}
+
+/// Recording sink for tests — captures all sent messages for assertions.
+#[cfg(test)]
+pub(crate) struct RecordingSink {
+    pub messages: std::sync::Mutex<Vec<OutboundMessage>>,
+}
+
+#[cfg(test)]
+impl RecordingSink {
+    pub(crate) fn new() -> Self {
+        Self { messages: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    /// Drain and return all recorded messages.
+    pub(crate) fn drain(&self) -> Vec<OutboundMessage> {
+        std::mem::take(&mut *self.messages.lock().unwrap())
+    }
+}
+
+#[cfg(test)]
+impl OutboundSink for RecordingSink {
+    fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
+        self.messages.lock().unwrap().push(OutboundMessage::Response(response));
+        Ok(())
+    }
+
+    fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
+        self.messages
+            .lock()
+            .unwrap()
+            .push(OutboundMessage::Notification { method: method.to_string(), params });
+        Ok(())
+    }
+
+    fn send_request(&self, id: ServerRequestId, method: &str, params: Value) -> io::Result<()> {
+        self.messages.lock().unwrap().push(OutboundMessage::Request {
+            id,
+            method: method.to_string(),
+            params,
+        });
+        Ok(())
+    }
+}
+
 /// Cloneable handle for sending outbound messages.
 ///
 /// Multiple tasks/threads can hold a clone and send concurrently;
@@ -99,6 +162,20 @@ impl OutboundSender {
         self.tx
             .try_send(OutboundMessage::Request { id, method: method.to_string(), params })
             .map_err(map_try_send_error)
+    }
+}
+
+impl OutboundSink for OutboundSender {
+    fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
+        OutboundSender::send_response(self, response)
+    }
+
+    fn send_notification(&self, method: &str, params: Value) -> io::Result<()> {
+        OutboundSender::send_notification(self, method, params)
+    }
+
+    fn send_request(&self, id: ServerRequestId, method: &str, params: Value) -> io::Result<()> {
+        OutboundSender::send_request(self, id, method, params)
     }
 }
 
@@ -428,5 +505,47 @@ mod tests {
             OUTBOUND_CAPACITY, 64,
             "OUTBOUND_CAPACITY should match the inbound scheduler QUEUE_CAPACITY (64)"
         );
+    }
+
+    /// Verify that a handler using &dyn OutboundSink can send a notification
+    /// and a RecordingSink captures it (#5015 PR-2).
+    ///
+    /// This test demonstrates the migration pattern: a handler function
+    /// accepts `&dyn OutboundSink` instead of `&LspServer`, enabling
+    /// unit testing without constructing the full server.
+    #[test]
+    fn outbound_sink_trait_works_with_recording_sink() {
+        fn send_diagnostics_notification(sink: &dyn OutboundSink, uri: &str) -> io::Result<()> {
+            sink.send_notification(
+                "textDocument/publishDiagnostics",
+                json!({ "uri": uri, "diagnostics": [] }),
+            )
+        }
+
+        let sink = RecordingSink::new();
+        send_diagnostics_notification(&sink, "file:///test.pl").unwrap();
+
+        let messages = sink.drain();
+        assert_eq!(messages.len(), 1, "exactly one message should be recorded");
+        match &messages[0] {
+            OutboundMessage::Notification { method, params } => {
+                assert_eq!(method, "textDocument/publishDiagnostics");
+                assert_eq!(params["uri"], "file:///test.pl");
+            }
+            _ => panic!("expected Notification, got something else"),
+        }
+    }
+
+    /// Verify that OutboundSender also satisfies the OutboundSink trait,
+    /// so production code and test code share the same interface (#5015 PR-2).
+    #[test]
+    fn outbound_sender_satisfies_sink_trait() {
+        fn accept_sink(sink: &dyn OutboundSink) -> io::Result<()> {
+            sink.send_notification("test/method", json!({}))
+        }
+
+        let (sender, _handle) = spawn_writer(Box::new(std::io::sink()));
+        // This compiles only if OutboundSender implements OutboundSink.
+        accept_sink(&sender).unwrap();
     }
 }

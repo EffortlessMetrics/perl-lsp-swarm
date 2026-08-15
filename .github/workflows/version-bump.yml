@@ -50,13 +50,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
         with:
           toolchain: stable
 
@@ -83,19 +83,20 @@ jobs:
       - name: Resolve release target
         id: resolved-version
         env:
-          INPUT_VERSION: ${{ github.event.inputs.version }}
-          INPUT_BUMP_TYPE: ${{ github.event.inputs.bump_type }}
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+          BUMP_TYPE_INPUT: ${{ github.event.inputs.bump_type }}
         run: |
-          VERSION="$INPUT_VERSION"
-          BUMP_TYPE="$INPUT_BUMP_TYPE"
+          set -euo pipefail
+          VERSION="$VERSION_INPUT"
+          BUMP_TYPE="$BUMP_TYPE_INPUT"
 
-          if [ -n "${VERSION}" ]; then
+          if [ -n "$VERSION" ]; then
             if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-              echo "::error::Invalid version format: ${VERSION}"
+              printf '::error::Invalid version format: %s\n' "$VERSION"
               exit 1
             fi
-            echo "mode=explicit" >> "$GITHUB_OUTPUT"
-            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            printf 'mode=explicit\n' >> "$GITHUB_OUTPUT"
+            printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -119,51 +120,54 @@ jobs:
             major) VERSION="$((MAJOR+1)).0.0" ;;
             minor) VERSION="${MAJOR}.$((MINOR+1)).0" ;;
             patch) VERSION="${MAJOR}.${MINOR}.$((PATCH+1))" ;;
-            *) echo "::error::Unknown bump_type: ${BUMP_TYPE}"; exit 1 ;;
+            *) printf '::error::Unknown bump_type: %s\n' "$BUMP_TYPE"; exit 1 ;;
           esac
 
-          echo "mode=auto" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Computed version: ${CURRENT} --${BUMP_TYPE}--> ${VERSION}"
+          printf 'mode=auto\n' >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'Computed version: %s --%s--> %s\n' "$CURRENT" "$BUMP_TYPE" "$VERSION"
 
       - name: Bump workspace version
         id: bump-version
+        env:
+          VERSION: ${{ steps.resolved-version.outputs.version }}
         run: |
-          VERSION="${{ steps.resolved-version.outputs.version }}"
-          echo "Bumping workspace to ${VERSION} via cargo xtask bump-version..."
-          cargo xtask bump-version "${VERSION}"
+          set -euo pipefail
+          printf 'Bumping workspace to %s via cargo xtask bump-version...\n' "$VERSION"
+          cargo xtask bump-version "$VERSION"
           # Regenerate Cargo.lock to reflect the new [workspace.package] version.
           cargo update --workspace --quiet
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Bump complete: ${VERSION}"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'Bump complete: %s\n' "$VERSION"
 
       - name: Assert bump completeness
+        env:
+          VERSION: ${{ steps.bump-version.outputs.version }}
         run: |
-          VERSION="${{ steps.bump-version.outputs.version }}"
+          set -euo pipefail
 
           # 1. Verify [workspace.package] version in root Cargo.toml.
           CARGO_VER=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
           if [ "$CARGO_VER" != "$VERSION" ]; then
-            echo "::error::[workspace.package] version is '${CARGO_VER}', expected '${VERSION}'"
+            printf "::error::[workspace.package] version is '%s', expected '%s'\n" "$CARGO_VER" "$VERSION"
             exit 1
           fi
 
           # 2. Verify RELEASE_HISTORY.md has a ledger row for the new version.
           if ! grep -qF "| [${VERSION}]" RELEASE_HISTORY.md; then
-            echo "::error::RELEASE_HISTORY.md is missing ledger row for ${VERSION}"
+            printf '::error::RELEASE_HISTORY.md is missing ledger row for %s\n' "$VERSION"
             exit 1
           fi
 
-          echo "Assertion passed: [workspace.package]=${VERSION}, RELEASE_HISTORY.md updated"
+          printf 'Assertion passed: [workspace.package]=%s, RELEASE_HISTORY.md updated\n' "$VERSION"
 
       - name: Generate changelog
         id: changelog
         env:
-          INPUT_PRERELEASE: ${{ github.event.inputs.prerelease }}
+          VERSION: ${{ steps.bump-version.outputs.version }}
+          PRERELEASE: ${{ github.event.inputs.prerelease }}
         run: |
-          VERSION="${{ steps.bump-version.outputs.version }}"
-          PRERELEASE="$INPUT_PRERELEASE"
-
+          set -euo pipefail
           git cliff --tag "v${VERSION}" --config cliff.toml > CHANGELOG.new.md
 
           if [ -f CHANGELOG.md ]; then
@@ -175,25 +179,30 @@ jobs:
 
           rm -f CHANGELOG.new.md
 
-          if [ "${PRERELEASE}" = "true" ]; then
-            echo "Release ${VERSION} changelog generated (prerelease)."
+          if [ "$PRERELEASE" = "true" ]; then
+            printf 'Release %s changelog generated (prerelease).\n' "$VERSION"
           else
-            echo "Changelog generated for v${VERSION}"
+            printf 'Changelog generated for v%s\n' "$VERSION"
           fi
 
       - name: Create version branch
         id: branch
+        env:
+          VERSION: ${{ steps.bump-version.outputs.version }}
         run: |
-          VERSION="${{ steps.bump-version.outputs.version }}"
+          set -euo pipefail
           BRANCH_NAME="release/v${VERSION}"
-          echo "branch=${BRANCH_NAME}" >> "$GITHUB_OUTPUT"
-          git checkout -b "${BRANCH_NAME}"
+          printf 'branch=%s\n' "$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH_NAME"
 
       - name: Commit changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump-version.outputs.version }}
+          BRANCH_NAME: ${{ steps.branch.outputs.branch }}
         run: |
-          VERSION="${{ steps.bump-version.outputs.version }}"
-          BRANCH_NAME="${{ steps.branch.outputs.branch }}"
-
+          set -euo pipefail
+          gh auth setup-git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -220,10 +229,10 @@ jobs:
             > /tmp/release-commit-message.txt
           git commit -F /tmp/release-commit-message.txt
 
-          git push origin "${BRANCH_NAME}"
+          git push origin "$BRANCH_NAME"
 
       - name: Create pull request
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ steps.branch.outputs.branch }}
@@ -258,12 +267,17 @@ jobs:
           draft: false
 
       - name: Summary
+        env:
+          VERSION: ${{ steps.bump-version.outputs.version }}
+          BRANCH_NAME: ${{ steps.branch.outputs.branch }}
         run: |
-          echo "## Version Bump Complete" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version**: v${{ steps.bump-version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Branch**: ${{ steps.branch.outputs.branch }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **PR**: Created" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Changelog**: Generated" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **RELEASE_HISTORY.md**: Ledger row appended" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Release notes scaffold**: docs/releases/v${{ steps.bump-version.outputs.version }}.md" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Version Bump Complete"
+            echo ""
+            printf -- '- **Version**: v%s\n' "$VERSION"
+            printf -- '- **Branch**: %s\n' "$BRANCH_NAME"
+            echo "- **PR**: Created"
+            echo "- **Changelog**: Generated"
+            echo "- **RELEASE_HISTORY.md**: Ledger row appended"
+            printf -- '- **Release notes scaffold**: docs/releases/v%s.md\n' "$VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -2,9 +2,13 @@
 <!-- Design Document: Statement Tracker Enhancement for Heredocs in Blocks -->
 <!-- Issue: #182 -->
 <!-- Author: Claude Code (2025-11-12) -->
-<!-- Status: 100% IMPLEMENTED - ALL COMPLETE! -->
+<!-- Status: ARCHIVED DESIGN - the implementation described here was removed from the current workspace. -->
 
-> **IMPLEMENTATION COMPLETE** (2025-11-15): Core architecture is **100% implemented**.
+> **Archived design:** This document records the historical heredoc statement-tracking proposal for issue #182. The described tracker and heredoc parser modules are not current source surfaces; the legacy implementation is retained only under [`archive/`](../../archive/). Do not use this document as evidence that the design is implemented on current `main`.
+
+> **Historical status (2025-11-15):** The original design reported its core
+> architecture as complete at that time. That status does not describe current
+> `main`; see the archive notice above.
 
 ## Implementation Status
 
@@ -24,7 +28,7 @@
 
 ## Executive Summary
 
-**Problem**: The current statement tracker (`crates/tree-sitter-perl-rs/src/statement_tracker.rs`) doesn't correctly handle heredocs declared inside code blocks (if, while, sub, etc.). This causes:
+**Historical problem**: The legacy statement tracker did not correctly handle heredocs declared inside code blocks (if, while, sub, etc.). This caused:
 1. Incorrect boundary detection for heredoc content
 2. Failed content collection when heredocs span beyond block boundaries
 3. AST integrity issues with heredoc placement
@@ -37,7 +41,7 @@
 
 ## Current Architecture Analysis
 
-### Existing Statement Tracker (`statement_tracker.rs`)
+### Historical Statement Tracker
 
 **Current Capabilities** ✅:
 - Bracket balancing (parentheses, square brackets, curly braces)
@@ -74,7 +78,7 @@ Phase 3: Integration
 
 **Current statement tracking integration**:
 ```rust
-// heredoc_parser.rs:95
+// historical heredoc parser: statement_end_line calculation
 let statement_end_line = find_statement_end_line(self.input, decl.declaration_line);
 let content_start_line = statement_end_line + 1;
 ```
@@ -295,7 +299,7 @@ impl StatementTracker {
 
 ### Integration with Heredoc Parser
 
-#### Modified heredoc_parser.rs
+#### Modified historical heredoc parser
 
 ```rust
 // Phase 1: Heredoc Detection Scanner
@@ -415,7 +419,7 @@ The block boundaries will be used to correctly place heredoc nodes in the AST:
 
 ## Test Strategy
 
-### Unit Tests (statement_tracker.rs)
+### Unit Tests (historical statement tracker)
 
 ```rust
 #[test]
@@ -476,7 +480,7 @@ EOF
 }
 ```
 
-### Integration Tests (heredoc_parser.rs)
+### Integration Tests (historical heredoc parser)
 
 ```rust
 #[test]
@@ -526,7 +530,7 @@ Add test cases to perl-corpus for:
 
 ### Phase 4: Documentation & Polish (Day 4)
 
-1. Update heredoc_parser.rs documentation
+1. Update the historical heredoc-parser documentation
 2. Add examples to docs/explanation/BUILTIN_FUNCTION_PARSING.md
 3. Update CLAUDE.md if needed
 4. Close Issue #182
@@ -588,7 +592,7 @@ All of these must pass before Issue #182 is considered complete:
 - [ ] AST integrity maintained (heredocs in correct block node)
 - [ ] All existing heredoc tests still pass
 - [ ] No performance regression (benchmarks within 5%)
-- [ ] Documentation updated in `heredoc_parser.rs`
+- [ ] Documentation updated in the historical heredoc-parser design
 - [ ] Integration with Issue #183 declarations confirmed
 - [ ] Integration with Issue #184 collector confirmed
 - [ ] Corpus tests expanded with 20+ new heredoc-in-block cases
@@ -602,7 +606,7 @@ All of these must pass before Issue #182 is considered complete:
 - [ ] Approve approach and API surface
 
 ### Implementation
-- [ ] Add new data structures to `statement_tracker.rs`
+- [ ] Add new data structures to the historical statement-tracker design
 - [ ] Implement block tracking methods
 - [ ] Write unit tests for block tracking
 - [ ] Modify `HeredocScanner` integration
@@ -636,8 +640,8 @@ Beyond Issue #182, the enhanced statement tracker could enable:
 - **Issue #182**: https://github.com/EffortlessMetrics/perl-lsp/issues/182
 - **Issue #183**: Heredoc declaration parsing (dependency)
 - **Issue #184**: Heredoc content collector (dependency)
-- **Current Implementation**: `crates/tree-sitter-perl-rs/src/statement_tracker.rs`
-- **Heredoc Parser**: `crates/tree-sitter-perl-rs/src/heredoc_parser.rs`
+- **Historical implementation**: removed from the current workspace; see the archive notice above
+- **Historical heredoc parser**: removed from the current workspace; see the archive notice above
 - **Sprint A Plan**: Days 6-8 for statement tracker implementation
 
 ---

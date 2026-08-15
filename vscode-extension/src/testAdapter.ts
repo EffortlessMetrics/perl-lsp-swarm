@@ -1,7 +1,309 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn } from 'child_process';
+import { spawn, type SpawnOptions } from 'child_process';
+
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
+
+function killWindowsProcessTree(pid: number | undefined): Promise<void> {
+  if (process.platform !== 'win32' || pid === undefined) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      shell: false,
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        killer.kill();
+      } catch {
+        // taskkill may already have exited or been torn down with its parent.
+      }
+      resolve();
+    }, WINDOWS_TREE_KILL_TIMEOUT_MS);
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    killer.once('error', finish);
+    killer.once('close', finish);
+  });
+}
+
+export interface ProveExecutionLimits {
+  timeoutMs: number;
+  maxOutputBytes: number;
+  terminationGraceMs: number;
+}
+
+export const DEFAULT_PROVE_EXECUTION_LIMITS: Readonly<ProveExecutionLimits> = {
+  timeoutMs: 120_000,
+  maxOutputBytes: 1_048_576,
+  terminationGraceMs: 1_000,
+};
+
+export type BoundedProcessOutcome =
+  | 'completed'
+  | 'timed_out'
+  | 'output_limit'
+  | 'cancelled'
+  | 'termination_failed'
+  | 'spawn_error';
+
+export interface BoundedProcessResult {
+  outcome: BoundedProcessOutcome;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  capturedOutputBytes: number;
+  diagnostic?: string;
+}
+
+export interface BoundedProcessOptions extends Omit<SpawnOptions, 'signal' | 'stdio'> {
+  signal?: AbortSignal;
+  timeoutMs: number;
+  maxOutputBytes: number;
+  terminationGraceMs: number;
+  /**
+   * Bound after SIGKILL / tree-kill escalation. If the child never emits
+   * `close` within this window, the probe finishes as `termination_failed`
+   * instead of hanging the host process.
+   */
+  terminationWatchdogMs?: number;
+  /**
+   * Test seam for kill delivery. Return `false` when the signal could not be
+   * delivered; production callers leave this unset and use `ChildProcess.kill`.
+   */
+  killProcess?: (proc: ReturnType<typeof spawn>, signal: NodeJS.Signals) => boolean;
+}
+
+/**
+ * Run an external process with one bounded output envelope and one termination
+ * path. The caller owns the user-facing mapping of the returned outcome.
+ */
+const DEFAULT_TERMINATION_WATCHDOG_MS = 5_000;
+
+export function runBoundedProcess(
+  command: string,
+  args: readonly string[],
+  options: BoundedProcessOptions,
+): Promise<BoundedProcessResult> {
+  return new Promise((resolve) => {
+    const {
+      signal,
+      timeoutMs,
+      maxOutputBytes,
+      terminationGraceMs,
+      terminationWatchdogMs = DEFAULT_TERMINATION_WATCHDOG_MS,
+      killProcess,
+      ...spawnOptions
+    } = options;
+    const proc = spawn(command, [...args], {
+      ...spawnOptions,
+      stdio: 'pipe',
+    });
+    let stdout = '';
+    let stderr = '';
+    let capturedOutputBytes = 0;
+    let termination:
+      | Exclude<BoundedProcessOutcome, 'completed' | 'spawn_error' | 'termination_failed'>
+      | undefined;
+    let settled = false;
+    let closed = false;
+    let graceTimer: NodeJS.Timeout | undefined;
+    let watchdogTimer: NodeJS.Timeout | undefined;
+    let treeKill: Promise<void> | undefined;
+    const timeout = setTimeout(() => requestTermination('timed_out'), timeoutMs);
+    const needsTreeKill = process.platform === 'win32' && spawnOptions.shell === true;
+
+    const deliverKill = (killSignal: NodeJS.Signals): boolean => {
+      if (killProcess) {
+        return killProcess(proc, killSignal);
+      }
+      try {
+        return proc.kill(killSignal);
+      } catch {
+        // The process may have exited between the guard and kill(). The close
+        // event remains the single completion path when it fires.
+        return false;
+      }
+    };
+
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      if (graceTimer !== undefined) {
+        clearTimeout(graceTimer);
+      }
+      if (watchdogTimer !== undefined) {
+        clearTimeout(watchdogTimer);
+      }
+      signal?.removeEventListener('abort', onAbort);
+    };
+
+    const finish = (
+      outcome: BoundedProcessOutcome,
+      exitCode: number | null,
+      signal: NodeJS.Signals | null,
+      diagnostic?: string,
+    ): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve({
+        outcome,
+        stdout,
+        stderr,
+        exitCode,
+        signal,
+        capturedOutputBytes,
+        ...(diagnostic === undefined ? {} : { diagnostic }),
+      });
+    };
+
+    const armTerminationWatchdog = (): void => {
+      if (watchdogTimer !== undefined || closed || settled) {
+        return;
+      }
+      watchdogTimer = setTimeout(() => {
+        if (closed || settled) {
+          return;
+        }
+        finish(
+          'termination_failed',
+          null,
+          null,
+          `Process did not exit within ${terminationWatchdogMs} ms after forced termination.`,
+        );
+      }, terminationWatchdogMs);
+    };
+
+    const requestTermination = (
+      reason: Exclude<BoundedProcessOutcome, 'completed' | 'spawn_error' | 'termination_failed'>,
+    ): void => {
+      if (termination !== undefined || closed) {
+        return;
+      }
+      termination = reason;
+      if (!needsTreeKill) {
+        deliverKill('SIGTERM');
+      }
+      graceTimer = setTimeout(() => {
+        if (closed) {
+          return;
+        }
+        if (needsTreeKill) {
+          treeKill = killWindowsProcessTree(proc.pid);
+          armTerminationWatchdog();
+          return;
+        }
+        deliverKill('SIGKILL');
+        armTerminationWatchdog();
+      }, terminationGraceMs);
+    };
+
+    const finishAfterTreeKill = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
+      const outcome = termination;
+      if (outcome === undefined) {
+        finish('completed', exitCode, signal);
+        return;
+      }
+      const detail = {
+        timed_out: `Process exceeded the ${timeoutMs} ms deadline.`,
+        output_limit: `Process output exceeded the ${maxOutputBytes}-byte capture limit.`,
+        cancelled: 'Process execution was cancelled.',
+      }[outcome];
+      void (treeKill ?? Promise.resolve()).then(() => finish(outcome, exitCode, signal, detail));
+    };
+
+    const onAbort = (): void => requestTermination('cancelled');
+    if (signal?.aborted) {
+      onAbort();
+    } else {
+      signal?.addEventListener('abort', onAbort, { once: true });
+    }
+
+    const appendOutput = (target: 'stdout' | 'stderr', chunk: Buffer): void => {
+      if (termination !== undefined || settled) {
+        return;
+      }
+      const remaining = maxOutputBytes - capturedOutputBytes;
+      if (chunk.byteLength > remaining) {
+        const bounded = remaining > 0 ? chunk.subarray(0, remaining).toString('utf8') : '';
+        if (target === 'stdout') {
+          stdout += bounded;
+        } else {
+          stderr += bounded;
+        }
+        capturedOutputBytes = maxOutputBytes;
+        requestTermination('output_limit');
+        return;
+      }
+      if (target === 'stdout') {
+        stdout += chunk.toString('utf8');
+      } else {
+        stderr += chunk.toString('utf8');
+      }
+      capturedOutputBytes += chunk.byteLength;
+    };
+
+    proc.stdout?.on('data', (chunk: Buffer) => appendOutput('stdout', chunk));
+    proc.stderr?.on('data', (chunk: Buffer) => appendOutput('stderr', chunk));
+    proc.on('error', (error: Error) => {
+      finish(
+        'spawn_error',
+        null,
+        null,
+        `Failed to run prove: ${error.message}. Is prove installed?`,
+      );
+    });
+    proc.on('close', (exitCode, signal) => {
+      closed = true;
+      if (termination === undefined) {
+        finish('completed', exitCode, signal);
+        return;
+      }
+      if (needsTreeKill && treeKill === undefined) {
+        treeKill = killWindowsProcessTree(proc.pid);
+      }
+      finishAfterTreeKill(exitCode, signal);
+    });
+  });
+}
+
+function configuredProveLimits(resource?: vscode.Uri): ProveExecutionLimits {
+  const config = vscode.workspace.getConfiguration('perl-lsp', resource);
+  const positive = (value: number | undefined, fallback: number): number =>
+    Number.isFinite(value) && value !== undefined && value > 0 ? Math.floor(value) : fallback;
+  return {
+    timeoutMs: positive(
+      config.get<number>('testAdapterTimeoutMs'),
+      DEFAULT_PROVE_EXECUTION_LIMITS.timeoutMs,
+    ),
+    maxOutputBytes: positive(
+      config.get<number>('testAdapterMaxOutputBytes'),
+      DEFAULT_PROVE_EXECUTION_LIMITS.maxOutputBytes,
+    ),
+    terminationGraceMs: positive(
+      config.get<number>('testAdapterTerminationGraceMs'),
+      DEFAULT_PROVE_EXECUTION_LIMITS.terminationGraceMs,
+    ),
+  };
+}
 
 /**
  * Perl Test Explorer integration.
@@ -242,92 +544,80 @@ export class PerlTestAdapter implements vscode.Disposable {
   ): Promise<void> {
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileItem.uri!);
     const cwd = workspaceFolder?.uri.fsPath ?? path.dirname(filePath);
+    const startTime = Date.now();
+    const {
+      command: proveCmd,
+      args: proveArgs,
+      shell: useShell,
+    } = resolveProveCommand(['-v', '--nocolor', filePath]);
+    const cancellation = new AbortController();
+    const killOnCancel = token.onCancellationRequested(() => cancellation.abort());
+    if (token.isCancellationRequested) {
+      cancellation.abort();
+    }
 
-    return new Promise<void>((resolve) => {
-      const startTime = Date.now();
-      const {
-        command: proveCmd,
-        args: proveArgs,
-        shell: useShell,
-      } = resolveProveCommand(['-v', '--nocolor', filePath]);
-      const proc = spawn(proveCmd, proveArgs, {
-        cwd,
-        env: { ...process.env, HARNESS_ACTIVE: '1' },
-        shell: useShell,
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data: Buffer) => {
-        stdout += data.toString();
-      });
-      proc.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString();
-      });
-
-      const killOnCancel = token.onCancellationRequested(() => {
-        proc.kill('SIGTERM');
-      });
-
-      proc.on('close', (code) => {
-        killOnCancel.dispose();
-        const duration = Date.now() - startTime;
-
-        const tapResults = parseTapOutput(stdout);
-        const subtestResults = parseSubtestResults(stdout);
-
-        // Map subtest results to test items
-        for (const st of subtests) {
-          const stName = st.label;
-          const result = subtestResults.get(stName);
-
-          if (result !== undefined) {
-            if (result.ok) {
-              run.passed(st, result.duration);
-            } else {
-              run.failed(
-                st,
-                new vscode.TestMessage(result.diagnostic || `Subtest "${stName}" failed`),
-                result.duration,
-              );
-            }
-          } else {
-            // Subtest was not in output -- mark skipped
-            run.skipped(st);
-          }
-        }
-
-        // File-level result
-        if (code === 0 && tapResults.failed === 0) {
-          run.passed(fileItem, duration);
-        } else {
-          const message = new vscode.TestMessage(
-            stderr.trim() ||
-              `${tapResults.failed} of ${tapResults.total} tests failed` +
-                (tapResults.bailOut ? ` (Bail out! ${tapResults.bailOut})` : ''),
-          );
-          if (fileItem.uri) {
-            message.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
-          }
-          run.failed(fileItem, message, duration);
-        }
-
-        resolve();
-      });
-
-      proc.on('error', (err: Error) => {
-        killOnCancel.dispose();
-        run.errored(
-          fileItem,
-          new vscode.TestMessage(`Failed to run prove: ${err.message}. Is prove installed?`),
-        );
-        for (const st of subtests) {
-          run.errored(st, new vscode.TestMessage('prove not available'));
-        }
-        resolve();
-      });
+    const result = await runBoundedProcess(proveCmd, proveArgs, {
+      cwd,
+      env: { ...process.env, HARNESS_ACTIVE: '1' },
+      shell: useShell,
+      signal: cancellation.signal,
+      ...configuredProveLimits(fileItem.uri),
     });
+    killOnCancel.dispose();
+
+    if (result.outcome !== 'completed') {
+      const message = new vscode.TestMessage(
+        result.diagnostic ?? 'The prove process ended before producing a complete result.',
+      );
+      if (fileItem.uri) {
+        message.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
+      }
+      run.errored(fileItem, message, Date.now() - startTime);
+      for (const st of subtests) {
+        run.errored(st, new vscode.TestMessage(message.message));
+      }
+      return;
+    }
+
+    const duration = Date.now() - startTime;
+    const tapResults = parseTapOutput(result.stdout);
+    const subtestResults = parseSubtestResults(result.stdout);
+
+    // Map subtest results to test items
+    for (const st of subtests) {
+      const stName = st.label;
+      const subtestResult = subtestResults.get(stName);
+
+      if (subtestResult !== undefined) {
+        if (subtestResult.ok) {
+          run.passed(st, subtestResult.duration);
+        } else {
+          run.failed(
+            st,
+            new vscode.TestMessage(subtestResult.diagnostic || `Subtest "${stName}" failed`),
+            subtestResult.duration,
+          );
+        }
+      } else {
+        // Subtest was not in output -- mark skipped
+        run.skipped(st);
+      }
+    }
+
+    // File-level result
+    if (result.exitCode === 0 && tapResults.failed === 0) {
+      run.passed(fileItem, duration);
+    } else {
+      const message = new vscode.TestMessage(
+        result.stderr.trim() ||
+          `${tapResults.failed} of ${tapResults.total} tests failed` +
+            (tapResults.bailOut ? ` (Bail out! ${tapResults.bailOut})` : ''),
+      );
+      if (fileItem.uri) {
+        message.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
+      }
+      run.failed(fileItem, message, duration);
+    }
   }
 
   // -- Public API -------------------------------------------------------

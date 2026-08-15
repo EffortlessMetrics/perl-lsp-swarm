@@ -2110,6 +2110,129 @@ print LOAD_CONST;
 }
 
 #[test]
+fn strict_subs_flags_missing_qualified_call_in_defined_package()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #3014: `Foo::baz()` where package Foo is declared in this file but `baz`
+    // is not a defined sub should produce UnresolvedQualifiedCall under strict.
+    let code = r#"
+use strict;
+package Foo;
+sub bar { 1 }
+
+package main;
+Foo::bar();
+Foo::baz();
+"#;
+    let issues = scope_issues_strict(code);
+
+    assert!(
+        !issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall) && i.variable_name == "Foo::bar"
+        }),
+        "Foo::bar() exists — should not be flagged"
+    );
+    assert!(
+        issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall) && i.variable_name == "Foo::baz"
+        }),
+        "Foo::baz() is missing and Foo is in-file — should be flagged under strict"
+    );
+    Ok(())
+}
+
+#[test]
+fn strict_subs_does_not_flag_external_package_qualified_call()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #3014 conservative: a package NOT declared in this file (e.g. loaded via
+    // `use`) must never produce a false-positive UnresolvedQualifiedCall.
+    let code = r#"
+use strict;
+use Some::External::Module;
+Some::External::Module::helper();
+"#;
+    let issues = scope_issues_strict(code);
+
+    assert!(
+        !issues.iter().any(|i| matches!(i.kind, IssueKind::UnresolvedQualifiedCall)),
+        "External packages must not be flagged — we cannot prove the sub is missing"
+    );
+    Ok(())
+}
+
+#[test]
+fn strict_subs_qualified_call_respects_nested_package() -> Result<(), Box<dyn std::error::Error>> {
+    // Nested package `Foo::Bar` declared in-file; `qux` missing.
+    let code = r#"
+use strict;
+package Foo::Bar {
+    sub qux { 1 }
+}
+package main;
+Foo::Bar::qux();
+Foo::Bar::missing();
+"#;
+    let issues = scope_issues_strict(code);
+
+    assert!(
+        !issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall)
+                && i.variable_name == "Foo::Bar::qux"
+        }),
+        "Foo::Bar::qux() exists — should not be flagged"
+    );
+    assert!(
+        issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall)
+                && i.variable_name == "Foo::Bar::missing"
+        }),
+        "Foo::Bar::missing() is absent — should be flagged"
+    );
+    Ok(())
+}
+
+#[test]
+fn no_strict_means_no_qualified_call_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
+    // Without `use strict`, package-qualified calls are never flagged.
+    let code = r#"
+package Foo;
+sub bar { 1 }
+package main;
+Foo::baz();
+"#;
+    let issues = scope_issues(code);
+
+    assert!(
+        !issues.iter().any(|i| matches!(i.kind, IssueKind::UnresolvedQualifiedCall)),
+        "Without strict, qualified calls should not be flagged"
+    );
+    Ok(())
+}
+
+#[test]
+fn strict_subs_qualified_call_explicit_qualified_sub_definition_suppresses()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `sub Foo::bar {}` declared from package main should suppress the check for
+    // `Foo::bar()` — collect_defined_subs stores the explicit qualified name.
+    let code = r#"
+use strict;
+package main;
+sub Foo::bar { 1 }
+package Foo;
+main::Foo::bar();
+Foo::bar();
+"#;
+    let issues = scope_issues_strict(code);
+
+    assert!(
+        !issues.iter().any(|i| {
+            matches!(i.kind, IssueKind::UnresolvedQualifiedCall) && i.variable_name == "Foo::bar"
+        }),
+        "Explicitly-qualified sub Foo::bar definition should suppress the call diagnostic"
+    );
+    Ok(())
+}
+
+#[test]
 fn strict_subs_allows_require_path_form_then_manual_import()
 -> Result<(), Box<dyn std::error::Error>> {
     // require "Foo/Bar.pm" path form should normalise to Foo::Bar for the
@@ -4925,6 +5048,186 @@ our ($Foo::y, $Foo::y);
         redecl.is_empty(),
         "qualified our variables should not be reported as package-generation redeclarations; got: {:?}",
         redecl
+    );
+    Ok(())
+}
+
+// ===========================================================================
+// Subroutines in phaser blocks have package scope (#1794)
+//
+// Named subroutines are always package-scoped in Perl regardless of the
+// lexical block they appear in.  `BEGIN { sub foo {} }` makes `foo` available
+// as a package symbol, not confined to the phaser block.
+// ===========================================================================
+
+#[test]
+fn subroutine_defined_in_begin_block_has_global_scope() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+BEGIN {
+    sub compile_time_helper {
+        return 42;
+    }
+}
+
+sub runtime_caller {
+    return compile_time_helper();
+}
+"#;
+    let table = parse_and_extract(code);
+
+    // 1. compile_time_helper must appear in the symbol table.
+    assert!(
+        has_symbol(&table, "compile_time_helper", SymbolKind::Subroutine),
+        "compile_time_helper must appear in symbol table; symbols: {:?}",
+        table.symbols.keys().collect::<Vec<_>>()
+    );
+
+    // 2. compile_time_helper must have global scope (scope_id == 0), not the
+    //    phaser block's Block scope.
+    let syms = table.symbols.get("compile_time_helper").ok_or("compile_time_helper not found")?;
+    let sym = syms.first().ok_or("no symbol entry")?;
+    assert_eq!(
+        sym.scope_id, 0,
+        "subroutine defined in BEGIN block must have scope_id == 0 (global/package scope), \
+         not the phaser Block scope; got scope_id={}",
+        sym.scope_id
+    );
+
+    let call_offset = code.find("compile_time_helper()").ok_or("call not found")?;
+    assert!(
+        !table
+            .find_symbol(
+                "compile_time_helper",
+                table.scope_at_offset(call_offset),
+                SymbolKind::Subroutine,
+            )
+            .is_empty(),
+        "compile_time_helper must resolve from runtime_caller"
+    );
+    Ok(())
+}
+
+#[test]
+fn subroutines_in_all_phaser_types_have_global_scope() -> Result<(), Box<dyn std::error::Error>> {
+    for phase in ["BEGIN", "END", "CHECK", "INIT", "UNITCHECK"] {
+        let code = format!(
+            r#"
+{phase} {{
+    sub phaser_helper {{
+        return 1;
+    }}
+}}
+"#
+        );
+        let table = parse_and_extract(&code);
+
+        assert!(
+            has_symbol(&table, "phaser_helper", SymbolKind::Subroutine),
+            "{phase}: phaser_helper must appear in symbol table; symbols: {:?}",
+            table.symbols.keys().collect::<Vec<_>>()
+        );
+
+        let syms = table.symbols.get("phaser_helper").ok_or("phaser_helper not found")?;
+        let sym = syms.first().ok_or("no symbol entry")?;
+        assert_eq!(
+            sym.scope_id, 0,
+            "{phase}: subroutine inside phaser must have scope_id==0, got {}",
+            sym.scope_id
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn subroutine_in_bare_block_has_package_scope() -> Result<(), Box<dyn std::error::Error>> {
+    // In Perl, `{ sub foo {} }` also makes `foo` a package sub (not lexical).
+    let code = r#"
+{
+    sub bare_block_sub {
+        return 1;
+    }
+}
+"#;
+    let table = parse_and_extract(code);
+
+    assert!(
+        has_symbol(&table, "bare_block_sub", SymbolKind::Subroutine),
+        "bare_block_sub must appear in symbol table; symbols: {:?}",
+        table.symbols.keys().collect::<Vec<_>>()
+    );
+
+    let syms = table.symbols.get("bare_block_sub").ok_or("bare_block_sub not found")?;
+    let sym = syms.first().ok_or("no symbol entry")?;
+    assert_eq!(
+        sym.scope_id, 0,
+        "subroutine in bare block must have global scope (scope_id==0), got {}",
+        sym.scope_id
+    );
+    Ok(())
+}
+
+#[test]
+fn subroutine_inside_package_block_has_package_scope() -> Result<(), Box<dyn std::error::Error>> {
+    // `package Foo { BEGIN { sub bar {} } }` — sub should be in the Foo package scope,
+    // not the phaser Block scope.
+    let code = r#"
+package Foo {
+    BEGIN {
+        sub bar {
+            return 1;
+        }
+    }
+}
+"#;
+    let table = parse_and_extract(code);
+
+    assert!(
+        has_symbol(&table, "bar", SymbolKind::Subroutine),
+        "bar must appear in symbol table; symbols: {:?}",
+        table.symbols.keys().collect::<Vec<_>>()
+    );
+
+    let syms = table.symbols.get("bar").ok_or("bar not found")?;
+    let sym = syms.first().ok_or("no symbol entry")?;
+
+    // bar's scope_id must NOT be a Block scope — it must be the enclosing Package scope.
+    let scope = table.scopes.get(&sym.scope_id).ok_or("bar scope not found")?;
+    assert!(
+        matches!(scope.kind, ScopeKind::Package),
+        "bar's scope_id must point to the enclosing Package scope, got {:?}",
+        scope.kind
+    );
+    Ok(())
+}
+
+#[test]
+fn lexical_my_sub_inside_block_stays_in_enclosing_scope() -> Result<(), Box<dyn std::error::Error>>
+{
+    let code = r#"
+{
+    my sub lexical_helper {
+        return 1;
+    }
+}
+"#;
+    let table = parse_and_extract(code);
+
+    assert!(
+        has_symbol(&table, "lexical_helper", SymbolKind::Subroutine),
+        "lexical_helper must appear in symbol table"
+    );
+
+    let syms = table.symbols.get("lexical_helper").ok_or("lexical_helper not found")?;
+    let sym = syms.first().ok_or("no symbol entry")?;
+    let scope = table.scopes.get(&sym.scope_id).ok_or("lexical_helper scope not found")?;
+    assert!(
+        matches!(scope.kind, ScopeKind::Block | ScopeKind::Global),
+        "my sub must stay in the enclosing lexical scope, not package scope; got {:?}",
+        scope.kind
+    );
+    assert_ne!(
+        sym.scope_id, 0,
+        "my sub inside a block must not be promoted to global/package scope"
     );
     Ok(())
 }

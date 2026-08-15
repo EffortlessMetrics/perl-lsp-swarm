@@ -13,6 +13,7 @@ const EVENT_WRITE_BATCH_MAX: usize = 64;
 const WRITE_FAILURE_THRESHOLD: usize = 3;
 
 fn write_framed_payload<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
+    tracing::debug!(payload_len = payload.len(), "Writing DAP frame");
     writer.write_all(b"Content-Length: ")?;
     writer.write_all(payload.len().to_string().as_bytes())?;
     writer.write_all(b"\r\n\r\n")?;
@@ -352,6 +353,23 @@ mod tests {
     #[derive(Default)]
     struct FlushFailingWriter {
         bytes: Vec<u8>,
+    }
+
+    struct ChunkedWriter {
+        bytes: Vec<u8>,
+        max_chunk: usize,
+    }
+
+    impl Write for ChunkedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let chunk_len = buf.len().min(self.max_chunk);
+            self.bytes.extend_from_slice(&buf[..chunk_len]);
+            Ok(chunk_len)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     impl Write for FlushFailingWriter {
@@ -708,6 +726,44 @@ mod tests {
             String::from_utf8_lossy(&writer).starts_with("Content-Length:"),
             "event payload must be written as a DAP frame"
         );
+    }
+
+    #[test]
+    fn test_write_framed_payload_uses_exact_byte_length_for_truncated_payload() -> io::Result<()> {
+        let payload = br#"{"type":"response","body":"unterminated"#;
+        let mut writer = Vec::new();
+
+        write_framed_payload(&mut writer, payload)?;
+
+        let separator = writer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "frame separator missing"))?;
+        let header = &writer[..separator];
+        let length =
+            std::str::from_utf8(header.strip_prefix(b"Content-Length: ").ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "length header missing")
+            })?)
+            .map_err(io::Error::other)?
+            .parse::<usize>()
+            .map_err(io::Error::other)?;
+
+        assert_eq!(length, payload.len(), "header must count payload bytes exactly");
+        assert_eq!(&writer[separator + 4..], payload, "frame body must be unmodified");
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_framed_payload_retries_short_writes_without_truncation() -> io::Result<()> {
+        let payload = "{\"message\":\"café\"}".as_bytes();
+        let mut writer = ChunkedWriter { bytes: Vec::new(), max_chunk: 2 };
+
+        write_framed_payload(&mut writer, payload)?;
+
+        let expected_header = format!("Content-Length: {}\r\n\r\n", payload.len());
+        assert!(writer.bytes.starts_with(expected_header.as_bytes()));
+        assert_eq!(&writer.bytes[expected_header.len()..], payload);
+        Ok(())
     }
 
     #[test]

@@ -63,6 +63,10 @@ impl GeneratedMemberExtractor {
             if model.framework == Framework::ClassAccessor {
                 collect_class_accessor_members(model, pkg, &mut members);
             }
+
+            if model.framework == Framework::DbixClass {
+                collect_dbix_class_members(model, pkg, &mut members);
+            }
         }
 
         members
@@ -156,6 +160,32 @@ fn collect_class_accessor_members(
         members.push(make_member(
             &method.name,
             class_accessor_kind(accessor_mode),
+            AnchorId(method.location.start as u64),
+            package,
+        ));
+    }
+}
+
+fn collect_dbix_class_members(
+    model: &ClassModel,
+    package: &str,
+    members: &mut Vec<GeneratedMember>,
+) {
+    for method in &model.methods {
+        if !method.synthetic {
+            continue;
+        }
+
+        let kind = match method.accessor_mode {
+            Some(ClassAccessorMode::Rw) => GeneratedMemberKind::Accessor,
+            Some(ClassAccessorMode::Ro) => GeneratedMemberKind::Getter,
+            Some(ClassAccessorMode::Wo) => GeneratedMemberKind::Setter,
+            None => GeneratedMemberKind::Accessor,
+        };
+
+        members.push(make_member(
+            &method.name,
+            kind,
             AnchorId(method.location.start as u64),
             package,
         ));
@@ -568,6 +598,80 @@ has 'b' => (is => 'rw');
         for m in &b_members {
             assert_eq!(m.package, "Bar");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_add_columns_generate_accessors() -> Result<(), String> {
+        let code = r#"
+package MyApp::Schema::Result::User;
+use DBIx::Class;
+__PACKAGE__->add_columns(qw/id name email/);
+1;
+"#;
+        let members = parse_and_extract(code);
+
+        let id = members_named(&members, "id");
+        let id = id.first().ok_or("expected accessor for column id")?;
+        assert_eq!(id.kind, GeneratedMemberKind::Accessor);
+        assert_eq!(id.package, "MyApp::Schema::Result::User");
+
+        assert_eq!(members_named(&members, "name").len(), 1);
+        assert_eq!(members_named(&members, "email").len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_add_columns_honors_accessor_metadata() -> Result<(), String> {
+        let code = r#"
+package MyApp::Schema::Result::Album;
+use DBIx::Class::Core;
+__PACKAGE__->add_columns(
+    albumid => { data_type => 'integer', accessor => 'album' },
+    title => { data_type => 'varchar' },
+);
+1;
+"#;
+        let members = parse_and_extract(code);
+        assert_eq!(members_named(&members, "album").len(), 1);
+        assert!(
+            members_named(&members, "albumid").is_empty(),
+            "column key must not be synthesized when accessor metadata overrides it"
+        );
+        assert_eq!(members_named(&members, "title").len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_relationships_generate_accessors() -> Result<(), String> {
+        let code = r#"
+package MyApp::Schema::Result::Author;
+use DBIx::Class::Core;
+__PACKAGE__->has_many('posts', 'MyApp::Schema::Result::Post', 'author_id');
+1;
+"#;
+        let members = parse_and_extract(code);
+        let posts = members_named(&members, "posts");
+        let posts = posts.first().ok_or("expected generated member for relationship posts")?;
+        assert_eq!(posts.kind, GeneratedMemberKind::Accessor);
+        Ok(())
+    }
+
+    #[test]
+    fn dbix_class_not_synthesized_for_moo_package() -> Result<(), String> {
+        let code = r#"
+package MyApp::User;
+use Moo;
+has 'name' => (is => 'ro');
+__PACKAGE__->add_columns(qw/id/);
+1;
+"#;
+        let members = parse_and_extract(code);
+        assert!(
+            members_named(&members, "id").is_empty(),
+            "DBIx synthesis must not run without DBIx::Class import"
+        );
+        assert_eq!(members_named(&members, "name").len(), 1);
         Ok(())
     }
 }

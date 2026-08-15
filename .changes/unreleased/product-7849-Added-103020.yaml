@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Added
+body: Stage a parity-checked nvim-lspconfig submission packet for perllsp.
+time: 2026-08-13T10:30:20Z
+custom:
+  PR: "7849"
+  Slug: nvim-lspconfig-candidate
+  Breaking: "no"

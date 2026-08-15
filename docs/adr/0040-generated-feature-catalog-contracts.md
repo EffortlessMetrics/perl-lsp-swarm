@@ -169,6 +169,6 @@ Review this ADR if any of the following become true:
 
 - [ADR-0016: Feature Governance Subsystem](0016-feature-governance.md)
 - [Feature Governance Architecture](../project/FEATURE_GOVERNANCE.md)
-- [`crates/perl-lsp-feature-contracts/src/lib.rs`](../../crates/perl-lsp-feature-contracts/src/lib.rs)
-- [`crates/perl-lsp-feature-contracts/build.rs`](../../crates/perl-lsp-feature-contracts/build.rs)
+- [`crates/perl-lsp-rs/src/features/feature_catalog.rs`](../../crates/perl-lsp-rs/src/features/feature_catalog.rs)
+- [`crates/perl-lsp-rs/features_sot.toml`](../../crates/perl-lsp-rs/features_sot.toml)
 - [`features.toml`](../../features.toml)

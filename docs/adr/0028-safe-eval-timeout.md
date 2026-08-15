@@ -202,8 +202,8 @@ sandboxing. It is one layer of defense alongside timeout enforcement.
 
 ## References
 
-- [crates/perl-dap-security/src/lib.rs](../../crates/perl-dap-security/src/lib.rs) - Security constants
-- [crates/perl-dap/src/debug_adapter.rs](../../crates/perl-dap/src/debug_adapter.rs) - Timeout enforcement
+- [crates/perl-dap/src/security/mod.rs](../../crates/perl-dap/src/security/mod.rs) - Security constants
+- [crates/perl-dap/src/debug_adapter/evaluation.rs](../../crates/perl-dap/src/debug_adapter/evaluation.rs) - Timeout enforcement
 - [crates/perl-dap/src/configuration.rs](../../crates/perl-dap/src/configuration.rs) - Configuration validation
 - [ADR-0019: Security-First DAP](0019-security-first-dap.md) - Security framework
 - [DAP Security Specification](../DAP_SECURITY_SPECIFICATION.md)

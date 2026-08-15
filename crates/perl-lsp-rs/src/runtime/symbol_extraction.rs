@@ -282,27 +282,27 @@ impl LspServer {
                         NodeKind::Identifier { name: id } => Some(id.clone()),
                         _ => None,
                     };
-                    if let Some(attr) = attr_name {
-                        if !attr.is_empty() {
-                            let (start_line, start_char) =
-                                byte_to_line_col(source, node.location.start);
-                            let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                    if let Some(attr) = attr_name
+                        && !attr.is_empty()
+                    {
+                        let (start_line, start_char) =
+                            byte_to_line_col(source, node.location.start);
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
-                            symbols.push(LspWorkspaceSymbol {
-                                name: attr,
-                                kind: 7, // Property
-                                location: WireLocation::new(
-                                    uri.to_string(),
-                                    WireRange::new(
-                                        WirePosition::new(start_line, start_char),
-                                        WirePosition::new(end_line, end_char),
-                                    ),
+                        symbols.push(LspWorkspaceSymbol {
+                            name: attr,
+                            kind: 7, // Property
+                            location: WireLocation::new(
+                                uri.to_string(),
+                                WireRange::new(
+                                    WirePosition::new(start_line, start_char),
+                                    WirePosition::new(end_line, end_char),
                                 ),
-                                container_name: container
-                                    .map(|s| normalize_package_separator(s).into_owned()),
-                                workspace_folder_uri: folder_uri.map(ToOwned::to_owned),
-                            });
-                        }
+                            ),
+                            container_name: container
+                                .map(|s| normalize_package_separator(s).into_owned()),
+                            workspace_folder_uri: folder_uri.map(ToOwned::to_owned),
+                        });
                     }
                 }
             }
@@ -553,14 +553,13 @@ impl LspServer {
 
             NodeKind::Unary { op, operand } => {
                 // Check if this is a reference to a subroutine (\&function)
-                if op == "\\" && symbol_kind == "subroutine" {
-                    if let NodeKind::Identifier { name } = &operand.kind {
-                        if perl_parser::qualified_name::split_qualified_name(name).1
-                            == perl_parser::qualified_name::split_qualified_name(symbol_name).1
-                        {
-                            count += 1;
-                        }
-                    }
+                if op == "\\"
+                    && symbol_kind == "subroutine"
+                    && let NodeKind::Identifier { name } = &operand.kind
+                    && perl_parser::qualified_name::split_qualified_name(name).1
+                        == perl_parser::qualified_name::split_qualified_name(symbol_name).1
+                {
+                    count += 1;
                 }
                 count += self.count_references(operand, symbol_name, symbol_kind);
             }

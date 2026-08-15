@@ -4,6 +4,7 @@
   "command.showVersion.title": "Show Server Version",
   "command.showOutput.title": "Show Output Channel",
   "command.showStatusMenu.title": "Show Status Menu",
+  "command.showWorkspaceStatus.title": "Show Perl Workspace Status",
   "command.reinstall.title": "Reinstall Server Binary",
   "command.checkForUpdate.title": "Check for Binary Updates",
   "command.organizeImports.title": "Organize Use Statements",

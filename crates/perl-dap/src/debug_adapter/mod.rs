@@ -307,21 +307,19 @@ impl DebugAdapter {
                 // an elevated warning.  We cannot hard-reject because no workspace
                 // boundary is known and temp files / explicit user paths are
                 // legitimate pre-launch use cases.
-                if p.is_absolute() {
-                    if let Ok(cwd) = std::env::current_dir() {
-                        let canonical_p =
-                            std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-                        let canonical_cwd =
-                            std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-                        if !canonical_p.starts_with(&canonical_cwd) {
-                            tracing::warn!(
-                                target = "debug_adapter.security",
-                                path = %resolved,
-                                "Pre-launch absolute path outside current working directory \
-                                 accepted without workspace boundary check"
-                            );
-                            return Ok(PathBuf::from(path));
-                        }
+                if p.is_absolute()
+                    && let Ok(cwd) = std::env::current_dir()
+                {
+                    let canonical_p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                    let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+                    if !canonical_p.starts_with(&canonical_cwd) {
+                        tracing::warn!(
+                            target = "debug_adapter.security",
+                            path = %resolved,
+                            "Pre-launch absolute path outside current working directory \
+                             accepted without workspace boundary check"
+                        );
+                        return Ok(PathBuf::from(path));
                     }
                 }
 
@@ -1611,6 +1609,26 @@ print "result: $final\n";
             cap_map.get("supportsTerminateThreadsRequest").and_then(|v| v.as_bool()),
             Some(false),
             "supportsTerminateThreadsRequest must not be advertised (handler always fails)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_restart_frame_capability_is_not_advertised() -> Result<(), Box<dyn std::error::Error>> {
+        // #5045: supportsRestartFrame is not advertised because the handler
+        // unconditionally returns failure ("Perl does not support restarting
+        // execution from a specific stack frame").
+        let mut adapter = DebugAdapter::new();
+        let init = adapter.handle_request(1, "initialize", None);
+        let capabilities = match init {
+            DapMessage::Response { success: true, body: Some(body), .. } => body,
+            _ => return Err("Expected successful initialize response".into()),
+        };
+        let cap_map = capabilities.as_object().ok_or("body must be object")?;
+        assert_eq!(
+            cap_map.get("supportsRestartFrame").and_then(|v| v.as_bool()),
+            Some(false),
+            "supportsRestartFrame must not be advertised (handler always fails)"
         );
         Ok(())
     }

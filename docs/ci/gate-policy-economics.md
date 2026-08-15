@@ -43,9 +43,9 @@ number of gates (e.g. `lsp_tier_a`) span two lanes.
 Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping.py --strict`,
 which is the authority for these counts. Last refreshed 2026-08-03 (#5709):
 
-- 66 gates in `.ci/gate-policy.yaml`
+- 67 gates in `.ci/gate-policy.yaml`
 - 24 lanes in `policy/ci-lanes.toml`
-- 66 / 66 gates have at least one lane mapping
+- 67 / 67 gates have at least one lane mapping
 - 0 gates point at a non-existent lane
 
 ---
@@ -55,11 +55,11 @@ which is the authority for these counts. Last refreshed 2026-08-03 (#5709):
 | Lane | Gates |
 |---|---|
 | `pr_smoke` | `fmt`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `policy_checks`, `workflow_audit`, `nested_lock_check`, `unit_routed_full`, `inline_completion_contract`, `inline_completion_quality_receipt`, `ignored_tests_check_refs` |
-| `merge_gate_shards` | `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `unit_analysis_full`, `unit_lsp_core_full`, `unit_lsp_full`, `unit_dap_support_full`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync`, `agent_context_coverage`, `non_rust_inventory_check` |
+| `merge_gate_shards` | `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `parser_integration`, `unit_analysis_full`, `unit_lsp_core_full`, `unit_lsp_full`, `unit_dap_support_full`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync`, `agent_context_coverage`, `non_rust_inventory_check`, `msrv_authority_sync` |
 | `check_all_targets` | `compile_all_targets` |
 | `conflict_markers` | `check_conflict_markers` |
 | `ux_tests` | `lsp_smoke`, `lsp_tier_a` |
-| `docs_gate` | `docs_build` |
+| `docs_gate` | `adr_link_check`, `docs_build` |
 | `release_check` | `published_crate_count`, `release_build`, `version_sync`, `sbom_verify`, `determinism_check`, `inline_completion_binary_smoke` |
 | `security_audit` | `security_audit` |
 | `mutation` | `mutation`, `corpus_validation`, `corpus_sweep` |

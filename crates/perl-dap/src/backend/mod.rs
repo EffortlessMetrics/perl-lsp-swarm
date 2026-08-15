@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub use capabilities::{DebugBackendCapabilities, intersect_dap_capabilities};
+pub use external_peer::PeerSessionToken;
 pub use peer_bridge::{DapPeerBridge, run_external_peer_session, run_external_peer_session_stdio};
 pub use peer_launch::{
     ExternalPeerLaunchConfig, MirrorPeerBridge, PeerListenEndpoint, PeerRendezvousMode,
@@ -57,6 +58,28 @@ pub enum BackendError {
 
 /// Result alias for backend operations.
 pub type BackendResult<T> = Result<T, BackendError>;
+
+impl perl_parser_core::ErrorClass for BackendError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // Engine/peer not attached — infrastructure readiness.
+            Self::NotConnected => perl_parser_core::ErrorCategory::Infra,
+            // Transport/framing failure — external dependency unavailable.
+            Self::Transport(_) => perl_parser_core::ErrorCategory::Infra,
+            // Operation may succeed on retry.
+            Self::Timeout(_) => perl_parser_core::ErrorCategory::Transient,
+            // The peer reported an error — surfaces an unexpected engine-side
+            // failure. Note: this reports what the engine said (which can
+            // include a debuggee die), but the error itself is an adapter-
+            // operational outcome, not a debuggee-termination signal (#4979).
+            Self::Engine(_) => perl_parser_core::ErrorCategory::Bug,
+            // The requested operation isn't supported — usage/configuration.
+            Self::Unsupported(_) => perl_parser_core::ErrorCategory::UserError,
+            // Serialization/deserialization — the other side violated format.
+            Self::Protocol(_) => perl_parser_core::ErrorCategory::Protocol,
+        }
+    }
+}
 
 /// Parameters for [`DebugBackend::initialize`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

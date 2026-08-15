@@ -396,6 +396,33 @@
             "order": 50,
             "description": "Enable semantic syntax highlighting. When disabled, the editor falls back to TextMate grammar coloring only.",
             "markdownDescription": "Enable semantic syntax highlighting. When disabled, the editor falls back to TextMate grammar coloring only."
+          },
+          "perl-lsp.testAdapterTimeoutMs": {
+            "type": "number",
+            "default": 120000,
+            "minimum": 1,
+            "scope": "resource",
+            "order": 51,
+            "description": "Maximum time in milliseconds for a Perl Test Explorer prove run before it is terminated.",
+            "markdownDescription": "Maximum time in milliseconds for a Perl Test Explorer `prove` run before it is terminated."
+          },
+          "perl-lsp.testAdapterMaxOutputBytes": {
+            "type": "number",
+            "default": 1048576,
+            "minimum": 1,
+            "scope": "resource",
+            "order": 52,
+            "description": "Maximum combined stdout and stderr captured from a Perl Test Explorer prove run.",
+            "markdownDescription": "Maximum combined `stdout` and `stderr` captured from a Perl Test Explorer `prove` run."
+          },
+          "perl-lsp.testAdapterTerminationGraceMs": {
+            "type": "number",
+            "default": 1000,
+            "minimum": 1,
+            "scope": "resource",
+            "order": 53,
+            "description": "Grace period in milliseconds between requesting prove termination and forcing it.",
+            "markdownDescription": "Grace period in milliseconds between requesting `prove` termination and forcing it."
           }
         }
       },
@@ -857,6 +884,12 @@
         "icon": "$(menu)"
       },
       {
+        "command": "perl-lsp.showWorkspaceStatus",
+        "title": "%command.showWorkspaceStatus.title%",
+        "category": "Perl",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "perl-lsp.reinstall",
         "title": "%command.reinstall.title%",
         "category": "Perl",
@@ -1290,7 +1323,7 @@
           {
             "id": "verify-perl",
             "title": "Verify Your Perl Installation",
-            "description": "Run the health check to confirm your Perl interpreter is available (used by the test runner and debugger). Native formatting and native critic diagnostics are built in — perltidy and perlcritic are optional and only used for explicit external-compatibility modes.",
+            "description": "Run [Perl: Run Health Check](command:perl-lsp.runHealthCheck) to confirm your Perl interpreter is available (used by the test runner and debugger). Native formatting and native critic diagnostics are built in — perltidy and perlcritic are optional and only used for explicit external-compatibility modes.",
             "media": {
               "image": "media/walkthrough/verify-perl.svg",
               "altText": "Verify Perl"
@@ -1415,12 +1448,12 @@
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "jest": "^30.4.2",
-    "mocha": "^11.7.6",
+    "mocha": "^11.8.0",
     "ovsx": "1.0.2",
-    "oxfmt": "0.61.0",
-    "oxlint": "1.76.0",
+    "oxfmt": "0.62.0",
+    "oxlint": "1.77.0",
     "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.1",
+    "rolldown": "1.2.3",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"

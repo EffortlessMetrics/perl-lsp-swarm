@@ -17,37 +17,82 @@ Resolve current, claim-relative authority before reviewing:
 - exact cumulative candidate identity and diff;
 - current proof, execution results, and known limitations.
 
-Do not substitute stale conversation or agent self-report for those sources. If the controlling claim or applicable authorities cannot be established reliably, return `NOT_PROVEN`; if investigation changes the premise, return the corrected boundary for issue preparation.
+Do not substitute stale conversation or agent self-report for those sources. If the
+controlling claim or applicable authorities cannot be established reliably, return
+`NOT_PROVEN`; if investigation changes the premise, return the corrected boundary for
+issue preparation.
 
-The review is directed at the declared claim, falsifying rather than merely descriptive,
-and verified against the relevant proof and source authority. Where applicable, check
-claim honesty, semantic and external correctness, proof discrimination, production-path
-reachability, negative and fallback behavior, compatibility and rollback, and remaining
-uncertainty.
+## Orchestration affordances
 
-Use applicable lenses:
+### Lane-root decisions
 
-- candidate-mode vision alignment;
-- authority alignment;
-- production path;
-- claim boundary;
-- external truth;
-- security, compatibility, parser/compiler, packaging, or performance risk;
-- test economics.
+The lane root retains candidate sufficiency, finding dispositions, material
+claim/authority/proof corrections, risk/rollback decisions, and whether the candidate
+returns to build, proof, issue preparation, or PR convergence.
 
-Check the cumulative candidate, not only the latest edit. Verify that real user or protocol paths can reach the changed behavior and that the PR-sized claim remains coherent.
+### Useful differentiated review
 
-The review is directed at the applicable vision, authority, production path,
-external-truth, claim, security/compatibility, complexity, proof, and rollback
-questions. It is falsifying: identify realistic wrong behavior or residue that the
-candidate should reject. It is verified through execution or competent authority,
-not a diff impression, green CI, or an ungrounded delegate verdict.
+Use read-only reviewers where useful for:
 
-A clean review is valid.
+- product/roadmap/architecture and semantic-owner alignment;
+- production-path and real-caller reachability;
+- proof discrimination and evidence integrity;
+- external language/protocol/dependency truth;
+- claim/non-goal honesty and unsupported fallback/refusal behavior;
+- simplification, duplicate authority, compatibility residue, and API surface;
+- security, concurrency, lifecycle, persistence, packaging, migration, performance,
+  support, and rollback risk.
 
-## Orchestration
+Review the cumulative candidate, not only the latest edit. Each reviewer names exact
+scope, evidence, realistic falsifier, uncertainty, and affected claim dimension. A
+subagent verdict is not acceptance.
 
-Run differentiated read-only lenses in parallel when they improve detection. One integrating writer owns accepted repairs. Join findings into one candidate disposition rather than counting votes.
+### Mutation owner and join
+
+Reviewers are read-only by default. One candidate writer integrates accepted repairs.
+If a reviewer is explicitly reassigned as writer, the resulting head returns through
+affected proof and review.
+
+Join when the lane root has verified load-bearing evidence, preserved and resolved
+material contradictions, dispositioned findings, and can state what the candidate does
+and does not prove.
+
+### Return packet
+
+Return candidate/head identity, material claim/non-goals, lenses and scope used,
+localized findings with severity/evidence/falsifier, contradictory evidence,
+production-route and proof conclusions, accepted/refuted/follow-up dispositions,
+limitations and `NOT_PROVEN` boundaries, recommended route, and typed result.
+
+A clean review is valid. Do not create findings or edits merely to demonstrate effort.
+
+## Review questions
+
+Where applicable, check:
+
+- claim honesty, semantic and external correctness;
+- proof discrimination and evidence identity;
+- production-path reachability and negative/fallback behavior;
+- compatibility, security, support, and rollback;
+- semantic owner, duplicate authority, unnecessary complexity, and residue;
+- remaining uncertainty and whether the candidate remains one coherent PR-sized claim.
+
+The review is directed and falsifying: identify realistic wrong behavior or residue that
+the candidate should reject. Conclusions require execution or competent authority—not
+a diff impression, green CI, or an ungrounded delegate verdict.
+
+## GitHub boundary
+
+The integrating lane owner posts. A skill run that only answers a bounded review
+question returns file/line-anchored findings as evidence and does not write to GitHub.
+
+Use inline review for localized candidate findings and a PR comment/review summary for
+cross-cutting claim, authority, proof, risk, or production-route conclusions. Preserve
+an evidence-backed disposition before resolving substantive findings.
+
+Keep reviewer topology, raw exploration, temporary tests, duplicate clean reports,
+retries, and routine review progress runtime-local. One cumulative lane-root conclusion
+joins the useful evidence.
 
 ## Routes
 

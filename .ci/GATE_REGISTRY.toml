@@ -146,7 +146,9 @@ failure_impact = "high"
 id = "parser-audit-closeout"
 name = "Parser Closeout Audit Ratchet"
 type = "correctness"
-blocking = true
+# NOTE (2026-08-10, #6261): demoted with gate-policy.yaml parser_audit_closeout
+# (required: false). No workflow route; re-promote only after wiring (#6261 G5).
+blocking = false
 timeout_seconds = 180
 command = "cargo run -p xtask -- corpus-audit --fresh --corpus-path . --check"
 evidence_pattern = "CI gate passed"
