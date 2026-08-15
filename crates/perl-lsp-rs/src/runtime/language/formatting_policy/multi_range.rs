@@ -924,22 +924,30 @@ mod tests {
         assert_eq!(ok.0.len(), 1);
         assert_eq!(ok.0[0].new_text, "X");
 
-        let escaped =
-            compose_edits(source, &plan, vec![vec![text_edit(0, 2, 0, 4, "XX")]], 1, "cfg")
+        // Bound each side independently so a one-sided gate regression cannot hide.
+        let left_escape =
+            compose_edits(source, &plan, vec![vec![text_edit(0, 2, 0, 3, "X")]], 1, "cfg")
                 .err()
-                .ok_or("empty-point span must reject escaping edits")?;
-        assert_eq!(escaped.reason, "edit_outside_range");
+                .ok_or("empty-point span must reject lower-bound escape")?;
+        assert_eq!(left_escape.reason, "edit_outside_range");
+
+        let right_escape =
+            compose_edits(source, &plan, vec![vec![text_edit(0, 3, 0, 4, "X")]], 1, "cfg")
+                .err()
+                .ok_or("empty-point span must reject upper-bound escape")?;
+        assert_eq!(right_escape.reason, "edit_outside_range");
         Ok(())
     }
 
     #[test]
     fn same_line_adjacent_edits_compose_in_order() -> Result<(), Box<dyn std::error::Error>> {
         let source = "abcdefgh\n";
-        let plan = build_plan(source, &[range(0, 0, 0, 4), range(0, 4, 0, 8)])?;
+        // One admitted span with right-to-left formatter edits proves canonical sort.
+        let plan = build_plan(source, &[range(0, 0, 0, 8)])?;
         let (edits, digest) = compose_edits(
             source,
             &plan,
-            vec![vec![text_edit(0, 0, 0, 4, "AAAA")], vec![text_edit(0, 4, 0, 8, "BBBB")]],
+            vec![vec![text_edit(0, 4, 0, 8, "BBBB"), text_edit(0, 0, 0, 4, "AAAA")]],
             7,
             "cfg-fingerprint",
         )?;
@@ -951,7 +959,7 @@ mod tests {
         let conflict = compose_edits(
             source,
             &plan,
-            vec![vec![text_edit(0, 0, 0, 5, "AAAAA")], vec![text_edit(0, 4, 0, 8, "BBBB")]],
+            vec![vec![text_edit(0, 0, 0, 5, "AAAAA"), text_edit(0, 4, 0, 8, "BBBB")]],
             7,
             "cfg-fingerprint",
         )
