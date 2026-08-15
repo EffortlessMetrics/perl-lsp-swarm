@@ -196,7 +196,7 @@ impl SourceGeometry {
     }
 }
 
-pub(super) fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, PlanError> {
+fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, PlanError> {
     let geometry = SourceGeometry::new(source);
     let requested_ranges = ranges.to_vec();
     let mut normalized_ranges = Vec::with_capacity(ranges.len());
