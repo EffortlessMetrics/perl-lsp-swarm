@@ -9,6 +9,11 @@ use super::super::{
     InternalCodeActionKindV2, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken,
     TestGenerator, Value, json,
 };
+
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
 use super::misc::{
     DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
 };
@@ -127,6 +132,8 @@ fn diagnostic_severity_value(severity: crate::features::diagnostics::DiagnosticS
         crate::features::diagnostics::DiagnosticSeverity::Warning => 2,
         crate::features::diagnostics::DiagnosticSeverity::Information => 3,
         crate::features::diagnostics::DiagnosticSeverity::Hint => 4,
+        // Forward-compatible fallback for future variants (#2898)
+        _ => 1,
     }
 }
 
@@ -402,10 +409,10 @@ fn build_source_fix_all(code_actions: &[Value], uri: &str) -> Option<Value> {
         },
     });
 
-    if !merged_diagnostics.is_empty() {
-        if let Some(object) = action.as_object_mut() {
-            object.insert("diagnostics".to_string(), Value::Array(merged_diagnostics));
-        }
+    if !merged_diagnostics.is_empty()
+        && let Some(object) = action.as_object_mut()
+    {
+        object.insert("diagnostics".to_string(), Value::Array(merged_diagnostics));
     }
 
     Some(action)
@@ -537,7 +544,7 @@ impl LspServer {
                 std::sync::Arc::from([]);
             let parse_errors =
                 parsed.as_ref().map_or_else(|| empty_errors.clone(), |p| p.parse_errors_arc());
-            let diag_provider = DiagnosticsProvider::new(ast, doc.text.clone());
+            let diag_provider = DiagnosticsProvider::new();
             let mut diagnostics =
                 diag_provider.get_diagnostics(ast, &parse_errors, &doc.text, None);
             diagnostics.extend(self.context_diagnostics_for_code_actions(&params, doc));
@@ -714,7 +721,7 @@ impl LspServer {
             }
 
             // Get quick-fixes from the V2 provider (diagnostic-based)
-            let provider_v2 = CodeActionsProviderV2::new(doc.text.clone());
+            let provider_v2 = CodeActionsProviderV2::new(doc.text_arc.to_string());
             let quick_fixes =
                 provider_v2.get_code_actions((start_offset, end_offset), &diagnostics);
 
@@ -758,6 +765,8 @@ impl LspServer {
                                 crate::features::diagnostics::DiagnosticSeverity::Warning => 2,
                                 crate::features::diagnostics::DiagnosticSeverity::Information => 3,
                                 crate::features::diagnostics::DiagnosticSeverity::Hint => 4,
+                                // Forward-compatible fallback for future variants (#2898)
+                                _ => 1,
                             },
                             "code": diagnostic.code.clone(),
                             "source": "perl-lsp",
@@ -780,20 +789,18 @@ impl LspServer {
                     },
                 });
 
-                if let Some(action_object) = action_json.as_object_mut() {
-                    if !associated_diagnostics.is_empty() {
-                        action_object.insert(
-                            "diagnostics".to_string(),
-                            Value::Array(associated_diagnostics),
-                        );
-                    }
+                if let Some(action_object) = action_json.as_object_mut()
+                    && !associated_diagnostics.is_empty()
+                {
+                    action_object
+                        .insert("diagnostics".to_string(), Value::Array(associated_diagnostics));
                 }
 
                 code_actions.push(action_json);
             }
 
             // Get refactorings from the original provider (AST-based)
-            let provider = CodeActionsProvider::new(doc.text.clone());
+            let provider = CodeActionsProvider::new(doc.text_arc.to_string());
             let actions = provider.get_code_actions(ast, (start_offset, end_offset), &diagnostics);
 
             for action in actions {
@@ -844,7 +851,7 @@ impl LspServer {
             }
 
             // Get enhanced refactorings (extract variable, convert loops, etc.)
-            let enhanced_provider = EnhancedCodeActionsProvider::new(doc.text.clone());
+            let enhanced_provider = EnhancedCodeActionsProvider::new(doc.text_arc.to_string());
             let enhanced_actions =
                 enhanced_provider.get_enhanced_refactoring_actions(ast, (start_offset, end_offset));
 
@@ -953,7 +960,7 @@ impl LspServer {
 
             self.enforce_code_action_tag_capabilities(&mut code_actions);
             retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
-            Ok(Some(json!(code_actions)))
+            Ok(Some(to_json_array(&code_actions)))
         } else {
             // No AST (parse error), but we can still offer some actions
             let mut code_actions: Vec<Value> = Vec::new();
@@ -1038,7 +1045,7 @@ impl LspServer {
 
             self.enforce_code_action_tag_capabilities(&mut code_actions);
             retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
-            Ok(Some(json!(code_actions)))
+            Ok(Some(to_json_array(&code_actions)))
         }
     }
 
@@ -1082,19 +1089,19 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(p) = params {
-            if let Some(uri) = p["textDocument"]["uri"].as_str() {
-                let documents = self.documents_guard();
-                if let Some(doc) = documents.get(uri) {
-                    let mut actions =
-                        crate::code_actions_pragmas::missing_pragmas_actions(uri, &doc.text);
+        if let Some(p) = params
+            && let Some(uri) = p["textDocument"]["uri"].as_str()
+        {
+            let documents = self.documents_guard();
+            if let Some(doc) = documents.get(uri) {
+                let mut actions =
+                    crate::code_actions_pragmas::missing_pragmas_actions(uri, &doc.text);
 
-                    // Fill in edits with proper ranges
-                    for action in &mut actions {
-                        self.fill_pragma_action_edit(action, doc);
-                    }
-                    return Ok(Some(json!(actions)));
+                // Fill in edits with proper ranges
+                for action in &mut actions {
+                    self.fill_pragma_action_edit(action, doc);
                 }
+                return Ok(Some(to_json_array(&actions)));
             }
         }
         Ok(Some(json!([])))
@@ -1109,32 +1116,32 @@ impl LspServer {
             // The action should already have minimal information
             // We now need to compute the actual edits
 
-            if let Some(kind) = action.get("kind").and_then(|k| k.as_str()) {
-                if kind == "quickfix" {
-                    // For quickfix actions, compute the workspace edit now
-                    if let Some(data) = action.get("data") {
-                        if let Some(uri) = data.get("uri").and_then(|u| u.as_str()) {
-                            let documents = self.documents_guard();
-                            if self.get_document(&documents, uri).is_some() {
-                                // Example: Add "use strict;" at the beginning
-                                if let Some(pragma) = data.get("pragma").and_then(|p| p.as_str()) {
-                                    let text = format!("{}\n", pragma);
-                                    let edit = json!({
-                                        "changes": {
-                                            uri: [{
-                                                "range": {
-                                                    "start": {"line": 0, "character": 0},
-                                                    "end": {"line": 0, "character": 0}
-                                                },
-                                                "newText": text
-                                            }]
-                                        }
-                                    });
-
-                                    if let Some(obj) = action.as_object_mut() {
-                                        obj.insert("edit".to_string(), edit);
-                                    }
+            if let Some(kind) = action.get("kind").and_then(|k| k.as_str())
+                && kind == "quickfix"
+            {
+                // For quickfix actions, compute the workspace edit now
+                if let Some(data) = action.get("data")
+                    && let Some(uri) = data.get("uri").and_then(|u| u.as_str())
+                {
+                    let documents = self.documents_guard();
+                    if self.get_document(&documents, uri).is_some() {
+                        // Example: Add "use strict;" at the beginning
+                        if let Some(pragma) = data.get("pragma").and_then(|p| p.as_str()) {
+                            let text = format!("{}\n", pragma);
+                            let edit = json!({
+                                "changes": {
+                                    uri: [{
+                                        "range": {
+                                            "start": {"line": 0, "character": 0},
+                                            "end": {"line": 0, "character": 0}
+                                        },
+                                        "newText": text
+                                    }]
                                 }
+                            });
+
+                            if let Some(obj) = action.as_object_mut() {
+                                obj.insert("edit".to_string(), edit);
                             }
                         }
                     }
@@ -1165,32 +1172,32 @@ impl LspServer {
                 .map(std::borrow::ToOwned::to_owned),
         );
 
-        if let (Some(uri), Some(offset), Some(text)) = data_info {
-            if let Some(obj) = action.as_object_mut() {
-                let edit_range = if offset as usize >= doc.text.len() {
-                    let end = self.get_document_end_position(&doc.text);
-                    json!({"start": end.clone(), "end": end })
-                } else {
-                    let (line, col) = self.offset_to_pos16(doc, offset as usize);
-                    json!({
-                        "start": {"line": line, "character": col},
-                        "end": {"line": line, "character": col}
-                    })
-                };
+        if let (Some(uri), Some(offset), Some(text)) = data_info
+            && let Some(obj) = action.as_object_mut()
+        {
+            let edit_range = if offset as usize >= doc.text.len() {
+                let end = self.get_document_end_position(&doc.text);
+                json!({"start": end.clone(), "end": end })
+            } else {
+                let (line, col) = self.offset_to_pos16(doc, offset as usize);
+                json!({
+                    "start": {"line": line, "character": col},
+                    "end": {"line": line, "character": col}
+                })
+            };
 
-                obj.insert(
-                    "edit".into(),
-                    json!({
-                        "changes": {
-                            uri: [{
-                                "range": edit_range,
-                                "newText": text
-                            }]
-                        }
-                    }),
-                );
-                obj.remove("data");
-            }
+            obj.insert(
+                "edit".into(),
+                json!({
+                    "changes": {
+                        uri: [{
+                            "range": edit_range,
+                            "newText": text
+                        }]
+                    }
+                }),
+            );
+            obj.remove("data");
         }
     }
 
@@ -1627,7 +1634,7 @@ mod tests {
             // just no snapshot.
             *doc = crate::state::DocumentState::from_parts(
                 doc.rope.clone(),
-                doc.text.clone(),
+                doc.text_arc.to_string(),
                 doc.version,
                 doc.generation.clone(),
             );

@@ -29,13 +29,13 @@ fn test_providers_completion_item_module_exists() -> Result<(), Box<dyn std::err
     // Just verify the module is accessible; we don't test behavior here.
     // That's covered by the migrated test suite in provider_completion_item_*.rs
     let _ = completion_item::CompletionItem {
-        label: "test".to_string(),
+        label: "test".into(),
         kind: completion_item::CompletionItemKind::Function,
         detail: None,
         documentation: None,
         sort_text: None,
         filter_text: None,
-        insert_text: Some("test".to_string()),
+        insert_text: Some("test".into()),
         additional_edits: Vec::new(),
         text_edit_range: None,
         commit_characters: None,

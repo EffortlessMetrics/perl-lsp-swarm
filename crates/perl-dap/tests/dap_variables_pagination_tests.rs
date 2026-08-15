@@ -17,6 +17,7 @@ fn make_variable(name: &str) -> ProtocolVariable {
         variables_reference: 0,
         named_variables: None,
         indexed_variables: None,
+        evaluate_name: None,
     }
 }
 

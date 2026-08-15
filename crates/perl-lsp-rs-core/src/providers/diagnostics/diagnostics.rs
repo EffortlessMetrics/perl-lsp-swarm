@@ -120,15 +120,22 @@ pub use perl_diagnostics::codes::{DiagnosticCode, DiagnosticSeverity};
 ///
 /// Analyzes Perl source code and generates diagnostic messages for
 /// parse errors, scope issues, and lint warnings.
-pub struct DiagnosticsProvider {
-    _ast: std::sync::Arc<Node>,
-    _source: String,
+pub struct DiagnosticsProvider;
+
+impl Default for DiagnosticsProvider {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DiagnosticsProvider {
-    /// Create a new diagnostics provider
-    pub fn new(ast: &std::sync::Arc<Node>, source: String) -> Self {
-        Self { _ast: ast.clone(), _source: source }
+    /// Create a new diagnostics provider.
+    ///
+    /// Source text is supplied per call to [`Self::get_diagnostics`] and related
+    /// methods; it is not stored on the provider to avoid an extra full-document
+    /// allocation on every diagnostic publish (#5053).
+    pub fn new() -> Self {
+        Self
     }
 
     /// Generate diagnostics for the given AST
@@ -657,5 +664,7 @@ pub fn build_parse_error_hint(error: &ParseError, base_message: &str) -> Option<
         // Recovered errors: the parser inserted a synthetic node and continued.
         // No user-facing suggestion is needed — the partial AST is still usable.
         ParseError::Recovered { .. } => None,
+        // Forward-compatible fallback for future variants (#2898)
+        _ => None,
     }
 }

@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 
 use crate::hir::{
-    AccessMode, AssignMode, BranchShell, CallForm, ControlTransferKind, DeclStorageClass,
-    DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell, RegexTargetKind, Sigil,
-    StatementModifierKind, UnaryMode, VariableKind,
+    AccessMode, AssignMode, BranchKeyword, BranchShell, CallForm, ControlTransferKind,
+    DeclStorageClass, DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId,
+    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell,
+    RegexTargetKind, Sigil, StatementModifierKind, UnaryMode, VariableKind,
 };
 
 use super::model::{
@@ -433,7 +433,7 @@ impl Lowerer {
         id
     }
 
-    fn lower_branch(&mut self, item: &HirItem, _branch: &BranchShell) {
+    fn lower_branch(&mut self, item: &HirItem, branch: &BranchShell) {
         // Source anchor: explicit, backed by the BranchShell HIR item's range.
         let anchor = PirSourceAnchor::explicit(item.range, item.id);
 
@@ -442,17 +442,21 @@ impl Lowerer {
         // named follow-up (see PLSP-SPEC-0025 §Control-Flow Model).
         let operation = PirOperation::Branch { condition: None };
 
-        // Void context: an `if`/`unless` statement is a control-flow fork that
-        // yields no value at statement level. Using Unknown here would over-
-        // approximate; Scalar/List would misrepresent the node's role. The
-        // condition sub-expression evaluates in scalar context, but that is the
-        // condition's context — not the BranchShell node's context, which is the
-        // whole statement.
+        // Statement branches are control-flow forks that yield no value at
+        // statement level. A ternary is different: it is a value-producing
+        // conditional expression that may participate in an lvalue context,
+        // but the flat path cannot prove its enclosing Scalar/List/Lvalue
+        // context. Keep it Unknown, matching the body path, rather than
+        // claiming Void and losing the value-producing distinction.
+        let context = match branch.keyword {
+            BranchKeyword::Ternary => PirContext::Unknown,
+            BranchKeyword::If | BranchKeyword::Unless => PirContext::Void,
+        };
         //
         // Arm-edge modeling (PirEdgeKind::Branch for then/else arms) is deferred
         // to a follow-up pass; this slice records the branch node and its
         // fallthrough without silently dropping it.
-        self.push_node(item, anchor, operation, PirContext::Void, None);
+        self.push_node(item, anchor, operation, context, None);
     }
 
     fn lower_loop(&mut self, item: &HirItem, _loop_shell: &LoopShell) {

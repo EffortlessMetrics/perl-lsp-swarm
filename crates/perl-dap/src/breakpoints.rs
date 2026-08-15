@@ -399,22 +399,22 @@ impl BreakpointStore {
             // AC7: Security validation - Reject conditions with newlines
             // The Perl debugger protocol is line-based, so a newline in a condition
             // allows injecting arbitrary debugger commands.
-            if let Some(ref condition) = bp.condition {
-                if condition.contains('\n') || condition.contains('\r') {
-                    let record = BreakpointRecord {
-                        id,
-                        line: bp.line,
-                        column: bp.column,
-                        condition: bp.condition.clone(),
-                        hit_condition: bp.hit_condition.clone(),
-                        log_message: bp.log_message.clone(),
-                        hit_count: 0,
-                        verified: false,
-                        message: Some("Breakpoint condition cannot contain newlines".to_string()),
-                    };
-                    records.push(record);
-                    continue;
-                }
+            if let Some(ref condition) = bp.condition
+                && (condition.contains('\n') || condition.contains('\r'))
+            {
+                let record = BreakpointRecord {
+                    id,
+                    line: bp.line,
+                    column: bp.column,
+                    condition: bp.condition.clone(),
+                    hit_condition: bp.hit_condition.clone(),
+                    log_message: bp.log_message.clone(),
+                    hit_count: 0,
+                    verified: false,
+                    message: Some("Breakpoint condition cannot contain newlines".to_string()),
+                };
+                records.push(record);
+                continue;
             }
 
             if let Some(ref hit_condition) = bp.hit_condition {

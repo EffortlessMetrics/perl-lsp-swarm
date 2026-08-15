@@ -1242,6 +1242,35 @@ fn run_critic_native_matches_pull_diagnostics_registry() -> Result<(), Box<dyn s
 }
 
 #[test]
+fn run_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n";
+    let tmp = tempdir()?;
+    let file = tmp.path().join("unused.pl");
+    fs::write(&file, source)?;
+
+    let provider = ExecuteCommandProvider::new().with_native_critic_config(
+        " RECOMMENDED ".to_string(),
+        Vec::new(),
+        Vec::new(),
+        3,
+    );
+    let result = provider.run_native_critic(&file)?;
+    let policies: Vec<&str> = result["violations"]
+        .as_array()
+        .ok_or("violations is not an array")?
+        .iter()
+        .filter_map(|violation| violation["policy"].as_str())
+        .collect();
+
+    assert!(
+        policies.contains(&"native.variables.unused_lexical"),
+        "legacy invalid profile fallback must remain strict: {policies:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn external_critic_not_requested_without_config() {
     // The structural guarantee behind "perlcritic on PATH does not change the
     // default": with no config the external branch is never reached, so the

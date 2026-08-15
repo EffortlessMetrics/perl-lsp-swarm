@@ -45,14 +45,19 @@ jobs:
     steps:
       - name: Determine version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$DISPATCH_VERSION"
             SHOULD_RUN="true"
-          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+          elif [ "$EVENT_NAME" = "workflow_run" ]; then
             # Only run when the upstream publish workflow succeeded
-            if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
-              echo "Upstream publish workflow did not succeed (conclusion: ${{ github.event.workflow_run.conclusion }}). Skipping smoke test."
+            if [ "$WORKFLOW_RUN_CONCLUSION" != "success" ]; then
+              echo "Upstream publish workflow did not succeed (conclusion: $WORKFLOW_RUN_CONCLUSION). Skipping smoke test."
               echo "should_run=false" >> "$GITHUB_OUTPUT"
               echo "version=skip" >> "$GITHUB_OUTPUT"
               exit 0
@@ -60,19 +65,18 @@ jobs:
             # Extract the version from the workflow_run event name.
             # The publish workflow is triggered on release events with tag names like "v0.12.2".
             # Fall back to the head SHA's Cargo.toml workspace version if no tag.
-            HEAD_BRANCH="${{ github.event.workflow_run.head_branch }}"
-            if [[ "$HEAD_BRANCH" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+            if [[ "$WORKFLOW_RUN_HEAD_BRANCH" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
               VERSION="${BASH_REMATCH[1]}"
             else
               # Checkout to read the workspace version
-              echo "could not determine version from branch '$HEAD_BRANCH'; needs manual dispatch"
+              echo "could not determine version from branch '$WORKFLOW_RUN_HEAD_BRANCH'; needs manual dispatch"
               echo "should_run=false" >> "$GITHUB_OUTPUT"
               echo "version=unknown" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             SHOULD_RUN="true"
           else
-            echo "Unrecognised event: ${{ github.event_name }}"
+            echo "Unrecognised event: $EVENT_NAME"
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             echo "version=unknown" >> "$GITHUB_OUTPUT"
             exit 0
@@ -96,7 +100,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Setup Rust (stable)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -106,7 +110,7 @@ jobs:
       # Warm the registry cache for the exact version we're testing so that
       # `cargo add` and `cargo install` don't have to fetch the full index.
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
 
@@ -134,7 +138,7 @@ jobs:
 
       - name: Upload smoke test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: smoke-test-results-v${{ needs.resolve-version.outputs.version }}
           path: /tmp/smoke-output.txt
@@ -142,8 +146,10 @@ jobs:
 
       - name: Annotate on failure
         if: failure()
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
-          echo "::error::Post-publish smoke test failed for v${{ needs.resolve-version.outputs.version }}. Check the job summary for details."
+          echo "::error::Post-publish smoke test failed for v${VERSION}. Check the job summary for details."
           echo ""
           echo "Common causes:"
           echo "  - cargo install failure: crate not yet fully propagated through crates.io CDN (wait ~5 min, re-run)"

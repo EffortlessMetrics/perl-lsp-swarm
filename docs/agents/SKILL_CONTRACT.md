@@ -1,8 +1,8 @@
 # Skill contract
 
 Skills are small, self-navigating artifact transformations. They make the next useful
-judgment clear without turning the repository into a runtime workflow engine or
-cross-lane coordinator.
+judgment and route clear without turning the repository into a runtime workflow engine,
+tracked frontier, or cross-lane coordinator.
 
 ## Provider-native operational authority
 
@@ -21,25 +21,61 @@ A substantive skill must be operationally complete in both provider implementati
 It may link shared context, but it cannot require the agent to reconstruct its actual
 procedure from one provider-neutral authority document.
 
-## Required shape
+## Scope-relative execution
 
-Every public flow and substantive atomic skill should state:
+Skills may be consumed by different runtime scopes:
+
+```text
+campaign root
+→ durable goal, acceptance predicates, bounded frontier, cross-lane decisions,
+  evidence joins, and goal reconciliation
+
+lane root
+→ one coherent claim, its named deliver-pr route, claim-local orchestration,
+  one candidate writer, review sufficiency, integration, and closeout
+
+worker / writer / reviewer
+→ one bounded skill or question, one mutation surface where applicable,
+  compact evidence and a typed return
+```
+
+Campaign-root leaf execution is exceptional. Lane-root direct execution remains valid
+for tiny claim-local work where briefing and joining cost more than the context saved.
+A whole-flow lane may invoke `orchestrate-work` within its claim. A leaf worker may not
+expand into lane ownership unless its brief explicitly grants that authority.
+
+## Required skill shape
+
+Every public flow and substantive atomic skill must expose the applicable semantics
+below. This is an affordance vocabulary for orchestrators and validators, not a demand
+that every skill use these exact headings or include inapplicable fields.
 
 ```text
 Purpose
 Use when
 Do not use when
 Authoritative inputs
-Focused questions
+Root-retained decisions
+Delegable read-only questions
+Mutation owner
+Useful parallelism / communication requirement
 Recommended procedure
-Optional within-claim lenses or delegation
-GitHub and repository inputs
-Durable updates
+Join predicate
+Required return packet
+GitHub reads and useful durable updates
+What stays runtime-local
+External wait / wake event where applicable
 What this establishes
 What this does not establish
 Valid exits and routes
 Actual stop conditions
 ```
+
+A skill may combine fields under provider-native headings such as scope hierarchy,
+assignment contract, graph-delta returns, runtime boundary, or goal-completion
+contract. It must still make the relevant decision owner, mutation owner, delegation
+surface, join/return boundary, durable/runtime split, and establishment/nonclaim
+boundary unambiguous enough for `orchestrate-work` and maintenance-time validation.
 
 ## Canonical skill vocabulary
 
@@ -54,7 +90,7 @@ build-candidate
 finish-pr
 ```
 
-The initial atomic transformation catalog is:
+The atomic transformation catalog is:
 
 ```text
 # Issue and plan
@@ -83,18 +119,19 @@ verify-live-ci
 merge-reconcile
 ```
 
-Public flows are the natural user/root entrypoints. Atomic skills are normally called
-from a public flow or invoked explicitly for midstream work. Adding, renaming, or
-removing an atomic skill is a control-plane change and must update both provider
-implementations and route validation.
+Public flows are natural campaign/lane entrypoints. Atomic skills normally execute in
+worker, writer, reviewer, or lane-root contexts. Adding, renaming, or removing a skill
+is a control-plane change and must update both provider implementations and route
+validation.
 
-The internal `orchestrate-work` operation is root-facing execution guidance, not a
-public flow or atomic artifact stage. It selects direct execution, a bounded question,
-an atomic-skill assignment, a whole-flow lane, or separate independent claim lanes
-for the current runtime. It must preserve one writer per candidate, join evidence
-rather than votes, and return to the invoking flow. It must not encode a durable
-executor graph, lease, reservation, liveness state, provider, model, agent count, or
-team topology.
+The internal `orchestrate-work` operation is root-facing runtime compilation guidance,
+not a public stage. It selects claim lanes, bounded questions, atomic-skill assignments,
+one candidate writer, differentiated review contexts, or independent claim lanes. It
+must run the route selected by the invoking flow and return to that flow.
+
+It must not encode a durable executor DAG, tracked frontier, lease, reservation,
+liveness state, provider, model, agent count, team topology, or comment-per-transition
+protocol.
 
 ## Local route grammar
 
@@ -138,8 +175,10 @@ BLOCKED / NOT_PROVEN
   → name the exact dependency, authority, instrument, or evidence gap
 ```
 
-Do not mix stage identifiers, agent identities, label names, guessed command names,
-and callable skills in one exit vocabulary.
+Selecting a route is not completion. The orchestrator invokes the selected skill and
+follows its named next or material backward edge. Do not mix stage identifiers, agent
+identities, label names, guessed command names, and callable skills in one exit
+vocabulary.
 
 ## Applicability
 
@@ -158,44 +197,81 @@ A substantive skill operates on one selected claim and its current candidate.
 
 - one claim normally has one current candidate;
 - one writer mutates that candidate branch/worktree at a time;
-- focused read-only research, oracle, proof, or review may assist when useful;
-- helpers do not inspect sibling lanes, touched-file overlap, or nearby symbols as a
-  routine ownership check;
+- focused research, oracle, proof, review, and CI evidence work may assist;
+- helpers do not inspect sibling lanes or touched-file overlap as a routine ownership
+  check;
 - before creating a candidate, check only for an equivalent current PR and explicit
   prerequisites;
-- use direct issue or PR comments for material prerequisite, ruling, supersession, or
-  actual integration findings;
-- the affected lane owns its own conflict resolution and affected re-proof/re-review.
+- the affected lane owns its conflict resolution and affected re-proof/re-review;
+- whole-flow lane agents execute `deliver-pr` and may orchestrate within the claim;
+- leaf agents consume the named skill when one is supplied.
 
 Do not add orchestration metadata, executor DAGs, lane reservations, candidate
-frontiers, or persistent liveness state to skills.
+frontiers, or persistent liveness state to skills or tracked files.
 
-A skill may contain a concise within-claim execution note when it materially
-clarifies:
+## Brief and return contract
 
-- which questions are read-only and independently answerable;
-- which provider-native skill a child should consume;
-- which candidate branch/worktree receives mutations;
-- which evidence or decision must be joined before continuing.
+A bounded brief should identify:
 
-That note must not require a model, agent count, team topology, workflow engine, or
-cross-lane surveillance.
+```text
+parent flow/skill
+exact durable subject and candidate identity
+established facts and accepted authority
+one question or mutation boundary
+named provider-native skill when known
+runtime authority: campaign root | lane root | read-only | writer | reviewer
+falsifiers / negative controls
+sufficient return and stable evidence references
+NOT_PROVEN and stop/backward conditions
+non-goals
+```
 
-## GitHub interaction section
+Read-only returns should preserve direct and contradictory evidence, searched scope,
+authority, what is/is not established, the affected claim/proof/authority edge,
+recommended route, `NOT_PROVEN` boundary, and overflow references. Writers return
+candidate identity, behavior/seams changed, proof run/not run, findings repaired,
+limitations, current GitHub state, and the typed flow result.
 
-State which native GitHub surfaces the skill reads and may update. Also state which
-surfaces must not be treated as authority.
+The root joins graph deltas rather than votes. Repeated claims from one source are not
+independent corroboration. Private reasoning and raw transcripts are never required.
 
-A skill may use labels to classify area, kind, risk, release, or requested attention.
-It must not use lifecycle-mirror or agent-completion labels as proof that work
-succeeded.
+## GitHub publication boundary
 
-When another lane needs a material fact, a direct issue or PR comment is sufficient.
-Do not create another coordination database.
+State which native GitHub surfaces the skill reads and may update, and which surfaces
+must not be treated as authority.
+
+Publish when information:
+
+- changes claim, authority, accepted plan, proof obligation, route, prerequisite,
+  support, risk, or rollback meaning;
+- is reusable source-backed evidence another context would otherwise rediscover;
+- is a localized review finding or supported disposition;
+- records a real external wait and wake event;
+- provides a useful cumulative review, merged effect, or goal synthesis.
+
+Keep runtime-local:
+
+- agent identity, topology, liveness, retry order, task state, and frontier;
+- provisional reasoning that changes no durable decision;
+- raw logs already available by stable reference;
+- unchanged polling and routine route transitions.
+
+Use issues for durable research/plan/ruling/dependency/goal synthesis, PR bodies or
+comments for candidate-wide route/proof/limitation summaries, inline review for
+localized findings, review replies for dispositions, submitted reviews for cumulative
+judgment, and issue closeout for landed effect and residual work.
+
+When route traceability is useful and not already obvious, one compact issue/PR route
+declaration may state the parent goal, claim, entry flow, current named transition,
+reason, durable subject, and wake event. Update it only when the material route changes.
+It is not stage authority.
+
+Labels may classify area, kind, risk, release, or requested attention. They must not
+prove route, build, review, CI, response, or merge completion.
 
 ## Review-bearing provider contract
 
-Both providers must implement the full review flow directly:
+Both providers implement the full review flow directly:
 
 ```text
 root router
@@ -205,29 +281,23 @@ root router
 → provider-native verify-live-ci
 ```
 
-The provider-local skills must establish all of the following without relying on a
-shared review-procedure document:
+The provider-local skills must establish:
 
-- `orchestrate-work` contains the PR review subgraph, bounded read-only briefs,
-  one-writer boundary, evidence joining, and the rule that subagent verdicts do not
-  authorize merge;
+- `orchestrate-work` contains hierarchical scopes, PR review subgraphs, bounded briefs,
+  one-writer protection, graph-delta joining, and useful GitHub publication filtering;
 - `finish-pr` routes substantive candidates without useful current review through
-  `final-challenge`, `orchestrate-work`, and `review-pr` before live integration;
-- `review-pr` reconstructs the candidate/evidence map, traces production reachability,
-  challenges proof discrimination and evidence integrity, verifies external and
-  semantic truth, checks authority/complexity/risk/rollback, publishes findings or a
-  useful clean conclusion, and returns an explicit substantive result;
-- `verify-live-ci` reads integration facts only after `REVIEW_CURRENT`; green checks,
-  mergeability, zero threads, bot output, and author self-certification cannot create
-  that result;
-- after accepted repair, affected proof and review dimensions are refreshed without
-  restarting unrelated review merely because the SHA changed;
-- `deliver-goal` may synthesize a bounded related PR set only after each candidate has
-  its own provider-native review, and only to resolve dependency, contract, limitation
-  propagation, and repair/merge order;
-- `deliver-pr` routes every existing or publication-ready PR through `finish-pr`.
+  `final-challenge`, `orchestrate-work`, and `review-pr` before integration;
+- `review-pr` reconstructs candidate/evidence, traces production reachability,
+  challenges proof/evidence, verifies external/semantic truth, checks authority,
+  complexity, risk, and rollback, and publishes findings or a useful clean conclusion;
+- `verify-live-ci` reads integration facts only after `REVIEW_CURRENT`;
+- accepted repair refreshes affected proof and review dimensions without exact-head
+  ceremony;
+- `deliver-goal` synthesizes related PRs only after each candidate has its own review;
+- `deliver-pr` runs the selected named route and sends accepted mutation through one
+  writer.
 
-Review-bearing skills use a substantive result vocabulary:
+Substantive review results are:
 
 ```text
 REVIEW_CURRENT
@@ -237,7 +307,7 @@ BLOCKED_BY_PREREQUISITE
 SUPERSEDED_OR_CLOSE
 ```
 
-Live integration uses a separate posture vocabulary:
+Live integration postures are:
 
 ```text
 INTEGRATION_READY
@@ -246,9 +316,8 @@ MERGE_BLOCKED
 NOT_PROVEN
 ```
 
-These are useful cumulative judgments and native flow results, not lifecycle labels,
-claim digests, exact-head receipts, automatic approvals, or merge authorization
-independent of live GitHub policy.
+These are cumulative judgments and flow results, not labels, claim digests, exact-head
+receipts, automatic approvals, or merge authorization independent of live policy.
 
 ## Structural validation
 
@@ -256,18 +325,30 @@ Maintenance-time validation may check:
 
 - metadata and route targets;
 - provider semantic coverage;
-- no-proof, midstream, in-flight, repair, and backward routes;
-- candidate-local writer wording where a skill mutates artifacts;
-- provider roots directly name their operational review flow;
-- `orchestrate-work` contains the provider-local PR review subgraph;
-- `finish-pr` cannot bypass `orchestrate-work` and `review-pr` for substantive
-  candidates;
-- `review-pr` routes `REVIEW_CURRENT` to `verify-live-ci`;
-- `verify-live-ci` routes missing review back to `review-pr` and cannot promote it;
+- no-proof, midstream, in-flight, repair, backward, and whole-flow-lane routes;
+- campaign-root, lane-root, worker, reviewer, and candidate-writer wording;
+- root-retained decisions and one mutation owner where mutation is applicable;
+- delegable read-only work or an explicit reason the skill remains local;
+- useful parallelism/communication boundary;
+- join predicate and graph-delta/return packet;
+- useful GitHub publication versus runtime-local state;
+- external wait and wake-event semantics for wait-bearing flows;
+- explicit establishment and nonclaim boundaries;
+- provider roots directly name their operational flows;
+- `orchestrate-work` runs the specified route and contains the provider-local review
+  subgraph;
+- `finish-pr` cannot bypass substantive review;
+- `review-pr` routes current review to `verify-live-ci`;
+- `verify-live-ci` cannot infer review from integration facts;
 - substantive review and integration posture remain distinct;
-- root skill-discovery budget;
-- absence of retired active references and orchestration metadata.
+- useful GitHub updates are distinct from runtime state;
+- route trace is bounded and non-authoritative;
+- absence of tracked frontier, liveness, agent registry, comment-per-transition, and
+  retired orchestration metadata.
 
-It must not inspect live issue or PR stage, judge actual review sufficiency from a
-phrase gate, infer neighbouring-lane overlap, require a named agent, authorize
-mutation, or run between ordinary skill transitions.
+Validation should test semantic markers and route relations appropriate to each skill
+class, not require identical headings or prose across Claude and Codex.
+
+It must not inspect a live issue/PR stage, select agents, judge actual review sufficiency
+from a phrase gate, infer neighbouring-lane overlap, authorize mutation, or run between
+ordinary skill transitions.

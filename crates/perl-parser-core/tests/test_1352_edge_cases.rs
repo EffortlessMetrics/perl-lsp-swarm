@@ -10,8 +10,6 @@
 //!   E7. Back-to-back hash recovery: two consecutive unclosed hashes, then a sub
 //!   E8. Unclosed after heredoc context (heredoc parsing doesn't interfere)
 
-mod cpan_test_helpers;
-use cpan_test_helpers::*;
 use perl_parser_core::{NodeKind, Parser};
 use perl_tdd_support::must;
 

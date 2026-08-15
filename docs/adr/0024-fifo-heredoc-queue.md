@@ -176,6 +176,6 @@ sequenceDiagram
 ## References
 
 - [crates/perl-parser-core/src/engine/parser/mod.rs](../../crates/perl-parser-core/src/engine/parser/mod.rs) - Parser implementation
-- [crates/perl-heredoc/src/lib.rs](../../crates/perl-heredoc/src/lib.rs) - Heredoc collection library
+- [crates/perl-parser-core/src/syntax/heredoc.rs](../../crates/perl-parser-core/src/syntax/heredoc.rs) - Heredoc collection library
 - [ADR-0005: Manual Heredoc Parsing](ADR_005_HEREDOC_MANUAL_PARSING.md) - Related heredoc parsing approach
 - [Perl heredoc documentation](https://perldoc.perl.org/perlop#Quote-and-Quote-like-Operators)

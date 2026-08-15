@@ -145,6 +145,70 @@ describe('workspace trust activation gate (#4631)', () => {
     expect(mockLanguageClientStart).not.toHaveBeenCalled();
   });
 
+  test('presents untrusted deferral as configuration action, not an endless start', async () => {
+    process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '0';
+    (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
+
+    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
+    const serverPath = path.join(
+      extensionRoot,
+      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+    );
+    fs.writeFileSync(serverPath, '');
+    mockConfig(serverPath);
+
+    await activate(makeContext(extensionRoot));
+
+    const statusBarItem = jest.mocked(vscode.window.createStatusBarItem).mock.results[0]?.value as {
+      text: string;
+      tooltip: string;
+      backgroundColor: unknown;
+    };
+
+    // The failure this guards against is the widget sitting on the spinner
+    // forever, which reads as a hung server rather than a decision the user
+    // has to make.
+    expect(statusBarItem.text).not.toContain('sync~spin');
+    expect(statusBarItem.text).toContain('action required');
+    expect(statusBarItem.backgroundColor).toBeDefined();
+
+    // The reason and the repair must both be legible without opening logs.
+    expect(statusBarItem.tooltip).toContain('not trusted');
+    expect(statusBarItem.tooltip).toContain('Trust this workspace');
+  });
+
+  test('clears the action-required state once trust is granted', async () => {
+    process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '0';
+    (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
+
+    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
+    const serverPath = path.join(
+      extensionRoot,
+      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+    );
+    fs.writeFileSync(serverPath, '');
+    mockConfig(serverPath);
+
+    await activate(makeContext(extensionRoot));
+
+    const statusBarItem = jest.mocked(vscode.window.createStatusBarItem).mock.results[0]?.value as {
+      text: string;
+      backgroundColor: unknown;
+    };
+    expect(statusBarItem.text).toContain('action required');
+
+    // Fire the trust-granted callback the extension registered.
+    const grantTrust = jest.mocked(vscode.workspace.onDidGrantWorkspaceTrust).mock
+      .calls[0]?.[0] as () => void;
+    expect(grantTrust).toBeDefined();
+    (vscode.workspace as { isTrusted: boolean }).isTrusted = true;
+    grantTrust();
+
+    // An action-required state that outlives its cause is its own defect.
+    expect(statusBarItem.text).not.toContain('action required');
+    expect(statusBarItem.backgroundColor).toBeUndefined();
+  });
+
   test('registers onDidGrantWorkspaceTrust listener when workspace is untrusted', async () => {
     process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '0';
     (vscode.workspace as { isTrusted: boolean }).isTrusted = false;

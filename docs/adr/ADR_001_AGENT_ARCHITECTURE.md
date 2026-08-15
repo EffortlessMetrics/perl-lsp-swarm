@@ -144,7 +144,7 @@ Total: **97 specialized agents** (vs. 53 generic agents) organized by functional
 - **Security Validation**: UTF-16 security enhancements tested through agent-coordinated mutation testing
 
 ## Related Documents
-- [CLAUDE.md](../CLAUDE.md) - Agent ecosystem overview
-- [AGENT_ORCHESTRATION.md](AGENT_ORCHESTRATION.md) - Agent workflow patterns
-- [AGENT_CUSTOMIZER.md](AGENT_CUSTOMIZER.md) - Domain-specific agent adaptation framework
-- [CLAUDE_AGENT_FLOW.md](CLAUDE_AGENT_FLOW.md) - PR review flow design
+- [SKILL_AND_AGENT_DESIGN.md](../reference/SKILL_AND_AGENT_DESIGN.md) - Agent ecosystem overview
+- [AGENT_SWARM_WORKFLOW.md](../project/AGENT_SWARM_WORKFLOW.md) - Agent workflow patterns
+- [AGENT_COORDINATION_HAZARDS.md](../reference/AGENT_COORDINATION_HAZARDS.md) - Coordination hazards
+- [AGENT_HANDOFF_PROTOCOL.md](../reference/AGENT_HANDOFF_PROTOCOL.md) - Handoff and review flow

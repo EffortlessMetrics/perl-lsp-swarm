@@ -10,13 +10,13 @@ permissions:
 
 jobs:
   base-smoke:
-    name: Real upstream base+comp+run parse+compile smoke
+    name: Real upstream base+comp+run+core parse+compile smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Install Rust toolchain
         run: |
@@ -63,6 +63,7 @@ jobs:
             --output-dir target/perl-core/smoke/base
 
       - name: Run comp parse+compile smoke
+        if: always()
         run: |
           cargo run -p xtask -- perl-core-harness smoke \
             --perl-tree "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5" \
@@ -73,6 +74,7 @@ jobs:
             --output-dir target/perl-core/smoke/comp
 
       - name: Run run parse+compile smoke
+        if: always()
         run: |
           cargo run -p xtask -- perl-core-harness smoke \
             --perl-tree "target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5" \
@@ -83,6 +85,7 @@ jobs:
             --output-dir target/perl-core/smoke/run
 
       - name: Check upstream compile ratchets
+        if: always()
         run: |
           for profile in base comp run; do
             cargo run -p xtask -- perl-core-harness baseline \
@@ -92,6 +95,22 @@ jobs:
               --baseline ".ci/perl-core-harness/upstream-$profile-compile-baseline.json" \
               --check
           done
+
+      - name: Run core parse+compile smoke (advisory)
+        if: always()
+        continue-on-error: true
+        env:
+          PERL_REF: ${{ steps.upstream.outputs.ref }}
+          PERL_MODES: ${{ steps.upstream.outputs.modes }}
+          PERL_TREE: target/perl-core/upstream/${{ steps.upstream.outputs.ref }}/perl5
+        run: |
+          cargo run -p xtask -- perl-core-harness smoke \
+            --perl-tree "$PERL_TREE" \
+            --host-perl perl \
+            --profile core \
+            --modes "$PERL_MODES" \
+            --perl-ref "$PERL_REF" \
+            --output-dir target/perl-core/smoke/core
 
       - name: Summarize receipts
         if: always()
@@ -107,7 +126,7 @@ jobs:
           import json
           from pathlib import Path
 
-          for profile in ("base", "comp", "run"):
+          for profile in ("base", "comp", "run", "core"):
               path = Path(f"target/perl-core/smoke/{profile}/smoke.json")
               print(f"### `{profile}`")
               if not path.exists():
@@ -129,7 +148,7 @@ jobs:
 
       - name: Upload Perl core harness receipts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: perl-core-harness-${{ github.sha }}
           path: target/perl-core/

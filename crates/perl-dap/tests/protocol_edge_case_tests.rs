@@ -605,6 +605,7 @@ fn test_variables_round_trip() -> Result<()> {
             variables_reference: 0,
             named_variables: None,
             indexed_variables: None,
+            evaluate_name: None,
         }],
         total_variables: Some(1),
     };

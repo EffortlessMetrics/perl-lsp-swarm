@@ -133,6 +133,7 @@ fn complete_use_or_structural_context(
             completions,
             context,
             source,
+            &provider.symbol_table,
             provider.type_engine.as_ref(),
             &provider.workspace_index,
             &provider.used_modules,
@@ -311,7 +312,12 @@ fn complete_indirect_method_context(
 
     // Gate: require a concrete receiver package. `Dynamic`/`Unknown` receivers
     // (e.g. `print $fh`, `return $foo`) carry no package and fall through.
-    let evidence = workspace::classify_receiver(&synth, source, provider.type_engine.as_ref());
+    let evidence = workspace::classify_receiver_with_symbol_table(
+        &synth,
+        source,
+        provider.type_engine.as_ref(),
+        Some(&provider.symbol_table),
+    );
     if evidence.package().is_none() {
         return false;
     }
@@ -332,6 +338,7 @@ fn complete_indirect_method_context(
         &mut probe,
         &synth,
         source,
+        &provider.symbol_table,
         provider.type_engine.as_ref(),
         &provider.workspace_index,
         &provider.used_modules,
@@ -343,7 +350,7 @@ fn complete_indirect_method_context(
         &provider.symbol_table,
         &provider.used_modules,
     );
-    if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_str())) {
+    if !probe.iter().any(|c| !OBJECT_DEFAULTS.contains(&c.label.as_ref())) {
         return false;
     }
 
@@ -359,6 +366,7 @@ fn complete_indirect_method_context(
         completions,
         &synth,
         source,
+        &provider.symbol_table,
         provider.type_engine.as_ref(),
         &provider.workspace_index,
         &provider.used_modules,

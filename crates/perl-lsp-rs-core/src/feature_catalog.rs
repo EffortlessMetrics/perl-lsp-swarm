@@ -295,6 +295,18 @@ pub enum CatalogError {
     Validation(String),
 }
 
+impl perl_parser_core::ErrorClass for CatalogError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // File system / infrastructure issues.
+            Self::MissingSource(_) | Self::Io(_) => perl_parser_core::ErrorCategory::Infra,
+            // The catalog is our own build artifact — a parse or validation
+            // failure means we shipped a broken catalog, which is our bug.
+            Self::Parse(_) | Self::Validation(_) => perl_parser_core::ErrorCategory::Bug,
+        }
+    }
+}
+
 /// Source selection detail for generated outputs and traceability.
 #[derive(Debug, Clone)]
 pub struct CatalogSource {

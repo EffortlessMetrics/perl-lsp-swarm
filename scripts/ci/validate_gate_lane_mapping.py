@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Validate that every gate in .ci/gate-policy.yaml maps to a lane in
-policy/ci-lanes.toml (or is explicitly declared as not-mapped).
+"""Validate gate policy mappings and required-gate workflow reachability.
+
+Every gate in .ci/gate-policy.yaml must map to a lane in policy/ci-lanes.toml
+(or be explicitly declared as not-mapped). When workflow files are supplied,
+every ``required: true`` merge-gate or release gate must also have a statically
+visible execution path through a ``gates --tier`` invocation or a workflow gate
+matrix. Commit-tier hooks and nightly jobs are intentionally outside this
+workflow reachability check.
 
 This is the cross-reference validator: it does not enforce, it reports.
 PR 09 of the CI economics rollout.
 
 Usage:
-  scripts/ci/validate_gate_lane_mapping.py [--strict]
+  scripts/ci/validate_gate_lane_mapping.py [--strict] [--workflow PATH ...]
 
 Exit codes:
   0 - all gates map to a lane (or are explicitly not-mapped)
-  1 - mapping mismatch (missing entries) and --strict was passed
+  1 - a strict mapping/reachability invariant failed
 """
 from __future__ import annotations
 
@@ -64,6 +70,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "clippy_full": {"lanes": ["merge_gate_shards"]},
     "unit_foundation_full": {"lanes": ["merge_gate_shards"]},
     "unit_parser_stack_full": {"lanes": ["merge_gate_shards"]},
+    "parser_integration": {"lanes": ["merge_gate_shards"]},
     "unit_analysis_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_core_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_full": {"lanes": ["merge_gate_shards"]},
@@ -86,6 +93,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "nested_lock_check": {"lanes": ["pr_smoke"]},
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
     "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
+    "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
 
     # commit-tier staged-tree hygiene (local pre-commit; not CI)
     "staged_tree_identity": {"lanes": ["commit_checks"]},
@@ -100,6 +108,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "from_raw_staged": {"lanes": ["commit_checks"]},
 
     # release-adjacent gates
+    "adr_link_check": {"lanes": ["docs_gate"]},
     "docs_build": {"lanes": ["docs_gate"]},
     "published_crate_count": {"lanes": ["release_check"]},
     "release_build": {"lanes": ["release_check"]},
@@ -123,7 +132,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
 }
 
 
-def read_yaml_gate_names(gate_policy_path: Path) -> list[str]:
+def read_yaml_gate_specs(gate_policy_path: Path) -> dict[str, dict[str, Any]]:
     """Lightweight gate-name extraction without a full YAML dependency.
 
     Looks for `^  - name: <ident>$` patterns under the `gates:` block. Avoids
@@ -131,7 +140,8 @@ def read_yaml_gate_names(gate_policy_path: Path) -> list[str]:
     """
     text = gate_policy_path.read_text(encoding="utf-8")
     in_gates = False
-    names: list[str] = []
+    specs: dict[str, dict[str, Any]] = {}
+    current: str | None = None
     for line in text.splitlines():
         stripped = line.rstrip()
         if stripped == "gates:":
@@ -143,8 +153,137 @@ def read_yaml_gate_names(gate_policy_path: Path) -> list[str]:
         if in_gates and line.startswith("  - name:"):
             name = line.split("name:", 1)[1].strip()
             if name:
-                names.append(name)
-    return names
+                current = name
+                specs[name] = {"tier": None, "required": False}
+            continue
+        if current is None or not line.startswith("    "):
+            continue
+        field, separator, value = line.strip().partition(":")
+        if not separator:
+            continue
+        value = value.strip()
+        if field == "tier":
+            specs[current]["tier"] = value
+        elif field == "required":
+            specs[current]["required"] = value.lower() == "true"
+    return specs
+
+
+def read_yaml_gate_names(gate_policy_path: Path) -> list[str]:
+    """Return gate names, retaining the legacy helper's public behavior."""
+    return list(read_yaml_gate_specs(gate_policy_path))
+
+
+def _workflow_line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _workflow_line_is_metadata(line: str) -> bool:
+    """Return True when a workflow line cannot execute gate commands.
+
+    Only matrix ``gates:`` declarations and shell ``run`` steps are trusted
+    execution contexts. Gate-like substrings in ``name:``, ``env:``, or other
+    YAML metadata are not executable paths.
+    """
+    stripped = line.lstrip()
+    if re.match(r"^(?:-\s*)?gates:\s*", stripped):
+        return False
+    if "run:" in line or stripped.startswith("run "):
+        return False
+    return True
+
+
+def _record_workflow_gate_matches(
+    line: str,
+    *,
+    known: set[str],
+    gate_specs: dict[str, dict[str, Any]],
+    reachable: set[str],
+) -> None:
+    tier_match = re.search(r"\bgates\s+--tier\s+([a-z0-9_-]+)\b", line)
+    if tier_match:
+        tier = tier_match.group(1).replace("-", "_")
+        reachable.update(
+            name for name, spec in gate_specs.items() if spec.get("tier") == tier
+        )
+
+    matrix_match = re.match(r"^\s*(?:-\s*)?gates:\s*(.*)$", line)
+    if matrix_match:
+        reachable.update(
+            token
+            for token in re.findall(r"[a-z][a-z0-9_]*", matrix_match.group(1))
+            if token in known
+        )
+
+    direct_match = re.search(r"\bgates\s+--gate\s+([a-z][a-z0-9_]*)\b", line)
+    if direct_match and direct_match.group(1) in known:
+        reachable.add(direct_match.group(1))
+
+
+def read_workflow_reachable_gates(
+    workflow_paths: list[Path], gate_specs: dict[str, dict[str, Any]]
+) -> set[str]:
+    """Extract statically visible gate execution paths from workflow YAML.
+
+    The CI workflow has two relevant shapes: a tier invocation for the PR-fast
+    tier and explicit ``gates:`` matrix values consumed by ``--gate "$gate"``.
+    Dynamic shell variables are intentionally not treated as gate names; the
+    matrix values that feed them are the authoritative source in the workflow.
+    """
+    known = set(gate_specs)
+    reachable: set[str] = set()
+    for workflow_path in workflow_paths:
+        text = workflow_path.read_text(encoding="utf-8")
+        in_run_block = False
+        run_block_indent = -1
+        for raw_line in text.splitlines():
+            line = raw_line.split("#", 1)[0]
+            if not line.strip():
+                continue
+
+            indent = _workflow_line_indent(line)
+            if in_run_block and indent <= run_block_indent:
+                in_run_block = False
+
+            stripped = line.lstrip()
+            block_run = re.match(r"run:\s*[|>][-+]?\s*$", stripped)
+            inline_run = (
+                re.match(r"run:\s*(.+)$", stripped) if block_run is None else None
+            )
+
+            if block_run is not None:
+                in_run_block = True
+                run_block_indent = indent
+                continue
+
+            if inline_run is not None:
+                _record_workflow_gate_matches(
+                    inline_run.group(1),
+                    known=known,
+                    gate_specs=gate_specs,
+                    reachable=reachable,
+                )
+                continue
+
+            if in_run_block and indent > run_block_indent:
+                _record_workflow_gate_matches(
+                    stripped,
+                    known=known,
+                    gate_specs=gate_specs,
+                    reachable=reachable,
+                )
+                continue
+
+            if _workflow_line_is_metadata(line):
+                continue
+
+            _record_workflow_gate_matches(
+                stripped,
+                known=known,
+                gate_specs=gate_specs,
+                reachable=reachable,
+            )
+    return reachable
 
 
 def read_lane_ids(lanes_path: Path) -> set[str]:
@@ -270,7 +409,18 @@ def main() -> int:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Exit 1 on any unmapped gate or missing lane reference.",
+        help="Exit 1 on mapping, documentation, or required-gate reachability failures.",
+    )
+    parser.add_argument(
+        "--workflow",
+        dest="workflows",
+        action="append",
+        type=Path,
+        default=[],
+        help=(
+            "Workflow YAML to inspect for gate execution paths. Repeat for multiple "
+            "workflows; required-gate reachability is skipped when omitted."
+        ),
     )
     parser.add_argument(
         "--json-out",
@@ -280,7 +430,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    gate_names = read_yaml_gate_names(args.gate_policy)
+    gate_specs = read_yaml_gate_specs(args.gate_policy)
+    gate_names = list(gate_specs)
     lane_ids = read_lane_ids(args.lanes)
 
     unmapped_gates: list[str] = []
@@ -311,19 +462,6 @@ def main() -> int:
     for g, l in missing_lanes:
         print(f"  - {g} -> {l}  (lane not in ci-lanes.toml)")
 
-    if args.json_out:
-        report = {
-            "gate_policy": str(args.gate_policy),
-            "lanes": str(args.lanes),
-            "gate_count": len(gate_names),
-            "lane_count": len(lane_ids),
-            "mapped": [{"gate": g, "lanes": l} for g, l in mapped],
-            "unmapped_gates": unmapped_gates,
-            "missing_lanes": [{"gate": g, "lane": l} for g, l in missing_lanes],
-        }
-        args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-
     docs_target = resolve_docs_target(args.docs, args.gate_policy, args.lanes)
     if docs_target is None:
         docs_problems: list[str] = []
@@ -334,7 +472,53 @@ def main() -> int:
     for problem in docs_problems:
         print(f"  - {problem}")
 
-    if args.strict and (unmapped_gates or missing_lanes or docs_problems):
+    required_unreachable: list[str] = []
+    if args.workflows:
+        reachable = read_workflow_reachable_gates(args.workflows, gate_specs)
+        workflow_scoped = {
+            name
+            for name, spec in gate_specs.items()
+            if spec.get("tier") in {"pr_fast", "merge_gate", "release"}
+        }
+        unreachable = sorted(workflow_scoped - reachable)
+        required_unreachable = sorted(
+            name
+            for name, spec in gate_specs.items()
+            if spec.get("required")
+            and spec.get("tier") in {"pr_fast", "merge_gate", "release"}
+            and name not in reachable
+        )
+        print(f"Workflow files checked: {len(args.workflows)}")
+        print(f"Reachable gates: {len(reachable)}")
+        print(f"Unreachable gates: {len(unreachable)}")
+        for name in unreachable[:30]:
+            print(f"  - {name}")
+        if len(unreachable) > 30:
+            print(f"  ... and {len(unreachable) - 30} more")
+        print(f"Required unreachable gates: {len(required_unreachable)}")
+        for name in required_unreachable:
+            print(f"  - {name}")
+    else:
+        print("Workflow reachability: skipped (no --workflow supplied)")
+
+    if args.json_out:
+        report = {
+            "gate_policy": str(args.gate_policy),
+            "lanes": str(args.lanes),
+            "gate_count": len(gate_names),
+            "lane_count": len(lane_ids),
+            "mapped": [{"gate": g, "lanes": l} for g, l in mapped],
+            "unmapped_gates": unmapped_gates,
+            "missing_lanes": [{"gate": g, "lane": l} for g, l in missing_lanes],
+            "workflows": [str(path) for path in args.workflows],
+            "required_unreachable_gates": required_unreachable,
+        }
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    if args.strict and (
+        unmapped_gates or missing_lanes or docs_problems or required_unreachable
+    ):
         return 1
     return 0
 

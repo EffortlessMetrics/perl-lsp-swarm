@@ -1204,7 +1204,7 @@ mod tests {
              update pkg-url in crates/perllsp/Cargo.toml"
         );
         assert!(
-            workflow.contains(r#"tar czf "${PKG_NAME}${EXT}" "${PKG_NAME}""#),
+            workflow.contains(r#"tar czf "${PKG_NAME}${EXT}" "$PKG_NAME""#),
             "release.yml no longer nests the tarball under PKG_NAME; \
              update bin-dir in crates/perllsp/Cargo.toml"
         );

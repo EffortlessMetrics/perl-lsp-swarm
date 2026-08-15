@@ -19,56 +19,50 @@ fn loc(start: usize, end: usize) -> SourceLocation {
 }
 
 fn use_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Use {
+    Node::new(
+        NodeKind::Use {
             module: module.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn no_node(module: &str, args: &[&str], start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::No {
+    Node::new(
+        NodeKind::No {
             module: module.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
             has_filter_risk: false,
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn function_call(name: &str, args: Vec<Node>, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::FunctionCall { name: name.to_string(), args },
-        location: loc(start, end),
-    }
+    Node::new(NodeKind::FunctionCall { name: name.to_string(), args }, loc(start, end))
 }
 
 fn number_node(value: &str, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Number { value: value.to_string() }, location: loc(start, end) }
+    Node::new(NodeKind::Number { value: value.to_string() }, loc(start, end))
 }
 
 fn string_node(value: &str, interpolated: bool, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::String { value: value.to_string(), interpolated },
-        location: loc(start, end),
-    }
+    Node::new(NodeKind::String { value: value.to_string(), interpolated }, loc(start, end))
 }
 
 fn program(stmts: Vec<Node>) -> Node {
     let end = stmts.last().map_or(0, |n| n.location.end);
-    Node { kind: NodeKind::Program { statements: stmts }, location: loc(0, end) }
+    Node::new(NodeKind::Program { statements: stmts }, loc(0, end))
 }
 
 fn block(stmts: Vec<Node>, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Block { statements: stmts }, location: loc(start, end) }
+    Node::new(NodeKind::Block { statements: stmts }, loc(start, end))
 }
 
 fn dummy_node(start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::MissingExpression, location: loc(start, end) }
+    Node::new(NodeKind::MissingExpression, loc(start, end))
 }
 
 fn require(condition: bool, message: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -856,8 +850,8 @@ fn nested_blocks_restore_correctly() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn subroutine_body_inherits_pragma_state() -> Result<(), Box<dyn std::error::Error>> {
     let sub_body = block(vec![use_node("warnings", &[], 30, 45)], 25, 50);
-    let sub_node = Node {
-        kind: NodeKind::Subroutine {
+    let sub_node = Node::new(
+        NodeKind::Subroutine {
             name: Some("foo".to_string()),
             name_span: None,
             declarator: None,
@@ -866,8 +860,8 @@ fn subroutine_body_inherits_pragma_state() -> Result<(), Box<dyn std::error::Err
             attributes: vec![],
             body: Box::new(sub_body),
         },
-        location: loc(20, 55),
-    };
+        loc(20, 55),
+    );
     let ast = program(vec![use_node("strict", &[], 0, 12), sub_node]);
     let map = PragmaTracker::build(&ast);
 
@@ -886,16 +880,16 @@ fn subroutine_body_inherits_pragma_state() -> Result<(), Box<dyn std::error::Err
 fn if_branches_traversed() -> Result<(), Box<dyn std::error::Error>> {
     let then_branch = block(vec![use_node("warnings", &[], 20, 35)], 18, 40);
     let else_branch = block(vec![no_node("strict", &["refs"], 45, 60)], 42, 65);
-    let if_node = Node {
-        kind: NodeKind::If {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 15)),
             then_branch: Box::new(then_branch),
             elsif_branches: vec![],
             else_branch: Some(Box::new(else_branch)),
         },
-        location: loc(10, 65),
-    };
+        loc(10, 65),
+    );
     let ast = program(vec![use_node("strict", &[], 0, 9), if_node]);
     let map = PragmaTracker::build(&ast);
 
@@ -914,16 +908,16 @@ fn if_elsif_else_branches_restore_state() -> Result<(), Box<dyn std::error::Erro
     let then_branch = block(vec![no_node("strict", &["refs"], 20, 35)], 18, 40);
     let elsif_branch = block(vec![use_node("warnings", &[], 45, 60)], 43, 65);
     let else_branch = block(vec![no_node("strict", &["subs"], 70, 85)], 68, 90);
-    let if_node = Node {
-        kind: NodeKind::If {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 15)),
             then_branch: Box::new(then_branch),
             elsif_branches: vec![(Box::new(dummy_node(41, 42)), Box::new(elsif_branch))],
             else_branch: Some(Box::new(else_branch)),
         },
-        location: loc(10, 90),
-    };
+        loc(10, 90),
+    );
     let ast =
         program(vec![use_node("strict", &[], 0, 12), if_node, use_node("warnings", &[], 91, 106)]);
     let map = PragmaTracker::build(&ast);
@@ -946,15 +940,15 @@ fn if_elsif_else_branches_restore_state() -> Result<(), Box<dyn std::error::Erro
 #[test]
 fn while_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
     let body = block(vec![use_node("warnings", &[], 20, 35)], 18, 40);
-    let while_node = Node {
-        kind: NodeKind::While {
+    let while_node = Node::new(
+        NodeKind::While {
             keyword: None,
             condition: Box::new(dummy_node(10, 15)),
             body: Box::new(body),
             continue_block: None,
         },
-        location: loc(10, 40),
-    };
+        loc(10, 40),
+    );
     let ast = program(vec![while_node]);
     let map = PragmaTracker::build(&ast);
     assert!(!map.is_empty());
@@ -965,16 +959,16 @@ fn while_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn for_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
     let body = block(vec![use_node("strict", &["vars"], 30, 50)], 28, 55);
-    let for_node = Node {
-        kind: NodeKind::For {
+    let for_node = Node::new(
+        NodeKind::For {
             init: None,
             condition: None,
             update: None,
             body: Box::new(body),
             continue_block: None,
         },
-        location: loc(10, 55),
-    };
+        loc(10, 55),
+    );
     let ast = program(vec![for_node]);
     let map = PragmaTracker::build(&ast);
     assert!(map[0].1.strict_vars);
@@ -984,15 +978,15 @@ fn for_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn foreach_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
     let body = block(vec![use_node("strict", &[], 30, 42)], 28, 45);
-    let foreach_node = Node {
-        kind: NodeKind::Foreach {
+    let foreach_node = Node::new(
+        NodeKind::Foreach {
             variable: Box::new(dummy_node(10, 12)),
             list: Box::new(dummy_node(13, 20)),
             body: Box::new(body),
             continue_block: None,
         },
-        location: loc(10, 45),
-    };
+        loc(10, 45),
+    );
     let ast = program(vec![foreach_node]);
     let map = PragmaTracker::build(&ast);
     let state = &map[0].1;
@@ -1081,13 +1075,13 @@ fn modern_container_bodies_are_traversed_and_scoped() -> Result<(), Box<dyn std:
 fn eval_string_call_is_handled_conservatively() -> Result<(), Box<dyn std::error::Error>> {
     let eval_string_call = function_call(
         "eval",
-        vec![Node {
-            kind: NodeKind::String {
+        vec![Node::new(
+            NodeKind::String {
                 value: "use warnings; no strict 'refs';".to_string(),
                 interpolated: true,
             },
-            location: loc(20, 58),
-        }],
+            loc(20, 58),
+        )],
         15,
         59,
     );
@@ -1495,16 +1489,16 @@ fn changed_builtin_scope_restores_state_after_block() -> Result<(), Box<dyn std:
 #[test]
 fn scoped_body_without_pragma_changes_does_not_create_restore_entry()
 -> Result<(), Box<dyn std::error::Error>> {
-    let if_node = Node {
-        kind: NodeKind::If {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 12)),
             then_branch: Box::new(dummy_node(15, 20)),
             elsif_branches: vec![],
             else_branch: None,
         },
-        location: loc(10, 20),
-    };
+        loc(10, 20),
+    );
     let ast = program(vec![use_node("builtin", &["'true'"], 0, 8), if_node, dummy_node(25, 30)]);
 
     let map = PragmaTracker::build(&ast);
@@ -1524,16 +1518,16 @@ fn scoped_body_without_pragma_changes_does_not_create_restore_entry()
 #[test]
 fn changed_scoped_body_restores_state_after_direct_pragma() -> Result<(), Box<dyn std::error::Error>>
 {
-    let if_node = Node {
-        kind: NodeKind::If {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 12)),
             then_branch: Box::new(use_node("builtin", &["'floor'"], 15, 25)),
             elsif_branches: vec![],
             else_branch: None,
         },
-        location: loc(10, 25),
-    };
+        loc(10, 25),
+    );
     let ast = program(vec![use_node("builtin", &["'true'"], 0, 8), if_node, dummy_node(30, 35)]);
 
     let map = PragmaTracker::build(&ast);
@@ -1807,16 +1801,16 @@ fn pragma_map_records_correct_ranges() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 fn if_without_else_does_not_panic() -> Result<(), Box<dyn std::error::Error>> {
     let then_branch = block(vec![use_node("warnings", &[], 20, 35)], 18, 40);
-    let if_node = Node {
-        kind: NodeKind::If {
+    let if_node = Node::new(
+        NodeKind::If {
             keyword: None,
             condition: Box::new(dummy_node(10, 15)),
             then_branch: Box::new(then_branch),
             elsif_branches: vec![],
             else_branch: None,
         },
-        location: loc(10, 40),
-    };
+        loc(10, 40),
+    );
     let ast = program(vec![if_node]);
     let map = PragmaTracker::build(&ast);
     assert!(!map.is_empty());
@@ -2149,51 +2143,51 @@ fn state_default_carries_the_default_feature_bundle() -> Result<(), Box<dyn std:
 // ===========================================================================
 
 fn package_node(name: &str, block_node: Option<Node>, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Package {
+    Node::new(
+        NodeKind::Package {
             name: name.to_string(),
             name_span: loc(start, end),
             block: block_node.map(Box::new),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn method_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Method {
+    Node::new(
+        NodeKind::Method {
             name: "foo".to_string(),
             name_span: None,
             signature: None,
             attributes: vec![],
             body: Box::new(body_node),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn class_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Class {
+    Node::new(
+        NodeKind::Class {
             name: "Foo".to_string(),
             name_span: None,
             parents: vec![],
             body: Box::new(body_node),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn eval_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Eval { block: Box::new(body_node) }, location: loc(start, end) }
+    Node::new(NodeKind::Eval { block: Box::new(body_node) }, loc(start, end))
 }
 
 fn do_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Do { block: Box::new(body_node) }, location: loc(start, end) }
+    Node::new(NodeKind::Do { block: Box::new(body_node) }, loc(start, end))
 }
 
 fn defer_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Defer { block: Box::new(body_node) }, location: loc(start, end) }
+    Node::new(NodeKind::Defer { block: Box::new(body_node) }, loc(start, end))
 }
 
 #[test]
@@ -2220,50 +2214,50 @@ fn try_node(
     start: usize,
     end: usize,
 ) -> Node {
-    Node {
-        kind: NodeKind::Try {
+    Node::new(
+        NodeKind::Try {
             body: Box::new(body_node),
             catch_blocks: catch_bodies.into_iter().map(|body| (None, Box::new(body))).collect(),
             finally_block: finally_node.map(Box::new),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn given_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::Given {
+    Node::new(
+        NodeKind::Given {
             expr: Box::new(dummy_node(start + 1, start + 2)),
             body: Box::new(body_node),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn when_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::When {
+    Node::new(
+        NodeKind::When {
             condition: Box::new(dummy_node(start + 1, start + 2)),
             body: Box::new(body_node),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 fn default_node(body_node: Node, start: usize, end: usize) -> Node {
-    Node { kind: NodeKind::Default { body: Box::new(body_node) }, location: loc(start, end) }
+    Node::new(NodeKind::Default { body: Box::new(body_node) }, loc(start, end))
 }
 
 fn while_node(body_node: Node, continue_node: Option<Node>, start: usize, end: usize) -> Node {
-    Node {
-        kind: NodeKind::While {
+    Node::new(
+        NodeKind::While {
             keyword: None,
             condition: Box::new(dummy_node(start + 1, start + 2)),
             body: Box::new(body_node),
             continue_block: continue_node.map(Box::new),
         },
-        location: loc(start, end),
-    }
+        loc(start, end),
+    )
 }
 
 /// `use strict; package Foo;` -- subsequent top-level statements after the bare
@@ -2308,14 +2302,14 @@ fn package_block_form_inherits_outer_pragma_state() -> Result<(), Box<dyn std::e
 /// pre-block value (package blocks are lexically scoped like regular blocks).
 #[test]
 fn package_block_form_restores_state_after_block() -> Result<(), Box<dyn std::error::Error>> {
-    let no_refs = Node {
-        kind: NodeKind::No {
+    let no_refs = Node::new(
+        NodeKind::No {
             module: "strict".to_string(),
             args: vec!["refs".to_string()],
             has_filter_risk: false,
         },
-        location: loc(20, 40),
-    };
+        loc(20, 40),
+    );
     let pkg_block = block(vec![no_refs], 14, 59);
     let pkg = package_node("Foo", Some(pkg_block), 13, 60);
     let ast = program(vec![use_node("strict", &[], 0, 12), pkg, use_node("warnings", &[], 61, 76)]);

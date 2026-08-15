@@ -6,6 +6,7 @@ mod catalog;
 mod metadata;
 
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
@@ -36,13 +37,13 @@ pub fn add_builtin_completions(
             let (insert_text, detail, documentation) = metadata::builtin_info(builtin);
 
             completions.push(CompletionItem {
-                label: builtin.to_string(),
+                label: Cow::Borrowed(builtin),
                 kind: super::items::CompletionItemKind::Function,
-                detail: Some(detail.to_string()),
-                documentation: documentation.map(str::to_string),
-                insert_text: Some(insert_text.to_string()),
-                sort_text: Some(format!("3_{}", builtin)),
-                filter_text: Some(builtin.to_string()),
+                detail: Some(Cow::Borrowed(detail)),
+                documentation: documentation.map(Cow::Borrowed),
+                insert_text: Some(Cow::Borrowed(insert_text)),
+                sort_text: Some(Cow::Owned(format!("3_{}", builtin))),
+                filter_text: Some(Cow::Borrowed(builtin)),
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,

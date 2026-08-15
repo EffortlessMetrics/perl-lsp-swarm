@@ -37,10 +37,10 @@ pub(super) fn apply_workspace_configuration_results(
     let global_settings = if includes_global_item { results.first() } else { None };
     let folder_results_start = usize::from(includes_global_item);
 
-    if let Some(global_settings) = global_settings {
-        if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
-            limits.update_from_value(global_settings);
-        }
+    if let Some(global_settings) = global_settings
+        && let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write()
+    {
+        limits.update_from_value(global_settings);
     }
 
     for (idx, folder_uri) in folder_uris.iter().enumerate() {

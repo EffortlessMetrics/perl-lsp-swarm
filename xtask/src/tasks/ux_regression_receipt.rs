@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn classify_extracts_structured_fields() {
         // Uses the Rust 1.73+ panic format: "panicked at path:row:col:" (no quoted message).
-        // The project toolchain is 1.92, so this is the format actual test output uses.
+        // The project toolchain is 1.95, so this is the format actual test output uses.
         let log = "running 1 test\ntest ux_scenario_19_diagnostics_lifecycle::scenario_19_diagnostics_clear_after_fix ... FAILED\nthread 'x' panicked at crates/perl-lsp-ux-tests/tests/ux_scenario_19_diagnostics_lifecycle.rs:102:5:\nboom\ntest result: FAILED. 0 passed; 1 failed";
         let receipt = classify(log, Some("abc123".to_string()));
         assert_eq!(receipt.sha, "abc123", "sha should match input");

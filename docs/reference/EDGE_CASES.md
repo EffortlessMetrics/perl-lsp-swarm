@@ -221,8 +221,8 @@ Codes relevant to the edge cases above:
 
 | Code | Severity | Condition | Suppressed for empty files? |
 |------|----------|-----------|-----------------------------|
-| `PL100` | Information | `use strict` not found | Yes — when `statements` is empty |
-| `PL101` | Information | `use warnings` not found | Yes — when `statements` is empty |
+| `PL100` | Warning | `use strict` not found | Yes — when `statements` is empty |
+| `PL101` | Warning | `use warnings` not found | Yes — when `statements` is empty |
 | `PL111` | Warning | Misspelled pragma | No — only fires when a `use` statement exists |
 
 For the full code registry see

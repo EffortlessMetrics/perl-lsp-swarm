@@ -155,7 +155,7 @@ export class OnboardingManager {
   // Individual checks
   // ---------------------------------------------------------------------------
 
-  /** Check whether `perl` is on PATH and return its version. */
+  /** Check whether optional Perl tooling is on PATH and return its version. */
   async checkPerlInstalled(): Promise<HealthCheckResult> {
     const label = 'Perl interpreter';
     try {
@@ -174,9 +174,9 @@ export class OnboardingManager {
       return {
         label,
         ok: false,
-        status: HealthCheckStatus.Error,
+        status: HealthCheckStatus.Warning,
         detail:
-          'Perl not found on PATH. Install Perl (Windows: strawberryperl.com, macOS: `brew install perl`, Linux: use your distro package manager) and reload.',
+          'Perl not found on PATH. The core language server does not require Perl; install it only for the test runner and debugger (Windows: strawberryperl.com, macOS: `brew install perl`, Linux: use your distro package manager).',
       };
     }
   }
@@ -400,7 +400,11 @@ export class OnboardingManager {
     await this.markWelcomed();
 
     if (selection === 'Run Health Check') {
-      await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);
+      if (serverPath) {
+        await vscode.commands.executeCommand('perl-lsp.runHealthCheck', serverPath);
+      } else {
+        await vscode.commands.executeCommand('perl-lsp.runHealthCheck');
+      }
     } else if (selection === 'Show Output') {
       this.outputChannel.show();
     }

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 /// Provides a typed interface over the raw `i32` error code constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
+#[non_exhaustive]
 pub enum ErrorCode {
     /// Parse error — invalid JSON received.
     ParseError = -32700,
@@ -126,7 +127,7 @@ pub const SERVER_NOT_INITIALIZED: i32 = -32002;
 /// Create a standard cancelled response
 pub fn cancelled_response(id: &Value) -> JsonRpcResponse {
     JsonRpcResponse {
-        jsonrpc: "2.0".to_string(),
+        jsonrpc: "2.0",
         id: JsonRpcId::from_value(id),
         result: None,
         error: Some(JsonRpcError {
@@ -156,7 +157,7 @@ pub fn cancelled_response_with_method(id: &Value, method: &str) -> JsonRpcRespon
     });
 
     JsonRpcResponse {
-        jsonrpc: "2.0".to_string(),
+        jsonrpc: "2.0",
         id: JsonRpcId::from_value(id),
         result: None,
         error: Some(JsonRpcError { code: REQUEST_CANCELLED, message, data: Some(data) }),
