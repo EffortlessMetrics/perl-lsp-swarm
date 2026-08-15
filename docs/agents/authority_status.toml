@@ -116,8 +116,9 @@ notes = "PR #6871 landed on main as c5c43757ed. The CLI entry point now prints a
 [[documents]]
 path = "scripts/ci/check-pr-review-convergence-core"
 status = "transitional"
-successor = "scripts/ci/check-pr-review-convergence and issue #5778"
-notes = "Compatibility collector with historical exact-head terminology; consume only through the public semantic wrapper until containment lands."
+successor = "scripts/ci/check-pr-review-convergence"
+stale_marker = "CANONICAL review-convergence authority"
+notes = "Compatibility collector that still calls itself the canonical authority and still carries exact-head receipt terminology; consume only through the public semantic wrapper. Containment is not finished: scripts/pre-merge-check.sh still invokes the core directly, bypassing the wrapper. Issue #5778 closed as completed on 2026-08-14 without landing that containment, so this row names the wrapper rather than a closed issue, and the remaining work is residual #4555 work."
 
 [[documents]]
 path = "docs/reference/ORCHESTRATION_DOCTRINE.md"

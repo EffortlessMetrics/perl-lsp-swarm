@@ -68,9 +68,15 @@ It does **not** require:
 A path that remains active-looking on `main` while its replacement PR is in review is
 classified `transitional`, not silently treated as current:
 
-| Path | Replacement |
-| --- | --- |
-| `scripts/ci/check-pr-review-convergence-core` | public wrapper plus #5778 — compatibility collector containment |
+| Path | Replacement | Retired text still present |
+| --- | --- | --- |
+| `scripts/ci/check-pr-review-convergence-core` | `scripts/ci/check-pr-review-convergence` — consume the collector only through the public semantic wrapper | “CANONICAL review-convergence authority” |
+
+Containment there is genuinely unfinished: `scripts/pre-merge-check.sh` still invokes the
+core directly, bypassing the wrapper, and the core still carries exact-head receipt
+terminology. Issue #5778 closed as completed on 2026-08-14 without landing that
+containment, so this row names the wrapper rather than a closed issue, and the remaining
+work is residual #4555 work.
 
 Seven rows left this table because their replacements landed on `main` while this
 candidate was open. They are reclassified rather than kept pending:
@@ -87,9 +93,16 @@ candidate was open. They are reclassified rather than kept pending:
 
 Leaving `PLSP-SPEC-0006` or the four #6868 entrypoints classified `transitional` would
 have demoted a still-authoritative document — the exact inversion this index exists to
-prevent. The validator reads each transitional document and rejects a row the document's
-own content contradicts, which is how the `MAINTAINER_AGENT_DOCTRINE.md` and
-`WORKTREE_PROTOCOL.md` rows were caught after #6868 landed.
+prevent.
+
+Both halves of a `transitional` claim are machine-checked against the document itself.
+The validator rejects a row whose document declares itself current or already retired —
+which is how the `MAINTAINER_AGENT_DOCTRINE.md` and `WORKTREE_PROTOCOL.md` rows were
+caught after #6868 landed — and it requires each transitional row to name the retired
+text it was classified for, rejecting the row once that text disappears. The second
+check exists because the first cannot see a document that carries no status line at all:
+`CONTRIBUTING.md` and `.github/copilot-instructions.md` went stale exactly that way when
+#6868 deleted their retired passages, and nothing contradicted either row.
 
 Until the remaining candidate lands, use the current issue rulings and provider-native method.
 Do not “fix” the mismatch by repeatedly rebasing the candidates; unrelated `main`

@@ -50,7 +50,21 @@ REQUIRED_TRANSITIONAL = {
 
 # A `transitional` row asserts a fact about the document's *present* content: the
 # retired text is still live on `main`, and a named replacement is still pending.
-# Two document self-declarations contradict that assertion outright.
+# That assertion has two halves, and both need an oracle.
+#
+# The negative half -- "the document does not consider itself settled" -- is
+# checked by self-declaration. The positive half -- "the retired text is still
+# there" -- is checked by `stale_marker`: each transitional row names an exact
+# substring that must still appear in the document. When the replacement lands
+# and removes that text, the row fails.
+#
+# Only the negative half existed at first, and it let four rows go stale
+# undetected when PR #6868 landed. `MAINTAINER_AGENT_DOCTRINE.md` and
+# `WORKTREE_PROTOCOL.md` were caught, because the rewrite gave them a
+# `Status: current` line. `CONTRIBUTING.md` and `.github/copilot-instructions.md`
+# were not: their retired conveyor text was deleted, but neither file declares a
+# status, so nothing contradicted the row. A vanished `stale_marker` catches
+# exactly that case without needing the document to say anything about itself.
 #
 # A `current` self-claim catches the authority inversion this registry exists to
 # prevent -- a document that declares itself the current contract must not be
@@ -91,6 +105,23 @@ def prose(path: Path) -> str:
 
 def _normalize(text: str) -> str:
     return " ".join(text.split())
+
+
+def stale_marker_contradiction(path: str, marker: str, text: str) -> str | None:
+    """Report a `transitional` row whose retired text is no longer in the document.
+
+    This is the half of the transitional claim that no self-declaration can
+    carry. A replacement PR that simply deletes the stale passage leaves a
+    document that says nothing about its own status, so only the absence of the
+    text it was classified for can reveal that the row is now false.
+    """
+    if _normalize(marker) in _normalize(text):
+        return None
+    return (
+        f"{path}: classified transitional, but its stale_marker {marker!r} is no "
+        f"longer present; the text this row was classified for is gone, so the "
+        f"replacement has landed and the row is stale"
+    )
 
 
 def self_claim_contradictions(path: str, text: str) -> list[str]:
@@ -205,10 +236,21 @@ def validate_registry(document: dict[str, Any]) -> list[str]:
         if not (ROOT / path).exists():
             errors.append(f"{path}: registry path does not exist")
         elif status == "transitional":
-            errors.extend(
-                self_claim_contradictions(
-                    path, (ROOT / path).read_text(encoding="utf-8", errors="replace")
+            text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
+            errors.extend(self_claim_contradictions(path, text))
+            marker = row.get("stale_marker")
+            if not isinstance(marker, str) or not marker.strip():
+                errors.append(
+                    f"{path}: transitional rows must name a non-empty stale_marker "
+                    f"so the row fails when its retired text is removed"
                 )
+            else:
+                problem = stale_marker_contradiction(path, marker, text)
+                if problem:
+                    errors.append(problem)
+        elif "stale_marker" in row:
+            errors.append(
+                f"{path}: stale_marker is only meaningful for transitional rows"
             )
 
     for field in TOP_LEVEL_PATH_FIELDS:
@@ -351,7 +393,11 @@ class AgentAuthorityStatusTests(unittest.TestCase):
         either one asserts a replacement is still pending when it has already
         landed.
         """
-        for path in ("scripts/ci/check-pr-claim-currentness", "scripts/reviews/claim-digest"):
+        markers = {
+            "scripts/ci/check-pr-claim-currentness": "review-convergence authority",
+            "scripts/reviews/claim-digest": "claim-digest command-line entry point",
+        }
+        for path, marker in markers.items():
             with self.subTest(path=path):
                 document = copy.deepcopy(load_registry())
                 row = next(
@@ -359,22 +405,76 @@ class AgentAuthorityStatusTests(unittest.TestCase):
                 )
                 row["status"] = "transitional"
                 row["successor"] = "issue #5778 / PR #6871"
+                # A present marker, so the row fails on the self-declaration
+                # rather than incidentally on a missing or vanished marker.
+                row["stale_marker"] = marker
 
                 errors = validate_registry(document)
                 self.assertTrue(
                     any("already retired" in error for error in errors), errors
                 )
+                self.assertFalse(
+                    any("stale_marker" in error for error in errors), errors
+                )
 
-    def test_self_claim_check_does_not_fire_on_genuine_transitional_rows(self) -> None:
-        """Negative control: the rows that are still correctly transitional.
+    def test_transitional_checks_do_not_fire_on_genuine_transitional_rows(self) -> None:
+        """Negative control over every row still genuinely transitional.
 
-        Without this, the check above could be satisfied by a rule broad enough
+        Without this, the checks above could be satisfied by rules broad enough
         to condemn every transitional row, which would make the status useless.
+
+        This control is weaker than when it was written: four of the five rows
+        it covered were reclassified `current` after PR #6868 landed, leaving
+        one. It narrows as the migration succeeds, which is the intended
+        direction, but a single subject cannot separate a targeted rule from an
+        accidentally-passing one. The mutation tests carry that weight instead.
         """
+        rows = {row["path"]: row for row in load_registry()["documents"]}
         for path in sorted(REQUIRED_TRANSITIONAL):
             with self.subTest(path=path):
                 text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
                 self.assertEqual(self_claim_contradictions(path, text), [])
+                self.assertIsNone(
+                    stale_marker_contradiction(path, rows[path]["stale_marker"], text)
+                )
+
+    def test_transitional_row_fails_when_its_stale_text_is_removed(self) -> None:
+        """The defect no self-declaration can catch.
+
+        `CONTRIBUTING.md` and `.github/copilot-instructions.md` went stale
+        exactly this way: PR #6868 deleted the retired conveyor text those rows
+        were classified for, and neither file declares a status, so every
+        self-declaration check stayed green while both rows asserted a
+        replacement was still pending.
+        """
+        document = copy.deepcopy(load_registry())
+        row = next(
+            item
+            for item in document["documents"]
+            if item["path"] == "scripts/ci/check-pr-review-convergence-core"
+        )
+        row["stale_marker"] = "text a successor PR has already deleted"
+
+        errors = validate_registry(document)
+        self.assertTrue(
+            any("is no longer present" in error for error in errors), errors
+        )
+
+    def test_transitional_row_must_name_a_stale_marker(self) -> None:
+        """A row cannot opt out of the content oracle by omitting the field."""
+        document = copy.deepcopy(load_registry())
+        row = next(
+            item
+            for item in document["documents"]
+            if item["path"] == "scripts/ci/check-pr-review-convergence-core"
+        )
+        del row["stale_marker"]
+
+        errors = validate_registry(document)
+        self.assertTrue(
+            any("must name a non-empty stale_marker" in error for error in errors),
+            errors,
+        )
 
     def test_duplicate_path_is_rejected(self) -> None:
         document = copy.deepcopy(load_registry())
