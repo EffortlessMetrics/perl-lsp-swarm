@@ -1,0 +1,9 @@
+project: vscode
+component: Performance and reliability
+kind: Added
+body: Added a bounded VS Code client measurement recorder that keeps missing instrumentation distinct from zero cost.
+time: 2026-08-13T10:55:30Z
+custom:
+  PR: 7884
+  Slug: vscode-client-measurement-recorder
+  Breaking: "no"
