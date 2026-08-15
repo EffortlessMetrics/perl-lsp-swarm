@@ -4,7 +4,8 @@
 //! refused, or not proven. This module admits one current source/configuration
 //! snapshot, binds cancellation, and projects that typed result onto LSP.
 //! Multi-range plan geometry and live `textDocument/rangesFormatting`
-//! wiring share this module; compose unit-test packet remains a follow-up.
+//! wiring share this module; compose edge units cover empty-point and
+//! same-line adjacent edit composition.
 
 use super::super::{
     GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
