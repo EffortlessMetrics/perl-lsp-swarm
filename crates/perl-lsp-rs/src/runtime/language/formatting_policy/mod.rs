@@ -1,9 +1,11 @@
-//! Shared runtime policy for document, range, and on-type formatting requests.
+//! Shared runtime policy for every formatting request surface.
 //!
 //! The formatter libraries decide whether a result was applied, unchanged,
 //! refused, or not proven. This module admits one current source/configuration
 //! snapshot, binds cancellation, and projects that typed result onto LSP.
-//! Multi-range atomic planning remains a successor slice.
+//! Multi-range plan geometry and live `textDocument/rangesFormatting`
+//! wiring share this module; compose edge units cover empty-point and
+//! same-line adjacent edit composition.
 
 use super::super::{
     GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
@@ -12,15 +14,15 @@ use super::super::{
 use crate::cancellation::RequestCleanupGuard;
 use crate::convert::{WirePosition, WireRange};
 use crate::features::formatting::{
-    CodeFormatter, FormatContext, FormattingDecision, FormattingError, FormattingOptions,
-    PerlTidyConfig,
+    CodeFormatter, FormatContext, FormatTextEdit, FormattingDecision, FormattingError,
+    FormattingOptions, PerlTidyConfig,
 };
 use crate::protocol::{CONTENT_MODIFIED, REQUEST_CANCELLED, invalid_params, req_position, req_uri};
 use perl_lsp_rs_core::config::FormatterMode;
 use perl_lsp_rs_core::features::ids::{
-    LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGE_FORMATTING,
+    LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGE_FORMATTING, LSP_RANGES_FORMATTING,
 };
-use perl_lsp_rs_core::tooling::perltidy::native::FormatDisposition;
+use perl_lsp_rs_core::tooling::perltidy::native::{FormatDisposition, FormatEngine};
 use serde::Serialize;
 
 const PROVIDER: &str = "formatting";
@@ -31,6 +33,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 enum Surface {
     Document,
     Range,
+    Ranges,
     OnType,
 }
 
@@ -39,6 +42,7 @@ impl Surface {
         match self {
             Self::Document => "textDocument/formatting",
             Self::Range => "textDocument/rangeFormatting",
+            Self::Ranges => "textDocument/rangesFormatting",
             Self::OnType => "textDocument/onTypeFormatting",
         }
     }
@@ -47,6 +51,7 @@ impl Surface {
         match self {
             Self::Document => LSP_FORMATTING,
             Self::Range => LSP_RANGE_FORMATTING,
+            Self::Ranges => LSP_RANGES_FORMATTING,
             Self::OnType => LSP_ON_TYPE_FORMATTING,
         }
     }
@@ -163,6 +168,25 @@ fn actual_engine_for_mode(mode: FormatterMode) -> &'static str {
     }
 }
 
+fn actual_engine_for_decision(decision: &FormattingDecision) -> &'static str {
+    match decision.outcome.identity.actual_engine {
+        FormatEngine::Native => "native",
+        FormatEngine::ExternalLegacy => "external_legacy",
+        FormatEngine::Disabled => "disabled",
+        FormatEngine::Unknown => "unknown",
+    }
+}
+
+fn actual_engine_for_decisions(decisions: &[FormattingDecision]) -> Option<&'static str> {
+    let mut iter = decisions.iter();
+    let first = actual_engine_for_decision(iter.next()?);
+    if iter.all(|decision| actual_engine_for_decision(decision) == first) {
+        Some(first)
+    } else {
+        Some("unknown")
+    }
+}
+
 fn cancellation_token(
     id: Option<&JsonRpcId>,
     surface: Surface,
@@ -197,7 +221,7 @@ impl LspServer {
         let advertised = self.advertised_features.lock();
         match surface {
             Surface::Document | Surface::OnType => advertised.formatting,
-            Surface::Range => advertised.range_formatting,
+            Surface::Range | Surface::Ranges => advertised.range_formatting,
         }
     }
 
@@ -289,6 +313,14 @@ impl LspServer {
     }
 
     fn ensure_current(&self, snapshot: &Snapshot) -> Result<(), JsonRpcError> {
+        self.ensure_current_with_engine(snapshot, None)
+    }
+
+    fn ensure_current_with_engine(
+        &self,
+        snapshot: &Snapshot,
+        actual_engine: Option<&str>,
+    ) -> Result<(), JsonRpcError> {
         let current = {
             let documents = self.documents_guard();
             self.get_document(&documents, &snapshot.uri).is_some_and(|document| {
@@ -297,17 +329,19 @@ impl LspServer {
             })
         };
         if !current {
-            return Err(self.stale_error(
+            return Err(self.stale_error_with_engine(
                 snapshot,
                 "stale_source",
                 "Document changed while formatting was running; no edits were returned.",
+                actual_engine,
             ));
         }
         if self.effective_formatting_config()?.fingerprint != snapshot.config.fingerprint {
-            return Err(self.stale_error(
+            return Err(self.stale_error_with_engine(
                 snapshot,
                 "stale_configuration",
                 "Formatting configuration changed while the request was running; no edits were returned.",
+                actual_engine,
             ));
         }
         Ok(())

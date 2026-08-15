@@ -259,6 +259,84 @@ fn external_partial_range_never_substitutes_native() -> Result<(), Box<dyn std::
 }
 
 #[test]
+fn invalid_multi_range_geometry_rejects_atomically() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Ranges);
+    let uri = "file:///multi-range-refusal.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+
+    let error = server
+        .handle_ranges_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "ranges": [
+                    {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    {
+                        "start": { "line": 99, "character": 0 },
+                        "end": { "line": 99, "character": 1 }
+                    }
+                ],
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )
+        .err()
+        .ok_or("invalid range geometry was admitted")?;
+
+    assert_eq!(error.code, -32602);
+    let data = error.data.ok_or("missing invalid-plan evidence")?;
+    assert_eq!(data["reason"], "invalid_position");
+    let receipt = receipt(&server)?;
+    assert_eq!(receipt["decision"], "blocked");
+    assert_eq!(receipt["reason"], "invalid_position");
+    assert_eq!(receipt["result_count"], 0);
+    Ok(())
+}
+
+#[test]
+fn overlapping_multi_ranges_are_rejected_before_formatting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Ranges);
+    let uri = "file:///overlapping-ranges.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+
+    let error = server
+        .handle_ranges_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "ranges": [
+                    {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 5 }
+                    },
+                    {
+                        "start": { "line": 0, "character": 3 },
+                        "end": { "line": 0, "character": 7 }
+                    }
+                ],
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )
+        .err()
+        .ok_or("overlapping ranges were admitted")?;
+
+    assert_eq!(error.code, -32602);
+    let data = error.data.ok_or("missing invalid-plan evidence")?;
+    assert_eq!(data["reason"], "overlapping_ranges");
+    let receipt = receipt(&server)?;
+    assert_eq!(receipt["decision"], "blocked");
+    assert_eq!(receipt["reason"], "overlapping_ranges");
+    assert_eq!(receipt["actual_engine"], "not_started");
+    assert_eq!(receipt["result_count"], 0);
+    Ok(())
+}
+
+#[test]
 fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     advertise(&server, Surface::Document);
@@ -291,17 +369,91 @@ fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let error = server.ensure_current(&fresh).err().ok_or("expected stale-configuration error")?;
     assert_eq!(error.code, CONTENT_MODIFIED);
     assert_eq!(receipt(&server)?["reason"], "stale_configuration");
+
     Ok(())
 }
 
 #[test]
-fn live_dispatch_routes_document_range_and_on_type_through_one_receipt_policy()
+fn stale_unknown_range_decision_preserves_unknown_receipt_engine()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Range);
+    server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+    let uri = "file:///stale-unknown-range-formatting.pl";
+    server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
+    let params = json!({
+        "textDocument": { "uri": uri, "version": 1 },
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 0, "character": 7 }
+        },
+        "options": { "tabSize": 4, "insertSpaces": true },
+    });
+    let snapshot = server.admit(Surface::Range, &params)?;
+    let formatter =
+        CodeFormatter::with_config_and_mode(snapshot.config.perltidy.clone(), snapshot.config.mode);
+    let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
+    let decision = formatter.format_range_decision(
+        &snapshot.text,
+        &parse_range(params.get("range").ok_or("missing range")?, "range")?,
+        &snapshot.options,
+        &context,
+    )?;
+    assert_eq!(decision.outcome.identity.actual_engine, FormatEngine::Unknown);
+    let actual_engine = actual_engine_for_decision(&decision);
+
+    {
+        let mut documents = server.documents.lock();
+        let document = server.get_document_mut(&mut documents, uri).ok_or("missing document")?;
+        document.update_content("my $x = 2;\nmy$y=2;\n", 2);
+    }
+    let error = server
+        .ensure_current_with_engine(&snapshot, Some(actual_engine))
+        .err()
+        .ok_or("expected stale-source error")?;
+    assert_eq!(error.code, CONTENT_MODIFIED);
+    let trace = receipt(&server)?;
+    assert_eq!(trace["reason"], "stale_source");
+    assert_eq!(trace["actual_engine"], "unknown");
+
+    let fresh_params = json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 0, "character": 7 }
+        },
+        "options": { "tabSize": 4, "insertSpaces": true },
+    });
+    let fresh = server.admit(Surface::Range, &fresh_params)?;
+    let fresh_context = FormatContext::new(Some(fresh.uri.clone()), Some(fresh.generation));
+    let fresh_decision = formatter.format_range_decision(
+        &fresh.text,
+        &parse_range(fresh_params.get("range").ok_or("missing fresh range")?, "range")?,
+        &fresh.options,
+        &fresh_context,
+    )?;
+    assert_eq!(fresh_decision.outcome.identity.actual_engine, FormatEngine::Unknown);
+    server.config.lock().perltidy_maximum_line_length = Some(96);
+    let error = server
+        .ensure_current_with_engine(&fresh, Some(actual_engine_for_decision(&fresh_decision)))
+        .err()
+        .ok_or("expected stale-configuration error")?;
+    assert_eq!(error.code, CONTENT_MODIFIED);
+    let trace = receipt(&server)?;
+    assert_eq!(trace["reason"], "stale_configuration");
+    assert_eq!(trace["actual_engine"], "unknown");
+
+    Ok(())
+}
+
+#[test]
+fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
     let document_uri = "file:///live-formatting.pl";
     let on_type_uri = "file:///live-on-type.pl";
-    server.test_apply_did_open(document_uri, "my$x=1;\n", 1)?;
+    server.test_apply_did_open(document_uri, "my$x=1;\nmy$y=2;\n", 1)?;
     server.test_apply_did_open(on_type_uri, "if ($ok) {\n\n", 1)?;
 
     let cases = [
@@ -320,6 +472,23 @@ fn live_dispatch_routes_document_range_and_on_type_through_one_receipt_policy()
                     "start": { "line": 0, "character": 0 },
                     "end": { "line": 0, "character": 7 }
                 },
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }),
+        ),
+        (
+            "textDocument/rangesFormatting",
+            json!({
+                "textDocument": { "uri": document_uri, "version": 1 },
+                "ranges": [
+                    {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    {
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 1, "character": 7 }
+                    }
+                ],
                 "options": { "tabSize": 4, "insertSpaces": true }
             }),
         ),
@@ -353,6 +522,35 @@ fn live_dispatch_routes_document_range_and_on_type_through_one_receipt_policy()
             trace["config_fingerprint"].is_string(),
             "{method} receipt must carry a config_fingerprint string"
         );
+        if method == "textDocument/rangesFormatting" {
+            let edits = response
+                .result
+                .as_ref()
+                .and_then(Value::as_array)
+                .ok_or("rangesFormatting must return an edit array")?;
+            assert_eq!(edits.len(), 2);
+            assert_eq!(
+                edits[0],
+                json!({
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    "newText": "my $x = 1;"
+                })
+            );
+            assert_eq!(
+                edits[1],
+                json!({
+                    "range": {
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 1, "character": 7 }
+                    },
+                    "newText": "my $y = 2;"
+                })
+            );
+            assert_eq!(trace["result_count"], 2);
+        }
     }
 
     Ok(())
@@ -444,8 +642,13 @@ fn receipt_source_id_is_always_hashed_never_raw() -> Result<(), Box<dyn std::err
             }),
         ))
         .ok_or("formatting returned no response")?;
-    // This valid formatting request must not return an error.
-    assert!(response.error.is_none(), "expected no error; got {:?}", response.error);
+    // The request must succeed so the receipt below reflects a completed decision.
+    assert!(
+        response.error.is_none(),
+        "formatting must not fail for this fixture; got error={:?}",
+        response.error
+    );
+    assert!(response.result.is_some(), "formatting must return an edit array");
     let trace = receipt(&server)?;
 
     // source_id (the raw URI) must never appear as a key in the receipt.

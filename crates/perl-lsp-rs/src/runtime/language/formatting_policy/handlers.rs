@@ -4,6 +4,9 @@ use super::{
     invalid_params, json, parse_range, req_position,
 };
 
+#[path = "multi_range.rs"]
+mod multi_range;
+
 impl LspServer {
     /// Run document formatting through the shared runtime policy.
     pub(crate) fn handle_formatting_policy(
@@ -27,15 +30,26 @@ impl LspServer {
         let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
         let decision =
             formatter.format_document_decision(&snapshot.text, &snapshot.options, &context);
+        let decision = match decision {
+            Ok(decision) => decision,
+            Err(error) => {
+                self.ensure_not_cancelled(
+                    Surface::Document,
+                    token.as_ref(),
+                    Some(&snapshot),
+                    Some(actual_engine_for_mode(snapshot.config.mode)),
+                )?;
+                return Err(self.formatting_failure(&snapshot, "Formatting failed", error));
+            }
+        };
+        let actual_engine = super::actual_engine_for_decision(&decision);
         self.ensure_not_cancelled(
             Surface::Document,
             token.as_ref(),
             Some(&snapshot),
-            Some(actual_engine_for_mode(snapshot.config.mode)),
+            Some(actual_engine),
         )?;
-        let decision = decision
-            .map_err(|error| self.formatting_failure(&snapshot, "Formatting failed", error))?;
-        self.ensure_current(&snapshot)?;
+        self.ensure_current_with_engine(&snapshot, Some(actual_engine))?;
         self.project(&snapshot, decision)
     }
 
@@ -66,17 +80,36 @@ impl LspServer {
         let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
         let decision =
             formatter.format_range_decision(&snapshot.text, &range, &snapshot.options, &context);
+        let decision = match decision {
+            Ok(decision) => decision,
+            Err(error) => {
+                self.ensure_not_cancelled(
+                    Surface::Range,
+                    token.as_ref(),
+                    Some(&snapshot),
+                    Some(actual_engine_for_mode(snapshot.config.mode)),
+                )?;
+                return Err(self.formatting_failure(&snapshot, "Range formatting failed", error));
+            }
+        };
+        let actual_engine = super::actual_engine_for_decision(&decision);
         self.ensure_not_cancelled(
             Surface::Range,
             token.as_ref(),
             Some(&snapshot),
-            Some(actual_engine_for_mode(snapshot.config.mode)),
+            Some(actual_engine),
         )?;
-        let decision = decision.map_err(|error| {
-            self.formatting_failure(&snapshot, "Range formatting failed", error)
-        })?;
-        self.ensure_current(&snapshot)?;
+        self.ensure_current_with_engine(&snapshot, Some(actual_engine))?;
         self.project(&snapshot, decision)
+    }
+
+    /// Run LSP 3.18 multi-range formatting through one atomic plan.
+    pub(crate) fn handle_ranges_formatting_policy(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        multi_range::handle(self, params, request_id)
     }
 
     /// Run bounded on-type indentation through the shared runtime policy.
