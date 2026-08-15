@@ -215,11 +215,11 @@ sub target_function {
         assert_eq!(response["kind"].as_i64(), Some(12), "Resolved symbol should keep its kind");
 
         // May have additional detail
-        if let Some(detail) = response.get("detail") {
-            if detail.is_string() {
-                let detail_str = detail.as_str().ok_or("detail should be a string")?;
-                assert!(!detail_str.is_empty(), "detail should not be empty if provided");
-            }
+        if let Some(detail) = response.get("detail")
+            && detail.is_string()
+        {
+            let detail_str = detail.as_str().ok_or("detail should be a string")?;
+            assert!(!detail_str.is_empty(), "detail should not be empty if provided");
         }
 
         // Location should still be present
@@ -250,16 +250,15 @@ fn test_workspace_symbol_capability_advertised() -> TestResult {
     );
 
     // If it is an object (not just true), check for resolveProvider
-    if let Some(wsp) = ws_provider {
-        if wsp.is_object() {
-            if let Some(resolve) = wsp.get("resolveProvider") {
-                assert!(
-                    resolve.is_boolean(),
-                    "resolveProvider should be a boolean, got: {:?}",
-                    resolve
-                );
-            }
-        }
+    if let Some(wsp) = ws_provider
+        && wsp.is_object()
+        && let Some(resolve) = wsp.get("resolveProvider")
+    {
+        assert!(
+            resolve.is_boolean(),
+            "resolveProvider should be a boolean, got: {:?}",
+            resolve
+        );
     }
 
     Ok(())
@@ -364,16 +363,16 @@ fn test_workspace_symbol_finds_native_class_and_method() -> TestResult {
         );
         // Each found method should report kind 6 (Method)
         for sym in symbols {
-            if let Some(name) = sym["name"].as_str() {
-                if name == "get_x" || name == "get_y" {
-                    assert_eq!(
-                        sym["kind"].as_u64(),
-                        Some(6),
-                        "native method '{}' should have LSP kind 6 (Method), got: {:?}",
-                        name,
-                        sym["kind"]
-                    );
-                }
+            if let Some(name) = sym["name"].as_str()
+                && (name == "get_x" || name == "get_y")
+            {
+                assert_eq!(
+                    sym["kind"].as_u64(),
+                    Some(6),
+                    "native method '{}' should have LSP kind 6 (Method), got: {:?}",
+                    name,
+                    sym["kind"]
+                );
             }
         }
     }
@@ -449,15 +448,15 @@ sub new { return bless {}, shift; }
 
     // The found symbol must have Variable kind (13)
     for sym in symbols {
-        if let Some(name) = sym["name"].as_str() {
-            if name.contains("VERSION") {
-                assert_eq!(
-                    sym["kind"].as_u64(),
-                    Some(13),
-                    "'$VERSION' should have LSP kind 13 (Variable); got: {:?}",
-                    sym["kind"]
-                );
-            }
+        if let Some(name) = sym["name"].as_str()
+            && name.contains("VERSION")
+        {
+            assert_eq!(
+                sym["kind"].as_u64(),
+                Some(13),
+                "'$VERSION' should have LSP kind 13 (Variable); got: {:?}",
+                sym["kind"]
+            );
         }
     }
 
@@ -542,7 +541,7 @@ sub get_all_items { 3 }
         short_symbols.iter().filter_map(|symbol| symbol["name"].as_str()).collect();
 
     assert!(
-        short_names.iter().any(|name| *name == "alpha_sub"),
+        short_names.contains(&"alpha_sub"),
         "short query should retain source prefix match: {short_names:?}"
     );
     assert!(

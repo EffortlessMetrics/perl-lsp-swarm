@@ -1763,14 +1763,14 @@ mod tests {
 
         let result =
             server.handle_code_actions_pragmas(Some(json!({"textDocument": {"uri": uri}})));
-        if let Ok(Some(result)) = result {
-            if let Some(actions) = result.as_array() {
-                assert!(!actions.is_empty());
-                let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
-                let end = server.get_document_end_position(text);
-                assert_eq!(edit["start"], end);
-                assert_eq!(edit["end"], end);
-            }
+        if let Ok(Some(result)) = result
+            && let Some(actions) = result.as_array()
+        {
+            assert!(!actions.is_empty());
+            let edit = &actions[0]["edit"]["changes"][uri][0]["range"];
+            let end = server.get_document_end_position(text);
+            assert_eq!(edit["start"], end);
+            assert_eq!(edit["end"], end);
         }
     }
 

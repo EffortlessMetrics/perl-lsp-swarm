@@ -56,11 +56,11 @@ impl LspServer {
                     })));
                 }
 
-                if let Some(to) = timeout {
-                    if start.elapsed() >= to {
-                        tracing::debug!(iteration = i, "Server-side timeout");
-                        return Err(server_cancelled_error());
-                    }
+                if let Some(to) = timeout
+                    && start.elapsed() >= to
+                {
+                    tracing::debug!(iteration = i, "Server-side timeout");
+                    return Err(server_cancelled_error());
                 }
             }
         }

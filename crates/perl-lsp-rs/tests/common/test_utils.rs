@@ -592,10 +592,10 @@ pub mod semantic {
         let lines: Vec<&str> = code.lines().collect();
 
         // Try preferred line first
-        if preferred_line < lines.len() {
-            if let Some(col) = lines[preferred_line].find(needle) {
-                return Some((preferred_line as u32, col as u32));
-            }
+        if preferred_line < lines.len()
+            && let Some(col) = lines[preferred_line].find(needle)
+        {
+            return Some((preferred_line as u32, col as u32));
         }
 
         // Search nearby lines (±2 lines from preferred)

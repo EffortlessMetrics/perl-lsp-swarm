@@ -1702,22 +1702,22 @@ mod tests {
             }
         });
 
-        if let Some(code) = diag_code {
-            if let Some(object) = action.as_object_mut() {
-                object.insert(
-                    "diagnostics".to_string(),
-                    json!([{
-                        "range": {
-                            "start": {"line": line, "character": start_char},
-                            "end": {"line": line, "character": end_char},
-                        },
-                        "code": code,
-                        "message": format!("Diagnostic for {code}"),
-                        "source": "perl-lsp",
-                        "severity": 2,
-                    }]),
-                );
-            }
+        if let Some(code) = diag_code
+            && let Some(object) = action.as_object_mut()
+        {
+            object.insert(
+                "diagnostics".to_string(),
+                json!([{
+                    "range": {
+                        "start": {"line": line, "character": start_char},
+                        "end": {"line": line, "character": end_char},
+                    },
+                    "code": code,
+                    "message": format!("Diagnostic for {code}"),
+                    "source": "perl-lsp",
+                    "severity": 2,
+                }]),
+            );
         }
 
         action
