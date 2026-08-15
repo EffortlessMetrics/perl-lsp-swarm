@@ -54,14 +54,16 @@ fn edge_case_diagnostic_with_all_fields_populated() {
 #[test]
 fn regression_reversed_spans_are_rejected_instead_of_swapped() {
     assert!(ByteSpan::new(50, 1).is_err());
-    assert!(Diagnostic::try_new(
-        DiagnosticCode::SyntaxError,
-        DiagnosticSeverity::Warning,
-        50,
-        1,
-        "Test diagnostic",
-    )
-    .is_err());
+    assert!(
+        Diagnostic::try_new(
+            DiagnosticCode::SyntaxError,
+            DiagnosticSeverity::Warning,
+            50,
+            1,
+            "Test diagnostic",
+        )
+        .is_err()
+    );
     assert!(RelatedInformation::try_new("related", 20, 10).is_err());
 }
 
@@ -353,10 +355,7 @@ fn regression_diagnostic_tag_copy() {
 #[test]
 fn edge_case_from_message_phase_scoped_takes_priority_over_use_strict() {
     let strict = "use strict inside a begin block does not enable strict at file scope";
-    assert_eq!(
-        DiagnosticCode::from_message(strict),
-        Some(DiagnosticCode::PhaseScopedStrictPragma)
-    );
+    assert_eq!(DiagnosticCode::from_message(strict), Some(DiagnosticCode::PhaseScopedStrictPragma));
 
     let warnings = "use warnings inside a phase block does not enable warnings at file scope";
     assert_eq!(

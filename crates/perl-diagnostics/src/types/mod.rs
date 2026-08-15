@@ -12,7 +12,7 @@ use std::ops::Range;
 pub use crate::codes::{DiagnosticSeverity, DiagnosticTag};
 
 /// An invalid half-open UTF-8 byte span.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvalidByteSpan {
     start: usize,
     end: usize,
@@ -32,11 +32,7 @@ impl InvalidByteSpan {
 
 impl fmt::Display for InvalidByteSpan {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "byte span start {} exceeds end {}",
-            self.start, self.end
-        )
+        write!(formatter, "byte span start {} exceeds end {}", self.start, self.end)
     }
 }
 
@@ -47,7 +43,7 @@ impl std::error::Error for InvalidByteSpan {}
 /// `ByteSpan` validates only interval ordering. Whether the offsets are within
 /// a particular source snapshot and fall on UTF-8 scalar boundaries must be
 /// checked by the consumer that owns that exact source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ByteSpan {
     start: usize,
     end: usize,
@@ -62,11 +58,7 @@ impl ByteSpan {
 
     /// Construct a validated half-open byte span.
     pub const fn new(start: usize, end: usize) -> Result<Self, InvalidByteSpan> {
-        if start <= end {
-            Ok(Self { start, end })
-        } else {
-            Err(InvalidByteSpan { start, end })
-        }
+        if start <= end { Ok(Self { start, end }) } else { Err(InvalidByteSpan { start, end }) }
     }
 
     /// Return the inclusive start byte offset.
@@ -106,22 +98,10 @@ impl ByteSpan {
 
     /// Return the non-empty intersection of two half-open intervals.
     pub const fn intersection(self, other: Self) -> Option<Self> {
-        let start = if self.start >= other.start {
-            self.start
-        } else {
-            other.start
-        };
-        let end = if self.end <= other.end {
-            self.end
-        } else {
-            other.end
-        };
+        let start = if self.start >= other.start { self.start } else { other.start };
+        let end = if self.end <= other.end { self.end } else { other.end };
 
-        if start < end {
-            Some(Self { start, end })
-        } else {
-            None
-        }
+        if start < end { Some(Self { start, end }) } else { None }
     }
 
     /// Convert this span into a standard byte range.
@@ -186,7 +166,7 @@ impl<'de> serde::Deserialize<'de> for ByteSpan {
 }
 
 /// A diagnostic message with a byte span and semantic metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct Diagnostic {
@@ -225,13 +205,7 @@ impl Diagnostic {
         range: ByteSpan,
         message: impl Into<String>,
     ) -> Self {
-        Self {
-            code,
-            severity,
-            range,
-            message: message.into(),
-            ..Default::default()
-        }
+        Self { code, severity, range, message: message.into(), ..Default::default() }
     }
 
     /// Validate a byte interval and create a diagnostic.
@@ -247,7 +221,7 @@ impl Diagnostic {
 }
 
 /// Information related to a diagnostic.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct RelatedInformation {
@@ -259,20 +233,14 @@ pub struct RelatedInformation {
 
 impl Default for RelatedInformation {
     fn default() -> Self {
-        Self {
-            message: String::new(),
-            location: ByteSpan::EMPTY,
-        }
+        Self { message: String::new(), location: ByteSpan::EMPTY }
     }
 }
 
 impl RelatedInformation {
     /// Create a new related-information entry.
     pub fn new(message: impl Into<String>, location: ByteSpan) -> Self {
-        Self {
-            message: message.into(),
-            location,
-        }
+        Self { message: message.into(), location }
     }
 
     /// Validate a byte interval and create a related-information entry.
@@ -306,13 +274,7 @@ mod tests {
     fn byte_span_rejects_reversed_intervals() {
         let error = ByteSpan::new(7, 3);
 
-        assert_eq!(
-            error,
-            Err(InvalidByteSpan {
-                start: 7,
-                end: 3,
-            })
-        );
+        assert_eq!(error, Err(InvalidByteSpan { start: 7, end: 3 }));
     }
 
     #[test]
@@ -343,8 +305,8 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
-    fn byte_span_serde_names_fields_and_rejects_reversal(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn byte_span_serde_names_fields_and_rejects_reversal() -> Result<(), Box<dyn std::error::Error>>
+    {
         let span = ByteSpan::new(3, 7)?;
         let serialized = serde_json::to_string(&span)?;
 

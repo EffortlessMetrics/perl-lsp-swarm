@@ -198,10 +198,7 @@ fn diagnostic_basic_construction() {
     let diagnostic = make_diagnostic();
     assert_eq!(diagnostic.range, span(0, 10));
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
-    assert_eq!(
-        diagnostic.code,
-        perl_diagnostics::codes::DiagnosticCode::ParseError
-    );
+    assert_eq!(diagnostic.code, perl_diagnostics::codes::DiagnosticCode::ParseError);
     assert_eq!(diagnostic.message, "syntax error");
     assert!(diagnostic.related_information.is_none());
     assert!(diagnostic.tags.is_none());
@@ -218,14 +215,16 @@ fn diagnostic_checked_construction() {
     ));
 
     assert_eq!(diagnostic.range, span(2, 8));
-    assert!(Diagnostic::try_new(
-        perl_diagnostics::codes::DiagnosticCode::ParseError,
-        DiagnosticSeverity::Error,
-        8,
-        2,
-        "syntax error",
-    )
-    .is_err());
+    assert!(
+        Diagnostic::try_new(
+            perl_diagnostics::codes::DiagnosticCode::ParseError,
+            DiagnosticSeverity::Error,
+            8,
+            2,
+            "syntax error",
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -252,10 +251,8 @@ fn diagnostic_with_tags() {
 #[test]
 fn diagnostic_with_related_information() {
     let mut diagnostic = Diagnostic::default();
-    diagnostic.related_information = Some(vec![RelatedInformation::new(
-        "did you mean 'foo'?",
-        span(100, 120),
-    )]);
+    diagnostic.related_information =
+        Some(vec![RelatedInformation::new("did you mean 'foo'?", span(100, 120))]);
     assert_eq!(diagnostic.related_information.as_ref().map(Vec::len), Some(1));
 }
 

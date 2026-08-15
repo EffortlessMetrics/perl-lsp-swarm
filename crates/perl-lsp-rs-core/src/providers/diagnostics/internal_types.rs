@@ -78,15 +78,8 @@ impl TryFrom<Diagnostic> for perl_diagnostics::Diagnostic {
     type Error = DiagnosticConversionError;
 
     fn try_from(inner: Diagnostic) -> Result<Self, Self::Error> {
-        let Diagnostic {
-            range,
-            severity,
-            code,
-            message,
-            related_information,
-            tags,
-            suggestion: _,
-        } = inner;
+        let Diagnostic { range, severity, code, message, related_information, tags, suggestion: _ } =
+            inner;
 
         let code_text = code.ok_or(DiagnosticConversionError::MissingCode)?;
         let code = parse_diagnostic_code(&code_text)
@@ -187,10 +180,7 @@ pub struct RelatedInformation {
 impl RelatedInformation {
     /// Creates a related information entry.
     pub fn new(location: (usize, usize), message: impl Into<String>) -> Self {
-        Self {
-            location,
-            message: message.into(),
-        }
+        Self { location, message: message.into() }
     }
 }
 
@@ -238,8 +228,8 @@ mod tests {
 
     #[test]
     fn canonical_conversion_rejects_reversed_primary_range() {
-        let diagnostic = Diagnostic::new((12, 8), DiagnosticSeverity::Error, "bad")
-            .with_code("PL001");
+        let diagnostic =
+            Diagnostic::new((12, 8), DiagnosticSeverity::Error, "bad").with_code("PL001");
 
         assert!(matches!(
             perl_diagnostics::Diagnostic::try_from(diagnostic),
@@ -249,8 +239,8 @@ mod tests {
 
     #[test]
     fn canonical_conversion_rejects_unknown_code_instead_of_defaulting() {
-        let diagnostic = Diagnostic::new((8, 12), DiagnosticSeverity::Error, "bad")
-            .with_code("native.unknown");
+        let diagnostic =
+            Diagnostic::new((8, 12), DiagnosticSeverity::Error, "bad").with_code("native.unknown");
 
         assert!(matches!(
             perl_diagnostics::Diagnostic::try_from(diagnostic),
