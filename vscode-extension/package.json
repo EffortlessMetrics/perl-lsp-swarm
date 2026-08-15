@@ -798,8 +798,10 @@
             "scope": "machine",
             "order": 95,
             "default": [],
-            "description": "Optional MCP stdio servers exposed to VS Code language models. Each entry supports label, command, args, cwd, env, version, and enabled.",
-            "markdownDescription": "Optional MCP stdio servers exposed to VS Code language models. Each entry supports `label`, `command`, `args`, `cwd`, `env`, `version`, and `enabled`.",
+            "description": "Removed and inert. The generic configured-command MCP passthrough is disabled; values here are read by nothing and start no process.",
+            "markdownDescription": "Removed and inert. The generic configured-command MCP passthrough is disabled; values here are read by nothing and start no process.",
+            "deprecationMessage": "Removed. This setting is inert: perl-lsp no longer publishes arbitrary configured commands as MCP servers.",
+            "markdownDeprecationMessage": "Removed. This setting is inert: perl-lsp no longer publishes arbitrary configured commands as MCP servers.",
             "items": {
               "type": "object",
               "required": [

@@ -376,10 +376,6 @@ impl CriticAlias {
     pub const fn observed(self) -> CriticObservedIdentity<'static> {
         CriticObservedIdentity::reviewed(self.origin, self.code, self.shape)
     }
-
-    fn matches(self, observed: &CriticObservedIdentity<'_>) -> bool {
-        self.origin == observed.origin && self.code == observed.code && self.shape == observed.shape
-    }
 }
 
 /// Canonical identity shared by approved critic aliases.
@@ -799,7 +795,26 @@ impl CriticIdentityRegistry {
     /// Resolve one checked observed identity into its canonical identity.
     #[must_use]
     pub fn resolve(observed: &CriticObservedIdentity<'_>) -> Option<&'static CriticIdentityEntry> {
-        IDENTITIES.iter().find(|entry| entry.aliases.iter().any(|alias| alias.matches(observed)))
+        Self::resolve_parts(observed.origin, observed.code, observed.shape)
+    }
+
+    /// Resolve one producer/code/shape tuple through the canonical registry.
+    ///
+    /// This keeps owned and borrowed identity consumers on the same registry
+    /// path. Callers may retain the tuple, but they do not need to duplicate
+    /// the registry's reviewed-shape constructor table.
+    #[must_use]
+    pub fn resolve_parts(
+        origin: CriticFindingOrigin,
+        code: &str,
+        shape: CriticFindingShape,
+    ) -> Option<&'static CriticIdentityEntry> {
+        IDENTITIES.iter().find(|entry| {
+            entry
+                .aliases
+                .iter()
+                .any(|alias| alias.origin == origin && alias.code == code && alias.shape == shape)
+        })
     }
 
     /// Look up one canonical ID.
