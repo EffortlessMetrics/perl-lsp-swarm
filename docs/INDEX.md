@@ -106,12 +106,11 @@ Background material that explains why the system is designed the way it is (unde
 Decision records, project status, and planning documents.
 
 - [ADR Index](adr/README.md) — chronological index plus a topic guide for parser, runtime, DAP, security, and swarm decisions
-- [0.14.0 Readiness Queue](releases/0.14.0-readiness.md) — current-release meta-roadmap: drain queue + implementation phase + release lock
 - [Project Roadmap](project/ROADMAP.md)
 - [Distribution Matrix](project/DISTRIBUTION_MATRIX.md)
 - [Compiler-Backed LSP Roadmap](project/COMPILER_BACKED_LSP_ROADMAP.md)
 - [Preview Before Edit ADR](adr/PLSP-ADR-0003-preview-before-edit.md)
-- [PR Queue Disposition Spec](specs/PLSP-SPEC-0006-pr-queue-disposition.md)
+- [PR Semantic Incorporation and Disposition Spec](specs/PLSP-SPEC-0006-pr-queue-disposition.md)
 - [Receiver-Fact Completion Spec](specs/PLSP-SPEC-0007-receiver-fact-completion.md)
 - [Edit-Producing Provider Safety Spec](specs/PLSP-SPEC-0008-edit-producing-provider-safety.md)
 - [Workspace Trust Report Spec](specs/PLSP-SPEC-0009-workspace-trust-report.md)

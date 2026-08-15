@@ -4,11 +4,14 @@
 //! Fixture rows are cloned from sample builders instead of fresh struct literals
 //! so side_effect probes on test construction do not inflate new-gap counts.
 
-use perl_core_harness::transition::{AcceptedBaseline, Classification, classify_transition};
+use perl_core_harness::transition::{
+    AcceptedBaseline, Classification, classify_transition, validate_run_report,
+};
 use perl_core_harness_types::{
     COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition, CompileBaselineV2, HarnessMode,
-    HarnessProfile, HarnessRunner, RUN_REPORT_SCHEMA_VERSION, RunFileResult, RunReport, RunSummary,
-    RunnerStatus,
+    HarnessProfile, HarnessRunner, ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION, RunFailure,
+    RunFileResult, RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence,
+    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundarySourceSpan,
 };
 use std::collections::BTreeMap;
 
@@ -112,12 +115,56 @@ fn failed_harness_status_is_not_proven() {
 }
 
 #[test]
+fn missing_harness_status_is_not_proven_even_with_pass_to_fail_rows() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 0);
+    current.harness_status = None;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("harness_status"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
 fn forged_summary_blocks_no_change() {
     let accepted = sample_v2_baseline(2, 2);
     let mut current = sample_report(2, 2);
     current.summary.files_passed = 0;
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("summary file/TAP totals"));
+}
+
+#[test]
+fn contradictory_tap_totals_block_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    current.file_results[1].status = RunnerStatus::Pass;
+    current.file_results[1].assertions_passed = 1;
+    // Detailed rows still look like a compensated swap, but aggregate TAP is forged.
+    current.summary.tap_assertions_total = 99;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("summary file/TAP totals"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
+fn accepted_assertion_overflow_blocks_regression() {
+    let mut accepted = sample_v2_baseline(2, 1);
+    accepted.file_results[1].assertions_passed = 2;
+    accepted.file_results[1].assertions_total = 1;
+    accepted.tap_assertions_passed = 2;
+    accepted.tap_assertions_total = 2;
+    let mut current = sample_report(2, 0);
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("assertions_passed"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
 }
 
 #[test]
@@ -130,6 +177,93 @@ fn accepted_membership_mismatch_is_not_proven() {
     assert!(classification.reason.contains("file_results do not match immutable file_membership"));
 }
 
+#[test]
+fn missing_failure_record_blocks_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    current.file_results[1].status = RunnerStatus::Pass;
+    current.file_results[1].assertions_passed = 1;
+    // Keep aggregates reconciled, but drop the failure inventory cardinality.
+    current.failures.clear();
+    current.summary.files_passed = 1;
+    current.summary.files_failed = 1;
+    current.summary.tap_assertions_passed = 1;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("has no failure record"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+    assert!(validate_run_report(&current).is_err());
+}
+
+#[test]
+fn empty_failure_bucket_blocks_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    current.file_results[1].status = RunnerStatus::Pass;
+    current.file_results[1].assertions_passed = 1;
+    current.failures = vec![sample_failure("base/0.t", "")];
+    current.summary.files_passed = 1;
+    current.summary.files_failed = 1;
+    current.summary.tap_assertions_passed = 1;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("empty bucket"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
+fn failure_record_for_passing_file_blocks_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.failures = vec![sample_failure("base/0.t", "parse_recovery")];
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("does not identify a failing file"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
+fn foreign_failure_record_blocks_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.failures = vec![sample_failure("foreign/0.t", "parse_recovery")];
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("has no file-result record"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
+fn duplicate_failure_records_block_regression() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    current.failures = vec![
+        sample_failure("base/1.t", "parse_recovery"),
+        sample_failure("base/1.t", "compile_error"),
+    ];
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("failure inventory repeats path"));
+    assert!(!classification.reason.contains("changed from pass to fail"));
+}
+
+#[test]
+fn malformed_semantic_boundary_identity_is_not_proven() {
+    let mut accepted = sample_v2_baseline(1, 1);
+    let mut current = sample_report(1, 1);
+    let mut boundary = sample_semantic_boundary();
+    boundary.id.clear();
+    accepted.semantic_boundaries.push(boundary.clone());
+    current.semantic_boundaries.push(boundary);
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("empty stable id"));
+}
+
 fn compensated_swap_classification() -> Classification {
     let accepted = sample_v2_baseline(2, 1);
     let mut current = sample_report(2, 1);
@@ -137,6 +271,10 @@ fn compensated_swap_classification() -> Classification {
     current.file_results[0].assertions_passed = 0;
     current.file_results[1].status = RunnerStatus::Pass;
     current.file_results[1].assertions_passed = 1;
+    current.failures = vec![sample_failure("base/0.t", "parse_recovery")];
+    current.summary.files_passed = 1;
+    current.summary.files_failed = 1;
+    current.summary.tap_assertions_passed = 1;
     classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)
 }
 
@@ -152,10 +290,18 @@ fn unexpected_file_classification() -> Classification {
     let mut extra = current.file_results[0].clone();
     extra.path = "unexpected/extra.t".into();
     current.file_results.push(extra);
+    // Keep summary reconciled so subject/membership incomparability is the discriminator.
+    current.summary.files_total = 2;
+    current.summary.files_passed = 2;
+    current.summary.files_failed = 0;
+    current.summary.tap_assertions_total = 2;
+    current.summary.tap_assertions_passed = 2;
     classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)
 }
 
 fn sample_report(total: usize, passed: usize) -> RunReport {
+    let file_results = sample_results(total, passed);
+    let failures = sample_failures_for(&file_results);
     RunReport {
         schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
         commit: "a".repeat(40),
@@ -176,8 +322,8 @@ fn sample_report(total: usize, passed: usize) -> RunReport {
             tap_assertions_passed: passed,
         },
         buckets: BTreeMap::new(),
-        file_results: sample_results(total, passed),
-        failures: Vec::new(),
+        file_results,
+        failures,
         semantic_boundaries: Vec::new(),
     }
 }
@@ -196,8 +342,45 @@ fn sample_results(total: usize, passed: usize) -> Vec<RunFileResult> {
         .collect()
 }
 
+fn sample_failures_for(file_results: &[RunFileResult]) -> Vec<RunFailure> {
+    file_results
+        .iter()
+        .filter(|result| result.status == RunnerStatus::Fail)
+        .map(|result| sample_failure(&result.path, "parse_recovery"))
+        .collect()
+}
+
+fn sample_failure(path: &str, bucket: &str) -> RunFailure {
+    RunFailure {
+        path: path.into(),
+        phase: "compile".into(),
+        bucket: bucket.into(),
+        first_diagnostic: "sample failure".into(),
+        workstream: "parser".into(),
+        lsp_impact: vec!["diagnostics".into()],
+    }
+}
+
+fn sample_semantic_boundary() -> ObservedSemanticBoundary {
+    ObservedSemanticBoundary {
+        path: "base/0.t".into(),
+        id: "boundary".into(),
+        disposition: SemanticBoundaryDisposition::Unsupported,
+        reason: "sample boundary".into(),
+        source_span: SemanticBoundarySourceSpan { start: 0, end: 1 },
+        source_kind: "expression".into(),
+        confidence: SemanticBoundaryConfidence::Unresolved,
+        blocks_compilation: true,
+        blocks_downstream_static_facts: true,
+        lock_scope: SemanticBoundaryLockScope::None,
+        owner_workstream: "parser".into(),
+        supporting_test: "tests/sample.rs".into(),
+    }
+}
+
 fn sample_v2_baseline(total: usize, passed: usize) -> CompileBaselineV2 {
     let file_results = sample_results(total, passed);
+    let expected_failures = sample_failures_for(&file_results);
     CompileBaselineV2 {
         schema_version: COMPILE_BASELINE_V2_SCHEMA_VERSION.into(),
         report_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
@@ -223,7 +406,7 @@ fn sample_v2_baseline(total: usize, passed: usize) -> CompileBaselineV2 {
         tap_assertions_total: total,
         tap_assertions_passed: passed,
         buckets: BTreeMap::new(),
-        expected_failures: Vec::new(),
+        expected_failures,
         file_results,
         semantic_boundaries: Vec::new(),
         boundary_retirements: Vec::new(),

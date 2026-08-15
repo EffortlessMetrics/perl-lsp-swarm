@@ -21,7 +21,6 @@ cargo_package = "perllsp"
 package_manifest = "crates/perllsp/Cargo.toml"
 implementation_crate = "perl-lsp-rs"
 implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
-compatibility_executable = "perl-lsp"
 
 [extension]
 publisher = "EffortlessMetrics"
@@ -166,9 +165,6 @@ fn implementation_package_drift_fails() -> Result<()> {
         r#"[package]
 name = "different-implementation"
 repository.workspace = true
-
-[[bin]]
-name = "perl-lsp"
 "#,
     )?;
 
@@ -489,12 +485,8 @@ perl-lsp-rs = { workspace = true }
         r#"[package]
 name = "perl-lsp-rs"
 repository.workspace = true
-
-[[bin]]
-name = "perl-lsp"
 "#,
     )?;
-    write(repo.path(), "crates/perl-lsp-rs/src/main.rs", "fn main() {}\n")?;
     write(
         repo.path(),
         "crates/perl-dap/Cargo.toml",
