@@ -17,7 +17,7 @@ pub use crate::continue_redo::{
 };
 pub use crate::files::{
     get_all_test_files, get_corpus_files, get_corpus_files_from, get_fuzz_files, get_test_files,
-    CorpusFile, CorpusLayer, CorpusPaths, ResolvedCorpusPaths,
+    get_test_files_from, CorpusFile, CorpusLayer, CorpusPaths, ResolvedCorpusPaths,
 };
 pub use crate::format_statements::{
     find_format_case, format_statement_cases, FormatStatementCase, FormatStatementGenerator,
