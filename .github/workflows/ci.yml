@@ -983,6 +983,13 @@ jobs:
       - name: Emacs docs contract (required merge surface)
         run: cargo test -p xtask --test emacs_docs_contract --locked -- --nocapture
 
+      # Same reasoning as the Emacs contract above: the merge gate runs
+      # `cargo test --workspace --lib`, so this integration test would otherwise
+      # only execute via advisory pr-smoke. It guards the publish path that can
+      # overwrite a shipped release asset (#9597), so keep it required here.
+      - name: Release-asset identity contract (required merge surface)
+        run: cargo test -p xtask --test publish_extension_release_identity --locked -- --nocapture
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
