@@ -309,11 +309,20 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
         workflow.contains("PR-fast timeout policy: GitHub job 50m, outer runner watchdog 45m"),
         "pr-smoke log message must document the active watchdog policy"
     );
+    // The watchdog contract is the invariant here: the inner `timeout` must wrap
+    // the pr-fast receipt run with the documented signal, grace, and 2700s budget.
+    // The xtask binary path is deliberately not pinned — the pr-smoke job selects
+    // CARGO_TARGET_DIR at runtime to avoid disk pressure, so the path varies by
+    // runner. Pinning it made this test fail on main when that step was added.
+    let watchdog_wraps_pr_fast_receipt = workflow.lines().any(|line| {
+        line.contains("timeout --signal=TERM --kill-after=60s 2700s")
+            && line.contains("gates --tier pr-fast --base origin/main --receipt")
+    });
     assert!(
-        workflow.contains(
-            "timeout --signal=TERM --kill-after=60s 2700s ./target/debug/xtask gates --tier pr-fast --base origin/main --receipt"
-        ),
-        "pr-smoke inner watchdog must leave enough room for unit_routed_full receipt output"
+        watchdog_wraps_pr_fast_receipt,
+        "pr-smoke inner watchdog must wrap the pr-fast receipt run as \
+         `timeout --signal=TERM --kill-after=60s 2700s <xtask> gates --tier pr-fast \
+         --base origin/main --receipt`, leaving room for unit_routed_full receipt output"
     );
 
     // Ensure the routed shard (which was a failed attempt to run unit_routed_full)
