@@ -12,7 +12,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .common import HostReceiptError, artifact_reference, redactions, write_json
+from .common import (
+    HostReceiptError,
+    artifact_reference,
+    redactions,
+    sha256_file,
+    write_json,
+)
 
 
 def _linux_processes(executable: Path) -> list[dict[str, Any]]:
@@ -125,6 +131,11 @@ def _process_ids(rows: list[dict[str, Any]]) -> set[int]:
 
 
 def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int:
+    prepared_manifest = run_dir / "manifest.json"
+    if not prepared_manifest.is_file():
+        raise HostReceiptError("prepared manifest is missing")
+    prepared_manifest_sha256 = sha256_file(prepared_manifest)
+
     zed_cli = Path(manifest["zed"]["cli"])
     zed_app = Path(manifest["zed"]["app"])
     profile = Path(manifest["profile"]["directory"])
@@ -194,6 +205,7 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
             row["executable"] = "<perllsp>"
     inventory = {
         "schema_version": "zed_exact_source_process_inventory.v1",
+        "prepared_manifest_sha256": prepared_manifest_sha256,
         "command": [
             "<zed-cli>",
             "--zed",
@@ -214,6 +226,7 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
     write_json(process_path, inventory)
     launch_result = {
         "schema_version": "zed_exact_source_launch.v1",
+        "prepared_manifest_sha256": prepared_manifest_sha256,
         "result": "pass" if return_code == 0 and samples and not leaked else "fail",
         "zed_return_code": return_code,
         "perllsp_observed": bool(samples),
