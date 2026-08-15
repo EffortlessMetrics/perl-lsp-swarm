@@ -1,0 +1,32 @@
+id = 'perl'
+name = 'Perl'
+description = "Perl support"
+version = '0.5.0'
+schema_version = 1
+authors = ["Veesh <rabbiveesh@gmail.com>"]
+repository = "https://github.com/tree-sitter-perl/zed-perl"
+languages = ["languages/perl", "languages/pod"]
+
+[grammars.perl]
+repository = "https://github.com/tree-sitter-perl/tree-sitter-perl"
+rev = "f48744e7ff7ae60b633fed4edf48151309901f3a"
+
+[grammars.pod]
+repository = "https://github.com/tree-sitter-perl/tree-sitter-pod"
+rev = "cd1931314beafeebc957964c65802961e283411e"
+
+[language_servers.perlnavigator-server]
+name = "Perl Navigator"
+language = "Perl"
+
+# tree-sitter-perl's independent language server. This ID and product remain
+# separate from EffortlessMetrics `perllsp`.
+[language_servers.perl-lsp]
+name = "Perl LSP (tree-sitter-perl)"
+language = "Perl"
+
+# EffortlessMetrics' native Rust language server. Zed's default settings should
+# keep this alternative disabled until the user selects it for Perl.
+[language_servers.perllsp]
+name = "Perl LSP (EffortlessMetrics)"
+language = "Perl"

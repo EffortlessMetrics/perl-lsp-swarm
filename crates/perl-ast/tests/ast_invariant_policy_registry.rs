@@ -65,8 +65,8 @@ fn recovery_registry_is_generated_from_the_canonical_recovery_set() {
 }
 
 #[test]
-fn source_derived_payload_classes_are_registered_deliberately(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn source_derived_payload_classes_are_registered_deliberately()
+-> Result<(), Box<dyn std::error::Error>> {
     let number = ast_node_policy("Number").ok_or("Number policy must exist")?;
     assert_eq!(number.classification, AstNodeClassification::Leaf);
     assert!(number.payload_policies.contains(&AstPayloadPolicy::LiteralRawAndCooked));
@@ -84,8 +84,8 @@ fn source_derived_payload_classes_are_registered_deliberately(
 }
 
 #[test]
-fn misclassifying_an_observed_child_is_a_load_bearing_failure(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn misclassifying_an_observed_child_is_a_load_bearing_failure()
+-> Result<(), Box<dyn std::error::Error>> {
     let leaf = ast_node_policy("Number").ok_or("Number policy must exist")?;
     assert!(!policy_accepts_observed_children(leaf, true));
     assert!(policy_accepts_observed_children(leaf, false));

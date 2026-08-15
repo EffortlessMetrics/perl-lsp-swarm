@@ -5,8 +5,6 @@
 //! the registry states which range, source, payload, synthetic, and child
 //! policies apply to each stable `NodeKind` identity.
 
-use crate::NodeKind;
-
 /// Structural role assigned to one `NodeKind` variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AstNodeClassification {
@@ -107,7 +105,7 @@ pub enum AstPayloadPolicy {
 /// Complete invariant policy row for one stable `NodeKind` identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AstNodePolicy {
-    /// Stable [`NodeKind::kind_name`] token.
+    /// Stable [`crate::NodeKind::kind_name`] token.
     pub kind_name: &'static str,
     /// Structural role.
     pub classification: AstNodeClassification,
@@ -152,7 +150,12 @@ macro_rules! policy {
 /// Version of the invariant policy contract.
 pub const AST_NODE_POLICY_SCHEMA_VERSION: u32 = 1;
 
-/// One policy row for every member of [`NodeKind::ALL_KIND_NAMES`].
+/// One policy row for every member of [`crate::NodeKind::ALL_KIND_NAMES`].
+///
+/// The table is intentionally one row per line so a reviewer can diff a single
+/// variant's policy against its neighbours; rustfmt would otherwise expand each
+/// row across eight lines and hide that alignment.
+#[rustfmt::skip]
 pub const AST_NODE_POLICIES: &[AstNodePolicy] = &[
     policy!("Program", ChildBearing, Exact, ProfileControlled, Required, Nondecreasing, Disjoint, &[]),
     policy!("ExpressionStatement", Wrapper, Exact, ProfileControlled, Required, Nondecreasing, MayOverlap, &[]),

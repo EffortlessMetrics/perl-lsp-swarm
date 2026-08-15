@@ -288,8 +288,12 @@ pub use pragma_tracker::{PragmaState, PragmaTracker};
 /// Token types and token stream for lexer output.
 pub use token_stream::{Token, TokenKind, TokenStream};
 /// Trivia (whitespace/comments) attached to AST nodes.
+// Public compatibility export retained until canonical node attachment lands in #7101.
+#[allow(deprecated)]
 pub use trivia::{NodeWithTrivia, Trivia, TriviaToken};
 /// Trivia-preserving parser and formatting utilities.
+// Public compatibility export retained until downstream callers migrate to source_with_trivia.
+#[allow(deprecated)]
 pub use trivia_parser::{TriviaPreservingParser, format_with_trivia};
 
 // Incremental parsing exports (feature-gated)
