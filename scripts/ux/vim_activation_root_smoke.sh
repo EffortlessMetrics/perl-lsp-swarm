@@ -39,7 +39,27 @@ if [[ ! -f "${contract}" ]]; then
   exit 1
 fi
 
+# A Vim built without these cannot produce the receipt at all: `json_encode`
+# would abort the run, and in integration mode vim-lsp needs jobs, channels,
+# timers and lambdas to reach `lsp_server_init`. A build that silently lacks
+# them must fail here rather than emit a receipt that looks like evidence.
+require_features() {
+  local missing=()
+  local feature
+  for feature in "$@"; do
+    if ! "${vim_bin}" -Nu NONE -n -es -c "if !has('${feature}') | cquit 3 | endif" -c 'qa!' >/dev/null 2>&1; then
+      missing+=("+${feature}")
+    fi
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "vim activation/root FAILED: ${vim_bin} lacks required features: ${missing[*]}" >&2
+    exit 1
+  fi
+}
+require_features eval
+
 if [[ ${mode} == integration ]]; then
+  require_features job channel timers lambda reltime
   : "${VIM_LSP_DIR:?VIM_LSP_DIR must point at a pinned vim-lsp checkout}"
   : "${PERLLSP:?PERLLSP must point at the exact perllsp candidate}"
   if [[ ! -f "${VIM_LSP_DIR}/plugin/lsp.vim" ]]; then
@@ -54,7 +74,9 @@ fi
 
 tmpdir=$(mktemp -d)
 cleanup() {
-  rm -rf "${tmpdir}"
+  if [[ -n ${tmpdir:-} && -d ${tmpdir} ]]; then
+    rm -rf "${tmpdir}"
+  fi
 }
 trap cleanup EXIT
 
@@ -63,66 +85,75 @@ mkdir -p "$(dirname "${receipt}")"
 
 # Filetype fixtures. Native detection is always measured before any custom
 # autocmd or LSP registration is installed.
-cat >"${tmpdir}/sample.pl" <<'EOF'
+#
+# These live in their own subtree, never beside the root fixtures: several of
+# them (`cpanfile` in particular) are themselves canonical root markers, and a
+# shared parent directory would make the nearest-marker walk terminate on a
+# filetype fixture instead of exercising the intended root case.
+ftdir="${tmpdir}/filetypes"
+mkdir -p "${ftdir}/bin" "${ftdir}/script"
+cat >"${ftdir}/sample.pl" <<'EOF'
 use strict;
 my $value = 1;
 EOF
-cp "${tmpdir}/sample.pl" "${tmpdir}/sample.PL"
-cat >"${tmpdir}/Sample.pm" <<'EOF'
+# Distinct stem, not a case variant of `sample.pl`: the uppercase-extension
+# case must still be observable on case-insensitive filesystems (macOS, Windows)
+# where `sample.pl` and `sample.PL` are the same file.
+cp "${ftdir}/sample.pl" "${ftdir}/legacy.PL"
+cat >"${ftdir}/Sample.pm" <<'EOF'
 package Sample;
 use strict;
 1;
 EOF
-cat >"${tmpdir}/Image.pm" <<'EOF'
+cat >"${ftdir}/Image.pm" <<'EOF'
 /* XPM */
 static char * icon[] = { "1 1 1 1", "a c #000000", "a" };
 EOF
-cat >"${tmpdir}/sample.t" <<'EOF'
+cat >"${ftdir}/sample.t" <<'EOF'
 use strict;
 use Test::More tests => 1;
 ok 1;
 EOF
-cat >"${tmpdir}/game.t" <<'EOF'
+cat >"${ftdir}/game.t" <<'EOF'
 #charset "us-ascii"
 #include <adv3.h>
 EOF
-cat >"${tmpdir}/app.psgi" <<'EOF'
+cat >"${ftdir}/app.psgi" <<'EOF'
 use strict;
 sub { [200, ['Content-Type' => 'text/plain'], ['ok']] };
 EOF
-cat >"${tmpdir}/app.cgi" <<'EOF'
+cat >"${ftdir}/app.cgi" <<'EOF'
 #!/usr/bin/env perl
 use strict;
 print "Content-Type: text/plain\n\nok\n";
 EOF
-cat >"${tmpdir}/app.fcgi" <<'EOF'
+cat >"${ftdir}/app.fcgi" <<'EOF'
 #!/usr/bin/env perl
 use strict;
 print "ok\n";
 EOF
-cat >"${tmpdir}/cpanfile" <<'EOF'
+cat >"${ftdir}/cpanfile" <<'EOF'
 requires 'Test::More';
 EOF
-mkdir -p "${tmpdir}/bin" "${tmpdir}/script"
-for path in "${tmpdir}/bin/tool" "${tmpdir}/script/tool"; do
+for path in "${ftdir}/bin/tool" "${ftdir}/script/tool"; do
   cat >"${path}" <<'EOF'
 #!/usr/bin/env perl
 use strict;
 print "ok\n";
 EOF
 done
-cat >"${tmpdir}/notes.pod" <<'EOF'
+cat >"${ftdir}/notes.pod" <<'EOF'
 =head1 NAME
 Example
 =cut
 EOF
-cat >"${tmpdir}/Native.xs" <<'EOF'
+cat >"${ftdir}/Native.xs" <<'EOF'
 MODULE = Native PACKAGE = Native
 EOF
-printf '<%%= $value %%>\n' >"${tmpdir}/view.ep"
-printf '[%% value %%]\n' >"${tmpdir}/view.tt"
-printf '[%% value %%]\n' >"${tmpdir}/view.tt2"
-printf '<%%perl>my $x = 1;</%%perl>\n' >"${tmpdir}/view.mason"
+printf '<%%= $value %%>\n' >"${ftdir}/view.ep"
+printf '[%% value %%]\n' >"${ftdir}/view.tt"
+printf '[%% value %%]\n' >"${ftdir}/view.tt2"
+printf '<%%perl>my $x = 1;</%%perl>\n' >"${ftdir}/view.mason"
 
 # Root fixtures. `.git` is deliberately outer in one case so a nearer Perl
 # marker has to win.
@@ -168,7 +199,7 @@ function! s:RecordFailure(message) abort
 endfunction
 
 function! s:ObserveFiletype(row) abort
-  execute 'silent edit ' . fnameescape(s:tmp . '/' . a:row.path)
+  execute 'silent edit ' . fnameescape(s:tmp . '/filetypes/' . a:row.path)
   let l:observed = &l:filetype
   let l:fixed = a:row.expect !=# 'observe'
   let l:ok = !l:fixed || l:observed ==# a:row.expect
@@ -190,7 +221,13 @@ for s:row in s:contract.filetypes
   call s:ObserveFiletype(s:row)
 endfor
 
+" The ascent stops at the fixture root. Without that bound a "no marker
+" anywhere" case would keep climbing into the host filesystem and could pick up
+" an unrelated `.git`/`cpanfile` above the temporary directory, making the
+" no-marker fallback pass or fail for reasons that have nothing to do with the
+" contract.
 function! s:NearestRoot(path) abort
+  let l:stop = fnamemodify(s:tmp, ':p:h')
   let l:dir = fnamemodify(a:path, ':p:h')
   while 1
     for l:marker in s:contract.root.markers
@@ -200,7 +237,7 @@ function! s:NearestRoot(path) abort
       endif
     endfor
     let l:parent = fnamemodify(l:dir, ':h')
-    if l:parent ==# l:dir
+    if l:parent ==# l:dir || l:dir ==# l:stop
       return ''
     endif
     let l:dir = l:parent
