@@ -200,20 +200,9 @@ impl SourceGeometry {
 
     fn line_byte_span(&self, source: &str, line: u32) -> Result<(usize, usize), PlanError> {
         let line_index = line as usize;
-        let start = *self.line_starts.get(line_index).ok_or_else(|| {
-            PlanError::new(
-                "invalid_position",
-                format!("line {line} is outside the current document"),
-            )
-        })?;
-        let mut end = self
-            .line_starts
-            .get(line_index + 1)
-            .map_or(source.len(), |next| next.saturating_sub(1));
-        if end > start && source.as_bytes().get(end.saturating_sub(1)) == Some(&b'\r') {
-            end -= 1;
-        }
-        Ok((start, end))
+        let start =
+            *self.line_starts.get(line_index).ok_or_else(|| PlanError::outside_document(line))?;
+        Ok((start, self.line_content_end(source, line_index)))
     }
 }
 
@@ -311,10 +300,23 @@ fn compose_edits(
         plan.normalized_ranges.iter().zip(per_range_edits).enumerate()
     {
         for edit in range_edits {
-            let start_byte =
-                geometry.byte_offset(source, edit.range.start.line, edit.range.start.character)?;
-            let end_byte =
-                geometry.byte_offset(source, edit.range.end.line, edit.range.end.character)?;
+            // Formatter-emitted positions are instrument output, not client
+            // request params. Remap byte_offset failures so the client sees
+            // -32603 / formatting_outcome_contract instead of -32602.
+            let reclassify = |error: PlanError| {
+                PlanError::new(
+                    "instrument_failure",
+                    format!(
+                        "formatter edit for normalized range {owner} has an unresolvable position: {error}"
+                    ),
+                )
+            };
+            let start_byte = geometry
+                .byte_offset(source, edit.range.start.line, edit.range.start.character)
+                .map_err(reclassify)?;
+            let end_byte = geometry
+                .byte_offset(source, edit.range.end.line, edit.range.end.character)
+                .map_err(reclassify)?;
             if end_byte < start_byte {
                 return Err(PlanError::new(
                     "edit_conflict",
@@ -476,13 +478,23 @@ fn plan_error(
     error: PlanError,
     evidence: Option<Value>,
 ) -> JsonRpcError {
+    plan_error_with_engine(server, snapshot, error, evidence, "not_started")
+}
+
+fn plan_error_with_engine(
+    server: &LspServer,
+    snapshot: &Snapshot,
+    error: PlanError,
+    evidence: Option<Value>,
+    actual_engine: &str,
+) -> JsonRpcError {
     let code = error.json_rpc_code();
     let error_kind = error.error_kind();
     let receipt = server.record_formatting_receipt(
         snapshot,
         "blocked",
         json!(error.reason),
-        "not_started",
+        actual_engine,
         "no_edit",
         0,
         evidence,
@@ -636,7 +648,13 @@ pub(super) fn handle(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| {
-            plan_error(server, &snapshot, error, Some(plan_evidence(&plan, outcomes.clone(), None)))
+            plan_error_with_engine(
+                server,
+                &snapshot,
+                error,
+                Some(plan_evidence(&plan, outcomes.clone(), None)),
+                actual_engine_for_mode(snapshot.config.mode),
+            )
         })?;
     let (edits, final_edit_digest) = compose_edits(
         &snapshot.text,
@@ -646,7 +664,13 @@ pub(super) fn handle(
         &snapshot.config.fingerprint,
     )
     .map_err(|error| {
-        plan_error(server, &snapshot, error, Some(plan_evidence(&plan, outcomes.clone(), None)))
+        plan_error_with_engine(
+            server,
+            &snapshot,
+            error,
+            Some(plan_evidence(&plan, outcomes.clone(), None)),
+            actual_engine_for_mode(snapshot.config.mode),
+        )
     })?;
 
     server.ensure_not_cancelled(
@@ -670,9 +694,7 @@ pub(super) fn handle(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::default_options;
     use super::*;
-    use perl_lsp_rs_core::tooling::perltidy::native::FormatReasonCode;
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
         json!({

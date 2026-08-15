@@ -331,6 +331,7 @@ fn overlapping_multi_ranges_are_rejected_before_formatting()
     let receipt = receipt(&server)?;
     assert_eq!(receipt["decision"], "blocked");
     assert_eq!(receipt["reason"], "overlapping_ranges");
+    assert_eq!(receipt["actual_engine"], "not_started");
     assert_eq!(receipt["result_count"], 0);
     Ok(())
 }
@@ -533,8 +534,13 @@ fn receipt_source_id_is_always_hashed_never_raw() -> Result<(), Box<dyn std::err
             }),
         ))
         .ok_or("formatting returned no response")?;
-    // The server must have produced a receipt regardless of formatting outcome.
-    assert!(response.error.is_none() || response.result.is_none() || response.result.is_some());
+    // The request must succeed so the receipt below reflects a completed decision.
+    assert!(
+        response.error.is_none(),
+        "formatting must not fail for this fixture; got error={:?}",
+        response.error
+    );
+    assert!(response.result.is_some(), "formatting must return an edit array");
     let trace = receipt(&server)?;
 
     // source_id (the raw URI) must never appear as a key in the receipt.
