@@ -3,6 +3,14 @@
 //! Live `textDocument/rangesFormatting` wiring and edit composition remain
 //! successor slices; this module proves plan admission and refusal geometry.
 
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "policy:multi-range-7089-plan: production link lands with rangesFormatting wiring successor"
+    )
+)]
+
 use serde::Serialize;
 
 use super::{Value, digest, json, parse_range};
@@ -151,7 +159,7 @@ impl SourceGeometry {
     }
 }
 
-fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, PlanError> {
+pub(super) fn build_plan(source: &str, ranges: &[Value]) -> Result<RangePlan, PlanError> {
     let geometry = SourceGeometry::new(source);
     let requested_ranges = ranges.to_vec();
     let mut normalized_ranges = Vec::with_capacity(ranges.len());
@@ -293,13 +301,28 @@ mod tests {
             .err()
             .ok_or("overlapping ranges were admitted")?;
         assert_eq!(overlap.reason, "overlapping_ranges");
+        assert!(
+            overlap.message.contains("ranges[1]") && overlap.message.contains("ranges[0]"),
+            "overlap message must name original indices: {}",
+            overlap.message
+        );
         let duplicate = build_plan(source, &[range(0, 0, 0, 5), range(0, 0, 0, 5)])
             .err()
             .ok_or("duplicate ranges were admitted")?;
         assert_eq!(duplicate.reason, "duplicate_range");
+        assert!(
+            duplicate.message.contains("ranges[1]") && duplicate.message.contains("ranges[0]"),
+            "duplicate message must name original indices: {}",
+            duplicate.message
+        );
         let reversal =
             build_plan(source, &[range(0, 5, 0, 2)]).err().ok_or("reversed range was admitted")?;
         assert_eq!(reversal.reason, "reversed_range");
+        assert!(
+            reversal.message.contains("ranges[0]") && reversal.message.contains("ends before"),
+            "reversal message must name the range: {}",
+            reversal.message
+        );
         Ok(())
     }
 
@@ -309,10 +332,26 @@ mod tests {
         let plan = build_plan(source, &[range(0, 1, 0, 3), range(1, 0, 1, 4)])?;
         assert_eq!(plan.normalized_ranges[0].start.byte, 1);
         assert_eq!(plan.normalized_ranges[0].end.byte, 5);
+        assert_eq!(plan.range_provenance[0].original_index, 0);
+        assert_eq!(plan.range_provenance[1].original_index, 1);
         let surrogate_split = build_plan(source, &[range(0, 2, 0, 3)])
             .err()
             .ok_or("surrogate-splitting position was admitted")?;
         assert_eq!(surrogate_split.reason, "invalid_position");
+        assert!(
+            surrogate_split.message.contains("splits a surrogate pair"),
+            "surrogate message must discriminate: {}",
+            surrogate_split.message
+        );
+        let past_line_end = build_plan(source, &[range(0, 0, 0, 99)])
+            .err()
+            .ok_or("past-end character was admitted")?;
+        assert_eq!(past_line_end.reason, "invalid_position");
+        assert!(
+            past_line_end.message.contains("outside line 0"),
+            "past-end message must discriminate: {}",
+            past_line_end.message
+        );
         Ok(())
     }
 
@@ -335,10 +374,16 @@ mod tests {
             .err()
             .ok_or("malformed range was admitted")?;
         assert_eq!(malformed.reason, "invalid_range");
+        assert!(!malformed.message.is_empty(), "invalid_range must carry the parse_range message");
         let outside = build_plan(source, &[range(9, 0, 9, 1)])
             .err()
             .ok_or("out-of-document range was admitted")?;
         assert_eq!(outside.reason, "invalid_position");
+        assert!(
+            outside.message.contains("line 9 is outside the current document"),
+            "out-of-document message must discriminate: {}",
+            outside.message
+        );
         Ok(())
     }
 
@@ -347,8 +392,15 @@ mod tests {
         let source = "abcdef\n";
         let adjacent = build_plan(source, &[range(0, 0, 0, 3), range(0, 3, 0, 6)])?;
         assert_eq!(adjacent.normalized_ranges.len(), 2);
+        assert_eq!(adjacent.normalized_ranges[0].start.byte, 0);
+        assert_eq!(adjacent.normalized_ranges[0].end.byte, 3);
+        assert_eq!(adjacent.normalized_ranges[1].start.byte, 3);
+        assert_eq!(adjacent.normalized_ranges[1].end.byte, 6);
+        assert_eq!(adjacent.range_provenance[0].original_index, 0);
+        assert_eq!(adjacent.range_provenance[1].original_index, 1);
         let empty = build_plan(source, &[range(0, 3, 0, 3)])?;
         assert_eq!(empty.normalized_ranges[0].start.byte, empty.normalized_ranges[0].end.byte);
+        assert_eq!(empty.normalized_ranges[0].start.byte, 3);
         Ok(())
     }
 
