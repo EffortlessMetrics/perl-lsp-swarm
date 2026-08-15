@@ -160,6 +160,17 @@ runtime plugin/coc.vim
 execute 'lcd ' . fnameescape(s:workspace)
 execute 'silent edit ' . fnameescape(s:workspace . '/main.pl')
 
+" Every position below is a hardcoded line number into this fixture. An
+" off-by-one here does not fail loudly -- it silently retargets a probe at the
+" wrong line, so the Unicode and repair checks would pass while proving
+" nothing. Assert the coordinates against the buffer before using them.
+for [s:want_line, s:want_text] in [[6, 'my $value = Widget::answer();'], [7, 'my $broken = $val'], [8, 'my $emoji = "😀";']]
+  if getline(s:want_line) !=# s:want_text
+    call s:Fail(printf('fixture drift: line %d is %s, expected %s',
+          \ s:want_line, string(getline(s:want_line)), string(s:want_text)))
+  endif
+endfor
+
 if !s:WaitFor('coc#rpc#ready()', 10000)
   call s:Fail('Coc Node RPC did not become ready')
 endif
@@ -207,7 +218,9 @@ if empty(s:diagnostics)
 endif
 
 " Hover/definition/references through stable public Coc actions.
-call cursor(5, 20)
+" Line 6 is `my $value = Widget::answer();`; column 20 sits inside the
+" `Widget::answer` call so definitions must resolve into lib/Widget.pm.
+call cursor(6, 20)
 let s:hover = CocAction('getHover')
 let s:cells.hover = type(s:hover) == type([]) && !empty(s:hover)
 if !s:cells.hover | call s:Fail('Coc getHover returned no text') | endif
@@ -215,7 +228,8 @@ let s:definitions = CocAction('definitions')
 let s:cells.definition = type(s:definitions) == type([]) && string(s:definitions) =~# 'Widget.pm'
 if !s:cells.definition | call s:Fail('Coc definitions did not resolve Widget.pm') | endif
 
-call cursor(5, 6)
+" Column 6 sits inside `$value` on line 6.
+call cursor(6, 6)
 let s:references = CocAction('references', 0)
 let s:cells.references = type(s:references) == type([]) && !empty(s:references)
 if !s:cells.references | call s:Fail('Coc references returned no locations') | endif
@@ -229,7 +243,17 @@ let s:completion = CocRequest('perl-lsp', 'textDocument/completion', {
       \ 'position': {'line': s:line0, 'character': 0},
       \ 'context': {'triggerKind': 1},
       \ })
-let s:completion_items = type(s:completion) == type([]) ? s:completion : get(s:completion, 'items', [])
+" CocRequest yields v:null on timeout or server error. Calling get() on that
+" throws and aborts the whole run, which reads as a harness crash rather than
+" the product failure it actually is.
+if type(s:completion) == type([])
+  let s:completion_items = s:completion
+elseif type(s:completion) == type({})
+  let s:completion_items = get(s:completion, 'items', [])
+else
+  let s:completion_items = []
+  call s:Fail('CocRequest completion returned ' . string(s:completion) . ' instead of a result')
+endif
 let s:snippet_item = {}
 for s:item in s:completion_items
   if get(s:item, 'insertTextFormat', 1) == 2
@@ -269,7 +293,8 @@ if type(s:actions) != type([]) | call s:Fail('Coc codeActions returned a malform
 
 " Repair the syntax defect through Vim, let Coc synchronize it, then require
 " diagnostics to update rather than reusing the original stale result.
-call setline(6, 'my $broken = $value;')
+" Line 7 is the intentionally broken `my $broken = $val`.
+call setline(7, 'my $broken = $value;')
 doautocmd <nomodeline> TextChanged
 sleep 300m
 let s:after_edit = CocAction('diagnosticList')
@@ -285,7 +310,7 @@ if !s:cells.formatting | call s:Fail('Coc format action failed') | endif
 
 " Interactive rename: queue the dialog answer, invoke the real Coc rename
 " action, and inspect the resulting buffer after workspace edits are applied.
-call cursor(5, 6)
+call cursor(6, 6)
 if CocHasProvider('rename')
   call feedkeys("renamed_value\<CR>", 't')
   try
@@ -303,7 +328,10 @@ endif
 
 " Unicode discriminator: the emoji precedes a later symbol on the line. A
 " hover request through Coc must not fail from byte/UTF-16 position drift.
-call cursor(7, strlen(getline(7)) - 3)
+" Line 8 is `my $emoji = "<emoji>";`. strlen() is a byte count, so this byte
+" column lands inside the 4-byte emoji itself — which is the whole point: a
+" byte/UTF-16 conversion error in the position mapping shows up here.
+call cursor(8, strlen(getline(8)) - 3)
 try
   let s:unicode_hover = CocAction('getHover')
   let s:cells.unicode_position = type(s:unicode_hover) == type([])
@@ -357,15 +385,19 @@ echo
 
 # Coc logs are intentionally searched only as a transport discriminator; all
 # semantic cells above come from the actual Coc/Vim state/actions.
+shopt -s nullglob
 coc_log_candidates=("${tmpdir}"/coc-*.log "${config_home}"/*.log)
+shopt -u nullglob
 did_change_count=0
 ranged_change_count=0
 for log in "${coc_log_candidates[@]}"; do
   [[ -f ${log} ]] || continue
+  # `grep -c` prints 0 and exits 1 on no match, but prints nothing on a read
+  # error; an empty operand would make the arithmetic below a syntax error.
   count=$(grep -c 'textDocument/didChange' "${log}" || true)
-  did_change_count=$((did_change_count + count))
+  did_change_count=$((did_change_count + ${count:-0}))
   range_count=$(grep 'textDocument/didChange' "${log}" | grep -c '"range"' || true)
-  ranged_change_count=$((ranged_change_count + range_count))
+  ranged_change_count=$((ranged_change_count + ${range_count:-0}))
 done
 if [[ ${expect_incremental} == 1 && ${did_change_count} -gt 0 && ${ranged_change_count} -eq 0 ]]; then
   echo "vim/coc smoke FAILED: incremental sync expected but observed Coc didChange traffic was not ranged" >&2
