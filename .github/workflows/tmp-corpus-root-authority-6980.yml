@@ -29,7 +29,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          workflow=.github/workflows/tmp-corpus-root-authority-6980.yml
           script=.github/scripts/tmp-corpus-root-authority-6980.py
           test -f "$script"
           test -f crates/perl-corpus/src/api/root.rs
@@ -44,18 +43,13 @@ jobs:
         shell: bash
         run: |
           set +e
-          cargo check -p perl-corpus --all-targets --locked 2>&1 | tee /tmp/perl-corpus-check.log
+          cargo check -p perl-corpus --all-targets --locked --message-format=short \
+            2>&1 | tee /tmp/perl-corpus-check.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            {
-              echo '### `cargo check -p perl-corpus --all-targets --locked`'
-              echo '```text'
-              tail -n 160 /tmp/perl-corpus-check.log
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            while IFS= read -r line; do
-              printf '::error::%s\n' "$line"
-            done < <(tail -n 80 /tmp/perl-corpus-check.log)
+            grep -E '(^error|: error\[|: error:)' /tmp/perl-corpus-check.log \
+              | head -n 10 \
+              | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
           fi
           exit "$status"
 
