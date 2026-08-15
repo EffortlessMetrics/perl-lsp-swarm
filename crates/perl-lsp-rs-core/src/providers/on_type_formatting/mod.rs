@@ -36,13 +36,45 @@ use serde_json::json;
 ///
 /// The number of spaces to add or remove per indentation level. Corresponds
 /// to the LSP client's `tabSize` option. Typical values: 2, 4.
-pub fn compute_on_type_edit(
+/// The reason on-type formatting was suppressed instead of merely producing no edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnTypeSuppression {
+    /// The cursor is inside a heredoc body.
+    Heredoc,
+    /// The cursor is inside a POD documentation block.
+    Pod,
+}
+
+impl OnTypeSuppression {
+    /// Return the stable receipt reason for this suppression.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Heredoc => "inside_heredoc",
+            Self::Pod => "inside_pod",
+        }
+    }
+}
+
+/// The typed result of an on-type formatting request.
+#[derive(Debug, PartialEq)]
+pub enum OnTypeEditDecision {
+    /// The trigger was supported, but no edit was necessary.
+    NoChange,
+    /// Formatting was deliberately suppressed for a protected source region.
+    Suppressed(OnTypeSuppression),
+    /// Formatting produced one or more edits.
+    Edits(Vec<Value>),
+}
+
+/// Computes a typed on-type formatting decision for a Perl document.
+pub fn compute_on_type_decision(
     text: &str,
     line: u32,
     _col: u32,
     ch: char,
     indent_step: usize,
-) -> Option<Vec<Value>> {
+) -> OnTypeEditDecision {
     // `str::lines()` drops a trailing empty line, but the LSP cursor can be
     // on a line that only exists because of a trailing `\n`.  We manually
     // append an empty element when the text ends with a newline to keep
@@ -53,24 +85,40 @@ pub fn compute_on_type_edit(
     }
 
     if line as usize >= lines.len() {
-        return None;
+        return OnTypeEditDecision::NoChange;
     }
 
     // Suppress all formatting inside heredoc bodies.
     if is_inside_heredoc(&lines, line as usize) {
-        return None;
+        return OnTypeEditDecision::Suppressed(OnTypeSuppression::Heredoc);
     }
 
     // Suppress all formatting inside POD blocks.
     if is_inside_pod(&lines, line as usize) {
-        return None;
+        return OnTypeEditDecision::Suppressed(OnTypeSuppression::Pod);
     }
 
-    match ch {
+    let edits = match ch {
         '}' => handle_close_brace(&lines, line, indent_step),
         ';' => None, // Semicolons preserve existing indentation.
         '\n' | '\r' => handle_newline(&lines, line, indent_step),
         _ => None,
+    };
+
+    edits.map_or(OnTypeEditDecision::NoChange, OnTypeEditDecision::Edits)
+}
+
+/// Computes on-type formatting edits for a Perl document based on character input.
+pub fn compute_on_type_edit(
+    text: &str,
+    line: u32,
+    col: u32,
+    ch: char,
+    indent_step: usize,
+) -> Option<Vec<Value>> {
+    match compute_on_type_decision(text, line, col, ch, indent_step) {
+        OnTypeEditDecision::Edits(edits) => Some(edits),
+        OnTypeEditDecision::NoChange | OnTypeEditDecision::Suppressed(_) => None,
     }
 }
 
@@ -510,6 +558,22 @@ mod tests {
     use super::*;
 
     // Internal helper unit tests — these call private functions and must stay here.
+
+    #[test]
+    fn typed_decision_distinguishes_suppression_from_no_change() {
+        assert_eq!(
+            compute_on_type_decision("my $x = <<END;\nbody\nEND\n", 1, 0, '\n', 4),
+            OnTypeEditDecision::Suppressed(OnTypeSuppression::Heredoc),
+        );
+        assert_eq!(
+            compute_on_type_decision("=pod\ntext\n=cut\n", 1, 0, '\n', 4),
+            OnTypeEditDecision::Suppressed(OnTypeSuppression::Pod),
+        );
+        assert_eq!(
+            compute_on_type_decision("my $x;\n", 0, 0, ';', 4),
+            OnTypeEditDecision::NoChange,
+        );
+    }
 
     #[test]
     fn extract_braces_skips_strings_and_comments() {

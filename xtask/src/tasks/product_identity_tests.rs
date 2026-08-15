@@ -21,7 +21,6 @@ cargo_package = "perllsp"
 package_manifest = "crates/perllsp/Cargo.toml"
 implementation_crate = "perl-lsp-rs"
 implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
-compatibility_executable = "perl-lsp"
 
 [extension]
 publisher = "EffortlessMetrics"
@@ -52,10 +51,8 @@ fn coherent_identity_contract_passes_in_both_declared_repositories() -> Result<(
 #[test]
 fn inferred_undeclared_origin_is_an_unbound_local_checkout() -> Result<()> {
     let repo = fixture_repo()?;
-    let context = RepositoryContext {
-        repository: "fork-owner/perl-lsp".to_string(),
-        authoritative: false,
-    };
+    let context =
+        RepositoryContext { repository: "fork-owner/perl-lsp".to_string(), authoritative: false };
 
     check_with_resolved_repository_context(repo.path(), Some(&context))
 }
@@ -72,10 +69,8 @@ fn unsupported_schema_version_fails() -> Result<()> {
 #[test]
 fn unknown_contract_field_fails() -> Result<()> {
     let repo = fixture_repo()?;
-    let contract = CONTRACT.replace(
-        "schema_version = 1",
-        "schema_version = 1\nunknown_contract_field = true",
-    );
+    let contract =
+        CONTRACT.replace("schema_version = 1", "schema_version = 1\nunknown_contract_field = true");
     write(repo.path(), "policy/product-identity.toml", &contract)?;
 
     expect_failure(repo.path(), "unknown field")
@@ -141,10 +136,7 @@ relation = \"different_project\"\nremediation = \"Invalid conflict.\"\n"
     );
     write(repo.path(), "policy/product-identity.toml", &contract)?;
 
-    expect_failure(
-        repo.path(),
-        "cannot also be classified as an identity conflict",
-    )
+    expect_failure(repo.path(), "cannot also be classified as an identity conflict")
 }
 
 #[test]
@@ -173,16 +165,10 @@ fn implementation_package_drift_fails() -> Result<()> {
         r#"[package]
 name = "different-implementation"
 repository.workspace = true
-
-[[bin]]
-name = "perl-lsp"
 "#,
     )?;
 
-    expect_failure(
-        repo.path(),
-        "server implementation Cargo package drifted",
-    )
+    expect_failure(repo.path(), "server implementation Cargo package drifted")
 }
 
 #[test]
@@ -264,10 +250,7 @@ fn identical_public_and_development_repositories_fail() -> Result<()> {
     );
     write(repo.path(), "policy/product-identity.toml", &contract)?;
 
-    expect_failure(
-        repo.path(),
-        "public and development repositories must remain distinct",
-    )
+    expect_failure(repo.path(), "public and development repositories must remain distinct")
 }
 
 #[test]
@@ -288,10 +271,7 @@ serde = "1"
 "#,
     )?;
 
-    expect_failure(
-        repo.path(),
-        "does not depend on declared implementation crate",
-    )
+    expect_failure(repo.path(), "does not depend on declared implementation crate")
 }
 
 #[test]
@@ -312,10 +292,7 @@ perl-lsp-rs = { package = "different-project", version = "1" }
 "#,
     )?;
 
-    expect_failure(
-        repo.path(),
-        "does not depend on declared implementation crate",
-    )
+    expect_failure(repo.path(), "does not depend on declared implementation crate")
 }
 
 #[test]
@@ -463,10 +440,8 @@ fn github_remote_forms_resolve_to_repository_slug() {
 }
 
 fn expect_failure(repo: &Path, expected: &str) -> Result<()> {
-    let error = match check_with_repository_context(
-        repo,
-        Some("EffortlessMetrics/perl-lsp-swarm"),
-    ) {
+    let error = match check_with_repository_context(repo, Some("EffortlessMetrics/perl-lsp-swarm"))
+    {
         Ok(()) => bail!("identity drift should fail"),
         Err(error) => error,
     };
@@ -510,15 +485,7 @@ perl-lsp-rs = { workspace = true }
         r#"[package]
 name = "perl-lsp-rs"
 repository.workspace = true
-
-[[bin]]
-name = "perl-lsp"
 "#,
-    )?;
-    write(
-        repo.path(),
-        "crates/perl-lsp-rs/src/main.rs",
-        "fn main() {}\n",
     )?;
     write(
         repo.path(),

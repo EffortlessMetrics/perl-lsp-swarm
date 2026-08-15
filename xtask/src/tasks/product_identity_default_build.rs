@@ -24,7 +24,6 @@ struct ServerIdentity {
     package_manifest: PathBuf,
     implementation_crate: String,
     implementation_manifest: PathBuf,
-    compatibility_executable: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,11 +54,10 @@ pub(super) fn check(repo_root: &Path) -> Result<()> {
         &contract.server.package_manifest,
         &contract.server.primary_executable,
     )?;
-    validate_default_binary(
+    validate_library_only(
         repo_root,
-        "server compatibility",
+        "server implementation",
         &contract.server.implementation_manifest,
-        &contract.server.compatibility_executable,
     )?;
     validate_default_binary(
         repo_root,
@@ -69,12 +67,42 @@ pub(super) fn check(repo_root: &Path) -> Result<()> {
     )?;
 
     println!(
-        "Product identity default build: implementation {}, binaries [{}, {}, {}]",
+        "Product identity default build: implementation {} (library-only), binaries [{}, {}]",
         contract.server.implementation_crate,
         contract.server.primary_executable,
-        contract.server.compatibility_executable,
         contract.debug_adapter.executable
     );
+    Ok(())
+}
+
+/// Reject an implementation crate that exposes a product binary through either
+/// an explicit `[[bin]]` declaration or Cargo's conventional autobin paths.
+fn validate_library_only(repo_root: &Path, label: &str, manifest_path: &Path) -> Result<()> {
+    let manifest = read_toml(repo_root, manifest_path)?;
+    let package = manifest
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| eyre!("{label} manifest has no [package] table"))?;
+    let package_name = package
+        .get("name")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| eyre!("{label} manifest has no package name"))?;
+    let binary_names = super::super::product_identity::cargo_binary_names(
+        repo_root,
+        manifest_path,
+        &manifest,
+        package_name,
+    )?;
+    if !binary_names.is_empty() {
+        bail!(
+            "{label} manifest {} must be library-only; found binaries {:?}; \
+             restoring an executable here violates the settled product topology \
+             — see #7213 and #7497",
+            manifest_path.display(),
+            binary_names
+        );
+    }
+
     Ok(())
 }
 
@@ -136,9 +164,8 @@ fn validate_default_binary(
     let mut unavailable_requirements = BTreeSet::new();
 
     if let Some(bins) = manifest.get("bin") {
-        let bins = bins
-            .as_array()
-            .ok_or_else(|| eyre!("{label} Cargo bin targets are not an array"))?;
+        let bins =
+            bins.as_array().ok_or_else(|| eyre!("{label} Cargo bin targets are not an array"))?;
         for bin in bins {
             if bin.get("name").and_then(toml::Value::as_str) != Some(expected_binary) {
                 continue;
@@ -149,9 +176,7 @@ fn validate_default_binary(
                 return Ok(());
             }
             unavailable_requirements.extend(
-                required
-                    .into_iter()
-                    .filter(|feature| !default_state.features.contains(feature)),
+                required.into_iter().filter(|feature| !default_state.features.contains(feature)),
             );
         }
     }
@@ -175,9 +200,8 @@ fn default_feature_state(manifest: &toml::Value) -> Result<DefaultFeatureState> 
     let Some(features) = manifest.get("features") else {
         return Ok(DefaultFeatureState::default());
     };
-    let features = features
-        .as_table()
-        .ok_or_else(|| eyre!("Cargo [features] value is not a table"))?;
+    let features =
+        features.as_table().ok_or_else(|| eyre!("Cargo [features] value is not a table"))?;
     let mut state = DefaultFeatureState::default();
     let mut queue = VecDeque::new();
 
@@ -234,9 +258,7 @@ fn feature_entries<'a>(value: &'a toml::Value, label: &str) -> Result<Vec<&'a st
         .ok_or_else(|| eyre!("Cargo {label} must be an array"))?
         .iter()
         .map(|entry| {
-            entry
-                .as_str()
-                .ok_or_else(|| eyre!("Cargo {label} contains a non-string feature entry"))
+            entry.as_str().ok_or_else(|| eyre!("Cargo {label} contains a non-string feature entry"))
         })
         .collect()
 }
@@ -268,22 +290,15 @@ fn implicit_binary_exists(
         .get("package")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| eyre!("Cargo manifest has no [package] table"))?;
-    if package
-        .get("autobins")
-        .and_then(toml::Value::as_bool)
-        == Some(false)
-    {
+    if package.get("autobins").and_then(toml::Value::as_bool) == Some(false) {
         return Ok(false);
     }
     let package_name = package
         .get("name")
         .and_then(toml::Value::as_str)
         .ok_or_else(|| eyre!("Cargo package has no string name"))?;
-    let manifest_dir = repo_root.join(
-        manifest_path
-            .parent()
-            .ok_or_else(|| eyre!("Cargo manifest path has no parent"))?,
-    );
+    let manifest_dir = repo_root
+        .join(manifest_path.parent().ok_or_else(|| eyre!("Cargo manifest path has no parent"))?);
     if expected_binary == package_name && manifest_dir.join("src/main.rs").is_file() {
         return Ok(true);
     }
@@ -292,18 +307,12 @@ fn implicit_binary_exists(
 }
 
 fn inherits_workspace(specification: &toml::Value) -> bool {
-    specification
-        .as_table()
-        .and_then(|table| table.get("workspace"))
-        .and_then(toml::Value::as_bool)
+    specification.as_table().and_then(|table| table.get("workspace")).and_then(toml::Value::as_bool)
         == Some(true)
 }
 
 fn dependency_optional(specification: &toml::Value) -> bool {
-    specification
-        .as_table()
-        .and_then(|table| table.get("optional"))
-        .and_then(toml::Value::as_bool)
+    specification.as_table().and_then(|table| table.get("optional")).and_then(toml::Value::as_bool)
         == Some(true)
 }
 
@@ -344,7 +353,6 @@ primary_executable = "perllsp"
 package_manifest = "crates/perllsp/Cargo.toml"
 implementation_crate = "perl-lsp-rs"
 implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
-compatibility_executable = "perl-lsp"
 
 [debug_adapter]
 executable = "perl-dap"
@@ -398,17 +406,43 @@ package_manifest = "crates/perl-dap/Cargo.toml"
     }
 
     #[test]
-    fn compatibility_binary_hidden_by_required_feature_fails() -> Result<()> {
+    fn implementation_crate_with_explicit_binary_is_rejected() -> Result<()> {
         let repo = fixture_repo()?;
         write_binary_manifest(
             repo.path(),
             "crates/perl-lsp-rs",
             "perl-lsp-rs",
             "perl-lsp",
-            "required-features = [\"internal-only\"]\n",
-            "[features]\ninternal-only = []\n",
+            "",
+            "",
         )?;
-        expect_failure(repo.path(), "binary \"perl-lsp\" is unavailable in the default feature set")
+        expect_failure(repo.path(), "must be library-only; found binaries {\"perl-lsp\"}")
+    }
+
+    #[test]
+    fn implementation_crate_with_implicit_binary_via_main_rs_is_rejected() -> Result<()> {
+        let repo = fixture_repo()?;
+        write(
+            repo.path(),
+            "crates/perl-lsp-rs/Cargo.toml",
+            "[package]\nname = \"perl-lsp-rs\"\n\n[lib]\nname = \"perl_lsp\"\n",
+        )?;
+        write(repo.path(), "crates/perl-lsp-rs/src/main.rs", "")?;
+        expect_failure(repo.path(), "must be library-only; found binaries {\"perl-lsp-rs\"}")
+    }
+
+    #[test]
+    fn implementation_crate_with_implicit_binary_via_src_bin_is_rejected() -> Result<()> {
+        let repo = fixture_repo()?;
+        write(repo.path(), "crates/perl-lsp-rs/src/bin/restored.rs", "fn main() {}\n")?;
+        expect_failure(repo.path(), "must be library-only; found binaries {\"restored\"}")
+    }
+
+    #[test]
+    fn implementation_crate_with_nested_implicit_binary_via_src_bin_is_rejected() -> Result<()> {
+        let repo = fixture_repo()?;
+        write(repo.path(), "crates/perl-lsp-rs/src/bin/restored/main.rs", "fn main() {}\n")?;
+        expect_failure(repo.path(), "must be library-only; found binaries {\"restored\"}")
     }
 
     #[test]
@@ -453,22 +487,8 @@ package_manifest = "crates/perl-dap/Cargo.toml"
             &facade_manifest("perl-lsp-rs = { workspace = true }", ""),
         )?;
         write(repo.path(), "crates/perllsp/src/main.rs", "")?;
-        write_binary_manifest(
-            repo.path(),
-            "crates/perl-lsp-rs",
-            "perl-lsp-rs",
-            "perl-lsp",
-            "",
-            "",
-        )?;
-        write_binary_manifest(
-            repo.path(),
-            "crates/perl-dap",
-            "perl-dap",
-            "perl-dap",
-            "",
-            "",
-        )?;
+        write_library_manifest(repo.path(), "crates/perl-lsp-rs", "perl-lsp-rs")?;
+        write_binary_manifest(repo.path(), "crates/perl-dap", "perl-dap", "perl-dap", "", "")?;
         Ok(repo)
     }
 
@@ -498,6 +518,15 @@ package_manifest = "crates/perl-dap/Cargo.toml"
             ),
         )?;
         write(root, &format!("{relative}/src/main.rs"), "")
+    }
+
+    fn write_library_manifest(root: &Path, relative: &str, name: &str) -> Result<()> {
+        write(
+            root,
+            &format!("{relative}/Cargo.toml"),
+            &format!("[package]\nname = {name:?}\n\n[lib]\nname = \"perl_lsp\"\n"),
+        )?;
+        write(root, &format!("{relative}/src/lib.rs"), "")
     }
 
     fn expect_failure(repo: &Path, expected: &str) -> Result<()> {

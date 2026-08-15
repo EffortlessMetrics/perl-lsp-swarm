@@ -23,8 +23,8 @@ fn data_field<'a>(link: &'a Value, field: &str) -> Option<&'a str> {
 
 #[test]
 fn document_links_resolve_modules_and_relative_files_over_stdio() -> TestResult {
-    let bin = env!("CARGO_BIN_EXE_perl-lsp");
-    let mut client = LspClient::spawn(bin)?;
+    let bin = support::product_binary_path()?;
+    let mut client = LspClient::spawn(&bin)?;
     let document_path = std::env::temp_dir().join("lsp_document_links_e2e").join("main.pl");
     let document_url = url::Url::from_file_path(&document_path)
         .map_err(|()| format!("failed to build file URI for {}", document_path.display()))?;
