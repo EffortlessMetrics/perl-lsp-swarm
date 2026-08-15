@@ -122,12 +122,16 @@ export function validateManagedCandidateManifest(manifest: ManagedCandidateManif
     errors.push('perl_dap_digest must be sha256 when present');
   }
   if (
-    (manifest.subject.perl_dap_digest === null && manifest.verification.perl_dap !== 'not_present') ||
+    (manifest.subject.perl_dap_digest === null &&
+      manifest.verification.perl_dap !== 'not_present') ||
     (manifest.subject.perl_dap_digest !== null && manifest.verification.perl_dap !== 'verified')
   ) {
     errors.push('perl-dap verification must agree with candidate pair membership');
   }
-  if (manifest.verification.perllsp !== 'verified' || manifest.verification.topology !== 'verified') {
+  if (
+    manifest.verification.perllsp !== 'verified' ||
+    manifest.verification.topology !== 'verified'
+  ) {
     errors.push('candidate manifest cannot represent a partially verified core subject');
   }
 

@@ -125,8 +125,6 @@ describe('managed cache protocol', () => {
   });
 
   test('derives attempt-private directory names without paths', () => {
-    expect(managedAttemptDirectoryName(attempt())).toBe(
-      'attempt-install-018-linux-x64-owner-7f2a',
-    );
+    expect(managedAttemptDirectoryName(attempt())).toBe('attempt-install-018-linux-x64-owner-7f2a');
   });
 });
