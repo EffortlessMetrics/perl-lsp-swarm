@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use zed_host_compat::validate_pass;
+use zed_host_compat::{validate_pass, validate_schema};
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -44,6 +44,7 @@ fn schema_and_template_are_valid_json_and_fail_closed() -> Result<(), Box<dyn Er
         Some("exact_source_dev_extension"),
         "exact-source template must use the development-extension stage"
     );
+    validate_schema(&template).map_err(io::Error::other)?;
     assert!(
         validate_pass(&template, None).is_err(),
         "not_run template must fail closed under validate_pass"
@@ -60,17 +61,97 @@ fn sha256_fill(nibble: char) -> String {
     value
 }
 
-/// Fill Zed/extension identity so later fail-closed checks are reachable.
-fn with_host_identity(mut receipt: Value) -> Value {
+fn valid_exact_source_pass(mut receipt: Value) -> Value {
+    receipt["result"] = Value::String("pass".to_string());
+    receipt["observed_at"] = Value::String("2026-08-15T00:00:00Z".to_string());
     receipt["zed"]["version"] = Value::String("0.0.0-test".to_string());
     receipt["zed"]["channel"] = Value::String("stable".to_string());
-    receipt["zed"]["build"] = Value::String("zed-build-test".to_string());
+    receipt["zed"]["build"] = Value::String("stable.1.abcdef0".to_string());
     receipt["extension"]["base_commit"] =
         Value::String("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string());
     receipt["extension"]["candidate_commit"] =
         Value::String("ffffffffffffffffffffffffffffffffffffffff".to_string());
+    receipt["extension"]["manifest_version"] = Value::String("0.5.0".to_string());
     receipt["extension"]["wasm_sha256"] = Value::String(sha256_fill('a'));
+    receipt["extension"]["install_route"] = Value::String("dev_extension".to_string());
+    receipt["perllsp"]["command"] = Value::String("<perllsp>".to_string());
+    receipt["perllsp"]["arguments"] = serde_json::json!(["--stdio"]);
+    receipt["perllsp"]["version"] = Value::String("0.0.0-test".to_string());
+    receipt["perllsp"]["build_commit"] =
+        Value::String("dddddddddddddddddddddddddddddddddddddddd".to_string());
+    receipt["perllsp"]["binary_sha256"] = Value::String(sha256_fill('b'));
+    receipt["perllsp"]["resolution_route"] = Value::String("binary_override".to_string());
+    receipt["platform"] = serde_json::json!({
+        "os": "linux",
+        "version": "test",
+        "architecture": "x86_64"
+    });
+    receipt["profile"] = serde_json::json!({
+        "clean_profile": true,
+        "prior_extension_absent": true,
+        "prior_managed_cache_absent": true,
+        "other_perl_servers_disabled": true
+    });
+    receipt["workspace"] = serde_json::json!({
+        "fixture_id": "zed-test-v1",
+        "fixture_sha256": sha256_fill('c'),
+        "root_identity": "workspace"
+    });
+    receipt["configuration"]["settings_sha256"] = Value::String(sha256_fill('d'));
+    receipt["configuration"]["workspace_configuration_observed"] = Value::Bool(true);
+    receipt["artifacts"] = serde_json::json!({
+        "zed_log": "artifacts/zed.log#sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "language_server_log": "artifacts/lsp.log#sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "process_inventory": "artifacts/process.json#sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "redacted": true
+    });
+    for cell in [
+        "manifest_discovery",
+        "perl_attachment",
+        "initialize",
+        "workspace_root",
+        "diagnostics",
+        "hover",
+        "definition",
+        "references",
+        "post_edit_freshness",
+        "restart",
+        "shutdown",
+    ] {
+        receipt["journey"][cell] = serde_json::json!({
+            "result": "pass",
+            "evidence": format!("observed {cell}")
+        });
+    }
+    receipt["activation"]["pod"] = serde_json::json!({
+        "result": "pass",
+        "evidence": "POD stayed separate"
+    });
     receipt
+}
+
+#[test]
+fn schema_rejects_invalid_emitter_values() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let template =
+        read_json(&root, ".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json")?;
+
+    let mut wrong_route = template.clone();
+    wrong_route["perllsp"]["resolution_route"] = Value::String("explicit_binary_path".to_string());
+    assert!(validate_schema(&wrong_route).is_err());
+
+    let mut darwin = template.clone();
+    darwin["platform"]["os"] = Value::String("darwin".to_string());
+    assert!(validate_schema(&darwin).is_err());
+
+    let mut limited = template.clone();
+    limited["journey"]["hover"]["result"] = Value::String("limited".to_string());
+    assert!(validate_schema(&limited).is_err());
+
+    let mut extra = template;
+    extra["unbound_evidence"] = Value::Bool(true);
+    assert!(validate_schema(&extra).is_err());
+    Ok(())
 }
 
 #[test]
@@ -78,31 +159,25 @@ fn false_green_mutations_are_rejected() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let template =
         read_json(&root, ".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json")?;
+    let valid = valid_exact_source_pass(template);
+    validate_schema(&valid).map_err(io::Error::other)?;
+    validate_pass(&valid, None).map_err(io::Error::other)?;
 
-    let mut empty_pass = template.clone();
-    empty_pass["result"] = Value::String("pass".to_string());
-    assert_eq!(
-        validate_pass(&empty_pass, None).expect_err("empty pass"),
-        "exact Zed host identity is missing"
-    );
-
-    let mut wrong_provider = with_host_identity(empty_pass.clone());
+    let mut wrong_provider = valid.clone();
     wrong_provider["perllsp"]["server_id"] = Value::String("perl-lsp".to_string());
-    assert_eq!(
-        validate_pass(&wrong_provider, None).expect_err("wrong provider"),
-        "exact perllsp process identity is missing"
-    );
+    assert!(validate_pass(&wrong_provider, None).is_err());
 
-    let mut wrong_transport = with_host_identity(empty_pass.clone());
+    let mut wrong_transport = valid.clone();
     wrong_transport["perllsp"]["arguments"] = serde_json::json!(["mcp", "--stdio"]);
-    assert_eq!(
-        validate_pass(&wrong_transport, None).expect_err("wrong transport"),
-        "exact perllsp process identity is missing"
-    );
+    assert!(validate_pass(&wrong_transport, None).is_err());
 
-    let mut cross_stage = empty_pass;
+    let mut cross_stage = valid;
     cross_stage["evidence_stage"] = Value::String("public_registry_install".to_string());
-    cross_stage["extension"]["install_route"] = Value::String("dev_extension".to_string());
+    cross_stage["perllsp"]["resolution_route"] = Value::String("managed_download".to_string());
+    cross_stage["public_subject"] = serde_json::json!({
+        "relative_path": zed_host_compat::PUBLIC_SUBJECT_RELATIVE_PATH,
+        "sha256": sha256_fill('e')
+    });
     assert_eq!(
         validate_pass(&cross_stage, None).expect_err("cross stage"),
         "evidence stage `public_registry_install` cannot use install route `dev_extension`"
