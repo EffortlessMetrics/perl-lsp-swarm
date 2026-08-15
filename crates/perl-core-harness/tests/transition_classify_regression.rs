@@ -8,10 +8,11 @@ use perl_core_harness::transition::{
     AcceptedBaseline, Classification, classify_transition, validate_run_report,
 };
 use perl_core_harness_types::{
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition, CompileBaselineV2, HarnessMode,
-    HarnessProfile, HarnessRunner, ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION, RunFailure,
-    RunFileResult, RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence,
-    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundarySourceSpan,
+    COMPILE_BASELINE_SCHEMA_VERSION, COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition,
+    CompileBaseline, CompileBaselineV2, HarnessMode, HarnessProfile, HarnessRunner,
+    ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
+    RunSummary, RunnerStatus, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
+    SemanticBoundaryLockScope, SemanticBoundarySourceSpan,
 };
 use std::collections::BTreeMap;
 
@@ -264,6 +265,140 @@ fn malformed_semantic_boundary_identity_is_not_proven() {
     assert!(classification.reason.contains("empty stable id"));
 }
 
+// ── V1 subject-comparability controls ────────────────────────────────────────
+
+#[test]
+fn v1_mode_mismatch_is_not_proven() {
+    let mut accepted = sample_v1_baseline(2, 2);
+    accepted.mode = HarnessMode::Parse; // current uses Compile → incomparable
+    let current = sample_report(2, 2);
+    let classification = classify_transition(&AcceptedBaseline::V1(accepted), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(!classification.requires_candidate);
+    assert!(
+        classification.reason.contains("mode"),
+        "expected mode in reason: {}",
+        classification.reason
+    );
+    assert!(
+        !classification.reason.contains("changed from pass to fail"),
+        "regression arm must not fire before subject check"
+    );
+}
+
+#[test]
+fn v1_profile_mismatch_is_not_proven() {
+    let mut accepted = sample_v1_baseline(2, 2);
+    accepted.profile = HarnessProfile::Comp; // current uses Base → incomparable
+    let current = sample_report(2, 2);
+    let classification = classify_transition(&AcceptedBaseline::V1(accepted), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(!classification.requires_candidate);
+    assert!(
+        classification.reason.contains("profile"),
+        "expected profile in reason: {}",
+        classification.reason
+    );
+}
+
+#[test]
+fn v1_regression_is_detected_when_subjects_match() {
+    // V1 baselines can still drive Regression if pass→fail is observed.
+    let accepted = sample_v1_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    // Invert: accepted passes base/0.t, current fails it.
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    current.file_results[1].status = RunnerStatus::Pass;
+    current.file_results[1].assertions_passed = 1;
+    current.failures = vec![sample_failure("base/0.t", "parse_recovery")];
+    current.summary.files_passed = 1;
+    current.summary.files_failed = 1;
+    current.summary.tap_assertions_passed = 1;
+    let classification = classify_transition(&AcceptedBaseline::V1(accepted), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::Regression);
+    assert!(classification.reason.contains("base/0.t changed from pass to fail"));
+}
+
+// ── Whitespace / path-identity controls ──────────────────────────────────────
+
+#[test]
+fn whitespace_contaminated_current_file_result_path_is_not_proven() {
+    let accepted = sample_v2_baseline(1, 1);
+    let mut current = sample_report(1, 1);
+    current.file_results[0].path = " base/0.t".into(); // leading space
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(
+        classification.reason.contains("whitespace"),
+        "expected whitespace in reason: {}",
+        classification.reason
+    );
+    assert!(
+        !classification.reason.contains("changed from pass to fail"),
+        "regression arm must not fire on contaminated path"
+    );
+}
+
+#[test]
+fn orphan_boundary_path_in_current_is_not_proven() {
+    let accepted = sample_v2_baseline(1, 1);
+    let mut current = sample_report(1, 1);
+    let mut boundary = sample_semantic_boundary();
+    boundary.path = "no_such/file.t".into(); // path not in file_results
+    current.semantic_boundaries.push(boundary);
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(
+        classification.reason.contains("not in file_results"),
+        "expected orphan path error: {}",
+        classification.reason
+    );
+}
+
+#[test]
+fn duplicate_boundary_id_in_current_is_not_proven() {
+    let accepted = sample_v2_baseline(1, 1);
+    let mut current = sample_report(1, 1);
+    current.semantic_boundaries.push(sample_semantic_boundary());
+    current.semantic_boundaries.push(sample_semantic_boundary()); // same path + id
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(
+        classification.reason.contains("repeats boundary id"),
+        "expected duplicate-id error: {}",
+        classification.reason
+    );
+}
+
+#[test]
+fn phase_mode_mismatch_in_current_failure_is_not_proven() {
+    let accepted = sample_v2_baseline(2, 1);
+    let mut current = sample_report(2, 1);
+    // Make the failing file's failure record have a wrong phase.
+    current.file_results[0].status = RunnerStatus::Fail;
+    current.file_results[0].assertions_passed = 0;
+    current.file_results[1].status = RunnerStatus::Pass;
+    current.file_results[1].assertions_passed = 1;
+    let mut bad_failure = sample_failure("base/0.t", "parse_recovery");
+    bad_failure.phase = "parse".into(); // mode is compile
+    current.failures = vec![bad_failure];
+    current.summary.files_passed = 1;
+    current.summary.files_failed = 1;
+    current.summary.tap_assertions_passed = 1;
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(
+        classification.reason.contains("does not match harness mode"),
+        "expected phase/mode mismatch: {}",
+        classification.reason
+    );
+    assert!(
+        !classification.reason.contains("changed from pass to fail"),
+        "regression arm must not fire before validation"
+    );
+}
+
 fn compensated_swap_classification() -> Classification {
     let accepted = sample_v2_baseline(2, 1);
     let mut current = sample_report(2, 1);
@@ -375,6 +510,26 @@ fn sample_semantic_boundary() -> ObservedSemanticBoundary {
         lock_scope: SemanticBoundaryLockScope::None,
         owner_workstream: "parser".into(),
         supporting_test: "tests/sample.rs".into(),
+    }
+}
+
+fn sample_v1_baseline(total: usize, passed: usize) -> CompileBaseline {
+    let file_results = sample_results(total, passed);
+    let expected_failures = sample_failures_for(&file_results);
+    CompileBaseline {
+        schema_version: COMPILE_BASELINE_SCHEMA_VERSION.into(),
+        report_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+        mode: HarnessMode::Compile,
+        profile: HarnessProfile::Base,
+        files_total: total,
+        files_passed: passed,
+        files_failed: total - passed,
+        tap_assertions_total: total,
+        tap_assertions_passed: passed,
+        buckets: BTreeMap::new(),
+        expected_failures,
+        file_results,
+        semantic_boundaries: Some(Vec::new()),
     }
 }
 
