@@ -77,10 +77,7 @@ pub fn check(repo_root: &Path) -> Result<()> {
     for (label, relative_manifest, expected_package) in governed {
         validate_manifest_path(relative_manifest)?;
         let manifest = fs::canonicalize(repo_root.join(relative_manifest)).wrap_err_with(|| {
-            format!(
-                "canonicalizing {label} manifest {}",
-                relative_manifest.display()
-            )
+            format!("canonicalizing {label} manifest {}", relative_manifest.display())
         })?;
         if !manifest.starts_with(&canonical_root) {
             bail!(
@@ -137,7 +134,9 @@ fn load_workspace_members(repo_root: &Path) -> Result<BTreeMap<PathBuf, String>>
         .args(["metadata", "--format-version", "1", "--no-deps", "--manifest-path"])
         .arg(&manifest_path)
         .output()
-        .wrap_err_with(|| format!("running {:?} metadata for {}", cargo, manifest_path.display()))?;
+        .wrap_err_with(|| {
+            format!("running {:?} metadata for {}", cargo, manifest_path.display())
+        })?;
 
     if !output.status.success() {
         bail!(
@@ -156,10 +155,7 @@ fn load_workspace_members(repo_root: &Path) -> Result<BTreeMap<PathBuf, String>>
             continue;
         }
         let manifest = fs::canonicalize(&package.manifest_path).wrap_err_with(|| {
-            format!(
-                "canonicalizing workspace member manifest {}",
-                package.manifest_path.display()
-            )
+            format!("canonicalizing workspace member manifest {}", package.manifest_path.display())
         })?;
         if let Some(previous) = members.insert(manifest.clone(), package.name.clone()) {
             bail!(
@@ -181,9 +177,8 @@ fn validate_manifest_path(path: &Path) -> Result<()> {
     let raw = path
         .to_str()
         .ok_or_else(|| eyre!("governed manifest path is not valid UTF-8: {path:?}"))?;
-    let invalid_segment = raw
-        .split('/')
-        .any(|segment| segment.is_empty() || segment == "." || segment == "..");
+    let invalid_segment =
+        raw.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..");
     if raw.is_empty()
         || raw.starts_with('/')
         || raw.starts_with('\\')
@@ -285,9 +280,7 @@ resolver = "2"
         write(
             root,
             &format!("{relative}/Cargo.toml"),
-            &format!(
-                "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n"
-            ),
+            &format!("[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
         )?;
         let source = if binary { "src/main.rs" } else { "src/lib.rs" };
         write(root, &format!("{relative}/{source}"), "")

@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use perl_position_tracking::Position;
 
 use crate::config::LexerConfig;
@@ -35,5 +33,4 @@ pub struct PerlLexer<'a> {
     pub(crate) current_quote_op: Option<quote_handler::QuoteOperatorInfo>,
     pub(crate) qw_recovery_enabled: bool,
     pub(crate) eof_emitted: bool,
-    pub(crate) start_time: Instant,
 }

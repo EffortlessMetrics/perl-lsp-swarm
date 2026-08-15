@@ -37,6 +37,9 @@ serde_json.workspace = true
 # Error handling
 anyhow.workspace = true
 
+# OS-backed entropy for external-peer session bearer tokens (#6949)
+getrandom = "0.3.4"
+
 # Regex for parsing debugger output
 regex.workspace = true
 
