@@ -137,16 +137,21 @@ fn scenario_10_definition_cross_file_module_symbol_points_to_module() -> Result<
 
     let scenario = DefinitionScenario::single_file()?;
 
-    // Given a module and script opened in the same workspace.
+    // Given a static workspace module and script using it through `use lib`.
     scenario.given_file_is_open("lib/Counter.pm", CROSS_FILE_MODULE)?;
     scenario.given_file_is_open("main.pl", CROSS_FILE_SCRIPT)?;
 
     // When go-to-definition is requested on `increment` in `Counter->increment`.
     let definitions = scenario.when_requesting_definition_with_retry("main.pl", 5, 23)?;
 
-    // Then results are shape-valid. Cross-file module resolution may degrade
-    // if `use lib` handling is incomplete; keep the empty path tolerated but
-    // log it so we notice when it happens in CI.
+    // Then bounded retry must produce a useful cross-file location. This fixture
+    // is static and checked in; a persistent empty response is a broken first-use
+    // navigation path rather than an accepted dynamic boundary.
+    assert!(
+        !definitions.is_empty(),
+        "expected a cross-file definition for static Counter->increment at \
+         main.pl:5:23, but the server returned an empty list after retries"
+    );
     for entry in &definitions {
         assert!(
             is_lsp_location_shape(entry),
@@ -154,32 +159,25 @@ fn scenario_10_definition_cross_file_module_symbol_points_to_module() -> Result<
         );
     }
 
-    if definitions.is_empty() {
-        eprintln!(
-            "INFO scenario_10: cross-file definition returned empty — tolerated \
-             degraded path (cross-file indexing may not have settled)"
-        );
-    } else {
-        let points_to_module = definitions
-            .iter()
-            .any(|entry| entry_uri(entry).map(|uri| uri.ends_with("Counter.pm")).unwrap_or(false));
-        assert!(
-            points_to_module,
-            "non-empty cross-file definition results must include Counter.pm but did not: \
-             {definitions:?}"
-        );
-        // And they must never resolve to an unrelated file (e.g. leaking the
-        // call-site file as the definition would be a real regression).
-        let resolves_outside_workspace = definitions.iter().any(|entry| {
-            entry_uri(entry)
-                .map(|uri| !uri.ends_with("Counter.pm") && !uri.ends_with("main.pl"))
-                .unwrap_or(false)
-        });
-        assert!(
-            !resolves_outside_workspace,
-            "cross-file definition resolved to an unrelated file: {definitions:?}"
-        );
-    }
+    let points_to_module = definitions
+        .iter()
+        .any(|entry| entry_uri(entry).map(|uri| uri.ends_with("Counter.pm")).unwrap_or(false));
+    assert!(
+        points_to_module,
+        "cross-file definition results must include Counter.pm: {definitions:?}"
+    );
+
+    // The call-site file may appear in a LocationLink origin, but no returned
+    // target may escape the two-file fixture.
+    let resolves_outside_workspace = definitions.iter().any(|entry| {
+        entry_uri(entry)
+            .map(|uri| !uri.ends_with("Counter.pm") && !uri.ends_with("main.pl"))
+            .unwrap_or(false)
+    });
+    assert!(
+        !resolves_outside_workspace,
+        "cross-file definition resolved to an unrelated file: {definitions:?}"
+    );
 
     scenario.then_no_crash_signals_exist();
     Ok(())
