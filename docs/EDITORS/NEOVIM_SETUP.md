@@ -1,22 +1,38 @@
 # Neovim Setup Guide for perl-lsp
 
-Use this guide to run `perllsp` in Neovim through Neovim's built-in LSP client.
+Use this guide to run `perllsp` through Neovim's built-in LSP client.
+
+## Current support boundary
+
+The maintained built-in-LSP configuration requires **Neovim 0.11.3 or later**.
+Actual client support is version- and platform-scoped: setup syntax, a synthetic
+capability profile, and a real Neovim receipt are different evidence. Do not
+treat a single host receipt as a broad `Neovim 0.11+` matrix. Exact
+version/feature cells belong in the bounded supported-version matrix (#7716)
+once that receipt lane lands; until then, cite only the concrete receipt that
+covers the claim.
+
+The current user path is:
+
+```text
+install perllsp
+→ define a local lsp/perllsp.lua config
+→ vim.lsp.enable('perllsp')
+→ open a Perl project
+```
+
+A first-party `perllsp` entry for upstream `nvim-lspconfig` and a Mason package
+are being prepared, but **do not treat either as publicly available until the
+upstream projects actually contain them**. Until then, use the built-in manual
+configuration below.
 
 ## Prerequisites
 
-- Neovim 0.11.3 or later (current stable recommended)
-- `perllsp` installed and available on your `PATH`
-- a Perl project opened from the project root
+- Neovim 0.11.3 or later
+- `perllsp` installed and visible to the Neovim process
+- a Perl project with a recognized project marker
 
-Optional:
-
-- `nvim-lspconfig`, if you already use it for other language servers
-- `nvim-cmp`, if you prefer cmp-based completion
-- `telescope.nvim`, for picker-based symbol/reference navigation
-- `perltidy`, only if explicit external formatting compatibility is enabled
-- `perlcritic`, only if explicit legacy Perl::Critic compatibility is enabled
-
-Verify `perllsp` before changing Neovim configuration:
+Verify the server before changing Neovim configuration:
 
 ```bash
 perllsp --version
@@ -26,19 +42,34 @@ perllsp --info
 
 ## Install `perllsp`
 
+Current public install routes are independent evidence stages. Verify the
+resolved binary after installation rather than assuming a package-manager name
+proves which server Neovim will start.
+
 ### Cargo
 
 ```bash
 cargo install perllsp
+perllsp --version
 ```
 
-### Homebrew
+### Homebrew tap
 
 ```bash
 brew install effortlessmetrics/tap/perllsp
+perllsp --version
 ```
 
+### Prebuilt release archive
+
+Download the archive matching your platform from the public `perl-lsp` GitHub
+release, verify the release/checksum identity, extract it, and place `perllsp`
+on `PATH`.
+
 ### From source
+
+Use source installation for development rather than as proof of a public
+package-manager route:
 
 ```bash
 git clone https://github.com/EffortlessMetrics/perl-lsp.git
@@ -46,43 +77,23 @@ cd perl-lsp
 cargo install --path crates/perllsp --locked
 ```
 
-### Prebuilt binary
+## Canonical built-in LSP setup
 
-Download the archive for your platform from GitHub Releases, extract it, and put
-`perllsp` on your `PATH`.
-
-Release assets use the `perllsp-<version>-<target>` naming pattern.
-
-## Basic setup (Neovim 0.11+)
-
-Create a custom LSP config file:
+Create a config file:
 
 ```vim
 :exe 'edit' stdpath('config') .. '/lsp/perllsp.lua'
 ```
 
-Add:
+Use:
 
 ```lua
 return {
   cmd = { 'perllsp', '--stdio' },
   filetypes = { 'perl' },
   root_markers = {
-    '.perl-lsp.toml',
-    'Makefile.PL',
-    'Build.PL',
-    'cpanfile',
-    'dist.ini',
+    { '.perl-lsp.toml', 'Makefile.PL', 'Build.PL', 'cpanfile', 'dist.ini' },
     '.git',
-  },
-  init_options = {
-    perl = {
-      workspace = {
-        includePaths = { 'lib', '.', 'local/lib/perl5' },
-        useSystemInc = false,
-        resolutionTimeout = 50,
-      },
-    },
   },
 }
 ```
@@ -93,17 +104,202 @@ Then enable it from `init.lua`:
 vim.lsp.enable('perllsp')
 ```
 
-Restart Neovim, open a Perl file, and run:
+The nested list is intentional. On Neovim 0.11.3+, those Perl project markers
+have equal priority, so the **nearest Perl project marker** wins. `.git` is the
+lower-priority repository fallback. A flat marker list can let a farther
+`.perl-lsp.toml` outrank a nearer nested `Makefile.PL` or `cpanfile`.
+
+Restart Neovim, open a Perl file inside the project, and run:
 
 ```vim
 :checkhealth vim.lsp
 ```
 
-## Optional: lean latency profile
+For predictable activation, the maintained path currently assumes a recognized
+workspace marker. Standalone no-marker behavior is kept as a separate support
+cell rather than being inferred from project-backed receipts.
 
-Use this profile when responsiveness matters more than full semantic,
-module-resolution, native critic, and workspace dead-code diagnostics. Normal
-mode remains the richer default.
+## Project and editor settings
+
+Prefer `.perl-lsp.toml` for configuration that should travel with the project
+and behave consistently across editors.
+
+For Neovim-specific LSP settings, use the server-native `perl.*` namespace via
+Neovim's `settings` field:
+
+```lua
+vim.lsp.config('perllsp', {
+  settings = {
+    perl = {
+      workspace = {
+        includePaths = { 'lib', 'local/lib/perl5' },
+        useSystemInc = false,
+        resolutionTimeout = 50,
+      },
+      inlayHints = {
+        enabled = true,
+        parameterHints = true,
+      },
+    },
+  },
+})
+```
+
+This is distinct from the VS Code extension's `perl-lsp.*` setting names.
+`initializationOptions.perl.*` remains a real server input, but it should not be
+the default generic-client configuration channel for settings that Neovim can
+supply through `workspace/configuration`.
+
+Machine-authority settings such as arbitrary interpreter paths, external
+formatter/critic profile paths, and remote AI endpoint or credential routing
+are intentionally not ordinary workspace-delivered `perl.*` settings.
+
+## Filetype activation
+
+`vim.lsp.enable('perllsp')` attaches only when Neovim's current buffer
+`filetype` is `perl`.
+
+Check the actual result:
+
+```vim
+:set filetype?
+```
+
+Ordinary `.pl`, `.pm`, and `.psgi` source forms are the base activation
+contract. Other Perl-bearing forms such as `.t`, `.PL`, `.cgi`, `.fcgi`,
+extensionless/shebang scripts, POD, XS, and template files are tracked as
+separate activation/semantic-support cells. Do not force a mixed-language file
+to `perl` merely because it contains Perl fragments.
+
+If a file family you deliberately treat as plain Perl is not detected as such
+in your supported Neovim version, add a local override explicitly, for example:
+
+```lua
+vim.filetype.add({
+  extension = {
+    t = 'perl',
+    cgi = 'perl',
+    fcgi = 'perl',
+    PL = 'perl',
+  },
+})
+```
+
+That is a user override, not evidence that Neovim natively detects the suffix.
+
+## Completion and optional LSP features
+
+Neovim can support an LSP method without making its UI behavior visible by
+default. Keep these states separate:
+
+```text
+server supports method
+client supports method
+Neovim enables it by default
+user enables it explicitly
+actual enabled journey works
+```
+
+### Built-in completion
+
+```lua
+vim.api.nvim_create_autocmd('LspAttach', {
+  callback = function(ev)
+    local client = vim.lsp.get_client_by_id(ev.data.client_id)
+    if not client or client.name ~= 'perllsp' then
+      return
+    end
+
+    if client:supports_method('textDocument/completion') then
+      vim.lsp.completion.enable(true, client.id, ev.buf, {
+        autotrigger = true,
+      })
+    end
+  end,
+})
+```
+
+### Inlay hints
+
+```lua
+vim.api.nvim_create_autocmd('LspAttach', {
+  callback = function(ev)
+    local client = vim.lsp.get_client_by_id(ev.data.client_id)
+    if client and client.name == 'perllsp'
+        and client:supports_method('textDocument/inlayHint') then
+      vim.lsp.inlay_hint.enable(true, { bufnr = ev.buf })
+    end
+  end,
+})
+```
+
+Code lenses, linked editing, and inline completion follow the same principle:
+only enable them when both the installed Neovim and the exact `perllsp` subject
+support the method. Their presence in server capability code does not make them
+default-visible Neovim features.
+
+## Formatting
+
+Neovim's built-in LSP client can consume `perllsp` document formatting. Manual
+formatting is straightforward:
+
+```lua
+vim.lsp.buf.format({ bufnr = 0 })
+```
+
+If you configure format-on-save yourself, keep one owner. Do not combine a
+`BufWritePre` formatting autocmd with another save-time formatting mechanism
+that would apply the same edit twice.
+
+Native formatting does not require `perltidy`; external compatibility behavior
+is a separate opt-in mode.
+
+## Diagnostics
+
+`perllsp` supports both push and pull diagnostics. The selected transport is a
+client-capability interaction, so support is proven against the actual Neovim
+version rather than from a server capability bit alone.
+
+To inspect the current client and diagnostics:
+
+```vim
+:checkhealth vim.lsp
+:lua =vim.lsp.get_clients({ name = 'perllsp' })
+:lua =vim.diagnostic.get(0)
+```
+
+A client advertising pull diagnostics is not considered proven merely because
+initialization succeeds; the real-client receipt must observe the diagnostic
+request/result path.
+
+## Semantic tokens
+
+The server implements semantic-token full results and a result-ID/delta path.
+That is separate from whether a given Neovim version actually advertises and
+uses delta in the tested journey.
+
+Do not use older documentation that says semantic-token delta is unimplemented.
+Likewise, semantic-token delta has nothing to do with whether the parser reused
+an AST.
+
+## Virtual `perldoc://` documents
+
+`perllsp` implements LSP 3.18 `workspace/textDocumentContent` for virtual
+`perldoc://...` documents, including workspace-local POD. Stock Neovim support
+for opening and refreshing those virtual documents is a separate client
+capability and is currently tracked as an upstream dependency where the tested
+Neovim row does not implement it.
+
+A working file-backed definition or a direct server request is **not** proof
+that stock Neovim can open `perldoc://strict` as a virtual buffer.
+
+No repository-owned Neovim plugin or `BufReadCmd` shim is required for ordinary
+LSP support.
+
+## Optional lean latency profile
+
+Use this profile when parser diagnostics and responsiveness matter more than the
+full semantic/module/native-critic/workspace diagnostic stack:
 
 ```lua
 vim.lsp.config('perllsp', {
@@ -118,11 +314,7 @@ vim.lsp.config('perllsp', {
   },
   filetypes = { 'perl' },
   root_markers = {
-    '.perl-lsp.toml',
-    'Makefile.PL',
-    'Build.PL',
-    'cpanfile',
-    'dist.ini',
+    { '.perl-lsp.toml', 'Makefile.PL', 'Build.PL', 'cpanfile', 'dist.ini' },
     '.git',
   },
 })
@@ -130,138 +322,50 @@ vim.lsp.config('perllsp', {
 vim.lsp.enable('perllsp')
 ```
 
-This profile keeps parser diagnostics but bypasses the full semantic/module
-diagnostic stack and avoids eager workspace indexing and file watcher
-registration. It does not provide incremental AST reuse. Semantic-token delta
-support is not advertised until the server implements the result-id/delta path.
+The lean profile changes server work, not LSP semantics. It does not imply
+incremental AST reuse. Text synchronization and parser strategy are also
+separate contracts: until the exact ranged-edit/desynchronization train is
+activated, the shipping server may still advertise full-document text sync.
 
-## Optional: Define the config inline
+## Verify the current journey
+
+1. Start Neovim with the intended `perllsp` on `PATH`.
+2. Open a project-backed `.pl` or `.pm` file.
+3. Confirm `:set filetype?` reports `perl`.
+4. Run `:checkhealth vim.lsp` and verify the resolved command/root.
+5. Introduce a temporary syntax error and confirm diagnostics change.
+6. Repair it and confirm the diagnostic state updates.
+7. Exercise completion plus hover/definition.
+8. Make a real buffer edit and re-query so a stale first result cannot satisfy the check.
+9. Exercise formatting if it is part of your configured workflow.
+10. Exit/restart and verify no unintended server process remains.
+
+For public/package-manager support claims, also verify that the Neovim process
+started the **installed artifact** rather than a workspace `target/` binary or a
+stale global version.
+
+## `nvim-lspconfig` and Mason status
+
+The intended eventual nvim-lspconfig route is:
 
 ```lua
-vim.lsp.config('perllsp', {
-  cmd = { 'perllsp', '--stdio' },
-  filetypes = { 'perl' },
-  root_markers = {
-    '.perl-lsp.toml',
-    'Makefile.PL',
-    'Build.PL',
-    'cpanfile',
-    'dist.ini',
-    '.git',
-  },
-  init_options = {
-    perl = {
-      workspace = {
-        includePaths = { 'lib', '.', 'local/lib/perl5' },
-      },
-      inlayHints = {
-        enabled = true,
-        parameterHints = true,
-      },
-    },
-  },
-})
-
 vim.lsp.enable('perllsp')
 ```
 
-## Optional: Filetype detection
+with the same command/filetype/root contract shown above. A submission packet is
+kept in the repository, but this route must not be advertised as public until
+upstream `neovim/nvim-lspconfig` actually contains `perllsp` in a consumable
+ref/version.
 
-Neovim starts the server only when the buffer filetype is `perl`.
-
-```vim
-:set filetype?
-```
-
-If `.t`, `.psgi`, `.cgi`, or other Perl-bearing files are not detected as Perl,
-add filetype rules before enabling the server:
-
-```lua
-vim.filetype.add({
-  extension = {
-    t = 'perl',
-    psgi = 'perl',
-    cgi = 'perl',
-    fcgi = 'perl',
-    PL = 'perl',
-  },
-})
-```
-
-## Project-wide settings
-
-Prefer `.perl-lsp.toml` for settings shared across editors:
-
-```toml
-[perl]
-include_paths = ["lib", "local/lib/perl5", "vendor/lib"]
-
-[features]
-inlay_hints = true
-```
-
-Use Neovim `init_options` only for Neovim-specific startup behavior.
-
-## Completion and inlay hints
-
-For built-in completion:
-
-```lua
-vim.api.nvim_create_autocmd('LspAttach', {
-  callback = function(ev)
-    local client = vim.lsp.get_client_by_id(ev.data.client_id)
-    if not client or client.name ~= 'perllsp' then
-      return
-    end
-
-    vim.lsp.completion.enable(true, client.id, ev.buf, {
-      autotrigger = true,
-    })
-
-    vim.keymap.set('i', '<C-Space>', function()
-      vim.lsp.completion.get()
-    end, { buffer = ev.buf, desc = 'Trigger LSP completion' })
-  end,
-})
-```
-
-For inlay hints:
-
-```lua
-vim.api.nvim_create_autocmd('LspAttach', {
-  callback = function(ev)
-    local client = vim.lsp.get_client_by_id(ev.data.client_id)
-    if client and client.name == 'perllsp' and client:supports_method('textDocument/inlayHint') then
-      vim.lsp.inlay_hint.enable(true, { bufnr = ev.buf })
-    end
-  end,
-})
-
-vim.keymap.set('n', '<leader>ih', function()
-  vim.lsp.inlay_hint.enable(
-    not vim.lsp.inlay_hint.is_enabled({ bufnr = 0 }),
-    { bufnr = 0 }
-  )
-end, { desc = 'Toggle inlay hints' })
-```
-
-## Verify it is running
-
-1. Restart Neovim.
-2. Open a Perl file such as `lib/My/Module.pm` or `t/basic.t`.
-3. Confirm the filetype is `perl` with `:set filetype?`.
-4. Run `:checkhealth vim.lsp`.
-5. Introduce a temporary syntax error and confirm diagnostics appear.
-
-You can also check a file outside Neovim:
-
-```bash
-perllsp --check path/to/file.pl
-```
+Likewise, `:MasonInstall perllsp` must not be presented as available until the
+package is accepted and observable in the public Mason registry. Local/forked
+registry tests are preparation evidence only.
 
 ## Troubleshooting
 
 ### Neovim cannot find `perllsp`
+
+Shell:
 
 ```bash
 command -v perllsp
@@ -279,19 +383,19 @@ perllsp --health
 perllsp --info
 ```
 
-From Neovim:
+From Neovim, inspect the actual client config rather than only the shell:
 
 ```vim
-:!command -v perllsp
+:checkhealth vim.lsp
+:lua =vim.lsp.get_clients({ name = 'perllsp' })
 ```
 
-If Neovim was launched from a GUI, it may not inherit your shell `PATH`. Use an
-absolute binary path if needed.
+GUI-launched Neovim may inherit a different `PATH` from your interactive shell.
 
 ### `perllsp --stdio` appears to hang
 
-This is expected. In stdio mode, `perllsp` waits for framed LSP JSON-RPC input.
-Use these commands for manual checks:
+That is expected: stdio mode waits for framed LSP JSON-RPC input. For manual
+checks use:
 
 ```bash
 perllsp --health
@@ -299,39 +403,14 @@ perllsp --info
 perllsp --check path/to/file.pl
 ```
 
-## Legacy setup: Neovim 0.8-0.10 with `nvim-lspconfig`
+## Historical Neovim 0.8-0.10 setup
 
-Use this only if you cannot upgrade to Neovim 0.11+.
+The old `require('lspconfig').setup(...)` framework and Neovim 0.8-0.10 recipes
+are **historical compatibility guidance**, not the maintained current path.
+Modern nvim-lspconfig itself has moved to native `vim.lsp.config()` /
+`vim.lsp.enable()` configuration and newer Neovim requirements.
 
-```lua
-local lspconfig = require('lspconfig')
-local configs = require('lspconfig.configs')
-
-if not configs.perllsp then
-  configs.perllsp = {
-    default_config = {
-      cmd = { 'perllsp', '--stdio' },
-      filetypes = { 'perl' },
-      root_dir = lspconfig.util.root_pattern(
-        '.perl-lsp.toml',
-        'Makefile.PL',
-        'Build.PL',
-        'cpanfile',
-        'dist.ini',
-        '.git'
-      ),
-      single_file_support = true,
-      init_options = {
-        perl = {
-          workspace = {
-            includePaths = { 'lib', '.', 'local/lib/perl5' },
-            useSystemInc = false,
-          },
-        },
-      },
-    },
-  }
-end
-
-lspconfig.perllsp.setup({})
-```
+If you must remain on an old Neovim version, pin a contemporaneous
+`nvim-lspconfig` release and adapt the same canonical command/filetype/root
+contract. Do not copy current nvim-lspconfig instructions into an old client and
+assume the combination is supported.
