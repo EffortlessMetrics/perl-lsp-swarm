@@ -10,10 +10,11 @@ Cargo package are **`perl-dap`**, and its product posture remains **preview**.
 ```bash
 cargo install perllsp --locked
 ```
+> The crates.io package `perl-lsp` is a **different project**, not this language
+> server.
 
-This installs the `perllsp` executable. The crates.io package named `perl-lsp`
-is a **different project** and is not this language server. The implementation
-library crate `perl-lsp-rs` is not the command to run.
+This installs the `perllsp` executable. The implementation library crate
+`perl-lsp-rs` is not the command to run.
 
 ## Configure another editor
 

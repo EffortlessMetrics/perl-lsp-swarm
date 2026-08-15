@@ -15,6 +15,23 @@ const UNQUALIFIED_HOMEBREW_COMMAND: &str = "brew install perllsp";
 const CARGO_INSTALL_COMMAND: &str = "cargo install perllsp";
 const RELEASE_CHOOSER_HEADING: &str = "Which file should I download?";
 
+/// Surfaces where a reader is choosing how to install, and therefore where the
+/// crates.io name collision has to be stated next to the command itself.
+///
+/// Deliberately not every file that mentions the command. Release notes, closeout
+/// audits, competitive analyses, publishing roadmaps, installer scripts, and extension
+/// source all reference `cargo install perllsp` while documenting or performing
+/// something other than an install decision; requiring a conflict warning beside each of
+/// those 39 mentions would add noise to shipped history without protecting any decision.
+const INSTALL_DECISION_SURFACES: &[&str] = &[
+    "README.md",
+    "book/src/getting-started/installation.md",
+    "book/src/quick-start.md",
+    "docs/how-to/INSTALLATION.md",
+    "docs/reference/product-identity.md",
+    "docs/EDITORS/",
+];
+
 const SCAN_ROOTS: &[&str] = &[
     "README.md",
     "CHANGELOG.md",
@@ -294,8 +311,23 @@ fn has_nearby_tap_command(lines: &[&str], install_index: usize) -> bool {
     lines[start..install_index].iter().any(|line| line.contains(REQUIRED_TAP_COMMAND))
 }
 
+/// True when this path is a surface a reader uses to decide how to install.
+fn is_install_decision_surface(rel_path: &Path) -> bool {
+    let path = rel_path.to_string_lossy().replace('\\', "/");
+    INSTALL_DECISION_SURFACES.iter().any(|surface| {
+        if let Some(dir) = surface.strip_suffix('/') {
+            path.starts_with(dir)
+        } else {
+            path == *surface
+        }
+    })
+}
+
 fn check_cargo_conflict_warning(files: &[SourceFile], violations: &mut Vec<Violation>) {
     for file in files {
+        if !is_install_decision_surface(&file.rel_path) {
+            continue;
+        }
         let lines: Vec<&str> = file.text.lines().collect();
         for (index, line) in lines.iter().enumerate() {
             if !line.contains(CARGO_INSTALL_COMMAND) {
@@ -559,6 +591,41 @@ mod tests {
     }
 
     #[test]
+    fn conflict_warning_is_required_on_install_decision_surfaces_only() {
+        for surface in [
+            "README.md",
+            "docs/how-to/INSTALLATION.md",
+            "docs/reference/product-identity.md",
+            "docs/EDITORS/NEOVIM_SETUP.md",
+            "book/src/quick-start.md",
+        ] {
+            assert!(is_install_decision_surface(Path::new(surface)), "{surface}");
+        }
+
+        // These reference the command while documenting something other than a choice.
+        for other in [
+            "docs/releases/v0.17.0.md",
+            "docs/articles/COMPETITIVE_ANALYSIS.md",
+            "docs/project/RELEASE_CHECKLIST.md",
+            "scripts/install.sh",
+            "vscode-extension/src/extension.ts",
+        ] {
+            assert!(!is_install_decision_surface(Path::new(other)), "{other}");
+        }
+    }
+
+    #[test]
+    fn install_decision_surface_without_a_nearby_warning_is_rejected() {
+        let file = SourceFile {
+            rel_path: PathBuf::from("docs/EDITORS/NEOVIM_SETUP.md"),
+            text: ["```bash", "cargo install perllsp", "```"].join("\n"),
+        };
+        let mut violations = Vec::new();
+        check_cargo_conflict_warning(&[file], &mut violations);
+        assert_eq!(violations.len(), 1, "got: {violations:?}");
+    }
+
+    #[test]
     fn version_pinned_release_runbooks_are_historical_evidence() {
         assert!(is_excluded_path(Path::new("docs/project/RELEASE_RUNBOOK_0_12_3.md")));
         assert!(!is_excluded_path(Path::new("docs/project/GA_RUNBOOK.md")));
@@ -576,6 +643,8 @@ mod tests {
         let mut violations = Vec::new();
         check_forbidden_patterns(&files, &mut violations);
         check_forbidden_executables(&files, &mut violations);
+        check_cargo_conflict_warning(&files, &mut violations);
+        check_unqualified_homebrew(&files, &mut violations);
 
         let reported: Vec<_> =
             violations.iter().map(|v| format!("{}: {}", v.location, v.message)).collect();
