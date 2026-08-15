@@ -230,10 +230,7 @@ fn symbol_table_changes_only_the_declared_bareword_slash_case() {
     assert!(!builtin_tokens.iter().any(|token| matches!(&token.0, TokenType::Division)));
     assert_symbol_table_invariant("a builtin-controlled regex", builtin);
 
-    assert_symbol_table_invariant(
-        "a method name",
-        "$obj->builder(); sub builder { 1 }",
-    );
+    assert_symbol_table_invariant("a method name", "$obj->builder(); sub builder { 1 }");
     assert_symbol_table_invariant("a hash key", "$h{builder}; sub builder { 1 }");
     assert_symbol_table_invariant("the declaration itself", "sub builder { 1 }");
 
