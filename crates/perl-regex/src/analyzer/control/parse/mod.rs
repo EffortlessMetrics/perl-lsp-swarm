@@ -19,10 +19,7 @@ pub(super) struct RawControl {
 #[derive(Debug, Clone)]
 pub(super) enum ResolutionRequest {
     None,
-    Number {
-        number: u32,
-        ambiguous_plain_escape: bool,
-    },
+    Number { number: u32, ambiguous_plain_escape: bool },
     Name(String),
     Relative(i32),
 }
@@ -42,10 +39,7 @@ pub(super) fn parse_escape_control(pattern: &str, start: usize) -> Option<RawCon
     escape::parse_escape_control(pattern, start)
 }
 
-pub(super) fn parse_special_group_control(
-    pattern: &str,
-    start: usize,
-) -> Option<RawControl> {
+pub(super) fn parse_special_group_control(pattern: &str, start: usize) -> Option<RawControl> {
     group::parse_special_group_control(pattern, start)
 }
 
@@ -53,11 +47,7 @@ pub(super) fn parse_star_control(pattern: &str, start: usize) -> RawControl {
     group::parse_star_control(pattern, start)
 }
 
-pub(super) fn unsupported_control(
-    pattern: &str,
-    range: RegexRange,
-    fallback: &str,
-) -> RawControl {
+pub(super) fn unsupported_control(pattern: &str, range: RegexRange, fallback: &str) -> RawControl {
     group::unsupported_control(pattern, range, fallback)
 }
 
@@ -117,8 +107,7 @@ fn valid_reference_name(raw: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    (first == '_' || first.is_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+    (first == '_' || first.is_alphabetic()) && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
 }
 
 fn delimited_operand(bytes: &[u8], open: usize, close: u8) -> Option<(RegexRange, usize)> {
@@ -144,11 +133,7 @@ fn scan_ascii_digits(bytes: &[u8], start: usize) -> usize {
 }
 
 fn scan_signed_digits(bytes: &[u8], start: usize) -> usize {
-    let digit_start = if matches!(bytes.get(start), Some(b'+' | b'-')) {
-        start + 1
-    } else {
-        start
-    };
+    let digit_start = if matches!(bytes.get(start), Some(b'+' | b'-')) { start + 1 } else { start };
     let end = scan_ascii_digits(bytes, digit_start);
     if end == digit_start { start } else { end }
 }

@@ -77,10 +77,7 @@ pub(super) fn parse_special_group_control(pattern: &str, start: usize) -> Option
                 kind: PatternControlKind::NumberedSubpatternCall { number },
                 range: RegexRange { start, end },
                 operand_range: Some(operand_range),
-                request: ResolutionRequest::Number {
-                    number,
-                    ambiguous_plain_escape: false,
-                },
+                request: ResolutionRequest::Number { number, ambiguous_plain_escape: false },
                 effect: PatternControlEffect::SubpatternCall,
                 boundary: None,
                 diagnostic: None,
@@ -161,12 +158,7 @@ fn parse_conditional(pattern: &str, start: usize) -> Option<RawControl> {
             .strip_prefix('R')
             .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
     {
-        (
-            PatternControlKind::RecursionConditional,
-            ResolutionRequest::None,
-            None,
-            None,
-        )
+        (PatternControlKind::RecursionConditional, ResolutionRequest::None, None, None)
     } else {
         match parse_operand(predicate) {
             ParsedOperand::Number(number) => (

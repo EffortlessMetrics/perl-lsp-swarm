@@ -6,15 +6,14 @@ pub use model::{
     PatternBoundary, PatternBoundaryKind, PatternControlAnalysis, PatternControlAnalysisStatus,
     PatternControlDiagnostic, PatternControlDiagnosticCode, PatternControlEffect,
     PatternControlFact, PatternControlId, PatternControlKind, PatternControlResolution,
-    PatternControlUnresolvedReason, PatternExtendedMode, PatternModeState,
-    PatternReferenceSyntax,
+    PatternControlUnresolvedReason, PatternExtendedMode, PatternModeState, PatternReferenceSyntax,
 };
 
 use crate::{
     analyzer::{CaptureLanguageProfile, CaptureMode, EffectiveModifiers, ExtendedMode},
     syntax::event::{
-        RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexExtendedMode,
-        RegexGroupKind, RegexModeState, parse_regex_events,
+        RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexExtendedMode, RegexGroupKind,
+        RegexModeState, parse_regex_events,
     },
     validator::RegexAnalysisBudget,
 };
@@ -64,16 +63,16 @@ pub(crate) fn analyze_pattern_controls(
                     raw.push((parsed, public_mode(event.mode)));
                 }
             }
-            RegexEventKind::GroupOpen(RegexGroupKind::Capturing)
-                if pattern
-                    .get(event.range.start..)
-                    .is_some_and(|rest| rest.starts_with("(*")) =>
+            RegexEventKind::GroupOpen(RegexGroupKind::Capturing | RegexGroupKind::NonCapturing)
+                if pattern.get(event.range.start..).is_some_and(|rest| rest.starts_with("(*")) =>
             {
                 let parsed = parse_star_control(pattern, event.range.start);
                 covered_until = parsed.range.end;
-                // The shared event stream currently sees every `(*...)` form as a
-                // capturing group. Keep later capture-number resolution conservative
-                // until star-control structure is modeled directly by that authority.
+                // The shared event stream does not model star-control structure: it
+                // reports every `(*...)` form as a plain group open, and which of the
+                // two group kinds it picks is not a property of the control itself.
+                // Match on the source prefix instead, and keep later capture-number
+                // resolution conservative until that authority models these directly.
                 structural_positions.push(parsed.range.start);
                 raw.push((parsed, public_mode(event.mode)));
             }
@@ -190,15 +189,15 @@ pub(crate) fn analyze_pattern_controls(
 
     boundaries.sort_by_key(|boundary| (boundary.range.start, boundary.range.end, boundary.kind));
     boundaries.dedup_by(|left, right| left.kind == right.kind && left.range == right.range);
-    diagnostics.sort_by_key(|diagnostic| {
-        (diagnostic.range.start, diagnostic.range.end, diagnostic.code)
-    });
+    diagnostics
+        .sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end, diagnostic.code));
     diagnostics.dedup_by(|left, right| left.code == right.code && left.range == right.range);
 
-    let source_mapping_complete = facts.iter().all(|fact| {
-        fact.source_range.is_some()
-            && (fact.operand_range.is_none() || fact.source_operand_range.is_some())
-    }) && boundaries.iter().all(|boundary| boundary.source_range.is_some());
+    let source_mapping_complete =
+        facts.iter().all(|fact| {
+            fact.source_range.is_some()
+                && (fact.operand_range.is_none() || fact.source_operand_range.is_some())
+        }) && boundaries.iter().all(|boundary| boundary.source_range.is_some());
     let exhausted = stream.exhausted.map(map_budget).or(captures.status.exhausted);
     let unsupported = facts.iter().any(|fact| {
         matches!(fact.effect, PatternControlEffect::Unsupported)
@@ -206,9 +205,8 @@ pub(crate) fn analyze_pattern_controls(
     }) || boundaries
         .iter()
         .any(|boundary| boundary.kind == PatternBoundaryKind::UnsupportedControl);
-    let dynamic_execution = facts
-        .iter()
-        .any(|fact| matches!(fact.effect, PatternControlEffect::DynamicExecution));
+    let dynamic_execution =
+        facts.iter().any(|fact| matches!(fact.effect, PatternControlEffect::DynamicExecution));
     let dynamic_pattern = !dynamic_positions.is_empty() || captures.status.dynamic;
     let structural_uncertainty = !structural_positions.is_empty();
     let malformed = stream.malformed || captures.status.malformed;

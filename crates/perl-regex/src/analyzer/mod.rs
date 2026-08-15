@@ -14,13 +14,12 @@ pub use control::{
     PatternBoundary, PatternBoundaryKind, PatternControlAnalysis, PatternControlAnalysisStatus,
     PatternControlDiagnostic, PatternControlDiagnosticCode, PatternControlEffect,
     PatternControlFact, PatternControlId, PatternControlKind, PatternControlResolution,
-    PatternControlUnresolvedReason, PatternExtendedMode, PatternModeState,
-    PatternReferenceSyntax,
+    PatternControlUnresolvedReason, PatternExtendedMode, PatternModeState, PatternReferenceSyntax,
 };
 pub use modifier_analysis::{
     CaptureMode, CharacterSetMode, EffectiveModifiers, ExtendedMode, FeatureState,
-    ModifierAnalysis, ModifierRequirement, ModifierRequirementKind, ModifierSequence, ModifierToken,
-    PerlVersion, RegexLanguageProfile, RegexOperator, RequirementDisposition,
+    ModifierAnalysis, ModifierRequirement, ModifierRequirementKind, ModifierSequence,
+    ModifierToken, PerlVersion, RegexLanguageProfile, RegexOperator, RequirementDisposition,
     TransliterationModifiers,
 };
 

@@ -10,8 +10,8 @@ pub use crate::{
         PatternControlAnalysisStatus, PatternControlDiagnostic, PatternControlDiagnosticCode,
         PatternControlEffect, PatternControlFact, PatternControlId, PatternControlKind,
         PatternControlResolution, PatternControlUnresolvedReason, PatternExtendedMode,
-        PatternModeState, PatternReferenceSyntax, PerlVersion, RegexLanguageProfile,
-        RegexOperator, RequirementDisposition, TransliterationModifiers,
+        PatternModeState, PatternReferenceSyntax, PerlVersion, RegexLanguageProfile, RegexOperator,
+        RequirementDisposition, TransliterationModifiers,
     },
     validator::{
         EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisBudget,

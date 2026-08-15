@@ -23,7 +23,8 @@ pub(super) fn parse_escape_control(pattern: &str, start: usize) -> Option<RawCon
         b'1'..=b'9' => {
             let end = scan_ascii_digits(bytes, start + 1);
             let operand_range = RegexRange { start: start + 1, end };
-            let number = pattern.get(operand_range.start..operand_range.end)?.parse::<u32>().ok()?;
+            let number =
+                pattern.get(operand_range.start..operand_range.end)?.parse::<u32>().ok()?;
             Some(RawControl {
                 kind: PatternControlKind::NumericBackreference {
                     number,
@@ -60,8 +61,8 @@ fn parse_g_reference(pattern: &str, start: usize) -> Option<RawControl> {
             return Some(invalid_reference(pattern, start, end));
         }
         Some(b'<') => {
-            let end = delimited_operand(bytes, operand_start, b'>')
-                .map_or(pattern.len(), |(_, end)| end);
+            let end =
+                delimited_operand(bytes, operand_start, b'>').map_or(pattern.len(), |(_, end)| end);
             return Some(invalid_reference(pattern, start, end));
         }
         Some(b'+' | b'-' | b'0'..=b'9') => {
@@ -69,21 +70,10 @@ fn parse_g_reference(pattern: &str, start: usize) -> Option<RawControl> {
             (RegexRange { start: operand_start, end }, end)
         }
         _ => {
-            return Some(invalid_reference(
-                pattern,
-                start,
-                (start + 2).min(pattern.len()),
-            ));
+            return Some(invalid_reference(pattern, start, (start + 2).min(pattern.len())));
         }
     };
-    raw_reference(
-        pattern,
-        start,
-        end,
-        operand_range,
-        PatternReferenceSyntax::GReference,
-        false,
-    )
+    raw_reference(pattern, start, end, operand_range, PatternReferenceSyntax::GReference, false)
 }
 
 fn parse_k_reference(pattern: &str, start: usize) -> Option<RawControl> {
@@ -104,14 +94,7 @@ fn parse_k_reference(pattern: &str, start: usize) -> Option<RawControl> {
         },
         _ => return Some(invalid_reference(pattern, start, (start + 2).min(pattern.len()))),
     };
-    raw_reference(
-        pattern,
-        start,
-        end,
-        operand_range,
-        PatternReferenceSyntax::KReference,
-        true,
-    )
+    raw_reference(pattern, start, end, operand_range, PatternReferenceSyntax::KReference, true)
 }
 
 fn raw_reference(

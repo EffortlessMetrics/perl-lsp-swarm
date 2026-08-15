@@ -26,16 +26,10 @@ pub(super) fn resolve_request(
                     captures
                         .declarations
                         .get(id.index())
-                        .is_some_and(|declaration| {
-                            declaration.group_range.start < fact_range.start
-                        })
+                        .is_some_and(|declaration| declaration.group_range.start < fact_range.start)
                 });
             }
-            (
-                targets,
-                PatternControlUnresolvedReason::MissingCaptureNumber,
-                *ambiguous_plain_escape,
-            )
+            (targets, PatternControlUnresolvedReason::MissingCaptureNumber, *ambiguous_plain_escape)
         }
         ResolutionRequest::Name(name) => (
             capture_targets_by_name(pattern, captures, name),
@@ -170,13 +164,12 @@ fn resolution_from_candidate_confidence(
     captures: &CaptureAnalysis,
     targets: Vec<CaptureId>,
 ) -> PatternControlResolution {
-    let declarations = targets
+    let declarations =
+        targets.iter().filter_map(|id| captures.declarations.get(id.index())).collect::<Vec<_>>();
+    if declarations
         .iter()
-        .filter_map(|id| captures.declarations.get(id.index()))
-        .collect::<Vec<_>>();
-    if declarations.iter().all(|declaration| {
-        declaration.confidence.profile == CaptureProfileConfidence::Incompatible
-    }) {
+        .all(|declaration| declaration.confidence.profile == CaptureProfileConfidence::Incompatible)
+    {
         return PatternControlResolution::Unresolved(
             PatternControlUnresolvedReason::ProfileIncompatible,
         );
@@ -187,9 +180,10 @@ fn resolution_from_candidate_confidence(
     }) {
         return PatternControlResolution::StructuralUnknown { known_targets: targets };
     }
-    if declarations.iter().any(|declaration| {
-        declaration.confidence.number == CaptureNumberConfidence::DynamicUnknown
-    }) {
+    if declarations
+        .iter()
+        .any(|declaration| declaration.confidence.number == CaptureNumberConfidence::DynamicUnknown)
+    {
         return PatternControlResolution::DynamicUnknown { known_targets: targets };
     }
     if declarations.iter().any(|declaration| {
@@ -240,9 +234,9 @@ pub(super) fn diagnostic_for_resolution(
     resolution: &PatternControlResolution,
 ) -> Option<PatternControlDiagnosticCode> {
     match resolution {
-        PatternControlResolution::Unresolved(
-            PatternControlUnresolvedReason::InvalidOperand,
-        ) => Some(PatternControlDiagnosticCode::InvalidReference),
+        PatternControlResolution::Unresolved(PatternControlUnresolvedReason::InvalidOperand) => {
+            Some(PatternControlDiagnosticCode::InvalidReference)
+        }
         PatternControlResolution::Unresolved(
             PatternControlUnresolvedReason::MissingCaptureNumber
             | PatternControlUnresolvedReason::MissingCaptureName,
