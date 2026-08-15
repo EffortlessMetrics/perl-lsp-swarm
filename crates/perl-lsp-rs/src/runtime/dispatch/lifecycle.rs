@@ -111,8 +111,12 @@ impl LspServer {
             });
         }
 
-        // Clear any pending cancelled requests on shutdown
+        // Clear request-local lifecycle state on shutdown. A client may shut
+        // down while the post-initialize configuration pull is still pending;
+        // a late response must not remain eligible to mutate configuration,
+        // and the pending count must settle back to zero (#7708).
         self.cancelled.lock().clear();
+        self.pending_workspace_configuration_requests.lock().clear();
         Ok(Some(json!(null)))
     }
 

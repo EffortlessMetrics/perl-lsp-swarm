@@ -1105,10 +1105,13 @@ include_paths = ["stale_lib"]
     fn request_workspace_configuration_supersedes_older_pending_requests() {
         let server = LspServer::new();
         server.client_capabilities.lock().workspace_configuration_support = true;
+        // Supersession is a post-initialize concern; server->client requests are
+        // rejected before initialization completes (#7708).
+        server.initialized.store(true, Ordering::Release);
 
         let temp = tempfile::tempdir().expect("failed to create temp dir");
         let folder = temp.path().join("folder");
-        std::fs::create_dir_all(&folder).expect("failed to create temp dir");
+        std::fs::create_dir_all(&folder).expect("failed to create folder");
         let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
 
         server.workspace_folders.lock().push(
