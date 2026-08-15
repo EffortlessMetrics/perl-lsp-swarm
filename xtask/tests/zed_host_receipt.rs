@@ -137,8 +137,7 @@ fn schema_rejects_invalid_emitter_values() -> Result<(), Box<dyn Error>> {
         read_json(&root, ".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json")?;
 
     let mut wrong_route = template.clone();
-    wrong_route["perllsp"]["resolution_route"] =
-        Value::String("explicit_binary_path".to_string());
+    wrong_route["perllsp"]["resolution_route"] = Value::String("explicit_binary_path".to_string());
     assert!(validate_schema(&wrong_route).is_err());
 
     let mut darwin = template.clone();

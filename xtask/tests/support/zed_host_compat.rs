@@ -121,12 +121,8 @@ const CONFIGURATION_FIELDS: &[&str] = &[
     "precedence_observed",
     "live_update_observed",
 ];
-const ARTIFACT_FIELDS: &[&str] = &[
-    "zed_log",
-    "language_server_log",
-    "process_inventory",
-    "redacted",
-];
+const ARTIFACT_FIELDS: &[&str] =
+    &["zed_log", "language_server_log", "process_inventory", "redacted"];
 const CELL_FIELDS: &[&str] = &["result", "evidence"];
 const CELL_RESULTS: &[&str] =
     &["pass", "fail", "not_proven", "unsupported", "legitimate_empty", "instrument_failed"];
@@ -163,7 +159,11 @@ fn object<'a>(value: &'a Value, context: &str) -> Result<&'a Map<String, Value>,
     value.as_object().ok_or_else(|| format!("{context} must be an object"))
 }
 
-fn field<'a>(object: &'a Map<String, Value>, key: &str, context: &str) -> Result<&'a Value, String> {
+fn field<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+    context: &str,
+) -> Result<&'a Value, String> {
     object.get(key).ok_or_else(|| format!("{context}.{key} is missing"))
 }
 
@@ -374,9 +374,8 @@ fn validate_public_pass_shape(
     perllsp: &Map<String, Value>,
     profile: &Map<String, Value>,
 ) -> Result<(), String> {
-    let subject = top
-        .get("public_subject")
-        .ok_or_else(|| "public pass lacks public_subject".to_string())?;
+    let subject =
+        top.get("public_subject").ok_or_else(|| "public pass lacks public_subject".to_string())?;
     validate_public_subject(subject)?;
     let subject = object(subject, "public_subject")?;
     if !subject.get("sha256").and_then(Value::as_str).is_some_and(is_sha256_digest)
@@ -421,9 +420,7 @@ pub fn validate_schema(receipt: &Value) -> Result<(), String> {
     validate_optional_strings(zed, &["version", "channel", "build"], "zed")?;
 
     let extension = required_object(top, "extension", EXTENSION_FIELDS)?;
-    if field(extension, "repository", "extension")?.as_str()
-        != Some("tree-sitter-perl/zed-perl")
-    {
+    if field(extension, "repository", "extension")?.as_str() != Some("tree-sitter-perl/zed-perl") {
         return Err("extension.repository is not canonical".to_string());
     }
     optional_commit(field(extension, "base_commit", "extension")?, "extension.base_commit")?;
@@ -435,10 +432,7 @@ pub fn validate_schema(receipt: &Value) -> Result<(), String> {
         field(extension, "manifest_version", "extension")?,
         "extension.manifest_version",
     )?;
-    optional_sha256(
-        field(extension, "wasm_sha256", "extension")?,
-        "extension.wasm_sha256",
-    )?;
+    optional_sha256(field(extension, "wasm_sha256", "extension")?, "extension.wasm_sha256")?;
     optional_enum(
         field(extension, "install_route", "extension")?,
         &["dev_extension", "official_registry"],
@@ -451,14 +445,8 @@ pub fn validate_schema(receipt: &Value) -> Result<(), String> {
     }
     validate_optional_strings(perllsp, &["command", "version"], "perllsp")?;
     string_array(field(perllsp, "arguments", "perllsp")?, "perllsp.arguments")?;
-    optional_commit(
-        field(perllsp, "build_commit", "perllsp")?,
-        "perllsp.build_commit",
-    )?;
-    optional_sha256(
-        field(perllsp, "binary_sha256", "perllsp")?,
-        "perllsp.binary_sha256",
-    )?;
+    optional_commit(field(perllsp, "build_commit", "perllsp")?, "perllsp.build_commit")?;
+    optional_sha256(field(perllsp, "binary_sha256", "perllsp")?, "perllsp.binary_sha256")?;
     optional_enum(
         field(perllsp, "resolution_route", "perllsp")?,
         &["binary_override", "worktree_path", "managed_download"],
@@ -483,10 +471,7 @@ pub fn validate_schema(receipt: &Value) -> Result<(), String> {
 
     let workspace = required_object(top, "workspace", WORKSPACE_FIELDS)?;
     validate_optional_strings(workspace, &["fixture_id", "root_identity"], "workspace")?;
-    optional_sha256(
-        field(workspace, "fixture_sha256", "workspace")?,
-        "workspace.fixture_sha256",
-    )?;
+    optional_sha256(field(workspace, "fixture_sha256", "workspace")?, "workspace.fixture_sha256")?;
 
     let configuration = required_object(top, "configuration", CONFIGURATION_FIELDS)?;
     optional_sha256(
@@ -518,10 +503,7 @@ pub fn validate_schema(receipt: &Value) -> Result<(), String> {
     )?;
     optional_bool(field(artifacts, "redacted", "artifacts")?, "artifacts.redacted")?;
     string_array(field(top, "limitations", "receipt")?, "limitations")?;
-    if !field(top, "claim_boundary", "receipt")?
-        .as_str()
-        .is_some_and(|text| !text.is_empty())
-    {
+    if !field(top, "claim_boundary", "receipt")?.as_str().is_some_and(|text| !text.is_empty()) {
         return Err("claim_boundary must be a non-empty string".to_string());
     }
 

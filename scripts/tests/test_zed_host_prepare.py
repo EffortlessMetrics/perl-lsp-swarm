@@ -43,7 +43,10 @@ class ZedHostPrepareTests(unittest.TestCase):
                 / "zed-perl-upstream"
                 / "receipts"
                 / "exact-source-observations-template.json"
-            ).write_text("{}\n", encoding="utf-8")
+            ).write_text(
+                '{"language_server_log": {"path": null, "sha256": null}}\n',
+                encoding="utf-8",
+            )
             args = Namespace(
                 run_dir=root / "run",
                 zed_cli=zed_cli,
@@ -59,7 +62,7 @@ class ZedHostPrepareTests(unittest.TestCase):
                 perllsp=perllsp,
                 perllsp_version="0.17.0",
                 perllsp_build="a" * 40,
-                resolution_route="explicit_binary_path",
+                resolution_route="binary_override",
                 workspace=workspace,
                 fixture_id="fixture-v1",
                 root_identity=None,
@@ -92,6 +95,15 @@ class ZedHostPrepareTests(unittest.TestCase):
             )
             self.assertTrue(
                 manifest["extension"]["manifest_sha256"].startswith("sha256:")
+            )
+            observations = json.loads(
+                (root / "run" / "observations.json").read_text(encoding="utf-8")
+            )
+            binding = prepare.sha256_file(root / "run" / "manifest.json")
+            self.assertEqual(observations["prepared_manifest_sha256"], binding)
+            self.assertEqual(
+                observations["language_server_log"]["prepared_manifest_sha256"],
+                binding,
             )
 
     def test_zed_identity_is_bound_to_cli_path_and_system_specs(self) -> None:
@@ -174,6 +186,19 @@ class ZedHostPrepareTests(unittest.TestCase):
             outside.write_bytes(b"wasm")
             with self.assertRaisesRegex(prepare.HostReceiptError, "inside"):
                 prepare._bound_wasm(extension.resolve(), outside.resolve())
+
+    def test_prepare_rejects_schema_invalid_resolution_route(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = Namespace(
+                run_dir=root / "run",
+                resolution_route="explicit_binary_path",
+            )
+            with self.assertRaisesRegex(
+                prepare.HostReceiptError, "resolution-route"
+            ):
+                prepare.prepare(args, root)
+            self.assertFalse((root / "run").exists())
 
 
 if __name__ == "__main__":

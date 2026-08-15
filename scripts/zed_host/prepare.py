@@ -30,6 +30,7 @@ _ZED_CHANNELS = {
 }
 _COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
 _FULL_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_EXACT_SOURCE_RESOLUTION_ROUTES = ("binary_override", "worktree_path")
 
 
 def _load_extension_manifest(path: Path) -> dict[str, Any]:
@@ -211,6 +212,10 @@ def _write_bound_observations(
 
 
 def prepare(args: Namespace, repo_root: Path) -> int:
+    if args.resolution_route not in _EXACT_SOURCE_RESOLUTION_ROUTES:
+        raise HostReceiptError(
+            "--resolution-route must be binary_override or worktree_path"
+        )
     run_dir = _empty_run_dir(args.run_dir)
     zed_cli = canonical_file(args.zed_cli, "Zed CLI")
     zed_app = canonical_file(args.zed_app, "Zed application binary")
