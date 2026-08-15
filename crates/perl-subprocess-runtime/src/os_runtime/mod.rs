@@ -38,11 +38,6 @@ pub(super) fn resolve_windows_program_pub(program: &str) -> Option<String> {
 }
 
 const MIN_TIMEOUT_SECS: u64 = 1;
-const MAX_TIMEOUT_SECS: u64 = 300;
-
-fn bounded_timeout_secs(timeout_secs: u64) -> u64 {
-    timeout_secs.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS)
-}
 
 /// Default implementation using `std::process::Command`.
 pub struct OsSubprocessRuntime {
@@ -55,13 +50,12 @@ impl OsSubprocessRuntime {
         Self { timeout_secs: None }
     }
 
-    /// Create a new OS subprocess runtime with a bounded wall-clock timeout.
+    /// Create a new OS subprocess runtime with the given wall-clock timeout.
     ///
-    /// The runtime accepts only the interactive subprocess envelope of 1 to
-    /// 300 seconds. A zero value is normalized to one second and a value above
-    /// 300 seconds is normalized to 300 seconds. This constructor is therefore
-    /// safe for defense-in-depth use even when an upstream caller has not yet
-    /// validated externally supplied configuration.
+    /// A zero value is normalized to one second so direct construction cannot
+    /// panic. This generic constructor deliberately does not impose a product-
+    /// specific maximum; callers with a bounded interactive contract should use
+    /// [`Self::with_bounded_timeout`].
     ///
     /// If the subprocess does not complete within the normalized timeout the
     /// call returns a `SubprocessError` with a "timed out" message and attempts
@@ -75,7 +69,19 @@ impl OsSubprocessRuntime {
     /// phase and the timeout will not fire. For typical Perl source files this
     /// is not a concern.
     pub fn with_timeout(timeout_secs: u64) -> Self {
-        Self { timeout_secs: Some(bounded_timeout_secs(timeout_secs)) }
+        Self { timeout_secs: Some(timeout_secs.max(MIN_TIMEOUT_SECS)) }
+    }
+
+    /// Create a runtime using a caller-owned bounded timeout envelope.
+    ///
+    /// Both zero inputs are normalized to one second. The requested timeout is
+    /// then clamped to the normalized maximum, allowing each product surface to
+    /// define its own upper bound without changing unrelated subprocess users.
+    pub fn with_bounded_timeout(timeout_secs: u64, max_timeout_secs: u64) -> Self {
+        let max_timeout_secs = max_timeout_secs.max(MIN_TIMEOUT_SECS);
+        Self {
+            timeout_secs: Some(timeout_secs.clamp(MIN_TIMEOUT_SECS, max_timeout_secs)),
+        }
     }
 }
 
@@ -101,16 +107,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn timeout_envelope_normalizes_zero_and_preserves_reasonable_values() {
+    fn generic_timeout_normalizes_zero_without_changing_large_valid_values() {
         assert_eq!(OsSubprocessRuntime::with_timeout(0).timeout_secs, Some(1));
         assert_eq!(OsSubprocessRuntime::with_timeout(1).timeout_secs, Some(1));
         assert_eq!(OsSubprocessRuntime::with_timeout(10).timeout_secs, Some(10));
-        assert_eq!(OsSubprocessRuntime::with_timeout(300).timeout_secs, Some(300));
+        assert_eq!(OsSubprocessRuntime::with_timeout(u64::MAX).timeout_secs, Some(u64::MAX));
     }
 
     #[test]
-    fn timeout_envelope_bounds_values_above_the_product_maximum() {
-        assert_eq!(OsSubprocessRuntime::with_timeout(301).timeout_secs, Some(300));
-        assert_eq!(OsSubprocessRuntime::with_timeout(u64::MAX).timeout_secs, Some(300));
+    fn bounded_timeout_uses_the_callers_envelope() {
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(0, 300).timeout_secs, Some(1));
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(1, 300).timeout_secs, Some(1));
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(300, 300).timeout_secs, Some(300));
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(301, 300).timeout_secs, Some(300));
+        assert_eq!(
+            OsSubprocessRuntime::with_bounded_timeout(u64::MAX, 300).timeout_secs,
+            Some(300)
+        );
+        assert_eq!(OsSubprocessRuntime::with_bounded_timeout(5, 0).timeout_secs, Some(1));
     }
 }
