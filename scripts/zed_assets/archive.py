@@ -26,51 +26,65 @@ def _candidate_executable(name: str) -> bool:
 
 
 def inspect_tar(path: Path, expected_member: str) -> list[str]:
-    with tarfile.open(path, mode="r:gz") as archive:
-        names: list[str] = []
-        seen: set[str] = set()
-        selected = False
-        for member in archive.getmembers():
-            normalized = str(validate_relative_member(member.name))
-            if normalized in seen:
-                raise ReceiptError(f"duplicate archive member: {normalized}")
-            seen.add(normalized)
-            names.append(normalized)
-            if member.issym() or member.islnk():
-                raise ReceiptError(f"archive links are not accepted: {normalized}")
-            if _candidate_executable(normalized) and normalized != expected_member:
-                raise ReceiptError(f"unexpected code-intelligence executable: {normalized}")
-            if normalized == expected_member:
-                if not member.isfile():
-                    raise ReceiptError("required perllsp member is not a regular file")
-                selected = True
-        if not selected:
-            raise ReceiptError(f"archive lacks required member {expected_member!r}")
-        return names
+    try:
+        with tarfile.open(path, mode="r:gz") as archive:
+            names: list[str] = []
+            seen: set[str] = set()
+            selected = False
+            for member in archive.getmembers():
+                normalized = str(validate_relative_member(member.name))
+                if normalized in seen:
+                    raise ReceiptError(f"duplicate archive member: {normalized}")
+                seen.add(normalized)
+                names.append(normalized)
+                if member.issym() or member.islnk():
+                    raise ReceiptError(f"archive links are not accepted: {normalized}")
+                if _candidate_executable(normalized) and normalized != expected_member:
+                    raise ReceiptError(f"unexpected code-intelligence executable: {normalized}")
+                if normalized == expected_member:
+                    if member.name != expected_member:
+                        raise ReceiptError(
+                            f"required member has a noncanonical archive name: {member.name!r}"
+                        )
+                    if not member.isfile():
+                        raise ReceiptError("required perllsp member is not a regular file")
+                    selected = True
+            if not selected:
+                raise ReceiptError(f"archive lacks required member {expected_member!r}")
+            return names
+    except tarfile.TarError as error:
+        raise ReceiptError(f"malformed tar.gz archive {path.name}: {error}") from error
 
 
 def inspect_zip(path: Path, expected_member: str) -> list[str]:
-    with zipfile.ZipFile(path) as archive:
-        names: list[str] = []
-        seen: set[str] = set()
-        selected = False
-        for info in archive.infolist():
-            normalized = str(validate_relative_member(info.filename.rstrip("/")))
-            if normalized in seen:
-                raise ReceiptError(f"duplicate archive member: {normalized}")
-            seen.add(normalized)
-            names.append(normalized)
-            if _zip_is_symlink(info):
-                raise ReceiptError(f"archive symlink is not accepted: {normalized}")
-            if _candidate_executable(normalized) and normalized != expected_member:
-                raise ReceiptError(f"unexpected code-intelligence executable: {normalized}")
-            if normalized == expected_member:
-                if info.is_dir():
-                    raise ReceiptError("required perllsp member is a directory")
-                selected = True
-        if not selected:
-            raise ReceiptError(f"archive lacks required member {expected_member!r}")
-        return names
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names: list[str] = []
+            seen: set[str] = set()
+            selected = False
+            for info in archive.infolist():
+                normalized = str(validate_relative_member(info.filename.rstrip("/")))
+                if normalized in seen:
+                    raise ReceiptError(f"duplicate archive member: {normalized}")
+                seen.add(normalized)
+                names.append(normalized)
+                if _zip_is_symlink(info):
+                    raise ReceiptError(f"archive symlink is not accepted: {normalized}")
+                if _candidate_executable(normalized) and normalized != expected_member:
+                    raise ReceiptError(f"unexpected code-intelligence executable: {normalized}")
+                if normalized == expected_member:
+                    if info.filename != expected_member:
+                        raise ReceiptError(
+                            f"required member has a noncanonical archive name: {info.filename!r}"
+                        )
+                    if info.is_dir():
+                        raise ReceiptError("required perllsp member is a directory")
+                    selected = True
+            if not selected:
+                raise ReceiptError(f"archive lacks required member {expected_member!r}")
+            return names
+    except zipfile.BadZipFile as error:
+        raise ReceiptError(f"malformed zip archive {path.name}: {error}") from error
 
 
 def extract_expected(
@@ -86,17 +100,23 @@ def extract_expected(
 
     if archive_type == "tar.gz":
         names = inspect_tar(archive_path, expected_member)
-        with tarfile.open(archive_path, mode="r:gz") as archive:
-            source = archive.extractfile(archive.getmember(expected_member))
-            if source is None:
-                raise ReceiptError("required tar member could not be opened")
-            with source, output.open("wb") as target:
-                shutil.copyfileobj(source, target)
+        try:
+            with tarfile.open(archive_path, mode="r:gz") as archive:
+                source = archive.extractfile(archive.getmember(expected_member))
+                if source is None:
+                    raise ReceiptError("required tar member could not be opened")
+                with source, output.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+        except tarfile.TarError as error:
+            raise ReceiptError(f"malformed tar.gz archive {archive_path.name}: {error}") from error
     elif archive_type == "zip":
         names = inspect_zip(archive_path, expected_member)
-        with zipfile.ZipFile(archive_path) as archive:
-            with archive.open(expected_member, "r") as source, output.open("wb") as target:
-                shutil.copyfileobj(source, target)
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                with archive.open(expected_member, "r") as source, output.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+        except zipfile.BadZipFile as error:
+            raise ReceiptError(f"malformed zip archive {archive_path.name}: {error}") from error
     else:
         raise ReceiptError(f"unsupported archive type: {archive_type}")
 

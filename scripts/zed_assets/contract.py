@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .common import CONTRACT_SCHEMA, ReceiptError, parse_digest, validate_relative_member
+from .common import (
+    CONTRACT_SCHEMA,
+    ReceiptError,
+    parse_digest,
+    validate_relative_member,
+    validate_single_component,
+)
 
 
 def validate_contract(contract: dict[str, Any]) -> None:
@@ -28,6 +34,7 @@ def validate_contract(contract: dict[str, Any]) -> None:
     version = source.get("version")
     if not isinstance(version, str) or not version:
         raise ReceiptError("contract source version is missing")
+    validate_single_component(version, "contract source version")
 
     rows = contract.get("targets")
     if not isinstance(rows, list) or not rows:
@@ -42,6 +49,7 @@ def validate_contract(contract: dict[str, Any]) -> None:
         disposition = row.get("disposition")
         if not isinstance(target, str) or not target:
             raise ReceiptError(f"target row {index} lacks target")
+        validate_single_component(target, f"target row {index} target")
         if target in seen:
             raise ReceiptError(f"duplicate target row: {target}")
         seen.add(target)
@@ -56,6 +64,7 @@ def validate_contract(contract: dict[str, Any]) -> None:
         archive_type = row.get("archive_type")
         if archive_type not in {"tar.gz", "zip"}:
             raise ReceiptError(f"target {target} has unsupported archive type")
+        validate_single_component(row.get("asset_name"), f"target {target} asset_name")
         suffix = ".tar.gz" if archive_type == "tar.gz" else ".zip"
         if row.get("asset_name") != f"perllsp-{version}-{target}{suffix}":
             raise ReceiptError(f"target {target} asset name does not match the contract")

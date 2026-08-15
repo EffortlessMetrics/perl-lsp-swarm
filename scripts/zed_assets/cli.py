@@ -21,7 +21,7 @@ def command_validate_contract(args: argparse.Namespace) -> int:
 
 
 def command_validate_receipt(args: argparse.Namespace) -> int:
-    validate_receipt(load_json(args.receipt))
+    validate_receipt(load_json(args.receipt), args.contract, load_json(args.contract))
     print("Zed managed asset receipt checks passed.")
     return 0
 
@@ -29,8 +29,10 @@ def command_validate_receipt(args: argparse.Namespace) -> int:
 def command_execute(args: argparse.Namespace) -> int:
     contract = load_json(args.contract)
     token = os.environ.get(args.token_env) if args.token_env else None
-    work_dir = args.work_dir or Path(tempfile.mkdtemp(prefix="zed-perllsp-assets-"))
-    return execute(args.contract, contract, args.output, work_dir, token)
+    if args.work_dir is not None:
+        return execute(args.contract, contract, args.output, args.work_dir, token)
+    with tempfile.TemporaryDirectory(prefix="zed-perllsp-assets-") as temporary_work_dir:
+        return execute(args.contract, contract, args.output, Path(temporary_work_dir), token)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     receipt_parser = subparsers.add_parser("validate-receipt")
     receipt_parser.add_argument("--receipt", type=Path, required=True)
+    receipt_parser.add_argument(
+        "--contract",
+        type=Path,
+        required=True,
+        help="checked contract the receipt must have been produced against",
+    )
     receipt_parser.set_defaults(func=command_validate_receipt)
 
     execute_parser = subparsers.add_parser("execute")

@@ -70,6 +70,7 @@ def _execute_target(
     verifier: dict[str, str],
     work_dir: Path,
     token: str | None,
+    expected_version: str,
     target_result: dict[str, Any],
 ) -> None:
     name = row["asset_name"]
@@ -127,7 +128,7 @@ def _execute_target(
         "executable": os.access(binary, os.X_OK) if os.name != "nt" else True,
     }
     if expected_host(row, verifier):
-        target_result["stdio_smoke"] = run_stdio_smoke(binary.resolve(), target_dir)
+        target_result["stdio_smoke"] = run_stdio_smoke(binary.resolve(), target_dir, expected_version)
         target_result["result"] = "managed_executed"
     else:
         target_result["stdio_smoke"] = {"result": "not_executed"}
@@ -188,7 +189,9 @@ def execute(
                 target_result["errors"].append(row.get("reason", "not managed"))
                 continue
             try:
-                _execute_target(row, by_id, by_name, verifier, work_dir, token, target_result)
+                _execute_target(
+                    row, by_id, by_name, verifier, work_dir, token, source["version"], target_result
+                )
             except ReceiptError as error:
                 any_failed = True
                 target_result["result"] = "fail"

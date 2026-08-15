@@ -20,7 +20,14 @@ class ReceiptError(RuntimeError):
 
 
 def load_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as error:
+        raise ReceiptError(f"cannot read {path}: {error}") from error
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ReceiptError(f"{path} is not valid JSON: {error}") from error
     if not isinstance(value, dict):
         raise ReceiptError(f"{path} must contain a JSON object")
     return value
@@ -78,6 +85,27 @@ def validate_relative_member(name: str) -> PurePosixPath:
     ):
         raise ReceiptError(f"unsafe archive member path: {name!r}")
     return path
+
+
+def validate_single_component(value: Any, context: str) -> None:
+    """Reject values that are not exactly one relative path component.
+
+    Contract fields that become filesystem path segments under the work
+    directory (`target`, `asset_name`, `version`) must never contain
+    separators, drive prefixes, absolute roots, or `.`/`..` traversal, so a
+    hostile contract cannot redirect `work_dir / value` outside the work
+    directory or point `shutil.rmtree` at unrelated paths.
+    """
+    if not isinstance(value, str) or not value:
+        raise ReceiptError(f"{context} must be a non-empty string")
+    normalized = value.replace("\\", "/")
+    if (
+        "/" in normalized
+        or re.match(r"^[A-Za-z]:", normalized)
+        or PurePosixPath(normalized).is_absolute()
+        or PurePosixPath(normalized).parts in {(), (".",), ("..",)}
+    ):
+        raise ReceiptError(f"{context} must be a single relative path component: {value!r}")
 
 
 def expected_host(row: dict[str, Any], verifier: dict[str, str]) -> bool:

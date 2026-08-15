@@ -33,10 +33,15 @@ python3 scripts/zed_public_asset_receipts.py validate-contract \
   --contract .ci/fixtures/zed-perl-upstream/managed-downloads.v1.json
 
 python3 scripts/zed_public_asset_receipts.py validate-receipt \
-  --receipt .ci/fixtures/zed-perl-upstream/receipts/managed-asset-template.json
+  --receipt .ci/fixtures/zed-perl-upstream/receipts/managed-asset-template.json \
+  --contract .ci/fixtures/zed-perl-upstream/managed-downloads.v1.json
 
 cargo test -p xtask --test zed_managed_asset_receipt --locked
 ```
+
+> On Windows hosts, invoke `python` instead of `python3` in every command in
+> this document; the test harness selects `python` on Windows for the same
+> reason.
 
 The not-run template remains at:
 
@@ -48,7 +53,8 @@ It is not sample passing evidence.
 
 ## Execute one host receipt
 
-From a clean checkout with ordinary network access:
+From a clean checkout with ordinary network access (on Windows, use `python`
+in place of `python3`):
 
 ```bash
 python3 scripts/zed_public_asset_receipts.py execute \
@@ -58,12 +64,22 @@ python3 scripts/zed_public_asset_receipts.py execute \
   --token-env GITHUB_TOKEN
 
 python3 scripts/zed_public_asset_receipts.py validate-receipt \
-  --receipt target/zed-public-assets/receipt.json
+  --receipt target/zed-public-assets/receipt.json \
+  --contract .ci/fixtures/zed-perl-upstream/managed-downloads.v1.json
 ```
 
 `GITHUB_TOKEN` is optional and is used only for read-only GitHub release and
 asset requests. The producer has no release, repository, branch, issue, or
 support-registry mutation path.
+
+`validate-receipt` requires `--contract`: the receipt's recorded contract
+digest is recomputed from that file and the receipt target rows are compared
+with the contract target set, so a receipt cannot attest to a different or
+narrower subject than the checked contract.
+
+When `--work-dir` is omitted, the producer downloads and extracts into a
+temporary work directory that is removed when the command finishes. Pass
+`--work-dir` only to retain artifacts for inspection.
 
 The complete matrix should run independently on current Linux, macOS, and
 Windows hosts. Each receipt binds its verifier OS and architecture.
@@ -95,12 +111,18 @@ The producer fails closed when:
 - an asset name, ID, size, or GitHub digest differs;
 - downloaded bytes differ from the retained SHA-256;
 - the archive contains traversal, absolute paths, duplicate members, links, a
-  missing required member, or another code-intelligence executable;
-- the version output does not identify `perllsp`;
+  missing required member, a noncanonically named required member, or another
+  code-intelligence executable;
+- the archive bytes are malformed (a corrupt zip or tar.gz becomes a per-target
+  `fail` receipt, not an instrument crash);
+- the version output does not identify `perllsp` or does not report the
+  expected release version;
 - stdio output contains stray or malformed data;
 - initialize or shutdown does not complete as expected;
 - the process times out, exits unsuccessfully, or leaves a new `perllsp`
-  process behind.
+  process behind;
+- the launched process cannot be observed in the post-launch inventory, so
+  cleanup cannot be proven.
 
 The receipt is still written with `fail`, `instrument_failed`, or
 `contract_stale` so the failed subject and exact boundary remain reviewable.

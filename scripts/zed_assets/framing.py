@@ -20,19 +20,30 @@ def parse_lsp_frames(data: bytes) -> list[dict[str, Any]]:
         header_end = data.find(b"\r\n\r\n", cursor)
         if header_end < 0:
             raise ReceiptError("protocol stdout contains an incomplete or stray header")
-        header = data[cursor:header_end].decode("ascii", errors="strict")
+        try:
+            header = data[cursor:header_end].decode("ascii", errors="strict")
+        except UnicodeDecodeError as error:
+            raise ReceiptError("protocol stdout header is not strict ASCII") from error
         length: int | None = None
         for line in header.split("\r\n"):
             name, separator, value = line.partition(":")
             if separator and name.strip().lower() == "content-length":
-                length = int(value.strip())
+                try:
+                    length = int(value.strip())
+                except ValueError as error:
+                    raise ReceiptError(
+                        f"protocol stdout Content-Length is not an integer: {value.strip()!r}"
+                    ) from error
         if length is None or length < 0:
             raise ReceiptError("protocol stdout frame lacks a valid Content-Length")
         body_start = header_end + 4
         body_end = body_start + length
         if body_end > len(data):
             raise ReceiptError("protocol stdout frame is truncated")
-        value = json.loads(data[body_start:body_end])
+        try:
+            value = json.loads(data[body_start:body_end])
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ReceiptError("protocol stdout frame is not valid JSON") from error
         if not isinstance(value, dict):
             raise ReceiptError("protocol stdout frame is not a JSON object")
         frames.append(value)

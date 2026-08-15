@@ -78,19 +78,27 @@ def matching_processes(binary: Path) -> set[int]:
     return _linux_processes(binary)
 
 
-def run_stdio_smoke(binary: Path, work_dir: Path) -> dict[str, Any]:
-    version = subprocess.run(
-        [str(binary), "--version"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=PROCESS_TIMEOUT_SECONDS,
-    )
+def run_stdio_smoke(binary: Path, work_dir: Path, expected_version: str) -> dict[str, Any]:
+    try:
+        version = subprocess.run(
+            [str(binary), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=PROCESS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ReceiptError("perllsp --version timed out") from error
     version_output = (version.stdout or version.stderr).strip()
     if version.returncode != 0:
         raise ReceiptError(f"perllsp --version failed with exit {version.returncode}")
     if "perllsp" not in version_output.lower():
         raise ReceiptError(f"version output does not identify perllsp: {version_output!r}")
+    if expected_version not in version_output:
+        raise ReceiptError(
+            f"version output {version_output!r} does not report the expected "
+            f"release version {expected_version!r}"
+        )
 
     before = matching_processes(binary)
     messages = [
@@ -118,11 +126,22 @@ def run_stdio_smoke(binary: Path, work_dir: Path) -> dict[str, Any]:
         cwd=work_dir,
     )
     try:
+        after_launch = matching_processes(binary)
+        if process.pid not in after_launch:
+            raise ReceiptError(
+                "post-launch inventory did not observe the launched perllsp process "
+                f"{process.pid}; process-group cleanup cannot be proven on this host"
+            )
         stdout, stderr = process.communicate(payload, timeout=PROCESS_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as error:
         process.kill()
         process.wait(timeout=10)
         raise ReceiptError("perllsp stdio lifecycle timed out") from error
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=10)
+        raise
 
     frames = parse_lsp_frames(stdout)
     responses = {frame.get("id"): frame for frame in frames if "id" in frame}
@@ -139,6 +158,8 @@ def run_stdio_smoke(binary: Path, work_dir: Path) -> dict[str, Any]:
     leaked = sorted(after - before)
     if leaked:
         raise ReceiptError("perllsp process inventory grew after shutdown: " + ",".join(map(str, leaked)))
+    if process.pid in after:
+        raise ReceiptError(f"launched perllsp process {process.pid} survived shutdown")
 
     bounded_stderr = stderr[-MAX_STDERR_BYTES:].decode("utf-8", errors="replace")
     bounded_stderr = bounded_stderr.replace(str(work_dir), "<work-dir>")
@@ -150,7 +171,9 @@ def run_stdio_smoke(binary: Path, work_dir: Path) -> dict[str, Any]:
         "initialize_response": True,
         "shutdown_response": True,
         "stdout_pure": True,
+        "launched_pid": process.pid,
         "process_inventory_before": sorted(before),
+        "process_inventory_after_launch": sorted(after_launch),
         "process_inventory_after": sorted(after),
         "process_group_clean": True,
         "stderr_sha256": sha256_bytes(stderr),

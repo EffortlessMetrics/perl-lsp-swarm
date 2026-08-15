@@ -5,6 +5,24 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "result", "observed_at", "contract", "release", "verifier", "targets", "limitations", "claim_boundary"],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"result": {"not": {"const": "not_run"}}},
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "contract": {
+            "properties": {
+              "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+            },
+            "required": ["sha256"]
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schema_version": {"const": "zed_managed_asset_receipt.v1"},
     "result": {"enum": ["not_run", "pass", "fail", "instrument_failed", "contract_stale"]},
