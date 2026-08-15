@@ -49,7 +49,9 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         // The executable suffix matters: on Windows the file is `perllsp.exe`, so a
         // suffix-less `exists()` check silently skips a perfectly good local binary
         // and forces the slow `cargo run` fallback below.
-        for profile in ["debug", "release"] {
+        // Prefer the profile these tests were themselves built with, so a `cargo test
+        // --release` run does not silently drive a debug server (or vice versa).
+        for profile in active_profile_order() {
             let binary = workspace_root.join("target").join(profile).join(perllsp_file_name());
             if binary.exists() {
                 let mut c = Command::new(&binary);
@@ -93,6 +95,16 @@ fn perllsp_file_name() -> String {
     format!("perllsp{}", std::env::consts::EXE_SUFFIX)
 }
 
+/// Cargo profile directory these tests were compiled into.
+fn active_profile() -> &'static str {
+    if cfg!(debug_assertions) { "debug" } else { "release" }
+}
+
+/// Target-directory profiles to probe, most-appropriate first.
+fn active_profile_order() -> [&'static str; 2] {
+    if cfg!(debug_assertions) { ["debug", "release"] } else { ["release", "debug"] }
+}
+
 /// Build the `perllsp` binary once per test process and return its path.
 ///
 /// The tests spawn a server owned by a different package, so nothing in
@@ -103,14 +115,23 @@ fn ensure_perllsp_built(workspace_root: &std::path::Path) -> Option<std::path::P
     static BUILT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     BUILT
         .get_or_init(|| {
+            // Build the profile these tests were built with. Building debug from a
+            // `cargo test --release` run would hand the suite a debug server and
+            // quietly change the performance characteristics under measurement.
+            let profile = active_profile();
+            let mut args = vec!["build", "-q", "-p", "perllsp", "--bin", "perllsp"];
+            if profile == "release" {
+                args.push("--release");
+            }
             let status =
                 Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()))
-                    .args(["build", "-q", "-p", "perllsp", "--bin", "perllsp"])
+                    .args(&args)
                     .current_dir(workspace_root)
                     .status();
             match status {
                 Ok(s) if s.success() => {
-                    let path = workspace_root.join("target/debug").join(perllsp_file_name());
+                    let path =
+                        workspace_root.join("target").join(profile).join(perllsp_file_name());
                     path.exists().then_some(path)
                 }
                 Ok(s) => {
