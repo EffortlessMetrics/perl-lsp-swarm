@@ -23,7 +23,7 @@ from .command_surface import (
     navigation_target,
     prepare_invocation,
 )
-from .debugger_adapter import register_debugger_adapter
+from .debugger_adapter import register_debugger_adapter, unregister_debugger_adapter
 from .release import install_server
 
 _SETTINGS_FILE = "LSP-perllsp.sublime-settings"
@@ -253,3 +253,7 @@ def plugin_loaded() -> None:
 
 def plugin_unloaded() -> None:
     PerllspPlugin.unregister()
+    # Debugger's adapter registry is process-global and outlives this package,
+    # so registration has to be symmetric or a disabled/replaced revision stays
+    # callable until Debugger or Sublime restarts.
+    unregister_debugger_adapter()

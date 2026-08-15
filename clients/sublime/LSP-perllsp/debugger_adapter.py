@@ -173,5 +173,41 @@ def register_debugger_adapter() -> bool:
     return True
 
 
+def unregister_debugger_adapter() -> bool:
+    """Drop our adapter from Debugger's registry when the package unloads.
+
+    Registration is process-global inside Debugger, so without this the class
+    object created by a disabled, uninstalled, or previous revision of this
+    package stays reachable. `register_debugger_adapter` would then find a
+    `perl` entry, see `_is_our_adapter` return True for that stale class, and
+    adopt it instead of installing the current implementation — leaving old code
+    callable until Debugger or Sublime restarts. Ownership is re-checked here so
+    a foreign `perl` adapter is never removed.
+    """
+    global _FOREIGN_OWNER_REPORTED, _IMPORT_FAILURE_REPORTED, _REGISTERED_CLASS
+
+    _REGISTERED_CLASS = None
+    _IMPORT_FAILURE_REPORTED = False
+    _FOREIGN_OWNER_REPORTED = False
+
+    try:
+        from Debugger.modules import dap
+    except ImportError:
+        return False
+
+    AdapterBase = getattr(dap, "AdapterConfiguration", None) or getattr(dap, "Adapter", None)
+    if not isinstance(AdapterBase, type):
+        return False
+
+    registered = _registry(AdapterBase)
+    if registered is None or "perl" not in registered:
+        return False
+    if not _is_our_adapter(registered["perl"]):
+        return False
+
+    del registered["perl"]
+    return True
+
+
 def registered_adapter_class() -> type | None:
     return _REGISTERED_CLASS

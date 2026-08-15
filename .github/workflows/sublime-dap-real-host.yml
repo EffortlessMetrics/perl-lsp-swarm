@@ -32,7 +32,23 @@ jobs:
       PERLLSP_SUBLIME_DAP_RUNTIME_RECEIPT: ${{ github.workspace }}/target/sublime-dap/runtime.json
       PERLLSP_SUBLIME_DAP_HOST_RECEIPT: ${{ github.workspace }}/target/sublime-dap/host.json
     steps:
+      # `PERLLSP_SOURCE_SHA` labels both receipts with the pull-request head, so
+      # the tree that is built and hashed has to be that same revision. The
+      # default `pull_request` checkout is the merge revision, which differs from
+      # the head whenever `main` has moved, and would bind the receipts to a
+      # commit that was never built.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Confirm the checked-out revision matches the receipted revision
+        shell: bash
+        run: |
+          checked_out="$(git rev-parse HEAD)"
+          if [ "$checked_out" != "$PERLLSP_SOURCE_SHA" ]; then
+            echo "receipt source_sha $PERLLSP_SOURCE_SHA is not the built revision $checked_out" >&2
+            exit 1
+          fi
 
       - name: Confirm the Perl runtime
         run: perl -v
@@ -47,7 +63,12 @@ jobs:
             "$GITHUB_WORKSPACE/target/release/perl-dap" >> "$GITHUB_ENV"
           mkdir -p "$GITHUB_WORKSPACE/target/sublime-dap"
 
+      # Without `PERL_DAP_TEST_BINARY` this smoke launches Cargo's test-profile
+      # `CARGO_BIN_EXE_perl-dap` while the receipt hashes the release artifact,
+      # so the framing assertion would describe a binary that was never run.
       - name: Prove stdio framing through the binary surface
+        env:
+          PERL_DAP_TEST_BINARY: ${{ github.workspace }}/target/release/perl-dap
         run: cargo test --locked -p perl-dap --test dap_stdio_transport_e2e -- --nocapture
 
       - name: Prove breakpoint, stack, scopes, variables, continue and termination
@@ -60,6 +81,8 @@ jobs:
           cargo test --locked -p perl-dap --test dap_e2e_workflow_tests
           test_e2e_step_over_changes_execution -- --exact --nocapture
 
+      # This is a clean relaunch in a fresh process, not a DAP `restart`
+      # request; the runtime receipt records it under that name.
       - name: Prove a clean second launch after termination
         run: >-
           cargo test --locked -p perl-dap --test dap_e2e_workflow_tests
@@ -113,10 +136,39 @@ jobs:
             Debugger:daveleroy/SublimeDebugger@0.11.6
 
       - name: Run the real Sublime Debugger adapter journey
+        id: host-journey
         uses: SublimeText/UnitTesting/actions/run-tests@b8abedefd5fbc0f64a8c6082506ebd1e24203164
         with:
           package-name: LSP-perllsp
           coverage: false
+
+      # The pinned runner gives Sublime a fixed, non-configurable 30s per launch
+      # (three attempts) to write the first byte of its result file, then exits
+      # with "Could not obtain tests output". On that path it tries to print
+      # `<Packages>/LSP-perllsp/unittesting.log`, but `run_scheduler.py` writes
+      # the redirected Sublime console to `<Packages>/UnitTesting/unittesting.log`
+      # instead, so the failure reaches CI with no diagnostic at all. Surface the
+      # real locations so a silent host timeout is debuggable from the run log.
+      - name: Surface the Sublime host console on failure
+        if: failure() && steps.host-journey.outcome == 'failure'
+        shell: bash
+        run: |
+          for candidate in \
+            "$SUBLIME_TEXT_PACKAGES/UnitTesting/unittesting.log" \
+            "$SUBLIME_TEXT_PACKAGES/LSP-perllsp/unittesting.log" \
+            "$SUBLIME_TEXT_PACKAGES/User/UnitTesting/LSP-perllsp/result" \
+            "$SUBLIME_TEXT_PACKAGES/User/UnitTesting/schedule.json"; do
+            echo "::group::$candidate"
+            if [ -f "$candidate" ]; then
+              cat "$candidate"
+            else
+              echo "(absent)"
+            fi
+            echo "::endgroup::"
+          done
+          echo "::group::installed packages"
+          ls -la "$SUBLIME_TEXT_PACKAGES" || true
+          echo "::endgroup::"
 
       - name: Reject an orphaned adapter process after Sublime shutdown
         shell: bash

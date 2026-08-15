@@ -62,19 +62,34 @@ def main() -> int:
             "path": str(fixture),
             "sha256": sha256_file(fixture),
         },
+        # `restart` was previously recorded as earned and the list above named
+        # `test_e2e_single_breakpoint_hit_inspect_continue_restart`, which does
+        # not exist. The workflow's third journey reruns
+        # `test_e2e_single_breakpoint_hit_inspect_continue` in a fresh process
+        # after termination, which proves a clean relaunch, not a DAP `restart`
+        # request. The assertion is named for what is actually exercised.
         "tests": [
             "dap_stdio_transport_e2e",
             "test_e2e_single_breakpoint_hit_inspect_continue",
             "test_e2e_step_over_changes_execution",
-            "test_e2e_single_breakpoint_hit_inspect_continue_restart",
+            "test_e2e_single_breakpoint_hit_inspect_continue (rerun after termination)",
         ],
+        "claim_boundary": (
+            "stdio_transport is proven against this exact binary through "
+            "dap_stdio_transport_e2e with PERL_DAP_TEST_BINARY bound to it. The "
+            "breakpoint, stack/scopes/variables, step-over, continue/termination "
+            "and clean-relaunch assertions come from in-process adapter-library "
+            "journeys in dap_e2e_workflow_tests built from the same source "
+            "revision, not from this binary's own protocol surface. No DAP "
+            "restart request is exercised."
+        ),
         "assertions": {
             "stdio_transport": True,
             "breakpoint_verified_hit": True,
             "stack_scopes_variables": True,
             "step_over": True,
             "continue_termination": True,
-            "restart": True,
+            "clean_relaunch_after_termination": True,
             "process_cleanup": True,
         },
     }

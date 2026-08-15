@@ -40,7 +40,8 @@ def runtime_receipt() -> dict:
         "recorded_at": "2026-08-13T11:30:00+00:00",
         "binary": binary(),
         "fixture": {"path": "/tmp/debug_current.pl", "sha256": "c" * 64},
-        "tests": ["stdio", "breakpoint", "step", "restart"],
+        "tests": ["stdio", "breakpoint", "step", "relaunch"],
+        "claim_boundary": "test fixture",
         "assertions": {name: True for name in validator.RUNTIME_ASSERTIONS},
     }
 
@@ -125,6 +126,42 @@ class SublimeDapReceiptContractTests(unittest.TestCase):
         self.assertIn("test_e2e_single_breakpoint_hit_inspect_continue", workflow)
         self.assertIn("test_e2e_step_over_changes_execution", workflow)
         self.assertNotIn("Package Control: Install Package", workflow)
+
+        # The receipt hashes target/release/perl-dap, so the framing smoke must
+        # be pointed at that artifact instead of Cargo's test-profile binary.
+        self.assertIn("PERL_DAP_TEST_BINARY", workflow)
+        # source_sha labels the receipts with the PR head, so the build must be
+        # the head revision rather than the default merge revision.
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}", workflow)
+
+    def test_runtime_receipt_writer_records_only_exercised_assertions(self) -> None:
+        writer = (CLIENT / "write_sublime_dap_runtime_receipt.py").read_text(encoding="utf-8")
+        validator = load_validator()
+
+        # No DAP `restart` request is sent anywhere in this workflow, and
+        # `test_e2e_single_breakpoint_hit_inspect_continue_restart` does not
+        # exist. Neither the writer nor the validator may reintroduce them.
+        self.assertNotIn('"test_e2e_single_breakpoint_hit_inspect_continue_restart"', writer)
+        self.assertNotIn('"restart": True', writer)
+        self.assertNotIn("restart", validator.RUNTIME_ASSERTIONS)
+        self.assertNotIn("runtime_restart", validator.HOST_ASSERTIONS)
+        self.assertIn("clean_relaunch_after_termination", validator.RUNTIME_ASSERTIONS)
+        self.assertIn("runtime_clean_relaunch_after_termination", validator.HOST_ASSERTIONS)
+
+        # The lifecycle journeys run in-process against the adapter library, so
+        # the receipt must say so rather than imply the hashed binary proved them.
+        self.assertIn("claim_boundary", writer)
+
+    def test_debugger_registration_is_symmetric(self) -> None:
+        # Debugger's registry is process-global, so a disabled or replaced
+        # package must not leave its adapter class reachable.
+        adapter = (PACKAGE / "debugger_adapter.py").read_text(encoding="utf-8")
+        plugin = (PACKAGE / "plugin.py").read_text(encoding="utf-8")
+        self.assertIn("def unregister_debugger_adapter()", adapter)
+        self.assertIn("_is_our_adapter(registered[\"perl\"])", adapter)
+        self.assertIn("unregister_debugger_adapter()", plugin)
+        unloaded = plugin.split("def plugin_unloaded()", 1)[1]
+        self.assertIn("unregister_debugger_adapter()", unloaded)
 
 
 if __name__ == "__main__":

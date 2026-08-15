@@ -13,7 +13,7 @@ RUNTIME_ASSERTIONS = {
     "stack_scopes_variables",
     "step_over",
     "continue_termination",
-    "restart",
+    "clean_relaunch_after_termination",
     "process_cleanup",
 }
 HOST_ASSERTIONS = {
@@ -28,7 +28,7 @@ HOST_ASSERTIONS = {
     "runtime_stack_scopes_variables",
     "runtime_step_over",
     "runtime_continue_termination",
-    "runtime_restart",
+    "runtime_clean_relaunch_after_termination",
     "runtime_process_cleanup",
 }
 

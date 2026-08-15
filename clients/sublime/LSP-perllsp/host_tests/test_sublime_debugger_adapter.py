@@ -11,10 +11,13 @@ import sublime
 from Debugger.modules import dap
 from unittesting import DeferrableTestCase
 
-# The pinned UnitTesting runner allows ~30s per Sublime launch for the whole
-# deferred journey to finish and write its result file; keep every internal
-# condition budget strictly below that window so a stuck journey fails with
-# output instead of the runner timing out silently.
+# The pinned UnitTesting runner (`actions/run-tests/run_tests.py`) waits a fixed,
+# non-configurable 30s per Sublime launch for the *first byte* of the result
+# file, retrying three times. That budget covers Sublime start plus LSP and
+# Debugger plugin load, not this journey; once output starts flowing the runner
+# allows 5 minutes of progress. Keep the deferred condition below the launch
+# window anyway so a never-registering adapter fails with a named condition
+# rather than as a silent host timeout.
 TIMEOUT_MS = 25_000
 
 
@@ -168,7 +171,9 @@ class SublimePerlDapAdapterJourney(DeferrableTestCase):
             "runtime_stack_scopes_variables": runtime["assertions"]["stack_scopes_variables"],
             "runtime_step_over": runtime["assertions"]["step_over"],
             "runtime_continue_termination": runtime["assertions"]["continue_termination"],
-            "runtime_restart": runtime["assertions"]["restart"],
+            "runtime_clean_relaunch_after_termination": runtime["assertions"][
+                "clean_relaunch_after_termination"
+            ],
             "runtime_process_cleanup": runtime["assertions"]["process_cleanup"],
         }
         receipt = {
