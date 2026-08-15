@@ -38,6 +38,7 @@
   ],
   "required_artifacts": [
     "vim_version",
+    "vim_stdout",
     "driver",
     "vimspector_log",
     "adapter_identity",

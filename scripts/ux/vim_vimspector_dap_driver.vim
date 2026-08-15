@@ -21,15 +21,32 @@ function! s:Fail(msg) abort
   call add(s:failures, a:msg)
 endfunction
 
+" Poll a predicate to a deadline. The predicate is evaluated defensively: several
+" callers use py3eval against Vimspector's session object, which can raise while
+" the session is still being built. An uncaught throw here used to abort this
+" function (and, through `abort`, the whole driver) so no receipt was written at
+" all; swallowing it per poll keeps transient failures survivable while still
+" reporting a predicate that never stopped throwing.
 function! s:Wait(expr, timeout_ms) abort
   let l:start = reltime()
-  while !eval(a:expr)
+  let l:last_error = ''
+  while 1
+    try
+      if eval(a:expr)
+        return 1
+      endif
+      let l:last_error = ''
+    catch
+      let l:last_error = v:exception
+    endtry
     if reltimefloat(reltime(l:start)) * 1000.0 > a:timeout_ms
+      if !empty(l:last_error)
+        call s:Fail('wait predicate kept erroring: ' . a:expr . ': ' . l:last_error)
+      endif
       return 0
     endif
     sleep 25m
   endwhile
-  return 1
 endfunction
 
 function! s:WindowLines(name) abort
@@ -48,8 +65,9 @@ endfunction
 
 execute 'set runtimepath^=' . fnameescape(s:vimspector_dir)
 let g:vimspector_enable_mappings = ''
-let g:vimspector_batch_mode = 1
 runtime plugin/vimspector.vim
+" Upstream spells its load guard `g:loaded_vimpector` (missing the 's') in
+" plugin/vimspector.vim at the pinned ref. Do not "correct" this name.
 if !exists('g:loaded_vimpector')
   call s:Fail('Vimspector did not load')
 endif
@@ -63,7 +81,11 @@ augroup END
 
 execute 'lcd ' . fnameescape(s:workspace)
 execute 'silent edit ' . fnameescape(s:expected_source)
-call cursor(4, 1)
+" Deliberately park the cursor away from the breakpoint line. Pre-positioning it
+" on line 4 made stopped_source_line a circular oracle: the cell asserted the very
+" cursor position the driver had just set, so it read true even when the debugger
+" never stopped at all.
+call cursor(1, 1)
 call vimspector#SetLineBreakpoint(s:expected_source, 4)
 
 try
@@ -78,7 +100,12 @@ endif
 let s:init_launch_settled = s:Wait(
       \ "py3eval('_vimspector_session is not None and _vimspector_session._connection is not None and _vimspector_session._init_complete and _vimspector_session._launch_complete')",
       \ 10000)
-let s:connection_present = py3eval('_vimspector_session is not None and _vimspector_session._connection is not None')
+let s:connection_present = 0
+try
+  let s:connection_present = py3eval('_vimspector_session is not None and _vimspector_session._connection is not None')
+catch
+  call s:Fail('could not read Vimspector session connection state: ' . v:exception)
+endtry
 let s:cells.adapter_launch = g:perl_dap_ui_created > 0 && s:connection_present
 let s:cells.initialize_launch = s:init_launch_settled
 if !s:cells.adapter_launch
@@ -88,11 +115,17 @@ if !s:cells.initialize_launch
   call s:Fail('DAP initialize/launch did not settle before the deadline')
 endif
 
-if !s:Wait('g:perl_dap_frame_events > 0', 15000)
+let s:frame_observed = s:Wait('g:perl_dap_frame_events > 0', 15000)
+if !s:frame_observed
   call s:Fail('no Vimspector stopped-frame event observed')
 endif
 
-let s:breakpoints = vimspector#GetBreakpointsAsQuickFix()
+let s:breakpoints = []
+try
+  let s:breakpoints = vimspector#GetBreakpointsAsQuickFix()
+catch
+  call s:Fail('could not read Vimspector breakpoint model: ' . v:exception)
+endtry
 let s:matching_bp = filter(copy(s:breakpoints),
       \ {_, bp -> get(bp, 'type', '') ==# 'L'
       \   && fnamemodify(get(bp, 'filename', ''), ':p') ==# fnamemodify(s:expected_source, ':p')
@@ -109,14 +142,23 @@ let s:stopped_path = fnamemodify(expand('%:p'), ':p')
 let s:stopped_line = line('.')
 let s:expected_path = fnamemodify(s:expected_source, ':p')
 let s:shadow_path = fnamemodify(s:shadow_source, ':p')
-let s:cells.stopped_source_line = s:stopped_path ==# s:expected_path && s:stopped_line == 4
-let s:cells.source_discriminator = s:stopped_path ==# s:expected_path
+" Both cells require a real stopped-frame event: the buffer under the cursor is
+" only evidence of where the debugger jumped if the debugger actually jumped.
+let s:cells.stopped_source_line = s:frame_observed
+      \ && s:stopped_path ==# s:expected_path && s:stopped_line == 4
+let s:cells.source_discriminator = s:frame_observed
+      \ && s:stopped_path ==# s:expected_path
       \ && s:stopped_path !=# s:shadow_path
 if !s:cells.stopped_source_line
   call s:Fail('debugger did not stop at exact debug_me.pl:4; got ' . s:stopped_path . ':' . s:stopped_line)
 endif
 if !s:cells.source_discriminator
-  call s:Fail('same-named shadow source satisfied the stopped-frame path')
+  if s:stopped_path ==# s:shadow_path
+    call s:Fail('same-named shadow source satisfied the stopped-frame path')
+  else
+    call s:Fail('no stopped frame resolved to the exact expected source; got '
+          \ . s:stopped_path)
+  endif
 endif
 
 let s:stack = s:WindowLines('stack_trace')
@@ -169,7 +211,12 @@ if !s:Wait('g:perl_dap_debug_ended > 0', 15000)
 endif
 let s:cells.continue_to_end = g:perl_dap_debug_ended > 0
 
-let s:session_id = vimspector#GetSessionID()
+let s:session_id = ''
+try
+  let s:session_id = vimspector#GetSessionID()
+catch
+  call s:Fail('could not read Vimspector session id: ' . v:exception)
+endtry
 let s:console_name = 'vimspector.Console[' . s:session_id . ']'
 let s:server_name = 'vimspector.Output:server[' . s:session_id . ']'
 call s:Wait("string(s:NamedBufferLines(s:console_name)) =~# 'value=42'", 5000)

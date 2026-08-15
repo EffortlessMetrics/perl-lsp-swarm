@@ -18,6 +18,17 @@ driver="${repo_root}/scripts/ux/vim_vimspector_dap_driver.vim"
 expected_vimspector_ref=34099d18d8957bb3db5f396c8ca993ffb246a437
 mkdir -p "${out}"
 
+# Several stage steps abort under `set -e` (identity mismatch, config generation,
+# receipt rewrite). Without this the per-stage workspace leaked on every such exit.
+stage_tmpdir=
+cleanup_stage_tmpdir() {
+  if [[ -n ${stage_tmpdir} && -d ${stage_tmpdir} ]]; then
+    rm -rf "${stage_tmpdir}"
+    stage_tmpdir=
+  fi
+}
+trap cleanup_stage_tmpdir EXIT
+
 if ! command -v "${vim_bin}" >/dev/null 2>&1; then
   echo "Vimspector DAP FAILED: Vim not found: ${vim_bin}" >&2
   exit 1
@@ -156,6 +167,7 @@ run_stage() {
   local receipt="${out}/${stage}.json"
   local tmpdir
   tmpdir=$(mktemp -d)
+  stage_tmpdir="${tmpdir}"
   local workspace="${tmpdir}/workspace"
   local home="${tmpdir}/home"
   mkdir -p "${workspace}/lib" "${workspace}/shadow" "${home}"
@@ -166,14 +178,14 @@ run_stage() {
   adapter_sha=$(hash_file "${adapter}")
   if [[ -n ${expected_sha} && ${adapter_sha} != "${expected_sha}" ]]; then
     echo "Vimspector DAP FAILED: ${stage}: expected adapter SHA-256 ${expected_sha}, got ${adapter_sha}" >&2
-    rm -rf "${tmpdir}"
+    cleanup_stage_tmpdir
     return 1
   fi
 
   local identity_path="${out}/${stage}.perl-dap.identity.json"
   if ! "${adapter}" --identity-json >"${identity_path}"; then
     echo "Vimspector DAP FAILED: ${stage}: perl-dap --identity-json failed" >&2
-    rm -rf "${tmpdir}"
+    cleanup_stage_tmpdir
     return 1
   fi
   IDENTITY_PATH="${identity_path}" "${perl_bin}" -MJSON::PP -0777 -e '
@@ -297,7 +309,17 @@ PERL
   export PERLLSP_DAP_OUTPUT_ARTIFACT="${debuggee_output}"
 
   local rc=0
-  HOME="${home}" "${vim_bin}" -Nu NONE -n -es -S "${driver}" || rc=$?
+  local vim_stdout="${out}/${stage}.vim-stdout.log"
+  # Vimspector drives real windows and terminal buffers, so silent Ex mode (-es)
+  # is the wrong host mode: upstream's own CI runs `vim -N --clean --not-a-term
+  # -S ...`, never -es. Match that invocation, keep stdin closed so a stray prompt
+  # cannot block forever, and bound the run so a hung adapter fails instead of
+  # wedging the job.
+  local -a vim_cmd=("${vim_bin}" -N -u NONE -n --not-a-term -S "${driver}")
+  if command -v timeout >/dev/null 2>&1; then
+    vim_cmd=(timeout --signal=TERM --kill-after=30s "${VIM_STAGE_TIMEOUT:-300}" "${vim_cmd[@]}")
+  fi
+  HOME="${home}" "${vim_cmd[@]}" </dev/null >"${vim_stdout}" 2>&1 || rc=$?
 
   capture_matching_processes "${after}" "${adapter}" "${debuggee}"
   {
@@ -312,10 +334,14 @@ PERL
 
   local baseline_pids="${tmpdir}/baseline.pids"
   local after_pids="${tmpdir}/after.pids"
-  awk '{print $1}' "${before}" | sort -n >"${baseline_pids}"
-  awk '{print $1}' "${after}" | sort -n >"${after_pids}"
+  # `comm` compares byte-wise, so both inputs must use the default collation.
+  # Numeric sort (e.g. 812 before 1490) makes `comm` report bogus differences
+  # and exit non-zero, which under `set -e` aborted the run before the
+  # os_process_cleanup evidence was ever written.
+  awk '{print $1}' "${before}" | LC_ALL=C sort >"${baseline_pids}"
+  awk '{print $1}' "${after}" | LC_ALL=C sort >"${after_pids}"
   local leaked_pids
-  leaked_pids=$(comm -13 "${baseline_pids}" "${after_pids}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  leaked_pids=$(LC_ALL=C comm -13 "${baseline_pids}" "${after_pids}" | LC_ALL=C sort -n | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   local os_cleanup=true
   if [[ -n ${leaked_pids} ]]; then
     os_cleanup=false
@@ -339,7 +365,7 @@ PERL
 
   if [[ ! -f "${receipt}" ]]; then
     echo "Vimspector DAP FAILED: receipt missing for ${stage}" >&2
-    rm -rf "${tmpdir}"
+    cleanup_stage_tmpdir
     return 2
   fi
 
@@ -354,6 +380,7 @@ PERL
   ADAPTER_TRACE="${adapter_trace}" \
   ADAPTER_TRACE_RETAINED="${adapter_trace_retained}" \
   VIM_VERSION="${vim_version_path}" \
+  VIM_STDOUT="${vim_stdout}" \
   ADAPTER_IDENTITY="${identity_path}" \
   FIXTURE_MANIFEST="${fixture_manifest}" \
   DRIVER="${driver}" \
@@ -376,6 +403,7 @@ PERL
     };
     $r->{artifacts} = {
       vim_version => $ENV{VIM_VERSION},
+      vim_stdout => $ENV{VIM_STDOUT},
       driver => $ENV{DRIVER},
       adapter_identity => $ENV{ADAPTER_IDENTITY},
       fixture_manifest => $ENV{FIXTURE_MANIFEST},
@@ -412,7 +440,7 @@ PERL
 
   cat "${receipt}"
   echo
-  rm -rf "${tmpdir}"
+  cleanup_stage_tmpdir
   return "${rc}"
 }
 
