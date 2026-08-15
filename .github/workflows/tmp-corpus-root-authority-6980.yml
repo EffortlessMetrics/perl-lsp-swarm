@@ -42,17 +42,7 @@ jobs:
 
       - name: Check all perl-corpus targets
         shell: bash
-        run: |
-          set +e
-          cargo check -p perl-corpus --all-targets --locked --message-format=short \
-            2>&1 | tee /tmp/perl-corpus-check.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            grep -E '(^error|: error\[|: error:)' /tmp/perl-corpus-check.log \
-              | head -n 10 \
-              | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
-          fi
-          exit "$status"
+        run: cargo check -p perl-corpus --all-targets --locked
 
       - name: Test root authority
         shell: bash
@@ -80,7 +70,17 @@ jobs:
 
       - name: Run focused Clippy
         shell: bash
-        run: cargo clippy -p perl-corpus --all-targets --locked -- -D warnings -A missing_docs
+        run: |
+          set +e
+          cargo clippy -p perl-corpus --all-targets --locked --message-format=short -- \
+            -D warnings -A missing_docs 2>&1 | tee /tmp/perl-corpus-clippy.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E '(^error|: error\[|: error:)' /tmp/perl-corpus-clippy.log \
+              | head -n 10 \
+              | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
+          fi
+          exit "$status"
 
       - name: Check patch hygiene
         shell: bash
