@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 from argparse import Namespace
 from pathlib import Path
 from typing import Any
@@ -195,6 +194,22 @@ def _settings(perl_settings: dict[str, Any], perllsp: Path) -> dict[str, Any]:
     }
 
 
+def _write_bound_observations(
+    template_path: Path,
+    output: Path,
+    prepared_manifest_sha256: str,
+) -> None:
+    observations = load_json(template_path)
+    observations["prepared_manifest_sha256"] = prepared_manifest_sha256
+    language_server_log = observations.get("language_server_log")
+    if not isinstance(language_server_log, dict):
+        raise HostReceiptError(
+            "exact-source observation template lacks language_server_log binding"
+        )
+    language_server_log["prepared_manifest_sha256"] = prepared_manifest_sha256
+    write_json(output, observations)
+
+
 def prepare(args: Namespace, repo_root: Path) -> int:
     run_dir = _empty_run_dir(args.run_dir)
     zed_cli = canonical_file(args.zed_cli, "Zed CLI")
@@ -251,12 +266,6 @@ def prepare(args: Namespace, repo_root: Path) -> int:
     artifacts.mkdir()
     settings_path = config / "settings.json"
     write_json(settings_path, _settings(perl_settings, perllsp))
-
-    observations = (
-        repo_root
-        / ".ci/fixtures/zed-perl-upstream/receipts/exact-source-observations-template.json"
-    )
-    shutil.copyfile(observations, run_dir / "observations.json")
 
     subject = {
         "schema_version": "zed_exact_source_run.v1",
@@ -323,8 +332,20 @@ def prepare(args: Namespace, repo_root: Path) -> int:
             ],
         },
     }
-    write_json(run_dir / "manifest.json", subject)
-    instructions = f"""# Exact-source Zed session\n\n1. Run the launch command emitted by this driver.\n2. In Zed invoke `zed::InstallDevExtension`.\n3. Select `{extension_dir}`.\n4. Complete every directly observed cell in `observations.json`.\n5. Export or locate the language-server log and set `language_server_log`.\n6. Close the Zed window normally.\n7. Finalize and validate the receipt.\n\nDo not copy the extension into Zed's internal extension directories.\n"""
+    prepared_manifest = run_dir / "manifest.json"
+    write_json(prepared_manifest, subject)
+    prepared_manifest_sha256 = sha256_file(prepared_manifest)
+    observations_template = (
+        repo_root
+        / ".ci/fixtures/zed-perl-upstream/receipts/exact-source-observations-template.json"
+    )
+    _write_bound_observations(
+        observations_template,
+        run_dir / "observations.json",
+        prepared_manifest_sha256,
+    )
+
+    instructions = f"""# Exact-source Zed session\n\n1. Run the launch command emitted by this driver.\n2. In Zed invoke `zed::InstallDevExtension`.\n3. Select `{extension_dir}`.\n4. Complete every directly observed cell in `observations.json`.\n5. Set `language_server_log.path` to the exact log and `language_server_log.sha256` to its SHA-256; do not change its prepared-manifest binding.\n6. Close the Zed window normally.\n7. Finalize and validate the receipt.\n\nDo not copy the extension into Zed's internal extension directories.\n"""
     (run_dir / "INSTRUCTIONS.md").write_text(instructions, encoding="utf-8")
     print(f"Prepared exact-source Zed run: {run_dir}")
     print(f"Observations: {run_dir / 'observations.json'}")
