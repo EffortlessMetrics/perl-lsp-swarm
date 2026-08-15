@@ -158,8 +158,42 @@ fn initialize(client: &mut RealProcessClient, capabilities: Value) -> Result<Val
     )
 }
 
-fn shutdown_and_exit(client: &mut RealProcessClient) -> Result<()> {
+/// Answer the server requests the profile actually negotiated.
+///
+/// A declaration such as `workspace.configuration` or
+/// `workspace.didChangeWatchedFiles.dynamicRegistration` obliges the client to
+/// answer the matching server request, so a profile receipt that never replies
+/// is not the client it claims to model. Each named method must arrive; any
+/// request the profile did not negotiate stays unanswered and still fails
+/// `assert_transport_clean` below.
+fn answer_negotiated_server_requests(
+    client: &mut RealProcessClient,
+    negotiated_requests: &[&str],
+) -> Result<()> {
+    for method in negotiated_requests {
+        let request = client.receive_server_request(method, timeout())?;
+        let id = request
+            .get("id")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("{method} request omitted id: {request}"))?;
+        let result = if *method == "workspace/configuration" {
+            let items = request
+                .pointer("/params/items")
+                .and_then(Value::as_array)
+                .ok_or_else(|| anyhow::anyhow!("{method} request omitted items: {request}"))?
+                .len();
+            Value::Array(vec![Value::Null; items])
+        } else {
+            Value::Null
+        };
+        client.respond(id, result)?;
+    }
+    Ok(())
+}
+
+fn shutdown_and_exit(client: &mut RealProcessClient, negotiated_requests: &[&str]) -> Result<()> {
     client.notify("initialized", json!({}))?;
+    answer_negotiated_server_requests(client, negotiated_requests)?;
     let shutdown = client.request(json!("sublime-shutdown"), "shutdown", Value::Null, timeout())?;
     ensure!(shutdown.get("result").is_some_and(Value::is_null), "shutdown failed: {shutdown}");
     client.notify("exit", Value::Null)?;
@@ -204,7 +238,10 @@ fn sublime_lsp_2_13_receives_only_declared_file_operations() -> Result<()> {
         capabilities.pointer("/workspace/textDocumentContent/schemes/0") == Some(&json!("perldoc"))
     );
 
-    shutdown_and_exit(&mut client)
+    shutdown_and_exit(
+        &mut client,
+        &["workspace/configuration", "client/registerCapability", "window/workDoneProgress/create"],
+    )
 }
 
 #[test]
@@ -234,5 +271,8 @@ fn malformed_file_operation_declarations_do_not_create_consent() -> Result<()> {
     );
     ensure!(capabilities.get("inlineCompletionProvider").is_none());
 
-    shutdown_and_exit(&mut client)
+    // This profile declares neither workspace configuration, dynamic
+    // watched-file registration, nor work-done progress, so the server must not
+    // issue any request for it to answer.
+    shutdown_and_exit(&mut client, &[])
 }
