@@ -57,12 +57,15 @@ pub fn run_with_paths(input: PathBuf, repo_root: PathBuf, out: PathBuf) -> Resul
 
     match receipt.verdict {
         Verdict::Clean => {
-            println!(
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            writeln!(
+                handle,
                 "publication-drift: clean comparison {} -> {} at version {}",
                 receipt.swarm.sha,
                 receipt.public.sha,
                 receipt.comparison_version.as_deref().unwrap_or("not-proven")
-            );
+            )?;
             Ok(())
         }
         Verdict::Drift => bail!("publication-drift: product drift detected; see {}", out.display()),
