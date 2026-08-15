@@ -5333,6 +5333,12 @@ error: aborting due to previous error
         assert!(is_cargo_test_command("cargo test -p perl-parser --lib"), "with flags");
         assert!(is_cargo_test_command("cargo test --workspace"), "workspace flag");
         assert!(is_cargo_test_command("/usr/local/bin/cargo test"), "absolute path cargo");
+        assert!(
+            is_cargo_test_command(
+                "cargo build -p perllsp --locked && cargo test --locked --tests -p perl-lsp-rs"
+            ),
+            "prebuild chain keeps test recognition"
+        );
     }
 
     #[test]
@@ -5343,6 +5349,10 @@ error: aborting due to previous error
         assert!(!is_cargo_test_command("cargo xtask fmt --check"), "xtask fmt is not test");
         assert!(!is_cargo_test_command("true"), "bare true is not test");
         assert!(!is_cargo_test_command(""), "empty string is not test");
+        assert!(
+            !is_cargo_test_command("cargo build -p perllsp --locked"),
+            "prebuild alone is still not a test command"
+        );
     }
 
     #[test]
