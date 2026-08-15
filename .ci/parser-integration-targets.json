@@ -126,6 +126,21 @@
       "boundedness": "focused"
     },
     {
+      "id": "parser.incremental.authority",
+      "package": "perl-parser",
+      "target": "incremental_authority_contract",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6701",
+      "reason": "Prove the single incremental authority ledger contract so parser incremental ownership cannot silently fork.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
       "id": "parser.incremental.parse_output",
       "package": "perl-parser",
       "target": "incremental_parse_output",
