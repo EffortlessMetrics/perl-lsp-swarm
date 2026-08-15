@@ -903,7 +903,18 @@ gates:
     # Single-threaded for determinism. Keep the wire-shape regression focused:
     # this target contains many API contracts, but only textDocumentSync owns
     # the reviewed recurrence claim in #6776.
+    #
+    # `semantic_definition` spawns the real `perllsp` binary over stdio. That
+    # binary belongs to the `perllsp` package, so no `-p perl-lsp-rs` test
+    # invocation builds it and no other gate in this shard produces it either
+    # (`unit_lsp_full` builds `-p perllsp --lib`, not the bin). Build it
+    # explicitly first so the server exists before any request deadline
+    # starts; otherwise the harness falls back to compiling it inside the
+    # test, which cannot finish within the initialize budget and surfaces as
+    # a `test harness timeout` blamed on go-to-definition (#9678).
     command: >-
+      cargo build -p perllsp --locked
+      &&
       env -u RUSTC_WRAPPER
       RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
       cargo test -p perl-lsp-rs --test semantic_definition --locked

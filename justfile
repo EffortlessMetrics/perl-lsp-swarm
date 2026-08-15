@@ -1194,8 +1194,13 @@ ci-test-lsp:
     @echo "✅ LSP tests passed"
 
 # LSP semantic definition tests (semantic-aware go-to-definition)
+# The stdio harness spawns the real `perllsp` binary, which lives in its own
+# package and is therefore never built by `cargo test -p perl-lsp-rs`. Build it
+# up front rather than letting the harness compile it inside a request
+# deadline (#9678).
 ci-lsp-def:
     @echo "🔎 Running LSP semantic definition tests..."
+    @cargo build -p perllsp --locked
     @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
         cargo test -p perl-lsp-rs --test semantic_definition -- --test-threads=1
     @echo "✅ LSP semantic definition tests passed"
@@ -1203,6 +1208,7 @@ ci-lsp-def:
 # LSP process-level smoke receipt (initialize/open/completion/hover/definition/shutdown)
 ci-lsp-smoke-e2e:
     @echo "💨 Running LSP stdio smoke E2E test..."
+    @cargo build -p perllsp --locked
     @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
         cargo test -p perl-lsp-rs --test lsp_smoke_e2e -- --test-threads=1
     @echo "✅ LSP smoke E2E passed"
