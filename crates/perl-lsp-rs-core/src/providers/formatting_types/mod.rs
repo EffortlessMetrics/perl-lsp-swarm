@@ -95,7 +95,7 @@ pub struct FormattingOptions {
 }
 
 /// Formatted document result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FormattedDocument {
     /// The formatted text.
     pub text: String,

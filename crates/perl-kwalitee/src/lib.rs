@@ -1,25 +1,28 @@
 //! # perl-kwalitee
 //!
-//! A **Perl distribution Kwalitee evaluator** for the perl-lsp native stack.
+//! Historical compatibility crate for the repository's first
+//! `perl_kwalitee.v1` receipt.
 //!
-//! "Kwalitee" (borrowed from CPAN's `Module::CPANTS`) is *measurable
-//! distribution quality* — objective, checkable indicators about how a
-//! distribution is shipped — as distinct from subjective code quality. This
-//! crate owns the indicator model, scoring, profiles, JSON receipt schema, and
-//! Markdown rendering. The `cargo xtask perl-kwalitee` command wires repository
-//! paths, existing xtask gate results, and CI ergonomics into it.
+//! The existing implementation predates the separation between:
 //!
-//! ## Design
+//! - CPAN distribution Kwalitee;
+//! - native-product posture;
+//! - engineering evidence;
+//! - release integrity and governance;
+//! - installed acceptance.
 //!
-//! The crate is **pure**: every indicator is evaluated either from the
-//! repository filesystem (manifests, first-mile surfaces) or by reading a JSON
-//! receipt another tool produced. It never spawns a subprocess or touches the
-//! network. Heavier gates that genuinely need to run (release archive
-//! validation, the runCritic parity test, `update-status --check`) are executed
-//! by the caller and fed in as [`ExternalResult`]s. This keeps evaluation
-//! deterministic and unit-testable.
+//! Its current indicator catalog and weighted verdict are therefore frozen as
+//! **mixed repository/product release-readiness history**. New indicators must
+//! not be added here. [`legacy_migration_ledger`] records the exact destination
+//! of every historical row, and [`read_legacy_receipt`] is the fail-closed
+//! compatibility reader.
 //!
-//! ## Example
+//! The implementation remains available temporarily so existing automation can
+//! migrate without evidence loss. The canonical code home moves to
+//! `perl-release-readiness`; the reclaimed `perl-kwalitee` name is reserved for
+//! the native Rust CPANTS-compatible distribution analyser.
+//!
+//! ## Existing evaluation API
 //!
 //! ```no_run
 //! use perl_kwalitee::{evaluate, KwaliteeOptions, KwaliteeProfile};
@@ -32,14 +35,13 @@
 
 #![warn(missing_docs)]
 // Production code stays under the workspace `unwrap_used`/`expect_used` deny;
-// test code may use `expect()`/`unwrap()` for brevity. Matches the precedent in
-// perl-incremental-parsing and perl-lsp-perltidy, and keeps `cargo clippy
-// --all-targets` green without threading `Result`/`must` through every fixture.
+// test code may use `expect()`/`unwrap()` for concise fixture construction.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod evaluator;
 mod evidence;
 mod indicator;
+mod legacy;
 mod profile;
 mod receipt;
 mod score;
@@ -47,6 +49,13 @@ mod score;
 pub use evaluator::{EvidencePaths, ExternalResult, KwaliteeOptions, evaluate, is_known_indicator};
 pub use indicator::{
     EvidenceRef, IndicatorExplanation, IndicatorStatus, KwaliteeIndicator, explain, indicator_ids,
+};
+pub use legacy::{
+    LEGACY_DOMAIN, LEGACY_MIGRATION_SCHEMA_VERSION, LEGACY_REPLACEMENT, LEGACY_STATUS,
+    LegacyCompatibilityError, LegacyDestinationRail, LegacyIndicatorMigration,
+    LegacyIndicatorRecord, LegacyMigrationAction, LegacyMigrationLedger, legacy_indicator_records,
+    legacy_migration_ledger, read_legacy_receipt, render_legacy_migration_markdown,
+    validate_legacy_migration_ledger,
 };
 pub use profile::KwaliteeProfile;
 pub use receipt::{KwaliteeReceipt, KwaliteeVerdict, RECEIPT_KIND, SCHEMA_VERSION};
@@ -66,5 +75,6 @@ mod tests {
         assert!(!indicator_ids().is_empty());
         assert!(explain(indicator_ids()[0]).is_some());
         assert!(is_known_indicator("license.declared"));
+        assert!(legacy_migration_ledger().is_ok());
     }
 }

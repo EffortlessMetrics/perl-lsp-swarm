@@ -142,10 +142,7 @@ fn receipt_value(raw: &str, authority: AuthoritySource) -> Result<Value> {
 
 fn fixture_authority() -> Result<AuthoritySource> {
     let document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
-    Ok(AuthoritySource::Loaded(LoadedManifest {
-        document,
-        actual_sha256: sha256_hex(AUTHORITY),
-    }))
+    Ok(AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: sha256_hex(AUTHORITY) }))
 }
 
 fn validate_schema_document(value: &Value, schema: &Value, context: &str) -> Result<()> {
@@ -154,9 +151,8 @@ fn validate_schema_document(value: &Value, schema: &Value, context: &str) -> Res
 }
 
 fn validate_schema_keywords(schema: &Value, context: &str) -> Result<()> {
-    let object = schema
-        .as_object()
-        .ok_or_else(|| eyre!("{context}: schema node must be an object"))?;
+    let object =
+        schema.as_object().ok_or_else(|| eyre!("{context}: schema node must be an object"))?;
     for keyword in object.keys() {
         if !SUPPORTED_SCHEMA_KEYWORDS.contains(&keyword.as_str())
             && !SCHEMA_ANNOTATIONS.contains(&keyword.as_str())

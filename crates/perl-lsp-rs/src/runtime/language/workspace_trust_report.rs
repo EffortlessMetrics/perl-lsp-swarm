@@ -392,6 +392,8 @@ fn index_report(server: &LspServer) -> Value {
             coordinator.index().file_count(),
             available_symbols,
         ),
+        // Forward-compatible fallback for future variants (#2898)
+        _ => ("none", "unknown", "unknown index state", 0, 0),
     };
 
     json!({
