@@ -14,6 +14,11 @@ keywords = ["perl", "corpus", "proptest", "testing", "parser"]
 categories = ["development-tools", "development-tools::testing"]
 include = ["src/**", "concepts/**", "README.md", "LICENSE*", "Cargo.toml"]
 
+[package.metadata.perl-corpus]
+repository-assets = "external-root"
+root-environment = "PERL_CORPUS_ROOT"
+workspace-discovery = "developer-convenience-only"
+
 [lib]
 name = "perl_corpus"
 path = "src/lib.rs"
