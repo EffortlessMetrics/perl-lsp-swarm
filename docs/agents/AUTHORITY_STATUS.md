@@ -65,18 +65,14 @@ It does **not** require:
 
 ## Transitional current-main defects
 
-Several paths remain active-looking on `main` while replacement PRs are in review. They
-are classified `transitional`, not silently treated as current:
+A path that remains active-looking on `main` while its replacement PR is in review is
+classified `transitional`, not silently treated as current:
 
 | Path | Replacement |
 | --- | --- |
-| `docs/reference/MAINTAINER_AGENT_DOCTRINE.md` | #4555 / PR #6868 — current ruling, review, integration, and cleanup contract |
-| `docs/reference/WORKTREE_PROTOCOL.md` | #4555 / PR #6868 — one mutation owner and concrete-purpose branch rewrite |
-| `CONTRIBUTING.md` | #4555 / PR #6868 — provider-native review and retained contributor routes |
-| `.github/copilot-instructions.md` | #4555 / PR #6868 — current route map and crate entrypoints |
 | `scripts/ci/check-pr-review-convergence-core` | public wrapper plus #5778 — compatibility collector containment |
 
-Three rows left this table because their replacements landed on `main` while this
+Seven rows left this table because their replacements landed on `main` while this
 candidate was open. They are reclassified rather than kept pending:
 
 | Path | Landed | New status |
@@ -84,13 +80,18 @@ candidate was open. They are reclassified rather than kept pending:
 | `docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md` | #4560 / PR #6863 (`e9a698285f`) | `current` — the amended specification retired the mandatory-rebase contract itself and now declares that it *is* the current durable disposition contract |
 | `scripts/ci/check-pr-claim-currentness` | #5778 / PR #6871 (`c5c43757ed`) | `historical` — fixture-mode reader with no live review-convergence authority |
 | `scripts/reviews/claim-digest` | #5778 / PR #6871 (`c5c43757ed`) | `historical` — the CLI prints a RETIRED notice and exits |
+| `docs/reference/MAINTAINER_AGENT_DOCTRINE.md` | #4555 / PR #6868 (`709b4ca939`) | `current` — declares itself the current maintainer authority over ruling, review, integration, and cleanup |
+| `docs/reference/WORKTREE_PROTOCOL.md` | #4555 / PR #6868 (`709b4ca939`) | `current` — declares itself the current operational reference for one mutation owner and concrete-purpose rewrite |
+| `CONTRIBUTING.md` | #4555 / PR #6868 (`709b4ca939`) | `current` — the model/label review conveyor is gone and the retained contributor routes match current source |
+| `.github/copilot-instructions.md` | #4555 / PR #6868 (`709b4ca939`) | `current` — reduced to a route map that forbids reconstructing a fixed conveyor or lifecycle-label state machine |
 
-Leaving `PLSP-SPEC-0006` classified `transitional` would have demoted a
-still-authoritative document — the exact inversion this index exists to prevent. The
-validator now reads each transitional document and rejects a row the document's own
-content contradicts.
+Leaving `PLSP-SPEC-0006` or the four #6868 entrypoints classified `transitional` would
+have demoted a still-authoritative document — the exact inversion this index exists to
+prevent. The validator reads each transitional document and rejects a row the document's
+own content contradicts, which is how the `MAINTAINER_AGENT_DOCTRINE.md` and
+`WORKTREE_PROTOCOL.md` rows were caught after #6868 landed.
 
-Until those candidates land, use the current issue rulings and provider-native method.
+Until the remaining candidate lands, use the current issue rulings and provider-native method.
 Do not “fix” the mismatch by repeatedly rebasing the candidates; unrelated `main`
 movement is not an authority change.
 

@@ -27,6 +27,11 @@ REQUIRED_CURRENT = {
     "docs/how-to/AGENT_CONTRIBUTING.md",
     # Amended by PR #6863 (e9a698285f) and current on `main` since.
     "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
+    # Rewritten by PR #6868 (709b4ca939) and current on `main` since.
+    "docs/reference/MAINTAINER_AGENT_DOCTRINE.md",
+    "docs/reference/WORKTREE_PROTOCOL.md",
+    "CONTRIBUTING.md",
+    ".github/copilot-instructions.md",
 }
 REQUIRED_LEGACY = {
     "docs/reference/ORCHESTRATION_DOCTRINE.md",
@@ -40,10 +45,6 @@ REQUIRED_LEGACY = {
     ".spec/3988-merge-readiness/spec.md",
 }
 REQUIRED_TRANSITIONAL = {
-    "docs/reference/MAINTAINER_AGENT_DOCTRINE.md",
-    "docs/reference/WORKTREE_PROTOCOL.md",
-    "CONTRIBUTING.md",
-    ".github/copilot-instructions.md",
     "scripts/ci/check-pr-review-convergence-core",
 }
 
@@ -311,7 +312,7 @@ class AgentAuthorityStatusTests(unittest.TestCase):
         document["documents"] = [
             row
             for row in document["documents"]
-            if row["path"] != "docs/reference/MAINTAINER_AGENT_DOCTRINE.md"
+            if row["path"] != "scripts/ci/check-pr-review-convergence-core"
         ]
 
         errors = validate_registry(document)
@@ -365,7 +366,7 @@ class AgentAuthorityStatusTests(unittest.TestCase):
                 )
 
     def test_self_claim_check_does_not_fire_on_genuine_transitional_rows(self) -> None:
-        """Negative control: the five rows that are still correctly transitional.
+        """Negative control: the rows that are still correctly transitional.
 
         Without this, the check above could be satisfied by a rule broad enough
         to condemn every transitional row, which would make the status useless.
