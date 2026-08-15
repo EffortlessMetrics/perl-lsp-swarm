@@ -1,9 +1,9 @@
 project: product
-component: Editor integrations
+component: Developer experience
 kind: Added
-body: "Added an operator-assisted exact-source Zed host driver that isolates user data, binds exact Zed, extension, perllsp, workspace, and settings subjects, captures process and log evidence, redacts artifacts, and finalizes only through the shared Rust receipt validator."
+body: "Added an operator-assisted exact-source Zed host driver that isolates user data, binds exact Zed, extension, perllsp, workspace, settings, and prepared-run evidence, rejects stale or mutable artifacts, redacts retained logs, and requires complete schema plus semantic receipt validation."
 time: 2026-08-13T23:00:00Z
 custom:
-  PR: "TBD"
+  PR: 8369
   Slug: zed-exact-source-host-driver
   Breaking: "no"
