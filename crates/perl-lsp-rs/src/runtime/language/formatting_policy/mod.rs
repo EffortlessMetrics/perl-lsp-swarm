@@ -22,7 +22,7 @@ use perl_lsp_rs_core::config::FormatterMode;
 use perl_lsp_rs_core::features::ids::{
     LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGE_FORMATTING, LSP_RANGES_FORMATTING,
 };
-use perl_lsp_rs_core::tooling::perltidy::native::FormatDisposition;
+use perl_lsp_rs_core::tooling::perltidy::native::{FormatDisposition, FormatEngine};
 use serde::Serialize;
 
 const PROVIDER: &str = "formatting";
@@ -168,6 +168,25 @@ fn actual_engine_for_mode(mode: FormatterMode) -> &'static str {
     }
 }
 
+fn actual_engine_for_decision(decision: &FormattingDecision) -> &'static str {
+    match decision.outcome.identity.actual_engine {
+        FormatEngine::Native => "native",
+        FormatEngine::ExternalLegacy => "external_legacy",
+        FormatEngine::Disabled => "disabled",
+        FormatEngine::Unknown => "unknown",
+    }
+}
+
+fn actual_engine_for_decisions(decisions: &[FormattingDecision]) -> Option<&'static str> {
+    let mut iter = decisions.iter();
+    let first = actual_engine_for_decision(iter.next()?);
+    if iter.all(|decision| actual_engine_for_decision(decision) == first) {
+        Some(first)
+    } else {
+        Some("unknown")
+    }
+}
+
 fn cancellation_token(
     id: Option<&JsonRpcId>,
     surface: Surface,
@@ -294,6 +313,14 @@ impl LspServer {
     }
 
     fn ensure_current(&self, snapshot: &Snapshot) -> Result<(), JsonRpcError> {
+        self.ensure_current_with_engine(snapshot, None)
+    }
+
+    fn ensure_current_with_engine(
+        &self,
+        snapshot: &Snapshot,
+        actual_engine: Option<&str>,
+    ) -> Result<(), JsonRpcError> {
         let current = {
             let documents = self.documents_guard();
             self.get_document(&documents, &snapshot.uri).is_some_and(|document| {
@@ -302,17 +329,19 @@ impl LspServer {
             })
         };
         if !current {
-            return Err(self.stale_error(
+            return Err(self.stale_error_with_engine(
                 snapshot,
                 "stale_source",
                 "Document changed while formatting was running; no edits were returned.",
+                actual_engine,
             ));
         }
         if self.effective_formatting_config()?.fingerprint != snapshot.config.fingerprint {
-            return Err(self.stale_error(
+            return Err(self.stale_error_with_engine(
                 snapshot,
                 "stale_configuration",
                 "Formatting configuration changed while the request was running; no edits were returned.",
+                actual_engine,
             ));
         }
         Ok(())

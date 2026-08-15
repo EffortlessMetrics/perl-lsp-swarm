@@ -374,13 +374,86 @@ fn stale_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn stale_unknown_range_decision_preserves_unknown_receipt_engine()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Range);
+    server.config.lock().formatting_engine = FormatterMode::ExternalLegacy;
+    let uri = "file:///stale-unknown-range-formatting.pl";
+    server.test_apply_did_open(uri, "my$x=1;\nmy$y=2;\n", 1)?;
+    let params = json!({
+        "textDocument": { "uri": uri, "version": 1 },
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 0, "character": 7 }
+        },
+        "options": { "tabSize": 4, "insertSpaces": true },
+    });
+    let snapshot = server.admit(Surface::Range, &params)?;
+    let formatter =
+        CodeFormatter::with_config_and_mode(snapshot.config.perltidy.clone(), snapshot.config.mode);
+    let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
+    let decision = formatter.format_range_decision(
+        &snapshot.text,
+        &parse_range(params.get("range").ok_or("missing range")?, "range")?,
+        &snapshot.options,
+        &context,
+    )?;
+    assert_eq!(decision.outcome.identity.actual_engine, FormatEngine::Unknown);
+    let actual_engine = actual_engine_for_decision(&decision);
+
+    {
+        let mut documents = server.documents.lock();
+        let document = server.get_document_mut(&mut documents, uri).ok_or("missing document")?;
+        document.update_content("my $x = 2;\nmy$y=2;\n", 2);
+    }
+    let error = server
+        .ensure_current_with_engine(&snapshot, Some(actual_engine))
+        .err()
+        .ok_or("expected stale-source error")?;
+    assert_eq!(error.code, CONTENT_MODIFIED);
+    let trace = receipt(&server)?;
+    assert_eq!(trace["reason"], "stale_source");
+    assert_eq!(trace["actual_engine"], "unknown");
+
+    let fresh_params = json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 0, "character": 7 }
+        },
+        "options": { "tabSize": 4, "insertSpaces": true },
+    });
+    let fresh = server.admit(Surface::Range, &fresh_params)?;
+    let fresh_context = FormatContext::new(Some(fresh.uri.clone()), Some(fresh.generation));
+    let fresh_decision = formatter.format_range_decision(
+        &fresh.text,
+        &parse_range(fresh_params.get("range").ok_or("missing fresh range")?, "range")?,
+        &fresh.options,
+        &fresh_context,
+    )?;
+    assert_eq!(fresh_decision.outcome.identity.actual_engine, FormatEngine::Unknown);
+    server.config.lock().perltidy_maximum_line_length = Some(96);
+    let error = server
+        .ensure_current_with_engine(&fresh, Some(actual_engine_for_decision(&fresh_decision)))
+        .err()
+        .ok_or("expected stale-configuration error")?;
+    assert_eq!(error.code, CONTENT_MODIFIED);
+    let trace = receipt(&server)?;
+    assert_eq!(trace["reason"], "stale_configuration");
+    assert_eq!(trace["actual_engine"], "unknown");
+
+    Ok(())
+}
+
+#[test]
 fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
     initialize(&server)?;
     let document_uri = "file:///live-formatting.pl";
     let on_type_uri = "file:///live-on-type.pl";
-    server.test_apply_did_open(document_uri, "my$x=1;\n", 1)?;
+    server.test_apply_did_open(document_uri, "my$x=1;\nmy$y=2;\n", 1)?;
     server.test_apply_did_open(on_type_uri, "if ($ok) {\n\n", 1)?;
 
     let cases = [
@@ -406,10 +479,16 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
             "textDocument/rangesFormatting",
             json!({
                 "textDocument": { "uri": document_uri, "version": 1 },
-                "ranges": [{
-                    "start": { "line": 0, "character": 0 },
-                    "end": { "line": 0, "character": 7 }
-                }],
+                "ranges": [
+                    {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    {
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 1, "character": 7 }
+                    }
+                ],
                 "options": { "tabSize": 4, "insertSpaces": true }
             }),
         ),
@@ -443,6 +522,35 @@ fn live_dispatch_routes_all_four_surfaces_through_one_receipt_policy()
             trace["config_fingerprint"].is_string(),
             "{method} receipt must carry a config_fingerprint string"
         );
+        if method == "textDocument/rangesFormatting" {
+            let edits = response
+                .result
+                .as_ref()
+                .and_then(Value::as_array)
+                .ok_or("rangesFormatting must return an edit array")?;
+            assert_eq!(edits.len(), 2);
+            assert_eq!(
+                edits[0],
+                json!({
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    "newText": "my $x = 1;"
+                })
+            );
+            assert_eq!(
+                edits[1],
+                json!({
+                    "range": {
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 1, "character": 7 }
+                    },
+                    "newText": "my $y = 2;"
+                })
+            );
+            assert_eq!(trace["result_count"], 2);
+        }
     }
 
     Ok(())

@@ -11,11 +11,21 @@ impl LspServer {
         reason: &'static str,
         message: &'static str,
     ) -> JsonRpcError {
+        self.stale_error_with_engine(snapshot, reason, message, None)
+    }
+
+    pub(super) fn stale_error_with_engine(
+        &self,
+        snapshot: &Snapshot,
+        reason: &'static str,
+        message: &'static str,
+        actual_engine: Option<&str>,
+    ) -> JsonRpcError {
         let receipt = self.record_formatting_receipt(
             snapshot,
             "blocked",
             json!(reason),
-            "not_started",
+            actual_engine.unwrap_or("not_started"),
             "no_edit",
             0,
             None,
@@ -150,11 +160,7 @@ impl LspServer {
         let disposition = decision.outcome.disposition;
         let edit_count = decision.document.edits.len();
         let outcome = sanitized_outcome(&decision);
-        let actual_engine = outcome
-            .pointer("/identity/actual_engine")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let actual_engine = super::actual_engine_for_decision(&decision);
         let reason = outcome.get("reason").cloned().unwrap_or_else(|| json!("unknown"));
         let (provider_decision, fallback) = match disposition {
             FormatDisposition::Applied | FormatDisposition::NoChange => ("acted", "none"),
@@ -166,7 +172,7 @@ impl LspServer {
             snapshot,
             provider_decision,
             reason,
-            &actual_engine,
+            actual_engine,
             fallback,
             edit_count,
             Some(outcome),

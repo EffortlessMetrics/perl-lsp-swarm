@@ -7,9 +7,10 @@ use serde::Serialize;
 use super::super::{
     CodeFormatter, FormatContext, FormatDisposition, FormatTextEdit, FormattingDecision,
     JsonRpcError, JsonRpcId, LspServer, RequestCleanupGuard, Snapshot, Surface, Value,
-    WirePosition, WireRange, actual_engine_for_mode, cancellation_token, digest, invalid_params,
-    json, parse_range, sanitized_outcome,
+    WirePosition, WireRange, actual_engine_for_decisions, actual_engine_for_mode,
+    cancellation_token, digest, invalid_params, json, parse_range, sanitized_outcome,
 };
+use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct PositionRecord {
@@ -548,13 +549,17 @@ pub(super) fn handle(
         CodeFormatter::with_config_and_mode(snapshot.config.perltidy.clone(), snapshot.config.mode);
     let context = FormatContext::new(Some(snapshot.uri.clone()), Some(snapshot.generation));
     let mut decisions = Vec::with_capacity(plan.normalized_ranges.len());
+    let mut formatter_started = false;
     for (normalized_index, admitted) in plan.normalized_ranges.iter().enumerate() {
         server.ensure_not_cancelled(
             Surface::Ranges,
             token.as_ref(),
             Some(&snapshot),
-            Some(actual_engine_for_mode(snapshot.config.mode)),
+            actual_engine_for_decisions(&decisions).or_else(|| {
+                formatter_started.then_some(actual_engine_for_mode(snapshot.config.mode))
+            }),
         )?;
+        formatter_started = true;
         let decision = match formatter.format_range_decision(
             &snapshot.text,
             &admitted.wire(),
@@ -567,7 +572,9 @@ pub(super) fn handle(
                     Surface::Ranges,
                     token.as_ref(),
                     Some(&snapshot),
-                    Some(actual_engine_for_mode(snapshot.config.mode)),
+                    actual_engine_for_decisions(&decisions).or_else(|| {
+                        formatter_started.then_some(actual_engine_for_mode(snapshot.config.mode))
+                    }),
                 )?;
                 let original_index = plan
                     .range_provenance
@@ -585,13 +592,9 @@ pub(super) fn handle(
         decisions.push(decision);
     }
 
-    server.ensure_not_cancelled(
-        Surface::Ranges,
-        token.as_ref(),
-        Some(&snapshot),
-        Some(actual_engine_for_mode(snapshot.config.mode)),
-    )?;
-    server.ensure_current(&snapshot)?;
+    let actual_engine = actual_engine_for_decisions(&decisions);
+    server.ensure_not_cancelled(Surface::Ranges, token.as_ref(), Some(&snapshot), actual_engine)?;
+    server.ensure_current_with_engine(&snapshot, actual_engine)?;
     let outcomes = plan_outcomes(&plan, &decisions);
 
     if let Some(blocked) = blocked_decision(&decisions) {
@@ -653,7 +656,7 @@ pub(super) fn handle(
                 &snapshot,
                 error,
                 Some(plan_evidence(&plan, outcomes.clone(), None)),
-                actual_engine_for_mode(snapshot.config.mode),
+                actual_engine.unwrap_or("not_started"),
             )
         })?;
     let (edits, final_edit_digest) = compose_edits(
@@ -669,22 +672,17 @@ pub(super) fn handle(
             &snapshot,
             error,
             Some(plan_evidence(&plan, outcomes.clone(), None)),
-            actual_engine_for_mode(snapshot.config.mode),
+            actual_engine.unwrap_or("not_started"),
         )
     })?;
 
-    server.ensure_not_cancelled(
-        Surface::Ranges,
-        token.as_ref(),
-        Some(&snapshot),
-        Some(actual_engine_for_mode(snapshot.config.mode)),
-    )?;
-    server.ensure_current(&snapshot)?;
+    server.ensure_not_cancelled(Surface::Ranges, token.as_ref(), Some(&snapshot), actual_engine)?;
+    server.ensure_current_with_engine(&snapshot, actual_engine)?;
     server.record_formatting_receipt(
         &snapshot,
         "acted",
         if edits.is_empty() { json!("already_formatted") } else { json!("applied") },
-        actual_engine_for_mode(snapshot.config.mode),
+        actual_engine.unwrap_or("not_started"),
         "none",
         edits.len(),
         Some(plan_evidence(&plan, outcomes, Some(final_edit_digest))),
@@ -701,6 +699,128 @@ mod tests {
             "start": { "line": sl, "character": sc },
             "end": { "line": el, "character": ec }
         })
+    }
+
+    fn edit(sl: u32, sc: u32, el: u32, ec: u32, new_text: &str) -> FormatTextEdit {
+        FormatTextEdit {
+            range: FormatRange::new(FormatPosition::new(sl, sc), FormatPosition::new(el, ec)),
+            new_text: new_text.to_string(),
+        }
+    }
+
+    fn compose_plan(source: &str, ranges: &[Value]) -> RangePlan {
+        build_plan(source, ranges).expect("test range plan must be valid")
+    }
+
+    #[test]
+    fn compose_edits_is_sorted_and_digest_bound_to_context()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "abc\ndef\n";
+        let plan = compose_plan(source, &[range(0, 0, 0, 3), range(1, 0, 1, 3)]);
+        let (edits, digest_one) = compose_edits(
+            source,
+            &plan,
+            vec![vec![edit(0, 0, 0, 3, "ABC")], vec![edit(1, 0, 1, 3, "DEF")]],
+            7,
+            "config-a",
+        )?;
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].new_text, "ABC");
+        assert_eq!(edits[1].new_text, "DEF");
+
+        let (_, digest_generation) = compose_edits(
+            source,
+            &plan,
+            vec![vec![edit(0, 0, 0, 3, "ABC")], vec![edit(1, 0, 1, 3, "DEF")]],
+            8,
+            "config-a",
+        )?;
+        let (_, digest_config) = compose_edits(
+            source,
+            &plan,
+            vec![vec![edit(0, 0, 0, 3, "ABC")], vec![edit(1, 0, 1, 3, "DEF")]],
+            7,
+            "config-b",
+        )?;
+        assert_ne!(digest_one, digest_generation);
+        assert_ne!(digest_one, digest_config);
+        Ok(())
+    }
+
+    #[test]
+    fn compose_edits_accepts_empty_point_and_rejects_escape()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "abcdef\n";
+        let plan = compose_plan(source, &[range(0, 3, 0, 3)]);
+        let (edits, _) =
+            compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 3, "X")]], 1, "config")?;
+        assert_eq!(edits.len(), 1);
+
+        let escaped = compose_edits(source, &plan, vec![vec![edit(0, 4, 0, 4, "X")]], 1, "config")
+            .err()
+            .ok_or("empty-point escape was accepted")?;
+        assert_eq!(escaped.reason, "edit_outside_range");
+
+        let left_escape =
+            compose_edits(source, &plan, vec![vec![edit(0, 2, 0, 3, "X")]], 1, "config")
+                .err()
+                .ok_or("empty-point span must reject lower-bound escape")?;
+        assert_eq!(left_escape.reason, "edit_outside_range");
+
+        let right_escape =
+            compose_edits(source, &plan, vec![vec![edit(0, 3, 0, 4, "X")]], 1, "config")
+                .err()
+                .ok_or("empty-point span must reject upper-bound escape")?;
+        assert_eq!(right_escape.reason, "edit_outside_range");
+        Ok(())
+    }
+
+    #[test]
+    fn compose_edits_sorts_reverse_order_adjacent_edits() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "abcdefgh\n";
+        let plan = compose_plan(source, &[range(0, 0, 0, 8)]);
+        let (edits, digest) = compose_edits(
+            source,
+            &plan,
+            vec![vec![edit(0, 4, 0, 8, "BBBB"), edit(0, 0, 0, 4, "AAAA")]],
+            7,
+            "config-fingerprint",
+        )?;
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].new_text, "AAAA");
+        assert_eq!(edits[1].new_text, "BBBB");
+        assert!(!digest.is_empty(), "composed edit digest must be non-empty");
+        Ok(())
+    }
+
+    #[test]
+    fn compose_edits_rejects_duplicate_and_overlapping_formatter_edits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "abcdef\n";
+        let plan = compose_plan(source, &[range(0, 0, 0, 6)]);
+        let duplicate = compose_edits(
+            source,
+            &plan,
+            vec![vec![edit(0, 0, 0, 2, "ab"), edit(0, 0, 0, 2, "ab")]],
+            1,
+            "config",
+        )
+        .err()
+        .ok_or("duplicate formatter edits were accepted")?;
+        assert_eq!(duplicate.reason, "duplicate_edit");
+
+        let overlap = compose_edits(
+            source,
+            &plan,
+            vec![vec![edit(0, 0, 0, 3, "abc"), edit(0, 2, 0, 4, "cd")]],
+            1,
+            "config",
+        )
+        .err()
+        .ok_or("overlapping formatter edits were accepted")?;
+        assert_eq!(overlap.reason, "edit_conflict");
+        Ok(())
     }
 
     #[test]
