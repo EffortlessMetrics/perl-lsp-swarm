@@ -524,30 +524,21 @@ mod tests {
     fn next_in_continue_block_flags_subsequent() {
         let diags =
             unreachable_diags("while ($ready) { work(); } continue { next; print $ready; }");
-        assert!(
-            has_pl406(&diags),
-            "code after 'next' in continue should be flagged: {diags:?}"
-        );
+        assert!(has_pl406(&diags), "code after 'next' in continue should be flagged: {diags:?}");
     }
 
     #[test]
     fn last_in_continue_block_flags_subsequent() {
         let diags =
             unreachable_diags("while ($ready) { work(); } continue { last; print $ready; }");
-        assert!(
-            has_pl406(&diags),
-            "code after 'last' in continue should be flagged: {diags:?}"
-        );
+        assert!(has_pl406(&diags), "code after 'last' in continue should be flagged: {diags:?}");
     }
 
     #[test]
     fn redo_in_continue_block_flags_subsequent() {
         let diags =
             unreachable_diags("while ($ready) { work(); } continue { redo; print $ready; }");
-        assert!(
-            has_pl406(&diags),
-            "code after 'redo' in continue should be flagged: {diags:?}"
-        );
+        assert!(has_pl406(&diags), "code after 'redo' in continue should be flagged: {diags:?}");
     }
 
     #[test]
@@ -563,9 +554,8 @@ mod tests {
 
     #[test]
     fn two_statements_after_next_in_continue_are_flagged() {
-        let diags = unreachable_diags(
-            "while ($ready) { work(); } continue { next; print 1; print 2; }",
-        );
+        let diags =
+            unreachable_diags("while ($ready) { work(); } continue { next; print 1; print 2; }");
         assert_eq!(
             count_pl406(&diags),
             2,
