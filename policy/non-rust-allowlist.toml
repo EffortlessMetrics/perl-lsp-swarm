@@ -253,8 +253,8 @@ created = "2026-08-15"
 review_after = "2026-09-15"
 
 [[allow]]
-id = "non-rust-product-7990-changelog-fragment"
-path = ".changes/unreleased/product-7990-Added-233000.yaml"
+id = "non-rust-product-7992-changelog-fragment"
+path = ".changes/unreleased/product-7992-Added-234500.yaml"
 kind = "release_metadata"
 language = "yaml"
 surface = "release"
@@ -1367,3 +1367,18 @@ covered_by = [
 ]
 created = "2026-08-13"
 review_after = "2026-11-13"
+
+[[allow]]
+id = "non-rust-product-7990-changelog-fragment"
+path = ".changes/unreleased/product-7990-Added-090500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
