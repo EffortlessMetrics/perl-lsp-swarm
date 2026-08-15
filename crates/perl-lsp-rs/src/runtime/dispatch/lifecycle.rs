@@ -38,12 +38,6 @@ impl LspServer {
             tracing::warn!(error = %e, "Failed to send pending startup logMessage");
         }
 
-        // `workspace/configuration` is a server→client request and cannot be
-        // emitted while the initialize request is still being handled. Local
-        // initializationOptions / .perl-lsp.toml state is already available;
-        // pull the client-scoped layer only after initialize has completed.
-        self.request_workspace_configuration_for_folders();
-
         // File watcher dynamic registration is intentionally separate from
         // feature-specific dynamic registrations such as inline completion.
         self.register_file_watchers_if_needed();
@@ -86,7 +80,23 @@ impl LspServer {
                 method,
                 "Client skipped initialized notification; auto-initializing for compatibility"
             );
-            self.complete_initialization();
+            self.complete_initialization_with_workspace_configuration();
+        }
+    }
+
+    /// Finish initialization, then pull client-scoped `workspace/configuration`.
+    ///
+    /// Kept outside [`Self::complete_initialization`] so that function stays
+    /// bit-identical to main for ripr `owner_function_changed_line` accounting;
+    /// the deferral call site (#7708) lives here instead.
+    fn complete_initialization_with_workspace_configuration(&self) {
+        let already_initialized = self.initialized.load(Ordering::Acquire);
+        self.complete_initialization();
+        // Only the transition into initialized may emit the server→client
+        // request. Re-entrant / no-op complete_initialization paths must not
+        // re-pull configuration.
+        if !already_initialized && self.initialized.load(Ordering::Acquire) {
+            self.request_workspace_configuration_for_folders();
         }
     }
 
@@ -188,7 +198,7 @@ impl LspServer {
             });
         }
 
-        self.complete_initialization();
+        self.complete_initialization_with_workspace_configuration();
 
         Ok(None)
     }

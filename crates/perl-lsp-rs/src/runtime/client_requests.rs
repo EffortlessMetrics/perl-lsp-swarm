@@ -191,8 +191,9 @@ mod tests {
         (server, output)
     }
 
+    /// ripr discriminator: `!self.initialized` rejects server→client requests (#7708).
     #[test]
-    fn server_request_before_initialized_is_rejected_without_output() -> TestResult {
+    fn ripr_seam_proof_send_request_before_initialized_would_block() -> TestResult {
         let (server, output) = uninitialized_server_with_output_capture();
 
         let error = match server.send_request("workspace/configuration", json!({"items": []})) {
@@ -205,7 +206,11 @@ mod tests {
             Err(error) => error,
         };
 
-        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::WouldBlock,
+            "exact WouldBlock on !initialized send_request boundary"
+        );
         assert!(
             error.to_string().contains("initialization completes"),
             "rejection should name the lifecycle boundary: {error}"
