@@ -24,9 +24,9 @@
 //! editor↔real-`Devel::ptkdb` sessions remain deferred; the seam is proven with
 //! a fake peer.
 
+use std::fmt;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -34,7 +34,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::capabilities::ControlMode;
-use super::external_peer::{DEFAULT_PEER_TIMEOUT, ExternalDebuggerPeerBackend};
+use super::external_peer::{DEFAULT_PEER_TIMEOUT, ExternalDebuggerPeerBackend, PeerSessionToken};
 use super::{
     BackendError, DebugBackend, EvaluateContext, EvaluateParams, InitializeBackendParams,
     SetBackendBreakpointsParams, SetFunctionBreakpointsParams, StackTraceParams,
@@ -146,10 +146,10 @@ impl ExternalPeerLaunchConfig {
                 _ => ControlMode::Mirror,
             };
         }
-        if let Some(host) = ext.get("host").and_then(Value::as_str) {
-            if !host.trim().is_empty() {
-                cfg.host = host.trim().to_string();
-            }
+        if let Some(host) = ext.get("host").and_then(Value::as_str)
+            && !host.trim().is_empty()
+        {
+            cfg.host = host.trim().to_string();
         }
         if let Some(port) = ext.get("port").and_then(Value::as_u64) {
             // Ports above u16 range are meaningless; clamp to 0 (allocate).
@@ -175,17 +175,49 @@ pub fn control_mode_env_str(mode: ControlMode) -> &'static str {
 
 /// A bound loopback listener a peer connects back to, plus the session token
 /// and control mode exposed to the (future) peer process via env vars.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PeerListenEndpoint {
     /// The actually-bound address (with the OS-assigned port when `port` was 0).
     pub addr: SocketAddr,
-    /// Per-session shared-secret token.
-    pub token: String,
+    /// Per-session shared-secret token. Kept private so ordinary struct logging
+    /// cannot disclose the bearer credential.
+    token: PeerSessionToken,
     /// Control mode for the session.
     pub control: ControlMode,
 }
 
+impl fmt::Debug for PeerListenEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PeerListenEndpoint")
+            .field("addr", &self.addr)
+            .field("token", &"<redacted>")
+            .field("control", &self.control)
+            .finish()
+    }
+}
+
 impl PeerListenEndpoint {
+    /// Return the bearer token for environment and compatibility boundaries.
+    ///
+    /// New backend callers should use [`Self::session_credential`] so an
+    /// arbitrary string cannot cross the authenticated backend boundary. This
+    /// value must not be logged, serialized into receipts, or shown in
+    /// user-facing errors.
+    #[must_use]
+    pub fn session_token(&self) -> String {
+        self.token.as_str().to_owned()
+    }
+
+    /// Return the validated credential for the authenticated backend boundary.
+    ///
+    /// The credential is minted by this endpoint and cannot be constructed from
+    /// an arbitrary string without passing the strict token validator.
+    #[must_use]
+    pub fn session_credential(&self) -> PeerSessionToken {
+        self.token.clone()
+    }
+
     /// Bind a loopback listener for the peer to connect back to, minting a
     /// session token. A `port` of `0` yields an OS-assigned ephemeral port; the
     /// resolved address is recorded on the returned endpoint.
@@ -219,9 +251,13 @@ impl PeerListenEndpoint {
                 ),
             ));
         }
+        // Obtain the bearer secret before opening the socket. Entropy failure
+        // must not leave a bound listener with an unauthenticated fallback.
+        let token = mint_session_token()?;
         let listener = TcpListener::bind(resolved.as_slice())?;
         let addr = listener.local_addr()?;
-        let endpoint = Self { addr, token: mint_session_token(), control };
+        let token = PeerSessionToken::minted(token);
+        let endpoint = Self { addr, token, control };
         Ok((listener, endpoint))
     }
 
@@ -237,37 +273,29 @@ impl PeerListenEndpoint {
     pub fn env_vars(&self) -> Vec<(String, String)> {
         vec![
             (ENV_PEER_ADDR.to_string(), self.addr.to_string()),
-            (ENV_PEER_TOKEN.to_string(), self.token.clone()),
+            (ENV_PEER_TOKEN.to_string(), self.token.as_str().to_owned()),
             (ENV_PEER_MODE.to_string(), control_mode_env_str(self.control).to_string()),
         ]
     }
 }
 
-/// Mint a per-session token without pulling in a uuid/rand dependency.
+/// Mint a per-session bearer token directly from the operating system CSPRNG.
 ///
-/// `RandomState` is seeded from the OS RNG on each construction, so hashing a
-/// per-call salt (time + a process-wide counter) yields an unpredictable
-/// 128-bit value rendered as 32 hex chars. This is a session-scoped shared
-/// secret for a loopback handshake, not a cryptographic key.
-fn mint_session_token() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
+/// Sixteen independently generated bytes provide 128 bits of entropy. Failure
+/// is returned to listener setup; there is no time/counter/hash fallback.
+fn mint_session_token() -> std::io::Result<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|error| {
+        std::io::Error::other(format!("secure token generation failed: {error}"))
+    })?;
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-
-    let mut token = String::with_capacity(32);
-    for salt in 0u64..2 {
-        let mut hasher = RandomState::new().build_hasher();
-        hasher.write_u64(salt);
-        hasher.write_u128(nanos);
-        hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-        token.push_str(&format!("{:016x}", hasher.finish()));
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
-    token
+    Ok(token)
 }
 
 // ---------------------------------------------------------------------------
@@ -978,48 +1006,97 @@ impl MirrorPeerBridge {
 fn spawn_peer_acceptor(
     peer_listener: TcpListener,
     handshake_timeout: Duration,
-    expected_token: Option<String>,
+    expected_token: Option<PeerSessionToken>,
 ) -> mpsc::Receiver<Box<dyn DebugBackend>> {
+    // A connection that never sends `peer/hello` must not consume the entire
+    // session deadline while the acceptor waits for that one candidate. The
+    // overall deadline still bounds the session, while this per-candidate cap
+    // bounds abandoned handshake workers after the listener moves on.
+    const MAX_CANDIDATE_HANDSHAKE: Duration = Duration::from_millis(250);
+
     let (tx, rx) = mpsc::channel::<Box<dyn DebugBackend>>();
+    let Some(expected_token) = expected_token else {
+        tracing::error!(
+            "mirror listen: refusing to accept a peer without an authenticated session token"
+        );
+        return rx;
+    };
     std::thread::spawn(move || {
-        peer_listener.set_nonblocking(true).ok();
+        if let Err(error) = peer_listener.set_nonblocking(true) {
+            tracing::warn!(%error, "mirror listen: failed to configure peer listener");
+            return;
+        }
         let deadline = Instant::now() + handshake_timeout;
-        let stream = loop {
-            match peer_listener.accept() {
-                Ok((s, _)) => break Some(s),
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        break None;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+        let (candidate_tx, candidate_rx) = mpsc::channel::<Result<Box<dyn DebugBackend>, String>>();
+        while Instant::now() < deadline {
+            match candidate_rx.try_recv() {
+                Ok(Ok(backend)) => {
+                    let _ = tx.send(backend);
+                    return;
                 }
-                Err(_) => break None,
+                Ok(Err(error)) => {
+                    tracing::warn!(error = %error, "mirror listen: peer handshake failed");
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => return,
             }
-        };
-        let Some(stream) = stream else { return };
-        if stream.set_nonblocking(false).is_err() {
-            return;
-        }
-        // Enforce the session token minted at bind (listen mode always mints
-        // one). A peer that connected to the loopback port but cannot present
-        // the matching secret is rejected inside the handshake and never
-        // delivered here as a live backend.
-        let mut backend = match ExternalDebuggerPeerBackend::from_connected_stream_with_token(
-            stream,
-            handshake_timeout,
-            expected_token,
-        ) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(error = %e, "mirror listen: building peer backend failed");
-                return;
+
+            let stream = match peer_listener.accept() {
+                Ok((s, _)) => Some(s),
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+                Err(error) => {
+                    tracing::warn!(%error, "mirror listen: peer accept failed");
+                    break;
+                }
+            };
+            if let Some(stream) = stream {
+                if stream.set_nonblocking(false).is_err() {
+                    continue;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let candidate_timeout = remaining.min(MAX_CANDIDATE_HANDSHAKE);
+                let candidate_tx = candidate_tx.clone();
+                let expected_token = expected_token.clone();
+                let spawn = std::thread::Builder::new()
+                    .name("perl-dap-peer-handshake".to_string())
+                    .spawn(move || {
+                        let result = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
+                            stream,
+                            candidate_timeout,
+                            expected_token,
+                        )
+                        .and_then(|mut backend| {
+                            backend
+                                .initialize(InitializeBackendParams::default())
+                                .map(|()| Box::new(backend) as Box<dyn DebugBackend>)
+                        })
+                        .map_err(|error| error.to_string());
+                        let _ = candidate_tx.send(result);
+                    });
+                if let Err(error) = spawn {
+                    tracing::warn!(%error, "mirror listen: failed to spawn peer handshake");
+                }
             }
-        };
-        if let Err(e) = backend.initialize(InitializeBackendParams::default()) {
-            tracing::warn!(error = %e, "mirror listen: peer handshake failed");
-            return;
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match candidate_rx.recv_timeout(remaining.min(Duration::from_millis(10))) {
+                Ok(Ok(backend)) => {
+                    let _ = tx.send(backend);
+                    return;
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(error = %error, "mirror listen: peer handshake failed");
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
         }
-        let _ = tx.send(Box::new(backend));
     });
     rx
 }
@@ -1037,7 +1114,7 @@ pub fn run_mirror_listen_session_stdio(
     bridge: MirrorPeerBridge,
     handshake_timeout: Duration,
     poll_interval: Duration,
-    expected_token: Option<String>,
+    expected_token: Option<PeerSessionToken>,
 ) -> std::io::Result<()> {
     let peer_rx = spawn_peer_acceptor(peer_listener, handshake_timeout, expected_token);
     run_mirror_editor_loop(std::io::stdin(), std::io::stdout(), bridge, peer_rx, poll_interval)
@@ -1057,7 +1134,7 @@ pub fn run_mirror_listen_session_socket(
     bridge: MirrorPeerBridge,
     handshake_timeout: Duration,
     poll_interval: Duration,
-    expected_token: Option<String>,
+    expected_token: Option<PeerSessionToken>,
 ) -> std::io::Result<()> {
     let peer_rx = spawn_peer_acceptor(peer_listener, handshake_timeout, expected_token);
     let reader = editor.try_clone()?;
@@ -1287,6 +1364,66 @@ fn handle_breakpoint_locations(args: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::peer_protocol::message::{PeerEvent, PeerMessage, PeerRequest, command, event};
+    use crate::peer_protocol::payloads::HelloArgs;
+    use crate::peer_protocol::{PROTOCOL_VERSION, PeerReportedCapabilities, encode_message};
+
+    fn spawn_hello_peer(
+        addr: SocketAddr,
+        token: String,
+        hold_open: bool,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).expect("connect peer listener");
+            let hello = PeerMessage::Request(PeerRequest {
+                seq: 1,
+                command: command::HELLO.to_string(),
+                arguments: serde_json::to_value(HelloArgs {
+                    peer: "RetryPeer".to_string(),
+                    peer_version: Some("0.1".to_string()),
+                    protocol_version: PROTOCOL_VERSION.to_string(),
+                    token: Some(token),
+                    capabilities: PeerReportedCapabilities::default(),
+                })
+                .ok(),
+            });
+            stream.write_all(&encode_message(&hello).expect("encode hello")).expect("write hello");
+            if hold_open {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        })
+    }
+
+    fn spawn_unauthenticated_event_peer(
+        addr: SocketAddr,
+        token: String,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).expect("connect attacker peer");
+            let hello = PeerMessage::Request(PeerRequest {
+                seq: 1,
+                command: command::HELLO.to_string(),
+                arguments: serde_json::to_value(HelloArgs {
+                    peer: "AttackerPeer".to_string(),
+                    peer_version: Some("0.1".to_string()),
+                    protocol_version: PROTOCOL_VERSION.to_string(),
+                    token: Some(token),
+                    capabilities: PeerReportedCapabilities::default(),
+                })
+                .ok(),
+            });
+            stream.write_all(&encode_message(&hello).expect("encode hello")).expect("write hello");
+            let stopped = PeerMessage::Event(PeerEvent {
+                seq: 2,
+                event: event::STOPPED.to_string(),
+                body: Some(json!({ "reason": "breakpoint", "threadId": 1 })),
+            });
+            stream
+                .write_all(&encode_message(&stopped).expect("encode stopped"))
+                .expect("write stopped");
+            std::thread::sleep(Duration::from_secs(1));
+        })
+    }
 
     #[test]
     fn parse_returns_none_for_non_external_backend() {
@@ -1335,12 +1472,13 @@ mod tests {
             PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("bind");
         assert_ne!(endpoint.addr.port(), 0, "port 0 must resolve to an OS-assigned port");
         assert!(endpoint.addr.ip().is_loopback());
-        assert_eq!(endpoint.token.len(), 32, "token is 32 hex chars");
-        assert!(endpoint.token.chars().all(|c| c.is_ascii_hexdigit()));
+        let token = endpoint.session_token();
+        assert_eq!(token.len(), 32, "token is 32 hex chars");
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
 
         let env: std::collections::HashMap<_, _> = endpoint.env_vars().into_iter().collect();
         assert_eq!(env[ENV_PEER_ADDR], endpoint.addr.to_string());
-        assert_eq!(env[ENV_PEER_TOKEN], endpoint.token);
+        assert_eq!(env[ENV_PEER_TOKEN], endpoint.session_token());
         assert_eq!(env[ENV_PEER_MODE], "mirror");
         drop(listener);
     }
@@ -1373,9 +1511,97 @@ mod tests {
 
     #[test]
     fn tokens_are_unique_per_session() {
-        let a = mint_session_token();
-        let b = mint_session_token();
+        let a = mint_session_token().expect("first secure token");
+        let b = mint_session_token().expect("second secure token");
         assert_ne!(a, b, "each session mints a distinct token");
+    }
+
+    #[test]
+    fn endpoint_debug_redacts_the_session_token() {
+        let (listener, endpoint) =
+            PeerListenEndpoint::bind("127.0.0.1", 0, ControlMode::Mirror).expect("bind");
+        let secret = endpoint.session_token();
+        let rendered = format!("{endpoint:?}");
+        assert!(!rendered.contains(&secret), "Debug must not disclose the bearer token");
+        assert!(rendered.contains("<redacted>"));
+        drop(listener);
+    }
+
+    #[test]
+    fn acceptor_retries_after_wrong_token_until_correct_peer_authenticates() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let addr = listener.local_addr().expect("listener address");
+        let expected = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
+            .expect("valid expected token");
+        let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
+
+        // This validly-shaped but incorrect credential must consume only the
+        // first connection, leaving the listener available for the real peer.
+        let wrong = spawn_hello_peer(addr, "00000000000000000000000000000000".to_string(), false);
+        wrong.join().expect("wrong-token peer exits");
+
+        let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
+        let backend = peer_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("correct peer must authenticate after wrong peer");
+        drop(backend);
+        correct.join().expect("correct peer exits");
+    }
+
+    #[test]
+    fn acceptor_refuses_missing_expected_token() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(1), None);
+
+        assert!(matches!(
+            peer_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn silent_peer_cannot_starve_correct_peer() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let addr = listener.local_addr().expect("listener address");
+        let expected = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
+            .expect("valid expected token");
+        let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
+
+        // Connect first, but never send peer/hello. The acceptor must keep
+        // making progress on later connections instead of waiting for this
+        // unauthenticated stream until the two-second session deadline.
+        let silent = TcpStream::connect(addr).expect("connect silent peer");
+        let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
+        let backend = peer_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("correct peer must authenticate behind a silent peer");
+        drop(backend);
+        drop(silent);
+        correct.join().expect("correct peer exits");
+    }
+
+    #[test]
+    fn unauthenticated_peer_cannot_inject_events_before_correct_peer() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let addr = listener.local_addr().expect("listener address");
+        let expected = PeerSessionToken::try_from("0123456789abcdef0123456789abcdef")
+            .expect("valid expected token");
+        let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
+
+        let attacker =
+            spawn_unauthenticated_event_peer(addr, "00000000000000000000000000000000".to_string());
+        assert!(
+            peer_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "wrong-token peer must not be delivered as a live backend"
+        );
+
+        let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
+        let backend = peer_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("correct peer must still authenticate after attacker event");
+        drop(backend);
+        attacker.join().expect("attacker peer exits");
+        correct.join().expect("correct peer exits");
     }
 
     #[test]

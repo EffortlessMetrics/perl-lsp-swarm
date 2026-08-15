@@ -190,7 +190,9 @@ impl RefreshController {
     /// Request diagnostics refresh with debounce
     ///
     /// Sends `workspace/diagnostic/refresh` request to client if:
-    /// - Client advertised `workspace.diagnosticProvider.refreshSupport` capability
+    /// - Client advertised `workspace.diagnostics.refreshSupport` capability (the
+    ///   LSP 3.17 spec key), or the `workspace.diagnostic.refreshSupport` spelling
+    ///   emitted by `lsp-types`-based clients such as Helix
     /// - Debounce window has elapsed since last refresh
     ///
     /// # Errors

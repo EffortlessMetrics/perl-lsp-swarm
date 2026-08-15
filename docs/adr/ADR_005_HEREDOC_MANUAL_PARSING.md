@@ -3,7 +3,7 @@
 **Status**: Proposed
 **Date**: 2025-11-05
 **Decision Makers**: Parser Team, LSP Architecture Committee
-**Related Specifications**: [SPEC-183](../SPEC_183_HEREDOC_DECLARATION_PARSER.md)
+**Related Documentation**: [Heredoc implementation reference](../reference/HEREDOC_IMPLEMENTATION.md)
 **Related Issues**: [Issue #183 - Handle backreferences in heredoc parsing](https://github.com/EffortlessMetrics/perl-lsp/issues/183)
 
 ---
@@ -428,8 +428,7 @@ If critical issues are discovered post-release:
 
 ### Related Documentation
 
-- **[SPEC-183: Heredoc Declaration Parser Architecture](../SPEC_183_HEREDOC_DECLARATION_PARSER.md)**: Complete technical specification
-- **[HEREDOC_IMPLEMENTATION.md](../reference/HEREDOC_IMPLEMENTATION.md)**: Existing three-phase architecture
+- **[Heredoc implementation reference](../reference/HEREDOC_IMPLEMENTATION.md)**: Current three-phase architecture
 - **[ERROR_HANDLING_STRATEGY.md](../explanation/ERROR_HANDLING_STRATEGY.md)**: Error handling principles
 - **[MUTATION_TESTING_METHODOLOGY.md](../reference/MUTATION_TESTING_METHODOLOGY.md)**: Test quality standards
 - **[ADR-001: Agent Architecture](ADR_001_AGENT_ARCHITECTURE.md)**: Workflow coordination patterns

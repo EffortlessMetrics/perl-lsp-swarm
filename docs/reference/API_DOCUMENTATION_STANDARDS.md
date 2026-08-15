@@ -1,5 +1,7 @@
 # API Documentation Standards - perl-parser crate
 
+> Currentness note: the original baseline and four-phase remediation plan below are historical context, not current status. Use [MISSING_DOCUMENTATION_GUIDE.md](MISSING_DOCUMENTATION_GUIDE.md) for the current public-surface workflow and example contract; compiled-example enforcement remains tracked separately in issue #4947.
+
 *Diataxis: How-to Guide* - Comprehensive API documentation requirements for production-quality perl-parser crate.
 
 ## Overview
@@ -12,7 +14,7 @@ As of **Draft PR 159 (SPEC-149)**, the perl-parser crate **successfully implemen
 
 The perl-parser crate has **`#![warn(missing_docs)]` successfully enabled** in `/crates/perl-parser/src/lib.rs` at line 38, providing:
 
-- **605+ Warning Baseline**: Systematic tracking of documentation violations across all modules
+- **Historical 605+ Warning Baseline**: Systematic tracking of documentation violations across all modules
 - **All public items flagged**: Comprehensive coverage detection for undocumented APIs
 - **CI build warnings**: Automated enforcement preventing documentation regression
 - **Zero performance impact**: <1% overhead validated, revolutionary LSP improvements preserved
@@ -31,10 +33,10 @@ The perl-parser crate has **`#![warn(missing_docs)]` successfully enabled** in `
 | Component | Status | Details |
 |-----------|--------|---------|
 | **Infrastructure** | ✅ **DEPLOYED** | `#![warn(missing_docs)]` enabled, 25 test suite operational |
-| **Baseline Tracking** | ✅ **ESTABLISHED** | 605+ violations identified and systematically tracked |
+| **Baseline Tracking** | ✅ **ESTABLISHED** | historical 605+ violations identified and systematically tracked |
 | **Quality Gates** | ✅ **ACTIVE** | CI enforcement preventing regression |
 | **Performance** | ✅ **VALIDATED** | <1% overhead, revolutionary LSP improvements preserved |
-| **Content Implementation** | 📝 **IN PROGRESS** | 4-phase systematic resolution strategy active |
+| **Content Implementation** | 📝 **IN PROGRESS** | historical four-phase strategy; current workflow is in MISSING_DOCUMENTATION_GUIDE.md |
 
 ## Documentation Requirements by Item Type
 
@@ -272,7 +274,7 @@ pub enum ParseError {
 
 ### Automated Testing
 
-The comprehensive test suite at `/crates/perl-parser/tests/missing_docs_ac_tests.rs` validates:
+The historical acceptance-test suite at `/crates/perl-parser/tests/missing_docs_ac_tests.rs` was intended to validate:
 
 - **AC1**: `#![warn(missing_docs)]` enabled and compiles successfully
 - **AC2**: All public structs/enums have comprehensive documentation including workflow role
@@ -285,7 +287,7 @@ The comprehensive test suite at `/crates/perl-parser/tests/missing_docs_ac_tests
 - **AC9**: Related functions include cross-references using Rust documentation linking
 - **AC10**: Documentation follows Rust best practices with consistent style
 - **AC11**: `cargo doc` generates complete documentation without warnings
-- **AC12**: CI checks enforce missing_docs warnings for new public APIs
+- **AC12**: the historical CI design checked missing_docs warnings for new public APIs
 
 ### Edge Case Detection
 
@@ -368,7 +370,7 @@ cargo test --doc -p perl-parser
 ### Progress Monitoring
 
 ```bash
-# Check current documentation violation count (baseline: 605+)
+# Check current documentation violation count (historical baseline: 605+)
 cargo build -p perl-parser 2>&1 | grep "warning: missing documentation" | wc -l
 
 # Detailed violation analysis by file
@@ -389,7 +391,7 @@ The **successfully implemented infrastructure** provides systematic documentatio
 
 ## Related Documentation
 
-- **[Missing Documentation Guide](MISSING_DOCUMENTATION_GUIDE.md)** - Systematic 4-phase resolution strategy for 605+ violations
+- **[Missing Documentation Guide](MISSING_DOCUMENTATION_GUIDE.md)** - Current-surface workflow for public API documentation and examples; completeness enforcement remains a separate follow-up
 - **[ADR-0002: API Documentation Infrastructure](../adr/0002-api-documentation-infrastructure.md)** - Implementation architecture and decisions
 - **[Comprehensive Testing Guide](../tutorials/COMPREHENSIVE_TESTING_GUIDE.md)** - Complete test framework documentation
 

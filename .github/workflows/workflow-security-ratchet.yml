@@ -1,0 +1,187 @@
+# Workflow Security Ratchet (authoritative)
+#
+# The workflow definition, evaluator, tests, and baseline all come from the
+# protected base repository. The candidate head is fetched only as a Git object
+# and materialized as inert data for a narrow, enumerated set of paths. It is
+# never checked out as a working tree and never executed.
+#
+# The advisory candidate self-test lives in a separate `pull_request` workflow
+# (workflow-security-ratchet-selftest.yml) precisely so that no job in this file
+# ever references the pull-request head in a checkout.
+
+name: Workflow Security Ratchet
+
+on:
+  pull_request_target:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - '.ci/workflow-security-baseline.json'
+      - 'scripts/ci/workflow_security_ratchet.py'
+      - 'scripts/ci/test_workflow_security_ratchet.py'
+  push:
+    branches: [main, master]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - '.ci/workflow-security-baseline.json'
+      - 'scripts/ci/workflow_security_ratchet.py'
+      - 'scripts/ci/test_workflow_security_ratchet.py'
+  workflow_dispatch: {}
+
+concurrency:
+  group: workflow-security-ratchet-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  trusted-base-ratchet:
+    name: Trusted-base workflow security ratchet
+    if: github.event_name == 'pull_request_target'
+    # Candidate bytes are untrusted even though they are never executed. Keep
+    # this trusted-base evaluator off persistent self-hosted capacity.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact trusted base authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Import exact PR head as inert Git data
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid base SHA identity"
+            exit 1
+          fi
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid head SHA identity"
+            exit 1
+          fi
+          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid pull-request number"
+            exit 1
+          fi
+
+          resolved_base="$(git rev-parse 'HEAD^{commit}')"
+          if [ "$resolved_base" != "$BASE_SHA" ]; then
+            printf '::error::Checked-out base %s does not match event base %s\n' \
+              "$resolved_base" "$BASE_SHA"
+            exit 1
+          fi
+
+          # The base repository exposes this synthetic ref for same-repository
+          # and fork pull requests. Import the object without a second checkout.
+          git fetch --no-tags --force origin \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/ratchet/head"
+          resolved_head="$(git rev-parse 'refs/remotes/ratchet/head^{commit}')"
+          if [ "$resolved_head" != "$HEAD_SHA" ]; then
+            printf '::error::Fetched PR head %s does not match event head %s\n' \
+              "$resolved_head" "$HEAD_SHA"
+            exit 1
+          fi
+
+          # Materialize ONLY the paths this control reads. Everything else in
+          # the candidate tree — build scripts, manifests, action entrypoints —
+          # is deliberately never written to disk, so there is nothing for a
+          # later step or tool to discover and execute.
+          mkdir -p candidate
+          present=()
+          for path in \
+            .github/workflows \
+            .github/actions \
+            .ci/workflow-security-baseline.json \
+            scripts/ci/workflow_security_ratchet.py \
+            scripts/ci/test_workflow_security_ratchet.py
+          do
+            if git cat-file -e "${HEAD_SHA}:${path}" 2>/dev/null; then
+              present+=("$path")
+            else
+              printf 'candidate does not contain %s\n' "$path"
+            fi
+          done
+          if [ "${#present[@]}" -eq 0 ]; then
+            echo "::error::Candidate contains none of the scanned control paths"
+            exit 1
+          fi
+          git archive --format=tar "$HEAD_SHA" -- "${present[@]}" | tar -x -C candidate
+
+          printf 'Trusted authority: %s\nCandidate scan subject: %s\n' \
+            "$BASE_SHA" "$HEAD_SHA"
+
+      - name: Prove trusted evaluator before use
+        run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+
+      - name: Reject new findings against the trusted base baseline
+        run: |
+          mkdir -p target/receipts
+          python3 scripts/ci/workflow_security_ratchet.py check \
+            --root candidate \
+            --baseline .ci/workflow-security-baseline.json \
+            --baseline-root . \
+            --report target/receipts/workflow-security-ratchet.json
+
+      - name: Reject stale, pre-seeded, or tampered candidate baseline
+        run: |
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root candidate \
+            --baseline candidate/.ci/workflow-security-baseline.json \
+            --baseline-root candidate \
+            --report target/receipts/workflow-security-candidate-baseline.json
+
+      - name: Upload authoritative ratchet receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workflow-security-ratchet-${{ github.event.pull_request.head.sha }}
+          path: target/receipts/workflow-security-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  main-selfcheck:
+    name: Workflow security baseline self-check
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run unit tests
+        run: python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+
+      - name: Validate committed baseline and control digests
+        run: |
+          mkdir -p target/receipts
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --baseline-root . \
+            --report target/receipts/workflow-security-main.json
+
+      - name: Upload main self-check receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workflow-security-main-${{ github.sha }}
+          path: target/receipts/workflow-security-main.json
+          if-no-files-found: warn
+          retention-days: 30

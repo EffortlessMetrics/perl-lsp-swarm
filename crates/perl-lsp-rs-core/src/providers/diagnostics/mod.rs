@@ -13,10 +13,12 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use perl_lsp_diagnostics::DiagnosticsProvider;
+//! use perl_lsp_rs_core::providers::diagnostics::PullDiagnosticsContext;
 //!
-//! let provider = DiagnosticsProvider::new();
-//! let diagnostics = provider.generate_diagnostics(&ast, source, Some(&workspace_index))?;
+//! // Diagnostics are computed via the pull-based provider, which takes an
+//! // AST, source text, and optional workspace context. See
+//! // `PullDiagnosticsContext` for the full API surface.
+//! let ctx = PullDiagnosticsContext { /* ... */ };
 //! ```
 
 /// Dead code detection

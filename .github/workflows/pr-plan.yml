@@ -1,27 +1,21 @@
 # PR Plan
 #
-# Advisory CI economics forecast. Runs on every PR. Reads:
-#   policy/ci-budget.toml
-#   policy/ci-lanes.toml
-#   policy/ci-risk-packs.toml
-# Emits target/ci/ci-plan.json and a step summary. Does not block merges.
-#
-# See docs/ci/perl-lsp-rollout-plan.md (PR 04). Replaced by `xtask ci plan`
-# in PR 12.
+# Advisory CI economics forecast. The authoritative plan runs from the exact
+# pull-request base SHA under pull_request_target. The candidate head is fetched
+# only as a Git object for diffing and is never checked out or executed.
 
 name: PR Plan
 
 on:
-  pull_request:
+  # The workflow definition, planner, and policies all come from the protected
+  # base repository. Do not checkout or execute the PR head in this event.
+  pull_request_target:
     branches: [master, main]
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
-  workflow_dispatch:
 
 concurrency:
-  group: pr-plan-${{ github.event.pull_request.number || github.ref }}
-  # Only cancel on synchronize so label add/remove events re-run the plan
-  # without cancelling an in-progress run. Required by workflow-policy-lint
-  # rule LABEL_EVENT_CANCELS_PR_RUN.
+  group: pr-plan-${{ github.event.pull_request.number }}
+  # Label changes rerun the authoritative plan without cancelling an active run.
   cancel-in-progress: ${{ github.event.action == 'synchronize' }}
 
 permissions:
@@ -30,31 +24,75 @@ permissions:
 
 jobs:
   plan:
-    name: Forecast LEM and lanes
-    runs-on:
-      group: em-ci-nano
-      labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
+    name: Forecast LEM and lanes from trusted authority
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft != true
+    # PR head data is untrusted even though it is not executed. Keep this
+    # trusted-base evaluator off persistent self-hosted capacity.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
-    if: github.event.pull_request.draft != true
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Checkout exact trusted base authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
-      # System python3 on the self-hosted runner (Ubuntu ships >=3.11 with
-      # tomllib). actions/setup-python has no tool-cache build for this
-      # runner's OS, and pr_plan.py is stdlib-only, so no setup needed.
-      - name: Compute PR Plan
-        # continue-on-error so the artifact upload step still runs even when
-        # the budget guard returns exit 2 (over hard ceiling, no override).
+      - name: Import exact PR head as inert Git data
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid base SHA identity"
+            exit 1
+          fi
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid head SHA identity"
+            exit 1
+          fi
+          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid pull-request number"
+            exit 1
+          fi
+
+          resolved_base="$(git rev-parse 'HEAD^{commit}')"
+          if [ "$resolved_base" != "$BASE_SHA" ]; then
+            printf '::error::Checked-out base %s does not match event base %s\n' \
+              "$resolved_base" "$BASE_SHA"
+            exit 1
+          fi
+
+          # The base repository exposes this synthetic ref for same-repository
+          # and fork pull requests. Import the object without a second checkout.
+          git fetch --no-tags --force origin \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr-plan/head"
+          resolved_head="$(git rev-parse 'refs/remotes/pr-plan/head^{commit}')"
+          if [ "$resolved_head" != "$HEAD_SHA" ]; then
+            printf '::error::Fetched PR head %s does not match event head %s\n' \
+              "$resolved_head" "$HEAD_SHA"
+            exit 1
+          fi
+
+          git cat-file -e "${HEAD_SHA}^{tree}"
+          printf 'Trusted authority: %s\nCandidate diff subject: %s\n' \
+            "$BASE_SHA" "$HEAD_SHA"
+
+      - name: Compute PR Plan from trusted planner and policy
         continue-on-error: true
         id: plan
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
+          set -euo pipefail
           mkdir -p target/ci
           python3 scripts/ci/pr_plan.py \
             --base "$BASE_SHA" \
@@ -69,7 +107,7 @@ jobs:
 
       - name: Upload ci-plan.json
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-plan
           path: target/ci/ci-plan.json
@@ -77,13 +115,9 @@ jobs:
           if-no-files-found: warn
 
       - name: Budget guard (hard ceiling)
-        # Re-surface a non-zero exit from the planner so over-ceiling PRs that
-        # don't have a `full-ci` or `ci-budget-override` label visibly fail.
-        # Sub-125-LEM PRs and acknowledged over-ceiling PRs pass.
+        # Re-surface a non-zero planner exit so an unacknowledged hard-ceiling
+        # result stays visible. PR Plan remains advisory, not a merge authority.
         if: always() && steps.plan.outcome == 'failure'
         run: |
           echo "::error::PR Plan returned a non-success exit code; see the step summary."
-          # Fail this job so the budget guard is visible. The PR Plan workflow
-          # is not a required check, so this never blocks merges — it only
-          # surfaces budget overruns to the contributor.
           exit 1

@@ -148,9 +148,14 @@ ready for either path.
 
 ```bash
 # Run aggregator on a directory of synthetic actuals.
+#
+# Samples are attributed by `lane_id`. A bare `gate_name` counts only when it
+# is literally a lane id; a real gate name such as `fmt` or `clippy_full` is
+# dropped as unmapped, and a run where nothing attributes exits non-zero
+# (#6217).
 mkdir -p /tmp/actuals
-echo '{"jobs":[{"gate_name":"pr_smoke","actual_lem":2.1}]}' > /tmp/actuals/run-1.json
-echo '{"jobs":[{"gate_name":"pr_smoke","actual_lem":1.9}]}' > /tmp/actuals/run-2.json
+echo '{"jobs":[{"lane_id":"pr_smoke","gate_name":"fmt","actual_lem":2.1}]}' > /tmp/actuals/run-1.json
+echo '{"jobs":[{"lane_id":"pr_smoke","gate_name":"clippy_full","actual_lem":1.9}]}' > /tmp/actuals/run-2.json
 python3 scripts/ci/aggregate_lane_history.py \
   --actuals-dir /tmp/actuals --output /tmp/hist.json
 

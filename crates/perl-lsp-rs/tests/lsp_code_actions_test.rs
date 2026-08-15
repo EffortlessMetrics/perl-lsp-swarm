@@ -133,10 +133,10 @@ fn test_parse_error_semicolon_fix() -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new(source);
     let _ast = parser.parse().unwrap_or_else(|_| {
         // Create error node for test
-        perl_parser::Node {
-            kind: perl_parser::NodeKind::Program { statements: vec![] },
-            location: perl_parser::SourceLocation { start: 0, end: source.len() },
-        }
+        perl_parser::Node::new(
+            perl_parser::NodeKind::Program { statements: vec![] },
+            perl_parser::SourceLocation { start: 0, end: source.len() },
+        )
     });
 
     // Create diagnostic manually for missing semicolon
