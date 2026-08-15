@@ -29,10 +29,8 @@ fn file_uri(path: &Path) -> String {
 }
 
 fn initialize_params(profile: &Value, workspace: &Path) -> Result<Value> {
-    let mut params = profile
-        .get("initialize_params")
-        .cloned()
-        .context("profile missing initialize_params")?;
+    let mut params =
+        profile.get("initialize_params").cloned().context("profile missing initialize_params")?;
     let root_uri = file_uri(workspace);
     params["processId"] = Value::Null;
     params["rootPath"] = Value::String(workspace.display().to_string());
@@ -68,19 +66,19 @@ fn settle_workspace_configuration(client: &mut RealProcessClient) -> Result<()> 
 
 fn receive_watcher_registration(client: &mut RealProcessClient) -> Result<Value> {
     for _ in 0..4 {
-        let request = client.receive_server_request("client/registerCapability", PROCESS_TIMEOUT)?;
+        let request =
+            client.receive_server_request("client/registerCapability", PROCESS_TIMEOUT)?;
         let id = request.get("id").cloned().context("registration request missing id")?;
-        let watchers = request
-            .pointer("/params/registrations")
-            .and_then(Value::as_array)
-            .and_then(|registrations| {
+        let watchers = request.pointer("/params/registrations").and_then(Value::as_array).and_then(
+            |registrations| {
                 registrations.iter().find_map(|registration| {
                     (registration.get("method").and_then(Value::as_str)
                         == Some("workspace/didChangeWatchedFiles"))
                     .then(|| registration.pointer("/registerOptions/watchers").cloned())
                     .flatten()
                 })
-            });
+            },
+        );
         client.respond(id, Value::Null)?;
         if let Some(watchers) = watchers {
             return Ok(watchers);
@@ -93,8 +91,14 @@ fn assert_string_watchers(watchers: &Value) -> Result<()> {
     let watchers = watchers.as_array().context("watchers must be an array")?;
     ensure!(watchers.len() == WATCH_PATTERNS.len(), "unexpected watchers: {watchers:?}");
     for (watcher, expected) in watchers.iter().zip(WATCH_PATTERNS) {
-        ensure!(watcher.get("globPattern").and_then(Value::as_str) == Some(expected));
-        ensure!(watcher.get("kind").and_then(Value::as_u64) == Some(7));
+        ensure!(
+            watcher.get("globPattern").and_then(Value::as_str) == Some(*expected),
+            "string watcher used the wrong glob: {watcher}"
+        );
+        ensure!(
+            watcher.get("kind").and_then(Value::as_u64) == Some(7),
+            "string watcher used the wrong kind: {watcher}"
+        );
     }
     Ok(())
 }
@@ -108,15 +112,34 @@ fn assert_relative_watchers(watchers: &Value, root_uri: &str) -> Result<()> {
             "relative watcher used the wrong base URI: {watcher}"
         );
         ensure!(
-            watcher.pointer("/globPattern/pattern").and_then(Value::as_str) == Some(expected),
+            watcher.pointer("/globPattern/pattern").and_then(Value::as_str) == Some(*expected),
             "relative watcher used the wrong pattern: {watcher}"
         );
-        ensure!(watcher.get("kind").and_then(Value::as_u64) == Some(7));
+        ensure!(
+            watcher.get("kind").and_then(Value::as_u64) == Some(7),
+            "relative watcher used the wrong kind: {watcher}"
+        );
+    }
+    Ok(())
+}
+
+/// Both Helix profiles advertise `window.workDoneProgress`, so the shipped
+/// server legitimately issues `window/workDoneProgress/create` for its
+/// workspace index. A real Helix client answers that request; leaving it
+/// unanswered would diverge from the profile being replayed and would leave an
+/// unconsumed server request on the transport at shutdown.
+fn settle_progress_creates(client: &mut RealProcessClient) -> Result<()> {
+    while let Ok(request) =
+        client.receive_server_request("window/workDoneProgress/create", ABSENCE_TIMEOUT)
+    {
+        let id = request.get("id").cloned().context("progress create request missing id")?;
+        client.respond(id, Value::Null)?;
     }
     Ok(())
 }
 
 fn clean_shutdown(client: &mut RealProcessClient, id: i64) -> Result<()> {
+    settle_progress_creates(client)?;
     let response = client.request(json!(id), "shutdown", Value::Null, PROCESS_TIMEOUT)?;
     ensure!(response.get("error").is_none(), "shutdown failed: {response}");
     ensure!(response.get("result").is_some_and(Value::is_null));
@@ -151,10 +174,14 @@ fn checked_profiles_preserve_the_exact_helix_cohort_boundary() -> Result<()> {
     let stable = profile(STABLE_PROFILE)?;
     let master = profile(MASTER_PROFILE)?;
 
-    ensure!(stable.pointer("/subject/source_sha").and_then(Value::as_str)
-        == Some("a05c151bb6e8e9c65ec390b0ae2afe7a5efd619b"));
-    ensure!(master.pointer("/subject/source_sha").and_then(Value::as_str)
-        == Some("079a789e8cb08ead67f19e1971a1b7438b37354b"));
+    ensure!(
+        stable.pointer("/subject/source_sha").and_then(Value::as_str)
+            == Some("a05c151bb6e8e9c65ec390b0ae2afe7a5efd619b")
+    );
+    ensure!(
+        master.pointer("/subject/source_sha").and_then(Value::as_str)
+            == Some("079a789e8cb08ead67f19e1971a1b7438b37354b")
+    );
     ensure!(stable.pointer("/initialize_params/capabilities/textDocument/diagnostic").is_none());
     ensure!(master.pointer("/initialize_params/capabilities/textDocument/diagnostic").is_some());
     ensure!(stable.pointer("/initialize_params/capabilities/workspace/diagnostics").is_none());
@@ -171,9 +198,15 @@ fn checked_profiles_preserve_the_exact_helix_cohort_boundary() -> Result<()> {
             .and_then(Value::as_bool)
             == Some(true)
     );
-    ensure!(stable.pointer("/initialize_params/capabilities/workspace/fileOperations/willCreate").is_none());
-    ensure!(master.pointer("/initialize_params/capabilities/workspace/fileOperations/willCreate")
-        == Some(&Value::Bool(true)));
+    ensure!(
+        stable
+            .pointer("/initialize_params/capabilities/workspace/fileOperations/willCreate")
+            .is_none()
+    );
+    ensure!(
+        master.pointer("/initialize_params/capabilities/workspace/fileOperations/willCreate")
+            == Some(&Value::Bool(true))
+    );
     Ok(())
 }
 
@@ -190,8 +223,8 @@ fn current_master_profile_uses_pull_shape_and_relative_watchers() -> Result<()> 
 #[test]
 fn explicit_false_dynamic_watcher_registration_fails_closed() -> Result<()> {
     let mut stable = profile(STABLE_PROFILE)?;
-    stable["initialize_params"]["capabilities"]["workspace"]["didChangeWatchedFiles"]
-        ["dynamicRegistration"] = Value::Bool(false);
+    stable["initialize_params"]["capabilities"]["workspace"]["didChangeWatchedFiles"]["dynamicRegistration"] =
+        Value::Bool(false);
     let workspace = tempfile::tempdir().context("create sparse-profile workspace")?;
     let params = initialize_params(&stable, workspace.path())?;
 
@@ -210,8 +243,8 @@ fn explicit_false_dynamic_watcher_registration_fails_closed() -> Result<()> {
 #[test]
 fn malformed_relative_pattern_support_falls_back_to_string_globs() -> Result<()> {
     let mut master = profile(MASTER_PROFILE)?;
-    master["initialize_params"]["capabilities"]["workspace"]["didChangeWatchedFiles"]
-        ["relativePatternSupport"] = Value::String("true".to_string());
+    master["initialize_params"]["capabilities"]["workspace"]["didChangeWatchedFiles"]["relativePatternSupport"] =
+        Value::String("true".to_string());
     let workspace = tempfile::tempdir().context("create malformed-profile workspace")?;
     let params = initialize_params(&master, workspace.path())?;
 
@@ -228,8 +261,7 @@ fn malformed_relative_pattern_support_falls_back_to_string_globs() -> Result<()>
 #[test]
 fn workspace_configuration_false_emits_no_configuration_request() -> Result<()> {
     let mut stable = profile(STABLE_PROFILE)?;
-    stable["initialize_params"]["capabilities"]["workspace"]["configuration"] =
-        Value::Bool(false);
+    stable["initialize_params"]["capabilities"]["workspace"]["configuration"] = Value::Bool(false);
     let workspace = tempfile::tempdir().context("create no-configuration workspace")?;
     let params = initialize_params(&stable, workspace.path())?;
 

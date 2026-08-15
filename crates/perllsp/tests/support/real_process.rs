@@ -287,6 +287,36 @@ impl RealProcessClient {
         }
     }
 
+    /// Wait for one server-to-client notification with `method`.
+    ///
+    /// Mirrors [`Self::receive_server_request`] for the notification half of the
+    /// transport, so a test can assert that a push-only notification such as
+    /// `textDocument/publishDiagnostics` was or was not emitted.
+    pub fn receive_server_notification(
+        &mut self,
+        method: &str,
+        timeout: Duration,
+    ) -> Result<Value> {
+        if let Some(index) =
+            self.pending.iter().position(|message| is_server_notification_for(message, method))
+        {
+            return self
+                .pending
+                .remove(index)
+                .ok_or_else(|| anyhow!("matched server notification disappeared"));
+        }
+
+        let deadline = Instant::now() + timeout;
+        let marker = Value::String(method.to_string());
+        loop {
+            let message = self.receive_message_until(deadline, "server notification", &marker)?;
+            if is_server_notification_for(&message, method) {
+                return Ok(message);
+            }
+            self.push_pending(message)?;
+        }
+    }
+
     pub fn assert_no_response_pending(&self) -> Result<()> {
         let unexpected = self.pending.iter().find(|message| is_response_like(message));
         ensure!(
@@ -577,6 +607,10 @@ fn is_server_notification(message: &Value) -> bool {
         && message.get("id").is_none()
         && has_no_response_members(message)
         && has_valid_params(message)
+}
+
+fn is_server_notification_for(message: &Value, method: &str) -> bool {
+    is_server_notification(message) && message.get("method").and_then(Value::as_str) == Some(method)
 }
 
 fn read_stdout(stdout: ChildStdout, sender: SyncSender<ProcessEvent>, overflow: &AtomicBool) {
