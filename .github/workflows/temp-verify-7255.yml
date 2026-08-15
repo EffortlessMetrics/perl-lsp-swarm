@@ -65,7 +65,19 @@ jobs:
         run: cargo check -p perl-parser-comparison --all-targets --locked
 
       - name: Run focused clippy
-        run: cargo clippy -p perl-parser-comparison --all-targets --locked -- -D warnings
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy -p perl-parser-comparison --all-targets --locked -- -D warnings 2>&1 \
+            | tee target/verification-logs/clippy.log
+
+      - name: Upload clippy log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: current-upstream-clippy-${{ github.run_id }}
+          path: target/verification-logs/clippy.log
+          if-no-files-found: error
 
       - name: Check patch hygiene
         run: git diff --check
