@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     io::Write,
@@ -246,9 +246,11 @@ fn released_lsp_bytes_preserve_the_upstream_behavior_and_known_drift() {
     assert_eq!(template.get("expandConfiguration"), Some(&json!(true)));
     let program_args =
         template.get("programArgs").and_then(Value::as_object).expect("released programArgs");
-    assert!(program_args.values().all(|value| value
-        .as_str()
-        .is_some_and(|command| command.contains("perllsp") && command.contains("--stdio"))));
+    assert!(program_args.values().all(|value| {
+        value
+            .as_str()
+            .is_some_and(|command| command.contains("perllsp") && command.contains("--stdio"))
+    }));
 
     let patterns: BTreeSet<_> = template
         .pointer("/fileTypeMappings/0/fileType/patterns")
@@ -306,5 +308,8 @@ fn released_dap_bytes_remain_independent_from_lsp_desired_state() {
     assert!(patterns.contains("*.pod") && patterns.contains("*.xs") && patterns.contains("*.psgi"));
     assert!(DAP_INSTALLER.contains("releases/download/v0.15.0/"));
     assert!(DAP_INSTALLER.contains("perl-dap"));
-    assert!(DAP_DOC.starts_with("TODO doc"), "placeholder DAP documentation is part of released truth until an upstream release changes it");
+    assert!(
+        DAP_DOC.starts_with("TODO doc"),
+        "placeholder DAP documentation is part of released truth until an upstream release changes it"
+    );
 }
