@@ -127,8 +127,11 @@ def normalize_architecture(machine: str) -> str:
 
 
 def platform_identity() -> dict[str, str]:
+    system = platform.system().strip().lower()
+    if system == "darwin":
+        system = "macos"
     return {
-        "os": platform.system().lower() or "unknown",
+        "os": system or "unknown",
         "version": platform.version(),
         "architecture": normalize_architecture(platform.machine()),
     }
@@ -167,3 +170,13 @@ def copy_redacted_text(
 
 def artifact_reference(path: Path, run_dir: Path) -> str:
     return f"{path.relative_to(run_dir).as_posix()}#{sha256_file(path)}"
+
+
+def verify_artifact_reference(
+    path: Path,
+    run_dir: Path,
+    reference: object,
+    label: str,
+) -> None:
+    if not isinstance(reference, str) or artifact_reference(path, run_dir) != reference:
+        raise HostReceiptError(f"{label} artifact binding does not match its bytes")

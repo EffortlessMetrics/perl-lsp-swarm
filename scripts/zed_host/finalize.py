@@ -17,6 +17,7 @@ from .common import (
     redactions,
     sha256_file,
     sha256_tree,
+    verify_artifact_reference,
     write_json,
 )
 
@@ -25,9 +26,26 @@ def _require_unchanged(manifest: dict[str, Any]) -> None:
     checks = [
         (Path(manifest["zed"]["cli"]), manifest["zed"]["cli_sha256"], "Zed CLI"),
         (Path(manifest["zed"]["app"]), manifest["zed"]["app_sha256"], "Zed app"),
-        (Path(manifest["extension"]["wasm"]), manifest["extension"]["wasm_sha256"], "extension WebAssembly"),
-        (Path(manifest["perllsp"]["command"]), manifest["perllsp"]["binary_sha256"], "perllsp"),
-        (Path(manifest["configuration"]["settings"]), manifest["configuration"]["settings_sha256"], "Zed settings"),
+        (
+            Path(manifest["extension"]["manifest"]),
+            manifest["extension"]["manifest_sha256"],
+            "extension manifest",
+        ),
+        (
+            Path(manifest["extension"]["wasm"]),
+            manifest["extension"]["wasm_sha256"],
+            "extension WebAssembly",
+        ),
+        (
+            Path(manifest["perllsp"]["command"]),
+            manifest["perllsp"]["binary_sha256"],
+            "perllsp",
+        ),
+        (
+            Path(manifest["configuration"]["settings"]),
+            manifest["configuration"]["settings_sha256"],
+            "Zed settings",
+        ),
     ]
     for path, expected, label in checks:
         if sha256_file(path) != expected:
@@ -35,6 +53,60 @@ def _require_unchanged(manifest: dict[str, Any]) -> None:
     extension = Path(manifest["extension"]["directory"])
     if sha256_tree(extension) != manifest["extension"]["tree_sha256"]:
         raise HostReceiptError("extension checkout changed after subject preparation")
+    workspace = Path(manifest["workspace"]["directory"])
+    if sha256_tree(workspace, ignored=(".git",)) != manifest["workspace"][
+        "fixture_sha256"
+    ]:
+        raise HostReceiptError("workspace fixture changed after subject preparation")
+
+
+def _require_run_binding(
+    prepared_manifest_sha256: str,
+    observations: dict[str, Any],
+    launch: dict[str, Any],
+    inventory: dict[str, Any],
+) -> None:
+    bindings = [
+        (observations.get("prepared_manifest_sha256"), "observations"),
+        (launch.get("prepared_manifest_sha256"), "launch evidence"),
+        (inventory.get("prepared_manifest_sha256"), "process inventory"),
+    ]
+    language_server_log = observations.get("language_server_log")
+    if not isinstance(language_server_log, dict):
+        raise HostReceiptError("observations.language_server_log must be an object")
+    bindings.append(
+        (
+            language_server_log.get("prepared_manifest_sha256"),
+            "language-server log",
+        )
+    )
+    for actual, label in bindings:
+        if actual != prepared_manifest_sha256:
+            raise HostReceiptError(
+                f"{label} is not bound to the current prepared manifest"
+            )
+
+
+def _language_server_source(
+    observations: dict[str, Any], prepared_manifest_sha256: str
+) -> Path:
+    binding = observations.get("language_server_log")
+    if not isinstance(binding, dict):
+        raise HostReceiptError("observations.language_server_log must be an object")
+    if binding.get("prepared_manifest_sha256") != prepared_manifest_sha256:
+        raise HostReceiptError(
+            "language-server log is not bound to the current prepared manifest"
+        )
+    source = binding.get("path")
+    expected_sha256 = binding.get("sha256")
+    if not isinstance(source, str) or not source.strip():
+        raise HostReceiptError("observations.language_server_log.path is required")
+    if not isinstance(expected_sha256, str) or not expected_sha256.startswith("sha256:"):
+        raise HostReceiptError("observations.language_server_log.sha256 is required")
+    source_path = Path(source).expanduser().resolve(strict=True)
+    if sha256_file(source_path) != expected_sha256:
+        raise HostReceiptError("language-server log digest does not match its bytes")
+    return source_path
 
 
 def _cells(
@@ -46,14 +118,24 @@ def _cells(
     if not isinstance(value, dict):
         raise HostReceiptError(f"observations.{group} must be an object")
     cells: dict[str, Any] = {}
+    allowed = {
+        "pass",
+        "unsupported",
+        "not_proven",
+        "fail",
+        "legitimate_empty",
+        "instrument_failed",
+    }
     for name, cell in value.items():
         if not isinstance(cell, dict):
             raise HostReceiptError(f"observations.{group}.{name} must be an object")
         result = cell.get("result")
         evidence = cell.get("evidence")
-        if result not in {"pass", "limited", "unsupported", "not_proven", "fail", "instrument_failed"}:
+        if result not in allowed:
             raise HostReceiptError(f"observations.{group}.{name} has invalid result")
-        if result == "pass" and (not isinstance(evidence, str) or not evidence.strip()):
+        if result == "pass" and (
+            not isinstance(evidence, str) or not evidence.strip()
+        ):
             raise HostReceiptError(f"passing {group}.{name} requires direct evidence")
         if isinstance(evidence, str):
             evidence = redact_text(evidence, replacements)
@@ -90,14 +172,36 @@ def _validate_with_rust(repo_root: Path, receipt: Path) -> None:
 
 def finalize(args: Namespace, repo_root: Path) -> int:
     run_dir = args.run_dir.expanduser().resolve(strict=True)
-    manifest = load_json(run_dir / "manifest.json")
+    prepared_manifest = run_dir / "manifest.json"
+    prepared_manifest_sha256 = sha256_file(prepared_manifest)
+    manifest = load_json(prepared_manifest)
     observations = load_json(args.observations or run_dir / "observations.json")
     launch = load_json(run_dir / "launch.json")
+    process_inventory = run_dir / "artifacts/process-inventory.json"
+    inventory = load_json(process_inventory)
+
+    if launch.get("schema_version") != "zed_exact_source_launch.v1":
+        raise HostReceiptError("unexpected exact-source launch schema")
+    if inventory.get("schema_version") != "zed_exact_source_process_inventory.v1":
+        raise HostReceiptError("unexpected exact-source process inventory schema")
     if launch.get("result") != "pass":
         raise HostReceiptError("launch/process isolation did not pass")
-    _require_unchanged(manifest)
     if observations.get("schema_version") != "zed_exact_source_observations.v1":
         raise HostReceiptError("unexpected exact-source observation schema")
+
+    _require_run_binding(
+        prepared_manifest_sha256,
+        observations,
+        launch,
+        inventory,
+    )
+    verify_artifact_reference(
+        process_inventory,
+        run_dir,
+        launch.get("process_inventory"),
+        "process inventory",
+    )
+    _require_unchanged(manifest)
 
     replacements = redactions(manifest, run_dir)
     template = load_json(
@@ -105,7 +209,9 @@ def finalize(args: Namespace, repo_root: Path) -> int:
     )
     result = observations.get("result")
     if result not in {"pass", "fail", "instrument_failed"}:
-        raise HostReceiptError("observations.result must be pass, fail, or instrument_failed")
+        raise HostReceiptError(
+            "observations.result must be pass, fail, or instrument_failed"
+        )
     observed_at = observations.get("observed_at")
     if not isinstance(observed_at, str) or not observed_at.strip():
         raise HostReceiptError("observations.observed_at is required")
@@ -115,19 +221,24 @@ def finalize(args: Namespace, repo_root: Path) -> int:
         raise HostReceiptError("observations.configuration must be an object")
 
     raw_stderr = run_dir / "artifacts/zed-foreground.stderr.log"
+    verify_artifact_reference(
+        raw_stderr,
+        run_dir,
+        launch.get("stderr"),
+        "Zed foreground stderr",
+    )
     redacted_stderr = run_dir / "artifacts/zed-foreground.stderr.redacted.log"
     copy_redacted_text(raw_stderr, redacted_stderr, replacements)
 
-    language_server_source = observations.get("language_server_log")
-    if not isinstance(language_server_source, str) or not language_server_source.strip():
-        raise HostReceiptError("observations.language_server_log is required")
-    language_server_source_path = Path(language_server_source).expanduser().resolve(strict=True)
+    language_server_source_path = _language_server_source(
+        observations, prepared_manifest_sha256
+    )
     language_server_log = run_dir / "artifacts/language-server.redacted.log"
-    copy_redacted_text(language_server_source_path, language_server_log, replacements)
-
-    process_inventory = run_dir / "artifacts/process-inventory.json"
-    if not process_inventory.is_file():
-        raise HostReceiptError("process inventory artifact is missing")
+    copy_redacted_text(
+        language_server_source_path,
+        language_server_log,
+        replacements,
+    )
 
     receipt = template
     receipt["result"] = result
@@ -185,9 +296,13 @@ def finalize(args: Namespace, repo_root: Path) -> int:
         "redacted": True,
     }
     limitations = observations.get("limitations")
-    if not isinstance(limitations, list) or not all(isinstance(item, str) for item in limitations):
+    if not isinstance(limitations, list) or not all(
+        isinstance(item, str) for item in limitations
+    ):
         raise HostReceiptError("observations.limitations must be a string array")
-    receipt["limitations"] = [redact_text(item, replacements) for item in limitations]
+    receipt["limitations"] = [
+        redact_text(item, replacements) for item in limitations
+    ]
     receipt["claim_boundary"] = (
         "Exact-source development-extension evidence only. No official-registry, managed-download, cross-platform, or broad Zed support claim follows."
     )

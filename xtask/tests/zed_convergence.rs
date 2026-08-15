@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
@@ -25,6 +25,27 @@ fn string<'a>(value: &'a Value, pointer: &str) -> Result<&'a str, Box<dyn Error>
         .ok_or_else(|| io::Error::other(format!("missing string at `{pointer}`")).into())
 }
 
+fn safe_relative_path(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+
+    let normalized = path.replace('\\', "/");
+    let first_component = normalized.split('/').next().unwrap_or_default();
+    let has_windows_prefix =
+        first_component.len() >= 2 && first_component.as_bytes().get(1) == Some(&b':');
+    if normalized.starts_with('/') || has_windows_prefix {
+        return false;
+    }
+
+    let path = Path::new(path);
+    !path.is_absolute()
+        && path.components().all(|component| {
+            !matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_))
+        })
+        && normalized.split('/').all(|component| component != "..")
+}
+
 fn validate_required_files(root: &Path, manifest: &Value) -> Result<(), String> {
     let required = manifest
         .pointer("/required_files")
@@ -34,6 +55,9 @@ fn validate_required_files(root: &Path, manifest: &Value) -> Result<(), String> 
     for entry in required {
         let relative =
             entry.as_str().ok_or_else(|| "required_files entry is not a string".to_string())?;
+        if !safe_relative_path(relative) {
+            return Err(format!("unsafe required file path `{relative}`"));
+        }
         if !root.join(relative).is_file() {
             return Err(format!("missing converged file `{relative}`"));
         }
@@ -140,5 +164,22 @@ fn missing_authority_is_a_hard_failure() -> Result<(), Box<dyn Error>> {
     required.push(Value::String(".ci/fixtures/zed-perl-upstream/does-not-exist".to_string()));
 
     assert!(validate_required_files(&root, &manifest).is_err());
+    Ok(())
+}
+
+#[test]
+fn unsafe_required_file_paths_are_rejected_before_join() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let manifest = read_json(&root, ".ci/fixtures/zed-perl-upstream/convergence.v1.json")?;
+
+    for path in ["", "../outside", "/outside", r"\outside", r"C:\outside", r"C:outside"] {
+        let mut mutated = manifest.clone();
+        mutated["required_files"] = Value::Array(vec![Value::String(path.to_string())]);
+        assert!(
+            validate_required_files(&root, &mutated).is_err(),
+            "unsafe path should be rejected: {path:?}"
+        );
+    }
+
     Ok(())
 }

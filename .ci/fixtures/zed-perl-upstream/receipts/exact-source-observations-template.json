@@ -1,5 +1,6 @@
 {
   "schema_version": "zed_exact_source_observations.v1",
+  "prepared_manifest_sha256": null,
   "result": "not_run",
   "observed_at": null,
   "configuration": {
@@ -38,7 +39,11 @@
     "restart": {"result": "not_proven", "evidence": null},
     "shutdown": {"result": "not_proven", "evidence": null}
   },
-  "language_server_log": null,
+  "language_server_log": {
+    "path": null,
+    "sha256": null,
+    "prepared_manifest_sha256": null
+  },
   "limitations": [
     "Template only. Install the exact candidate through Zed's Install Dev Extension action and record direct observations.",
     "Managed download and official-registry installation are separate evidence stages."

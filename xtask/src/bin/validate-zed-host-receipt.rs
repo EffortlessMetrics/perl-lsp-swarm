@@ -5,6 +5,7 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use std::io;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -21,7 +22,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let receipt_bytes = fs::read(&receipt)?;
     let receipt: Value = serde_json::from_slice(&receipt_bytes)?;
+    zed_host_compat::validate_schema(&receipt).map_err(io::Error::other)?;
     zed_host_compat::validate_pass(&receipt, None).map_err(io::Error::other)?;
-    println!("Zed exact-source host receipt checks passed.");
+    writeln!(io::stdout(), "Zed exact-source host receipt checks passed.")?;
     Ok(())
 }

@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from .common import HostReceiptError, artifact_reference, redactions, write_json
+from .common import (
+    HostReceiptError,
+    artifact_reference,
+    redactions,
+    sha256_file,
+    write_json,
+)
 
 
 def _linux_processes(executable: Path) -> list[dict[str, Any]]:
@@ -24,13 +32,18 @@ def _linux_processes(executable: Path) -> list[dict[str, Any]]:
             continue
         try:
             actual = (entry / "exe").resolve(strict=True)
-            command = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(
-                "utf-8", errors="replace"
+            command = (
+                (entry / "cmdline")
+                .read_bytes()
+                .replace(b"\0", b" ")
+                .decode("utf-8", errors="replace")
             )
         except (FileNotFoundError, PermissionError, OSError):
             continue
         if actual == expected:
-            processes.append({"pid": int(entry.name), "executable": str(actual), "command": command})
+            processes.append(
+                {"pid": int(entry.name), "executable": str(actual), "command": command}
+            )
     return processes
 
 
@@ -42,13 +55,30 @@ def _macos_processes(executable: Path) -> list[dict[str, Any]]:
         text=True,
         timeout=15,
     )
-    expected = str(executable.resolve())
+    expected = executable.resolve()
     processes: list[dict[str, Any]] = []
     for line in completed.stdout.splitlines():
         pid_text, separator, command = line.strip().partition(" ")
-        if separator and pid_text.isdigit() and command.startswith(expected):
-            processes.append({"pid": int(pid_text), "executable": expected, "command": command})
+        if not separator or not pid_text.isdigit():
+            continue
+        try:
+            executable_token = shlex.split(command)[0]
+            actual = Path(executable_token).expanduser().resolve()
+        except (IndexError, OSError, ValueError):
+            continue
+        if actual == expected:
+            processes.append(
+                {"pid": int(pid_text), "executable": str(expected), "command": command}
+            )
     return processes
+
+
+def _windows_powershell() -> str:
+    for name in ("pwsh", "powershell.exe"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+    raise HostReceiptError("Windows process inventory requires pwsh or powershell.exe")
 
 
 def _windows_processes(executable: Path) -> list[dict[str, Any]]:
@@ -58,7 +88,7 @@ def _windows_processes(executable: Path) -> list[dict[str, Any]]:
         "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
     )
     completed = subprocess.run(
-        ["pwsh", "-NoLogo", "-NoProfile", "-Command", query],
+        [_windows_powershell(), "-NoLogo", "-NoProfile", "-Command", query],
         check=True,
         capture_output=True,
         text=True,
@@ -101,6 +131,11 @@ def _process_ids(rows: list[dict[str, Any]]) -> set[int]:
 
 
 def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int:
+    prepared_manifest = run_dir / "manifest.json"
+    if not prepared_manifest.is_file():
+        raise HostReceiptError("prepared manifest is missing")
+    prepared_manifest_sha256 = sha256_file(prepared_manifest)
+
     zed_cli = Path(manifest["zed"]["cli"])
     zed_app = Path(manifest["zed"]["app"])
     profile = Path(manifest["profile"]["directory"])
@@ -126,16 +161,25 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
     print("Zed will start in an isolated profile.")
     print("Inside Zed, invoke zed::InstallDevExtension and select:")
     print(manifest["extension"]["directory"])
-    print("Complete the exact observation checklist, then close the Zed window normally.")
+    print(
+        "Complete the exact observation checklist, then close the Zed window normally."
+    )
 
     samples: list[dict[str, Any]] = []
+    before_pids = _process_ids(before)
     started_at = time.monotonic()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
         while process.poll() is None:
             rows = matching_processes(perllsp)
-            if rows:
-                samples.append({"offset_seconds": round(time.monotonic() - started_at, 3), "rows": rows})
+            new_rows = [row for row in rows if row.get("pid") not in before_pids]
+            if new_rows:
+                samples.append(
+                    {
+                        "offset_seconds": round(time.monotonic() - started_at, 3),
+                        "rows": new_rows,
+                    }
+                )
             if time.monotonic() - started_at > timeout_seconds:
                 process.terminate()
                 try:
@@ -143,7 +187,9 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=15)
-                raise HostReceiptError("Zed exact-source host session exceeded the bounded timeout")
+                raise HostReceiptError(
+                    "Zed exact-source host session exceeded the bounded timeout"
+                )
             time.sleep(1.0)
         return_code = process.returncode
 
@@ -159,7 +205,17 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
             row["executable"] = "<perllsp>"
     inventory = {
         "schema_version": "zed_exact_source_process_inventory.v1",
-        "command": ["<zed-cli>", "--zed", "<zed-app>", "--foreground", "--wait", "--user-data-dir", "<profile>", "<workspace>"],
+        "prepared_manifest_sha256": prepared_manifest_sha256,
+        "command": [
+            "<zed-cli>",
+            "--zed",
+            "<zed-app>",
+            "--foreground",
+            "--wait",
+            "--user-data-dir",
+            "<profile>",
+            "<workspace>",
+        ],
         "zed_return_code": return_code,
         "perllsp_observed": bool(samples),
         "perllsp_samples": samples,
@@ -170,6 +226,7 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
     write_json(process_path, inventory)
     launch_result = {
         "schema_version": "zed_exact_source_launch.v1",
+        "prepared_manifest_sha256": prepared_manifest_sha256,
         "result": "pass" if return_code == 0 and samples and not leaked else "fail",
         "zed_return_code": return_code,
         "perllsp_observed": bool(samples),

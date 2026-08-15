@@ -27,7 +27,7 @@ def main() -> int:
     parser.add_argument("--perllsp-build", required=True)
     parser.add_argument(
         "--resolution-route",
-        choices=["explicit_binary_path", "worktree_path"],
+        choices=["binary_override", "worktree_path"],
         required=True,
     )
     parser.add_argument("--workspace", type=Path, required=True)
