@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   type AccessibilityInventory,
   CURRENT_ACCESSIBILITY_INVENTORY,
@@ -5,6 +7,12 @@ import {
   normalizedAccessibilityInventory,
   validateAccessibilityInventory,
 } from '../accessibilityInventory';
+
+const extensionRoot = path.resolve(__dirname, '..', '..');
+
+function readExtensionSource(fileName: string): string {
+  return fs.readFileSync(path.join(extensionRoot, 'src', fileName), 'utf8');
+}
 
 function cloneInventory(): AccessibilityInventory {
   return JSON.parse(JSON.stringify(CURRENT_ACCESSIBILITY_INVENTORY)) as AccessibilityInventory;
@@ -77,5 +85,62 @@ describe('VS Code accessibility inventory', () => {
         'custom surface must name its accessibility semantic source: workspace_status',
       ]),
     );
+  });
+});
+
+/**
+ * `validateAccessibilityInventory` only checks the inventory against itself, so
+ * on its own it cannot notice that a row has stopped describing the shipped
+ * extension. A row could keep claiming a keyboard route after the command was
+ * deleted, or claim `accessibilityInformation` after the assignment was
+ * removed, and every structural test above would still pass.
+ *
+ * These bind each claim to the production artifact that has to back it.
+ */
+describe('accessibility inventory is bound to the shipped extension', () => {
+  const contributedCommands = new Set(
+    (
+      JSON.parse(fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8')) as {
+        contributes?: { commands?: Array<{ command?: string }> };
+      }
+    ).contributes?.commands?.flatMap((command) => (command.command ? [command.command] : [])) ?? [],
+  );
+
+  test('every command-shaped keyboard route is a really contributed command', () => {
+    const commandRoutes = CURRENT_ACCESSIBILITY_INVENTORY.surfaces.flatMap((surface) =>
+      surface.keyboard_route !== null && surface.keyboard_route.startsWith('perl-lsp.')
+        ? [surface.keyboard_route]
+        : [],
+    );
+
+    // Guard the guard: if nothing is command-shaped the assertion below is vacuous.
+    expect(commandRoutes.length).toBeGreaterThan(0);
+    for (const route of commandRoutes) {
+      expect(contributedCommands).toContain(route);
+    }
+  });
+
+  test('a surface naming a VS Code accessibility API has that API assigned in source', () => {
+    const surfaces = CURRENT_ACCESSIBILITY_INVENTORY.surfaces.filter(
+      (surface) => surface.accessible_name_source === 'StatusBarItem.accessibilityInformation',
+    );
+
+    expect(surfaces.length).toBeGreaterThan(0);
+    expect(readExtensionSource('extension.ts')).toMatch(
+      /statusBarItem\.accessibilityInformation\s*=/,
+    );
+  });
+
+  test('a surface claiming VS Code theme variables really uses them', () => {
+    const themedTsOwners = CURRENT_ACCESSIBILITY_INVENTORY.surfaces.flatMap((surface) =>
+      surface.theme_policy === 'vscode_theme_variables' && surface.owner.endsWith('.ts')
+        ? [surface.owner]
+        : [],
+    );
+
+    expect(themedTsOwners.length).toBeGreaterThan(0);
+    for (const owner of themedTsOwners) {
+      expect(readExtensionSource(owner)).toContain('var(--vscode-');
+    }
   });
 });
