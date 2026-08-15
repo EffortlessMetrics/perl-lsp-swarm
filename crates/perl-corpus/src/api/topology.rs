@@ -662,6 +662,28 @@ fn collect_layer_assets(
             })?;
             let kind = classify(&path);
 
+            if file_type.is_symlink() {
+                // Selected assets must fail closed as SymlinkUnsupported before any
+                // target follow: a dangling selected link would otherwise surface as Io.
+                if kind.is_some() {
+                    return Err(CorpusTopologyError::SymlinkUnsupported { path });
+                }
+                let target_is_directory = match fs::metadata(&path) {
+                    Ok(metadata) => metadata.is_dir(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(error) => {
+                        return Err(CorpusTopologyError::Io {
+                            path: path.clone(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                if target_is_directory {
+                    return Err(CorpusTopologyError::SymlinkUnsupported { path });
+                }
+                continue;
+            }
+
             if file_type.is_dir() {
                 if kind.is_some() {
                     return Err(CorpusTopologyError::UnsupportedFileType { path });
@@ -673,9 +695,6 @@ fn collect_layer_assets(
             let Some(kind) = kind else {
                 continue;
             };
-            if file_type.is_symlink() {
-                return Err(CorpusTopologyError::SymlinkUnsupported { path });
-            }
             if !file_type.is_file() {
                 return Err(CorpusTopologyError::UnsupportedFileType { path });
             }
@@ -1197,6 +1216,22 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn dangling_excluded_metadata_symlink_does_not_block_discovery() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let link = root.path().join("crates/perl-corpus/fuzz/README.md");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        symlink(root.path().join("missing-readme-target.md"), &link)
+            .expect("create dangling metadata symlink");
+
+        let topology =
+            topology_from_root(root.path()).expect("ignore dangling excluded metadata symlink");
+        assert!(topology.assets.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn symlinked_entries_fail_closed() {
         use std::os::unix::fs::symlink;
 
@@ -1206,6 +1241,116 @@ mod tests {
         write_fixture(&target, "1;");
         fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
         symlink(&target, &link).expect("create source symlink");
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_selected_symlink_fails_as_symlink_unsupported() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let link = root.path().join("test_corpus/dangling.pl");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        symlink(root.path().join("missing-target.pl"), &link)
+            .expect("create dangling selected symlink");
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_test_directory_cannot_hide_selected_descendants() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let target = root.path().join("outside-test-tree");
+        write_fixture(&target.join("case.pl"), "1;");
+        write_fixture(&target.join("Case.pm"), "package Case; 1;");
+        write_fixture(&target.join("case.t"), "ok 1;");
+        let link = root.path().join("test_corpus/linked");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        symlink(&target, &link).expect("create test directory symlink");
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_fuzz_directory_cannot_hide_selected_descendants() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let target = root.path().join("outside-fuzz-tree");
+        write_fixture(&target.join("crash-deadbeef"), "xqN<<\"");
+        write_fixture(&target.join("validation.txt"), "xqN<<\"");
+        write_fixture(&target.join("seed.pl"), "1;");
+        let link = root.path().join("crates/perl-corpus/fuzz/linked");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        symlink(&target, &link).expect("create fuzz directory symlink");
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_directory_target_inside_root_still_fails_closed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let target = root.path().join("test_corpus/real");
+        write_fixture(&target.join("case.pl"), "1;");
+        let link = root.path().join("test_corpus/linked");
+        symlink(&target, &link).expect("create internal directory symlink");
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_directory_target_outside_root_fails_closed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let outside = tempfile::tempdir().expect("outside temporary directory");
+        write_fixture(&outside.path().join("case.pl"), "1;");
+        let link = root.path().join("test_corpus/linked");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        symlink(outside.path(), &link).expect("create external directory symlink");
+
+        assert_eq!(
+            topology_from_root(root.path()),
+            Err(CorpusTopologyError::SymlinkUnsupported { path: link })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_intermediate_directory_symlink_fails_closed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let target = root.path().join("outside-nested-tree");
+        write_fixture(&target.join("case.pl"), "1;");
+        let link = root.path().join("test_corpus/outer/linked");
+        fs::create_dir_all(link.parent().expect("link parent")).expect("create link parent");
+        symlink(&target, &link).expect("create nested directory symlink");
 
         assert_eq!(
             topology_from_root(root.path()),

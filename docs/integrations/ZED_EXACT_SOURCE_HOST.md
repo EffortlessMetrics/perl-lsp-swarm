@@ -21,6 +21,12 @@ install_route = dev_extension
 binary_route = binary_override | worktree_path
 ```
 
+`binary_override` writes the exact binary into `lsp.perllsp.binary.path`.
+`worktree_path` omits that override so the staged extension resolves the
+server itself through `worktree.which("perllsp")`; preparation and launch both
+reject the route unless the session PATH resolves `perllsp` to the exact
+prepared binary.
+
 This is not managed download, official-registry installation, or public support. #7994 owns the managed route in real Zed; #7912 owns the official-registry journey.
 
 ## Prepare
@@ -74,7 +80,11 @@ Preparation rejects prior run state, dirty or wrong extension subjects, version 
 }
 ```
 
-`binary.arguments` stays empty so the extension remains the exact `--stdio` authority. Preparation writes `manifest.json`, hashes its exact bytes, and injects that digest into the observation template. Do not copy an observation file from another prepared run.
+With `--resolution-route worktree_path` the `binary` override is omitted and
+Zed resolves `perllsp` through the worktree shell environment; the driver
+accepts the route only when this session's PATH resolves `perllsp` to the
+exact prepared binary. `binary.arguments` stays empty so the extension remains
+the exact `--stdio` authority. Preparation writes `manifest.json`, hashes its exact bytes, and injects that digest into the observation template. Do not copy an observation file from another prepared run.
 
 ## Launch
 

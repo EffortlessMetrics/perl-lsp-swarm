@@ -109,6 +109,29 @@ def _language_server_source(
     return source_path
 
 
+def _configuration_observation(
+    config_observation: dict[str, Any],
+) -> dict[str, Any]:
+    """Reject observation values the shared schema would refuse after emission."""
+    workspace_observed = config_observation.get("workspace_configuration_observed")
+    if workspace_observed is not None and not isinstance(workspace_observed, bool):
+        raise HostReceiptError(
+            "observations.configuration.workspace_configuration_observed must be"
+            " a boolean or null"
+        )
+    observed: dict[str, Any] = {
+        "workspace_configuration_observed": workspace_observed
+    }
+    for name in ("precedence_observed", "live_update_observed"):
+        value = config_observation.get(name)
+        if value is not None and not isinstance(value, str):
+            raise HostReceiptError(
+                f"observations.configuration.{name} must be a string or null"
+            )
+        observed[name] = value
+    return observed
+
+
 def _cells(
     observations: dict[str, Any],
     group: str,
@@ -143,19 +166,22 @@ def _cells(
     return cells
 
 
-def _validate_with_rust(repo_root: Path, receipt: Path) -> None:
+def _validate_with_rust(repo_root: Path, receipt: Path, schema_only: bool) -> None:
+    command = [
+        "cargo",
+        "run",
+        "--quiet",
+        "-p",
+        "xtask",
+        "--bin",
+        "validate-zed-host-receipt",
+        "--",
+    ]
+    if schema_only:
+        command.append("--schema-only")
+    command.append(str(receipt))
     completed = subprocess.run(
-        [
-            "cargo",
-            "run",
-            "--quiet",
-            "-p",
-            "xtask",
-            "--bin",
-            "validate-zed-host-receipt",
-            "--",
-            str(receipt),
-        ],
+        command,
         cwd=repo_root,
         check=False,
         capture_output=True,
@@ -219,6 +245,7 @@ def finalize(args: Namespace, repo_root: Path) -> int:
     config_observation = observations.get("configuration")
     if not isinstance(config_observation, dict):
         raise HostReceiptError("observations.configuration must be an object")
+    configuration_observed = _configuration_observation(config_observation)
 
     raw_stderr = run_dir / "artifacts/zed-foreground.stderr.log"
     verify_artifact_reference(
@@ -281,11 +308,11 @@ def finalize(args: Namespace, repo_root: Path) -> int:
     receipt["configuration"] = {
         "settings_sha256": manifest["configuration"]["settings_sha256"],
         "server_order": manifest["configuration"]["server_order"],
-        "workspace_configuration_observed": config_observation.get(
+        "workspace_configuration_observed": configuration_observed[
             "workspace_configuration_observed"
-        ),
-        "precedence_observed": config_observation.get("precedence_observed"),
-        "live_update_observed": config_observation.get("live_update_observed"),
+        ],
+        "precedence_observed": configuration_observed["precedence_observed"],
+        "live_update_observed": configuration_observed["live_update_observed"],
     }
     receipt["activation"] = _cells(observations, "activation", replacements)
     receipt["journey"] = _cells(observations, "journey", replacements)
@@ -310,8 +337,9 @@ def finalize(args: Namespace, repo_root: Path) -> int:
     output = args.output or run_dir / "receipt.json"
     candidate = output.with_suffix(output.suffix + ".candidate")
     write_json(candidate, receipt)
-    if result == "pass":
-        _validate_with_rust(repo_root, candidate)
+    # Every durable receipt must satisfy the shared structural schema; only the
+    # pass semantics are conditioned on the recorded result.
+    _validate_with_rust(repo_root, candidate, result != "pass")
     output.parent.mkdir(parents=True, exist_ok=True)
     os.replace(candidate, output)
     print(f"Wrote exact-source Zed receipt: {output}")

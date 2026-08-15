@@ -52,6 +52,7 @@ proves which server Neovim will start.
 cargo install perllsp
 perllsp --version
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 ### Homebrew tap
 
