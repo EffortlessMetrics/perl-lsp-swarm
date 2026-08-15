@@ -1,0 +1,44 @@
+{
+  "schema_version": "zed_public_registry_subject.v1",
+  "status": "blocked_pending_publication",
+  "registry": {
+    "repository": "zed-industries/extensions",
+    "repository_commit": null,
+    "extension_id": "perl",
+    "extension_version": null,
+    "submodule_path": "extensions/perl",
+    "submodule_commit": null
+  },
+  "extension": {
+    "repository": "tree-sitter-perl/zed-perl",
+    "manifest_version": null,
+    "commit": null,
+    "package_identity": null
+  },
+  "zed_defaults": {
+    "repository": "zed-industries/zed",
+    "source_commit": null,
+    "released_build": null,
+    "perl_order": ["perlnavigator-server", "!perl-lsp", "!perllsp", "..."]
+  },
+  "perllsp_asset": {
+    "release": null,
+    "target": null,
+    "asset_name": null,
+    "asset_url": null,
+    "asset_sha256": null
+  },
+  "clean_profile": {
+    "identity": null,
+    "prior_extension_absent": null,
+    "prior_managed_cache_absent": null,
+    "path_override_absent": null
+  },
+  "promotion": {
+    "registry_row": "not_proven",
+    "managed_download_row": "not_proven",
+    "path_row": "not_proven",
+    "documentation_projection": "not_proven"
+  },
+  "claim_boundary": "The public subject becomes current only after official registry publication, released Zed defaults, a clean profile, and an exact public perllsp asset or separately named PATH route exist."
+}
