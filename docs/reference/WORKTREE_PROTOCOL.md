@@ -65,6 +65,11 @@ For an existing candidate branch:
 git worktree add .worktrees/<short-slot> <branch>
 ```
 
+`/.worktrees/` is ignored in `.gitignore`, so a linked checkout created there never
+appears as untracked content in the coordination checkout. A worktree root that is not
+ignored breaks the clean-checkout requirement above and makes accidental staging
+possible.
+
 Keep paths short, especially on Windows. Enable repository long-path support where
 needed:
 
