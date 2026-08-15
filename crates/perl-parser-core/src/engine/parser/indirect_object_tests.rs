@@ -240,10 +240,7 @@ mod tests {
             other => panic!("Expected Block node, got {other:?}"),
         };
         let call = match &body[0] {
-            Node {
-                kind: NodeKind::ExpressionStatement { expression },
-                ..
-            } => expression.as_ref(),
+            Node { kind: NodeKind::ExpressionStatement { expression }, .. } => expression.as_ref(),
             node => node,
         };
         match &call.kind {
