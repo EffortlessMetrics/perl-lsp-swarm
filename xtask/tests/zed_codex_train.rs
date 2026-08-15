@@ -95,14 +95,8 @@ fn dap_index<'a>(train: &'a Value) -> Result<BTreeMap<&'a str, &'a Value>, Box<d
 #[test]
 fn core_train_is_topologically_ordered_and_unique() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
-    assert_eq!(
-        train.get("schema_version").and_then(Value::as_str),
-        Some("zed_codex_train.v1")
-    );
-    assert_eq!(
-        train.get("programme_issue").and_then(Value::as_u64),
-        Some(7759)
-    );
+    assert_eq!(train.get("schema_version").and_then(Value::as_str), Some("zed_codex_train.v1"));
+    assert_eq!(train.get("programme_issue").and_then(Value::as_u64), Some(7759));
 
     let mut seen = BTreeSet::new();
     for stage in core_stages(&train)? {
@@ -121,40 +115,20 @@ fn core_train_is_topologically_ordered_and_unique() -> Result<(), Box<dyn Error>
 #[test]
 fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
-    let rules = train
-        .get("rules")
-        .ok_or_else(|| io::Error::other("train lacks rules"))?;
+    let rules = train.get("rules").ok_or_else(|| io::Error::other("train lacks rules"))?;
     assert_eq!(
         string_set(rules, "current_core_frontier")?,
         BTreeSet::from(["C01", "P02", "P06", "P09"])
     );
-    assert_eq!(
-        string_set(rules, "current_dap_frontier")?,
-        BTreeSet::from(["D01"])
-    );
+    assert_eq!(string_set(rules, "current_dap_frontier")?, BTreeSet::from(["D01"]));
 
     let core = core_index(&train)?;
-    assert_eq!(
-        string(core["P00"], "state")?,
-        "complete_static_substrate_execution_not_proven"
-    );
-    assert_eq!(
-        core["P00"].get("pull_request").and_then(Value::as_u64),
-        Some(8023)
-    );
-    assert_eq!(
-        string(core["P01"], "state")?,
-        "authority_merged_execution_not_proven"
-    );
-    assert_eq!(
-        core["P01"].get("pull_request").and_then(Value::as_u64),
-        Some(8365)
-    );
+    assert_eq!(string(core["P00"], "state")?, "complete_static_substrate_execution_not_proven");
+    assert_eq!(core["P00"].get("pull_request").and_then(Value::as_u64), Some(8023));
+    assert_eq!(string(core["P01"], "state")?, "authority_merged_execution_not_proven");
+    assert_eq!(core["P01"].get("pull_request").and_then(Value::as_u64), Some(8365));
     assert_eq!(string(core["P02"], "state")?, "implementation_pr_open");
-    assert_eq!(
-        core["P02"].get("pull_request").and_then(Value::as_u64),
-        Some(8369)
-    );
+    assert_eq!(core["P02"].get("pull_request").and_then(Value::as_u64), Some(8369));
     for ready in ["P06", "P09", "C01"] {
         assert_eq!(string(core[ready], "state")?, "ready");
     }
@@ -206,18 +180,12 @@ fn core_authority_evidence_and_public_gates_remain_separate() -> Result<(), Box<
         ("P12", BTreeSet::from(["P04", "P11"])),
         ("P13", BTreeSet::from(["P05", "P11"])),
         ("P14", BTreeSet::from(["P07", "P10", "P11"])),
-        (
-            "P15",
-            BTreeSet::from(["P10", "P11", "P12", "P13", "P14"]),
-        ),
+        ("P15", BTreeSet::from(["P10", "P11", "P12", "P13", "P14"])),
         ("P16", BTreeSet::from(["P15"])),
         ("P17", BTreeSet::from(["P13"])),
         ("U01", BTreeSet::from(["M01"])),
         ("P18", BTreeSet::from(["M01", "U01"])),
-        (
-            "P19",
-            BTreeSet::from(["C01", "M02", "P08", "P10", "P13", "P14"]),
-        ),
+        ("P19", BTreeSet::from(["C01", "M02", "P08", "P10", "P13", "P14"])),
         ("P20", BTreeSet::from(["P09", "P19"])),
         ("P21", BTreeSet::from(["P20"])),
     ]);
@@ -241,16 +209,11 @@ fn core_authority_evidence_and_public_gates_remain_separate() -> Result<(), Box<
 #[test]
 fn support_and_closeout_require_public_receipt_and_projection() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
-    let rules = train
-        .get("rules")
-        .ok_or_else(|| io::Error::other("train lacks rules"))?;
+    let rules = train.get("rules").ok_or_else(|| io::Error::other("train lacks rules"))?;
     assert!(!boolean(rules, "templates_are_evidence")?);
     assert!(boolean(rules, "external_writes_are_manual")?);
     assert!(!boolean(rules, "dap_in_scope")?);
-    assert_eq!(
-        string_set(rules, "public_support_requires")?,
-        BTreeSet::from(["P19", "P20"])
-    );
+    assert_eq!(string_set(rules, "public_support_requires")?, BTreeSet::from(["P19", "P20"]));
 
     let core = core_index(&train)?;
     assert_eq!(string_set(core["P20"], "depends_on")?, BTreeSet::from(["P09", "P19"]));
@@ -266,10 +229,7 @@ fn upstream_acceptance_contracts_fail_closed() -> Result<(), Box<dyn Error>> {
     let core_acceptance = core["U01"]
         .get("upstream_acceptance")
         .ok_or_else(|| io::Error::other("U01 lacks upstream_acceptance"))?;
-    assert_eq!(
-        string(core_acceptance, "repository")?,
-        "tree-sitter-perl/zed-perl"
-    );
+    assert_eq!(string(core_acceptance, "repository")?, "tree-sitter-perl/zed-perl");
     assert!(boolean(core_acceptance, "requires_changed_subject")?);
     assert_eq!(
         string_set(core_acceptance, "required_fields")?,
@@ -291,10 +251,7 @@ fn upstream_acceptance_contracts_fail_closed() -> Result<(), Box<dyn Error>> {
     let dap_acceptance = dap["DU01"]
         .get("upstream_acceptance")
         .ok_or_else(|| io::Error::other("DU01 lacks upstream_acceptance"))?;
-    assert_eq!(
-        string(dap_acceptance, "repository")?,
-        "tree-sitter-perl/zed-perl"
-    );
+    assert_eq!(string(dap_acceptance, "repository")?, "tree-sitter-perl/zed-perl");
     assert!(boolean(dap_acceptance, "requires_changed_subject")?);
     assert!(boolean(dap_acceptance, "requires_released_build")?);
     assert_eq!(
@@ -309,14 +266,10 @@ fn upstream_acceptance_contracts_fail_closed() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn dap_sidecar_is_non_blocking_and_has_independent_asset_evidence()
--> Result<(), Box<dyn Error>> {
+fn dap_sidecar_is_non_blocking_and_has_independent_asset_evidence() -> Result<(), Box<dyn Error>> {
     let train = load_train()?;
     let sidecar = dap_sidecar(&train)?;
-    assert_eq!(
-        sidecar.get("controller_issue").and_then(Value::as_u64),
-        Some(9484)
-    );
+    assert_eq!(sidecar.get("controller_issue").and_then(Value::as_u64), Some(9484));
     assert!(!boolean(sidecar, "blocks_programme_closeout")?);
 
     let expected_issues = BTreeMap::from([
@@ -353,34 +306,16 @@ fn dap_sidecar_is_non_blocking_and_has_independent_asset_evidence()
 
     let dap = dap_index(&train)?;
     assert_eq!(string(dap["DA01"], "kind")?, "evidence");
-    assert_eq!(
-        string(dap["DA01"], "phase")?,
-        "public_perl_dap_asset_receipts"
-    );
-    assert_eq!(
-        string_set(dap["DA01"], "depends_on_sidecar")?,
-        BTreeSet::from(["D01"])
-    );
-    assert_eq!(
-        string_set(dap["D02"], "depends_on_core")?,
-        BTreeSet::from(["P02", "P03"])
-    );
+    assert_eq!(string(dap["DA01"], "phase")?, "public_perl_dap_asset_receipts");
+    assert_eq!(string_set(dap["DA01"], "depends_on_sidecar")?, BTreeSet::from(["D01"]));
+    assert_eq!(string_set(dap["D02"], "depends_on_core")?, BTreeSet::from(["P02", "P03"]));
     assert_eq!(
         string_set(dap["D05"], "depends_on_sidecar")?,
         BTreeSet::from(["D02", "DA01", "DM02"])
     );
-    assert_eq!(
-        string_set(dap["D05"], "depends_on_core")?,
-        BTreeSet::from(["C01"])
-    );
-    assert_eq!(
-        string_set(dap["D06"], "depends_on_sidecar")?,
-        BTreeSet::from(["D05"])
-    );
-    assert_eq!(
-        string_set(dap["D06"], "depends_on_core")?,
-        BTreeSet::from(["P09"])
-    );
+    assert_eq!(string_set(dap["D05"], "depends_on_core")?, BTreeSet::from(["C01"]));
+    assert_eq!(string_set(dap["D06"], "depends_on_sidecar")?, BTreeSet::from(["D05"]));
+    assert_eq!(string_set(dap["D06"], "depends_on_core")?, BTreeSet::from(["P09"]));
     Ok(())
 }
 
