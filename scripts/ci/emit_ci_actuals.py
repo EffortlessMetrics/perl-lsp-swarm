@@ -78,10 +78,15 @@ def emit_actuals(
     sha: str,
     pr: int | None,
     runner_default: str,
+    lane_id: str | None = None,
 ) -> dict[str, Any]:
     jobs: list[dict[str, Any]] = []
     total_actual_lem = 0.0
     total_estimated_lem = 0.0
+    # Lane floors are a property of the lane, not of each gate inside it. A
+    # shard lane runs many gates, so adding its floor per job would multiply
+    # the lane's whole budget by its gate count. Count each lane once.
+    counted_lanes: set[str] = set()
     for r in receipts:
         gate_name = r.get("gate_name", "")
         duration_ms = r.get("duration_ms")
@@ -94,13 +99,35 @@ def emit_actuals(
         else:
             actual_minutes = None
             actual_lem = None
-        # Attribute against a static lane floor where the gate name maps to a
-        # known lane id. Many gate names match lane ids directly.
-        estimated_lem = lane_base_lem(gate_name, lanes)
-        if estimated_lem is not None:
-            total_estimated_lem += estimated_lem
+        # Attribute against the static floor of the lane this job ran in.
+        #
+        # The lane is supplied by the workflow via --lane-id, because the
+        # workflow job is the only place that knows it: gate names are N:1
+        # into lanes (`fmt`, `clippy_full`, and `unit_foundation_full` all run
+        # inside one shard lane), so the mapping cannot be recovered from the
+        # gate name. It must not be guessed either — `compile_all_targets` and
+        # `check_all_targets`, `docs_build` and `docs_gate` are near-miss pairs
+        # that any fuzzy match would bind to the wrong lane (#6217).
+        #
+        # A bare gate name is honoured only when it is *literally* a known lane
+        # id, which is an exact lookup rather than a match heuristic.
+        resolved_lane = lane_id or (gate_name if gate_name in lanes else None)
+
+        # Per-job `estimated_lem` stays the job's *own* static estimate, which
+        # exists only when the gate is itself a whole lane (1:1). A gate that
+        # is one of many inside a lane has no floor of its own, so it reports
+        # null rather than borrowing the lane's.
+        estimated_lem = (
+            lane_base_lem(gate_name, lanes) if gate_name in lanes else None
+        )
+        if resolved_lane is not None and resolved_lane not in counted_lanes:
+            counted_lanes.add(resolved_lane)
+            lane_floor = lane_base_lem(resolved_lane, lanes)
+            if lane_floor is not None:
+                total_estimated_lem += lane_floor
         jobs.append(
             {
+                "lane_id": resolved_lane,
                 "gate_name": gate_name,
                 "tier": r.get("tier"),
                 "status": r.get("status"),
@@ -144,10 +171,30 @@ def main() -> int:
         default="ubuntu_24_04",
         help="Runner to assume when receipts don't carry a runner field.",
     )
+    p.add_argument(
+        "--lane-id",
+        default=None,
+        help=(
+            "Lane id from policy/ci-lanes.toml that this job ran in, e.g. "
+            "merge_gate_shards. Stamped onto every emitted job so the "
+            "aggregator can attribute samples to a real lane. Gate names are "
+            "N:1 into lanes and cannot be mapped back, so the invoking "
+            "workflow must supply this (#6217)."
+        ),
+    )
     args = p.parse_args()
 
     multipliers = read_toml(args.budget).get("runner_multipliers", {})
     lanes = read_toml(args.lanes).get("lane", {})
+
+    if args.lane_id is not None and args.lane_id not in lanes:
+        print(
+            f"::error::--lane-id {args.lane_id!r} is not a lane in {args.lanes}. "
+            "Samples stamped with an unknown lane are dropped by the "
+            "aggregator, so this is refused rather than emitted (#6217).",
+            file=sys.stderr,
+        )
+        return 1
 
     receipts = collect_receipts(args.receipts_dir)
     actuals = emit_actuals(
@@ -158,6 +205,7 @@ def main() -> int:
         sha=args.sha,
         pr=args.pr,
         runner_default=args.runner_default,
+        lane_id=args.lane_id,
     )
 
     args.json_out.parent.mkdir(parents=True, exist_ok=True)

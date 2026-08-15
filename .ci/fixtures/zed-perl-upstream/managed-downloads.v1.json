@@ -1,0 +1,139 @@
+{
+  "schema_version": "zed_perllsp_managed_downloads.v1",
+  "status": "public_asset_snapshot_not_host_proven",
+  "source": {
+    "repository": "EffortlessMetrics/perl-lsp",
+    "release_id": 345992952,
+    "tag": "v0.17.0",
+    "version": "0.17.0",
+    "prerelease": false,
+    "published_at": "2026-06-28T21:22:46Z",
+    "release_topology": "docs/reference/downstream-dap-integrations.json"
+  },
+  "identity": {
+    "server_id": "perllsp",
+    "executable": "perllsp",
+    "arguments": ["--stdio"],
+    "release_asset_prefix": "perllsp-",
+    "retired_or_other_executable": "perl-lsp"
+  },
+  "version_normalization": {
+    "accepted_tag_prefix": "v",
+    "asset_version": "strip_one_leading_v_only"
+  },
+  "targets": [
+    {
+      "os": "linux",
+      "architecture": "x86_64",
+      "target": "x86_64-unknown-linux-musl",
+      "disposition": "managed",
+      "archive_type": "tar.gz",
+      "asset_name": "perllsp-0.17.0-x86_64-unknown-linux-musl.tar.gz",
+      "asset_id": 460503630,
+      "asset_size": 8925383,
+      "asset_digest": "sha256:857c763678dd1ef568e119a7e326f9ee4660d98862bef227988bf2a48f543717",
+      "archive_member": "perllsp-0.17.0-x86_64-unknown-linux-musl/perllsp",
+      "installed_path": "perllsp-0.17.0-x86_64-unknown-linux-musl/perllsp-0.17.0-x86_64-unknown-linux-musl/perllsp",
+      "make_executable": true,
+      "host_execution": "not_proven"
+    },
+    {
+      "os": "linux",
+      "architecture": "aarch64",
+      "target": "aarch64-unknown-linux-musl",
+      "disposition": "managed",
+      "archive_type": "tar.gz",
+      "asset_name": "perllsp-0.17.0-aarch64-unknown-linux-musl.tar.gz",
+      "asset_id": 460503631,
+      "asset_size": 8343553,
+      "asset_digest": "sha256:0b99b263d6deff88e25ff125688fbc5ebb712cf8cc261be9986b776b972602bf",
+      "archive_member": "perllsp-0.17.0-aarch64-unknown-linux-musl/perllsp",
+      "installed_path": "perllsp-0.17.0-aarch64-unknown-linux-musl/perllsp-0.17.0-aarch64-unknown-linux-musl/perllsp",
+      "make_executable": true,
+      "host_execution": "not_proven"
+    },
+    {
+      "os": "macos",
+      "architecture": "x86_64",
+      "target": "x86_64-apple-darwin",
+      "disposition": "managed",
+      "archive_type": "tar.gz",
+      "asset_name": "perllsp-0.17.0-x86_64-apple-darwin.tar.gz",
+      "asset_id": 460503629,
+      "asset_size": 7912749,
+      "asset_digest": "sha256:b117abfe29bb9840f21433d5ffff8c47a2fda1f6815cf477230d3f3b3ec22e74",
+      "archive_member": "perllsp-0.17.0-x86_64-apple-darwin/perllsp",
+      "installed_path": "perllsp-0.17.0-x86_64-apple-darwin/perllsp-0.17.0-x86_64-apple-darwin/perllsp",
+      "make_executable": true,
+      "host_execution": "not_proven"
+    },
+    {
+      "os": "macos",
+      "architecture": "aarch64",
+      "target": "aarch64-apple-darwin",
+      "disposition": "managed",
+      "archive_type": "tar.gz",
+      "asset_name": "perllsp-0.17.0-aarch64-apple-darwin.tar.gz",
+      "asset_id": 460503634,
+      "asset_size": 7305468,
+      "asset_digest": "sha256:cb00d92395e94caee6e565b2e74f18cbbcd2b9366ddd1e13a6b5df7660f77ffd",
+      "archive_member": "perllsp-0.17.0-aarch64-apple-darwin/perllsp",
+      "installed_path": "perllsp-0.17.0-aarch64-apple-darwin/perllsp-0.17.0-aarch64-apple-darwin/perllsp",
+      "make_executable": true,
+      "host_execution": "not_proven"
+    },
+    {
+      "os": "windows",
+      "architecture": "x86_64",
+      "target": "x86_64-pc-windows-msvc",
+      "disposition": "managed",
+      "archive_type": "zip",
+      "asset_name": "perllsp-0.17.0-x86_64-pc-windows-msvc.zip",
+      "asset_id": 460503633,
+      "asset_size": 8140127,
+      "asset_digest": "sha256:679cd43780d36cb2a980a42804905d24d2c76b0a3e2deaa3cd344daece87f7dd",
+      "archive_member": "perllsp.exe",
+      "installed_path": "perllsp-0.17.0-x86_64-pc-windows-msvc/perllsp.exe",
+      "make_executable": false,
+      "host_execution": "not_proven"
+    },
+    {
+      "os": "windows",
+      "architecture": "aarch64",
+      "target": "aarch64-pc-windows-msvc",
+      "disposition": "unsupported",
+      "reason": "The captured public release and canonical downstream target map do not contain a native Windows ARM64 perllsp asset. x86_64 or emulation cannot satisfy this row."
+    }
+  ],
+  "cache_contract": {
+    "version_directory": "perllsp-{version}-{target}",
+    "reuse_requires": [
+      "release_tag_match",
+      "target_match",
+      "expected_member_exists"
+    ],
+    "replace_only_after": [
+      "download_complete",
+      "archive_extracted",
+      "expected_member_exists",
+      "executable_ready"
+    ],
+    "preserve_known_good_on": [
+      "missing_asset",
+      "duplicate_asset",
+      "digest_mismatch",
+      "unsafe_archive_path",
+      "missing_member",
+      "partial_download",
+      "launch_failure"
+    ],
+    "cleanup_scope": "older directories matching exact perllsp managed prefix only"
+  },
+  "claim_boundary": {
+    "public_asset_metadata": "captured",
+    "archive_extraction": "not_proven",
+    "perllsp_version_execution": "not_proven",
+    "stdio_initialize_shutdown": "not_proven",
+    "actual_zed_host": "not_proven"
+  }
+}

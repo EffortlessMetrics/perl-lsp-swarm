@@ -56,7 +56,7 @@ fn non_rust_inventory_command_exits_zero() -> Result<()> {
     Ok(())
 }
 
-/// Read-only end-to-end check against the committed inventory.
+/// Read-only end-to-end check against the tracked-file inventory scan.
 #[test]
 fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
     let _guard = inventory_output_lock()?;
@@ -198,8 +198,8 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
 
     let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
     assert!(
-        workflow.contains("gates: docs_build non_rust_inventory_check v2_bundle_sync"),
-        "the live policy matrix must execute the inventory freshness gate"
+        workflow.contains("docs_build adr_link_check non_rust_inventory_check v2_bundle_sync"),
+        "the live policy matrix must execute the inventory scan gate"
     );
     Ok(())
 }

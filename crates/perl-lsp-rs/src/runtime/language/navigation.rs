@@ -15,6 +15,11 @@ use perl_parser_core::source_file::is_binary_content;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
+
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_lsp_rs_core::providers::navigation::definition_shadow::{
     DefinitionCutoverResult, goto_definition_live_exact_or_imported,
@@ -560,13 +565,10 @@ fn find_plack_middleware_definition_location(
             continue;
         }
 
-        if let Some(fs_path) = crate::workspace_index::uri_to_fs_path(&symbol.uri) {
-            if fs_path.ends_with(&expected_suffix) {
-                return Some(crate::workspace_index::Location {
-                    uri: symbol.uri,
-                    range: symbol.range,
-                });
-            }
+        if let Some(fs_path) = crate::workspace_index::uri_to_fs_path(&symbol.uri)
+            && fs_path.ends_with(&expected_suffix)
+        {
+            return Some(crate::workspace_index::Location { uri: symbol.uri, range: symbol.range });
         }
     }
 
@@ -691,12 +693,10 @@ fn find_symbol_key_definition_locations(
 ) -> Vec<crate::workspace_index::Location> {
     if symbol_key.kind == crate::workspace_index::SymKind::Pack
         && symbol_key.pkg.starts_with("Plack::Middleware::")
-    {
-        if let Some(location) =
+        && let Some(location) =
             find_plack_middleware_definition_location(workspace_index, symbol_key.pkg.as_ref())
-        {
-            return vec![location];
-        }
+    {
+        return vec![location];
     }
 
     if symbol_key.kind == crate::workspace_index::SymKind::Sub && symbol_key.sigil.is_none() {
@@ -754,7 +754,7 @@ fn lookup_workspace_definition(
     let package_prefix = format!("{pkg}::");
     for symbol in ranked_symbols {
         // Check if this symbol matches our package
-        if symbol.container_name.as_deref() == Some(pkg)
+        if (symbol.container_name.as_deref() == Some(pkg)
             || symbol
                 .qualified_name
                 .as_ref()
@@ -763,13 +763,12 @@ fn lookup_workspace_definition(
                         || q.strip_prefix(package_prefix.as_str())
                             .is_some_and(|rest| !rest.contains("::"))
                 })
-                .unwrap_or(false)
-        {
-            if let Some(lsp_location) = crate::workspace_index::lsp_adapter::to_lsp_location(
+                .unwrap_or(false))
+            && let Some(lsp_location) = crate::workspace_index::lsp_adapter::to_lsp_location(
                 &crate::workspace_index::Location { uri: symbol.uri.clone(), range: symbol.range },
-            ) {
-                return Some(json!([lsp_location]));
-            }
+            )
+        {
+            return Some(json!([lsp_location]));
         }
     }
 
@@ -783,12 +782,10 @@ fn lookup_workspace_definition(
                 None
             }
         })
-    {
-        if let Some(lsp_location) =
+        && let Some(lsp_location) =
             crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
-        {
-            return Some(json!([lsp_location]));
-        }
+    {
+        return Some(json!([lsp_location]));
     }
 
     None
@@ -942,11 +939,10 @@ impl LspServer {
                 "trace_only_no_live_behavior_change": true,
                 "claim_boundary": "records existing navigation response only; no broader live navigation cutover"
         });
-        if let Some(semantic_shadow_receipt) = semantic_shadow_receipt {
-            if let Some(receipt_object) = receipt.as_object_mut() {
-                receipt_object
-                    .insert("semantic_shadow_receipt".to_string(), semantic_shadow_receipt);
-            }
+        if let Some(semantic_shadow_receipt) = semantic_shadow_receipt
+            && let Some(receipt_object) = receipt.as_object_mut()
+        {
+            receipt_object.insert("semantic_shadow_receipt".to_string(), semantic_shadow_receipt);
         }
         self.record_provider_decision_trace(context.provider, &receipt);
     }
@@ -1005,7 +1001,7 @@ impl LspServer {
                     let parent_map = parsed.as_ref().map_or(&empty_parent_map, |p| p.parent_map());
                     let provider = crate::declaration::DeclarationProvider::new(
                         Arc::clone(ast),
-                        doc.text.clone(),
+                        doc.text_arc.to_string(),
                         uri.to_string(),
                     )
                     .with_parent_map(parent_map)
@@ -1113,6 +1109,7 @@ impl LspServer {
     }
 
     /// Handle textDocument/definition request
+    #[tracing::instrument(skip(self, params), name = "textDocument/definition")]
     pub(crate) fn handle_definition(
         &self,
         params: Option<Value>,
@@ -1196,7 +1193,7 @@ impl LspServer {
                     {
                         Some((
                             EarlyDefinitionTarget::XsBootstrap(module_name),
-                            doc.text.clone(),
+                            doc.text_arc.to_string(),
                             offset,
                         ))
                     } else if let Some(module_name) =
@@ -1204,7 +1201,7 @@ impl LspServer {
                     {
                         Some((
                             EarlyDefinitionTarget::UseModule(module_name),
-                            doc.text.clone(),
+                            doc.text_arc.to_string(),
                             offset,
                         ))
                     } else if let Some(module_name) =
@@ -1212,7 +1209,7 @@ impl LspServer {
                     {
                         Some((
                             EarlyDefinitionTarget::FrameworkModule(module_name),
-                            doc.text.clone(),
+                            doc.text_arc.to_string(),
                             offset,
                         ))
                     } else {
@@ -1228,7 +1225,7 @@ impl LspServer {
                                         EarlyDefinitionTarget::Module(
                                             package_match.as_str().to_string(),
                                         ),
-                                        doc.text.clone(),
+                                        doc.text_arc.to_string(),
                                         offset,
                                     ));
                                     break;
@@ -1336,10 +1333,9 @@ impl LspServer {
                                 module_ref.definition_location(coordinator.index())
                             && let Some(lsp_location) =
                                 crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
+                            && workspace_index_is_fresh()
                         {
-                            if workspace_index_is_fresh() {
-                                return Ok(Some(json!([lsp_location])));
-                            }
+                            return Ok(Some(json!([lsp_location])));
                         }
 
                         if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
@@ -1422,38 +1418,30 @@ impl LspServer {
                 }
 
                 if let Some(mason_location) = self.resolve_mason_definition(uri, &doc.text, offset)
-                {
-                    if let Some(lsp_location) =
+                    && let Some(lsp_location) =
                         crate::workspace_index::lsp_adapter::to_lsp_location(&mason_location)
-                    {
-                        return Ok(Some(json!([lsp_location])));
-                    }
+                {
+                    return Ok(Some(json!([lsp_location])));
                 }
 
                 #[cfg(feature = "workspace")]
                 if workspace_index_is_fresh() {
                     let parsed = doc.current_parsed();
-                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
-                        if let Some(coordinator) = self.coordinator() {
-                            let workspace_index = coordinator.index();
-                            let current_package =
-                                crate::declaration::current_package_at(ast, offset);
-                            if let Some(def_location) = resolve_mojolicious_route_definition(
-                                workspace_index,
-                                current_package,
-                                &text_around,
-                                cursor_in_text,
-                            ) {
-                                if let Some(lsp_location) =
-                                    crate::workspace_index::lsp_adapter::to_lsp_location(
-                                        &def_location,
-                                    )
-                                {
-                                    if workspace_index_is_fresh() {
-                                        return Ok(Some(json!([lsp_location])));
-                                    }
-                                }
-                            }
+                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast())
+                        && let Some(coordinator) = self.coordinator()
+                    {
+                        let workspace_index = coordinator.index();
+                        let current_package = crate::declaration::current_package_at(ast, offset);
+                        if let Some(def_location) = resolve_mojolicious_route_definition(
+                            workspace_index,
+                            current_package,
+                            &text_around,
+                            cursor_in_text,
+                        ) && let Some(lsp_location) =
+                            crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
+                            && workspace_index_is_fresh()
+                        {
+                            return Ok(Some(json!([lsp_location])));
                         }
                     }
 
@@ -1516,10 +1504,9 @@ impl LspServer {
                                         crate::workspace_index::lsp_adapter::to_lsp_location(
                                             &def_location,
                                         )
+                                    && workspace_index_is_fresh()
                                 {
-                                    if workspace_index_is_fresh() {
-                                        return Ok(Some(json!([lsp_location])));
-                                    }
+                                    return Ok(Some(json!([lsp_location])));
                                 }
                             }
                         }
@@ -1574,56 +1561,51 @@ impl LspServer {
                     let arrow_re = get_arrow_method_regex()?;
                     for cap in arrow_re.captures_iter(&text_around) {
                         if let (Some(package_match), Some(method_match)) = (cap.get(1), cap.get(2))
+                            && cursor_in_text >= method_match.start()
+                            && cursor_in_text <= method_match.end()
                         {
-                            if cursor_in_text >= method_match.start()
-                                && cursor_in_text <= method_match.end()
-                            {
-                                let package_name = package_match.as_str();
-                                let method_name = method_match.as_str();
+                            let package_name = package_match.as_str();
+                            let method_name = method_match.as_str();
 
-                                if let Some(result) = lookup_workspace_definition(
+                            if let Some(result) = lookup_workspace_definition(
+                                self.coordinator(),
+                                package_name,
+                                method_name,
+                                Some(uri),
+                            ) && workspace_index_is_fresh()
+                            {
+                                return Ok(Some(result));
+                            }
+                            #[cfg(feature = "workspace")]
+                            {
+                                if let Some(coordinator) = self.coordinator()
+                                    && let Some(def_location) = autoload_definition_location(
+                                        coordinator.index(),
+                                        package_name,
+                                        true,
+                                    )
+                                    && let Some(lsp_location) =
+                                        crate::workspace_index::lsp_adapter::to_lsp_location(
+                                            &def_location,
+                                        )
+                                    && workspace_index_is_fresh()
+                                {
+                                    return Ok(Some(json!([lsp_location])));
+                                }
+                            }
+                            if is_universal_method(method_name)
+                                && let Some(result) = lookup_workspace_definition(
                                     self.coordinator(),
-                                    package_name,
+                                    "UNIVERSAL",
                                     method_name,
                                     Some(uri),
-                                ) {
-                                    if workspace_index_is_fresh() {
-                                        return Ok(Some(result));
-                                    }
-                                }
-                                #[cfg(feature = "workspace")]
-                                {
-                                    if let Some(coordinator) = self.coordinator()
-                                        && let Some(def_location) = autoload_definition_location(
-                                            coordinator.index(),
-                                            package_name,
-                                            true,
-                                        )
-                                        && let Some(lsp_location) =
-                                            crate::workspace_index::lsp_adapter::to_lsp_location(
-                                                &def_location,
-                                            )
-                                    {
-                                        if workspace_index_is_fresh() {
-                                            return Ok(Some(json!([lsp_location])));
-                                        }
-                                    }
-                                }
-                                if is_universal_method(method_name)
-                                    && let Some(result) = lookup_workspace_definition(
-                                        self.coordinator(),
-                                        "UNIVERSAL",
-                                        method_name,
-                                        Some(uri),
-                                    )
-                                {
-                                    if workspace_index_is_fresh() {
-                                        return Ok(Some(result));
-                                    }
-                                }
-                                // Partial/None: fall through to same-file resolution
-                                break;
+                                )
+                                && workspace_index_is_fresh()
+                            {
+                                return Ok(Some(result));
                             }
+                            // Partial/None: fall through to same-file resolution
+                            break;
                         }
                     }
 
@@ -1631,72 +1613,62 @@ impl LspServer {
                     // For $self/$this/$class, resolve using the current package context
                     let var_method_re = get_var_method_regex()?;
                     for cap in var_method_re.captures_iter(&text_around) {
-                        if let (Some(var_match), Some(method_match)) = (cap.get(1), cap.get(2)) {
-                            if cursor_in_text >= method_match.start()
-                                && cursor_in_text <= method_match.end()
-                            {
-                                let var_name = var_match.as_str();
-                                let method_name = method_match.as_str();
+                        if let (Some(var_match), Some(method_match)) = (cap.get(1), cap.get(2))
+                            && cursor_in_text >= method_match.start()
+                            && cursor_in_text <= method_match.end()
+                        {
+                            let var_name = var_match.as_str();
+                            let method_name = method_match.as_str();
 
-                                // For $self/$this/$class, resolve using current package
-                                if var_name == "self" || var_name == "this" || var_name == "class" {
-                                    let self_method_parsed = doc.current_parsed();
-                                    if let Some(ast) =
-                                        self_method_parsed.as_ref().and_then(|p| p.ast())
-                                    {
-                                        let byte_offset =
-                                            self.pos16_to_offset(doc, line, character);
-                                        let current_package =
-                                            crate::declaration::current_package_at(
-                                                ast,
-                                                byte_offset,
-                                            );
-                                        if let Some(result) = lookup_workspace_definition(
-                                            self.coordinator(),
-                                            current_package,
-                                            method_name,
-                                            Some(uri),
-                                        ) {
-                                            if workspace_index_is_fresh() {
-                                                return Ok(Some(result));
-                                            }
-                                        }
-                                        #[cfg(feature = "workspace")]
-                                        {
-                                            if let Some(coordinator) = self.coordinator()
-                                                && let Some(def_location) =
-                                                    autoload_definition_location(
-                                                        coordinator.index(),
-                                                        current_package,
-                                                        true,
-                                                    )
-                                                && let Some(lsp_location) =
-                                                    crate::workspace_index::lsp_adapter::to_lsp_location(
-                                                        &def_location,
-                                                    )
-                                            {
-                                                if workspace_index_is_fresh() {
-                                                    return Ok(Some(json!([lsp_location])));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                if is_universal_method(method_name)
-                                    && let Some(result) = lookup_workspace_definition(
+                            // For $self/$this/$class, resolve using current package
+                            if var_name == "self" || var_name == "this" || var_name == "class" {
+                                let self_method_parsed = doc.current_parsed();
+                                if let Some(ast) = self_method_parsed.as_ref().and_then(|p| p.ast())
+                                {
+                                    let byte_offset = self.pos16_to_offset(doc, line, character);
+                                    let current_package =
+                                        crate::declaration::current_package_at(ast, byte_offset);
+                                    if let Some(result) = lookup_workspace_definition(
                                         self.coordinator(),
-                                        "UNIVERSAL",
+                                        current_package,
                                         method_name,
                                         Some(uri),
-                                    )
-                                {
-                                    if workspace_index_is_fresh() {
+                                    ) && workspace_index_is_fresh()
+                                    {
                                         return Ok(Some(result));
                                     }
+                                    #[cfg(feature = "workspace")]
+                                    {
+                                        if let Some(coordinator) = self.coordinator()
+                                            && let Some(def_location) = autoload_definition_location(
+                                                coordinator.index(),
+                                                current_package,
+                                                true,
+                                            )
+                                            && let Some(lsp_location) =
+                                                crate::workspace_index::lsp_adapter::to_lsp_location(
+                                                    &def_location,
+                                                )
+                                            && workspace_index_is_fresh()
+                                        {
+                                            return Ok(Some(json!([lsp_location])));
+                                        }
+                                    }
                                 }
-                                // Fall through for non-self variables
-                                break;
                             }
+                            if is_universal_method(method_name)
+                                && let Some(result) = lookup_workspace_definition(
+                                    self.coordinator(),
+                                    "UNIVERSAL",
+                                    method_name,
+                                    Some(uri),
+                                )
+                                && workspace_index_is_fresh()
+                            {
+                                return Ok(Some(result));
+                            }
+                            // Fall through for non-self variables
+                            break;
                         }
                     }
                 }
@@ -1756,7 +1728,7 @@ impl LspServer {
                     let parent_map = parsed.as_ref().map_or(&empty_parent_map, |p| p.parent_map());
                     let provider = crate::declaration::DeclarationProvider::new(
                         Arc::clone(ast),
-                        doc.text.clone(),
+                        doc.text_arc.to_string(),
                         uri.to_string(),
                     )
                     .with_parent_map(parent_map)
@@ -1795,74 +1767,68 @@ impl LspServer {
 
                     // Try workspace index for cross-file definitions using routing policy
                     #[cfg(feature = "workspace")]
-                    if workspace_index_is_fresh() {
-                        if let Some(coordinator) = self.coordinator() {
-                            let workspace_index = coordinator.index();
-                            // Use symbol_at_cursor to get the symbol key
-                            let current_package =
-                                crate::declaration::current_package_at(ast, offset);
-                            if let Some(symbol_key) =
-                                crate::declaration::symbol_at_cursor_with_source(
-                                    ast,
-                                    offset,
-                                    current_package,
-                                    &doc.text,
-                                )
-                            {
-                                tracing::debug!(symbol_key = ?symbol_key, "looking for definition");
-                                let workspace_symbol_key =
-                                    super::to_workspace_symbol_key(&symbol_key);
+                    if workspace_index_is_fresh()
+                        && let Some(coordinator) = self.coordinator()
+                    {
+                        let workspace_index = coordinator.index();
+                        // Use symbol_at_cursor to get the symbol key
+                        let current_package = crate::declaration::current_package_at(ast, offset);
+                        if let Some(symbol_key) = crate::declaration::symbol_at_cursor_with_source(
+                            ast,
+                            offset,
+                            current_package,
+                            &doc.text,
+                        ) {
+                            tracing::debug!(symbol_key = ?symbol_key, "looking for definition");
+                            let workspace_symbol_key = super::to_workspace_symbol_key(&symbol_key);
 
-                                let def_locations = find_symbol_key_definition_locations(
-                                    workspace_index,
-                                    &workspace_symbol_key,
-                                );
-                                if !def_locations.is_empty() {
-                                    tracing::debug!(
-                                        count = def_locations.len(),
-                                        "found definition(s)"
-                                    );
-                                    let lsp_locations: Vec<serde_json::Value> = def_locations
-                                        .iter()
-                                        .filter_map(|loc| {
-                                            let lsp_loc = crate::workspace_index::lsp_adapter::to_lsp_location(loc)?;
-                                            serde_json::to_value(lsp_loc).ok()
-                                        })
-                                        .collect();
-                                    if !lsp_locations.is_empty() {
-                                        if workspace_index_is_fresh() {
-                                            return Ok(Some(json!(lsp_locations)));
-                                        }
-                                    }
+                            let def_locations = find_symbol_key_definition_locations(
+                                workspace_index,
+                                &workspace_symbol_key,
+                            );
+                            if !def_locations.is_empty() {
+                                tracing::debug!(count = def_locations.len(), "found definition(s)");
+                                let lsp_locations: Vec<serde_json::Value> = def_locations
+                                    .iter()
+                                    .filter_map(|loc| {
+                                        let lsp_loc =
+                                            crate::workspace_index::lsp_adapter::to_lsp_location(
+                                                loc,
+                                            )?;
+                                        serde_json::to_value(lsp_loc).ok()
+                                    })
+                                    .collect();
+                                if !lsp_locations.is_empty() && workspace_index_is_fresh() {
+                                    return Ok(Some(to_json_array(&lsp_locations)));
                                 }
+                            }
 
-                                if workspace_symbol_key.kind == crate::workspace_index::SymKind::Sub
-                                    && workspace_symbol_key.sigil.is_none()
-                                    && let Some(import_source) =
-                                        self.find_import_source(ast, &workspace_symbol_key.name)
-                                    && let Some(def_location) = find_workspace_definition_location(
-                                        workspace_index,
-                                        &import_source,
-                                        &workspace_symbol_key.name,
+                            if workspace_symbol_key.kind == crate::workspace_index::SymKind::Sub
+                                && workspace_symbol_key.sigil.is_none()
+                                && let Some(import_source) =
+                                    self.find_import_source(ast, &workspace_symbol_key.name)
+                                && let Some(def_location) = find_workspace_definition_location(
+                                    workspace_index,
+                                    &import_source,
+                                    &workspace_symbol_key.name,
+                                )
+                                && let Some(lsp_location) =
+                                    crate::workspace_index::lsp_adapter::to_lsp_location(
+                                        &def_location,
                                     )
-                                    && let Some(lsp_location) =
-                                        crate::workspace_index::lsp_adapter::to_lsp_location(
-                                            &def_location,
-                                        )
-                                {
-                                    tracing::debug!(
-                                        symbol = %workspace_symbol_key.name,
-                                        source_pkg = %import_source,
-                                        "resolved bare imported symbol through require/import source"
-                                    );
-                                    if workspace_index_is_fresh() {
-                                        return Ok(Some(json!([lsp_location])));
-                                    }
+                            {
+                                tracing::debug!(
+                                    symbol = %workspace_symbol_key.name,
+                                    source_pkg = %import_source,
+                                    "resolved bare imported symbol through require/import source"
+                                );
+                                if workspace_index_is_fresh() {
+                                    return Ok(Some(json!([lsp_location])));
                                 }
                             }
                         }
-                        // No coordinator: fall through to same-file semantic model
                     }
+                    // No coordinator: fall through to same-file semantic model
 
                     // Fall back to same-file definition
                     let model = crate::semantic::SemanticModel::build(ast, &doc.text);
@@ -1948,6 +1914,10 @@ impl LspServer {
         ) {
             return None;
         }
+        let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+        if self.workspace_index_stale_for_any_open_document() {
+            return None;
+        }
         let IndexAccessMode::Full(coordinator) = route_index_access(self.coordinator()) else {
             return None;
         };
@@ -1965,7 +1935,7 @@ impl LspServer {
             goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
                 .receipt
         })?;
-        if !snapshot_is_current() {
+        if !snapshot_is_current() || self.workspace_index_stale_for_any_open_document() {
             return None;
         }
         serde_json::to_value(receipt).ok()
@@ -2019,10 +1989,14 @@ impl LspServer {
                 })));
             };
 
-            let compiler_receipt = match route_index_access(self.coordinator()) {
-                IndexAccessMode::Full(coordinator) => {
-                    let index = coordinator.index();
-                    index.with_semantic_queries_for_uri(uri, |file_id, queries| {
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+            let compiler_receipt = if self.workspace_index_stale_for_any_open_document() {
+                None
+            } else {
+                match route_index_access(self.coordinator()) {
+                    IndexAccessMode::Full(coordinator) => {
+                        let index = coordinator.index();
+                        index.with_semantic_queries_for_uri(uri, |file_id, queries| {
                         let ctx = QueryContext::new(file_id, None, Some(byte_offset));
                         let mut receipt = goto_definition_live_exact_or_imported(
                             index.as_ref(),
@@ -2038,9 +2012,11 @@ impl LspServer {
                         ));
                         receipt
                     })
+                    }
+                    IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
-                IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
             };
+            let live_cutover = compiler_receipt.is_some();
 
             Ok(Some(json!({
                 "provider": "definition",
@@ -2048,8 +2024,12 @@ impl LspServer {
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
                 "compiler_receipt": compiler_receipt,
-                "no_live_behavior_change": false,
-                "live_cutover": "partial_exact_imported"
+                "no_live_behavior_change": !live_cutover,
+                "live_cutover": if live_cutover {
+                    Some("partial_exact_imported")
+                } else {
+                    None
+                }
             })))
         }
     }
@@ -2269,7 +2249,7 @@ impl LspServer {
                     );
                     return Ok(Some(json!([])));
                 };
-                (ast, doc.text.clone())
+                (ast, doc.text_arc.to_string())
             };
 
             // Build doc_map outside the lock, pinning `uri`'s own entry to
@@ -2287,7 +2267,7 @@ impl LspServer {
                         locations.len(),
                         TypeDefinitionFallbackTrace::default(),
                     );
-                    return Ok(Some(json!(locations)));
+                    return Ok(Some(to_json_array(&locations)));
                 }
 
                 self.record_type_definition_ambiguous_identity_trace(
@@ -2412,11 +2392,17 @@ impl LspServer {
                 let Some(ast) = doc.current_parsed().and_then(|p| p.ast().cloned()) else {
                     return Ok(Some(json!([])));
                 };
-                (ast, doc.text.clone())
+                (ast, doc.text_arc.to_string())
             };
 
             #[cfg(feature = "workspace")]
             {
+                // Wait for the workspace index to finish building before querying it.
+                // Without this, an implementation request while the index is in Building
+                // state routes to Partial and returns no cross-file implementors.
+                // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+
                 // Build doc_map outside the lock, pinning `uri`'s own entry
                 // to the captured generation -- mirrors
                 // `handle_type_definition` above; see `pinned_doc_map_for`'s
@@ -2424,25 +2410,32 @@ impl LspServer {
                 // #3396 / a95ad72).
                 let doc_map = self.pinned_doc_map_for(uri, &doc_text);
 
-                // Wait for the workspace index to finish building before querying it.
-                // Without this, an implementation request while the index is in Building
-                // state routes to Partial and returns no cross-file implementors.
-                // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
-                let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                // Sample after readiness wait and doc snapshot; do not call while
+                // holding `documents_guard()` (#5016 / #6199 deadlock lesson).
+                let workspace_index_stale = self.workspace_index_stale_for_any_open_document();
 
-                // Use routing policy - only provide workspace index in Full mode
-                let access_mode = route_index_access(self.coordinator());
-                let workspace_index = if let IndexAccessMode::Full(coordinator) = access_mode {
-                    Some(coordinator.index().clone())
-                } else {
-                    // Partial/None: same-file analysis only
+                // Use routing policy - only provide workspace index in Full mode.
+                // When any open document is ahead of the index, skip the index tier
+                // and rely on the open-document AST scan only (#5016).
+                let workspace_index = if workspace_index_stale {
+                    tracing::debug!(
+                        "Implementation: skipping stale workspace index tier, using open-doc scan only"
+                    );
                     None
+                } else {
+                    let access_mode = route_index_access(self.coordinator());
+                    if let IndexAccessMode::Full(coordinator) = access_mode {
+                        Some(coordinator.index().clone())
+                    } else {
+                        // Partial/None: same-file analysis only
+                        None
+                    }
                 };
 
                 let provider = ImplementationProvider::new(workspace_index);
                 let locations =
                     provider.find_implementations(ast.as_ref(), line, character, uri, &doc_map);
-                return Ok(Some(json!(locations)));
+                return Ok(Some(to_json_array(&locations)));
             }
 
             #[cfg(not(feature = "workspace"))]
@@ -2519,11 +2512,11 @@ impl LspServer {
         let text = self.buffer_text(uri).unwrap_or_default();
         let module = token_under_cursor(&text, line, ch).filter(|s| s.contains("::"));
 
-        if let Some(m) = module {
-            if let Some(path) = self.resolve_module_path_with_uri(&m, Some(&text), Some(uri)) {
-                let loc = location_from_path(&path);
-                return Ok(serde_json::json!([loc]));
-            }
+        if let Some(m) = module
+            && let Some(path) = self.resolve_module_path_with_uri(&m, Some(&text), Some(uri))
+        {
+            let loc = location_from_path(&path);
+            return Ok(serde_json::json!([loc]));
         }
 
         // Fallback: try existing analysis
@@ -2634,6 +2627,83 @@ mod tests {
         Ok(())
     }
 
+    /// Regression (#5016 item 2): stale workspace index must not run definition
+    /// semantic shadow queries even when the request document's generation matches.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn definition_semantic_shadow_skips_stale_workspace_index_tier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let main_uri = "file:///workspace/shadow-main.pl";
+        let main_text = "package Foo;\nsub bar { return 1; }\npackage main;\nFoo::bar();\n";
+        let unrelated_uri = "file:///workspace/shadow-unrelated.pl";
+        let unrelated_text = "package Unrelated;\nsub helper {}\n";
+
+        server.test_apply_did_open(main_uri, main_text, 1)?;
+        server.test_apply_did_open(unrelated_uri, unrelated_text, 1)?;
+        server
+            .test_index_file_in_building_state(main_uri, main_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(unrelated_uri, unrelated_text)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let fresh = server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 3, "character": 5 }
+        })))?;
+        assert!(
+            fresh.as_ref().and_then(Value::as_array).is_some_and(|locations| !locations.is_empty()),
+            "fresh index should resolve Foo::bar call target: {fresh:?}"
+        );
+        let fresh_explanation = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "goto_definition"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        assert!(
+            fresh_explanation
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("semantic_shadow_receipt"))
+                .is_some(),
+            "fresh index should persist definition semantic shadow receipt"
+        );
+
+        server
+            .test_replace_document_without_index(
+                unrelated_uri,
+                "package Unrelated;\nsub renamed {}\n",
+                2,
+            )
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "edited unrelated buffer must stale the workspace index"
+        );
+
+        let _ = server.test_handle_definition(Some(json!({
+            "textDocument": { "uri": main_uri },
+            "position": { "line": 3, "character": 5 }
+        })))?;
+        let stale_explanation = server
+            .handle_execute_command(Some(json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "goto_definition"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        assert!(
+            stale_explanation
+                .get("request_receipt")
+                .and_then(|receipt| receipt.get("semantic_shadow_receipt"))
+                .is_none(),
+            "stale workspace index must not persist definition semantic shadow receipt"
+        );
+
+        Ok(())
+    }
+
     /// Serializes tests in this module that touch
     /// `NAVIGATION_SAME_DOC_FALLBACK_GAP`, mirroring `toctou_hook_lock` in
     /// `tests/navigation_same_document_toctou_regression_tests.rs`: any call
@@ -2676,6 +2746,69 @@ mod tests {
             "position": { "line": 1, "character": 4 }
         })));
         assert!(result.is_ok(), "handle_implementation must not error: {result:?}");
+    }
+
+    /// Regression (#5016): when the workspace index is stale relative to an open
+    /// document, `handle_implementation` must not return implementors from the
+    /// outdated index tier (open-document AST scan may still answer).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn implementation_skips_stale_workspace_index_tier() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let base_uri = "file:///workspace/stale_impl_base.pm";
+        let derived_uri = "file:///workspace/stale_impl_derived.pm";
+        let base_text = "package StaleImpl::Base;\nsub new { bless {}, shift }\n1;\n";
+        let derived_v1 = "package StaleImpl::Derived;\nuse parent 'StaleImpl::Base';\n1;\n";
+        let derived_v2 = "package StaleImpl::Derived;\n1;\n";
+
+        server.test_apply_did_open(base_uri, base_text, 1)?;
+        server.test_apply_did_open(derived_uri, derived_v1, 1)?;
+        server
+            .test_index_file_in_building_state(base_uri, base_text)
+            .map_err(std::io::Error::other)?;
+        server
+            .test_index_file_in_building_state(derived_uri, derived_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        // Cursor on the `Base` package identifier.
+        let fresh = server.handle_implementation(Some(json!({
+            "textDocument": { "uri": base_uri },
+            "position": { "line": 0, "character": 19 }
+        })))?;
+        let fresh_locations = fresh.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            fresh_locations.iter().any(|loc| {
+                loc.get("targetUri")
+                    .and_then(|u| u.as_str())
+                    .is_some_and(|uri| uri.contains("stale_impl_derived"))
+            }),
+            "fresh workspace index should return Derived implementor: {fresh_locations:?}"
+        );
+
+        server
+            .test_replace_document_without_index(derived_uri, derived_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale = server.handle_implementation(Some(json!({
+            "textDocument": { "uri": base_uri },
+            "position": { "line": 0, "character": 19 }
+        })))?;
+        let stale_locations = stale.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        assert!(
+            !stale_locations.iter().any(|loc| {
+                loc.get("targetUri")
+                    .and_then(|u| u.as_str())
+                    .is_some_and(|uri| uri.contains("stale_impl_derived"))
+            }),
+            "stale workspace index must not return removed parent relationship: {stale_locations:?}"
+        );
+
+        Ok(())
     }
 
     /// Verifies `wait_at_same_doc_fallback_gap`'s poison-recovery path

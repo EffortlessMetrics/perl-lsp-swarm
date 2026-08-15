@@ -156,3 +156,40 @@ fn given_workspace_roots_when_collecting_then_root_precedence_is_workspace_expan
     );
     Ok(())
 }
+
+// ── URI spelling preservation ────────────────────────────────────────────────
+
+/// GIVEN an open document with a URI that contains raw characters needing
+/// URL-encoding (spaces, percent signs, angle brackets) WHEN the module
+/// candidate report is collected THEN the candidate URI equals the supplied
+/// URI verbatim, with no re-encoding applied.
+///
+/// `ModuleUriCandidate.uri` contract: "open-document candidates preserve the
+/// supplied URI spelling."  Asserting the raw form avoids the platform-
+/// dependent Url::parse → to_file_path → from_file_path round-trip that
+/// URL-encodes on Linux but silently falls back to the original string on
+/// Windows, causing intermittent cross-platform test failures (issue #6234).
+#[test]
+fn given_open_document_with_unencoded_uri_when_resolving_then_uri_spelling_is_preserved() {
+    // Build a URI with characters that would be percent-encoded by a
+    // URL round-trip: space (%20), percent-sign (%25), angle bracket (%3C).
+    let open_doc = "file:///workspace/lib/My Module%<special>/Foo.pm".to_string();
+
+    let report = collect_module_uri_candidates_with_effective_inc(
+        "My Module%<special>::Foo",
+        std::slice::from_ref(&open_doc),
+        &[],
+        &[],
+        Duration::from_secs(1),
+    );
+
+    assert_eq!(report.candidates.len(), 1, "expected exactly one candidate");
+    let candidate = &report.candidates[0];
+    assert_eq!(
+        candidate.uri, open_doc,
+        "open-document candidate must preserve the raw supplied URI, not re-encode it"
+    );
+    assert_eq!(candidate.source, "open-document");
+    assert!(candidate.inc_root.is_none());
+    assert_eq!(candidate.search_order, 0);
+}

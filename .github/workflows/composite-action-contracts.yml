@@ -1,0 +1,33 @@
+name: Composite Action Contracts
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.github/actions/rust-checks/**'
+      - '.github/actions/upload-receipt/**'
+      - '.github/workflows/composite-action-contracts.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - '.github/actions/rust-checks/**'
+      - '.github/actions/upload-receipt/**'
+      - '.github/workflows/composite-action-contracts.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  rust-checks-contract:
+    name: Rust checks composite action contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Exercise argv and status contracts
+        run: python3 .github/actions/rust-checks/test_run_cargo.py

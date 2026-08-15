@@ -136,10 +136,10 @@ impl InlayHintsProvider {
 
             // Variable declarations - show type hints
             NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                if self.enabled_hints.type_hints {
-                    if let Some(init) = initializer {
-                        self.add_type_hint(variable, init, hints, range);
-                    }
+                if self.enabled_hints.type_hints
+                    && let Some(init) = initializer
+                {
+                    self.add_type_hint(variable, init, hints, range);
                 }
 
                 // Visit initializer

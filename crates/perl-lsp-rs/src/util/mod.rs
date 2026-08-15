@@ -63,7 +63,7 @@ pub fn nth_char_is<F: FnOnce(char) -> bool>(s: &str, n: usize, predicate: F) -> 
 
 /// Escape special markdown characters in plain text to prevent unintended formatting.
 ///
-/// Escapes: backtick (`), hash (#), asterisk (*), underscore (_), brackets ([, ]),
+/// Escapes: backtick (`), hash (#), asterisk (*), underscore (_), and square brackets,
 /// and other markdown formatting characters so they render as literal text in hover cards.
 ///
 /// This preserves the semantic content of comments and documentation while preventing
@@ -99,25 +99,25 @@ pub fn escape_markdown_text(text: &str) -> String {
 ///   truncating the trailing byte)
 /// - Latin-1 byte-preserving fallback for non-UTF8 legacy files
 pub fn decode_text_bytes(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        if let Ok(utf8) = std::str::from_utf8(&bytes[3..]) {
-            return utf8.to_string();
-        }
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+        && let Ok(utf8) = std::str::from_utf8(&bytes[3..])
+    {
+        return utf8.to_string();
     }
 
-    if bytes.starts_with(&[0xFF, 0xFE]) {
-        if let Some(decoded) = decode_utf16_lossy(&bytes[2..], true) {
-            return decoded;
-        }
-        // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
+    if bytes.starts_with(&[0xFF, 0xFE])
+        && let Some(decoded) = decode_utf16_lossy(&bytes[2..], true)
+    {
+        return decoded;
     }
+    // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
 
-    if bytes.starts_with(&[0xFE, 0xFF]) {
-        if let Some(decoded) = decode_utf16_lossy(&bytes[2..], false) {
-            return decoded;
-        }
-        // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
+    if bytes.starts_with(&[0xFE, 0xFF])
+        && let Some(decoded) = decode_utf16_lossy(&bytes[2..], false)
+    {
+        return decoded;
     }
+    // Odd-length UTF-16 payload — fall through to latin-1 on the full bytes.
 
     match std::str::from_utf8(bytes) {
         Ok(utf8) => utf8.to_string(),

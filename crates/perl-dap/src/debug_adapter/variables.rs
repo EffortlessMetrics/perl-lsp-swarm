@@ -83,19 +83,19 @@ impl DebugAdapter {
         // protocol-safe honest empty immediately.
         {
             let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
-            if let Some(ref session) = *session_guard {
-                if session.state != DebugState::Stopped {
-                    // Not stopped: variable refs are stale. Omit totalVariables —
-                    // we have no meaningful count when not paused.
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: true,
-                        command: "variables".to_string(),
-                        body: Some(json!({ "variables": [] })),
-                        message: None,
-                    };
-                }
+            if let Some(ref session) = *session_guard
+                && session.state != DebugState::Stopped
+            {
+                // Not stopped: variable refs are stale. Omit totalVariables —
+                // we have no meaningful count when not paused.
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "variables".to_string(),
+                    body: Some(json!({ "variables": [] })),
+                    message: None,
+                };
             }
         }
 

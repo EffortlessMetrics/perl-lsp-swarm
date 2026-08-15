@@ -150,7 +150,7 @@ impl LspServer {
         };
 
         let offset = position.map(|(line, character)| self.pos16_to_offset(doc, line, character));
-        (Some(doc.text.clone()), offset, true)
+        (Some(doc.text_str().to_string()), offset, true)
     }
 }
 

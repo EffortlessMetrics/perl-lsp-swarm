@@ -12,7 +12,8 @@
 
 param(
     [string]$Version = "latest",
-    [string]$InstallDir = "$env:USERPROFILE\.local\bin"
+    [string]$InstallDir = "$env:USERPROFILE\.local\bin",
+    [switch]$NoModifyPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,16 +57,100 @@ function Write-Success {
     Write-Host $Message
 }
 
+# Normalize one PATH entry for exact, case-insensitive comparison. Expand
+# environment variables before comparing so `%USERPROFILE%\.local\bin` and the
+# already-expanded install directory are treated as the same entry.
+function Normalize-PathEntry {
+    param([string]$PathEntry)
+
+    if ([string]::IsNullOrWhiteSpace($PathEntry)) {
+        return $null
+    }
+
+    $Expanded = [Environment]::ExpandEnvironmentVariables($PathEntry.Trim())
+    if ([IO.Path]::IsPathRooted($Expanded)) {
+        try {
+            $Expanded = [IO.Path]::GetFullPath($Expanded)
+        } catch {
+            # Keep the expanded value when the entry is intentionally not a normal
+            # filesystem path; it still participates in exact string comparison.
+        }
+    }
+
+    return $Expanded.TrimEnd([char[]]"\/")
+}
+
+function Test-PathContainsEntry {
+    param(
+        [string]$PathValue,
+        [string]$Entry
+    )
+
+    $Expected = Normalize-PathEntry $Entry
+    if (-not $Expected) {
+        return $false
+    }
+
+    foreach ($Candidate in @($PathValue -split ';')) {
+        $Normalized = Normalize-PathEntry $Candidate
+        if ($Normalized -and [string]::Equals($Normalized, $Expected, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Add-InstallDirToCurrentProcessPath {
+    if (Test-PathContainsEntry -PathValue $env:Path -Entry $InstallDir) {
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($env:Path)) {
+        $env:Path = $InstallDir
+    } else {
+        $env:Path = "$env:Path;$InstallDir"
+    }
+}
+
+function Ensure-InstallDirOnUserPath {
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir) {
+        return $false
+    }
+
+    # Persist only the existing *user* PATH plus the install directory. Do not
+    # copy `$env:Path`: that value is the merged process/system/user PATH and
+    # writing it back to the user scope duplicates system entries permanently.
+    $NewUserPath = if ([string]::IsNullOrWhiteSpace($UserPath)) {
+        $InstallDir
+    } else {
+        "$($UserPath.TrimEnd(';'));$InstallDir"
+    }
+    [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
+    return $true
+}
+
+function Write-ManualPathGuidance {
+    Write-Host "Add this directory to your user PATH before starting a new editor/Claude process: $InstallDir" -ForegroundColor Cyan
+}
+
 # Detect architecture.
 #
-# Only x86_64-pc-windows-msvc is published: the release matrix in
-# .github/workflows/release.yml has no aarch64-pc-windows-msvc entry. Asking
-# for one built a URL that always 404s, and the failure surfaced as a bare
-# "Failed to download" with nothing actionable in it (#5007).
+# The release matrix builds both x86_64-pc-windows-msvc and, since #5208, a
+# native aarch64-pc-windows-msvc on the windows-11-arm runner. Prefer the
+# native ARM64 asset and fall back to the x64 build under emulation only when
+# a given release does not carry it.
 #
-# ARM64 Windows runs x64 binaries under emulation on Windows 11 (build 22000
-# or newer), so the x64 asset is the working answer there. Windows 10 ARM64
-# cannot run the published x64 asset and must fail before downloading it.
+# The fallback must stay: the ARM64 target was added on 2026-08-03 and no
+# release has been cut since, so that asset has never actually been produced.
+# Nothing here may *require* it. Releases predating #5208 legitimately have
+# only the x64 archive, and installing from an older tag must keep working.
+#
+# The Windows 11 build-22000 floor applies ONLY to the emulation fallback --
+# it exists because x64 emulation needs Windows 11, not because of anything
+# about ARM64 itself. A native ARM64 binary runs fine on Windows 10 ARM64, so
+# gating the native path on it would refuse an install that works (#6196).
 #
 # A 32-bit PowerShell host on 64-bit Windows reports "x86" in
 # PROCESSOR_ARCHITECTURE and the real architecture in PROCESSOR_ARCHITEW6432,
@@ -77,6 +162,36 @@ $HostArch = if ($env:PROCESSOR_ARCHITEW6432) {
 }
 
 $IsArm64Host = $HostArch -eq "ARM64"
+
+function Get-ExpectedAssetHash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ChecksumPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Asset
+    )
+
+    $HashPattern = [regex]'^[0-9a-f]{64}$'
+    $Rows = @(
+        Get-Content -LiteralPath $ChecksumPath | ForEach-Object {
+            $Parts = $_ -split '\s+', 2
+            if ($Parts.Count -eq 2 -and $Parts[0] -and $Parts[1]) {
+                [pscustomobject]@{ Hash = $Parts[0]; Name = $Parts[1].Trim().TrimStart('*') }
+            }
+        } | Where-Object { $_.Name -ceq $Asset }
+    )
+
+    if ($Rows.Count -eq 0) {
+        throw "SHA256SUMS contains no exact entry for $Asset"
+    }
+    if ($Rows.Count -ne 1) {
+        throw "SHA256SUMS contains duplicate entries for $Asset"
+    }
+    if (-not $HashPattern.IsMatch($Rows[0].Hash)) {
+        throw "SHA256SUMS entry for $Asset is not an exact lowercase SHA-256 hash"
+    }
+    return $Rows[0].Hash
+}
 
 function Get-WindowsBuildNumber {
     try {
@@ -95,35 +210,13 @@ function Get-WindowsBuildNumber {
     }
 }
 
-if ($IsArm64Host) {
-    $WindowsBuild = Get-WindowsBuildNumber
-    if ($WindowsBuild -lt 22000) {
-        $DetectedBuild = if ($WindowsBuild -ge 0) { "build $WindowsBuild" } else { "an unknown Windows build" }
-        Write-Error "Windows ARM64 x64 emulation requires Windows 11 (build 22000 or newer); detected $DetectedBuild. Windows 10 ARM64 cannot run the published x86_64 binary. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
-    }
+if (-not ($IsArm64Host -or $HostArch -eq "AMD64")) {
+    Write-Error "Unsupported architecture: $HostArch. Windows releases ship x86_64 and ARM64 builds only. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
 }
 
-# Name the target as a whole literal rather than assembling it from an arch
-# variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
-# the Linux CI host, so the contract test in
-# scripts/tests/test-install-target-selection.sh checks which targets this
-# script can request by reading them out of the source. Assembling the triple
-# from a variable hides it from that check, which is how the original defect
-# ($Arch = "aarch64") stayed invisible.
-$Target = if ($IsArm64Host -or $HostArch -eq "AMD64") {
-    "x86_64-pc-windows-msvc"
-} else {
-    Write-Error "Unsupported architecture: $HostArch. Only x86_64 Windows binaries are published. Build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
-}
-
-if ($IsArm64Host) {
-    Write-Info "Detected system: Windows (ARM64) - installing $Target"
-    Write-Warn "No native ARM64 Windows build is published. The x64 build runs under the x64 emulation in Windows 11 on ARM."
-} else {
-    Write-Info "Detected system: Windows ($HostArch) - $Target"
-}
-
-# Get version
+# Resolve the version before selecting a target. Target selection now depends
+# on which assets a specific release actually carries, so the tag has to be
+# known first.
 if ($Version -eq "latest") {
     try {
         $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest"
@@ -137,10 +230,91 @@ if ($Version -eq "latest") {
 }
 
 $VersionNum = $Tag.TrimStart("v")
+$ReleaseBaseUrl = "https://github.com/$Repo/releases/download/$Tag"
+
+# Probe for an asset without downloading it. A definitive 404 means the
+# release does not carry the native asset; transport/proxy failures are kept
+# distinct because they do not establish absence.
+function Test-ReleaseAsset {
+    param([string]$AssetName)
+
+    try {
+        $Response = Invoke-WebRequest -Uri "$ReleaseBaseUrl/$AssetName" -Method Head -UseBasicParsing -ErrorAction Stop
+        $StatusCode = [int]$Response.StatusCode
+        if ($StatusCode -eq 404) {
+            return [pscustomobject]@{ State = "absent" }
+        }
+        if ($StatusCode -ge 200 -and $StatusCode -lt 400) {
+            return [pscustomobject]@{ State = "present" }
+        }
+        return [pscustomobject]@{ State = "unknown"; StatusCode = $StatusCode }
+    } catch {
+        $StatusCode = $null
+        if ($_.Exception.Response) {
+            try {
+                $StatusCode = [int]$_.Exception.Response.StatusCode
+            } catch {
+                # The response may not expose a numeric status code for a
+                # transport or proxy failure; retain the unknown state.
+            }
+        }
+        if ($StatusCode -eq 404) {
+            return [pscustomobject]@{ State = "absent" }
+        }
+        return [pscustomobject]@{ State = "unknown"; StatusCode = $StatusCode }
+    }
+}
+
+# Name each target as a whole literal rather than assembling it from an arch
+# variable and a "-pc-windows-msvc" suffix. PowerShell cannot be executed on
+# the Linux CI host, so the contract test in
+# scripts/tests/test-install-target-selection.sh checks which targets this
+# script can request by reading them out of the source. Assembling the triple
+# from a variable hides it from that check, which is how the original defect
+# ($Arch = "aarch64") stayed invisible.
+if ($IsArm64Host) {
+    Write-Info "Detected system: Windows (ARM64)"
+
+    $NativeTarget = "aarch64-pc-windows-msvc"
+    $NativeAsset = "$Name-$VersionNum-$NativeTarget.zip"
+    $AssetProbe = Test-ReleaseAsset $NativeAsset
+
+    if ($AssetProbe.State -eq "present") {
+        $Target = $NativeTarget
+        Write-Info "Using the native ARM64 build for $Target"
+    } elseif ($AssetProbe.State -eq "absent") {
+        # Emulation fallback only. The build floor belongs here and nowhere
+        # else: it is a property of running x64 code on ARM64, so it must not
+        # gate the native path above.
+        $WindowsBuild = Get-WindowsBuildNumber
+        if ($WindowsBuild -lt 22000) {
+            $DetectedBuild = if ($WindowsBuild -ge 0) { "build $WindowsBuild" } else { "an unknown Windows build" }
+            Write-Error "$Tag ships no native ARM64 Windows build, and running the x86_64 build under emulation requires Windows 11 (build 22000 or newer); detected $DetectedBuild. Install a release that carries $NativeAsset, or build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
+        }
+
+        $Target = "x86_64-pc-windows-msvc"
+        Write-Warn "$Tag ships no native ARM64 Windows build; using the x86_64 build, which runs under the x64 emulation in Windows 11 on ARM."
+    } else {
+        # An unknown probe result is not evidence that the native asset is
+        # absent. Windows 10 cannot safely use the x64 fallback, so fail with
+        # a retryable diagnosis instead of claiming that the release lacks the
+        # native asset. Windows 11 can still use the safe x64 fallback.
+        $WindowsBuild = Get-WindowsBuildNumber
+        if ($WindowsBuild -lt 22000) {
+            Write-Error "Could not determine whether $Tag carries the native ARM64 Windows build because the asset probe failed. Windows 10 ARM64 cannot safely fall back to x64 emulation; retry when the release can be checked, or build from source: https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/how-to/INSTALLATION.md"
+        }
+
+        $Target = "x86_64-pc-windows-msvc"
+        Write-Warn "Could not verify the native ARM64 asset for $Tag; using the x86_64 build under Windows 11 x64 emulation."
+    }
+} else {
+    $Target = "x86_64-pc-windows-msvc"
+    Write-Info "Detected system: Windows ($HostArch) - $Target"
+}
 
 # Construct download URL
 $Asset = "$Name-$VersionNum-$Target.zip"
-$Url = "https://github.com/$Repo/releases/download/$Tag/$Asset"
+$Url = "$ReleaseBaseUrl/$Asset"
 
 Write-Info "Downloading $Name $Tag for $Target"
 
@@ -148,36 +322,36 @@ Write-Info "Downloading $Name $Tag for $Target"
 $TempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
 
 try {
+    # Integrity metadata is required and validated before the archive download.
+    $ChecksumUrl = "$ReleaseBaseUrl/SHA256SUMS"
+    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
+    try {
+        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
+    } catch {
+        Write-Error "Failed to download required checksum manifest from $ChecksumUrl : $_"
+        throw
+    }
+
+    $ExpectedHash = Get-ExpectedAssetHash -ChecksumPath $ChecksumPath -Asset $Asset
+
     # Download binary
     $ZipPath = Join-Path $TempDir $Asset
     Write-Info "Downloading from $Url"
-    
     try {
         Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
     } catch {
         Write-Error "Failed to download from $Url : $_"
+        throw
     }
-    
-    # Download and verify checksum (optional)
-    $ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS"
-    $ChecksumPath = Join-Path $TempDir "SHA256SUMS"
-    
-    try {
-        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath -UseBasicParsing
-        
-        # Verify checksum
-        $ExpectedHash = (Get-Content $ChecksumPath | Select-String $Asset).Line.Split(" ")[0]
-        $ActualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
-        
-        if ($ExpectedHash -eq $ActualHash) {
-            Write-Success "Checksum verified"
-        } else {
-            Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
-        }
-    } catch {
-        Write-Warn "Could not download or verify checksums"
+
+    # Verify checksum
+    $ActualHash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
+    if ($ExpectedHash -ne $ActualHash) {
+        Write-Error "Checksum mismatch - expected: $ExpectedHash, got: $ActualHash"
+        throw
     }
-    
+    Write-Success "Checksum verified"
+
     # Extract archive
     Write-Info "Extracting archive"
     $ExtractDir = Join-Path $TempDir "extract"
@@ -240,23 +414,51 @@ try {
     } catch {
         Write-Warn "Could not verify installation"
     }
-    
-    # Check PATH
+
+    # Persist a user-local install directory safely. The old guidance printed a
+    # command that copied the merged process/system/user `$env:Path` back into
+    # the User PATH, permanently duplicating system entries. This path updates
+    # only the User scope and keeps an explicit opt-out for managed machines.
+    #
+    # Process-only visibility is not persistence: a prior temporary-session
+    # PATH edit must still write User PATH so fresh terminals inherit it.
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($UserPath -like "*$InstallDir*") {
-        Write-Success "$InstallDir is already in your PATH"
+    $InUserPath = Test-PathContainsEntry -PathValue $UserPath -Entry $InstallDir
+    $InProcessPath = Test-PathContainsEntry -PathValue $env:Path -Entry $InstallDir
+
+    if ($InUserPath) {
+        Add-InstallDirToCurrentProcessPath
+        if ($InProcessPath) {
+            $PathDisposition = "path_visible_current_process"
+            Write-Success "$InstallDir is already persisted and visible on PATH"
+        } else {
+            $PathDisposition = "persisted_user_path_restart_required"
+            Write-Info "$InstallDir is already persisted in the user PATH"
+            Write-Warn "Restart already-running terminals, editors, and Claude Code so they inherit the persisted PATH."
+        }
+    } elseif ($NoModifyPath) {
+        $PathDisposition = "manual_path_action_required"
+        Write-Warn "$InstallDir is not in the user PATH and -NoModifyPath was requested"
+        Write-ManualPathGuidance
     } else {
-        Write-Warn "$InstallDir is not in your PATH"
-        Write-Host ""
-        Write-Host "To add it to your PATH permanently, run:" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"`$env:Path;$InstallDir`", 'User')" -ForegroundColor White
-        Write-Host ""
-        Write-Host "Or add it temporarily for this session:" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  `$env:Path += `";$InstallDir`"" -ForegroundColor White
-        Write-Host ""
+        try {
+            $Changed = Ensure-InstallDirOnUserPath
+            Add-InstallDirToCurrentProcessPath
+            $PathDisposition = "persisted_user_path_restart_required"
+            if ($Changed) {
+                Write-Success "Added $InstallDir to the persistent user PATH"
+            } elseif ($InProcessPath) {
+                Write-Info "$InstallDir was process-visible; confirmed user PATH persistence"
+            }
+            Write-Warn "Restart already-running terminals, editors, and Claude Code so they inherit the persisted PATH."
+        } catch {
+            Add-InstallDirToCurrentProcessPath
+            $PathDisposition = "manual_path_action_required"
+            Write-Warn "Could not persist $InstallDir on the user PATH: $($_.Exception.Message)"
+            Write-ManualPathGuidance
+        }
     }
+    Write-Info "PATH status: $PathDisposition"
     
     Write-Host ""
     Write-Host "Installation complete! 🎉" -ForegroundColor Green

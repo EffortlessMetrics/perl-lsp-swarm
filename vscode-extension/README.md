@@ -169,8 +169,12 @@ If you prefer to manage the binary yourself:
 # Homebrew via the EffortlessMetrics tap (macOS/Linux)
 brew install effortlessmetrics/tap/perllsp
 
-# One-liner (Linux/macOS)
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+# Identity-bound remote bootstrap once release closeout publishes ref+digest
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 
 # From source
 cargo install --git https://github.com/EffortlessMetrics/perl-lsp --package perllsp
@@ -198,7 +202,7 @@ All settings are under the `perl-lsp.*` namespace. Open settings with `Ctrl+,` a
 | `perl-lsp.trace.server`          | `"off"`                      | LSP trace level for debugging: `off`, `messages`, `verbose`                                                                                                              |
 | `perl-lsp.featureProfile`        | `"auto"`                     | Runtime capability profile. Keep `auto` unless you need a specific compatibility profile                                                                                 |
 | `perl-lsp.downloadBaseUrl`       | `""`                         | Internal mirror URL for air-gapped deployments                                                                                                                           |
-| `perl-lsp.mcp.servers`           | `[]`                         | Optional MCP stdio server definitions (`label`, `command`, `args`, `cwd`, `env`, `version`, `enabled`) published to VS Code language models                              |
+| `perl-lsp.mcp.servers`           | `[]`                         | **Removed and inert.** The generic configured-command MCP passthrough is disabled; existing values are read by nothing and start no process                              |
 
 ### Internal / Air-Gapped Deployment
 
@@ -240,7 +244,7 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 ## Commands
 
 Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
-"Perl". All 35 commands the extension contributes:
+"Perl". All 36 commands the extension contributes:
 
 ### Server and setup
 
@@ -256,6 +260,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Show What's New**              | Show release notes for the installed version               |
 | **Perl: Show Output Channel**          | Open the extension output log                              |
 | **Perl: Show Status Menu**             | Quick-access menu for all actions                          |
+| **Perl: Show Perl Workspace Status**   | Show the current server, workspace, and diagnostic state   |
 | **Perl: Report Issue**                 | Open a pre-filled issue report                             |
 
 ### Editing and refactoring

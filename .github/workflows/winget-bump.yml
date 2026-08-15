@@ -10,7 +10,8 @@ on:
     inputs:
       tag:
         description: 'Release tag to refresh (e.g., v0.10.0)'
-        required: false
+        required: true
+        type: string
 
 concurrency:
   group: winget-bump-${{ github.ref }}
@@ -26,64 +27,82 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Checkout default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Get release tag
+      - name: Resolve and validate release tag
         id: tag
         shell: pwsh
         env:
           RELEASE_TAG_INPUT: ${{ github.event.inputs.tag }}
         run: |
-          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and $env:RELEASE_TAG_INPUT) {
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
             $tag = $env:RELEASE_TAG_INPUT
           } else {
             $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
           }
 
-          $version = $tag.TrimStart('v')
+          if ($tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+            throw "Invalid release tag: $tag"
+          }
+
+          $version = $tag.Substring(1)
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Wait for release assets
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
+          $found = $false
           for ($i = 1; $i -le 20; $i++) {
             Write-Host "Checking for release assets (attempt $i/20)..."
-            $assetCount = gh release view "${{ steps.tag.outputs.tag }}" --json assets -q '.assets | length'
-            if ($assetCount -match '^[1-9]') {
-              Write-Host "Assets found!"
+            $assetCount = gh release view $env:RELEASE_TAG --json assets -q '.assets | length'
+            if ($LASTEXITCODE -eq 0 -and $assetCount -match '^[1-9]') {
+              Write-Host 'Assets found.'
+              $found = $true
               break
             }
             Start-Sleep -Seconds 30
           }
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          if (-not $found) {
+            throw "Release assets were not available for $env:RELEASE_TAG after 20 attempts."
+          }
 
       - name: Download Windows binary
         shell: pwsh
-        run: |
-          $tag = "${{ steps.tag.outputs.tag }}"
-          $version = "${{ steps.tag.outputs.version }}"
-          $assetDir = Join-Path $env:RUNNER_TEMP 'winget-assets'
-
-          New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
-          Write-Host "Downloading perllsp-$version-x86_64-pc-windows-msvc.zip..."
-          gh release download $tag `
-            --pattern "perllsp-$version-x86_64-pc-windows-msvc.zip" `
-            --dir $assetDir
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          $assetDir = Join-Path $env:RUNNER_TEMP 'winget-assets'
+          $assetName = "perllsp-$($env:RELEASE_VERSION)-x86_64-pc-windows-msvc.zip"
+
+          New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
+          Write-Host "Downloading $assetName..."
+          gh release download $env:RELEASE_TAG `
+            --pattern $assetName `
+            --dir $assetDir
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to download $assetName from $env:RELEASE_TAG."
+          }
 
       - name: Compute SHA256
         id: checksum
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.tag.outputs.version }}
         run: |
-          $version = "${{ steps.tag.outputs.version }}"
           $assetDir = Join-Path $env:RUNNER_TEMP 'winget-assets'
-          $assetPath = Join-Path $assetDir "perllsp-$version-x86_64-pc-windows-msvc.zip"
+          $assetPath = Join-Path $assetDir "perllsp-$($env:RELEASE_VERSION)-x86_64-pc-windows-msvc.zip"
 
           $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $assetPath).Hash.ToLowerInvariant()
           "sha256=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -91,10 +110,13 @@ jobs:
 
       - name: Update winget manifest
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.tag.outputs.version }}
+          RELEASE_SHA256: ${{ steps.checksum.outputs.sha256 }}
         run: |
           ./distribution/windows/update-manifests.ps1 `
-            -Version "${{ steps.tag.outputs.version }}" `
-            -ReleaseSha256 "${{ steps.checksum.outputs.sha256 }}" `
+            -Version $env:RELEASE_VERSION `
+            -ReleaseSha256 $env:RELEASE_SHA256 `
             -WingetManifestPath 'distribution/winget/perl-lsp.yaml'
 
           if (Select-String -Path 'distribution/winget/perl-lsp.yaml' -Pattern '__RELEASE_VERSION__|__RELEASE_URL__|__RELEASE_SHA256__' -Quiet) {
@@ -102,25 +124,35 @@ jobs:
           }
 
       - name: Create PR
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        id: cpr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          branch: bump-perl-lsp-winget-${{ steps.tag.outputs.version }}
-          title: "winget: perl-lsp ${{ steps.tag.outputs.version }}"
+          base: ${{ github.event.repository.default_branch }}
+          branch: automation/winget-${{ steps.tag.outputs.version }}
+          title: "chore(distribution): refresh Winget manifest for ${{ steps.tag.outputs.version }}"
           body: |
-            Refresh the repo-local winget manifest for perl-lsp ${{ steps.tag.outputs.version }}.
+            Refresh the repo-local Winget manifest for perl-lsp ${{ steps.tag.outputs.version }}.
 
-            This keeps the Windows package metadata in sync with the release artifacts.
-            The upstream winget-pkgs submission remains a follow-up manual step.
-          commit-message: "winget: perl-lsp ${{ steps.tag.outputs.version }}"
-          labels: automated-pr
+            This keeps the Windows package metadata in sync with the release artifacts. The upstream winget-pkgs submission remains a follow-up maintainer action.
+          commit-message: "chore(distribution): refresh Winget manifest for ${{ steps.tag.outputs.version }}"
+          add-paths: distribution/winget/perl-lsp.yaml
+          labels: |
+            automated-pr
+            skip-title-check
           signoff: false
+          delete-branch: true
 
       - name: Summary
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.tag.outputs.version }}
+          RELEASE_SHA256: ${{ steps.checksum.outputs.sha256 }}
+          MANIFEST_PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
         run: |
-          Add-Content $env:GITHUB_STEP_SUMMARY "## Winget Manifest Refresh Complete :rocket:"
-          Add-Content $env:GITHUB_STEP_SUMMARY ""
-          Add-Content $env:GITHUB_STEP_SUMMARY "- **Version**: ${{ steps.tag.outputs.version }}"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- **SHA256**: ${{ steps.checksum.outputs.sha256 }}"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- **PR**: Created in the current repository"
+          Add-Content $env:GITHUB_STEP_SUMMARY '## Winget Manifest Refresh Complete'
+          Add-Content $env:GITHUB_STEP_SUMMARY ''
+          Add-Content $env:GITHUB_STEP_SUMMARY "- **Version**: $env:RELEASE_VERSION"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- **SHA256**: $env:RELEASE_SHA256"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- **Repo-local PR**: $env:MANIFEST_PR_URL"
+          Add-Content $env:GITHUB_STEP_SUMMARY '- **Upstream submission**: manual follow-up to microsoft/winget-pkgs'

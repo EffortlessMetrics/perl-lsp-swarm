@@ -20,7 +20,7 @@ inputs:
     required: false
     default: 'true'
   clippy-args:
-    description: 'Additional arguments for clippy'
+    description: 'Additional POSIX shell-like arguments for clippy; parsed into argv without a shell'
     required: false
     default: '--workspace --lib --locked -- -D warnings -A missing_docs'
   clippy-prod:
@@ -28,7 +28,7 @@ inputs:
     required: false
     default: 'false'
   clippy-prod-args:
-    description: 'Arguments for production clippy checks'
+    description: 'POSIX shell-like arguments for production clippy; parsed into argv without a shell'
     required: false
     default: '--workspace --lib --bins --no-deps -- -D clippy::unwrap_used -D clippy::expect_used'
   test:
@@ -36,7 +36,7 @@ inputs:
     required: false
     default: 'true'
   test-args:
-    description: 'Additional arguments for test'
+    description: 'Additional POSIX shell-like arguments for test; parsed into argv without a shell'
     required: false
     default: '--workspace --lib --locked'
   test-threads:
@@ -75,10 +75,12 @@ runs:
       if: inputs.check-fmt == 'true'
       shell: bash
       run: |
+        set +e
         echo "::group::Format Check"
-        cargo xtask fmt --check
-        echo "status=$?" >> $GITHUB_OUTPUT
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind fmt
+        status=$?
         echo "::endgroup::"
+        exit "$status"
 
     - name: Run clippy
       id: clippy
@@ -89,15 +91,12 @@ runs:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
         CLIPPY_ARGS: ${{ inputs.clippy-args }}
       run: |
+        set +e
         echo "::group::Clippy Lint"
-        # Read CLIPPY_ARGS from the environment and split into an argv array
-        # using shell-safe word-splitting. This prevents interpreter injection
-        # via action inputs containing shell separators (#5969).
-        read -r -a clippy_argv <<< "$CLIPPY_ARGS"
-        cargo clippy "${clippy_argv[@]}" || clippy_exit=$?
-        echo "status=${clippy_exit:-0}" >> $GITHUB_OUTPUT
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind clippy
+        status=$?
         echo "::endgroup::"
-        exit "${clippy_exit:-0}"
+        exit "$status"
 
     - name: Run production clippy (no unwrap/expect)
       id: clippy-prod
@@ -108,12 +107,12 @@ runs:
         CARGO_BUILD_JOBS: ${{ inputs.build-jobs }}
         CLIPPY_PROD_ARGS: ${{ inputs.clippy-prod-args }}
       run: |
+        set +e
         echo "::group::Production Clippy (no unwrap/expect)"
-        read -r -a clippy_prod_argv <<< "$CLIPPY_PROD_ARGS"
-        cargo clippy "${clippy_prod_argv[@]}" || clippy_prod_exit=$?
-        echo "status=${clippy_prod_exit:-0}" >> $GITHUB_OUTPUT
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind clippy-prod
+        status=$?
         echo "::endgroup::"
-        exit "${clippy_prod_exit:-0}"
+        exit "$status"
 
     - name: Run tests
       id: test
@@ -126,9 +125,9 @@ runs:
         RUST_BACKTRACE: '1'
         TEST_ARGS: ${{ inputs.test-args }}
       run: |
+        set +e
         echo "::group::Tests"
-        read -r -a test_argv <<< "$TEST_ARGS"
-        cargo test "${test_argv[@]}" || test_exit=$?
-        echo "status=${test_exit:-0}" >> $GITHUB_OUTPUT
+        python3 "$GITHUB_ACTION_PATH/run_cargo.py" --kind test
+        status=$?
         echo "::endgroup::"
-        exit "${test_exit:-0}"
+        exit "$status"

@@ -10,6 +10,7 @@ use super::{
     items::{CompletionItem, CompletionItemKind, InsertTextFormat},
 };
 use crate::providers::completion::module_scan_cache::{ModuleCompletionScanCache, ScanCacheKey};
+use perl_lexer::{PerlLexer, TokenType};
 use perl_module::path::module_name_to_path;
 use perl_parser_core::SourceLocation;
 use perl_semantic_analyzer::{
@@ -19,12 +20,13 @@ use perl_semantic_analyzer::{
         ReceiverKind, receiver_fact_for_method_call,
     },
     semantic::SemanticModel,
+    symbol::SymbolTable,
     type_facts::TypeEvidence,
     type_inference::{PerlType, TypeInferenceEngine},
 };
 use perl_semantic_facts::{
-    Confidence, DefinitionCandidate, EntityKind, FileId, PackageEdge, Provenance, VisibleSymbol,
-    VisibleSymbolSource,
+    Confidence, DefinitionCandidate, EntityKind, FileId, PackageEdge, PackageEdgeKind, Provenance,
+    VisibleSymbol, VisibleSymbolSource,
 };
 use perl_workspace::semantic::{
     imports::ImportExportIndex,
@@ -967,6 +969,17 @@ pub(super) enum ReceiverEvidence {
     /// Static hash slot, e.g. `$services{db}->`, resolved through a fresh
     /// source-backed receiver fact.
     HashSlotFact(String),
+    /// Receiver resolved to two or more distinct candidate packages from a
+    /// union-typed variable (e.g. `$obj : Foo | Bar`).  All candidate
+    /// packages are exposed so completion can offer methods from every arm.
+    ///
+    /// The primary `package` in the underlying [`ReceiverFact`] is the first
+    /// union arm; `candidate_packages` carries the full ordered set.
+    ///
+    /// Confidence is high for all arms (union inference is source-backed);
+    /// fallback state is `Fallback` because the exact package cannot be
+    /// narrowed to a single type at the call site.
+    UnionCandidates(Vec<String>),
     /// No receiver evidence found, OR a positively-detected dynamic form
     /// (e.g. `bless {}, $class`, expression-tail class, nested call,
     /// Positively-detected dynamic / fail-closed receiver form — e.g.
@@ -984,8 +997,9 @@ pub(super) enum ReceiverEvidence {
 }
 
 impl ReceiverEvidence {
-    /// Returns the inferred receiver package, if any. `Dynamic` and
-    /// `Unknown` both return `None`.
+    /// Returns the inferred receiver package, if any. `Dynamic`, `Unknown`,
+    /// and `UnionCandidates` all return `None` — use
+    /// [`candidate_packages`](Self::candidate_packages) for union receivers.
     pub(super) fn package(&self) -> Option<&str> {
         match self {
             Self::StaticPackage(p)
@@ -995,7 +1009,21 @@ impl ReceiverEvidence {
             | Self::TypeEngine(p)
             | Self::ObjectFact(p)
             | Self::HashSlotFact(p) => Some(p.as_str()),
-            Self::Dynamic | Self::Unknown => None,
+            Self::UnionCandidates(_) | Self::Dynamic | Self::Unknown => None,
+        }
+    }
+
+    /// Returns the full list of candidate packages for union receivers.
+    ///
+    /// For `UnionCandidates` returns all packages in declaration order.
+    /// For all other variants (including `StaticPackage`, `ObjectFact`,
+    /// `Dynamic`, and `Unknown`) returns an empty slice.
+    /// Use [`package`](Self::package) to get the single package for
+    /// non-union evidence.
+    pub(super) fn candidate_packages(&self) -> &[String] {
+        match self {
+            Self::UnionCandidates(packages) => packages.as_slice(),
+            _ => &[],
         }
     }
 
@@ -1008,9 +1036,9 @@ impl ReceiverEvidence {
 
     /// Returns the confidence level for this evidence kind, using the
     /// shared `perl_semantic_facts::Confidence` vocabulary so the rest of
-    /// the semantic stack speaks the same language. `Dynamic` and
-    /// `Unknown` return `None` — there is no confidence when there is
-    /// no exact evidence.
+    /// the semantic stack speaks the same language. `Dynamic`, `Unknown`,
+    /// and `UnionCandidates` return `None` — there is no single-package
+    /// confidence for a multi-candidate receiver.
     ///
     /// Today the production method-completion callsite reads this only
     /// to decide medium-confidence labelling on detail text (#7925
@@ -1023,15 +1051,15 @@ impl ReceiverEvidence {
             }
             Self::ObjectFact(_) | Self::HashSlotFact(_) => Some(Confidence::High),
             Self::LiteralBless(_) | Self::TypeEngine(_) => Some(Confidence::Medium),
-            Self::Dynamic | Self::Unknown => None,
+            Self::UnionCandidates(_) | Self::Dynamic | Self::Unknown => None,
         }
     }
 
     /// Short, user-facing suffix describing the evidence source, suitable
-    /// for appending to a `CompletionItem.detail` string. `Dynamic` and
-    /// `Unknown` return `None` — when there is no exact evidence, there
-    /// is nothing to label. Issue #7918: explanatory only, no ranking /
-    /// inclusion change.
+    /// for appending to a `CompletionItem.detail` string. `Dynamic`,
+    /// `Unknown`, and `UnionCandidates` return `None` — when there is no
+    /// exact evidence, there is nothing to label. Issue #7918: explanatory
+    /// only, no ranking / inclusion change.
     pub(super) fn detail_suffix(&self) -> Option<&'static str> {
         match self {
             Self::StaticPackage(_) => Some("receiver: static package"),
@@ -1041,6 +1069,7 @@ impl ReceiverEvidence {
             Self::TypeEngine(_) => Some("receiver: type engine"),
             Self::ObjectFact(_) => Some("receiver: source-backed object"),
             Self::HashSlotFact(_) => Some("receiver: hash slot"),
+            Self::UnionCandidates(_) => Some("receiver: union candidates"),
             Self::Dynamic | Self::Unknown => None,
         }
     }
@@ -1065,21 +1094,38 @@ pub(super) fn detail_with_evidence(base: String, evidence: &ReceiverEvidence) ->
 
 /// Classify the receiver of a `->` method-completion call site.
 ///
-/// Tries exact source-backed receiver facts first, then falls back to the
-/// historical type-engine and text-pattern receiver inference paths. Returns
-/// [`ReceiverEvidence::Unknown`] when no evidence is found.
+/// Uses exact source-backed receiver facts first, except that `$self`/`$this`
+/// retains an established type-engine package when one is available for
+/// inherited workspace resolution. Finally falls back to text-pattern
+/// inference. This keeps literal bless and hash-slot evidence authoritative
+/// while preserving the inherited receiver path.
+#[cfg(test)]
 pub(super) fn classify_receiver(
     context: &CompletionContext,
     source: &str,
     type_engine: Option<&TypeInferenceEngine>,
 ) -> ReceiverEvidence {
+    classify_receiver_with_symbol_table(context, source, type_engine, None)
+}
+
+pub(super) fn classify_receiver_with_symbol_table(
+    context: &CompletionContext,
+    source: &str,
+    type_engine: Option<&TypeInferenceEngine>,
+    symbol_table: Option<&SymbolTable>,
+) -> ReceiverEvidence {
     if let Some(evidence) = source_backed_receiver_fact_evidence(context, source, type_engine) {
+        if matches!(evidence, ReceiverEvidence::SelfOrThis(_))
+            && let Some(pkg) = type_engine_receiver(context, type_engine)
+        {
+            return ReceiverEvidence::TypeEngine(pkg);
+        }
         return evidence;
     }
     if let Some(pkg) = type_engine_receiver(context, type_engine) {
         return ReceiverEvidence::TypeEngine(pkg);
     }
-    classify_text_pattern_receiver(context, source)
+    classify_text_pattern_receiver_with_symbol_table(context, source, symbol_table)
 }
 
 fn source_backed_receiver_fact_evidence(
@@ -1166,6 +1212,19 @@ fn exact_receiver_fact_evidence(fact: &ReceiverFact) -> Option<ReceiverEvidence>
         return Some(ReceiverEvidence::LiteralBless(package));
     }
 
+    // Union receivers: two or more candidate packages from a union-typed variable.
+    // These are source-backed and fresh but cannot claim `Exact` fallback state
+    // because the call-site type is ambiguous. Route them to `UnionCandidates`
+    // so the completion dispatch can offer methods from every arm (#9500).
+    if fact.is_union_receiver()
+        && fact.freshness == ReceiverFactFreshness::Fresh
+        && fact.dynamic_boundary.is_none()
+        && fact.source_range.is_some()
+        && fact.confidence == Confidence::High
+    {
+        return Some(ReceiverEvidence::UnionCandidates(fact.candidate_packages.clone()));
+    }
+
     if fact.confidence != Confidence::High
         || fact.freshness != ReceiverFactFreshness::Fresh
         || fact.fallback_state != ReceiverFallbackState::Exact
@@ -1218,12 +1277,120 @@ fn type_engine_receiver(
     }
 }
 
+pub(super) fn receiver_package_from_context_or_source(
+    context: &CompletionContext,
+    source: &str,
+) -> Option<String> {
+    if !context.current_package.is_empty() && context.current_package != "main" {
+        return Some(context.current_package.clone());
+    }
+
+    let position = context.position.min(source.len());
+    let mut parser = Parser::new(source);
+    if let Ok(ast) = parser.parse() {
+        let analyzer =
+            perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, source);
+        return receiver_package_from_symbol_table_or_source(
+            context,
+            source,
+            analyzer.symbol_table(),
+        );
+    }
+
+    source_package_fallback(source, position)
+}
+
+pub(super) fn receiver_package_from_symbol_table_or_source(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: &SymbolTable,
+) -> Option<String> {
+    if !context.current_package.is_empty() && context.current_package != "main" {
+        return Some(context.current_package.clone());
+    }
+
+    let position = context.position.min(source.len());
+    let current = CompletionContext::detect_current_package(symbol_table, position);
+    if current != "main" {
+        return Some(current);
+    }
+
+    source_package_fallback(source, position)
+}
+
+pub(super) fn source_package_fallback(source: &str, position: usize) -> Option<String> {
+    let prefix = source.get(..position)?;
+    let mut lexer = PerlLexer::new(prefix);
+    let mut current = "main".to_string();
+    let mut brace_depth = 0usize;
+    let mut package_blocks: Vec<(usize, String)> = Vec::new();
+    let mut package_name: Option<String> = None;
+    let mut in_package_declaration = false;
+
+    while let Some(token) = lexer.next_token() {
+        match &token.token_type {
+            TokenType::Keyword(name) if name.as_ref() == "package" => {
+                package_name = None;
+                in_package_declaration = true;
+            }
+            TokenType::Identifier(name) if in_package_declaration && package_name.is_none() => {
+                package_name = Some(name.to_string());
+            }
+            TokenType::LeftBrace if in_package_declaration => {
+                let Some(package) = package_name.take() else {
+                    in_package_declaration = false;
+                    brace_depth = brace_depth.saturating_add(1);
+                    continue;
+                };
+                let previous = current.clone();
+                current = package;
+                brace_depth = brace_depth.saturating_add(1);
+                package_blocks.push((brace_depth, previous));
+                in_package_declaration = false;
+            }
+            TokenType::Semicolon if in_package_declaration => {
+                if let Some(package) = package_name.take() {
+                    current = package;
+                }
+                in_package_declaration = false;
+            }
+            TokenType::LeftBrace => {
+                brace_depth = brace_depth.saturating_add(1);
+            }
+            TokenType::RightBrace => {
+                brace_depth = brace_depth.saturating_sub(1);
+                while let Some((depth, _)) = package_blocks.last() {
+                    if *depth <= brace_depth {
+                        break;
+                    }
+                    let Some((_, previous)) = package_blocks.pop() else {
+                        break;
+                    };
+                    current = previous;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (current != "main").then_some(current)
+}
+
 /// Text-pattern arm of [`classify_receiver`]. Looks for `Foo->method`
 /// (static), `$self->` / `$this->` (self), `my $x = Foo->new` (constructor
 /// assignment), and `my $x = bless ..., "Foo"` (literal bless).
+#[cfg(test)]
 pub(super) fn classify_text_pattern_receiver(
     context: &CompletionContext,
     source: &str,
+) -> ReceiverEvidence {
+    classify_text_pattern_receiver_with_symbol_table(context, source, None)
+}
+
+pub(super) fn classify_text_pattern_receiver_with_symbol_table(
+    context: &CompletionContext,
+    source: &str,
+    symbol_table: Option<&SymbolTable>,
 ) -> ReceiverEvidence {
     let arrow_prefix = context.receiver_prefix().trim_end_matches("->");
 
@@ -1245,10 +1412,14 @@ pub(super) fn classify_text_pattern_receiver(
     // analyser already sets correctly from the surrounding `package`
     // declaration.
     if matches!(arrow_prefix, "$self" | "$this")
-        && !context.current_package.is_empty()
-        && context.current_package != "main"
+        && let Some(package) = match symbol_table {
+            Some(symbol_table) => {
+                receiver_package_from_symbol_table_or_source(context, source, symbol_table)
+            }
+            None => receiver_package_from_context_or_source(context, source),
+        }
     {
-        return ReceiverEvidence::SelfOrThis(context.current_package.clone());
+        return ReceiverEvidence::SelfOrThis(package);
     }
 
     // Case 2: Variable method call like `$obj->meth` — try to find the
@@ -1617,6 +1788,7 @@ pub fn add_workspace_method_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
     source: &str,
+    symbol_table: &SymbolTable,
     type_engine: Option<&TypeInferenceEngine>,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
     used_modules: &HashSet<String>,
@@ -1632,7 +1804,19 @@ pub fn add_workspace_method_completions(
     // Prefer semantic receiver facts only when they meet the narrow live pilot
     // bar. Medium, dynamic, unknown, and unsupported facts fall back through the
     // existing receiver classifier instead of suppressing legacy behavior.
-    let evidence = classify_receiver(context, source, type_engine);
+    let evidence =
+        classify_receiver_with_symbol_table(context, source, type_engine, Some(symbol_table));
+
+    // Union receivers: offer methods from every candidate package (#9500).
+    // Methods shared across arms are deduplicated; the first arm's definition wins.
+    // Use the `candidate_packages` accessor so the dispatch stays decoupled from
+    // the enum variant's internals.
+    let union_packages = evidence.candidate_packages();
+    if !union_packages.is_empty() {
+        add_union_receiver_method_completions(completions, context, source, index, union_packages);
+        return;
+    }
+
     let Some(package_name) = evidence.package().map(str::to_string) else {
         // No exact receiver package. Trigger bounded Unknown-receiver
         // fallback (#7929) only for `Unknown` evidence; `Dynamic` stays
@@ -1648,7 +1832,7 @@ pub fn add_workspace_method_completions(
 
     // Collect all methods from the receiver package AND its ancestor chain
     // (parents + roles). Child methods take priority.
-    let members = collect_all_package_members(index, &package_name);
+    let members = collect_all_package_members_with_source(index, &package_name, source);
 
     // Build an auto-import edit once for all methods from this package.
     let auto_import_edit = auto_import::build_auto_import_edit(source, &package_name);
@@ -1717,6 +1901,122 @@ pub fn add_workspace_method_completions(
             label_details: None,
         });
     }
+}
+
+/// Union-aware method completion for [`ReceiverEvidence::UnionCandidates`] (#9500).
+///
+/// When the receiver type is a union (e.g. `my $obj : Foo | Bar`), the
+/// `candidate_packages` field of the underlying [`ReceiverFact`] exposes every
+/// distinct object package from the union.  This function queries each package
+/// and its `@ISA` ancestor chain, deduplicates methods by name (first
+/// occurrence wins), and offers them all with a sort tier that reflects
+/// source-backed high-confidence evidence.
+///
+/// Sort tiers used:
+/// - `2u_<name>` — method found in every union arm (shared interface)
+/// - `3u_<name>` — method found in at least one arm (partial interface)
+///
+/// This preserves the proven tier-ordering invariant (tiers 1–4 for
+/// exact-receiver, tier 5–6 for low-confidence fallback).
+fn add_union_receiver_method_completions(
+    completions: &mut Vec<CompletionItem>,
+    context: &CompletionContext,
+    source: &str,
+    index: &WorkspaceIndex,
+    packages: &[String],
+) {
+    let method_prefix = context.prefix.rsplit("->").next().unwrap_or("");
+    // Snapshot existing labels before any push to avoid borrow conflicts.
+    let existing_labels: HashSet<String> =
+        completions.iter().map(|item| item.label.as_ref().to_string()).collect();
+    let mut emitted: HashSet<String> = HashSet::new();
+
+    // Gather methods per package so we can determine "shared across all arms".
+    let per_package_methods: Vec<HashSet<String>> = packages
+        .iter()
+        .map(|pkg| {
+            collect_all_package_members(index, pkg)
+                .into_iter()
+                .filter(|s| matches!(s.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method))
+                .filter(|s| method_prefix.is_empty() || s.name.starts_with(method_prefix))
+                .map(|s| s.name)
+                .collect()
+        })
+        .collect();
+
+    let all_method_names: HashSet<String> =
+        per_package_methods.iter().flat_map(|set| set.iter().cloned()).collect();
+
+    let shared_methods: HashSet<&String> = all_method_names
+        .iter()
+        .filter(|name| per_package_methods.iter().all(|set| set.contains(*name)))
+        .collect();
+
+    // Collect into pending first (mirrors add_unknown_receiver_fallback pattern)
+    // so we do not hold any borrow on `completions` while pushing.
+    let mut pending: Vec<CompletionItem> = Vec::new();
+
+    // Emit one completion per method, iterating packages in declaration order
+    // so the first arm's definition wins for the detail label.
+    for package_name in packages {
+        let members = collect_all_package_members_with_source(index, package_name, source);
+        for symbol in &members {
+            if !matches!(symbol.kind, WsSymbolKind::Subroutine | WsSymbolKind::Method) {
+                continue;
+            }
+            if !method_prefix.is_empty() && !symbol.name.starts_with(method_prefix) {
+                continue;
+            }
+            if existing_labels.contains(symbol.name.as_str()) {
+                continue;
+            }
+            if !emitted.insert(symbol.name.clone()) {
+                continue;
+            }
+
+            let defining_pkg = symbol.container_name.as_deref().unwrap_or(package_name.as_str());
+            let arms_label = packages.join(" | ");
+            let detail = if shared_methods.contains(&symbol.name) {
+                format!("shared method ({arms_label}) — receiver: union candidates")
+            } else {
+                format!("method from {defining_pkg} ({arms_label}) — receiver: union candidates")
+            };
+
+            // Shared-interface methods rank above partial-interface ones.
+            let sort_tier = if shared_methods.contains(&symbol.name) { "2u" } else { "3u" };
+
+            pending.push(CompletionItem {
+                label: Cow::Owned(symbol.name.clone()),
+                kind: CompletionItemKind::Function,
+                detail: Some(Cow::Owned(detail)),
+                documentation: symbol
+                    .documentation
+                    .clone()
+                    .or_else(|| {
+                        Some(format!(
+                            "Method `{}::{}` — union receiver `{}`.",
+                            defining_pkg,
+                            symbol.name,
+                            packages.join(" | ")
+                        ))
+                    })
+                    .map(Cow::Owned),
+                insert_text: Some(Cow::Owned(format!("{}()", symbol.name))),
+                sort_text: Some(Cow::Owned(format!("{sort_tier}_{}", symbol.name))),
+                filter_text: Some(Cow::Owned(symbol.name.clone())),
+                additional_edits: workspace_auto_import_edits(
+                    source,
+                    Some(defining_pkg),
+                    &context.current_package,
+                ),
+                text_edit_range: Some((context.method_text_edit_start(source), context.position)),
+                commit_characters: None,
+                insert_text_format: InsertTextFormat::PlainText,
+                label_details: None,
+            });
+        }
+    }
+    completions.extend(pending);
 }
 
 /// Bounded low-confidence fallback for method completion when receiver
@@ -1977,8 +2277,17 @@ fn method_symbol_defining_packages(
 }
 
 fn is_confident_method_candidate(candidate: &DefinitionCandidate) -> bool {
-    candidate.confidence == Confidence::High
-        && matches!(candidate.kind, EntityKind::Method | EntityKind::Subroutine)
+    match candidate.kind {
+        // Generated accessors are emitted with medium confidence because they
+        // are inferred from framework declarations rather than explicit Perl
+        // subroutines.  The workspace-index path is still authoritative enough
+        // for inherited completion when the entity kind is preserved.
+        EntityKind::GeneratedMember => {
+            matches!(candidate.confidence, Confidence::Medium | Confidence::High)
+        }
+        EntityKind::Method | EntityKind::Subroutine => candidate.confidence == Confidence::High,
+        _ => false,
+    }
 }
 
 fn semantic_method_candidate_sort_key(
@@ -2045,10 +2354,25 @@ fn build_completion_package_graph(
     index: &WorkspaceIndex,
     source_uris: &HashSet<String>,
 ) -> PackageGraphIndex {
-    let mut graph = PackageGraphIndex::new();
+    const MAX_DISCOVERED_ROLE_FILES: usize = 32;
 
-    for uri in source_uris {
-        let Some(text) = workspace_text_for_uri(index, uri) else {
+    let mut graph = PackageGraphIndex::new();
+    // `source_uris` is a `HashSet`; make the bounded discovery order stable so
+    // the cap cannot select different role files across hash iterations.
+    let mut initial_uris: Vec<_> = source_uris.iter().cloned().collect();
+    initial_uris.sort_unstable();
+    let mut pending_uris = VecDeque::from(initial_uris);
+    let mut visited_uris = HashSet::new();
+    let max_files = source_uris.len().saturating_add(MAX_DISCOVERED_ROLE_FILES);
+
+    while let Some(uri) = pending_uris.pop_front() {
+        if visited_uris.len() >= max_files {
+            break;
+        }
+        if !visited_uris.insert(uri.clone()) {
+            continue;
+        }
+        let Some(text) = workspace_text_for_uri(index, &uri) else {
             continue;
         };
         let Ok(ast) = parse_workspace_source(&text) else {
@@ -2064,8 +2388,21 @@ fn build_completion_package_graph(
             })
             .cloned()
             .collect();
+
+        for edge in &edges {
+            if edge.kind != PackageEdgeKind::ComposesRole {
+                continue;
+            }
+            let Some(location) = index.find_definition(&edge.to_package) else {
+                continue;
+            };
+            if !visited_uris.contains(&location.uri) {
+                pending_uris.push_back(location.uri);
+            }
+        }
+
         if !edges.is_empty() {
-            graph.add_edges(uri, semantic_file_id(uri), edges);
+            graph.add_edges(&uri, semantic_file_id(&uri), edges);
         }
     }
 
@@ -2091,10 +2428,6 @@ fn semantic_file_id(uri: &str) -> FileId {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::items_after_test_module,
-    reason = "policy:#2064: visible-symbol completion tests stay beside their filter seam"
-)]
 mod visible_symbol_completion_tests {
     use super::{VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate};
     use perl_semantic_facts::{Confidence, EntityId};
@@ -2145,97 +2478,220 @@ mod visible_symbol_completion_tests {
 
 /// Collect all method symbols accessible from a package, following parent/role chains.
 ///
-/// Performs BFS over the inheritance graph starting at `package_name`, collecting
-/// subroutine and method symbols from each package in the resolution order.
+/// Traverses the inheritance graph starting at `package_name`, collecting
+/// subroutine and method symbols from each package in MRO order.
 /// Child-defined methods shadow parent methods — the first occurrence of each name wins.
 ///
+/// MRO handling:
+/// - Default (DFS): leftmost-depth-first @ISA traversal, matching Perl's
+///   default method resolution order.
+/// - C3 (`use mro 'c3'`): C3 linearization of @ISA ancestors, matching
+///   Perl's C3 MRO pragma (#6326).
+/// - Role composition: roles are appended after @ISA ancestors in BFS order,
+///   distinct from @ISA MRO ordering per the issue's non-goals.
+///
 /// Edge-case handling:
-/// - Diamond inheritance: BFS visited-set prevents duplicate traversal.
-/// - Circular `@ISA`: visited-set prevents infinite loops.
+/// - Diamond inheritance: visited-set prevents duplicate traversal.
+/// - Circular `@ISA`: visited-set + depth bound prevents infinite loops.
 /// - Package not indexed: `get_package_members` returns `Vec::new()` gracefully.
 /// - `use parent -norequire`: already handled by `ClassModelBuilder`; model.parents
 ///   contains the parent names regardless.
-///
-/// NOTE: C3 MRO ordering is NOT honoured — this uses BFS (breadth-first), which
-/// approximates but does not exactly match C3 for complex diamond hierarchies.
-/// This is a pre-existing approximation shared with `navigation.rs`. A follow-up
-/// issue should address strict C3 ordering if it becomes important (see issue #3482).
 pub(super) fn collect_all_package_members(
     index: &WorkspaceIndex,
     package_name: &str,
 ) -> Vec<WorkspaceSymbol> {
+    collect_all_package_members_with_source(index, package_name, "")
+}
+
+/// Collect package members and use the current open document as a model source
+/// when the receiver package has not been indexed yet. This keeps completion
+/// useful during editing while retaining the workspace index as the authority
+/// for persisted members and inherited packages.
+fn collect_all_package_members_with_source(
+    index: &WorkspaceIndex,
+    package_name: &str,
+    source: &str,
+) -> Vec<WorkspaceSymbol> {
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
-
     let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = VecDeque::new();
 
-    // Cache of package_name → list of parent/role package names, populated lazily.
-    let mut related_cache: HashMap<String, Vec<String>> = HashMap::new();
+    // Cache of package_name → (parents, roles, mro), populated lazily.
+    let mut model_cache: HashMap<
+        String,
+        (
+            Vec<String>,
+            Vec<String>,
+            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+        ),
+    > = HashMap::new();
 
-    // Collect related packages (parents + roles) for a given package by parsing
-    // its source file from the workspace index or filesystem.
-    let collect_related = |pkg: &str, cache: &mut HashMap<String, Vec<String>>| -> Vec<String> {
+    // Parse a package's source and extract its ClassModel data.
+    let load_model = |pkg: &str,
+                      cache: &mut HashMap<
+        String,
+        (
+            Vec<String>,
+            Vec<String>,
+            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+        ),
+    >| {
         cache
             .entry(pkg.to_string())
             .or_insert_with(|| {
-                let Some(pkg_location) = index.find_definition(pkg) else {
-                    return Vec::new();
-                };
-
-                let text = index.document_store().get_text(&pkg_location.uri).or_else(|| {
-                    perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
-                        .and_then(|path| std::fs::read_to_string(path).ok())
+                let indexed_text = index.find_definition(pkg).and_then(|pkg_location| {
+                    index.document_store().get_text(&pkg_location.uri).or_else(|| {
+                        perl_workspace::workspace_index::uri_to_fs_path(&pkg_location.uri)
+                            .and_then(|path| std::fs::read_to_string(path).ok())
+                    })
                 });
 
-                let Some(text) = text else {
-                    return Vec::new();
+                let fallback = || {
+                    (
+                        Vec::new(),
+                        Vec::new(),
+                        perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs,
+                    )
                 };
 
-                let mut parser = perl_semantic_analyzer::Parser::new(&text);
-                let Ok(ast) = parser.parse() else {
-                    return Vec::new();
-                };
-
-                perl_semantic_analyzer::semantic::SemanticAnalyzer::analyze_with_source(&ast, &text)
-                    .class_models
+                // A bare-symbol lookup can resolve an unrelated indexed symbol.
+                // Only suppress the open-document fallback when the indexed text
+                // actually contains the requested package model.
+                for text in indexed_text
                     .into_iter()
-                    .find(|model| model.name == pkg)
-                    .map(|model| {
-                        model.parents.iter().chain(model.roles.iter()).cloned().collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
+                    .chain((!source.is_empty()).then_some(source.to_string()))
+                {
+                    let mut parser = perl_semantic_analyzer::Parser::new(&text);
+                    let Ok(ast) = parser.parse() else {
+                        continue;
+                    };
+
+                    if let Some(model) =
+                        perl_semantic_analyzer::class_model::ClassModelBuilder::new()
+                            .build(&ast)
+                            .into_iter()
+                            .find(|model| model.name == pkg)
+                    {
+                        return (model.parents.clone(), model.roles.clone(), model.mro);
+                    }
+                }
+
+                fallback()
             })
             .clone()
     };
 
-    // Start with the receiver package itself
-    queue.push_back(package_name.to_string());
-    visited.insert(package_name.to_string());
+    // DFS traversal honoring MRO: visit receiver first, then @ISA ancestors
+    // in MRO order, then roles. This ensures child definitions shadow parents.
+    fn visit_mro(
+        pkg: &str,
+        index: &WorkspaceIndex,
+        load_model: &impl Fn(
+            &str,
+            &mut HashMap<
+                String,
+                (
+                    Vec<String>,
+                    Vec<String>,
+                    perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+                ),
+            >,
+        ) -> (
+            Vec<String>,
+            Vec<String>,
+            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+        ),
+        model_cache: &mut HashMap<
+            String,
+            (
+                Vec<String>,
+                Vec<String>,
+                perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder,
+            ),
+        >,
+        visited: &mut HashSet<String>,
+        seen_names: &mut HashSet<String>,
+        result: &mut Vec<WorkspaceSymbol>,
+        depth: usize,
+    ) {
+        const MAX_DEPTH: usize = 50;
+        if depth >= MAX_DEPTH || !visited.insert(pkg.to_string()) {
+            return;
+        }
 
-    while let Some(pkg) = queue.pop_front() {
         // Collect direct members for this package
-        let members = index.get_package_members(&pkg);
+        let members = index
+            .get_package_members(pkg)
+            .into_iter()
+            .chain(index.get_generated_package_members(pkg));
         for symbol in members {
-            // Only include subroutines and methods
             match symbol.kind {
                 WsSymbolKind::Subroutine | WsSymbolKind::Method => {}
                 _ => continue,
             }
-            // Child wins: skip if a closer ancestor already provided this name
             if seen_names.insert(symbol.name.clone()) {
                 result.push(symbol);
             }
         }
 
-        // Enqueue ancestor packages
-        let related = collect_related(&pkg, &mut related_cache);
-        for ancestor in related {
-            if visited.insert(ancestor.clone()) {
-                queue.push_back(ancestor);
+        // Get model data
+        let (parents, roles, mro) = load_model(pkg, model_cache);
+
+        // Traverse @ISA ancestors in MRO order
+        match mro {
+            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::Dfs => {
+                // DFS: leftmost-depth-first (Perl default)
+                for parent in &parents {
+                    visit_mro(
+                        parent,
+                        index,
+                        load_model,
+                        model_cache,
+                        visited,
+                        seen_names,
+                        result,
+                        depth + 1,
+                    );
+                }
+            }
+            perl_semantic_analyzer::analysis::class_model::MethodResolutionOrder::C3 => {
+                // C3: approximate by visiting parents left-to-right depth-first
+                // for completion ordering. A full C3 linearization would require
+                // the complete model graph up front, but for completion we only
+                // need the visitation order to be consistent — DFS over parents
+                // is the standard fallback when C3 linearization cannot be
+                // fully computed (e.g. incomplete workspace) (#6326).
+                for parent in &parents {
+                    visit_mro(
+                        parent,
+                        index,
+                        load_model,
+                        model_cache,
+                        visited,
+                        seen_names,
+                        result,
+                        depth + 1,
+                    );
+                }
             }
         }
+
+        // Traverse roles after @ISA (role composition is distinct from MRO)
+        for role in &roles {
+            visit_mro(role, index, load_model, model_cache, visited, seen_names, result, depth + 1);
+        }
     }
+
+    visit_mro(
+        package_name,
+        index,
+        &load_model,
+        &mut model_cache,
+        &mut visited,
+        &mut seen_names,
+        &mut result,
+        0,
+    );
 
     result
 }
@@ -2261,4 +2717,192 @@ fn find_assignment_eq(line: &str) -> Option<usize> {
         return Some(i);
     }
     None
+}
+
+#[cfg(test)]
+mod collect_all_tests {
+    use super::*;
+    use perl_tdd_support::must;
+    use perl_workspace::workspace::workspace_index::WorkspaceIndex;
+    use std::sync::Arc;
+    use url::Url;
+
+    fn inherited_moo_parent_index() -> Arc<WorkspaceIndex> {
+        let index = Arc::new(WorkspaceIndex::new());
+        let parent_uri = must(Url::parse("file:///workspace/Parent.pm"));
+        must(
+            index.index_file(
+                parent_uri,
+                r#"package Parent;
+use Moo;
+has 'name' => (is => 'ro', isa => 'Str');
+has 'status' => (
+    is => 'rw',
+    predicate => 1,
+    builder => 1,
+    clearer => 1,
+);
+1;
+"#
+                .to_string(),
+            ),
+        );
+        index
+    }
+
+    #[test]
+    fn collect_all_follows_parent_generated_members() {
+        let index = inherited_moo_parent_index();
+        assert!(index.has_symbols(), "parent-only Moo index should be populated");
+        let child_source = r#"
+package Child;
+use Moo;
+use parent 'Parent';
+
+sub greet {
+    my $self = shift;
+    $self->
+}
+"#;
+        let members =
+            collect_all_package_members_with_source(index.as_ref(), "Child", child_source);
+        let names: Vec<_> = members.iter().map(|member| member.name.as_str()).collect();
+        assert!(
+            names.contains(&"name"),
+            "expected inherited generated reader from Parent, got {names:?}"
+        );
+    }
+}
+
+/// Tests for union-receiver method completion (#9500).
+///
+/// These tests exercise `add_union_receiver_method_completions` directly.
+/// The discriminating test `union_receiver_surfaces_methods_from_second_arm`
+/// verifies that dropping any union arm would cause a test failure — the
+/// contract required by #9500.
+#[cfg(test)]
+mod union_receiver_method_completion_tests {
+    use super::*;
+    use perl_tdd_support::must;
+    use perl_workspace::workspace::workspace_index::WorkspaceIndex;
+    use std::sync::Arc;
+    use url::Url;
+
+    /// Index with `Foo` (has `shared_method` + `foo_only`) and
+    /// `Bar` (has `shared_method` + `bar_only`).
+    fn two_package_index() -> Arc<WorkspaceIndex> {
+        let index = Arc::new(WorkspaceIndex::new());
+
+        let foo_uri = must(Url::parse("file:///workspace/Foo.pm"));
+        must(index.index_file(
+            foo_uri,
+            "package Foo;\nsub shared_method { }\nsub foo_only { }\n1;\n".to_string(),
+        ));
+
+        let bar_uri = must(Url::parse("file:///workspace/Bar.pm"));
+        must(index.index_file(
+            bar_uri,
+            "package Bar;\nsub shared_method { }\nsub bar_only { }\n1;\n".to_string(),
+        ));
+
+        index
+    }
+
+    fn arrow_context(source: &str) -> CompletionContext {
+        let position = source.len();
+        CompletionContext {
+            position,
+            trigger_character: Some('>'),
+            in_string: false,
+            in_regex: false,
+            in_comment: false,
+            in_use_statement: false,
+            current_package: "main".to_string(),
+            prefix: source.to_string(),
+            prefix_start: 0,
+            cursor_scope_id: 0,
+        }
+    }
+
+    /// Discriminating test for #9500: if the second union arm is dropped,
+    /// `bar_only` would be absent from the completions.
+    #[test]
+    fn union_receiver_surfaces_methods_from_second_arm() {
+        let index = two_package_index();
+        let source = "$obj->";
+        let context = arrow_context(source);
+        let mut completions: Vec<CompletionItem> = Vec::new();
+
+        add_union_receiver_method_completions(
+            &mut completions,
+            &context,
+            source,
+            &index,
+            &["Foo".to_string(), "Bar".to_string()],
+        );
+
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+
+        assert!(labels.contains(&"shared_method"), "shared_method should appear; got {labels:?}");
+        assert!(labels.contains(&"foo_only"), "foo_only (Foo arm) should appear; got {labels:?}");
+        // This assertion would FAIL if the second union candidate were dropped.
+        assert!(
+            labels.contains(&"bar_only"),
+            "bar_only (Bar arm, second candidate) should appear; got {labels:?}"
+        );
+    }
+
+    /// Shared methods must not appear more than once even though both arms define them.
+    #[test]
+    fn union_receiver_deduplicates_shared_method() {
+        let index = two_package_index();
+        let source = "$obj->";
+        let context = arrow_context(source);
+        let mut completions: Vec<CompletionItem> = Vec::new();
+
+        add_union_receiver_method_completions(
+            &mut completions,
+            &context,
+            source,
+            &index,
+            &["Foo".to_string(), "Bar".to_string()],
+        );
+
+        let count = completions.iter().filter(|c| c.label.as_ref() == "shared_method").count();
+        assert_eq!(count, 1, "shared_method should appear exactly once, not duplicated");
+    }
+
+    /// Shared-interface methods (in every arm) must rank above partial-interface
+    /// methods (in at least one arm) via sort tiers `2u_` vs `3u_`.
+    #[test]
+    fn shared_method_gets_shared_sort_tier_and_partial_gets_partial_tier() {
+        let index = two_package_index();
+        let source = "$obj->";
+        let context = arrow_context(source);
+        let mut completions: Vec<CompletionItem> = Vec::new();
+
+        add_union_receiver_method_completions(
+            &mut completions,
+            &context,
+            source,
+            &index,
+            &["Foo".to_string(), "Bar".to_string()],
+        );
+
+        let shared = completions.iter().find(|c| c.label.as_ref() == "shared_method");
+        let partial = completions.iter().find(|c| c.label.as_ref() == "foo_only");
+
+        let shared_sort = shared.and_then(|c| c.sort_text.as_ref()).map(|s| s.as_ref().to_string());
+        let partial_sort =
+            partial.and_then(|c| c.sort_text.as_ref()).map(|s| s.as_ref().to_string());
+
+        assert!(
+            shared_sort.as_deref().is_some_and(|s| s.starts_with("2u_")),
+            "shared_method should have sort tier 2u_, got {shared_sort:?}"
+        );
+        assert!(
+            partial_sort.as_deref().is_some_and(|s| s.starts_with("3u_")),
+            "foo_only should have sort tier 3u_, got {partial_sort:?}"
+        );
+    }
 }

@@ -117,7 +117,6 @@ fn parse_corpus_layer(layer_path: &Path, layer: CorpusLayer) -> Result<Vec<Corpu
 
     // Walk the directory and collect files
     for entry in WalkDir::new(layer_path)
-        .max_depth(2)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
@@ -225,6 +224,20 @@ mod tests {
 
         let inventory = generate_inventory(&files);
         assert_eq!(inventory.total_size_bytes, raw.len());
+        Ok(())
+    }
+
+    #[test]
+    fn walks_nested_test_corpus_gold_fixtures() -> Result<()> {
+        let temp = TempDir::new()?;
+        let gold_dir = temp.path().join("test_corpus").join("gold").join("case");
+        std::fs::create_dir_all(&gold_dir)?;
+        std::fs::write(gold_dir.join("fixture.pl"), "package Gold;\\n1;\\n")?;
+
+        let files = parse_corpus_files(temp.path())?;
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, gold_dir.join("fixture.pl"));
         Ok(())
     }
 }

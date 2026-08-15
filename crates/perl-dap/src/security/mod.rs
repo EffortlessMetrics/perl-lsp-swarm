@@ -44,6 +44,21 @@ pub enum SecurityError {
     ExcessiveTimeout(u32),
 }
 
+impl perl_parser_core::ErrorClass for SecurityError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // All variants represent invalid or hostile input from launch
+        // configuration or evaluate arguments — user must correct.
+        match self {
+            Self::PathTraversalAttempt(_)
+            | Self::PathOutsideWorkspace(_)
+            | Self::SymlinkOutsideWorkspace(_)
+            | Self::InvalidPathCharacters
+            | Self::InvalidExpression
+            | Self::ExcessiveTimeout(_) => perl_parser_core::ErrorCategory::UserError,
+        }
+    }
+}
+
 /// Maximum allowed timeout in milliseconds (5 minutes)
 pub const MAX_TIMEOUT_MS: u32 = 300_000;
 

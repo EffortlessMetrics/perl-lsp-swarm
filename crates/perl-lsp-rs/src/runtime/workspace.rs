@@ -27,7 +27,7 @@ use crate::runtime::workspace_progress::{
 };
 use crate::state::workspace_symbol_cap;
 use perl_module::path::file_path_to_module_name;
-use perl_module::rename::{apply_module_rename_edits, plan_module_rename_edits};
+use perl_module::rename::plan_module_rename_edits;
 #[cfg(feature = "workspace")]
 use perl_parser::workspace_index::{
     DegradationReason, EarlyExitReason, IndexState, ResourceKind, SymbolKind,
@@ -42,6 +42,11 @@ use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
 use std::collections::{HashMap, HashSet};
+
+/// Serialize a slice of typed values to a JSON array (#4995).
+fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
+    serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
+}
 #[cfg(feature = "workspace")]
 use std::path::Path;
 use std::sync::Arc;
@@ -127,10 +132,8 @@ impl Drop for IndexingGuard {
             &self.indexing_rescan_pending,
             &self.indexing_transition_lock,
         );
-        if should_restart {
-            if let Some(restart) = self.restart.take() {
-                restart();
-            }
+        if should_restart && let Some(restart) = self.restart.take() {
+            restart();
         }
     }
 }
@@ -182,10 +185,9 @@ fn next_indexing_progress_request_id(next_request_id: &AtomicI32) -> ServerReque
         if next_request_id
             .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
+            && let Some(id) = ServerRequestId::new(current.max(1))
         {
-            if let Some(id) = ServerRequestId::new(current.max(1)) {
-                return id;
-            }
+            return id;
         }
     }
 }
@@ -405,6 +407,13 @@ impl LspServer {
             // that occurs when workspace/symbol arrives right after `initialized`.
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
 
+            if self.workspace_index_stale_for_any_open_document() {
+                tracing::debug!(
+                    "Workspace symbol: skipping stale workspace index tier, using open-doc fallback"
+                );
+                return self.search_open_documents_for_symbols(query, cap);
+            }
+
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
@@ -451,7 +460,7 @@ impl LspServer {
                             WorkspaceSymbolsTraceKind::SourceBackedReadyIndex,
                             generated_pilot_count,
                         );
-                        return Ok(Some(json!(lsp_symbols)));
+                        return Ok(Some(to_json_array(&lsp_symbols)));
                     }
                     // If index is empty, fall through to open-doc search
                 }
@@ -483,7 +492,7 @@ impl LspServer {
                                 WorkspaceSymbolsTraceKind::PartialIndexFallback,
                                 0,
                             );
-                            return Ok(Some(json!(lsp_symbols)));
+                            return Ok(Some(to_json_array(&lsp_symbols)));
                         }
                     }
                     tracing::debug!(
@@ -561,10 +570,10 @@ impl LspServer {
                     .and_then(|u| u.as_str())
                     .unwrap_or("")
                     .to_string();
-                if !file_uri.is_empty() {
-                    if let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri) {
-                        obj.insert("workspaceFolderUri".to_string(), Value::String(folder_uri));
-                    }
+                if !file_uri.is_empty()
+                    && let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri)
+                {
+                    obj.insert("workspaceFolderUri".to_string(), Value::String(folder_uri));
                 }
             }
         }
@@ -588,7 +597,11 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast().cloned()))
+                    (
+                        k.clone(),
+                        v.text_arc.to_string(),
+                        v.current_parsed().and_then(|p| p.ast().cloned()),
+                    )
                 })
                 .collect()
         };
@@ -644,7 +657,7 @@ impl LspServer {
             WorkspaceSymbolsTraceKind::OpenDocumentFallback,
             0,
         );
-        Ok(Some(json!(all_symbols)))
+        Ok(Some(to_json_array(&all_symbols)))
     }
 
     /// Workspace symbol runtime quality receipt for staged trust proof.
@@ -927,25 +940,27 @@ impl LspServer {
         #[cfg(feature = "workspace")]
         {
             let _ = self.check_index_readiness(IndexReadinessPolicy::NoWait);
-            let access_mode = route_index_access(self.coordinator());
-            if let IndexAccessMode::Full(coordinator) = access_mode {
-                let cap = workspace_symbol_cap();
-                let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
-                symbols.extend(
-                    coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
-                );
-                if !symbols.is_empty() {
-                    let lsp_symbols: Vec<Value> = symbols
-                        .iter()
-                        .map(|sym| serde_json::to_value(sym).unwrap_or_else(|_| json!({})))
-                        .collect();
-                    tracing::debug!(
-                        count = lsp_symbols.len(),
-                        "Workspace symbol: served from prebuilt index (v1 fast path)"
+            if !self.workspace_index_stale_for_any_open_document() {
+                let access_mode = route_index_access(self.coordinator());
+                if let IndexAccessMode::Full(coordinator) = access_mode {
+                    let cap = workspace_symbol_cap();
+                    let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                    symbols.extend(
+                        coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
                     );
-                    return Ok(Some(json!(lsp_symbols)));
+                    if !symbols.is_empty() {
+                        let lsp_symbols: Vec<Value> = symbols
+                            .iter()
+                            .map(|sym| serde_json::to_value(sym).unwrap_or_else(|_| json!({})))
+                            .collect();
+                        tracing::debug!(
+                            count = lsp_symbols.len(),
+                            "Workspace symbol: served from prebuilt index (v1 fast path)"
+                        );
+                        return Ok(Some(to_json_array(&lsp_symbols)));
+                    }
+                    // Index returned empty — fall through to re-index fallback.
                 }
-                // Index returned empty — fall through to re-index fallback.
             }
         }
 
@@ -957,7 +972,11 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast().cloned()))
+                    (
+                        k.clone(),
+                        v.text_arc.to_string(),
+                        v.current_parsed().and_then(|p| p.ast().cloned()),
+                    )
                 })
                 .collect()
         };
@@ -1247,10 +1266,10 @@ impl LspServer {
 /// Accepts both the standard wrapped form `{"perl": {...}}` and the unwrapped form `{...}` used
 /// by clients such as Sublime Text's LSP package that omit the outer `"perl"` key.
 pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
-    if let Some(perl) = settings.get("perl") {
-        if perl.is_object() {
-            return Some(perl);
-        }
+    if let Some(perl) = settings.get("perl")
+        && perl.is_object()
+    {
+        return Some(perl);
     }
     // Unwrapped: the settings object itself contains perl config keys directly.
     if settings.is_object() { Some(settings) } else { None }
@@ -1294,29 +1313,52 @@ impl LspServer {
     /// Updates both ServerConfig and WorkspaceConfig when the client
     /// notifies of configuration changes.
     pub(super) fn handle_did_change_configuration(&self, params: Option<Value>) {
-        if let Some(params) = params {
-            if let Some(settings) = params.get("settings") {
-                tracing::debug!("Configuration changed, updating server settings");
+        if let Some(params) = params
+            && let Some(settings) = params.get("settings")
+        {
+            tracing::debug!("Configuration changed, updating server settings");
 
-                // Read perl settings once and update both configs.
-                // Some clients (e.g. Sublime Text's LSP package) send settings without
-                // wrapping them under a top-level "perl" key. Accept both shapes:
-                //   - Wrapped:   {"perl": { "workspace": { "includePaths": [...] } }}
-                //   - Unwrapped: { "workspace": { "includePaths": [...] } }
-                if let Some(perl) = extract_perl_settings(settings) {
-                    self.warn_invalid_client_settings(perl);
-                    // Snapshot the critic-relevant config fields before applying the
-                    // update so we can decide whether to reset the shared
-                    // CriticAnalyzer (config-bound on severity/profile/enabled). We
-                    // compare before/after `update_from_value` rather than re-parsing
-                    // the payload here so this stays in lockstep with the parser — in
-                    // particular it detects severity/enabled changes that arrive via
-                    // either the legacy `perlcritic.*` keys or the native `critic.*`
-                    // keys, which the parser folds into the same fields.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let critic_snapshot_before = {
-                        let cfg = self.config.lock();
-                        (
+            // Read perl settings once and update both configs.
+            // Some clients (e.g. Sublime Text's LSP package) send settings without
+            // wrapping them under a top-level "perl" key. Accept both shapes:
+            //   - Wrapped:   {"perl": { "workspace": { "includePaths": [...] } }}
+            //   - Unwrapped: { "workspace": { "includePaths": [...] } }
+            if let Some(perl) = extract_perl_settings(settings) {
+                self.warn_invalid_client_settings(perl);
+                // Snapshot the critic-relevant config fields before applying the
+                // update so we can decide whether to reset the shared
+                // CriticAnalyzer (config-bound on severity/profile/enabled). We
+                // compare before/after `update_from_value` rather than re-parsing
+                // the payload here so this stays in lockstep with the parser — in
+                // particular it detects severity/enabled changes that arrive via
+                // either the legacy `perlcritic.*` keys or the native `critic.*`
+                // keys, which the parser folds into the same fields.
+                #[cfg(not(target_arch = "wasm32"))]
+                let critic_snapshot_before = {
+                    let cfg = self.config.lock();
+                    (
+                        cfg.perlcritic_enabled,
+                        cfg.perlcritic_severity,
+                        cfg.perlcritic_profile.clone(),
+                        cfg.perlcritic_theme.clone(),
+                        cfg.native_critic_profile.clone(),
+                        cfg.native_critic_include.clone(),
+                        cfg.native_critic_exclude.clone(),
+                    )
+                };
+
+                // Update server config (inlay hints, test runner)
+                {
+                    let mut config = self.config.lock();
+                    config.update_from_value(perl);
+                    tracing::debug!("Updated server config from perl settings");
+                }
+
+                #[cfg(not(target_arch = "wasm32"))]
+                let critic_config_changed = {
+                    let cfg = self.config.lock();
+                    critic_snapshot_before
+                        != (
                             cfg.perlcritic_enabled,
                             cfg.perlcritic_severity,
                             cfg.perlcritic_profile.clone(),
@@ -1325,133 +1367,108 @@ impl LspServer {
                             cfg.native_critic_include.clone(),
                             cfg.native_critic_exclude.clone(),
                         )
-                    };
+                };
 
-                    // Update server config (inlay hints, test runner)
-                    {
-                        let mut config = self.config.lock();
-                        config.update_from_value(perl);
-                        tracing::debug!("Updated server config from perl settings");
-                    }
+                // Reset the shared CriticAnalyzer when any critic-related setting
+                // changed so the next diagnostic cycle rebuilds it with the new config.
+                #[cfg(not(target_arch = "wasm32"))]
+                if critic_config_changed {
+                    *self.critic_analyzer.lock() = None;
+                    self.critic_workspace_warnings_sent.lock().clear();
+                    self.pull_diagnostics_orchestrator.reset();
+                }
 
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let critic_config_changed = {
-                        let cfg = self.config.lock();
-                        critic_snapshot_before
-                            != (
-                                cfg.perlcritic_enabled,
-                                cfg.perlcritic_severity,
-                                cfg.perlcritic_profile.clone(),
-                                cfg.perlcritic_theme.clone(),
-                                cfg.native_critic_profile.clone(),
-                                cfg.native_critic_include.clone(),
-                                cfg.native_critic_exclude.clone(),
-                            )
-                    };
-
-                    // Reset the shared CriticAnalyzer when any critic-related setting
-                    // changed so the next diagnostic cycle rebuilds it with the new config.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if critic_config_changed {
-                        *self.critic_analyzer.lock() = None;
-                        self.critic_workspace_warnings_sent.lock().clear();
-                        self.pull_diagnostics_orchestrator.reset();
-                    }
-
-                    // Update workspace config (include paths, @INC)
-                    {
-                        let mut workspace_config = self.workspace_config.lock();
-                        let root_path = self.root_path.lock().clone();
-                        let rejected = workspace_config.update_from_value_with_context(
-                            perl,
-                            perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
-                                workspace_root: root_path.as_deref(),
-                                apply_external_include_paths: true,
-                            },
+                // Update workspace config (include paths, @INC)
+                {
+                    let mut workspace_config = self.workspace_config.lock();
+                    let root_path = self.root_path.lock().clone();
+                    let rejected = workspace_config.update_from_value_with_context(
+                        perl,
+                        perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
+                            workspace_root: root_path.as_deref(),
+                            apply_external_include_paths: true,
+                        },
+                    );
+                    for entry in rejected {
+                        tracing::warn!(
+                            target: "perl_lsp::config",
+                            entry = %entry.entry,
+                            reason = %entry.render(),
+                            "rejected client includePaths entry"
                         );
-                        for entry in rejected {
-                            tracing::warn!(
-                                target: "perl_lsp::config",
-                                entry = %entry.entry,
-                                reason = %entry.render(),
-                                "rejected client includePaths entry"
-                            );
-                        }
-                        tracing::debug!("Updated workspace config from perl settings");
                     }
+                    tracing::debug!("Updated workspace config from perl settings");
+                }
 
-                    // Update global limits from the same perl settings layer.
-                    if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
-                        limits.update_from_value(perl);
-                    }
+                // Update global limits from the same perl settings layer.
+                if let Ok(mut limits) = perl_lsp_rs_core::runtime::limits::LSP_LIMITS.write() {
+                    limits.update_from_value(perl);
+                }
 
-                    // Apply global client settings to each folder's effective config immediately.
-                    // The async workspace/configuration pull that follows will refine per-folder
-                    // settings once the client responds, but we update now so the window between
-                    // didChangeConfiguration arrival and the pull response doesn't leave folders
-                    // with stale settings.
-                    {
-                        let mut folders = self.workspace_folders.lock();
-                        let init_options_perl = self.initialization_options_perl_settings.lock();
-                        for folder in folders.iter_mut() {
-                            let mut effective_config =
-                                perl_lsp_rs_core::config::WorkspaceConfig::default();
-                            if let Some(init_opts) = init_options_perl.as_ref() {
-                                let rejected = effective_config.update_from_value(init_opts);
-                                for entry in rejected {
-                                    tracing::warn!(
-                                        target: "perl_lsp::config",
-                                        folder_uri = %folder.uri,
-                                        entry = %entry.entry,
-                                        reason = %entry.render(),
-                                        "rejected initializationOptions includePaths entry"
-                                    );
-                                }
-                            }
-                            if let Some(project_config) = &folder.project_config {
-                                // Re-applying an already-loaded, already-warned-about
-                                // project_config; discard the rejection list rather than
-                                // re-warning on every reconfiguration.
-                                if let Some(folder_path) = folder.path.as_deref() {
-                                    let _ = project_config.apply_to_workspace_config(
-                                        &mut effective_config,
-                                        folder_path,
-                                    );
-                                }
-                            }
-                            let rejected = effective_config.update_from_value_with_context(
-                                perl,
-                                perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
-                                    workspace_root: folder.path.as_deref(),
-                                    apply_external_include_paths: true,
-                                },
-                            );
+                // Apply global client settings to each folder's effective config immediately.
+                // The async workspace/configuration pull that follows will refine per-folder
+                // settings once the client responds, but we update now so the window between
+                // didChangeConfiguration arrival and the pull response doesn't leave folders
+                // with stale settings.
+                {
+                    let mut folders = self.workspace_folders.lock();
+                    let init_options_perl = self.initialization_options_perl_settings.lock();
+                    for folder in folders.iter_mut() {
+                        let mut effective_config =
+                            perl_lsp_rs_core::config::WorkspaceConfig::default();
+                        if let Some(init_opts) = init_options_perl.as_ref() {
+                            let rejected = effective_config.update_from_value(init_opts);
                             for entry in rejected {
                                 tracing::warn!(
                                     target: "perl_lsp::config",
                                     folder_uri = %folder.uri,
                                     entry = %entry.entry,
                                     reason = %entry.render(),
-                                    "rejected client includePaths entry"
+                                    "rejected initializationOptions includePaths entry"
                                 );
                             }
-                            folder.effective_workspace_config = effective_config;
-                            folder.refresh_workspace_metadata();
                         }
+                        if let Some(project_config) = &folder.project_config {
+                            // Re-applying an already-loaded, already-warned-about
+                            // project_config; discard the rejection list rather than
+                            // re-warning on every reconfiguration.
+                            if let Some(folder_path) = folder.path.as_deref() {
+                                let _ = project_config
+                                    .apply_to_workspace_config(&mut effective_config, folder_path);
+                            }
+                        }
+                        let rejected = effective_config.update_from_value_with_context(
+                            perl,
+                            perl_lsp_rs_core::config::WorkspaceConfigUpdateContext {
+                                workspace_root: folder.path.as_deref(),
+                                apply_external_include_paths: true,
+                            },
+                        );
+                        for entry in rejected {
+                            tracing::warn!(
+                                target: "perl_lsp::config",
+                                folder_uri = %folder.uri,
+                                entry = %entry.entry,
+                                reason = %entry.render(),
+                                "rejected client includePaths entry"
+                            );
+                        }
+                        folder.effective_workspace_config = effective_config;
+                        folder.refresh_workspace_metadata();
                     }
+                }
 
-                    // A configuration notification starts a new user-visible
-                    // configuration session; do not let an old auth failure
-                    // suppress feedback after settings are changed or removed.
-                    self.ai_backend_warnings_sent.lock().clear();
+                // A configuration notification starts a new user-visible
+                // configuration session; do not let an old auth failure
+                // suppress feedback after settings are changed or removed.
+                self.ai_backend_warnings_sent.lock().clear();
 
-                    // Refresh AI backend when config changes (constructs or clears provider)
-                    self.refresh_ai_backend();
+                // Refresh AI backend when config changes (constructs or clears provider)
+                self.refresh_ai_backend();
 
-                    // Trigger client refresh for configuration-dependent features
-                    if let Err(e) = self.refresh_controller.refresh_all(self) {
-                        tracing::warn!(error = %e, "Failed to refresh client after config change");
-                    }
+                // Trigger client refresh for configuration-dependent features
+                if let Err(e) = self.refresh_controller.refresh_all(self) {
+                    tracing::warn!(error = %e, "Failed to refresh client after config change");
                 }
             }
         }
@@ -1553,23 +1570,23 @@ impl LspServer {
 
         // Re-index the file if it is a Perl source file.
         #[cfg(feature = "workspace")]
-        if let Some(coordinator) = self.coordinator() {
-            if is_perl_source_uri(uri) {
-                if loaded_content.is_none() {
-                    loaded_content = read_watched_file_content(uri, "re-indexing");
-                }
+        if let Some(coordinator) = self.coordinator()
+            && is_perl_source_uri(uri)
+        {
+            if loaded_content.is_none() {
+                loaded_content = read_watched_file_content(uri, "re-indexing");
+            }
 
-                let workspace_index = coordinator.index();
-                if let Ok(url) = url::Url::parse(uri) {
-                    if let Some(content) = loaded_content.as_ref() {
-                        // Clear old index data before re-indexing
-                        workspace_index.clear_file(uri);
-                        match workspace_index.index_file(url, content.clone()) {
-                            Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
-                            Err(e) => {
-                                tracing::warn!("Failed to re-index file {}: {}", uri, e);
-                            }
-                        }
+            let workspace_index = coordinator.index();
+            if let Ok(url) = url::Url::parse(uri)
+                && let Some(content) = loaded_content.as_ref()
+            {
+                // Clear old index data before re-indexing
+                workspace_index.clear_file(uri);
+                match workspace_index.index_file(url, content.clone()) {
+                    Ok(()) => tracing::debug!("Re-indexed file: {}", uri),
+                    Err(e) => {
+                        tracing::warn!("Failed to re-index file {}: {}", uri, e);
                     }
                 }
             }
@@ -1607,205 +1624,35 @@ impl LspServer {
         tracing::debug!("Processed file watcher change: {}", uri);
     }
 
-    /// Handle workspace/willRenameFiles request
-    pub(super) fn handle_will_rename_files(
-        &self,
-        params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
-                let mut workspace_edit = json!({
-                    "changes": {}
-                });
-                let mut planned_workspace_texts: std::collections::BTreeMap<
-                    String,
-                    (String, String),
-                > = std::collections::BTreeMap::new();
-
-                for file in files {
-                    let Some(old_uri) = file["oldUri"].as_str() else {
-                        continue;
-                    };
-                    let Some(new_uri) = file["newUri"].as_str() else {
-                        continue;
-                    };
-
-                    tracing::debug!("File rename: {} -> {}", old_uri, new_uri);
-
-                    // Extract module names from file paths
-                    let old_module = path_to_module_name(old_uri);
-                    let new_module = path_to_module_name(new_uri);
-
-                    if !old_module.is_empty() && !new_module.is_empty() {
-                        if !planned_workspace_texts.contains_key(old_uri) {
-                            if let Some(text) = self.read_workspace_text(old_uri) {
-                                planned_workspace_texts
-                                    .insert(old_uri.to_string(), (text.clone(), text));
-                            }
-                        }
-                        if let Some((_, current_text)) = planned_workspace_texts.get_mut(old_uri) {
-                            let planned =
-                                plan_module_rename_edits(current_text, &old_module, &new_module);
-                            if !planned.is_empty() {
-                                *current_text = apply_module_rename_edits(current_text, &planned);
-                            }
-                        }
-
-                        // Find all files that reference the old module
-                        // Note: Query operation - use coordinator.index() for consistency
-                        #[cfg(feature = "workspace")]
-                        let dependents = if let Some(coordinator) = self.coordinator() {
-                            coordinator.index().find_dependents(&old_module)
-                        } else {
-                            Vec::new()
-                        };
-
-                        #[cfg(not(feature = "workspace"))]
-                        let dependents = Vec::<String>::new();
-
-                        for dependent_uri in dependents {
-                            if !planned_workspace_texts.contains_key(&dependent_uri) {
-                                let Some(text) = self.read_workspace_text(&dependent_uri) else {
-                                    continue;
-                                };
-                                planned_workspace_texts
-                                    .insert(dependent_uri.clone(), (text.clone(), text));
-                            }
-
-                            if let Some((_, current_text)) =
-                                planned_workspace_texts.get_mut(&dependent_uri)
-                            {
-                                let planned = plan_module_rename_edits(
-                                    current_text,
-                                    &old_module,
-                                    &new_module,
-                                );
-                                if !planned.is_empty() {
-                                    *current_text =
-                                        apply_module_rename_edits(current_text, &planned);
-                                }
-                            }
-                        }
-                    }
-
-                    // Update the index for the renamed file
-                    // Note: Mutation operation - use coordinator with lifecycle tracking
-                    #[cfg(feature = "workspace")]
-                    if let Some(coordinator) = self.coordinator() {
-                        coordinator.notify_change(old_uri);
-                        coordinator.notify_change(new_uri);
-                        let workspace_index = coordinator.index();
-                        workspace_index.remove_file(old_uri);
-                        if let Some(path) = uri_to_fs_path(new_uri) {
-                            if let Ok(content) = read_text_file_with_encoding(&path) {
-                                if let Ok(url) = url::Url::parse(new_uri) {
-                                    if let Err(e) = workspace_index.index_file(url, content.clone())
-                                    {
-                                        tracing::warn!(
-                                            "Failed to index renamed file {}: {}",
-                                            new_uri,
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        coordinator.notify_parse_complete(old_uri);
-                        coordinator.notify_parse_complete(new_uri);
-                    }
-
-                    // Warn the user if open documents reference the old module name via
-                    // patterns that were not updated (e.g., `->` static calls, `@ISA`,
-                    // qualified function calls). These are known gaps tracked in
-                    // docs/reference/KNOWN_LIMITATIONS.md.
-                    if !old_module.is_empty() {
-                        #[cfg(feature = "workspace")]
-                        let updated_uris: std::collections::HashSet<&str> =
-                            planned_workspace_texts.keys().map(String::as_str).collect();
-                        #[cfg(not(feature = "workspace"))]
-                        let updated_uris = std::collections::HashSet::<&str>::new();
-                        // Build a word-boundary pattern so "Base" does not match "Database".
-                        // Perl module names consist of \w and ::, so we check that any match
-                        // of old_module in the document text is not immediately preceded or
-                        // followed by a word character.
-                        let documents = self.documents.lock();
-                        let unhandled = documents.iter().any(|(uri, doc)| {
-                            // Skip the file being renamed itself — it is expected to contain
-                            // the old module name (e.g., `package OldModule;`).
-                            if uri.as_str() == old_uri {
-                                return false;
-                            }
-                            if updated_uris.contains(uri.as_str()) {
-                                return false;
-                            }
-                            // Word-boundary check: reject matches where old_module is part of
-                            // a longer identifier (e.g., "Base" inside "Database").
-                            module_name_appears_in_text(&doc.text, old_module.as_str())
-                        });
-                        drop(documents);
-                        if unhandled {
-                            let msg = format!(
-                                "Some references to '{}' may not have been updated. \
-                                 String literals, comments, and dynamic method calls \
-                                 are not automatically rewritten. \
-                                 Use find-and-replace to update them manually.",
-                                old_module
-                            );
-                            if let Err(e) = self
-                                .show_message(crate::runtime::window::MessageType::Warning, &msg)
-                            {
-                                tracing::debug!("Failed to send rename warning: {}", e);
-                            }
-                        }
-                    }
-                }
-
-                #[cfg(feature = "workspace")]
-                for (uri, (original_text, current_text)) in planned_workspace_texts {
-                    self.append_workspace_edits(
-                        &mut workspace_edit,
-                        &uri,
-                        build_module_rename_workspace_edits(&original_text, &current_text),
-                    );
-                }
-
-                return Ok(Some(workspace_edit));
-            }
-        }
-
-        // Return empty edit if no changes needed
-        Ok(Some(json!({"changes": {}})))
-    }
-
     /// Handle workspace/didDeleteFiles notification
     pub(super) fn handle_did_delete_files(
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
-                for file in files {
-                    let Some(uri) = file["uri"].as_str() else {
-                        continue;
-                    };
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array()
+        {
+            for file in files {
+                let Some(uri) = file["uri"].as_str() else {
+                    continue;
+                };
 
-                    tracing::debug!(uri, "File deleted");
+                tracing::debug!(uri, "File deleted");
 
-                    #[cfg(feature = "workspace")]
-                    if let Some(coordinator) = self.coordinator() {
-                        coordinator.notify_change(uri);
-                    }
-                    self.evict_deleted_file_state(uri);
-                    #[cfg(feature = "workspace")]
-                    if let Some(coordinator) = self.coordinator() {
-                        coordinator.notify_parse_complete(uri);
-                    }
+                #[cfg(feature = "workspace")]
+                if let Some(coordinator) = self.coordinator() {
+                    coordinator.notify_change(uri);
                 }
-
-                // Trigger client refresh after file deletions
-                if let Err(e) = self.refresh_controller.refresh_all(self) {
-                    tracing::warn!(error = %e, "Failed to refresh client after file deletions");
+                self.evict_deleted_file_state(uri);
+                #[cfg(feature = "workspace")]
+                if let Some(coordinator) = self.coordinator() {
+                    coordinator.notify_parse_complete(uri);
                 }
+            }
+
+            // Trigger client refresh after file deletions
+            if let Err(e) = self.refresh_controller.refresh_all(self) {
+                tracing::warn!(error = %e, "Failed to refresh client after file deletions");
             }
         }
 
@@ -1818,81 +1665,82 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
-                #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator() {
-                    let idx = coordinator.index();
-                    let open_documents: Vec<(String, String)> = {
-                        let documents = self.documents.lock();
-                        documents.iter().map(|(uri, doc)| (uri.clone(), doc.text.clone())).collect()
-                    };
-                    let deleting_uris: std::collections::HashSet<String> = files
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array()
+        {
+            #[cfg(feature = "workspace")]
+            if let Some(coordinator) = self.coordinator() {
+                let idx = coordinator.index();
+                let open_documents: Vec<(String, String)> = {
+                    let documents = self.documents.lock();
+                    documents
                         .iter()
-                        .filter_map(|file| {
-                            file["uri"].as_str().map(|uri| self.normalize_uri_key(uri))
-                        })
-                        .collect();
-                    let mut unsafe_deletes: Vec<(String, usize, Vec<String>)> = Vec::new();
+                        .map(|(uri, doc)| (uri.clone(), doc.text_arc.to_string()))
+                        .collect()
+                };
+                let deleting_uris: std::collections::HashSet<String> = files
+                    .iter()
+                    .filter_map(|file| file["uri"].as_str().map(|uri| self.normalize_uri_key(uri)))
+                    .collect();
+                let mut unsafe_deletes: Vec<(String, usize, Vec<String>)> = Vec::new();
 
-                    for file in files {
-                        let Some(uri) = file["uri"].as_str() else {
-                            continue;
-                        };
+                for file in files {
+                    let Some(uri) = file["uri"].as_str() else {
+                        continue;
+                    };
 
-                        tracing::debug!(uri, "File will be deleted");
-                        let mut dependents: std::collections::BTreeSet<String> =
-                            collect_cross_file_delete_dependents(idx, uri, &deleting_uris);
-                        dependents.extend(collect_open_document_delete_dependents(
-                            idx,
+                    tracing::debug!(uri, "File will be deleted");
+                    let mut dependents: std::collections::BTreeSet<String> =
+                        collect_cross_file_delete_dependents(idx, uri, &deleting_uris);
+                    dependents.extend(collect_open_document_delete_dependents(
+                        idx,
+                        uri,
+                        &deleting_uris,
+                        &open_documents,
+                    ));
+                    dependents.extend(collect_symbol_reference_delete_dependents(
+                        idx,
+                        uri,
+                        &deleting_uris,
+                    ));
+                    let dependents: Vec<String> = dependents.into_iter().collect();
+
+                    if !dependents.is_empty() {
+                        let examples: Vec<String> =
+                            dependents.iter().take(3).map(|uri| short_uri(uri)).collect();
+                        tracing::warn!(
                             uri,
-                            &deleting_uris,
-                            &open_documents,
-                        ));
-                        dependents.extend(collect_symbol_reference_delete_dependents(
-                            idx,
-                            uri,
-                            &deleting_uris,
-                        ));
-                        let dependents: Vec<String> = dependents.into_iter().collect();
-
-                        if !dependents.is_empty() {
-                            let examples: Vec<String> =
-                                dependents.iter().take(3).map(|uri| short_uri(uri)).collect();
-                            tracing::warn!(
-                                uri,
-                                dependent_file_count = dependents.len(),
-                                "Safe delete detected dependent workspace files"
-                            );
-                            unsafe_deletes.push((short_uri(uri), dependents.len(), examples));
-                        }
+                            dependent_file_count = dependents.len(),
+                            "Safe delete detected dependent workspace files"
+                        );
+                        unsafe_deletes.push((short_uri(uri), dependents.len(), examples));
                     }
+                }
 
-                    if !unsafe_deletes.is_empty() {
-                        let msg = if unsafe_deletes.len() == 1 {
-                            let (uri, dependent_count, examples) = &unsafe_deletes[0];
-                            let example_suffix = if examples.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" Example dependents: {}.", examples.join(", "))
-                            };
-                            format!(
-                                "Safe delete warning: '{}' has {} dependent workspace file(s). \
-                                 Delete may break callers.{}",
-                                uri, dependent_count, example_suffix
-                            )
+                if !unsafe_deletes.is_empty() {
+                    let msg = if unsafe_deletes.len() == 1 {
+                        let (uri, dependent_count, examples) = &unsafe_deletes[0];
+                        let example_suffix = if examples.is_empty() {
+                            String::new()
                         } else {
-                            format!(
-                                "Safe delete warning: {} files have dependent workspace files. \
-                                 Delete may break callers.",
-                                unsafe_deletes.len()
-                            )
+                            format!(" Example dependents: {}.", examples.join(", "))
                         };
-                        if let Err(e) =
-                            self.show_message(crate::runtime::window::MessageType::Warning, &msg)
-                        {
-                            tracing::debug!("Failed to send safe-delete warning: {}", e);
-                        }
+                        format!(
+                            "Safe delete warning: '{}' has {} dependent workspace file(s). \
+                                 Delete may break callers.{}",
+                            uri, dependent_count, example_suffix
+                        )
+                    } else {
+                        format!(
+                            "Safe delete warning: {} files have dependent workspace files. \
+                                 Delete may break callers.",
+                            unsafe_deletes.len()
+                        )
+                    };
+                    if let Err(e) =
+                        self.show_message(crate::runtime::window::MessageType::Warning, &msg)
+                    {
+                        tracing::debug!("Failed to send safe-delete warning: {}", e);
                     }
                 }
             }
@@ -1907,15 +1755,15 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
-                for file in files {
-                    let Some(uri) = file["uri"].as_str() else {
-                        continue;
-                    };
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array()
+        {
+            for file in files {
+                let Some(uri) = file["uri"].as_str() else {
+                    continue;
+                };
 
-                    tracing::debug!("File will be created: {}", uri);
-                }
+                tracing::debug!("File will be created: {}", uri);
             }
         }
 
@@ -1928,57 +1776,52 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
-                for file in files {
-                    let Some(uri) = file["uri"].as_str() else {
-                        continue;
-                    };
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array()
+        {
+            for file in files {
+                let Some(uri) = file["uri"].as_str() else {
+                    continue;
+                };
 
-                    tracing::debug!("File created: {}", uri);
+                tracing::debug!("File created: {}", uri);
 
-                    // Index the new file if it's a Perl file
-                    // Note: Mutation operation - use coordinator with lifecycle tracking
-                    #[cfg(feature = "workspace")]
-                    if let Some(coordinator) = self.coordinator() {
-                        if is_perl_source_uri(uri) {
-                            if let Some(path) = uri_to_fs_path(uri) {
-                                match read_text_file_with_encoding(&path) {
-                                    Ok(content) => {
-                                        coordinator.notify_change(uri);
-                                        if let Ok(url) = url::Url::parse(uri) {
-                                            match coordinator.index().index_file(url, content) {
-                                                Ok(()) => {
-                                                    tracing::debug!("Indexed new file: {}", uri)
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        "Failed to index new file {}: {}",
-                                                        uri,
-                                                        e
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        coordinator.notify_parse_complete(uri);
+                // Index the new file if it's a Perl file
+                // Note: Mutation operation - use coordinator with lifecycle tracking
+                #[cfg(feature = "workspace")]
+                if let Some(coordinator) = self.coordinator()
+                    && is_perl_source_uri(uri)
+                    && let Some(path) = uri_to_fs_path(uri)
+                {
+                    match read_text_file_with_encoding(&path) {
+                        Ok(content) => {
+                            coordinator.notify_change(uri);
+                            if let Ok(url) = url::Url::parse(uri) {
+                                match coordinator.index().index_file(url, content) {
+                                    Ok(()) => {
+                                        tracing::debug!("Indexed new file: {}", uri)
                                     }
                                     Err(e) => {
-                                        tracing::debug!(
-                                            "Failed to read new file for indexing ({}): {}",
-                                            path.display(),
-                                            e
-                                        );
+                                        tracing::warn!("Failed to index new file {}: {}", uri, e)
                                     }
                                 }
                             }
+                            coordinator.notify_parse_complete(uri);
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "Failed to read new file for indexing ({}): {}",
+                                path.display(),
+                                e
+                            );
                         }
                     }
                 }
+            }
 
-                // Trigger client refresh after file creations
-                if let Err(e) = self.refresh_controller.refresh_all(self) {
-                    tracing::warn!("Failed to refresh client after file creations: {}", e);
-                }
+            // Trigger client refresh after file creations
+            if let Err(e) = self.refresh_controller.refresh_all(self) {
+                tracing::warn!("Failed to refresh client after file creations: {}", e);
             }
         }
 
@@ -1991,84 +1834,81 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(files) = params["files"].as_array() {
-                for file in files {
-                    let Some(old_uri) = file["oldUri"].as_str() else {
-                        continue;
-                    };
-                    let Some(new_uri) = file["newUri"].as_str() else {
-                        continue;
-                    };
+        if let Some(params) = params
+            && let Some(files) = params["files"].as_array()
+        {
+            for file in files {
+                let Some(old_uri) = file["oldUri"].as_str() else {
+                    continue;
+                };
+                let Some(new_uri) = file["newUri"].as_str() else {
+                    continue;
+                };
 
-                    // Normalize URIs so the index and pinned_doc_map_for
-                    // lookups (which use normalize_uri_key / uri_key) match
-                    // regardless of percent-encoding or case differences in
-                    // the client-supplied URIs (#3665).
-                    let old_uri = self.normalize_uri_key(old_uri);
-                    let new_uri = self.normalize_uri_key(new_uri);
+                // Normalize URIs so the index and pinned_doc_map_for
+                // lookups (which use normalize_uri_key / uri_key) match
+                // regardless of percent-encoding or case differences in
+                // the client-supplied URIs (#3665).
+                let old_uri = self.normalize_uri_key(old_uri);
+                let new_uri = self.normalize_uri_key(new_uri);
 
-                    tracing::debug!("File renamed: {} -> {}", old_uri, new_uri);
+                tracing::debug!("File renamed: {} -> {}", old_uri, new_uri);
 
-                    // Update the index for the renamed file
-                    // Note: Mutation operation - use coordinator with lifecycle tracking
-                    #[cfg(feature = "workspace")]
-                    if let Some(coordinator) = self.coordinator() {
-                        coordinator.notify_change(&old_uri);
-                        coordinator.notify_change(&new_uri);
+                // Update the index for the renamed file
+                // Note: Mutation operation - use coordinator with lifecycle tracking
+                #[cfg(feature = "workspace")]
+                if let Some(coordinator) = self.coordinator() {
+                    coordinator.notify_change(&old_uri);
+                    coordinator.notify_change(&new_uri);
 
-                        // Remove old file from index
-                        coordinator.index().remove_file(&old_uri);
+                    // Remove old file from index
+                    coordinator.index().remove_file(&old_uri);
 
-                        // Index new file if it's a Perl file
-                        if is_perl_source_uri(&new_uri) {
-                            if let Some(path) = uri_to_fs_path(&new_uri) {
-                                match read_text_file_with_encoding(&path) {
-                                    Ok(content) => {
-                                        if let Ok(url) = url::Url::parse(&new_uri) {
-                                            match coordinator.index().index_file(url, content) {
-                                                Ok(()) => {
-                                                    tracing::debug!(
-                                                        "Indexed renamed file: {}",
-                                                        new_uri
-                                                    )
-                                                }
-                                                Err(e) => tracing::warn!(
-                                                    "Failed to index renamed file {}: {}",
-                                                    new_uri,
-                                                    e
-                                                ),
-                                            }
+                    // Index new file if it's a Perl file
+                    if is_perl_source_uri(&new_uri)
+                        && let Some(path) = uri_to_fs_path(&new_uri)
+                    {
+                        match read_text_file_with_encoding(&path) {
+                            Ok(content) => {
+                                if let Ok(url) = url::Url::parse(&new_uri) {
+                                    match coordinator.index().index_file(url, content) {
+                                        Ok(()) => {
+                                            tracing::debug!("Indexed renamed file: {}", new_uri)
                                         }
-                                    }
-                                    Err(e) => {
-                                        tracing::debug!(
-                                            "Failed to read renamed file for indexing ({}): {}",
-                                            path.display(),
+                                        Err(e) => tracing::warn!(
+                                            "Failed to index renamed file {}: {}",
+                                            new_uri,
                                             e
-                                        );
+                                        ),
                                     }
                                 }
                             }
-                        }
-
-                        coordinator.notify_parse_complete(&old_uri);
-                        coordinator.notify_parse_complete(&new_uri);
-                    }
-
-                    // Update document store
-                    {
-                        let mut documents = self.documents.lock();
-                        if let Some(doc) = documents.remove(&old_uri) {
-                            documents.insert(new_uri.clone(), doc);
+                            Err(e) => {
+                                tracing::debug!(
+                                    "Failed to read renamed file for indexing ({}): {}",
+                                    path.display(),
+                                    e
+                                );
+                            }
                         }
                     }
+
+                    coordinator.notify_parse_complete(&old_uri);
+                    coordinator.notify_parse_complete(&new_uri);
                 }
 
-                // Trigger client refresh after file renames
-                if let Err(e) = self.refresh_controller.refresh_all(self) {
-                    tracing::warn!(error = %e, "Failed to refresh client after file renames");
+                // Update document store
+                {
+                    let mut documents = self.documents.lock();
+                    if let Some(doc) = documents.remove(&old_uri) {
+                        documents.insert(new_uri.clone(), doc);
+                    }
                 }
+            }
+
+            // Trigger client refresh after file renames
+            if let Err(e) = self.refresh_controller.refresh_all(self) {
+                tracing::warn!(error = %e, "Failed to refresh client after file renames");
             }
         }
 
@@ -2081,78 +1921,78 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<(), JsonRpcError> {
-        if let Some(params) = params {
-            if let Some(event) = params.get("event") {
-                let change = extract_workspace_folder_change(event);
-                if change.added.is_empty() && change.removed.is_empty() {
-                    tracing::debug!("Ignoring empty workspace folder change notification");
-                    return Ok(());
-                }
-
-                #[cfg(feature = "workspace")]
-                let _indexing_transition = self.indexing_transition_lock.lock();
-
-                if !change.added.is_empty() {
-                    let mut workspace_folders = self.workspace_folders.lock();
-                    for uri in &change.added {
-                        tracing::debug!(uri, "Added workspace folder");
-                        let mut folder_state =
-                            super::workspace_folder::WorkspaceFolderState::new(uri.clone());
-
-                        // Resolve the folder path
-                        if let Some(path) = super::source_path_from_uri(uri) {
-                            folder_state = folder_state.with_path(path);
-                        }
-
-                        workspace_folders.push(folder_state);
-                    }
-                }
-
-                if !change.removed.is_empty() {
-                    let mut workspace_folders = self.workspace_folders.lock();
-                    let removed_uris: std::collections::HashSet<String> =
-                        change.removed.iter().cloned().collect();
-
-                    for uri in &change.removed {
-                        tracing::debug!(uri, "Removed workspace folder");
-                        self.evict_workspace_folder_state(uri);
-                    }
-
-                    // Retain only folders that are not in the removed list
-                    workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
-                }
-
-                // Workspace folder membership changed, so any in-flight reverse
-                // request now has stale per-folder scoping. Drop pending entries
-                // before issuing a fresh `workspace/configuration` pull.
-                self.pending_workspace_configuration_requests.lock().clear();
-
-                // Load config for all folders after changes
-                self.load_and_apply_project_config();
-
-                // Update workspace index with new folder list
-                #[cfg(feature = "workspace")]
-                {
-                    if let Some(coordinator) = self.coordinator() {
-                        coordinator.index().set_workspace_folders(self.workspace_folder_uris());
-
-                        // Removed folders were evicted above before folder
-                        // membership was updated.
-                    }
-                }
-
-                #[cfg(feature = "workspace")]
-                drop(_indexing_transition);
-
-                // Trigger client refresh after workspace folder changes
-                if let Err(e) = self.refresh_controller.refresh_all(self) {
-                    tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
-                }
-
-                // Rebuild workspace index after folder changes
-                #[cfg(feature = "workspace")]
-                self.start_workspace_indexing();
+        if let Some(params) = params
+            && let Some(event) = params.get("event")
+        {
+            let change = extract_workspace_folder_change(event);
+            if change.added.is_empty() && change.removed.is_empty() {
+                tracing::debug!("Ignoring empty workspace folder change notification");
+                return Ok(());
             }
+
+            #[cfg(feature = "workspace")]
+            let _indexing_transition = self.indexing_transition_lock.lock();
+
+            if !change.added.is_empty() {
+                let mut workspace_folders = self.workspace_folders.lock();
+                for uri in &change.added {
+                    tracing::debug!(uri, "Added workspace folder");
+                    let mut folder_state =
+                        super::workspace_folder::WorkspaceFolderState::new(uri.clone());
+
+                    // Resolve the folder path
+                    if let Some(path) = super::source_path_from_uri(uri) {
+                        folder_state = folder_state.with_path(path);
+                    }
+
+                    workspace_folders.push(folder_state);
+                }
+            }
+
+            if !change.removed.is_empty() {
+                let mut workspace_folders = self.workspace_folders.lock();
+                let removed_uris: std::collections::HashSet<String> =
+                    change.removed.iter().cloned().collect();
+
+                for uri in &change.removed {
+                    tracing::debug!(uri, "Removed workspace folder");
+                    self.evict_workspace_folder_state(uri);
+                }
+
+                // Retain only folders that are not in the removed list
+                workspace_folders.retain(|f| !removed_uris.contains(&f.uri));
+            }
+
+            // Workspace folder membership changed, so any in-flight reverse
+            // request now has stale per-folder scoping. Drop pending entries
+            // before issuing a fresh `workspace/configuration` pull.
+            self.pending_workspace_configuration_requests.lock().clear();
+
+            // Load config for all folders after changes
+            self.load_and_apply_project_config();
+
+            // Update workspace index with new folder list
+            #[cfg(feature = "workspace")]
+            {
+                if let Some(coordinator) = self.coordinator() {
+                    coordinator.index().set_workspace_folders(self.workspace_folder_uris());
+
+                    // Removed folders were evicted above before folder
+                    // membership was updated.
+                }
+            }
+
+            #[cfg(feature = "workspace")]
+            drop(_indexing_transition);
+
+            // Trigger client refresh after workspace folder changes
+            if let Err(e) = self.refresh_controller.refresh_all(self) {
+                tracing::warn!(error = %e, "Failed to refresh client after workspace folder changes");
+            }
+
+            // Rebuild workspace index after folder changes
+            #[cfg(feature = "workspace")]
+            self.start_workspace_indexing();
         }
 
         Ok(())
@@ -2527,7 +2367,7 @@ impl LspServer {
                     send_progress_end(&outbound, message);
                 }
                 readiness_receipt.lock().log();
-                send_index_ready_notification(&outbound, false);
+                send_index_ready_notification(&outbound, &coordinator.state());
             } else if work_done_progress
                 && GLOBAL_CANCELLATION_REGISTRY.is_cancelled(&progress_request_id)
             {
@@ -2541,7 +2381,7 @@ impl LspServer {
                 );
                 send_progress_end(&outbound, "Indexing cancelled");
                 readiness_receipt.lock().log();
-                send_index_ready_notification(&outbound, false);
+                send_index_ready_notification(&outbound, &coordinator.state());
             } else {
                 indexing_receipt.log(budget_start.elapsed(), None);
                 let resource_limited = matches!(
@@ -2553,7 +2393,7 @@ impl LspServer {
                     if work_done_progress {
                         send_progress_end(&outbound, "Indexing stopped at resource limit");
                     }
-                    send_index_ready_notification(&outbound, false);
+                    send_index_ready_notification(&outbound, &coordinator.state());
                 } else {
                     let file_count = coordinator.index().file_count();
                     let symbol_count = coordinator.index().symbol_count();
@@ -2565,7 +2405,7 @@ impl LspServer {
                     if work_done_progress {
                         send_progress_end(&outbound, "Indexing complete");
                     }
-                    send_index_ready_notification(&outbound, true);
+                    send_index_ready_notification(&outbound, &coordinator.state());
                 }
             }
         });
@@ -2661,12 +2501,12 @@ impl LspServer {
                             #[cfg(feature = "workspace")]
                             if let Some(coordinator) = self.coordinator() {
                                 coordinator.notify_change(uri);
-                                if let Ok(url) = url::Url::parse(uri) {
-                                    if let Err(e) =
-                                        coordinator.index().index_file(url, doc.text.clone())
-                                    {
-                                        tracing::warn!("Failed to re-index file {}: {}", uri, e);
-                                    }
+                                if let Ok(url) = url::Url::parse(uri)
+                                    && let Err(e) = coordinator
+                                        .index()
+                                        .index_file(url, doc.text_arc.to_string())
+                                {
+                                    tracing::warn!("Failed to re-index file {}: {}", uri, e);
                                 }
                                 coordinator.notify_parse_complete(uri);
                             }
@@ -2814,82 +2654,6 @@ impl LspServer {
     }
 }
 
-impl LspServer {
-    #[cfg(feature = "workspace")]
-    fn append_workspace_edits(&self, workspace_edit: &mut Value, uri: &str, mut edits: Vec<Value>) {
-        if edits.is_empty() {
-            return;
-        }
-        if let Some(existing) = workspace_edit["changes"][uri].as_array_mut() {
-            existing.append(&mut edits);
-        } else {
-            workspace_edit["changes"][uri] = Value::Array(edits);
-        }
-    }
-
-    #[cfg(feature = "workspace")]
-    fn read_workspace_text(&self, uri: &str) -> Option<String> {
-        // Priority 1: actively-open document (editor is authoritative).
-        if let Some(doc) = self.documents.lock().get(uri) {
-            return Some(doc.text.clone());
-        }
-
-        // Priority 2: workspace index document store (content from the last
-        // time the file was indexed; avoids a synchronous disk read for files
-        // that were open and then closed within the session).
-        if let Some(coordinator) = self.coordinator() {
-            if let Some(doc) = coordinator.index().document_store().get(uri) {
-                return Some(doc.text().to_string());
-            }
-        }
-
-        // Priority 3: read from disk.  `workspace/willRenameFiles` is a
-        // workspace-wide refactoring operation; returning edits for files not
-        // currently open in the editor is explicitly correct per LSP 3.17 §3.17
-        // (the client requests cross-file edits and applies them).  This path
-        // is restricted to workspace-root-relative paths by the caller and is
-        // bounded to files that `find_dependents` already knows about.
-        uri_to_fs_path(uri).and_then(|path| read_text_file_with_encoding(&path).ok())
-    }
-}
-
-#[cfg(feature = "workspace")]
-fn build_module_rename_workspace_edits(original: &str, updated: &str) -> Vec<Value> {
-    let original_lines: Vec<&str> = original.split('\n').collect();
-    let updated_lines: Vec<&str> = updated.split('\n').collect();
-
-    debug_assert_eq!(
-        original_lines.len(),
-        updated_lines.len(),
-        "module rename planning should not change line counts"
-    );
-
-    original_lines
-        .iter()
-        .zip(updated_lines.iter())
-        .enumerate()
-        .filter_map(|(line, (old_line, new_line))| {
-            if old_line == new_line {
-                return None;
-            }
-
-            Some(json!({
-                "range": {
-                    "start": {
-                        "line": line,
-                        "character": 0,
-                    },
-                    "end": {
-                        "line": line,
-                        "character": old_line.len(),
-                    }
-                },
-                "newText": new_line
-            }))
-        })
-        .collect()
-}
-
 #[cfg(feature = "workspace")]
 fn collect_delete_target_module_names(
     index: &perl_parser::workspace_index::WorkspaceIndex,
@@ -2902,14 +2666,13 @@ fn collect_delete_target_module_names(
     }
 
     for symbol in index.file_symbols(uri) {
-        if matches!(symbol.kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role) {
-            if let Some(module_name) = symbol
+        if matches!(symbol.kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role)
+            && let Some(module_name) = symbol
                 .qualified_name
                 .clone()
                 .or_else(|| (!symbol.name.is_empty()).then_some(symbol.name.clone()))
-            {
-                module_names.insert(module_name);
-            }
+        {
+            module_names.insert(module_name);
         }
     }
 
@@ -2977,10 +2740,10 @@ fn collect_symbol_reference_delete_dependents(
         if !symbol.name.is_empty() {
             names.insert(symbol.name.clone());
         }
-        if let Some(qualified_name) = symbol.qualified_name {
-            if !qualified_name.is_empty() {
-                names.insert(qualified_name);
-            }
+        if let Some(qualified_name) = symbol.qualified_name
+            && !qualified_name.is_empty()
+        {
+            names.insert(qualified_name);
         }
 
         for symbol_name in names {
@@ -4227,6 +3990,52 @@ mod tests {
         let folder_state = folders.first().ok_or("workspace folder should exist")?;
         assert_eq!(folder_state.effective_workspace_config.include_paths, vec!["lib", "local"]);
         assert_eq!(folder_state.effective_workspace_config.resolution_timeout_ms, 123);
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_symbol_skips_stale_workspace_index_tier() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = LspServer::default();
+        let source_uri = "file:///workspace/stale_ws_symbol_source.pl";
+        let source_v1 = "package StaleWs::Source;\nsub stale_symbol { return 1; }\n1;\n";
+        let source_v2 = "package StaleWs::Source;\nsub fresh_only { return 2; }\n1;\n";
+
+        server.test_apply_did_open(source_uri, source_v1, 1)?;
+        server
+            .test_index_file_in_building_state(source_uri, source_v1)
+            .map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+
+        let fresh = server.handle_workspace_symbols_v2(Some(json!({"query": "stale_symbol"})))?;
+        let fresh_symbols = fresh.and_then(|value| value.as_array().cloned()).unwrap_or_default();
+        assert!(
+            fresh_symbols
+                .iter()
+                .any(|symbol| symbol.get("name").and_then(|name| name.as_str())
+                    == Some("stale_symbol")),
+            "fresh workspace index should return stale_symbol: {fresh_symbols:?}"
+        );
+
+        server
+            .test_replace_document_without_index(source_uri, source_v2, 2)
+            .map_err(std::io::Error::other)?;
+        assert!(
+            server.workspace_index_stale_for_any_open_document(),
+            "test setup must leave the workspace index stale relative to open documents"
+        );
+
+        let stale = server.handle_workspace_symbols_v2(Some(json!({"query": "stale_symbol"})))?;
+        let stale_symbols = stale.and_then(|value| value.as_array().cloned()).unwrap_or_default();
+        assert!(
+            !stale_symbols
+                .iter()
+                .any(|symbol| symbol.get("name").and_then(|name| name.as_str())
+                    == Some("stale_symbol")),
+            "stale workspace index must not return removed symbol: {stale_symbols:?}"
+        );
+
         Ok(())
     }
 }

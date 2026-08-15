@@ -984,7 +984,7 @@ RUST_TEST_THREADS=2 cargo test -p perl-parser --test mutation_hardening_tests
 ```
 
 **Quality Metrics**:
-- **Mutation Score**: 87% (improved from ~70% in PR #153)
+- **Mutation Score**: 87% (improved from the historical ~70% baseline)
 - **Test Suites**: 7 mutation hardening test files
 - **Coverage**: 147 tests for comprehensive edge case coverage
 

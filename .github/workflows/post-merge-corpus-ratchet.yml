@@ -55,20 +55,20 @@ jobs:
         with:
           toolchain: 1.95.0
 
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
       - name: Restore CPAN corpus cache (bounded)
         id: cpan-bounded-cache-restore
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: target/cpan-corpus-bounded
           key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distributions.txt') }}
@@ -85,7 +85,7 @@ jobs:
 
       - name: Save CPAN corpus cache (bounded)
         if: steps.cpan-bounded-install.outcome == 'success'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: target/cpan-corpus-bounded
           key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distributions.txt') }}
@@ -153,20 +153,20 @@ jobs:
         with:
           toolchain: 1.95.0
 
-      - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
 
       - name: Restore CPAN corpus cache (full)
         id: cpan-corpus-cache-restore
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: target/cpan-corpus
           key: cpan-corpus-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}
@@ -180,7 +180,7 @@ jobs:
 
       - name: Save CPAN corpus cache (full)
         if: steps.cpan-install.outcome == 'success'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: target/cpan-corpus
           key: cpan-corpus-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-1000-distributions.txt') }}

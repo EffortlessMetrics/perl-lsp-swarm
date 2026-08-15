@@ -48,7 +48,7 @@ impl LspServer {
         let text = {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
-                Some(doc) => doc.text.clone(),
+                Some(doc) => doc.text_arc.to_string(),
                 None => return Ok(Some(json!(null))),
             }
         };

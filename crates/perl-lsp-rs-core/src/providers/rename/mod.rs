@@ -344,14 +344,14 @@ impl RenameProvider {
         if offset < node.location.start || offset > node.location.end {
             return None;
         }
-        if let NodeKind::Binary { op, left, .. } = &node.kind {
-            if op == expected_op && offset >= left.location.start && offset <= left.location.end {
-                if let NodeKind::Variable { sigil, .. } = &left.kind {
-                    if sigil == "$" {
-                        return Some(());
-                    }
-                }
-            }
+        if let NodeKind::Binary { op, left, .. } = &node.kind
+            && op == expected_op
+            && offset >= left.location.start
+            && offset <= left.location.end
+            && let NodeKind::Variable { sigil, .. } = &left.kind
+            && sigil == "$"
+        {
+            return Some(());
         }
         for child in node.children() {
             if Self::find_subscript_at(child, offset, expected_op).is_some() {

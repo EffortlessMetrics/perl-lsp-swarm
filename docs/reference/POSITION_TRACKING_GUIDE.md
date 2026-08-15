@@ -2,17 +2,17 @@
 
 ## Overview
 
-The enhanced position tracking system provides accurate line/column mapping for LSP compliance with comprehensive Unicode support. **PR #153 includes critical security enhancements** with symmetric UTF-16 position conversion and boundary validation.
+The enhanced position tracking system provides accurate line/column mapping for LSP compliance with comprehensive Unicode support, including symmetric UTF-16 position conversion and boundary validation.
 
 ## Features
 
 - **O(log n) Position Mapping**: Efficient binary search-based position lookups using LineStartsCache
 - **LSP-Compliant UTF-16 Support**: Accurate character counting for multi-byte Unicode characters and emoji
-- **Symmetric Position Conversion**: **Security-enhanced UTF-16 ↔ UTF-8 conversion with boundary validation** (PR #153)
+- **Symmetric Position Conversion**: **Security-enhanced UTF-16 ↔ UTF-8 conversion with boundary validation**
 - **Multi-line Token Support**: Proper position tracking for tokens spanning multiple lines (strings, comments, heredocs)
 - **Line Ending Agnostic**: Handles CRLF, LF, and CR line endings consistently across platforms
 - **Integration**: Seamless integration with parser context and LSP server for real-time editing
-- **Security**: **Overflow prevention and fractional position handling** (PR #153)
+- **Security**: **Overflow prevention and fractional position handling**
 - **Comprehensive Testing**: Enhanced test suite with UTF-16 security validation and mutation testing coverage
 
 ## API Reference
@@ -26,10 +26,10 @@ impl PositionTracker {
     /// Convert byte offset to Position with UTF-16 support
     pub fn byte_to_position(&self, byte_offset: usize) -> Position;
 
-    /// SECURE: Convert UTF-8 offset to UTF-16 position (PR #153)
+    /// SECURE: Convert UTF-8 offset to UTF-16 position
     pub fn convert_utf8_to_utf16_position(&self, text: &str, utf8_offset: usize) -> u32;
 
-    /// SECURE: Convert UTF-16 position to UTF-8 offset (PR #153)
+    /// SECURE: Convert UTF-16 position to UTF-8 offset
     pub fn convert_utf16_to_utf8_position(&self, text: &str, utf16_pos: u32) -> usize;
 }
 
@@ -41,7 +41,7 @@ impl LineStartsCache {
     /// Convert byte offset to (line, utf16_column) with boundary validation
     pub fn offset_to_position(&self, text: &str, offset: usize) -> (u32, u32);
 
-    /// SECURE: Symmetric position conversion with overflow protection (PR #153)
+    /// SECURE: Symmetric position conversion with overflow protection
     pub fn safe_position_conversion(&self, text: &str, pos: usize, target_encoding: Encoding) -> u32;
 }
 ```
@@ -61,7 +61,7 @@ let range = token.range();
 println!("Token at line {}, column {}", range.start.line, range.start.column);
 ```
 
-### Secure UTF-16 Position Conversion (PR #153)
+### Secure UTF-16 Position Conversion
 
 **Security-Enhanced Position Handling**: Always use the secure conversion methods to prevent boundary violations and overflow issues:
 
@@ -116,7 +116,7 @@ cargo test -p perl-parser --test parser_context -- test_multiline_positions
 cargo test -p perl-parser --test parser_context -- test_utf16_position_mapping
 cargo test -p perl-parser --test parser_context -- test_crlf_line_endings
 
-# Test UTF-16 security enhancements (PR #153)
+# Test UTF-16 security enhancements
 cargo test -p perl-parser --test mutation_hardening_tests -- utf16_security
 cargo test -p perl-lsp-rs lsp_encoding_edge_cases -- --nocapture
 cargo test -p perl-parser position_tracker_tests -- test_boundary_validation
@@ -156,7 +156,7 @@ fn test_utf16_security_validation() {
 ## Integration with LSP
 
 The position tracking system is fully integrated with:
-- **Enhanced LSP position conversion** (UTF-16 ↔ UTF-8) with **security-validated symmetric conversion** (PR #153)
+- **Enhanced LSP position conversion** (UTF-16 ↔ UTF-8) with **security-validated symmetric conversion**
 - **Secure multi-line token handling** with boundary validation
 - **Real-time editing support** with overflow protection
 - **Cross-platform line ending support** with Unicode safety

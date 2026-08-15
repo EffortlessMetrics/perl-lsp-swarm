@@ -49,6 +49,25 @@ pub enum DestinationError {
     LocalhostNotLoopback,
 }
 
+impl perl_parser_core::ErrorClass for DestinationError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        match self {
+            // URL parse failures and missing components are user config errors.
+            Self::InvalidUrl(_)
+            | Self::UnsupportedScheme(_)
+            | Self::MissingHost
+            | Self::HttpsRequired
+            | Self::LocalHttpDisabled => perl_parser_core::ErrorCategory::UserError,
+            // DNS resolution is an external dependency issue.
+            Self::UnresolvedHost => perl_parser_core::ErrorCategory::Infra,
+            // Security policy rejection — user must correct configuration.
+            Self::DisallowedAddress | Self::LocalhostNotLoopback => {
+                perl_parser_core::ErrorCategory::UserError
+            }
+        }
+    }
+}
+
 type ResolveFn = dyn Fn(&str, u16) -> Result<Vec<IpAddr>, DestinationError>;
 
 /// Validate `url` and resolve its host before any outbound AI HTTP request.
