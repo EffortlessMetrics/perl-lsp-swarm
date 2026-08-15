@@ -502,7 +502,10 @@ pub(crate) fn cargo_binary_names(
         .and_then(toml::Value::as_table)
         .ok_or_else(|| eyre!("Cargo manifest has no [package] table"))?;
     let autobins = package.get("autobins").and_then(toml::Value::as_bool).unwrap_or(true);
-    if autobins {
+    // Cargo autodiscovers src/main.rs and src/bin/* only when no explicit
+    // [[bin]] target is declared; an explicit list disables discovery, so a
+    // stray src/main.rs beside [[bin]] targets is not another binary.
+    if autobins && names.is_empty() {
         let manifest_dir = repo_root.join(
             manifest_path.parent().ok_or_else(|| eyre!("Cargo manifest path has no parent"))?,
         );
