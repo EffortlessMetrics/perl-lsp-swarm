@@ -69,12 +69,18 @@ the current tree.
 
 ## Development route
 
-Enter at the earliest missing useful judgment:
+Choose the narrowest applicable public flow, then enter it at the earliest missing
+useful judgment:
 
+- durable multi-PR outcome or umbrella → `deliver-goal`;
+- one issue, PR, branch, candidate, or coherent claim → `deliver-pr`;
 - problem, owner, scope, or plan unsettled → `prepare-issue`;
 - proof absent or weak → `prepare-proof`;
 - implementation incomplete → `build-candidate`;
 - published candidate needs review, repair, CI, integration, or closeout → `finish-pr`.
+
+A claim-level flow owns publication, review, integration, and reconciliation. Running an
+atomic stage inside it does not complete the claim.
 
 The concrete provider procedures live in `.agents/skills/` and `.claude/skills/`.
 Do not invent a parallel lifecycle or fixed model/agent roster.
@@ -98,7 +104,7 @@ just devex
 just doctor
 just ci-gate
 just status-check
-just docs-check
+just ci-docs-check
 just release-check
 ```
 

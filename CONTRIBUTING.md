@@ -140,7 +140,7 @@ Useful command choices:
 | Full local merge gate | `just ci-gate` |
 | Agent compile/test/lint | `just agent-check`, `just agent-test`, `just agent-clippy` |
 | Parser or generated status changed | `just status-update` then `just status-check` |
-| Public API documentation changed | `just docs-check` and `just docs-report` |
+| Public API documentation changed | `just ci-docs-check` and `just docs-verify` |
 | Release/version surfaces changed | `just version-check` then `just release-check` |
 | Cargo manifests or publish topology changed | `just publish-dry-run` |
 
@@ -274,8 +274,8 @@ status surfaces:
 ```bash
 just status-update
 just status-check
-just docs-check
-just docs-report
+just ci-docs-check
+just docs-verify
 ```
 
 Screen recordings and README walkthrough assets follow
