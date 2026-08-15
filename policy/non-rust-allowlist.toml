@@ -109,14 +109,14 @@ created = "2026-08-15"
 review_after = "2026-09-15"
 
 [[allow]]
-id = "non-rust-product-7810-changelog-fragment"
-path = ".changes/unreleased/product-7810-Added-100438.yaml"
+id = "non-rust-product-7819-changelog-fragment"
+path = ".changes/unreleased/product-7819-Added-101327.yaml"
 kind = "release_metadata"
 language = "yaml"
 surface = "release"
 classification = "documentation"
 owner = "release/ci"
-reason = "Changie product release-note fragment announcing the fail-closed real Vim + vim-lsp interoperability journey for the canonical perllsp client path (#7810)."
+reason = "Changie product release-note fragment announcing the fail-closed actual Coc-on-Vim interoperability journey for the perllsp client path (#7819)."
 covered_by = [
   "cargo xtask changelog check",
   "cargo xtask check-file-policy",
@@ -1430,3 +1430,66 @@ covered_by = [
 broad_glob_reason = "The zed-perl-upstream fixture tree holds versioned contract/receipt JSON pairs consumed by name from the xtask zed contract tests; a missing or malformed fixture fails those tests by name."
 created = "2026-08-15"
 review_after = "2026-11-15"
+
+[[allow]]
+id = "non-rust-product-7701-changelog-fragment"
+path = ".changes/unreleased/product-7701-Changed-113000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-helix-initialize-profiles"
+glob = "crates/perllsp/tests/fixtures/helix/*.initialize.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "lsp/capability-negotiation"
+reason = "Provenance-bound Helix `InitializeParams` capability profiles, replayed through the shipped server process to pin the released-stable and current-master negotiation boundary (#7701)."
+covered_by = [
+  "cargo test -p perllsp --test helix_capability_profiles --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-helix-fixture-readme"
+path = "crates/perllsp/tests/fixtures/helix/README.md"
+kind = "documentation"
+language = "markdown"
+surface = "fixtures"
+classification = "documentation"
+owner = "lsp/capability-negotiation"
+reason = "Provenance, refresh procedure, and actual-host claim boundary for the Helix initialize profiles (#7701)."
+covered_by = [
+  "cargo test -p perllsp --test helix_capability_profiles --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+
+id = "non-rust-product-7810-changelog-fragment"
+path = ".changes/unreleased/product-7810-Added-100438.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing the fail-closed real Vim + vim-lsp interoperability journey for the canonical perllsp client path (#7810)."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
