@@ -1,22 +1,25 @@
-//! Shared runtime policy for document formatting requests.
+//! Shared runtime policy for document, range, and on-type formatting requests.
 //!
-//! Slice 2 wires `textDocument/formatting` only. The formatter libraries decide
-//! whether a result was applied, unchanged, refused, or not proven. This module
-//! admits one current source/configuration snapshot, binds cancellation, and
-//! projects that typed result onto LSP.
+//! The formatter libraries decide whether a result was applied, unchanged,
+//! refused, or not proven. This module admits one current source/configuration
+//! snapshot, binds cancellation, and projects that typed result onto LSP.
+//! Multi-range atomic planning remains a successor slice.
 
 use super::super::{
     GLOBAL_CANCELLATION_REGISTRY, INVALID_REQUEST, JsonRpcError, JsonRpcId, LspServer,
     PerlLspCancellationToken, Value, json,
 };
 use crate::cancellation::RequestCleanupGuard;
+use crate::convert::{WirePosition, WireRange};
 use crate::features::formatting::{
     CodeFormatter, FormatContext, FormattingDecision, FormattingError, FormattingOptions,
     PerlTidyConfig,
 };
-use crate::protocol::{CONTENT_MODIFIED, REQUEST_CANCELLED, invalid_params, req_uri};
+use crate::protocol::{CONTENT_MODIFIED, REQUEST_CANCELLED, invalid_params, req_position, req_uri};
 use perl_lsp_rs_core::config::FormatterMode;
-use perl_lsp_rs_core::features::ids::LSP_FORMATTING;
+use perl_lsp_rs_core::features::ids::{
+    LSP_FORMATTING, LSP_ON_TYPE_FORMATTING, LSP_RANGE_FORMATTING,
+};
 use perl_lsp_rs_core::tooling::perltidy::native::FormatDisposition;
 use serde::Serialize;
 
@@ -27,18 +30,24 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Surface {
     Document,
+    Range,
+    OnType,
 }
 
 impl Surface {
     const fn method(self) -> &'static str {
         match self {
             Self::Document => "textDocument/formatting",
+            Self::Range => "textDocument/rangeFormatting",
+            Self::OnType => "textDocument/onTypeFormatting",
         }
     }
 
     const fn feature_id(self) -> &'static str {
         match self {
             Self::Document => LSP_FORMATTING,
+            Self::Range => LSP_RANGE_FORMATTING,
+            Self::OnType => LSP_ON_TYPE_FORMATTING,
         }
     }
 }
@@ -111,6 +120,27 @@ fn request_version(params: &Value) -> Option<i32> {
     params["textDocument"]["version"].as_i64().and_then(|number| i32::try_from(number).ok())
 }
 
+fn parse_range(value: &Value, label: &str) -> Result<WireRange, JsonRpcError> {
+    let field = |pointer: &str, name: &str| -> Result<u32, JsonRpcError> {
+        let raw = value
+            .pointer(pointer)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| invalid_params(&format!("Missing {label}.{name}")))?;
+        u32::try_from(raw).map_err(|_| invalid_params(&format!("{label}.{name} exceeds u32::MAX")))
+    };
+
+    Ok(WireRange::new(
+        WirePosition::new(
+            field("/start/line", "start.line")?,
+            field("/start/character", "start.character")?,
+        ),
+        WirePosition::new(
+            field("/end/line", "end.line")?,
+            field("/end/character", "end.character")?,
+        ),
+    ))
+}
+
 fn document_not_open(uri: &str) -> JsonRpcError {
     JsonRpcError { code: INVALID_REQUEST, message: format!("Document not open: {uri}"), data: None }
 }
@@ -148,10 +178,10 @@ fn cancellation_token(
 
 fn sanitized_outcome(decision: &FormattingDecision) -> Value {
     let mut outcome = value(&decision.outcome);
-    if let Some(identity) = outcome.get_mut("identity").and_then(Value::as_object_mut) {
-        if let Some(Value::String(source_id)) = identity.remove("source_id") {
-            identity.insert("source_id_hash".to_string(), json!(digest(&source_id)));
-        }
+    if let Some(identity) = outcome.get_mut("identity").and_then(Value::as_object_mut)
+        && let Some(Value::String(source_id)) = identity.remove("source_id")
+    {
+        identity.insert("source_id_hash".to_string(), json!(digest(&source_id)));
     }
     outcome
 }
@@ -166,7 +196,8 @@ impl LspServer {
 
         let advertised = self.advertised_features.lock();
         match surface {
-            Surface::Document => advertised.formatting,
+            Surface::Document | Surface::OnType => advertised.formatting,
+            Surface::Range => advertised.range_formatting,
         }
     }
 

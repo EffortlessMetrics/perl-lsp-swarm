@@ -9,11 +9,31 @@ impl<'a> Parser<'a> {
     /// quantifiers stay as non-fatal parser diagnostics.
     fn analyze_regex_body_for_ast(&mut self, pattern: &str, start: usize) -> ParseResult<bool> {
         let validator = crate::engine::regex_validator::RegexValidator::new();
-        let has_embedded_code = validator.find_code_execution(pattern, start).is_some();
-        let nested_quantifier = validator.find_nested_quantifier(pattern, start);
+        let source_end = self
+            .tokens
+            .peek()
+            .map(|token| token.start)
+            .unwrap_or(self.src_bytes.len())
+            .min(self.src_bytes.len());
+        let geometry = self
+            .src_bytes
+            .get(start..source_end)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .and_then(|source| quote_parser::extract_regex_family_geometry(source, start));
+
+        let Some(geometry) = geometry else {
+            // Without exact source geometry, retain the AST compatibility fact
+            // but do not publish a position-bearing diagnostic from a guessed
+            // token start.
+            return Ok(validator.detects_code_execution(pattern));
+        };
+        let pattern = geometry.pattern.text.as_str();
+        let pattern_start = geometry.pattern.range.start;
+        let has_embedded_code = validator.find_code_execution(pattern, pattern_start).is_some();
+        let nested_quantifier = validator.find_nested_quantifier(pattern, pattern_start);
 
         if !has_embedded_code && nested_quantifier.is_none() {
-            validator.validate(pattern, start).map_err(|error| match error {
+            validator.validate(pattern, pattern_start).map_err(|error| match error {
                 crate::engine::regex_validator::RegexError::Syntax { message, offset } => {
                     ParseError::syntax(message, offset)
                 }
