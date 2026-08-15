@@ -108,8 +108,12 @@ describe('VS Code client measurement recorder', () => {
     const recorder = new VscodeClientMeasurementRecorder(subject(), 0);
     recorder.observeResource('extension_owned_timers', 2);
     const first = recorder.snapshot();
-    first.resources[0].value = 99;
-    expect(recorder.snapshot().resources[0].value).toBe(2);
+    const clonedRecord = first.resources[0];
+    if (!clonedRecord) {
+      throw new Error('expected one observed resource record');
+    }
+    clonedRecord.value = 99;
+    expect(recorder.snapshot().resources[0]?.value).toBe(2);
   });
 
   test('compares restart/reload resource baselines only when both observations exist', () => {
