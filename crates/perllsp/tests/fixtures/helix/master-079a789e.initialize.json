@@ -6,13 +6,13 @@
     "source_ref": "079a789e8cb08ead67f19e1971a1b7438b37354b",
     "source_sha": "079a789e8cb08ead67f19e1971a1b7438b37354b",
     "client_info_version": "25.07.1 (079a789e)",
-    "diagnostic_transport": "pull",
-    "workspace_trust": "present"
+    "diagnostic_transport": "pull"
   },
   "provenance": {
     "kind": "source_derived_exact",
     "source_path": "helix-lsp/src/client.rs",
     "snippets_enabled": true,
+    "empty_language_server_config": true,
     "normalized_fields": ["processId", "rootPath", "rootUri", "workspaceFolders"]
   },
   "initialize_params": {
@@ -68,7 +68,7 @@
           "willDelete": true,
           "didDelete": true
         },
-        "diagnostics": {
+        "diagnostic": {
           "refreshSupport": true
         }
       },

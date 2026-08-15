@@ -184,8 +184,14 @@ fn checked_profiles_preserve_the_exact_helix_cohort_boundary() -> Result<()> {
     );
     ensure!(stable.pointer("/initialize_params/capabilities/textDocument/diagnostic").is_none());
     ensure!(master.pointer("/initialize_params/capabilities/textDocument/diagnostic").is_some());
-    ensure!(stable.pointer("/initialize_params/capabilities/workspace/diagnostics").is_none());
-    ensure!(master.pointer("/initialize_params/capabilities/workspace/diagnostics").is_some());
+    // `workspace.diagnostic` is singular on purpose. LSP 3.17 names this client
+    // capability `workspace.diagnostics`, but `helix-lsp-types` declares it as
+    // `pub diagnostic: Option<DiagnosticWorkspaceClientCapabilities>` under
+    // `#[serde(rename_all = "camelCase")]` with no per-field rename, so real
+    // Helix puts it on the wire as `diagnostic`. These fixtures mirror Helix,
+    // not the spec; do not "correct" this to the plural spelling.
+    ensure!(stable.pointer("/initialize_params/capabilities/workspace/diagnostic").is_none());
+    ensure!(master.pointer("/initialize_params/capabilities/workspace/diagnostic").is_some());
     ensure!(
         stable
             .pointer("/initialize_params/capabilities/workspace/didChangeWatchedFiles/relativePatternSupport")

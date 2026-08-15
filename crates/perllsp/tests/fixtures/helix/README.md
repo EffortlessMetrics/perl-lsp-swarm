@@ -3,16 +3,34 @@
 These fixtures preserve two materially different Helix client subjects for
 `perllsp` capability-negotiation tests:
 
-| Fixture | Helix subject | Diagnostics | Relative watcher patterns | Workspace trust |
+| Fixture | Helix subject | Diagnostics | Relative watcher patterns | Full file operations |
 | --- | --- | --- | --- | --- |
-| `25.07.1.initialize.json` | official `25.07.1`, commit `a05c151bb6e8e9c65ec390b0ae2afe7a5efd619b` | push | no | absent |
-| `master-079a789e.initialize.json` | commit `079a789e8cb08ead67f19e1971a1b7438b37354b` | pull | yes | present |
+| `25.07.1.initialize.json` | official `25.07.1`, commit `a05c151bb6e8e9c65ec390b0ae2afe7a5efd619b` | push | no | rename only |
+| `master-079a789e.initialize.json` | commit `079a789e8cb08ead67f19e1971a1b7438b37354b` | pull | yes | create/rename/delete |
 
 The capability objects are source-derived from the exact `InitializeParams`
-construction in `helix-lsp/src/client.rs`, with snippets enabled. Only process,
-workspace-path, and workspace-folder identities are normalized. The test replaces
-those normalized fields with an isolated workspace before replaying each profile
-through Cargo's exact `CARGO_BIN_EXE_perllsp` candidate.
+construction in `helix-lsp/src/client.rs`. They are transcribed from Helix
+source at the pinned commits; they were **not** captured from a running `hx`
+process, so `provenance.kind` is `source_derived_exact` rather than a capture
+receipt. Only process, workspace-path, and workspace-folder identities are
+normalized. The test replaces those normalized fields with an isolated
+workspace before replaying each profile through Cargo's exact
+`CARGO_BIN_EXE_perllsp` candidate.
+
+Two config-dependent branches are pinned rather than defaulted, and are
+declared in `provenance`:
+
+- `snippets_enabled` — `snippetSupport` follows Helix's `enable_snippets`
+  configuration, pinned here to `true`;
+- `empty_language_server_config` — Helix omits `initializationOptions`
+  entirely when a language server has no `config` table, so the `{}` in these
+  fixtures represents an explicitly empty config table.
+
+`workspace.diagnostic` in the master profile is **singular on purpose**. LSP
+3.17 names that client capability `workspace.diagnostics`, but
+`helix-lsp-types` declares the field as `diagnostic` under
+`#[serde(rename_all = "camelCase")]`, so real Helix puts `diagnostic` on the
+wire. These fixtures mirror Helix, not the spec.
 
 This is **protocol-profile evidence**, not an actual-editor receipt. It proves
 that the shipped server negotiates the exact checked Helix shapes, including the
