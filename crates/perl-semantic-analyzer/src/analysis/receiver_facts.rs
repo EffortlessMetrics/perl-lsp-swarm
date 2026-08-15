@@ -80,13 +80,33 @@ pub enum ReceiverFallbackState {
 }
 
 /// Trust-bounded evidence about a method-call receiver.
+///
+/// `package` holds the primary (first) candidate for backward compatibility.
+/// `candidate_packages` holds every distinct package from the receiver's inferred
+/// type, including all union branches.  For an exact single-package receiver the
+/// two fields agree; for a union receiver `candidate_packages` carries the full
+/// set so consumers can rank or validate against all possibilities without losing
+/// information.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ReceiverFact {
     /// Classified receiver kind.
     pub kind: ReceiverKind,
-    /// Inferred package for method ranking, when available.
+    /// Primary inferred package for method ranking, when available.
+    ///
+    /// For union-typed receivers this is the first candidate.  Consumers that
+    /// need the full set should use [`candidate_packages`](Self::candidate_packages).
     pub package: Option<String>,
+    /// All package candidates derived from the receiver's inferred type.
+    ///
+    /// - Empty when no package can be inferred (unknown / dynamic / shape-only receivers).
+    /// - One element for an exact single-package receiver.
+    /// - Multiple elements when the receiver has a union type with more than one
+    ///   distinct object package (e.g. `My::Foo | My::Bar`).
+    ///
+    /// The order matches the union's declaration order and is deterministic.
+    /// Duplicates are removed; the first occurrence is kept.
+    pub candidate_packages: Vec<String>,
     /// Structural shape fact associated with the receiver, when available.
     pub shape: Option<ShapeFact>,
     /// Confidence assigned to this receiver fact.
@@ -108,6 +128,7 @@ impl ReceiverFact {
         Self {
             kind: ReceiverKind::Unknown,
             package: None,
+            candidate_packages: vec![],
             shape: None,
             confidence: Confidence::Low,
             evidence: vec![TypeEvidence::Heuristic { reason: reason.into() }],
@@ -122,6 +143,7 @@ impl ReceiverFact {
         Self {
             kind: ReceiverKind::DynamicKey,
             package: None,
+            candidate_packages: vec![],
             shape: None,
             confidence: Confidence::Low,
             evidence: vec![evidence],
@@ -134,10 +156,12 @@ impl ReceiverFact {
 
     fn from_type_fact(kind: ReceiverKind, fact: TypeFact, receiver: &Node) -> Self {
         let package = package_from_type_fact(&fact);
+        let candidate_packages = all_packages_from_type_fact(&fact);
         let fallback_state = fallback_state_for_fact(package.as_deref(), &fact);
         Self {
             kind,
             package,
+            candidate_packages,
             shape: fact.shape,
             confidence: fact.confidence,
             evidence: fact.evidence,
@@ -146,6 +170,15 @@ impl ReceiverFact {
             source_range: Some((receiver.location.start, receiver.location.end)),
             fallback_state,
         }
+    }
+
+    /// Returns `true` when the receiver has more than one distinct candidate package.
+    ///
+    /// A multi-candidate receiver corresponds to a union-typed variable such as
+    /// `my $obj : Foo | Bar`.  Completion and diagnostics should apply fallback
+    /// or union-aware logic rather than assuming a single exact package.
+    pub fn is_union_receiver(&self) -> bool {
+        self.candidate_packages.len() > 1
     }
 }
 
@@ -221,6 +254,7 @@ fn variable_receiver_fact(
         return ReceiverFact {
             kind,
             package: None,
+            candidate_packages: vec![],
             shape: None,
             confidence: Confidence::Medium,
             evidence: vec![TypeEvidence::Heuristic {
@@ -250,6 +284,7 @@ fn static_package_receiver(
     ReceiverFact {
         kind: ReceiverKind::StaticPackage,
         package: Some(package.to_string()),
+        candidate_packages: vec![package.to_string()],
         shape: None,
         confidence: Confidence::High,
         evidence: vec![evidence],
@@ -290,6 +325,7 @@ fn hash_receiver_fact(
         return ReceiverFact {
             kind,
             package: None,
+            candidate_packages: vec![],
             shape: None,
             confidence: Confidence::Low,
             evidence: vec![evidence],
@@ -311,6 +347,7 @@ fn hash_receiver_fact(
     ReceiverFact {
         kind,
         package: None,
+        candidate_packages: vec![],
         shape: container_fact.shape,
         confidence: Confidence::Low,
         evidence: vec![evidence],
@@ -332,6 +369,7 @@ fn array_receiver_fact(
         return ReceiverFact {
             kind: ReceiverKind::ArrayIndex,
             package: None,
+            candidate_packages: vec![],
             shape: None,
             confidence: Confidence::Low,
             evidence: vec![evidence],
@@ -346,6 +384,7 @@ fn array_receiver_fact(
         return ReceiverFact {
             kind: ReceiverKind::ArrayIndex,
             package: None,
+            candidate_packages: vec![],
             shape: container_fact.shape,
             confidence: Confidence::Low,
             evidence: vec![evidence],
@@ -367,6 +406,7 @@ fn array_receiver_fact(
     ReceiverFact {
         kind: ReceiverKind::ArrayIndex,
         package: None,
+        candidate_packages: vec![],
         shape: container_fact.shape,
         confidence: Confidence::Low,
         evidence: vec![evidence],
@@ -495,6 +535,52 @@ fn package_from_type(ty: &PerlType) -> Option<String> {
         PerlType::Reference(inner) => package_from_type(inner),
         PerlType::Union(types) => types.iter().find_map(package_from_type),
         _ => None,
+    }
+}
+
+/// Collects every distinct package name reachable from a type fact.
+///
+/// For a plain `Object(Foo)` this returns `["Foo"]`.  For a
+/// `Union(Object(Foo), Object(Bar), Scalar(Int))` it returns `["Foo", "Bar"]`
+/// (non-object union arms are silently skipped).
+///
+/// Duplicates are removed; the first occurrence wins.  When the type fact
+/// carries no package (e.g. `Any`, `Scalar`, or a pure shape fact without an
+/// object shape), the returned vec is empty.
+fn all_packages_from_type_fact(fact: &TypeFact) -> Vec<String> {
+    let mut packages: Vec<String> = all_packages_from_type(&fact.ty);
+
+    // If no package was found from the type itself, check the shape field.
+    if packages.is_empty() {
+        if let Some(ShapeFact::Object(shape)) = &fact.shape {
+            packages.push(shape.package.clone());
+        }
+    }
+
+    packages
+}
+
+/// Recursively collects all distinct package names from a Perl type.
+fn all_packages_from_type(ty: &PerlType) -> Vec<String> {
+    let mut packages: Vec<String> = vec![];
+    collect_packages_from_type(ty, &mut packages);
+    packages
+}
+
+fn collect_packages_from_type(ty: &PerlType, packages: &mut Vec<String>) {
+    match ty {
+        PerlType::Object(package) => {
+            if !packages.contains(package) {
+                packages.push(package.clone());
+            }
+        }
+        PerlType::Reference(inner) => collect_packages_from_type(inner, packages),
+        PerlType::Union(types) => {
+            for inner in types {
+                collect_packages_from_type(inner, packages);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -806,6 +892,128 @@ mod tests {
         assert_eq!(fact.dynamic_boundary, Some(DynamicBoundary::UnknownReceiver));
         assert_eq!(fact.package, None);
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
+        Ok(())
+    }
+
+    // ── candidate_packages / is_union_receiver ────────────────────────────
+
+    /// A static constructor call (`Foo::Bar->new`) must produce exactly one
+    /// candidate package and must not be flagged as a union receiver.
+    #[test]
+    fn static_constructor_receiver_has_one_candidate() -> Result<(), String> {
+        let env = TypeEnvironment::new();
+        let fact = receiver_fact_for("Foo::Bar->new();", "new", &env)?;
+
+        assert_eq!(fact.candidate_packages, vec!["Foo::Bar".to_string()]);
+        assert!(!fact.is_union_receiver(), "static receiver should not be a union receiver");
+        Ok(())
+    }
+
+    /// A `$self` receiver backed by an exact object fact must have exactly one
+    /// candidate package and must not be flagged as a union receiver.
+    #[test]
+    fn exact_single_package_receiver_has_one_candidate() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("self".to_string(), object_fact("My::Controller", Confidence::High));
+
+        let fact = receiver_fact_for("$self->render();", "render", &env)?;
+
+        assert_eq!(fact.candidate_packages, vec!["My::Controller".to_string()]);
+        assert!(!fact.is_union_receiver(), "single-package $self should not be a union receiver");
+        Ok(())
+    }
+
+    /// An unknown receiver (no type environment entry) must have no candidate
+    /// packages and must not be flagged as a union receiver.
+    #[test]
+    fn unknown_receiver_has_no_candidates() -> Result<(), String> {
+        let env = TypeEnvironment::new();
+        let fact = receiver_fact_for("$unknown->run();", "run", &env)?;
+
+        assert!(fact.candidate_packages.is_empty(), "unknown receiver should have no candidates");
+        assert!(!fact.is_union_receiver(), "unknown receiver should not be a union receiver");
+        Ok(())
+    }
+
+    /// A variable whose type is `Union(Foo, Bar)` must expose both package names
+    /// in `candidate_packages` and must be flagged as a union receiver.
+    #[test]
+    fn union_receiver_exposes_all_candidate_packages() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact("object".to_string(), union_object_fact("My::Service", "Other"));
+
+        let fact = receiver_fact_for("$object->run();", "run", &env)?;
+
+        assert_eq!(
+            fact.candidate_packages,
+            vec!["My::Service".to_string(), "Other".to_string()],
+            "union receiver must list both packages in declaration order"
+        );
+        assert!(fact.is_union_receiver(), "two-arm union should be flagged as union receiver");
+        Ok(())
+    }
+
+    /// A three-arm union type must expose all three packages in `candidate_packages`.
+    #[test]
+    fn triple_union_receiver_exposes_all_candidates() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "object".to_string(),
+            TypeFact {
+                ty: PerlType::Union(vec![
+                    PerlType::Object("Alpha".to_string()),
+                    PerlType::Object("Beta".to_string()),
+                    PerlType::Object("Gamma".to_string()),
+                ]),
+                confidence: Confidence::High,
+                evidence: vec![TypeEvidence::WorkspaceSymbol { package: "Alpha".to_string() }],
+                dynamic_boundary: None,
+                shape: None,
+            },
+        );
+
+        let fact = receiver_fact_for("$object->process();", "process", &env)?;
+
+        assert_eq!(
+            fact.candidate_packages,
+            vec!["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()],
+            "three-arm union must expose all packages in declaration order"
+        );
+        assert!(fact.is_union_receiver(), "three-arm union should be flagged as union receiver");
+        Ok(())
+    }
+
+    /// A union whose branches contain the same package more than once must
+    /// deduplicate: `candidate_packages` contains each package exactly once.
+    #[test]
+    fn union_with_duplicate_packages_deduplicates() -> Result<(), String> {
+        let mut env = TypeEnvironment::new();
+        env.set_variable_fact(
+            "object".to_string(),
+            TypeFact {
+                ty: PerlType::Union(vec![
+                    PerlType::Object("Foo".to_string()),
+                    PerlType::Object("Bar".to_string()),
+                    PerlType::Object("Foo".to_string()), // duplicate
+                ]),
+                confidence: Confidence::High,
+                evidence: vec![TypeEvidence::WorkspaceSymbol { package: "Foo".to_string() }],
+                dynamic_boundary: None,
+                shape: None,
+            },
+        );
+
+        let fact = receiver_fact_for("$object->get();", "get", &env)?;
+
+        assert_eq!(
+            fact.candidate_packages,
+            vec!["Foo".to_string(), "Bar".to_string()],
+            "duplicate union branch must be removed; first occurrence wins"
+        );
+        assert!(
+            fact.is_union_receiver(),
+            "two-distinct-arm union should still be a union receiver"
+        );
         Ok(())
     }
 }
