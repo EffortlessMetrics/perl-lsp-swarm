@@ -39,7 +39,7 @@ global:
   # Toolchain requirements
   toolchain:
     # MSRV for the project (per rust-toolchain.toml)
-    msrv: "1.92.0"
+    msrv: "1.95.0"
     # Required components
     components:
       - rustfmt
@@ -700,7 +700,12 @@ gates:
     # regression in an untouched crate's `tests/` directory sails through pr_fast
     # and is only caught at the merge-gate full suite. This deferral is the
     # structural reason false-confidence patterns in `tests/` went undetected.
-    command: cargo test --locked --tests {package_args}
+    # Build the server binary first: binary_version_test (and every suite
+    # that spawns perllsp) resolves the binary through PERL_LSP_BIN ->
+    # CARGO_BIN_EXE -> target/debug/perllsp -> PATH -> cargo-run fallback;
+    # without a prebuilt binary the fallback compile exceeds the test's own
+    # initialize timeout and reds the gate nondeterministically (#9464).
+    command: cargo build -p perllsp --locked && cargo test --locked --tests {package_args}
     # PR #1585 produced timeout-only receipts at 600s and 900s for the
     # perl-lsp-rs/perl-lsp-rs-core/xtask route. Keep the required --tests proof
     # bounded while matching the PR Smoke watchdog for the heavier routed path.
@@ -761,6 +766,24 @@ gates:
       - test
       - unit
       - workspace
+
+  - name: parser_integration
+    tier: merge_gate
+    description: "Bounded parser integration proof with a non-shrinking target manifest (#6107)"
+    required: true
+    command: python3 scripts/ci/run_parser_integration.py
+    timeout_seconds: 900
+    retry_count: 0
+    budgets:
+      max_duration_ms: 780000
+    quarantine: false
+    tags:
+      - test
+      - integration
+      - parser
+      - ratchet
+    planning:
+      role: always_on
 
   - name: unit_analysis_full
     tier: merge_gate
@@ -875,14 +898,22 @@ gates:
 
   - name: lsp_smoke
     tier: merge_gate
-    description: "Deterministic LSP scenario test (semantic definitions)"
+    description: "Deterministic LSP semantic-definition and initialize-contract tests"
     required: true
-    # Single-threaded for determinism
+    # Single-threaded for determinism. Keep the wire-shape regression focused:
+    # this target contains many API contracts, but only textDocumentSync owns
+    # the reviewed recurrence claim in #6776.
     command: >-
       env -u RUSTC_WRAPPER
       RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
       cargo test -p perl-lsp-rs --test semantic_definition --locked
       -- --test-threads=1
+      &&
+      env -u RUSTC_WRAPPER
+      RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
+      cargo test -p perl-lsp-rs --test lsp_api_contracts --locked
+      test_text_document_sync_option_keys_use_lsp_camel_case
+      -- --exact --test-threads=1
     timeout_seconds: 300
     retry_count: 1
     budgets:
@@ -960,13 +991,16 @@ gates:
       - cpan
       - ratchet
 
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
+  # shard or tier invocation executes this gate; keeping required: true was a
+  # false enforcement claim. Re-promote only after wiring into a merge-gate shard
+  # and burn-in on current main (issue #6261 G5).
   - name: parser_audit_closeout
     tier: merge_gate
-    # Deterministic/scoped rationale for required=true:
-    # - Evaluates repository-local corpus files only (`--corpus-path .`), not host CPAN/system trees.
-    # - Uses a fresh in-process run (`--fresh`) to avoid stale machine-local cache baselines.
-    description: "Project corpus parser closeout metrics (repo-scoped, deterministic run) must not regress"
-    required: true
+    # Evaluates repository-local corpus files only (`--corpus-path .`), not host
+    # CPAN/system trees. Uses a fresh in-process run (`--fresh`).
+    description: "Project corpus parser closeout metrics (repo-scoped, deterministic run) must not regress (advisory; no workflow route)"
+    required: false
     command: >-
       cargo run --locked -p xtask
       -- corpus-audit --fresh --corpus-path . --check
@@ -981,10 +1015,12 @@ gates:
       - audit
       - ratchet
 
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
+  # route executes this gate; cargo-audit remains quarantined per debt-ledger.
   - name: security_audit
     tier: merge_gate
-    description: "Check dependencies for known security vulnerabilities"
-    required: true
+    description: "Check dependencies for known security vulnerabilities (advisory; quarantined + no workflow route)"
+    required: false
     # Quarantined: cargo-audit ecosystem breakage as of 2026-04-26.
     # - cargo-audit >= 0.21: can't install (abscissa_core ^0.8 requires secrecy ^0.10, all 0.10.x yanked)
     # - cargo-audit <= 0.20: installs but can't parse CVSS 4.0 advisories (RUSTSEC-2026-0041)
@@ -1000,10 +1036,14 @@ gates:
       - dependencies
       - audit
 
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). The composite
+  # gate has no workflow execution path; several members (version_sync, etc.) run
+  # in other shards but the full && chain never executes. Decompose and wire per
+  # #6261 G4 before re-promotion.
   - name: policy_checks
     tier: merge_gate
-    description: "Enforce project policies (docs baseline, version sync, ExitStatus helper, features invariants)"
-    required: true
+    description: "Enforce project policies (docs baseline, version sync, ExitStatus helper, features invariants) (advisory; no workflow route)"
+    required: false
     command: >-
       cargo xtask check-from-raw &&
       cargo xtask check-memory-lifecycle-policy &&
@@ -1049,6 +1089,20 @@ gates:
       - docs
       - advisory
 
+  - name: adr_link_check
+    tier: merge_gate
+    description: "Inline relative Markdown links under docs/adr resolve to files inside the repository"
+    required: true
+    command: cargo xtask ci-hygiene check-doc-links docs/adr
+    timeout_seconds: 180
+    retry_count: 0
+    budgets:
+      max_duration_ms: 150000
+    quarantine: false
+    tags:
+      - docs
+      - policy
+
   - name: docs_build
     tier: merge_gate
     description: "Verify documentation builds without errors"
@@ -1065,7 +1119,7 @@ gates:
 
   - name: non_rust_inventory_check
     tier: merge_gate
-    description: "Verify the tracked non-Rust inventory document matches the current tree"
+    description: "Scan and classify tracked non-Rust files without requiring a race-prone snapshot match"
     required: true
     command: cargo xtask non-rust inventory --check
     timeout_seconds: 300
@@ -1078,10 +1132,39 @@ gates:
       - docs
       - generated
 
+  # Guards the MSRV declared by Cargo.toml, rust-toolchain.toml, this file's
+  # global.toolchain.msrv, and the pinned matrix legs below. #6106 exists
+  # because those authorities drifted apart with nothing running to notice;
+  # this gate is what makes the comparison load-bearing rather than a command
+  # a contributor has to remember to type. Runs in the `policy` shard.
+  - name: msrv_authority_sync
+    tier: merge_gate
+    description: "Run the gate-policy validator: every MSRV authority (Cargo.toml, rust-toolchain.toml, gate-policy global + matrix legs) agrees, plus PR-profile and registry invariants"
+    required: true
+    command: cargo xtask gate-policy check
+    # 300s to match non_rust_inventory_check, the sibling `cargo xtask ...`
+    # gate in this shard. The validator itself is near-instant; the cost is
+    # the cargo invocation, which took >60s on a cold shard even after the
+    # "Warm xtask" step and timed out at exit 124 on the first CI run that
+    # reached this gate. Sizing it off a prebuilt-binary measurement was the
+    # error — the gate pays cargo's price, not the binary's.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - version
+      - hygiene
+
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
+  # shard executes this gate; wire into parser_stack or corpus shard before
+  # re-promotion.
   - name: v2_parity
     tier: merge_gate
-    description: "Verify in-crate v2 and perl-parser-pest v2 produce identical corpus output"
-    required: true
+    description: "Verify in-crate v2 and perl-parser-pest v2 produce identical corpus output (advisory; no workflow route)"
+    required: false
     command: >-
       cargo run --locked -p xtask --features legacy
       -- corpus --scanner v2-parity
@@ -1111,10 +1194,13 @@ gates:
       - sync
       - microcrate
 
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
+  # route executes this gate; the audit script also times out on current main.
+  # Repair/bound the oracle before wiring (issue #6261 G2/G3 REPAIR_THEN_WIRE).
   - name: workflow_audit
     tier: merge_gate
-    description: "Audit CI workflows for ungated expensive jobs"
-    required: true
+    description: "Audit CI workflows for ungated expensive jobs (advisory; no workflow route)"
+    required: false
     command: python3 scripts/ci-audit-workflows.py
     timeout_seconds: 60
     retry_count: 0
@@ -1250,7 +1336,7 @@ gates:
         - macos-latest
       toolchain:
         - stable
-        - "1.92.0"  # MSRV
+        - "1.95.0"  # MSRV
         - beta
     tags:
       - matrix
@@ -1342,10 +1428,12 @@ gates:
   # ===========================================================================
   # Release candidate validation gates.
 
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No release
+  # workflow invokes this gate; re-promote only on a no-publish rehearsal route.
   - name: release_build
     tier: release
-    description: "Release build with locked dependencies"
-    required: true
+    description: "Release build with locked dependencies (advisory; no workflow route)"
+    required: false
     command: cargo build -p perllsp --release --locked
     timeout_seconds: 300
     retry_count: 0
@@ -1356,10 +1444,12 @@ gates:
       - release
       - build
 
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No release
+  # workflow invokes this gate.
   - name: inline_completion_binary_smoke
     tier: release
-    description: "Release-built perl-lsp stdio smoke for LSP 3.18 inline completion"
-    required: true
+    description: "Release-built perl-lsp stdio smoke for LSP 3.18 inline completion (advisory; no workflow route)"
+    required: false
     command: >-
       cargo build --release -p perl-lsp-rs --bin perl-lsp --locked &&
       cargo xtask smoke inline-completion --binary target/release/perl-lsp
@@ -1392,10 +1482,12 @@ gates:
       - version
       - hygiene
 
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No release
+  # workflow invokes this gate.
   - name: sbom_verify
     tier: release
-    description: "SBOM generation and verification for supply chain security"
-    required: true
+    description: "SBOM generation and verification for supply chain security (advisory; no workflow route)"
+    required: false
     command: >-
       just sbom-verify
     timeout_seconds: 300
@@ -1413,10 +1505,13 @@ gates:
   # ===========================================================================
   # Fast smoke subset for merge gate, full suite for nightly.
 
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). UX Regression
+  # Tests job covers overlapping LSP smoke surface but not via `cargo xtask gates
+  # --gate lsp_tier_a`; wire explicitly before re-promotion.
   - name: lsp_tier_a
     tier: merge_gate
-    description: "LSP smoke tests: capabilities, protocol basics (<30s)"
-    required: true
+    description: "LSP smoke tests: capabilities, protocol basics (<30s) (advisory; no workflow route)"
+    required: false
     command: >-
       cargo test -p perl-lsp-rs
       --test cli_smoke --test lsp_capabilities_snapshot
@@ -1433,10 +1528,12 @@ gates:
       - smoke
       - tier-a
 
+  # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
+  # shard executes this gate.
   - name: lsp_tier_b
     tier: merge_gate
-    description: "LSP core behavior: definitions, completion, color handling, code lens, inline completion, security (2-5 min)"
-    required: true
+    description: "LSP core behavior: definitions, completion, color handling, code lens, inline completion, security (2-5 min) (advisory; no workflow route)"
+    required: false
     command: >-
       env RUST_TEST_THREADS=2
       cargo test -p perl-lsp-rs
@@ -1540,6 +1637,7 @@ escape_hatches:
       - unit_core
       - unit_foundation_full
       - unit_parser_stack_full
+      - parser_integration
       - unit_analysis_full
       - unit_lsp_core_full
       - unit_lsp_full
@@ -1663,6 +1761,10 @@ workflow_integration:
 # Track significant changes to this policy.
 
 version_history:
+  - version: "1.1.0"
+    date: "2026-08-10"
+    changes:
+      - "Demote 10 unreachable required gates to advisory per #6261 (no workflow route)"
   - version: "1.0.0"
     date: "2026-01-24"
     changes:

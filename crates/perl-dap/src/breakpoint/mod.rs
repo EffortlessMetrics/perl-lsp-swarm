@@ -42,3 +42,15 @@ pub enum BreakpointError {
     #[error("Line {0} is out of range (file has {1} lines)")]
     LineOutOfRange(i64, usize),
 }
+
+impl perl_parser_core::ErrorClass for BreakpointError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // Both variants represent invalid user input — source parse failure
+        // or an out-of-range line number in a breakpoint request.
+        match self {
+            Self::ParseError(_) | Self::LineOutOfRange(..) => {
+                perl_parser_core::ErrorCategory::UserError
+            }
+        }
+    }
+}

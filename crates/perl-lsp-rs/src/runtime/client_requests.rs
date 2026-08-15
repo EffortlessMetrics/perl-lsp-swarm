@@ -10,7 +10,7 @@ impl LspServer {
     /// Send a server-to-client request with no parameters (for refresh requests)
     pub(crate) fn send_request(&self, method: &str, params: Value) -> io::Result<ServerRequestId> {
         let id = self.next_server_request_id();
-        self.outbound.send_request(id, method, params)?;
+        self.outbound_sink().send_request(id, method, params)?;
         Ok(id)
     }
 
@@ -22,10 +22,9 @@ impl LspServer {
                 .next_request_id
                 .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
+                && let Some(id) = ServerRequestId::new(current.max(1))
             {
-                if let Some(id) = ServerRequestId::new(current.max(1)) {
-                    return id;
-                }
+                return id;
             }
         }
     }

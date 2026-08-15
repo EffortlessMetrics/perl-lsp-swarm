@@ -483,6 +483,9 @@ enum Commands {
         /// Head revision for the PR diff.
         #[arg(long, default_value = "HEAD")]
         head: String,
+        /// Original PR head SHA when the evaluated revision is a merge ref.
+        #[arg(long)]
+        pr_head: Option<String>,
         /// Validate existing target/ripr/pr artifacts instead of regenerating.
         #[arg(long)]
         check: bool,
@@ -515,6 +518,9 @@ enum Commands {
         /// Head revision for the PR diff.
         #[arg(long, default_value = "HEAD")]
         head: String,
+        /// Original PR head SHA when the evaluated revision is a merge ref.
+        #[arg(long)]
+        pr_head: Option<String>,
         /// Bound RIPR review guidance generation; timeout writes an advisory error artifact.
         #[arg(long)]
         timeout_seconds: Option<u64>,
@@ -748,6 +754,18 @@ enum Commands {
         /// Check formatting without making changes
         #[arg(long)]
         check: bool,
+
+        /// Format only the staged Rust diff and re-stage it.
+        ///
+        /// The apply half of the `rustfmt_staged` commit gate: that check
+        /// blocks a commit whose staged Rust would be reformatted, and this
+        /// fixes exactly those files instead of the whole workspace. Files
+        /// that are staged *and* separately modified in the worktree are left
+        /// untouched, so formatting never sweeps unstaged work into a commit.
+        ///
+        /// Cannot be combined with --check or --package.
+        #[arg(long, conflicts_with_all = ["check", "package"])]
+        staged: bool,
 
         /// Restrict formatting to one or more package names.
         ///
@@ -1112,6 +1130,22 @@ enum Commands {
     /// Run version-sync checks from `perl-ci-hygiene`.
     CheckVersionSync,
 
+    /// Classify an exact-SHA publication-drift observation.
+    #[command(name = "publication-drift")]
+    PublicationDrift {
+        /// Comparison observation JSON.
+        #[arg(long)]
+        input: PathBuf,
+
+        /// Repository root used to resolve the authority manifest.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/publication-drift.json")]
+        out: PathBuf,
+    },
+
     /// Sync active release narrative docs from workspace version and publish count.
     SyncReleaseDocs {
         /// Write synced files (omit to run a dry check).
@@ -1455,7 +1489,7 @@ enum Commands {
         report: PathBuf,
 
         /// Output path for generated matrix documentation.
-        #[arg(long, default_value = "docs/reference/PARSER_FEATURE_MATRIX.md")]
+        #[arg(long, default_value = "docs/project/status/parser_feature_matrix.generated.md")]
         output: PathBuf,
     },
 
@@ -2223,6 +2257,12 @@ enum Commands {
         command: NonRustCommand,
     },
 
+    /// Read-only policy obligation tooling.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
+
     /// Check non-Rust files against the policy allowlist and report violations.
     ///
     /// Equivalent to `non-rust check`. Default mode is `advisory` (always
@@ -2284,8 +2324,8 @@ enum Commands {
         #[arg(long)]
         reason: Option<String>,
 
-        /// Also check binary freshness: verify that target/debug/perl-lsp and
-        /// target/release/perl-lsp are newer than the HEAD commit timestamp.
+        /// Also check binary freshness: verify that target/debug/perllsp and
+        /// target/release/perllsp are newer than the HEAD commit timestamp.
         /// Exits non-zero when a binary exists and is stale. Missing binaries
         /// are reported but do not cause a non-zero exit.
         #[arg(long)]
@@ -2336,7 +2376,8 @@ enum NonRustCommand {
     /// and emit `target/policy/non-rust-inventory.{md,json}` plus
     /// `docs/policy/NON_RUST_INVENTORY.md`.
     Inventory {
-        /// Check the committed Markdown inventory without rewriting outputs.
+        /// Check classification and newly added files without rewriting outputs.
+        /// The generated Markdown snapshot may be stale during concurrent merges.
         #[arg(long)]
         check: bool,
     },
@@ -2418,6 +2459,25 @@ enum NonRustCommand {
         /// Override the workspace root used for `git ls-files`. Test seam only.
         #[arg(long, hide = true)]
         root: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Inventory registered review and expiry obligations at an explicit date.
+    Cadence {
+        /// Evaluation date. Defaults to the current UTC date in production;
+        /// tests and evidence runs should always pass it explicitly.
+        #[arg(long)]
+        as_of: Option<String>,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.json")]
+        json: PathBuf,
+
+        /// Deterministic Markdown summary path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.md")]
+        markdown: PathBuf,
     },
 }
 
@@ -4088,14 +4148,21 @@ fn run_cli(cli: Cli) -> Result<()> {
             summary,
             check,
         }),
-        Commands::RiprPr { root, base, head, check } => {
-            ripr_evidence::ripr_pr(&root, &base, &head, check)
+        Commands::RiprPr { root, base, head, pr_head, check } => {
+            ripr_evidence::ripr_pr(&root, &base, &head, pr_head.as_deref(), check)
         }
         Commands::RiprPlus { root, receipt, suppressions, check } => {
             ripr_evidence::ripr_plus(&root, &receipt, &suppressions, check)
         }
-        Commands::RiprReviewComments { root, base, head, timeout_seconds, check } => {
-            ripr_evidence::ripr_review_comments(&root, &base, &head, timeout_seconds, check)
+        Commands::RiprReviewComments { root, base, head, pr_head, timeout_seconds, check } => {
+            ripr_evidence::ripr_review_comments(
+                &root,
+                &base,
+                &head,
+                pr_head.as_deref(),
+                timeout_seconds,
+                check,
+            )
         }
         Commands::RiprPrSummary { check } => ripr_evidence::ripr_pr_summary(check),
         Commands::RiprAnnotations { comments, out, check } => {
@@ -4164,7 +4231,13 @@ fn run_cli(cli: Cli) -> Result<()> {
         ),
         Commands::Doc { open, all_features } => doc::run(open, all_features),
         Commands::Check { clippy, fmt, all } => check::run(clippy, fmt, all),
-        Commands::Fmt { check, package } => fmt::run(check, package),
+        Commands::Fmt { check, package, staged } => {
+            if staged {
+                fmt::run_staged()
+            } else {
+                fmt::run(check, package)
+            }
+        }
         #[cfg(feature = "legacy")]
         Commands::Corpus { path, scanner, diagnose, test } => {
             corpus::run(path, scanner, diagnose, test)
@@ -4331,6 +4404,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
         }
         Commands::CheckVersionSync => check_version_sync::run(),
+        Commands::PublicationDrift { input, repo_root, out } => {
+            xtask::publication_drift::run_with_paths(input, repo_root, out)
+        }
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
         Commands::CheckFromRaw => ci_policy::check_from_raw(),
         Commands::CheckMemoryLifecyclePolicy => ci_policy::check_memory_lifecycle(),
@@ -5194,6 +5270,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tasks::file_policy::non_rust_migration_candidates(
                     &root,
                     MigrationCandidatesConfig { format, output, limit, root_override },
+                )
+            }
+        },
+        Commands::Policy { command } => match command {
+            PolicyCommand::Cadence { as_of, json, markdown } => {
+                let root = utils::project_root()?;
+                tasks::policy_cadence::run(
+                    &root,
+                    tasks::policy_cadence::CadenceArgs { as_of, json, markdown },
                 )
             }
         },

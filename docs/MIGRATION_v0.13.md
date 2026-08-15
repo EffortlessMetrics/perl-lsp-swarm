@@ -1,5 +1,7 @@
 # Migration Guide — v0.13.0
 
+> **Historical release note:** This page documents the v0.13.0 microcrate-collapse migration. For upgrading to the current public-beta line, use [Upgrading](how-to/UPGRADING.md).
+
 This guide is for downstream users of perl-lsp crates who are upgrading to v0.13.0.
 
 > **Note (2026-04-16):** This file was previously named `MIGRATION_v0.14.md`. The target release

@@ -24,6 +24,16 @@ mkdir -p "$BOOK_SRC/process"
 mkdir -p "$BOOK_SRC/resources"
 
 # Function to copy and adapt a doc file
+
+# Apply sed edits through a temporary file so the helper works with both GNU and BSD sed.
+sed_in_place() {
+    local file="$1"
+    shift
+    local tmp="${file}.tmp"
+    sed "$@" "$file" > "$tmp"
+    mv "$tmp" "$file"
+}
+
 copy_doc() {
     local source="$1"
     local dest="$2"
@@ -36,6 +46,54 @@ copy_doc() {
     fi
 }
 
+# Adapt source-relative links when canonical docs are copied into the book.
+copy_lsp_doc() {
+    local source="$1"
+    local dest="$2"
+
+    copy_doc "$source" "$dest"
+    if [ -f "$dest" ]; then
+        sed_in_place "$dest" \
+            -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g' \
+            -e 's#../reference/ARCHITECTURE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md#g' \
+            -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
+            -e 's#../../features.toml#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/features.toml#g' \
+            -e 's#../project/CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
+            -e 's#../reference/LSP_FEATURES.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/LSP_FEATURES.md#g' \
+            -e 's#../project/protocols/verification.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/protocols/verification.md#g' 
+    fi
+}
+
+copy_development_doc() {
+    local source="$1"
+    local dest="$2"
+
+    copy_doc "$source" "$dest"
+    if [ -f "$dest" ]; then
+        sed_in_place "$dest" \
+            -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g' \
+            -e 's#ORIENTATION.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/ORIENTATION.md#g' \
+            -e 's#../reference/ARCHITECTURE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ARCHITECTURE.md#g' \
+            -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
+            -e 's#../tutorials/LSP_DEVELOPMENT_GUIDE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/tutorials/LSP_DEVELOPMENT_GUIDE.md#g' \
+            -e 's#CURRENT_STATUS.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/CURRENT_STATUS.md#g' \
+            -e 's#](\.\.\/project\/ROADMAP\.md)#](https:\/\/github.com\/EffortlessMetrics\/perl-lsp-swarm\/blob\/main\/docs\/project\/ROADMAP.md)#g'
+    fi
+}
+
+copy_testing_doc() {
+    local source="$1"
+    local dest="$2"
+
+    copy_doc "$source" "$dest"
+    if [ -f "$dest" ]; then
+        sed_in_place "$dest" \
+            -e 's#../../crates/perl-corpus/#https://github.com/EffortlessMetrics/perl-lsp-swarm/tree/main/crates/perl-corpus/#g' \
+            -e 's#../reference/COMMANDS_REFERENCE.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/COMMANDS_REFERENCE.md#g' \
+            -e 's#../../CONTRIBUTING.md#https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/CONTRIBUTING.md#g'
+    fi
+}
+
 # The canonical configuration reference is authored in the repository docs tree,
 # but its links must resolve inside the published book tree after copying.
 copy_config_doc() {
@@ -44,7 +102,7 @@ copy_config_doc() {
 
     copy_doc "$source" "$dest"
     if [ -f "$dest" ]; then
-        sed -i \
+        sed_in_place "$dest" \
             -e 's#NATIVE_CRITIC_RULE_MATRIX.md#native-critic-rule-matrix.md#g' \
             -e 's#../tutorials/DAP_USER_GUIDE.md#../dap/user-guide.md#g' \
             -e 's#../how-to/EDITOR_SETUP.md#editor-setup-canonical.md#g' \
@@ -52,8 +110,7 @@ copy_config_doc() {
             -e 's#PERFORMANCE_SLO.md#performance-slo.md#g' \
             -e 's#LSP_FEATURES.md#../user-guides/lsp-features.md#g' \
             -e 's#../how-to/THREADING_CONFIGURATION_GUIDE.md#../advanced/threading-configuration.md#g' \
-            -e 's#CONFIGURATION_SCHEMA.md#configuration-schema.md#g' \
-            "$dest"
+            -e 's#CONFIGURATION_SCHEMA.md#configuration-schema.md#g'
     fi
 }
 
@@ -92,14 +149,14 @@ copy_doc "$DOCS_DIR/reference/CRATE_ARCHITECTURE_DAP.md" "$BOOK_SRC/architecture
 echo "Setting up Developer Guides..."
 copy_doc "$REPO_ROOT/CONTRIBUTING.md" "$BOOK_SRC/developer/contributing.md"
 copy_doc "$DOCS_DIR/reference/COMMANDS_REFERENCE.md" "$BOOK_SRC/developer/commands-reference.md"
-copy_doc "$DOCS_DIR/tutorials/COMPREHENSIVE_TESTING_GUIDE.md" "$BOOK_SRC/developer/testing-guide.md"
+copy_testing_doc "$DOCS_DIR/tutorials/COMPREHENSIVE_TESTING_GUIDE.md" "$BOOK_SRC/developer/testing-guide.md"
 copy_doc "$DOCS_DIR/reference/TEST_INFRASTRUCTURE_GUIDE.md" "$BOOK_SRC/developer/test-infrastructure.md"
 copy_doc "$DOCS_DIR/reference/API_DOCUMENTATION_STANDARDS.md" "$BOOK_SRC/developer/api-documentation-standards.md"
-copy_doc "$DOCS_DIR/project/DEVELOPMENT.md" "$BOOK_SRC/developer/development-workflow.md"
+copy_development_doc "$DOCS_DIR/project/DEVELOPMENT.md" "$BOOK_SRC/developer/development-workflow.md"
 
 # LSP Development section
 echo "Setting up LSP Development..."
-copy_doc "$DOCS_DIR/reference/LSP_IMPLEMENTATION_GUIDE.md" "$BOOK_SRC/lsp/implementation-guide.md"
+copy_lsp_doc "$DOCS_DIR/tutorials/LSP_DEVELOPMENT_GUIDE.md" "$BOOK_SRC/lsp/implementation-guide.md"
 copy_doc "$DOCS_DIR/reference/LSP_PROVIDERS_REFERENCE.md" "$BOOK_SRC/lsp/providers-reference.md"
 copy_doc "$DOCS_DIR/reference/LSP_FEATURE_IMPLEMENTATION_BEST_PRACTICES.md" "$BOOK_SRC/lsp/feature-implementation.md"
 copy_doc "$DOCS_DIR/reference/LSP_CANCELLATION_PROTOCOL.md" "$BOOK_SRC/lsp/cancellation-system.md"

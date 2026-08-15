@@ -7,8 +7,9 @@
 - **VS Code (recommended)**: install the [Perl LSP extension](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs) — it downloads the server binary automatically.
 - **Pre-built binary**: download from [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases).
 - **Homebrew tap**: `brew install effortlessmetrics/tap/perllsp`.
-- **Installer script (Linux/macOS, best-effort)**:
-  `curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash`
+- **Installer script (Linux/macOS)**: prefer a release archive until closeout publishes
+  `PERL_LSP_INSTALLER_REF` and `PERL_LSP_INSTALLER_SHA256` for the reviewed
+  `scripts/install.sh` digest; see [INSTALLATION.md](../how-to/INSTALLATION.md#installer-script-macos-and-linux).
 - **From source**:
   `cargo install --path crates/perllsp`
 
@@ -85,22 +86,34 @@ Yes. The parser targets Perl 5.8 as the minimum and handles most idioms from tha
 
 ### Which editors work with perl-lsp?
 
-Any editor with LSP client support works. Point it at `perllsp --stdio`:
+`perllsp --stdio` speaks standard LSP, but a server implementation alone does
+not prove that every editor has a valid registration, install path, or tested
+host journey. Current setup paths include:
 
-- **VS Code** — native extension with auto-download, UI settings, and DAP debugging
-- **Trae (ByteDance)** — VS Code-compatible setup (extension or generic LSP command)
-- **Neovim** — via `nvim-lspconfig` (`perl_ls` server)
-- **Emacs** — via `eglot` or `lsp-mode`
-- **Helix** — via `languages.toml`
-- **Zed** — via a Perl extension (see [ZED_SETUP.md](../EDITORS/ZED_SETUP.md))
-- **Sublime Text** — via the LSP package
-- **Kate**, **Lapce**, **Kakoune** — any editor with a generic LSP client
+- **VS Code** — repository-maintained extension with managed binary installation
+- **Trae (ByteDance)** — VS Code-compatible setup; host-specific behavior remains separately bounded
+- **Neovim** — generic LSP configuration
+- **Emacs** — `eglot` or `lsp-mode`
+- **Helix** — `languages.toml`
+- **Sublime Text** — the LSP package
+- **Vim and coc.nvim** — generic LSP configuration
 
-See [EDITOR_SETUP.md](../how-to/EDITOR_SETUP.md) for editor-specific configuration.
+Zed is **planned / not proven**. The public Zed Perl extension currently
+registers `perlnavigator-server` for Perl Navigator and `perl-lsp` for
+`tree-sitter-perl/perl-tree-sitter-lsp`; it does not register the EffortlessMetrics
+`perllsp` server ID. Do not repoint that independent `perl-lsp` ID to
+`perllsp`. See [ZED_SETUP.md](../EDITORS/ZED_SETUP.md) for the current boundary
+and prepared upstream candidate.
+
+See [EDITOR_SETUP.md](../how-to/EDITOR_SETUP.md) for editor-specific configuration
+and evidence boundaries.
 
 ### Can I use it without VS Code?
 
-Yes. The VS Code extension is the easiest path, but `perllsp --stdio` is a plain LSP server that works with any compliant client. The extension is a convenience layer on top of the same binary.
+Yes, when your editor has a valid generic-LSP or extension route for launching
+`perllsp --stdio`. The VS Code extension is the easiest packaged path. Other
+hosts need their own setup and evidence; standard protocol compatibility is not
+an automatic all-editor support claim.
 
 ### Does it support debugging (DAP)?
 
@@ -158,7 +171,7 @@ See [CONFIG.md](CONFIG.md) for the full configuration reference.
 
 ### Where is feature coverage tracked?
 
-`features.toml` is the canonical source. Computed metrics live in `docs/project/CURRENT_STATUS.md`.
+`features.toml` is the canonical source. Computed metrics live in `docs/project/CURRENT_STATUS.md` .
 
 ---
 

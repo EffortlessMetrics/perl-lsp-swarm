@@ -134,11 +134,46 @@ After merge or evidence-backed deliberate closure:
 4. update durable contracts, proof, support claims, and changelog only within the
    proven boundary;
 5. preserve partial or residual work explicitly;
-6. safely release branch/worktree residue;
+6. release the claim's worktree;
 7. expose the next coherent claim to `deliver-goal`.
+
+Release on **every** terminal outcome — merged, superseded, deliberately closed,
+or **abandoned** — not only the merge path. For an abandoned lane, return the
+typed `ABANDONED`/`EXTERNAL_BLOCKER` result to the campaign root and release the
+worktree from the allocator or campaign root on that return, same as merge closeout. A cap bounds how many worktrees exist at once;
+nothing bounds residue, and most accumulation is finished work whose content already
+lives on the remote, each copy still holding a multi-gigabyte `target/`.
+
+Release belongs to whoever allocated the worktree, not to whoever finished the work in
+it. A writer cannot remove the directory it is standing in, so a lane that ends inside
+its own worktree leaves it behind by construction. The lane root or campaign root
+releases on the typed return.
+
+Keep a worktree only when it holds state that exists nowhere else — uncommitted changes,
+unpushed commits, or a detached HEAD outside the base. An open PR is not such a state: a
+fully pushed branch is restored with one `git worktree add`, and the branch, PR, and
+review all survive removal. `bash scripts/cleanup-completed-worktrees.sh --dry-run`
+applies that predicate across every worktree.
 
 Post a closeout only when the landed effect, residual claim, support boundary, or next
 route is useful. Do not persist runtime topology, task state, or merge-check polling.
+
+## Supersession carries its corrections
+
+When one candidate replaces another, the replacement inherits the superseded candidate's
+findings, dispositions, and corrections. Carry them forward before closing:
+
+- corrections to claims the replacement still makes, including anything the superseded
+  body stated inaccurately and later fixed;
+- accepted findings not yet repaired, and the evidence behind each disposition;
+- limitations and `NOT_PROVEN` boundaries that still apply to the replacement.
+- revalidate every carried finding against the replacement head before preserving a `fixed`, `accepted`, or `NOT_PROVEN` disposition.
+
+A correction that dies with a superseded PR is worse than one never made. The inaccurate
+claim reaches `main` through the replacement, and the record now shows a reviewed
+candidate, so nothing downstream has reason to look again. Where the replacement's claim
+differs, say which corrections no longer apply and why, rather than dropping them
+silently.
 
 ## Results and routes
 

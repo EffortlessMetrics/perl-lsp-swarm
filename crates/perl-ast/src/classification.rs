@@ -70,6 +70,7 @@ use crate::ast::NodeKind;
 /// dominant role of the construct in the Perl language, not its syntactic
 /// surface form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum NodeKindCategory {
     /// The root program node.
     Program,
@@ -99,6 +100,7 @@ pub enum NodeKindCategory {
 /// See the module-level documentation for the precise semantics of each flag
 /// and the invariants between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct NodeKindFlags {
     /// Code that can/will execute (methods, ops, side effects).
     ///
@@ -278,6 +280,28 @@ impl NodeKind {
             | NodeKind::MissingBlock
             | NodeKind::UnknownRest => NodeKindCategory::Recovery,
         }
+    }
+
+    /// Whether this node kind should appear in document outline / symbol results.
+    ///
+    /// Centralizes the eligibility predicate used by SymbolExtractor and
+    /// LSP document-symbol providers. Only nodes that declare a named
+    /// entity (subroutines, packages, classes, methods) are outlinable.
+    /// This avoids scattered match arms checking `NodeKindCategory::Declaration`
+    /// and then re-matching specific variants (#6298).
+    ///
+    /// Anonymous subs (name == None) are handled at the extraction site,
+    /// not here — `outline_visible` says "this kind is eligible", not
+    /// "this specific instance has a name".
+    #[must_use]
+    pub fn outline_visible(&self) -> bool {
+        matches!(
+            self,
+            NodeKind::Subroutine { .. }
+                | NodeKind::Package { .. }
+                | NodeKind::Class { .. }
+                | NodeKind::Method { .. }
+        )
     }
 
     /// Return the full [`NodeKindFlags`] for this variant.

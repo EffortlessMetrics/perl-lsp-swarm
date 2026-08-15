@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "report": {
+    "project": "perl-lsp",
+    "date": "2026-05-13T13:32:50.221Z",
+    "files_tracked": 59,
+    "files_analyzed": 59,
+    "total_findings": 60,
+    "severity_counts": {
+      "HIGH": 22,
+      "MEDIUM": 30,
+      "HIGH_BUG": 2,
+      "BUG": 6
+    }
+  },
+  "current_main_observation": {
+    "repository": "EffortlessMetrics/perl-lsp-swarm",
+    "main_sha": "c47491b936ac744b3044250ec5ed6218c739b262",
+    "observed_at": "2026-08-08",
+    "scope": "Initial source-row import and live issue/PR relationship orientation; row-level current-source proof remains explicit."
+  },
+  "finding_fields": [
+    "id",
+    "severity",
+    "title",
+    "slug",
+    "path",
+    "lines",
+    "source_text_digest",
+    "threat",
+    "reachability",
+    "current_reachability_correction",
+    "canonical_issue",
+    "issue_state",
+    "canonical_pr",
+    "pr_relationship",
+    "pr_state",
+    "landed_commit",
+    "ancestry_state",
+    "ancestry_main_sha",
+    "ancestry_observed_at",
+    "current_source_seam",
+    "proof_refs",
+    "verdict",
+    "residual_owner",
+    "limitations"
+  ],
+  "finding_files": [
+    "may-2026-findings/high-1.json",
+    "may-2026-findings/high-2.json",
+    "may-2026-findings/medium-1.json",
+    "may-2026-findings/medium-2.json",
+    "may-2026-findings/high-bug.json",
+    "may-2026-findings/bug.json"
+  ]
+}

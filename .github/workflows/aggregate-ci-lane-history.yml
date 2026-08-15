@@ -1,113 +1,332 @@
 name: Aggregate CI lane history
 
-# Daily aggregation of per-PR `ci-actuals-*` artifacts into
-# `.ci/metrics/ci-lane-history.json`. Once enough samples exist
-# (≥5 per lane, default `MIN_SAMPLES_FOR_LEARNED`), PR 13's planner
-# starts treating lane estimates as "learned" rather than falling back
-# to the static floor in `policy/ci-lanes.toml`.
-#
-# Tracked in #8166. Wires the previously-deferred aggregator step.
+# Only successful default-branch push and merge-group runs may teach the lane
+# estimator. Pull-request artifacts are never aggregation inputs. Generation
+# and repository mutation are separated by an inert artifact boundary.
 
 on:
   schedule:
-    # 05:07 UTC daily — off-minute (not on the hour) to avoid cron-fleet
-    # pile-up at :00. Lands after the 04:00 flake-detection run and well
-    # outside US/EU CI peak hours.
+    # 05:07 UTC daily — off-minute to avoid cron-fleet pile-up at :00.
     - cron: '7 5 * * *'
   workflow_dispatch:
 
-# Only one aggregation at a time.
 concurrency:
-  group: aggregate-ci-lane-history
-  cancel-in-progress: true
+  group: aggregate-ci-lane-history-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
-  contents: write   # for the [skip ci] commit-back
-  actions: read     # for listing/downloading recent ci-actuals artifacts
+  contents: read
 
 jobs:
   aggregate:
-    name: Aggregate ci-actuals into ci-lane-history.json
+    name: Aggregate trusted ci-actuals into lane history
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      default_branch: ${{ steps.repository.outputs.default_branch }}
+    env:
+      REPOSITORY: ${{ github.repository }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Setup Python (3.11+ for tomllib)
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - name: Resolve repository metadata
+        id: repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api "repos/${REPOSITORY}" --jq '.default_branch')"
+          if [ -z "$default_branch" ]; then
+            echo "::error::Repository default branch could not be resolved"
+            exit 1
+          fi
+          printf 'DEFAULT_BRANCH=%s\n' "$default_branch" >> "$GITHUB_ENV"
+          printf 'default_branch=%s\n' "$default_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
-      - name: Download recent ci-actuals artifacts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify aggregation implementation and policy
         run: |
           set -euo pipefail
-          mkdir -p target/ci/actuals
+          python3 scripts/ci/test_aggregate_lane_history.py
+          empty_actuals="$RUNNER_TEMP/empty-ci-actuals"
+          mkdir -p "$empty_actuals"
+          python3 scripts/ci/aggregate_lane_history.py \
+            --actuals-dir "$empty_actuals" \
+            --output "$RUNNER_TEMP/ci-lane-history.json" \
+            --static-lanes policy/ci-lanes.toml
 
-          # List recent completed ci.yml runs (last ~14 days worth on a
-          # busy repo fits in 100 runs). Download `ci-actuals-*` artifacts
-          # from each into a per-run subdirectory.
-          gh api -X GET "repos/${{ github.repository }}/actions/workflows/ci.yml/runs" \
+      - name: Download trusted ci-actuals artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          actuals_root="target/ci/actuals"
+          manifest="target/ci/trusted-runs.tsv"
+          runs_json="$(mktemp)"
+          run_candidates="$(mktemp)"
+          mkdir -p "$actuals_root"
+          printf 'run_id\trepository\tevent\thead_branch\thead_sha\tconclusion\tcreated_at\n' > "$manifest"
+
+          cutoff="$(date -u -d '14 days ago' +'%Y-%m-%dT%H:%M:%SZ')"
+          gh api --paginate --slurp -X GET \
+            "repos/${REPOSITORY}/actions/workflows/ci.yml/runs" \
             -F per_page=100 \
             -F status=completed \
-            --jq '.workflow_runs[].id' \
-            > /tmp/run_ids.txt
+            > "$runs_json"
 
-          run_count=$(wc -l < /tmp/run_ids.txt || echo 0)
-          echo "Found ${run_count} completed ci.yml runs to inspect."
+          python3 - "$runs_json" "$REPOSITORY" "$DEFAULT_BRANCH" "$cutoff" \
+            > "$run_candidates" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          pages = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          repository = sys.argv[2]
+          default_branch = sys.argv[3]
+          cutoff = sys.argv[4]
+
+          for page in pages:
+              if not isinstance(page, dict):
+                  continue
+              for run in page.get("workflow_runs", []):
+                  if not isinstance(run, dict):
+                      continue
+                  run_repository = run.get("repository") or {}
+                  event = run.get("event")
+                  branch = run.get("head_branch") or ""
+                  if run_repository.get("full_name") != repository:
+                      continue
+                  if run.get("conclusion") != "success":
+                      continue
+                  if not isinstance(run.get("created_at"), str) or run["created_at"] < cutoff:
+                      continue
+                  if not (
+                      (event == "push" and branch == default_branch)
+                      or event == "merge_group"
+                  ):
+                      continue
+                  fields = [
+                      run.get("id"),
+                      repository,
+                      event,
+                      branch,
+                      run.get("head_sha"),
+                      run.get("conclusion"),
+                      run.get("created_at"),
+                  ]
+                  if not isinstance(fields[0], int) or any(value is None for value in fields):
+                      continue
+                  print("\t".join(str(value) for value in fields))
+          PY
+
+          candidate_count="$(wc -l < "$run_candidates" | tr -d ' ')"
+          printf 'Found %s trusted ci.yml run candidates.\n' "$candidate_count"
 
           downloaded=0
-          while read -r run_id; do
+          while IFS=$'\t' read -r run_id repository event head_branch head_sha conclusion created_at; do
             [ -z "$run_id" ] && continue
-            if gh run download "$run_id" \
+            run_dir="${actuals_root}/run-${run_id}"
+            artifact_dir="${run_dir}/artifacts"
+            mkdir -p "$artifact_dir"
+
+            if ! gh run download "$run_id" \
+              --repo "$REPOSITORY" \
               --pattern 'ci-actuals-*' \
-              --dir "target/ci/actuals/run-${run_id}" \
+              --dir "$artifact_dir" \
               2>/dev/null
             then
-              downloaded=$((downloaded + 1))
+              rm -rf "$run_dir"
+              continue
             fi
-          done < /tmp/run_ids.txt
 
-          echo "Downloaded artifacts from ${downloaded} runs."
+            # This marker is written only after extraction and outside the
+            # artifact subtree. The aggregator derives this exact run-level
+            # path and never searches downloaded content for a closer marker.
+            python3 - \
+              "$run_dir/trusted-run.json" \
+              "$run_id" \
+              "$repository" \
+              "$event" \
+              "$head_branch" \
+              "$head_sha" \
+              "$conclusion" \
+              "$created_at" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          output = Path(sys.argv[1])
+          output.write_text(
+              json.dumps(
+                  {
+                      "run_id": int(sys.argv[2]),
+                      "repository": sys.argv[3],
+                      "event": sys.argv[4],
+                      "head_branch": sys.argv[5],
+                      "head_sha": sys.argv[6],
+                      "conclusion": sys.argv[7],
+                      "created_at": sys.argv[8],
+                  },
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+              "$run_id" "$repository" "$event" "$head_branch" \
+              "$head_sha" "$conclusion" "$created_at" >> "$manifest"
+            downloaded=$((downloaded + 1))
+          done < "$run_candidates"
+
+          printf 'Downloaded ci-actuals artifacts from %s trusted runs.\n' "$downloaded"
 
       - name: Aggregate lane history
         run: |
+          set -euo pipefail
           python3 scripts/ci/aggregate_lane_history.py \
-            --actuals-dir target/ci/actuals/ \
+            --actuals-dir target/ci/actuals \
             --window-days 14 \
             --output .ci/metrics/ci-lane-history.json \
-            --static-lanes policy/ci-lanes.toml
+            --static-lanes policy/ci-lanes.toml \
+            --require-trusted-markers \
+            --repository "$REPOSITORY" \
+            --default-branch "$DEFAULT_BRANCH"
+          mkdir -p target/ci/generated
+          cp .ci/metrics/ci-lane-history.json \
+            target/ci/generated/ci-lane-history.json
 
-      - name: Commit refreshed history if changed
-        # Best-effort push. Branch protection may block the direct-to-master
-        # push (matches the pattern in post-merge-corpus-ratchet.yml). The
-        # warning annotation surfaces silently-blocked pushes without failing
-        # the scheduled run.
+      - name: Summarize accepted and rejected evidence
         run: |
-          set -euo pipefail
-          if ! git diff --quiet -- .ci/metrics/ci-lane-history.json; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add .ci/metrics/ci-lane-history.json
-            git commit -m "chore(ci): refresh ci-lane-history.json [skip ci]"
-            git push || echo "::warning::Direct push to master blocked by branch protection rules -- ci-lane-history not auto-updated. The aggregator output remains in this run's logs; re-run after the protection settles."
-            echo "::notice::Refreshed .ci/metrics/ci-lane-history.json from the last 14d of ci-actuals samples."
-          else
-            echo "::notice::ci-lane-history.json already up to date."
-          fi
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
 
-      - name: Upload aggregator artifact (always)
-        # Even when commit-back is blocked, the artifact captures the
-        # generator output so operators can inspect the run.
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+          history = json.loads(
+              Path(".ci/metrics/ci-lane-history.json").read_text(encoding="utf-8")
+          )
+          validation = history.get("validation", {})
+          rejected = validation.get("rejected", {})
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+
+          lines = [
+              "## Trusted CI lane-history aggregation",
+              "",
+              f"- Source runs: {validation.get('source_run_count', 0)}",
+              f"- Receipt files seen: {validation.get('files_seen', 0)}",
+              f"- Receipt files accepted: {validation.get('files_accepted', 0)}",
+              f"- Samples accepted: {validation.get('accepted_samples', 0)}",
+              f"- Samples/files rejected: {sum(rejected.values())}",
+              "",
+              "| Rejection reason | Count |",
+              "| --- | ---: |",
+          ]
+          if rejected:
+              for reason, count in sorted(rejected.items()):
+                  lines.append(f"| `{reason}` | {count} |")
+          else:
+              lines.append("| None | 0 |")
+
+          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload aggregation evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: ci-lane-history-${{ github.run_id }}
-          path: .ci/metrics/ci-lane-history.json
-          if-no-files-found: warn
+          path: |
+            target/ci/generated/ci-lane-history.json
+            target/ci/trusted-runs.tsv
+          if-no-files-found: error
           retention-days: 30
+
+  open-pr:
+    name: Open lane-history refresh PR
+    needs: aggregate
+    if: >-
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.aggregate.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.aggregate.outputs.default_branch }}
+          persist-credentials: false
+
+      - name: Download generated evidence outside the checkout
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ci-lane-history-${{ github.run_id }}
+          path: ${{ runner.temp }}/lane-history
+
+      - name: Validate and stage the exact generated payload
+        env:
+          PAYLOAD_DIR: ${{ runner.temp }}/lane-history
+        run: |
+          set -euo pipefail
+          payload="$PAYLOAD_DIR/generated/ci-lane-history.json"
+          test -f "$payload"
+          if [ -L "$payload" ]; then
+            echo "::error::Lane-history payload is a symbolic link"
+            exit 1
+          fi
+          python3 - "$payload" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          data = json.loads(path.read_text(encoding="utf-8"))
+          if data.get("schema_version") != 1 or not isinstance(data.get("lanes"), dict):
+              raise SystemExit("invalid lane-history artifact schema")
+          validation = data.get("validation")
+          if not isinstance(validation, dict) or not isinstance(
+              validation.get("source_run_ids"), list
+          ):
+              raise SystemExit("lane-history artifact lacks provenance summary")
+          PY
+          install -m 0644 "$payload" .ci/metrics/ci-lane-history.json
+
+      - name: Create lane-history refresh PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ github.token }}
+          base: ${{ needs.aggregate.outputs.default_branch }}
+          branch: automation/ci-lane-history
+          title: "chore(ci): refresh trusted lane history (#5995)"
+          commit-message: "chore(ci): refresh trusted lane history (#5995)"
+          body: |
+            Refresh `.ci/metrics/ci-lane-history.json` from successful,
+            same-repository `ci.yml` evidence produced by default-branch
+            `push` or `merge_group` runs.
+
+            Pull-request artifacts, failed runs, unknown lanes, contradictory
+            receipt identities, non-finite values, and out-of-range samples are
+            excluded. The workflow artifact retains the trusted source-run
+            manifest and validation counts.
+
+            Refs #5995.
+          add-paths: .ci/metrics/ci-lane-history.json
+          signoff: false
+          delete-branch: true

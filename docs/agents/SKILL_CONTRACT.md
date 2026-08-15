@@ -341,6 +341,7 @@ Maintenance-time validation may check:
 - `review-pr` routes current review to `verify-live-ci`;
 - `verify-live-ci` cannot infer review from integration facts;
 - substantive review and integration posture remain distinct;
+- useful GitHub updates are distinct from runtime state;
 - route trace is bounded and non-authoritative;
 - absence of tracked frontier, liveness, agent registry, comment-per-transition, and
   retired orchestration metadata.

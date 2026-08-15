@@ -6,10 +6,6 @@
 //!   #5067: `$:` (format line-break character) and other punctuation special
 //!          variables were missing from the builtin list, producing
 //!          false-positive UndeclaredVariable under `use strict`.
-#![expect(
-    clippy::panic,
-    reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-)]
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};

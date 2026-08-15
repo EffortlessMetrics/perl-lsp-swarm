@@ -370,24 +370,120 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Check the committed Markdown inventory against a fresh tracked-file scan.
+/// Check the tracked-file classification against the allowlist.
 ///
-/// This mode is read-only: it does not rewrite the generated inventory or the
-/// target receipts. Use `cargo xtask non-rust inventory` to refresh them.
+/// The committed Markdown inventory is generated documentation, so it may be
+/// behind a concurrent merge. The scan and classification must still complete;
+/// stale generated documentation and the existing unclassified backlog are
+/// reported as warnings. A newly added unclassified file is a blocking error.
 pub fn non_rust_inventory_check(root: &Path) -> Result<()> {
+    let baseline = resolve_inventory_baseline(root);
+    non_rust_inventory_check_with_baseline(root, baseline.as_deref())
+}
+
+fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -> Result<()> {
+    let mut policy_errors = Vec::new();
+    validate_policy_table(
+        &root.join("policy/non-rust-allowlist.toml"),
+        "allow",
+        true,
+        &mut policy_errors,
+    );
+    if !policy_errors.is_empty() {
+        bail!("non-Rust allowlist validation failed: {}", policy_errors.join("; "));
+    }
+
     let records = build_inventory(root)?;
+    let unclassified: Vec<&FileRecord> =
+        records.iter().filter(|record| record.category == "unclassified").collect();
+    if !unclassified.is_empty() {
+        eprintln!(
+            "warning: non-Rust inventory has {} unclassified tracked file(s); inspect policy/non-rust-allowlist.toml",
+            unclassified.len()
+        );
+    }
+
+    if let Some(baseline) = baseline {
+        let added_paths = added_paths_since(root, baseline)?;
+        let newly_unclassified: Vec<&FileRecord> = unclassified
+            .iter()
+            .copied()
+            .filter(|record| added_paths.iter().any(|path| path == &record.path))
+            .collect();
+        if !newly_unclassified.is_empty() {
+            let paths = newly_unclassified
+                .iter()
+                .map(|record| record.path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "newly added tracked non-Rust file(s) are unclassified: {paths}; add allowlist entries before merging"
+            );
+        }
+    } else {
+        eprintln!(
+            "warning: cannot resolve a merge baseline; newly added unclassified files were not checked"
+        );
+    }
+
     let expected = render_markdown(&records);
     let docs_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
     let actual = fs::read_to_string(&docs_path)
         .with_context(|| format!("reading committed inventory {}", docs_path.display()))?;
     if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
-        bail!(
-            "non-Rust inventory is stale at {}; run `cargo xtask non-rust inventory` to regenerate it",
+        eprintln!(
+            "warning: non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory` to regenerate it",
             docs_path.display()
         );
     }
-    println!("Non-Rust inventory is current: {}", docs_path.display());
+    println!("Non-Rust inventory scan completed: {}", docs_path.display());
     Ok(())
+}
+
+fn resolve_inventory_baseline(root: &Path) -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Ok(scope_base) = std::env::var("CI_SCOPE_BASE") {
+        candidates.push(scope_base);
+    }
+    if let Ok(base_ref) = std::env::var("GITHUB_BASE_REF") {
+        candidates.push(format!("origin/{base_ref}"));
+        candidates.push(base_ref);
+    }
+    candidates.extend(["origin/main".to_string(), "HEAD^".to_string()]);
+
+    candidates.into_iter().find(|candidate| {
+        Command::new("git")
+            .args(["rev-parse", "--verify", candidate])
+            .current_dir(root)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    })
+}
+
+fn added_paths_since(root: &Path, baseline: &str) -> Result<Vec<String>> {
+    let range = format!("{baseline}..HEAD");
+    let output = Command::new("git")
+        .args(["diff", "--name-only", "--diff-filter=A", "-z", baseline, "HEAD"])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("running `git diff --name-only --diff-filter=A -z {range}`"))?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "`git diff --name-only --diff-filter=A -z {range}` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            let path = String::from_utf8(path.to_vec())
+                .with_context(|| "git diff produced a non-UTF-8 path")?;
+            Ok(path.replace('\\', "/"))
+        })
+        .collect()
 }
 
 fn normalize_line_endings(value: &str) -> String {
@@ -2322,7 +2418,7 @@ mod tests {
     }
 
     #[test]
-    fn non_rust_inventory_check_accepts_current_and_rejects_stale_docs() -> Result<()> {
+    fn non_rust_inventory_check_accepts_current_and_stale_docs() -> Result<()> {
         let temp = tempfile::tempdir()?;
         init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
@@ -2336,10 +2432,78 @@ mod tests {
         non_rust_inventory_check(temp.path())?;
 
         fs::write(&docs_path, "stale\n")?;
-        let error = non_rust_inventory_check(temp.path())
-            .err()
-            .ok_or_else(|| eyre!("expected stale inventory failure"))?;
-        assert!(error.to_string().contains("inventory is stale"));
+        non_rust_inventory_check(temp.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn non_rust_inventory_check_accepts_unclassified_files() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(
+            temp.path(),
+            &[("README.md", "# Fixture\n"), ("scripts/tool.py", "print('fixture')\n")],
+        )?;
+        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        non_rust_inventory(temp.path())?;
+
+        non_rust_inventory_check(temp.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn non_rust_inventory_check_rejects_new_unclassified_files() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(
+            temp.path(),
+            &[("README.md", "# Fixture\n"), ("scripts/existing.py", "print('fixture')\n")],
+        )?;
+        write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
+        non_rust_inventory(temp.path())?;
+        run_git(temp.path(), &["add", "."])?;
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "baseline",
+            ],
+        )?;
+
+        write_fixture(temp.path(), "scripts/new.py", "print('new')\n")?;
+        run_git(temp.path(), &["add", "scripts/new.py"])?;
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "candidate",
+            ],
+        )?;
+
+        assert!(non_rust_inventory_check_with_baseline(temp.path(), Some("HEAD^")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn non_rust_inventory_check_rejects_invalid_allowlist_classification() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
+        write_fixture(
+            temp.path(),
+            "policy/non-rust-allowlist.toml",
+            &readme_allowlist_toml()?
+                .replace("classification = \"documentation\"", "classification = \"toolng\""),
+        )?;
+
+        assert!(non_rust_inventory_check(temp.path()).is_err());
         Ok(())
     }
 

@@ -245,6 +245,9 @@ impl LspServer {
             // consume a worker thread for ~1 second per call (issue #4632).
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             "$/test/slowOperation" => self.handle_slow_operation_dispatch(&id, request.params),
+            // Keep the VS Code liveness probe on a constant-time server path.
+            // It must not enter provider or open-document fallback work.
+            "$/perl-lsp/watchdog" => Ok(Some(Value::Null)),
             // Tolerate unknown `$/`-prefixed methods per LSP spec:
             // Method names starting with "$/" are protocol-specific and should be
             // silently ignored (notifications) or return MethodNotFound (requests)

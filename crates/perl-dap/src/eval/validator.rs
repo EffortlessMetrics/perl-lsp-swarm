@@ -49,6 +49,22 @@ pub enum ValidationError {
 /// Result type for expression validation
 pub type ValidationResult = Result<(), ValidationError>;
 
+impl perl_parser_core::ErrorClass for ValidationError {
+    fn error_class(&self) -> perl_parser_core::ErrorCategory {
+        // All variants are deliberate policy refusals of unsafe expressions.
+        // Each tells the user their input is disallowed and suggests
+        // allowSideEffects: true. These are user-actionable corrections.
+        match self {
+            Self::DangerousOperation(_)
+            | Self::AssignmentOperator(_)
+            | Self::IncrementDecrement
+            | Self::Backticks
+            | Self::RegexMutation(_)
+            | Self::ContainsNewlines => perl_parser_core::ErrorCategory::UserError,
+        }
+    }
+}
+
 /// Safe expression evaluator for policy validation.
 ///
 /// Validates that expressions are safe for evaluation during debugging,

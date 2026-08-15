@@ -1,14 +1,8 @@
 name: Post-Merge Status Regeneration
 
-# Automatically regenerates docs/project/status/*.md after every merge to main.
-# This eliminates the #1 merge friction point: PRs no longer need to edit CURRENT_STATUS.md
-# themselves, ending the cascade of merge conflicts on that hot shared file.
-#
-# The status directory contains four generated files (lsp.md, tests.md, parser.md, quality.md)
-# and three human-owned files (index.md, release.md). Only the generated files are committed.
-# CURRENT_STATUS.md is now a stable stub — it is never touched by this workflow.
-#
-# See issue #2801 (split CURRENT_STATUS.md) and issue #2296 (original post-merge regen).
+# Generate status documentation from trusted default-branch source without write
+# authority. A separate minimal job validates one content-addressed payload and
+# proposes the exact five generated files through a reviewable pull request.
 
 on:
   push:
@@ -17,70 +11,385 @@ on:
       - master
   workflow_dispatch: {}
 
-# Only one regeneration at a time; cancel stale runs if a new push lands.
 concurrency:
   group: post-merge-status-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  regenerate-status:
-    name: Regenerate status subsystem files
+  generate:
+    name: Generate bounded status payload
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
-    # Large source/sync cutovers can spend the former 10 minute budget compiling
-    # xtask before update-status runs. Keep this below broad CI budgets but above
-    # the observed cutover compile time.
     timeout-minutes: 20
-
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.payload.outputs.changed }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Checkout trusted source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # Fetch full history so git can commit cleanly.
+          # Pin to the immutable event commit, matching the writer. The manifest
+          # records `git rev-parse HEAD` and the writer requires it to equal
+          # `github.sha`, so generating from the moving branch tip would make the
+          # writer reject the payload after a full Cargo build and silently drop
+          # the status update for that push.
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
         with:
           toolchain: 1.95.0
 
-      - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
+          cache-targets: false
           shared-key: post-merge-status-${{ hashFiles('Cargo.lock') }}
 
-      - name: Regenerate all status subsystem files and ROADMAP.md
+      - name: Regenerate status subsystem files and roadmap
         run: cargo run -p xtask -- update-status --write
 
-      - name: Commit regenerated files if changed
-        # TODO(#follow-up): Switch to creating a PR instead of direct push once a
-        # bot token or GitHub App is configured that can bypass branch protection.
-        # For now, the push is best-effort (git push || echo warning) so CI stays green
-        # even when branch protection blocks the direct-to-master push. The warning
-        # annotation remains visible in the Actions UI so the failure is not silent.
+      - name: Validate and stage exact generated payload
+        id: payload
         run: |
-          CHANGED_FILES=$(git diff --name-only -- \
-            docs/project/status/lsp.md \
-            docs/project/status/tests.md \
-            docs/project/status/parser.md \
-            docs/project/status/quality.md \
-            docs/project/ROADMAP.md)
+          set -euo pipefail
+          mkdir -p target/post-merge-status-payload
+          python3 - <<'PY'
+          from __future__ import annotations
 
-          if [ -n "$CHANGED_FILES" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add \
-              docs/project/status/lsp.md \
-              docs/project/status/tests.md \
-              docs/project/status/parser.md \
-              docs/project/status/quality.md \
-              docs/project/ROADMAP.md
-            git commit -m "chore(docs): regenerate status subsystem files post-merge [skip ci]"
-            git push || echo "::warning::Direct push to master blocked by branch protection rules -- status files not auto-updated. See TODO above for proper fix."
-            echo "::notice::Attempted to push regenerated status files."
-          else
-            echo "::notice::Status files already up to date -- nothing to commit."
-          fi
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import stat
+          import subprocess
+
+          canonical = [
+              "docs/project/status/lsp.md",
+              "docs/project/status/tests.md",
+              "docs/project/status/parser.md",
+              "docs/project/status/quality.md",
+              "docs/project/ROADMAP.md",
+          ]
+          # `update-status --write` regenerates six subsystems, not four: it also
+          # owns docs/project/status/{dap,workspace}.md, editor_ux.json, and the
+          # target-derived status receipts. Only the five canonical files above are
+          # ever proposed to the writer, but the generator legitimately dirties the
+          # rest, so the abort below is scoped to writes that escape the
+          # generator-owned surface entirely (source, workflows, scripts, ...).
+          owned_prefixes = ("docs/project/status/",)
+          owned_paths = {"docs/project/ROADMAP.md"}
+          root = Path.cwd().resolve()
+          payload_root = root / "target" / "post-merge-status-payload"
+          files_root = payload_root / "files"
+          manifest_path = payload_root / "manifest.json"
+          max_file_bytes = 5_242_880
+          max_total_bytes = 20_971_520
+
+          changed_paths: set[str] = set()
+          commands = [
+              ["git", "diff", "--name-only", "-z"],
+              ["git", "diff", "--cached", "--name-only", "-z"],
+              ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+          ]
+          for command in commands:
+              output = subprocess.run(
+                  command,
+                  check=True,
+                  stdout=subprocess.PIPE,
+              ).stdout
+              changed_paths.update(
+                  entry.decode("utf-8", errors="surrogateescape")
+                  for entry in output.split(b"\0")
+                  if entry
+              )
+
+          unexpected = sorted(
+              path
+              for path in changed_paths
+              if path not in owned_paths and not path.startswith(owned_prefixes)
+          )
+          if unexpected:
+              raise SystemExit(
+                  "status generator changed paths outside its owned surface: "
+                  + ", ".join(unexpected)
+              )
+
+          records: list[dict[str, object]] = []
+          total_bytes = 0
+          for relative in canonical:
+              source = root / relative
+              metadata = source.lstat()
+              if not stat.S_ISREG(metadata.st_mode):
+                  raise SystemExit(f"generated status output is not regular: {relative}")
+              if metadata.st_size > max_file_bytes:
+                  raise SystemExit(f"generated status output exceeds byte limit: {relative}")
+              data = source.read_bytes()
+              total_bytes += len(data)
+              records.append(
+                  {
+                      "path": relative,
+                      "bytes": len(data),
+                      "sha256": hashlib.sha256(data).hexdigest(),
+                  }
+              )
+
+          if total_bytes > max_total_bytes:
+              raise SystemExit("generated status payload exceeds aggregate byte limit")
+
+          # Only movement in the five canonical files justifies a proposal PR.
+          # Churn confined to the other generator-owned outputs must not open an
+          # empty PR, and must not reach the writer's changed-path contract.
+          canonical_changed = sorted(changed_paths & set(canonical))
+          changed = bool(canonical_changed)
+          if files_root.exists():
+              shutil.rmtree(files_root)
+          for relative in canonical:
+              destination = files_root / relative
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(root / relative, destination)
+
+          manifest_path.write_text(
+              json.dumps(
+                  {
+                      "schema_version": 1,
+                      "source_sha": subprocess.check_output(
+                          ["git", "rev-parse", "HEAD"], text=True
+                      ).strip(),
+                      "changed": changed,
+                      "changed_paths": canonical_changed,
+                      "file_count": len(records),
+                      "total_bytes": total_bytes,
+                      "files": records,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a", encoding="utf-8") as output:
+              output.write(f"changed={'true' if changed else 'false'}\n")
+          print(
+              f"staged {len(records)} canonical files; "
+              f"changed={changed}; total_bytes={total_bytes}"
+          )
+          PY
+
+      - name: Upload exact generated payload
+        if: steps.payload.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: post-merge-status-${{ github.run_id }}
+          path: target/post-merge-status-payload
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Report current generated state
+        if: steps.payload.outputs.changed != 'true'
+        run: echo "::notice::Generated status files are already current."
+
+  open-pr:
+    name: Open generated status PR
+    needs: generate
+    if: needs.generate.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pin to the exact event commit, not the moving branch tip. The manifest
+          # is only ever validated against `github.sha`, so a branch ref could let
+          # a later commit become the base for a payload generated from an earlier
+          # one. `base` is set explicitly below because this leaves HEAD detached.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download generated payload outside the checkout
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: post-merge-status-${{ github.run_id }}
+          path: ${{ runner.temp }}/post-merge-status-payload
+
+      - name: Verify and stage canonical generated files
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+          PAYLOAD_ROOT: ${{ runner.temp }}/post-merge-status-payload
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import stat
+          import subprocess
+
+          canonical = [
+              "docs/project/status/lsp.md",
+              "docs/project/status/tests.md",
+              "docs/project/status/parser.md",
+              "docs/project/status/quality.md",
+              "docs/project/ROADMAP.md",
+          ]
+          expected_paths = set(canonical)
+          # Re-declared here on purpose. The generator enforces the same limits,
+          # but it is the untrusted side of this boundary: a compromised generator
+          # or build dependency controls both the artifact and its manifest, so a
+          # limit that exists only over there binds nothing. This privileged job
+          # must refuse an oversized payload on its own authority.
+          max_file_bytes = 5_242_880
+          max_total_bytes = 20_971_520
+          payload_root = Path(os.environ["PAYLOAD_ROOT"])
+          files_root = payload_root / "files"
+          manifest_path = payload_root / "manifest.json"
+          if not files_root.is_dir() or files_root.is_symlink():
+              raise SystemExit("generated status files payload is missing or non-regular")
+          if not manifest_path.is_file() or manifest_path.is_symlink():
+              raise SystemExit("generated status manifest is missing or non-regular")
+
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("schema_version") != 1:
+              raise SystemExit("unsupported generated status manifest schema")
+          if manifest.get("source_sha") != os.environ["EXPECTED_SOURCE_SHA"]:
+              raise SystemExit("generated status source SHA does not match this run")
+          if manifest.get("changed") is not True:
+              raise SystemExit("writer received a payload that declares no change")
+          changed_paths = manifest.get("changed_paths")
+          if (
+              not isinstance(changed_paths, list)
+              or not changed_paths
+              or any(path not in expected_paths for path in changed_paths)
+          ):
+              raise SystemExit("generated status manifest has invalid changed paths")
+
+          records = manifest.get("files")
+          if not isinstance(records, list) or len(records) != len(canonical):
+              raise SystemExit("generated status manifest has wrong file count")
+          expected: dict[str, tuple[int, str]] = {}
+          for record in records:
+              if not isinstance(record, dict):
+                  raise SystemExit("generated status manifest contains a non-object")
+              relative = record.get("path")
+              size = record.get("bytes")
+              digest = record.get("sha256")
+              if (
+                  relative not in expected_paths
+                  or not isinstance(size, int)
+                  or isinstance(size, bool)
+                  or size < 0
+                  or size > max_file_bytes
+                  or not isinstance(digest, str)
+                  or len(digest) != 64
+                  or any(ch not in "0123456789abcdef" for ch in digest)
+              ):
+                  raise SystemExit(f"invalid generated status record: {record!r}")
+              if relative in expected:
+                  raise SystemExit(f"duplicate generated status record: {relative}")
+              expected[relative] = (size, digest)
+          if set(expected) != expected_paths:
+              raise SystemExit("generated status manifest omits a canonical file")
+          if sum(size for size, _ in expected.values()) > max_total_bytes:
+              raise SystemExit("generated status payload exceeds aggregate byte limit")
+
+          observed_paths: set[str] = set()
+          for path in sorted(files_root.rglob("*")):
+              metadata = path.lstat()
+              if stat.S_ISDIR(metadata.st_mode):
+                  continue
+              if not stat.S_ISREG(metadata.st_mode):
+                  raise SystemExit(f"generated status payload is non-regular: {path}")
+              # Refuse on stat, before any read, so an oversized blob is never
+              # loaded into this job at all.
+              if metadata.st_size > max_file_bytes:
+                  raise SystemExit(f"generated status payload exceeds byte limit: {path}")
+              relative = path.relative_to(files_root).as_posix()
+              record = expected.get(relative)
+              if record is None:
+                  raise SystemExit(f"generated status payload has extra file: {relative}")
+              data = path.read_bytes()
+              if len(data) != record[0]:
+                  raise SystemExit(f"generated status size mismatch: {relative}")
+              if hashlib.sha256(data).hexdigest() != record[1]:
+                  raise SystemExit(f"generated status digest mismatch: {relative}")
+              observed_paths.add(relative)
+          if observed_paths != expected_paths:
+              raise SystemExit("generated status payload omits a canonical file")
+          if manifest.get("file_count") != len(expected_paths):
+              raise SystemExit("generated status manifest file count is inconsistent")
+          if manifest.get("total_bytes") != sum(size for size, _ in expected.values()):
+              raise SystemExit("generated status manifest byte count is inconsistent")
+
+          for relative in canonical:
+              destination = Path(relative)
+              if destination.is_symlink():
+                  raise SystemExit(f"repository destination is a symlink: {relative}")
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(files_root / relative, destination)
+
+          # Observe the whole working tree. Restricting `git diff` to `canonical`
+          # made this guard unfalsifiable: the pathspec filtered the output down
+          # to exactly the set it was then compared against, so the difference was
+          # empty by construction and no unexpected write could ever trip it.
+          # The payload itself lives in RUNNER_TEMP, outside this checkout.
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only"], text=True
+          ).splitlines()
+          untracked = subprocess.check_output(
+              ["git", "ls-files", "--others", "--exclude-standard"], text=True
+          ).splitlines()
+          unexpected = sorted((set(changed) | set(untracked)) - expected_paths)
+          if unexpected:
+              raise SystemExit(f"writer staged unexpected paths: {unexpected}")
+          PY
+
+      # Established peter-evans/create-pull-request pattern (see
+      # post-merge-corpus-ratchet.yml, version-bump.yml). NOTE: a PR opened by
+      # GITHUB_TOKEN does not trigger the required checks (GitHub loop
+      # prevention), so it lands via ops override; a bot token or GitHub App for
+      # full self-merge is the #1004 follow-up. This is still strictly better
+      # than the former direct push, which branch protection always rejected.
+      - name: Create generated status PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ github.token }}
+          branch: automation/post-merge-status
+          base: ${{ github.event.repository.default_branch }}
+          delete-branch: true
+          title: "chore(docs): regenerate post-merge status (#6012)"
+          commit-message: "chore(docs): regenerate post-merge status (#6012)"
+          body: |
+            Regenerates the five canonical status documents from the trusted
+            default-branch source at `${{ github.sha }}`.
+
+            Generation ran without repository write authority. The writer
+            verified the source SHA and every path, size, and SHA-256 digest.
+
+            Refs #6012.
+          add-paths: |
+            docs/project/status/lsp.md
+            docs/project/status/tests.md
+            docs/project/status/parser.md
+            docs/project/status/quality.md
+            docs/project/ROADMAP.md

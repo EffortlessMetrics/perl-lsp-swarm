@@ -108,8 +108,12 @@ The recommended way to install is to use the pre-built binaries or a package man
 
 ### Quick Install (Linux/macOS)
 ```bash
-# One-liner installer
-curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/install.sh | bash
+# Prefer a release archive until closeout publishes ref+digest; then:
+INSTALLER_REF=<full-40-char-commit-sha>
+INSTALLER_SHA256=<reviewed-sha256-of-scripts-install-sh>
+curl -fsSL "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/$INSTALLER_REF/install.sh" \
+  | PERL_LSP_INSTALLER_REF="$INSTALLER_REF" \
+    PERL_LSP_INSTALLER_SHA256="$INSTALLER_SHA256" bash
 ```
 
 ### Windows
