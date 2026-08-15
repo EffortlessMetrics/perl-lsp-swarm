@@ -73,9 +73,9 @@ notes = "Short agent contribution route."
 
 [[documents]]
 path = "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md"
-status = "transitional"
-successor = "issue #4560 / PR #6863"
-notes = "Current main still contains the accepted mandatory-rebase text; PR #6863 replaces it with semantic incorporation."
+status = "current"
+successor = ""
+notes = "PR #6863 landed on main as e9a698285f. The amended specification retired the mandatory-rebase contract itself and now declares that it is the current durable disposition contract; classifying it transitional would demote a current authority."
 
 [[documents]]
 path = "docs/reference/MAINTAINER_AGENT_DOCTRINE.md"
@@ -103,15 +103,15 @@ notes = "Current main duplicates a stale architecture and fixed workflow; PR #68
 
 [[documents]]
 path = "scripts/ci/check-pr-claim-currentness"
-status = "transitional"
-successor = "issue #5778 / PR #6871"
-notes = "Legacy exact-head and claim-digest verdict command; PR #6871 retires live use while preserving fixtures."
+status = "historical"
+successor = "scripts/ci/check-pr-review-convergence"
+notes = "PR #6871 landed on main as c5c43757ed. The command now declares in its own docstring that it has no live review-convergence authority and reads historical receipts in fixture mode only; the retirement is complete, not pending."
 
 [[documents]]
 path = "scripts/reviews/claim-digest"
-status = "transitional"
-successor = "issue #5778 / PR #6871"
-notes = "Legacy command-line digest authority; PR #6871 retires the CLI while preserving the compatibility module."
+status = "historical"
+successor = "scripts/reviews/claim_digest.py"
+notes = "PR #6871 landed on main as c5c43757ed. The CLI entry point now prints a RETIRED notice and exits; the compatibility module scripts/reviews/claim_digest.py remains readable for fixtures. The retirement is complete, not pending."
 
 [[documents]]
 path = "scripts/ci/check-pr-review-convergence-core"
