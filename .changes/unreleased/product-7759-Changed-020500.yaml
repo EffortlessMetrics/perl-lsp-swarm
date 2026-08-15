@@ -1,9 +1,0 @@
-project: product
-component: Developer experience
-kind: Changed
-body: "Added a machine-checked Zed Codex implementation train that separates current-main convergence, authority PRs, exact-source evidence, packet freeze, manual external checkpoints, official-registry proof, and support projection."
-time: 2026-08-14T02:05:00Z
-custom:
-  PR: 9651
-  Slug: zed-codex-implementation-train
-  Breaking: "no"
