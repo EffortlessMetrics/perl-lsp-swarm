@@ -164,14 +164,97 @@ function parseBlocks(lines: string[]): Block[] {
 // Step 3: render blocks to HTML
 // ---------------------------------------------------------------------------
 
+/** Emitted for `=over` and rewritten once the first `=item` fixes the list type. */
+const LIST_PLACEHOLDER = '<!-- over -->';
+
+/** An `=item` marker that opens an ordered list: `1.`, `2)`, or a bare `1`. */
+const ORDERED_ITEM_MARKER = /^\d+(?:[.)](?:\s|$)|$)/;
+
+/** An `=item` marker that opens a bullet list: `*` or `-`. */
+const UNORDERED_ITEM_MARKER = /^[*-](?:\s|$)/;
+
+/** One open `=over` list level. */
+interface ListFrame {
+  tag: 'ul' | 'ol';
+  /** Index in `parts` holding this list's opening tag or its placeholder. */
+  openIdx: number;
+  /** True once the opening tag reflects a real `=item` marker. */
+  decided: boolean;
+  /** True while an `<li>` is open and can still absorb the item's body. */
+  itemOpen: boolean;
+  /** Index in `parts` of the currently open `<li>`, or -1 when none. */
+  itemIdx: number;
+  /** True once this list has emitted at least one `=item`. */
+  hasItems: boolean;
+}
+
 function renderBlocks(blocks: Block[]): string {
   const parts: string[] = [];
-  let listStack: Array<'ul' | 'ol'> = [];
+  const listStack: ListFrame[] = [];
+
+  /**
+   * Close the open `<li>`.
+   *
+   * An item with no body keeps its original single-element `<li>…</li>` shape;
+   * an item that absorbed paragraphs or verbatim blocks gets its own closing
+   * tag after them, so the body stays inside the item rather than terminating
+   * the list.
+   */
+  function closeItem(frame: ListFrame): void {
+    if (!frame.itemOpen) {
+      return;
+    }
+    const openTag = parts[frame.itemIdx];
+    if (frame.itemIdx === parts.length - 1 && openTag !== undefined) {
+      parts[frame.itemIdx] = `${openTag}</li>`;
+    } else {
+      parts.push('</li>');
+    }
+    frame.itemOpen = false;
+    frame.itemIdx = -1;
+  }
+
+  function closeList(): void {
+    const frame = listStack.pop();
+    if (!frame) {
+      return;
+    }
+    closeItem(frame);
+    if (!frame.hasItems) {
+      // `=over` with no `=item` contributes no list; the placeholder is
+      // dropped below rather than emitted as an empty `<ul></ul>`.
+      return;
+    }
+    if (!frame.decided) {
+      parts[frame.openIdx] = `<${frame.tag}>`;
+      frame.decided = true;
+    }
+    parts.push(`</${frame.tag}>`);
+  }
 
   function closeAllLists(): void {
     while (listStack.length > 0) {
-      parts.push(`</${listStack.pop()}>`);
+      closeList();
     }
+  }
+
+  /** The innermost list item that a body block belongs to, when one is open. */
+  function openItemFrame(): ListFrame | undefined {
+    const frame = listStack[listStack.length - 1];
+    return frame?.itemOpen === true ? frame : undefined;
+  }
+
+  /**
+   * Render an item body (paragraph or verbatim block).
+   *
+   * POD item text and its explanatory paragraphs are one list item. Closing the
+   * list here would split every `=item` into its own single-entry list.
+   */
+  function pushBodyBlock(html: string): void {
+    if (!openItemFrame()) {
+      closeAllLists();
+    }
+    parts.push(html);
   }
 
   for (const block of blocks) {
@@ -182,7 +265,7 @@ function renderBlocks(blocks: Block[]): string {
       if (/^head[1-4]$/.test(cmd)) {
         closeAllLists();
         const level = cmd[4];
-        parts.push(`<h${level}>${escapeHtml(text)}</h${level}>`);
+        parts.push(`<h${level}>${renderInline(text)}</h${level}>`);
         continue;
       }
 
@@ -194,55 +277,64 @@ function renderBlocks(blocks: Block[]): string {
       // =over: begin a list
       if (cmd === 'over') {
         // defer list type until we see the first =item
-        listStack.push('ul'); // placeholder; corrected on first =item
-        parts.push('<!-- over -->'); // placeholder index for replacement
+        listStack.push({
+          tag: 'ul',
+          openIdx: parts.length,
+          decided: false,
+          itemOpen: false,
+          itemIdx: -1,
+          hasItems: false,
+        });
+        parts.push(LIST_PLACEHOLDER);
         continue;
       }
 
       // =item: list item
       if (cmd === 'item') {
         // Determine / correct list type from item marker
-        const isOrdered = /^\d+[.)]\s/.test(text);
-        const isUnordered = /^[*\-]\s/.test(text) || text === '*' || text === '-';
+        const isOrdered = ORDERED_ITEM_MARKER.test(text);
+        const isUnordered = UNORDERED_ITEM_MARKER.test(text);
 
         // If we are not inside any list context, open one
-        if (listStack.length === 0) {
-          const listTag: 'ul' | 'ol' = isOrdered ? 'ol' : 'ul';
-          listStack.push(listTag);
-          parts.push(`<${listTag}>`);
-        } else {
-          // Fix the placeholder if this is the first item
-          const expectedTag: 'ul' | 'ol' = isOrdered ? 'ol' : 'ul';
-          const placeholderIdx = parts.lastIndexOf('<!-- over -->');
-          if (placeholderIdx !== -1) {
-            parts[placeholderIdx] = `<${expectedTag}>`;
-            listStack[listStack.length - 1] = expectedTag;
-          }
+        let frame = listStack[listStack.length - 1];
+        if (!frame) {
+          frame = {
+            tag: isOrdered ? 'ol' : 'ul',
+            openIdx: parts.length,
+            decided: true,
+            itemOpen: false,
+            itemIdx: -1,
+            hasItems: false,
+          };
+          listStack.push(frame);
+          parts.push(`<${frame.tag}>`);
+        } else if (!frame.decided) {
+          // Fix the placeholder now that the first item names the list type
+          frame.tag = isOrdered ? 'ol' : 'ul';
+          parts[frame.openIdx] = `<${frame.tag}>`;
+          frame.decided = true;
         }
+
+        closeItem(frame);
 
         // Strip leading marker
         let itemText = text;
         if (isOrdered) {
-          itemText = text.replace(/^\d+[.)]\s*/, '').trim();
+          itemText = text.replace(/^\d+[.)]?\s*/, '').trim();
         } else if (isUnordered) {
-          itemText = text.replace(/^[*\-]\s*/, '').trim();
+          itemText = text.replace(/^[*-]\s*/, '').trim();
         }
 
-        parts.push(`<li>${renderInline(itemText)}</li>`);
+        frame.itemIdx = parts.length;
+        frame.itemOpen = true;
+        frame.hasItems = true;
+        parts.push(`<li>${renderInline(itemText)}`);
         continue;
       }
 
       // =back: end a list
       if (cmd === 'back') {
-        if (listStack.length > 0) {
-          const tag = listStack.pop();
-          // Remove the placeholder if it was never replaced
-          const placeholderIdx = parts.lastIndexOf('<!-- over -->');
-          if (placeholderIdx !== -1) {
-            parts[placeholderIdx] = `<${tag ?? 'ul'}>`;
-          }
-          parts.push(`</${tag ?? 'ul'}>`);
-        }
+        closeList();
         continue;
       }
 
@@ -253,22 +345,20 @@ function renderBlocks(blocks: Block[]): string {
 
       // Unknown command: treat as paragraph
       if (text) {
-        parts.push(`<p>${renderInline(text)}</p>`);
+        pushBodyBlock(`<p>${renderInline(text)}</p>`);
       }
       continue;
     }
 
     if (block.kind === 'verbatim') {
-      closeAllLists();
       // Compute common indentation to strip
       const stripped = stripCommonIndent(block.lines);
-      parts.push(`<pre><code>${escapeHtml(stripped.join('\n'))}</code></pre>`);
+      pushBodyBlock(`<pre><code>${escapeHtml(stripped.join('\n'))}</code></pre>`);
       continue;
     }
 
     if (block.kind === 'para') {
-      closeAllLists();
-      parts.push(`<p>${renderInline(block.text)}</p>`);
+      pushBodyBlock(`<p>${renderInline(block.text)}</p>`);
       continue;
     }
   }
@@ -276,27 +366,40 @@ function renderBlocks(blocks: Block[]): string {
   closeAllLists();
 
   // Remove any remaining placeholder comments (e.g. =over with no =item)
-  return parts.filter((p) => p !== '<!-- over -->').join('\n');
+  return parts.filter((p) => p !== LIST_PLACEHOLDER).join('\n');
 }
 
 // ---------------------------------------------------------------------------
 // Inline formatting: B<>, I<>, C<>, L<>, E<>, S<>, X<>
 // ---------------------------------------------------------------------------
 
+/**
+ * One POD inline sequence: extended `B<< … >>` delimiters are matched before
+ * the common single-delimiter `B<…>` form so the longer delimiter wins.
+ */
+const INLINE_SEQUENCE = /([BICLESFZX])(?:<<\s+([\s\S]*?)\s+>>|<([^>]*)>)/g;
+
+/**
+ * Render POD inline formatting codes and escape everything else.
+ *
+ * Literal text between sequences is escaped before it reaches the webview.
+ * Escaping cannot run over the finished output instead: the rendered codes are
+ * real HTML by then, so any pattern that spares them also spares prose that
+ * happens to look like a tag — `Use <angle> markers` would reach the webview as
+ * markup and its text would silently vanish from the preview.
+ */
 function renderInline(text: string): string {
-  // Process inline codes. POD allows extended delimiters (B<< >> etc.) but
-  // we handle the common single-delimiter case for practicality.
-  return (
-    text
-      // Extended double-angle delimiters first
-      .replace(/([BICLESFZX])<<\s+(.*?)\s+>>/g, (_m, code, inner) => renderInlineCode(code, inner))
-      // Single-angle delimiters
-      .replace(/([BICLESFZX])<([^>]*)>/g, (_m, code, inner) => renderInlineCode(code, inner))
-      // Finally escape any remaining bare HTML
-      .replace(/&(?!(?:[a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;')
-      .replace(/<(?![a-zA-Z/])/g, '&lt;')
-      .replace(/(?<![a-zA-Z"])>/g, '&gt;')
-  );
+  let out = '';
+  let cursor = 0;
+
+  INLINE_SEQUENCE.lastIndex = 0;
+  for (let match = INLINE_SEQUENCE.exec(text); match !== null; match = INLINE_SEQUENCE.exec(text)) {
+    out += escapeHtml(text.slice(cursor, match.index));
+    out += renderInlineCode(match[1] ?? '', match[2] ?? match[3] ?? '');
+    cursor = match.index + match[0].length;
+  }
+
+  return out + escapeHtml(text.slice(cursor));
 }
 
 function renderInlineCode(code: string, inner: string): string {
