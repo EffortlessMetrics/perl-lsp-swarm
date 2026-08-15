@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -11,6 +12,8 @@ const OUTLINE_PLACEHOLDER_RE = /<[^>\r\n]+>/y;
 const DEFAULT_STEP_DEFINITION_GLOB = '**/*.pm';
 const DEFAULT_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**}';
 const MAX_STEP_DEFINITION_FILES = 500;
+const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
+const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_MATCH_REGEX_LENGTH = 256;
 const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
@@ -46,11 +49,27 @@ interface CreateStepDefinitionArgs {
   line: number;
 }
 
+interface ExistingTarget {
+  text: string;
+  mode: number;
+}
+
+interface SafeTarget {
+  canonicalWorkspaceRoot: string;
+  targetPath: string;
+  parentPath: string;
+}
+
 export function registerGherkinStepDefinitionSupport(): vscode.Disposable[] {
   const selector: vscode.DocumentSelector = [{ language: 'gherkin' }];
 
   const provider: vscode.CodeActionProvider = {
     async provideCodeActions(document, range) {
+      // Generating a step definition writes to the workspace, so it is not
+      // offered while the workspace is untrusted.
+      if (!vscode.workspace.isTrusted) {
+        return [];
+      }
       return provideGherkinStepDefinitionActions(document, range);
     },
   };
@@ -101,7 +120,7 @@ export function buildGeneratedStepPattern(stepText: string): string {
     OUTLINE_PLACEHOLDER_RE.lastIndex = cursor;
     const placeholder = OUTLINE_PLACEHOLDER_RE.exec(stepText);
     if (placeholder && placeholder.index === cursor) {
-      pattern += '(.+)';
+      pattern += '([^\\r\\n]+)';
       cursor += placeholder[0].length;
       continue;
     }
@@ -120,8 +139,9 @@ export function buildGeneratedStepPattern(stepText: string): string {
 }
 
 export function buildGeneratedStepStub(step: GherkinStepLine, relativeFeaturePath: string): string {
+  const safeFeaturePath = sanitizeGeneratedComment(relativeFeaturePath);
   return [
-    `# Auto-generated from ${relativeFeaturePath}:${step.line + 1}`,
+    `# Auto-generated from ${safeFeaturePath}:${step.line + 1}`,
     `${step.keyword} qr/${buildGeneratedStepPattern(step.text)}/, sub {`,
     '    # TODO: implement step',
     '    return;',
@@ -290,20 +310,19 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
 
   const targetPath = suggestStepDefinitionPath(featureUri.fsPath, workspaceFolder.uri.fsPath);
   const relativeFeaturePath = vscode.workspace.asRelativePath(featureUri);
-  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
 
-  if (fs.existsSync(targetPath)) {
-    const existing = await fs.promises.readFile(targetPath, 'utf8');
-    const stub = buildGeneratedStepStub(step, relativeFeaturePath);
-    const separator = existing.trimEnd().length === 0 ? '' : '\n\n';
-    await fs.promises.writeFile(
+  try {
+    await writeGeneratedStepDefinitionFile(
+      workspaceFolder.uri.fsPath,
       targetPath,
-      `${existing.replace(/\s*$/, '')}${separator}${stub}\n`,
-      'utf8',
+      buildStepDefinitionFileContent(step, relativeFeaturePath),
+      buildGeneratedStepStub(step, relativeFeaturePath),
     );
-  } else {
-    const content = buildStepDefinitionFileContent(step, relativeFeaturePath);
-    await fs.promises.writeFile(targetPath, content, 'utf8');
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Could not write the generated step definition: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
   }
 
   const targetDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(targetPath));
@@ -323,20 +342,47 @@ async function collectWorkspaceStepDefinitionSources(
     ensureTrailingSeparator(uri.fsPath).startsWith(workspacePrefix),
   );
 
-  const sources = await Promise.all(
-    candidateFiles.map(async (uri) => {
-      const text = await fs.promises.readFile(uri.fsPath, 'utf8');
-      if (
-        !uri.fsPath.includes(`${path.sep}step_definitions${path.sep}`) &&
-        !text.includes('Test::BDD::Cucumber::StepFile')
-      ) {
-        return null;
-      }
-      return text;
-    }),
-  );
+  // Read sequentially under a global byte envelope. The previous concurrent
+  // read had no per-file or aggregate bound, so a workspace could hold the
+  // extension host open on arbitrarily large step-definition candidates.
+  const sources: string[] = [];
+  let acceptedBytes = 0;
 
-  return sources.filter((value): value is string => typeof value === 'string');
+  for (const uri of candidateFiles) {
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.lstat(uri.fsPath);
+    } catch {
+      continue;
+    }
+
+    if (!stat.isFile() || stat.size > MAX_STEP_DEFINITION_FILE_BYTES) {
+      continue;
+    }
+    if (acceptedBytes + stat.size > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      break;
+    }
+
+    let text: string;
+    try {
+      text = await fs.promises.readFile(uri.fsPath, 'utf8');
+    } catch {
+      continue;
+    }
+
+    acceptedBytes += stat.size;
+
+    if (
+      !uri.fsPath.includes(`${path.sep}step_definitions${path.sep}`) &&
+      !text.includes('Test::BDD::Cucumber::StepFile')
+    ) {
+      continue;
+    }
+
+    sources.push(text);
+  }
+
+  return sources;
 }
 
 function ensureTrailingSeparator(value: string): string {
@@ -396,4 +442,209 @@ function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
   }
 
   return !isPotentiallyExpensiveRegex(source);
+}
+
+/**
+ * Create or append a generated step definition without following a workspace
+ * symlink outside the trusted workspace root.
+ */
+export async function writeGeneratedStepDefinitionFile(
+  workspaceRoot: string,
+  targetPath: string,
+  createContent: string,
+  appendStub: string,
+): Promise<void> {
+  const safeTarget = await prepareSafeTarget(workspaceRoot, targetPath);
+  const existing = await readExistingTarget(safeTarget);
+  const nextContent = existing
+    ? `${existing.text.replace(/\s*$/, '')}${existing.text.trimEnd().length === 0 ? '' : '\n\n'}${appendStub}\n`
+    : createContent;
+
+  if (Buffer.byteLength(nextContent, 'utf8') > MAX_STEP_DEFINITION_FILE_BYTES) {
+    throw new Error('generated step definition exceeds the file-size limit');
+  }
+
+  await atomicReplaceTarget(safeTarget, nextContent, existing?.mode ?? 0o600);
+}
+
+async function prepareSafeTarget(workspaceRoot: string, targetPath: string): Promise<SafeTarget> {
+  const lexicalWorkspaceRoot = path.resolve(workspaceRoot);
+  const resolvedTarget = path.resolve(targetPath);
+  if (
+    !isPathContained(lexicalWorkspaceRoot, resolvedTarget) ||
+    resolvedTarget === lexicalWorkspaceRoot
+  ) {
+    throw new Error('generated step-definition path escapes the workspace');
+  }
+
+  const canonicalWorkspaceRoot = await fs.promises.realpath(lexicalWorkspaceRoot);
+  const parentPath = path.dirname(resolvedTarget);
+  const parentRelative = path.relative(lexicalWorkspaceRoot, parentPath);
+  const segments = parentRelative.split(path.sep).filter((segment) => segment.length > 0);
+  let current = lexicalWorkspaceRoot;
+
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.lstat(current);
+    } catch (error) {
+      if (!isNodeError(error, 'ENOENT')) {
+        throw error;
+      }
+      await fs.promises.mkdir(current);
+      stat = await fs.promises.lstat(current);
+    }
+
+    if (stat.isSymbolicLink()) {
+      throw new Error(`generated step-definition parent is a symlink: ${current}`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`generated step-definition parent is not a directory: ${current}`);
+    }
+
+    const canonicalCurrent = await fs.promises.realpath(current);
+    if (!isPathContained(canonicalWorkspaceRoot, canonicalCurrent)) {
+      throw new Error(`generated step-definition parent escapes the workspace: ${current}`);
+    }
+  }
+
+  return { canonicalWorkspaceRoot, targetPath: resolvedTarget, parentPath };
+}
+
+async function readExistingTarget(target: SafeTarget): Promise<ExistingTarget | null> {
+  let before: fs.Stats;
+  try {
+    before = await fs.promises.lstat(target.targetPath);
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) {
+      return null;
+    }
+    throw error;
+  }
+
+  if (before.isSymbolicLink()) {
+    throw new Error('generated step-definition target is a symlink');
+  }
+  if (!before.isFile()) {
+    throw new Error('generated step-definition target is not a regular file');
+  }
+  if (before.size > MAX_STEP_DEFINITION_FILE_BYTES) {
+    throw new Error('existing step-definition file exceeds the file-size limit');
+  }
+
+  const canonicalTarget = await fs.promises.realpath(target.targetPath);
+  if (!isPathContained(target.canonicalWorkspaceRoot, canonicalTarget)) {
+    throw new Error('generated step-definition target escapes the workspace');
+  }
+
+  const handle = await fs.promises.open(
+    target.targetPath,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+  );
+  try {
+    const after = await handle.stat();
+    if (!after.isFile() || !sameFileIdentity(before, after)) {
+      throw new Error('generated step-definition target changed during validation');
+    }
+    const text = await handle.readFile({ encoding: 'utf8' });
+    if (Buffer.byteLength(text, 'utf8') > MAX_STEP_DEFINITION_FILE_BYTES) {
+      throw new Error('existing step-definition file exceeds the file-size limit');
+    }
+    return { text, mode: before.mode & 0o777 };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function atomicReplaceTarget(
+  target: SafeTarget,
+  content: string,
+  mode: number,
+): Promise<void> {
+  await revalidateSafeParent(target);
+  await rejectUnsafeTargetIfPresent(target.targetPath);
+
+  const temporaryPath = path.join(
+    target.parentPath,
+    `.${path.basename(target.targetPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let handle: fs.promises.FileHandle | undefined;
+  try {
+    handle = await fs.promises.open(
+      temporaryPath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+      mode,
+    );
+    await handle.writeFile(content, { encoding: 'utf8' });
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    await revalidateSafeParent(target);
+    await rejectUnsafeTargetIfPresent(target.targetPath);
+    await fs.promises.rename(temporaryPath, target.targetPath);
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => undefined);
+    }
+    await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function revalidateSafeParent(target: SafeTarget): Promise<void> {
+  const stat = await fs.promises.lstat(target.parentPath);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error('generated step-definition parent changed during validation');
+  }
+  const canonicalParent = await fs.promises.realpath(target.parentPath);
+  if (!isPathContained(target.canonicalWorkspaceRoot, canonicalParent)) {
+    throw new Error('generated step-definition parent escapes the workspace');
+  }
+}
+
+async function rejectUnsafeTargetIfPresent(targetPath: string): Promise<void> {
+  try {
+    const stat = await fs.promises.lstat(targetPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error('generated step-definition target is a symlink');
+    }
+    if (!stat.isFile()) {
+      throw new Error('generated step-definition target is not a regular file');
+    }
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) {
+      return;
+    }
+    throw error;
+  }
+}
+
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function isPathContained(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  );
+}
+
+function sanitizeGeneratedComment(value: string): string {
+  return value.replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
+}
+
+// Deliberately structural rather than `instanceof Error`: fs rejections are
+// constructed in Node's realm and cross a module boundary before reaching
+// here, so an identity check on the Error constructor can be false for a
+// genuine ENOENT and turn "create the missing directory" into a hard failure.
+function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === code
+  );
 }
