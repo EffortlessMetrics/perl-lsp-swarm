@@ -10,7 +10,7 @@
   },
   "run": {
     "download": {
-      "name": "Download perl-lsp",
+      "name": "Download perl-dap",
       "github": {
         "owner": "EffortlessMetrics",
         "repository": "perl-lsp",
