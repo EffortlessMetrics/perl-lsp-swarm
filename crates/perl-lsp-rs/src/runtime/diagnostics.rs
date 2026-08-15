@@ -151,6 +151,14 @@ fn parse_error_base_message(error: &crate::error::ParseError) -> String {
         | crate::error::ParseError::InvalidRegex { .. }
         | crate::error::ParseError::NestingTooDeep { .. }
         | crate::error::ParseError::Cancelled => error.to_string(),
+        // `ParseError` is `#[non_exhaustive]`, so a wildcard is mandatory
+        // outside perl-parser-core. It is safe here because this match only
+        // selects message text, and `Display` is defined for every variant,
+        // present and future. Source placement deliberately does not come from
+        // this match — it comes from `resolved_diagnostic_anchor`, whose
+        // exhaustiveness is enforced inside the defining crate, so a future
+        // variant cannot silently anchor a diagnostic at byte 0.
+        _ => error.to_string(),
     }
 }
 
