@@ -10,10 +10,8 @@
 //! product layers associate the result with source/test identity and render it.
 
 pub use perl_test_facts::{
-    TapAssertion as CanonicalTapAssertion,
-    TapAssertionOutcome as CanonicalTapAssertionOutcome,
-    TapAssertionStatus as CanonicalTapAssertionStatus,
-    TapPlan as CanonicalTapPlan,
+    TapAssertion as CanonicalTapAssertion, TapAssertionOutcome as CanonicalTapAssertionOutcome,
+    TapAssertionStatus as CanonicalTapAssertionStatus, TapPlan as CanonicalTapPlan,
     TapReport as CanonicalTapReport,
 };
 
@@ -167,10 +165,8 @@ pub fn parse_tap(output: &str) -> TapReport {
 /// summary assertion. This helper attributes the contiguous nested failures to
 /// that summary. It does not claim the subtest executed in isolation.
 pub fn focus_subtest(report: &TapReport, name: &str) -> Option<SubtestFocus> {
-    let summary_index = report
-        .tests
-        .iter()
-        .position(|test| test.depth == 0 && test.description == name)?;
+    let summary_index =
+        report.tests.iter().position(|test| test.depth == 0 && test.description == name)?;
     let summary = &report.tests[summary_index];
 
     let mut inner_failed = 0;
@@ -202,12 +198,7 @@ fn project_report(report: &CanonicalTapReport) -> TapReport {
         todo: report.todo_count(),
     };
 
-    TapReport {
-        plan,
-        tests,
-        bailed_out: report.bail_out.clone(),
-        summary,
-    }
+    TapReport { plan, tests, bailed_out: report.bail_out.clone(), summary }
 }
 
 fn project_assertion(assertion: &CanonicalTapAssertion) -> TapTest {
