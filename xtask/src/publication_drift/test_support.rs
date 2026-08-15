@@ -4,8 +4,7 @@ use super::model::{
 };
 use color_eyre::eyre::{Result, eyre};
 
-pub(super) const CLEAN: &str =
-    include_str!("../../../fixtures/publication_drift/clean.json");
+pub(super) const CLEAN: &str = include_str!("../../../fixtures/publication_drift/clean.json");
 pub(super) const AUTHORITY: &[u8] =
     include_bytes!("../../../fixtures/publication_drift/publication_manifest.v1.json");
 
@@ -25,10 +24,7 @@ pub(super) fn first_difference_mut(
 
 pub(super) fn fixture_authority() -> Result<AuthoritySource> {
     let document: PublicationManifest = serde_json::from_slice(AUTHORITY)?;
-    Ok(AuthoritySource::Loaded(LoadedManifest {
-        document,
-        actual_sha256: manifest_digest(),
-    }))
+    Ok(AuthoritySource::Loaded(LoadedManifest { document, actual_sha256: manifest_digest() }))
 }
 
 pub(super) fn manifest_digest() -> String {

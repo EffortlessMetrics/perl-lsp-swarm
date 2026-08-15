@@ -14,4 +14,7 @@
 
 #![deny(unsafe_code)]
 
+/// Claude plugin/server compatibility contracts consumed by setup and support surfaces.
+pub mod claude_compat;
+
 pub use perl_lsp::*;
