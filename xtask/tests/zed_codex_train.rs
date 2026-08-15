@@ -78,6 +78,46 @@ fn set_stage_state(train: &mut Value, id: &str, state: &str) -> Result<(), Box<d
     Ok(())
 }
 
+fn dap_stages(train: &Value) -> Result<&[Value], Box<dyn Error>> {
+    train
+        .get("non_blocking_sidecars")
+        .and_then(Value::as_array)
+        .and_then(|sidecars| {
+            sidecars
+                .iter()
+                .find(|sidecar| sidecar.get("id").and_then(Value::as_str) == Some("zed_dap"))
+        })
+        .and_then(|sidecar| sidecar.get("stages"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| io::Error::other("Zed DAP sidecar lacks stages").into())
+}
+
+fn dap_stage<'a>(train: &'a Value, id: &str) -> Result<&'a Value, Box<dyn Error>> {
+    dap_stages(train)?
+        .iter()
+        .find(|stage| stage.get("id").and_then(Value::as_str) == Some(id))
+        .ok_or_else(|| io::Error::other(format!("missing DAP stage `{id}`")).into())
+}
+
+fn set_dap_stage_state(train: &mut Value, id: &str, state: &str) -> Result<(), Box<dyn Error>> {
+    train
+        .get_mut("non_blocking_sidecars")
+        .and_then(Value::as_array_mut)
+        .and_then(|sidecars| {
+            sidecars
+                .iter_mut()
+                .find(|sidecar| sidecar.get("id").and_then(Value::as_str) == Some("zed_dap"))
+        })
+        .and_then(|sidecar| sidecar.get_mut("stages"))
+        .and_then(Value::as_array_mut)
+        .and_then(|stages| {
+            stages.iter_mut().find(|stage| stage.get("id").and_then(Value::as_str) == Some(id))
+        })
+        .map(|stage| stage["state"] = Value::String(state.to_string()))
+        .ok_or_else(|| io::Error::other(format!("missing DAP stage `{id}`")).into())
+}
+
 fn merged_upstream_subject_is_accepted(
     train: &Value,
     registry: &toml::Value,
@@ -118,6 +158,71 @@ fn merged_upstream_subject_is_accepted(
         && string_field(extension, "new_version")
         && string_field(extension, "current_commit")
         && string_field(extension, "current_version")
+        && string_field(extension, "upstream_branch_containing_commit")
+        && new_commit != current_commit
+        && new_version != current_version
+        && validation
+            .and_then(|table| table.get("submodule_commit_branch_reachable"))
+            .and_then(toml::Value::as_bool)
+            == Some(true)
+        && validation
+            .and_then(|table| table.get("manifest_version_matches"))
+            .and_then(toml::Value::as_bool)
+            == Some(true))
+}
+
+fn released_dap_subject_is_accepted(
+    train: &Value,
+    registry: &toml::Value,
+) -> Result<bool, Box<dyn Error>> {
+    let dm01_complete =
+        dap_stage(train, "DM01")?.get("state").and_then(Value::as_str) == Some("complete");
+    let du01 = dap_stage(train, "DU01")?;
+    let du01_complete = du01.get("state").and_then(Value::as_str) == Some("complete");
+    let acceptance = du01
+        .get("upstream_acceptance")
+        .and_then(Value::as_object)
+        .ok_or_else(|| io::Error::other("DU01 lacks upstream_acceptance"))?;
+    let required_fields = acceptance
+        .get("required_fields")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::other("DU01 lacks required_fields"))?;
+    let required_validation = acceptance
+        .get("required_validation")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::other("DU01 lacks required_validation"))?;
+    let contract_requires = |fields: &[Value], required: &str| {
+        fields.iter().any(|field| field.as_str() == Some(required))
+    };
+    let extension = registry.get("extension").and_then(toml::Value::as_table);
+    let validation = registry.get("validation").and_then(toml::Value::as_table);
+    let string_field = |table: Option<&toml::map::Map<String, toml::Value>>, key: &str| {
+        table
+            .and_then(|table| table.get(key))
+            .and_then(toml::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    };
+    let new_commit = extension.and_then(|table| table.get("new_commit"));
+    let current_commit = extension.and_then(|table| table.get("current_commit"));
+    let new_version = extension.and_then(|table| table.get("new_version"));
+    let current_version = extension.and_then(|table| table.get("current_version"));
+
+    Ok(dm01_complete
+        && du01_complete
+        && acceptance.get("repository").and_then(Value::as_str)
+            == Some("tree-sitter-perl/zed-perl")
+        && acceptance.get("requires_changed_subject").and_then(Value::as_bool) == Some(true)
+        && acceptance.get("requires_released_build").and_then(Value::as_bool) == Some(true)
+        && contract_requires(required_fields, "extension.new_commit")
+        && contract_requires(required_fields, "extension.new_version")
+        && contract_requires(required_fields, "extension.upstream_branch_containing_commit")
+        && contract_requires(required_validation, "validation.submodule_commit_branch_reachable")
+        && contract_requires(required_validation, "validation.manifest_version_matches")
+        && contract_requires(required_validation, "validation.released_build_contains_commit")
+        && string_field(extension, "current_commit")
+        && string_field(extension, "new_commit")
+        && string_field(extension, "current_version")
+        && string_field(extension, "new_version")
         && string_field(extension, "upstream_branch_containing_commit")
         && new_commit != current_commit
         && new_version != current_version
@@ -260,7 +365,6 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
             .map(|fields| fields.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()),
         Some(BTreeSet::from([
             "validation.manifest_version_matches",
-            "validation.released_build_contains_commit",
             "validation.submodule_commit_branch_reachable",
         ]))
     );
@@ -304,7 +408,6 @@ fn p18_rejects_m01_without_merged_upstream_acceptance() -> Result<(), Box<dyn Er
         .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?;
     validation.insert("submodule_commit_branch_reachable".to_string(), toml::Value::Boolean(true));
     validation.insert("manifest_version_matches".to_string(), toml::Value::Boolean(true));
-    validation.insert("released_build_contains_commit".to_string(), toml::Value::Boolean(true));
 
     for missing_field in ["current_commit", "current_version"] {
         let mut missing_captured_subject = merged_registry.clone();
@@ -319,23 +422,69 @@ fn p18_rejects_m01_without_merged_upstream_acceptance() -> Result<(), Box<dyn Er
         );
     }
 
-    let mut missing_released_build_evidence = merged_registry.clone();
+    assert!(merged_upstream_subject_is_accepted(&train, &merged_registry)?);
+    Ok(())
+}
+
+#[test]
+fn du01_requires_released_dap_subject_evidence() -> Result<(), Box<dyn Error>> {
+    let train = load_train()?;
+    let blocked_registry = load_registry_manifest()?;
+    assert_eq!(string(dap_stage(&train, "DU01")?, "state")?, "blocked_on_external_subject");
+    assert!(!released_dap_subject_is_accepted(&train, &blocked_registry)?);
+
+    let mut complete_train = train.clone();
+    set_dap_stage_state(&mut complete_train, "DM01", "complete")?;
+    set_dap_stage_state(&mut complete_train, "DU01", "complete")?;
+
+    let mut released_registry = blocked_registry.clone();
+    let extension = released_registry
+        .get_mut("extension")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| io::Error::other("registry manifest lacks extension table"))?;
+    extension.insert(
+        "new_commit".to_string(),
+        toml::Value::String("0123456789abcdef0123456789abcdef01234567".to_string()),
+    );
+    extension.insert("new_version".to_string(), toml::Value::String("0.5.0".to_string()));
+    extension.insert(
+        "upstream_branch_containing_commit".to_string(),
+        toml::Value::String("master".to_string()),
+    );
+    let validation = released_registry
+        .get_mut("validation")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?;
+    validation.insert("submodule_commit_branch_reachable".to_string(), toml::Value::Boolean(true));
+    validation.insert("manifest_version_matches".to_string(), toml::Value::Boolean(true));
+    validation.insert("released_build_contains_commit".to_string(), toml::Value::Boolean(true));
+
+    assert!(released_dap_subject_is_accepted(&complete_train, &released_registry)?);
+
+    let mut missing_released_build_evidence = released_registry.clone();
     missing_released_build_evidence
         .get_mut("validation")
         .and_then(toml::Value::as_table_mut)
         .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?
         .remove("released_build_contains_commit");
-    assert!(!merged_upstream_subject_is_accepted(&train, &missing_released_build_evidence)?);
+    assert!(!released_dap_subject_is_accepted(&complete_train, &missing_released_build_evidence)?);
 
-    let mut false_released_build_evidence = merged_registry.clone();
+    let mut false_released_build_evidence = released_registry.clone();
     false_released_build_evidence
         .get_mut("validation")
         .and_then(toml::Value::as_table_mut)
         .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?
         .insert("released_build_contains_commit".to_string(), toml::Value::Boolean(false));
-    assert!(!merged_upstream_subject_is_accepted(&train, &false_released_build_evidence)?);
+    assert!(!released_dap_subject_is_accepted(&complete_train, &false_released_build_evidence)?);
 
-    assert!(merged_upstream_subject_is_accepted(&train, &merged_registry)?);
+    for incomplete_stage in ["DM01", "DU01"] {
+        let mut incomplete_train = complete_train.clone();
+        set_dap_stage_state(&mut incomplete_train, incomplete_stage, "blocked")?;
+        assert!(
+            !released_dap_subject_is_accepted(&incomplete_train, &released_registry)?,
+            "incomplete DAP stage `{incomplete_stage}` was accepted"
+        );
+    }
     Ok(())
 }
 
@@ -473,6 +622,19 @@ fn dap_sidecar_is_explicitly_non_blocking_and_has_manual_publication_stops()
             .and_then(|acceptance| acceptance.get("requires_released_build"))
             .and_then(Value::as_bool),
         Some(true)
+    );
+    assert_eq!(
+        dap_index["DU01"]
+            .get("upstream_acceptance")
+            .and_then(Value::as_object)
+            .and_then(|acceptance| acceptance.get("required_validation"))
+            .and_then(Value::as_array)
+            .map(|fields| fields.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()),
+        Some(BTreeSet::from([
+            "validation.manifest_version_matches",
+            "validation.released_build_contains_commit",
+            "validation.submodule_commit_branch_reachable",
+        ]))
     );
     assert_eq!(
         dap_index["D04"].get("depends_on_sidecar").and_then(Value::as_array).map(|dependencies| {
