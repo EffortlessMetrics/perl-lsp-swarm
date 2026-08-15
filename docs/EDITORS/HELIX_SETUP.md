@@ -29,6 +29,7 @@ perllsp --info
 ```bash
 cargo install perllsp --locked
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 ### From Source
 
