@@ -66,11 +66,20 @@ jobs:
         uses: ./.github/actions/setup-vscode-toolchain
 
       - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: vscode-current-source-smoke-${{ hashFiles('Cargo.lock') }}
+
+      - name: Prove exact public perllsp process contracts
+        working-directory: .
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/perl-lsp-public-process-target
+          RUST_TEST_THREADS: '1'
+        run: >-
+          cargo test -p perllsp --tests
+          --locked -- --test-threads=1
 
       - name: Build current Rust server
         id: build

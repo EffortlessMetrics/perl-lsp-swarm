@@ -1,0 +1,39 @@
+{
+  "schema_version": "zed_perllsp_changed_files.v1",
+  "status": "candidate_map_not_frozen",
+  "files": [
+    {
+      "path": "extension.toml",
+      "reason": "Register the dedicated perllsp server ID and select a valid next extension version.",
+      "required": true
+    },
+    {
+      "path": "src/perl.rs",
+      "reason": "Dispatch all three providers explicitly; resolve perllsp through binary override, worktree PATH, or checked managed assets; launch exact LSP stdio.",
+      "required": true
+    },
+    {
+      "path": "languages/perl/config.toml",
+      "reason": "Add only the reviewed Perl activation suffixes while preserving the separate POD language.",
+      "required": true
+    },
+    {
+      "path": "languages/perl/semantic_token_rules.json",
+      "reason": "Map only the custom semantic token types emitted by perllsp.",
+      "required": true
+    },
+    {
+      "path": "README.md",
+      "reason": "Document three independent provider identities, explicit selection, process resolution, configuration, target limits, and evidence boundary.",
+      "required": true
+    }
+  ],
+  "preserved_without_change": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "LICENSE",
+    "languages/pod/**",
+    "existing Perl grammar and Tree-sitter query files"
+  ],
+  "claim_boundary": "The final packet must refresh this map against the exact current upstream diff. Added or removed files invalidate the candidate map and its digest."
+}

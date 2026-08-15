@@ -49,7 +49,7 @@ jobs:
 
     steps:
       - name: Checkout exact candidate
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -73,12 +73,12 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
         with:
           tool: just
 
       - name: Cache Cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
           cache-all-crates: true
@@ -130,9 +130,19 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p target/receipts
+          set +e
           just ux-tests 2>&1 | tee target/receipts/ux-regression.log
-          test_status=${PIPESTATUS[0]}
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          test_status="${pipeline_status[0]}"
+          tee_status="${pipeline_status[1]}"
           printf '%s\n' "$test_status" > target/receipts/ux-regression.exit
+          if [ "$tee_status" -ne 0 ]; then
+            printf '%s\n' "$tee_status" > target/receipts/ux-regression.instrumentation.exit
+            printf '::error::UX regression tee failed with status %s\n' "$tee_status" >&2
+            exit "$tee_status"
+          fi
+          printf '0\n' > target/receipts/ux-regression.instrumentation.exit
           exit "$test_status"
 
       - name: Emit structured UX regression receipt
@@ -158,6 +168,11 @@ jobs:
           from pathlib import Path
 
           receipt_path = Path("target/receipts/ux-regression.json")
+          instrumentation_path = Path("target/receipts/ux-regression.instrumentation.exit")
+          if not instrumentation_path.is_file() or instrumentation_path.is_symlink():
+              raise SystemExit("UX receipt instrumentation status is missing or not a regular file")
+          if instrumentation_path.read_text(encoding="utf-8").strip() != "0":
+              raise SystemExit("UX receipt instrumentation failed")
           if not receipt_path.is_file() or receipt_path.is_symlink():
               raise SystemExit("UX receipt is missing or not a regular file")
           receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -181,6 +196,7 @@ jobs:
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
             target/receipts/ux-regression.exit
+            target/receipts/ux-regression.instrumentation.exit
             target/receipts/editor-ux/golden-editor-workload-v3.json
           if-no-files-found: warn
           retention-days: 7
@@ -196,6 +212,7 @@ jobs:
             target/receipts/ux-regression.json
             target/receipts/ux-regression.log
             target/receipts/ux-regression.exit
+            target/receipts/ux-regression.instrumentation.exit
           if-no-files-found: warn
           retention-days: 7
 
@@ -210,8 +227,9 @@ jobs:
       - name: Upload test results to Codecov without a repository secret
         if: always() && steps.harness_check.outputs.harness_available == 'true'
         continue-on-error: true
-        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
         with:
+          report_type: test_results
           files: target/test-results/ux-regression-gate-junit.xml
           fail_ci_if_error: false
 
@@ -317,7 +335,7 @@ jobs:
 
     steps:
       - name: Checkout exact candidate
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false

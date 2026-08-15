@@ -20,6 +20,7 @@ pub mod changelog;
 pub mod check;
 pub mod check_agent_context;
 pub mod check_lint_policy;
+pub mod check_naming_consistency;
 pub mod check_test_wiring;
 pub mod check_toolchain;
 pub mod check_version_sync;
@@ -37,6 +38,7 @@ pub mod ci_route;
 pub mod ci_scope;
 pub mod clean;
 pub mod command_evidence;
+#[path = "commit_checks_facade.rs"]
 pub mod commit_checks;
 pub mod compare;
 #[cfg(feature = "parser-tasks")]
@@ -112,6 +114,7 @@ pub mod parser_matrix;
 pub mod parser_ratchet;
 pub mod perl_core_harness;
 pub mod perl_kwalitee;
+pub mod policy_cadence;
 pub mod populate_book;
 pub mod pr;
 pub mod pr_close_proof;

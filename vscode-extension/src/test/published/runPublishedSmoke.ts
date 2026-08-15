@@ -22,6 +22,104 @@ function envValue(name: string): string {
   return process.env[name]?.trim() ?? '';
 }
 
+export interface CandidateBoundInstallContext {
+  source: ExtensionSource;
+  version: string;
+  vsixPath: string;
+  candidateBound: boolean;
+}
+
+export function assertCandidateBoundInstallSource({
+  source,
+  version,
+  vsixPath,
+  candidateBound,
+}: CandidateBoundInstallContext): void {
+  if (!candidateBound) {
+    return;
+  }
+  if (source === 'marketplace') {
+    throw new Error(
+      version
+        ? 'Candidate-bound installed acceptance refuses Marketplace installs because the installed extension VSIX digest cannot be observed; use source=vsix with an exact VSIX path and observed digest.'
+        : 'Candidate-bound installed acceptance refuses Marketplace latest; use source=vsix with an exact VSIX path and observed digest.',
+    );
+  }
+  if (source === 'open-vsx' && !version) {
+    throw new Error(
+      'Candidate-bound installed acceptance requires an exact Open VSX version so the downloaded VSIX can be observed and hashed.',
+    );
+  }
+  if (source === 'vsix' && !vsixPath) {
+    throw new Error(
+      'Candidate-bound installed acceptance requires PERL_LSP_PUBLISHED_VSIX_PATH for an observed VSIX artifact.',
+    );
+  }
+}
+
+export function assertCandidateBoundPlatform(platform: string, candidateBound: boolean): void {
+  if (candidateBound && platform !== 'linux') {
+    throw new Error(
+      `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
+    );
+  }
+}
+
+function smokePlatformLabel(): string {
+  switch (process.platform) {
+    case 'win32':
+      return 'windows';
+    case 'darwin':
+      return 'macos';
+    case 'linux':
+      return 'linux';
+    default:
+      return process.platform;
+  }
+}
+
+function smokeReceiptLabel(): string {
+  const label = envValue('PERL_LSP_SMOKE_SOURCE_LABEL') || 'packaged-bundle';
+  if (!/^[A-Za-z0-9_-]+$/.test(label)) {
+    throw new Error(`Smoke receipt label must be a single safe path component, got ${label}`);
+  }
+  return label;
+}
+
+function configureInstalledAcceptanceReceipt(
+  extensionTestsEnv: NodeJS.ProcessEnv,
+  receiptsRoot: string,
+): void {
+  if (process.env.PERL_LSP_PACKAGED_BUNDLE_SMOKE !== '1') {
+    return;
+  }
+
+  const candidateId = envValue('PERL_LSP_CANDIDATE_ID');
+  const artifactSetId = envValue('PERL_LSP_ARTIFACT_SET_ID');
+  const frozenProductSha = envValue('PERL_LSP_CURRENT_SOURCE_SHA');
+  const artifactManifest = envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST');
+  const candidateIdentityPresent = Boolean(
+    candidateId || artifactSetId || frozenProductSha || artifactManifest,
+  );
+  if (
+    candidateIdentityPresent &&
+    (!candidateId || !artifactSetId || !frozenProductSha || !artifactManifest)
+  ) {
+    throw new Error(
+      'Candidate-bound packaged smoke requires candidate ID, frozen product SHA, artifact-set ID, and artifact manifest together.',
+    );
+  }
+  if (candidateIdentityPresent) {
+    const label = smokeReceiptLabel();
+    extensionTestsEnv.PERL_LSP_VERIFIED_OUTPUT = path.join(
+      receiptsRoot,
+      label,
+      smokePlatformLabel(),
+      'verified_child_receipt.json',
+    );
+  }
+}
+
 function toolchainNpmVersion(): string {
   const npmUserAgent = process.env.npm_config_user_agent ?? '';
   const configuredVersion = /(?:^|\s)npm\/([^\s]+)/.exec(npmUserAgent)?.[1];
@@ -249,6 +347,23 @@ function configureCurrentSourceSmoke(
 
 async function main(): Promise<void> {
   const source = publishedSource();
+  const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
+  const candidateBound = Boolean(
+    envValue('PERL_LSP_CANDIDATE_ID') ||
+    envValue('PERL_LSP_ARTIFACT_SET_ID') ||
+    envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
+    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
+  );
+  assertCandidateBoundPlatform(
+    process.platform === 'linux' ? 'linux' : process.platform,
+    candidateBound,
+  );
+  assertCandidateBoundInstallSource({
+    source,
+    version,
+    vsixPath: envValue('PERL_LSP_PUBLISHED_VSIX_PATH'),
+    candidateBound,
+  });
   const vscodeVersion = resolveVSCodeTestVersion(process.env.PERL_LSP_VSCODE_VERSION);
   const toolchainNodeVersion = process.version;
   const toolchainNpmVersionValue = toolchainNpmVersion();
@@ -311,6 +426,7 @@ async function main(): Promise<void> {
       PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
       PERL_LSP_VSCODE_VERSION: vscodeVersion,
     };
+    configureInstalledAcceptanceReceipt(extensionTestsEnv, receiptsRoot);
     if (vsixSha256 === undefined) {
       delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;
     } else {
@@ -348,8 +464,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exit(1);
+  });
+}
