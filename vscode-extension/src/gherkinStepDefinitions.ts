@@ -16,6 +16,11 @@ const MAX_STEP_DEFINITION_FILE_BYTES = 512 * 1024;
 const MAX_STEP_DEFINITION_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_MATCH_REGEX_LENGTH = 256;
 const MAX_MATCH_STEP_TEXT_LENGTH = 512;
+// Rejecting ReDoS-shaped patterns bounds the cost of any single match, not the
+// number of matches. An accepted 16 MiB workspace can still hold hundreds of
+// thousands of individually linear-time step definitions, so the population
+// itself gets a budget. Ordinary suites are three orders of magnitude below it.
+const MAX_MATCH_ATTEMPTS = 20_000;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier, a backreference, a lookaround, or alternation. A
 // single character class
@@ -49,9 +54,17 @@ interface CreateStepDefinitionArgs {
   line: number;
 }
 
+interface TargetIdentity {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+}
+
 interface ExistingTarget {
   text: string;
   mode: number;
+  identity: TargetIdentity;
 }
 
 interface SafeTarget {
@@ -223,12 +236,22 @@ export function classifyStepDefinitionStatus(
   sources: string[],
 ): StepDefinitionStatus {
   let ambiguous = false;
+  let attempts = 0;
 
   for (const source of sources) {
     const scan = scanStepDefinitions(source);
     ambiguous = ambiguous || scan.ambiguous;
 
     for (const definition of scan.definitions) {
+      if (attempts >= MAX_MATCH_ATTEMPTS) {
+        // The population was never fully tested, so "undefined" would be a
+        // claim this scan cannot support. Report the uncertainty instead; the
+        // ambiguous path declines to generate rather than writing a stub that
+        // may duplicate an untested definition.
+        return 'ambiguous';
+      }
+      attempts += 1;
+
       const matches = testExtractedDefinition(definition, step.text);
       if (matches === true) {
         return 'defined';
@@ -329,7 +352,10 @@ async function createStepDefinitionFromFeature(args: CreateStepDefinitionArgs): 
   await vscode.window.showTextDocument(targetDocument);
 }
 
-async function collectWorkspaceStepDefinitionSources(
+// Exported for the containment proof in gherkinSecurity.test.ts: the scan
+// bounds are a security claim and need a direct seam, not one observed through
+// the code-action provider.
+export async function collectWorkspaceStepDefinitionSources(
   workspaceFolder: vscode.WorkspaceFolder,
 ): Promise<string[]> {
   const files = await vscode.workspace.findFiles(
@@ -349,40 +375,83 @@ async function collectWorkspaceStepDefinitionSources(
   let acceptedBytes = 0;
 
   for (const uri of candidateFiles) {
-    let stat: fs.Stats;
-    try {
-      stat = await fs.promises.lstat(uri.fsPath);
-    } catch {
-      continue;
-    }
-
-    if (!stat.isFile() || stat.size > MAX_STEP_DEFINITION_FILE_BYTES) {
-      continue;
-    }
-    if (acceptedBytes + stat.size > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+    if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
       break;
     }
 
-    let text: string;
-    try {
-      text = await fs.promises.readFile(uri.fsPath, 'utf8');
-    } catch {
+    const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    if (!read) {
       continue;
     }
+    if (acceptedBytes + read.byteLength > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      break;
+    }
 
-    acceptedBytes += stat.size;
+    acceptedBytes += read.byteLength;
 
     if (
       !uri.fsPath.includes(`${path.sep}step_definitions${path.sep}`) &&
-      !text.includes('Test::BDD::Cucumber::StepFile')
+      !read.text.includes('Test::BDD::Cucumber::StepFile')
     ) {
       continue;
     }
 
-    sources.push(text);
+    sources.push(read.text);
   }
 
   return sources;
+}
+
+/**
+ * Read at most `limit` bytes from a regular file, allocating no more than
+ * `limit + 1` bytes regardless of how the file changes after it is opened.
+ *
+ * Deciding on `lstat().size` and then calling `readFile` does not bound the
+ * read: a workspace process can grow or replace the file in between, and
+ * `readFile` allocates whatever is actually there. The size is therefore taken
+ * from the already-open descriptor and enforced by the read itself. Returns
+ * `null` for anything that is not a readable regular file within the limit,
+ * including a symlink, which `O_NOFOLLOW` rejects.
+ */
+async function readBoundedFile(
+  filePath: string,
+  limit: number,
+): Promise<{ text: string; byteLength: number } | null> {
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch {
+    return null;
+  }
+
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) {
+      return null;
+    }
+
+    // One byte past the limit distinguishes "exactly at the limit" from
+    // "larger than the limit" without reading the remainder of the file.
+    const buffer = Buffer.allocUnsafe(limit + 1);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, filled);
+      if (bytesRead === 0) {
+        break;
+      }
+      filled += bytesRead;
+    }
+
+    if (filled > limit) {
+      return null;
+    }
+
+    return { text: buffer.subarray(0, filled).toString('utf8'), byteLength: filled };
+  } catch {
+    return null;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 function ensureTrailingSeparator(value: string): string {
@@ -464,7 +533,12 @@ export async function writeGeneratedStepDefinitionFile(
     throw new Error('generated step definition exceeds the file-size limit');
   }
 
-  await atomicReplaceTarget(safeTarget, nextContent, existing?.mode ?? 0o600);
+  await atomicReplaceTarget(
+    safeTarget,
+    nextContent,
+    existing?.mode ?? 0o600,
+    existing?.identity ?? null,
+  );
 }
 
 async function prepareSafeTarget(workspaceRoot: string, targetPath: string): Promise<SafeTarget> {
@@ -551,7 +625,7 @@ async function readExistingTarget(target: SafeTarget): Promise<ExistingTarget | 
     if (Buffer.byteLength(text, 'utf8') > MAX_STEP_DEFINITION_FILE_BYTES) {
       throw new Error('existing step-definition file exceeds the file-size limit');
     }
-    return { text, mode: before.mode & 0o777 };
+    return { text, mode: before.mode & 0o777, identity: toTargetIdentity(after) };
   } finally {
     await handle.close();
   }
@@ -561,9 +635,10 @@ async function atomicReplaceTarget(
   target: SafeTarget,
   content: string,
   mode: number,
+  expected: TargetIdentity | null,
 ): Promise<void> {
   await revalidateSafeParent(target);
-  await rejectUnsafeTargetIfPresent(target.targetPath);
+  await assertTargetUnchanged(target.targetPath, expected);
 
   const temporaryPath = path.join(
     target.parentPath,
@@ -582,7 +657,7 @@ async function atomicReplaceTarget(
     handle = undefined;
 
     await revalidateSafeParent(target);
-    await rejectUnsafeTargetIfPresent(target.targetPath);
+    await assertTargetUnchanged(target.targetPath, expected);
     await fs.promises.rename(temporaryPath, target.targetPath);
   } finally {
     if (handle) {
@@ -603,21 +678,60 @@ async function revalidateSafeParent(target: SafeTarget): Promise<void> {
   }
 }
 
-async function rejectUnsafeTargetIfPresent(targetPath: string): Promise<void> {
+/**
+ * Refuse the rename unless the target is still exactly what the append content
+ * was derived from.
+ *
+ * `expected` is the identity observed while reading the existing file, or
+ * `null` when the write is a create. Proving only that the current path holds
+ * some regular file is not enough: an editor save or another workspace process
+ * between the read and the rename would have its bytes silently discarded, and
+ * a create would clobber a file that appeared in the meantime. This narrows
+ * that window to the interval between this check and `rename`, which POSIX
+ * gives no way to close; any change observed here aborts the write instead.
+ */
+async function assertTargetUnchanged(
+  targetPath: string,
+  expected: TargetIdentity | null,
+): Promise<void> {
+  let stat: fs.Stats;
   try {
-    const stat = await fs.promises.lstat(targetPath);
-    if (stat.isSymbolicLink()) {
-      throw new Error('generated step-definition target is a symlink');
-    }
-    if (!stat.isFile()) {
-      throw new Error('generated step-definition target is not a regular file');
-    }
+    stat = await fs.promises.lstat(targetPath);
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) {
+      if (expected) {
+        throw new Error('generated step-definition target was removed during validation');
+      }
       return;
     }
     throw error;
   }
+
+  if (stat.isSymbolicLink()) {
+    throw new Error('generated step-definition target is a symlink');
+  }
+  if (!stat.isFile()) {
+    throw new Error('generated step-definition target is not a regular file');
+  }
+  if (!expected) {
+    throw new Error('generated step-definition target appeared during validation');
+  }
+  if (!sameTargetIdentity(expected, toTargetIdentity(stat))) {
+    throw new Error('generated step-definition target changed during validation');
+  }
+}
+
+function toTargetIdentity(stat: fs.Stats): TargetIdentity {
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+}
+
+function sameTargetIdentity(left: TargetIdentity, right: TargetIdentity): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs
+  );
 }
 
 function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
