@@ -1,3 +1,5 @@
+#![cfg(feature = "current-upstream")]
+
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -123,7 +125,11 @@ fn exposes_the_pinned_query_and_node_type_surfaces() -> Result<(), Box<dyn Error
 #[test]
 fn manifest_and_lock_bind_the_exact_crates_io_subject() -> Result<(), Box<dyn Error>> {
     let manifest = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))?;
-    assert!(manifest.contains("ts-parser-perl = \"=1.2.1\""));
+    assert!(
+        manifest.contains(
+            "ts-parser-perl = { version = \"=1.2.1\", optional = true }"
+        )
+    );
     assert!(!manifest.contains("ts-parser-perl = \"1.2.1\""));
 
     let lock = fs::read_to_string(workspace_root().join("Cargo.lock"))?;
