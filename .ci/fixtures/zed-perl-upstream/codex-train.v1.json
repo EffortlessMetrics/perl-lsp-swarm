@@ -12,9 +12,9 @@
     "dap_in_scope": false
   },
   "stages": [
-    {"id":"P00","issue":7975,"phase":"static_convergence_repair","pull_request":8023,"actor":"codex","kind":"authority","state":"repair_required","depends_on":[],"external_write":false,"closes_issue":true},
-    {"id":"P01","issue":7980,"phase":"public_asset_producer","pull_request":8365,"actor":"codex","kind":"authority","state":"blocked_on_dependency","depends_on":["P00"],"external_write":false,"closes_issue":false},
-    {"id":"P02","issue":7984,"phase":"exact_source_host_driver","pull_request":8369,"actor":"codex","kind":"authority","state":"blocked_on_dependency","depends_on":["P00"],"external_write":false,"closes_issue":false},
+    {"id":"P00","issue":7975,"phase":"static_convergence_repair","pull_request":8023,"actor":"codex","kind":"authority","state":"static_substrate_complete_execution_not_proven","depends_on":[],"external_write":false,"closes_issue":true},
+    {"id":"P01","issue":7980,"phase":"public_asset_producer","pull_request":8365,"actor":"codex","kind":"authority","state":"ready_after_dependency","depends_on":["P00"],"external_write":false,"closes_issue":false},
+    {"id":"P02","issue":7984,"phase":"exact_source_host_driver","pull_request":8369,"actor":"codex","kind":"authority","state":"ready_after_dependency","depends_on":["P00"],"external_write":false,"closes_issue":false},
     {"id":"P03","issue":8647,"phase":"deterministic_fixture","pull_request":null,"actor":"codex","kind":"authority","state":"ready_after_dependency","depends_on":["P02"],"external_write":false,"closes_issue":true},
     {"id":"P04","issue":7990,"phase":"settings_behavior_authority","pull_request":8373,"actor":"codex","kind":"authority","state":"blocked_on_dependency","depends_on":["P02","P03"],"external_write":false,"closes_issue":false},
     {"id":"P05","issue":7992,"phase":"default_order_authority","pull_request":8379,"actor":"codex","kind":"authority","state":"blocked_on_dependency","depends_on":["P02","P03"],"external_write":false,"closes_issue":false},
@@ -32,7 +32,7 @@
     {"id":"P16","issue":7909,"phase":"extension_packet_freeze","pull_request":null,"actor":"codex","kind":"packet","state":"blocked_on_dependency","depends_on":["P15"],"external_write":false,"closes_issue":true},
     {"id":"P17","issue":7908,"phase":"zed_defaults_packet_freeze","pull_request":null,"actor":"codex","kind":"packet","state":"blocked_on_dependency","depends_on":["P13"],"external_write":false,"closes_issue":true},
     {"id":"M01","issue":null,"phase":"manual_extension_and_defaults_submission","pull_request":null,"actor":"maintainer","kind":"manual_checkpoint","state":"blocked_on_dependencies","depends_on":["P16","P17"],"external_write":true,"closes_issue":false},
-    {"id":"P18","issue":7910,"phase":"registry_packet_freeze","pull_request":null,"actor":"codex","kind":"packet","state":"blocked_on_external_subject","depends_on":["M01"],"external_write":false,"closes_issue":true},
+    {"id":"P18","issue":7910,"phase":"registry_packet_freeze","pull_request":null,"actor":"codex","kind":"packet","state":"blocked_on_external_subject","depends_on":["M01"],"external_write":false,"closes_issue":true,"upstream_acceptance":{"source_of_truth":[".ci/fixtures/zed-perl-upstream/registry/manifest.toml","docs/integrations/ZED_REGISTRY_SUBMISSION.md"],"repository":"tree-sitter-perl/zed-perl","required_fields":["extension.new_commit","extension.new_version","extension.upstream_branch_containing_commit"],"required_validation":["validation.submodule_commit_branch_reachable","validation.manifest_version_matches"],"requires_changed_subject":true}},
     {"id":"M02","issue":null,"phase":"manual_registry_submission_and_released_defaults","pull_request":null,"actor":"maintainer","kind":"manual_checkpoint","state":"blocked_on_dependency","depends_on":["P18"],"external_write":true,"closes_issue":false},
     {"id":"P19","issue":7912,"phase":"official_registry_public_receipt","pull_request":null,"actor":"codex_with_operator","kind":"public_evidence","state":"blocked_on_dependencies","depends_on":["P08","P10","P13","P14","C01","M02"],"external_write":false,"closes_issue":true},
     {"id":"P20","issue":8000,"phase":"public_support_projection","pull_request":null,"actor":"codex","kind":"projection","state":"blocked_on_dependencies","depends_on":["P09","P19"],"external_write":false,"closes_issue":true},

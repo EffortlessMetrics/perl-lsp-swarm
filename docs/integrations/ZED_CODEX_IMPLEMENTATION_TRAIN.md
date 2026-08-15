@@ -38,11 +38,11 @@ The identities are not aliases. Every EffortlessMetrics LSP process receipt prov
 
 ## Phase 0 — converge the static substrate
 
-### P00 — #7975 / PR #8023: repair static convergence
+### P00 — #7975 / PR #8023: static convergence landed
 
-Reconstruct the accepted unique Zed increment on current `main`, including the truthful #7898 boundary and the static extension/settings/defaults/managed/packet contracts. Run pinned Rust 1.95 formatting and the complete current Zed contract suite. No host/public claim.
+The accepted unique Zed increment is now present on current `main`, including the truthful #7898 boundary and the static extension/settings/defaults/managed/packet contracts. The authoritative convergence manifest records `static_substrate_complete_execution_not_proven`; the static contracts do not establish host or public behavior.
 
-**Immediate Codex frontier:** this is the first core train car. Do not merge descendant authority branches first.
+**Current Codex frontier:** P01, P02, and C01 may now proceed from the landed P00 substrate. Keep their existing owners and do not treat the landed static substrate as execution evidence.
 
 ## Phase 1 — implementation authorities
 
@@ -163,7 +163,7 @@ The maintainer manually submits extension/defaults work in the validated order. 
 ### P18 — #7910: freeze the official existing-`perl` registry packet
 
 **Depends on:** M01 and the actual merged upstream extension subject.  
-Refresh `zed-industries/extensions`, update only the existing `perl` identity/version/ref, bind merged upstream identity, and emit copy-ready registry material.
+Refresh `zed-industries/extensions`, update only the existing `perl` identity/version/ref, bind merged upstream identity, and emit copy-ready registry material. P18 is not accepted from M01 alone: the authoritative registry packet at `.ci/fixtures/zed-perl-upstream/registry/manifest.toml` and [the registry submission contract](ZED_REGISTRY_SUBMISSION.md) must contain a non-empty merged `tree-sitter-perl/zed-perl` commit, manifest version, and upstream branch, with branch reachability and manifest/version equality validated. The new commit and version must differ from the captured registry subject. This remains a planned/not-proven packet boundary; it performs no registry write.
 
 ### M02 — maintainer registry submission + released defaults
 
@@ -211,6 +211,12 @@ P09 ─────────────────────────�
                                                                 │
                                                         P21 #7759
 ```
+
+The prose graph retains the fixture's required fan-in edges, including `P01 -> P07`,
+`P07 -> P14`, and `P11 -> P12`, `P11 -> P13`, and `P11 -> P14`. These edges are
+dependency constraints, not ownership transfers: P07 remains the managed-route
+authority, P11 remains the exact-source receipt owner, and P14 remains the
+managed-route/recovery receipt owner.
 
 # Non-blocking Zed DAP sidecar
 

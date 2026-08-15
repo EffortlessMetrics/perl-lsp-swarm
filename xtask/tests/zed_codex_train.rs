@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 const TRAIN_PATH: &str = ".ci/fixtures/zed-perl-upstream/codex-train.v1.json";
+const REGISTRY_MANIFEST_PATH: &str = ".ci/fixtures/zed-perl-upstream/registry/manifest.toml";
+const TRAIN_DOC_PATH: &str = "docs/integrations/ZED_CODEX_IMPLEMENTATION_TRAIN.md";
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -19,6 +21,11 @@ fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
 fn load_train() -> Result<Value, Box<dyn Error>> {
     let root = repo_root()?;
     Ok(serde_json::from_slice(&fs::read(root.join(TRAIN_PATH))?)?)
+}
+
+fn load_registry_manifest() -> Result<toml::Value, Box<dyn Error>> {
+    let root = repo_root()?;
+    Ok(fs::read_to_string(root.join(REGISTRY_MANIFEST_PATH))?.parse()?)
 }
 
 fn stages(train: &Value) -> Result<&[Value], Box<dyn Error>> {
@@ -57,6 +64,62 @@ fn index_by_id<'a>(train: &'a Value) -> Result<BTreeMap<&'a str, &'a Value>, Box
         }
     }
     Ok(index)
+}
+
+fn set_stage_state(train: &mut Value, id: &str, state: &str) -> Result<(), Box<dyn Error>> {
+    let stage = train
+        .get_mut("stages")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| io::Error::other("Zed Codex train lacks mutable stages"))?
+        .iter_mut()
+        .find(|stage| stage.get("id").and_then(Value::as_str) == Some(id))
+        .ok_or_else(|| io::Error::other(format!("missing train stage `{id}`")))?;
+    stage["state"] = Value::String(state.to_string());
+    Ok(())
+}
+
+fn merged_upstream_subject_is_accepted(
+    train: &Value,
+    registry: &toml::Value,
+) -> Result<bool, Box<dyn Error>> {
+    let index = index_by_id(train)?;
+    let p18 = index.get("P18").copied().ok_or_else(|| io::Error::other("missing P18"))?;
+    let m01_complete =
+        index.get("M01").and_then(|stage| stage.get("state")).and_then(Value::as_str)
+            == Some("complete");
+    let acceptance = p18
+        .get("upstream_acceptance")
+        .and_then(Value::as_object)
+        .ok_or_else(|| io::Error::other("P18 lacks upstream_acceptance"))?;
+    let extension = registry.get("extension").and_then(toml::Value::as_table);
+    let validation = registry.get("validation").and_then(toml::Value::as_table);
+    let string_field = |table: Option<&toml::map::Map<String, toml::Value>>, key: &str| {
+        table
+            .and_then(|table| table.get(key))
+            .and_then(toml::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    };
+
+    let new_commit = extension.and_then(|table| table.get("new_commit"));
+    let current_commit = extension.and_then(|table| table.get("current_commit"));
+    let new_version = extension.and_then(|table| table.get("new_version"));
+    let current_version = extension.and_then(|table| table.get("current_version"));
+    Ok(m01_complete
+        && acceptance.get("repository").and_then(Value::as_str)
+            == Some("tree-sitter-perl/zed-perl")
+        && string_field(extension, "new_commit")
+        && string_field(extension, "new_version")
+        && string_field(extension, "upstream_branch_containing_commit")
+        && new_commit != current_commit
+        && new_version != current_version
+        && validation
+            .and_then(|table| table.get("submodule_commit_branch_reachable"))
+            .and_then(toml::Value::as_bool)
+            == Some(true)
+        && validation
+            .and_then(|table| table.get("manifest_version_matches"))
+            .and_then(toml::Value::as_bool)
+            == Some(true))
 }
 
 #[test]
@@ -153,10 +216,89 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
         index.get("P20").and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
         Some(8000)
     );
+    assert_eq!(string(index["P00"], "state")?, "static_substrate_complete_execution_not_proven");
+    assert_eq!(string(index["P01"], "state")?, "ready_after_dependency");
+    assert_eq!(string(index["P02"], "state")?, "ready_after_dependency");
+    let acceptance = index["P18"]
+        .get("upstream_acceptance")
+        .and_then(Value::as_object)
+        .ok_or_else(|| io::Error::other("P18 lacks upstream_acceptance"))?;
+    assert_eq!(acceptance.get("source_of_truth").and_then(Value::as_array).map(Vec::len), Some(2));
+    assert_eq!(
+        acceptance.get("repository").and_then(Value::as_str),
+        Some("tree-sitter-perl/zed-perl")
+    );
+    assert_eq!(
+        acceptance
+            .get("required_fields")
+            .and_then(Value::as_array)
+            .map(|fields| fields.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()),
+        Some(BTreeSet::from([
+            "extension.new_commit",
+            "extension.new_version",
+            "extension.upstream_branch_containing_commit",
+        ]))
+    );
+    assert_eq!(
+        acceptance
+            .get("required_validation")
+            .and_then(Value::as_array)
+            .map(|fields| fields.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()),
+        Some(BTreeSet::from([
+            "validation.manifest_version_matches",
+            "validation.submodule_commit_branch_reachable",
+        ]))
+    );
+    assert_eq!(acceptance.get("requires_changed_subject").and_then(Value::as_bool), Some(true));
     assert_ne!(
         index.get("P08").and_then(|stage| stage.get("phase")),
         index.get("P19").and_then(|stage| stage.get("phase"))
     );
+    Ok(())
+}
+
+#[test]
+fn p18_rejects_m01_without_a_merged_upstream_subject() -> Result<(), Box<dyn Error>> {
+    let mut train = load_train()?;
+    set_stage_state(&mut train, "M01", "complete")?;
+    let blocked_registry = load_registry_manifest()?;
+
+    assert!(!merged_upstream_subject_is_accepted(&train, &blocked_registry)?);
+
+    let mut merged_registry = blocked_registry.clone();
+    let extension = merged_registry
+        .get_mut("extension")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| io::Error::other("registry manifest lacks extension table"))?;
+    extension.insert(
+        "new_commit".to_string(),
+        toml::Value::String("0123456789abcdef0123456789abcdef01234567".to_string()),
+    );
+    extension.insert("new_version".to_string(), toml::Value::String("0.5.0".to_string()));
+    extension.insert(
+        "upstream_branch_containing_commit".to_string(),
+        toml::Value::String("master".to_string()),
+    );
+    let validation = merged_registry
+        .get_mut("validation")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?;
+    validation.insert("submodule_commit_branch_reachable".to_string(), toml::Value::Boolean(true));
+    validation.insert("manifest_version_matches".to_string(), toml::Value::Boolean(true));
+    assert!(merged_upstream_subject_is_accepted(&train, &merged_registry)?);
+    Ok(())
+}
+
+#[test]
+fn prose_dependency_edges_match_the_machine_checked_fan_in() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let prose = fs::read_to_string(root.join(TRAIN_DOC_PATH))?;
+    for (dependency, stage) in
+        [("P01", "P07"), ("P07", "P14"), ("P11", "P12"), ("P11", "P13"), ("P11", "P14")]
+    {
+        let edge = format!("`{dependency} -> {stage}`");
+        assert!(prose.contains(&edge), "prose graph lacks dependency edge {edge}");
+    }
     Ok(())
 }
 
@@ -190,8 +332,7 @@ fn support_and_closeout_cannot_precede_public_receipt() -> Result<(), Box<dyn Er
 
 #[test]
 fn dap_sidecar_is_explicitly_non_blocking_and_has_manual_publication_stops()
-    -> Result<(), Box<dyn Error>>
-{
+-> Result<(), Box<dyn Error>> {
     let train = load_train()?;
     let sidecars = train
         .get("non_blocking_sidecars")
@@ -231,10 +372,10 @@ fn dap_sidecar_is_explicitly_non_blocking_and_has_manual_publication_stops()
             "DAP sidecar issue drifted for `{id}`"
         );
 
-        for dependency in stage
-            .get("depends_on_sidecar")
-            .and_then(Value::as_array)
-            .ok_or_else(|| io::Error::other(format!("DAP stage `{id}` lacks sidecar dependencies")))?
+        for dependency in
+            stage.get("depends_on_sidecar").and_then(Value::as_array).ok_or_else(|| {
+                io::Error::other(format!("DAP stage `{id}` lacks sidecar dependencies"))
+            })?
         {
             let dependency = dependency
                 .as_str()
