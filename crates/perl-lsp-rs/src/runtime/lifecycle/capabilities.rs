@@ -434,8 +434,25 @@ impl LspServer {
                         .unwrap_or(false);
 
                     // workspace/diagnostic/refresh
+                    //
+                    // Two spellings are accepted on purpose — do not "clean this up":
+                    // - `workspace.diagnostics` (plural) is the spec key. LSP 3.17
+                    //   names it `ClientCapabilities.workspace.diagnostics?:
+                    //   DiagnosticWorkspaceClientCapabilities` (confirmed against the
+                    //   published metaModel, version 3.17.0). It is preferred here.
+                    // - `workspace.diagnostic` (singular) is a known client-side
+                    //   deviation, not a spec reading. `lsp-types` (and its
+                    //   `helix-lsp-types` fork) declare the field as
+                    //   `pub diagnostic: Option<DiagnosticWorkspaceClientCapabilities>`
+                    //   under `#[serde(rename_all = "camelCase")]` with no per-field
+                    //   rename, so real Helix and other `lsp-types`-based clients put
+                    //   `diagnostic` on the wire. Dropping it would regress them.
+                    //
+                    // The sibling `textDocument.diagnostic` *is* singular per spec,
+                    // which is the source of the confusion. See issue #9592.
                     caps.diagnostic_refresh_support = cap_val
-                        .pointer("/workspace/diagnostic/refreshSupport")
+                        .pointer("/workspace/diagnostics/refreshSupport")
+                        .or_else(|| cap_val.pointer("/workspace/diagnostic/refreshSupport"))
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
 
@@ -1991,5 +2008,61 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
         assert_eq!(server.client_capabilities.lock().prepare_support_default_behavior, 0);
+    }
+
+    /// LSP 3.17 spec key: `ClientCapabilities.workspace.diagnostics` (plural).
+    #[test]
+    fn initialize_reads_diagnostic_refresh_support_from_spec_plural_key() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "workspace": {
+                    "diagnostics": { "refreshSupport": true }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+        assert!(
+            server.client_capabilities.lock().diagnostic_refresh_support,
+            "spec-conformant `workspace.diagnostics.refreshSupport` must enable refresh"
+        );
+    }
+
+    /// `lsp-types`/`helix-lsp-types` client deviation: `workspace.diagnostic`
+    /// (singular). Accepted for compatibility, not because the spec says so.
+    #[test]
+    fn initialize_reads_diagnostic_refresh_support_from_singular_client_deviation() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "workspace": {
+                    "diagnostic": { "refreshSupport": true }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+        assert!(
+            server.client_capabilities.lock().diagnostic_refresh_support,
+            "`lsp-types`-style `workspace.diagnostic.refreshSupport` must still enable refresh"
+        );
+    }
+
+    #[test]
+    fn initialize_leaves_diagnostic_refresh_support_false_when_neither_key_present() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "workspace": { "codeLens": { "refreshSupport": true } },
+                "textDocument": { "diagnostic": { "dynamicRegistration": true } }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+        assert!(
+            !server.client_capabilities.lock().diagnostic_refresh_support,
+            "neither workspace diagnostic-refresh spelling advertised: must stay false"
+        );
     }
 }
