@@ -700,7 +700,12 @@ gates:
     # regression in an untouched crate's `tests/` directory sails through pr_fast
     # and is only caught at the merge-gate full suite. This deferral is the
     # structural reason false-confidence patterns in `tests/` went undetected.
-    command: cargo test --locked --tests {package_args}
+    # Build the server binary first: binary_version_test (and every suite
+    # that spawns perllsp) resolves the binary through PERL_LSP_BIN ->
+    # CARGO_BIN_EXE -> target/debug/perllsp -> PATH -> cargo-run fallback;
+    # without a prebuilt binary the fallback compile exceeds the test's own
+    # initialize timeout and reds the gate nondeterministically (#9464).
+    command: cargo build -p perllsp --locked && cargo test --locked --tests {package_args}
     # PR #1585 produced timeout-only receipts at 600s and 900s for the
     # perl-lsp-rs/perl-lsp-rs-core/xtask route. Keep the required --tests proof
     # bounded while matching the PR Smoke watchdog for the heavier routed path.
@@ -893,14 +898,22 @@ gates:
 
   - name: lsp_smoke
     tier: merge_gate
-    description: "Deterministic LSP scenario test (semantic definitions)"
+    description: "Deterministic LSP semantic-definition and initialize-contract tests"
     required: true
-    # Single-threaded for determinism
+    # Single-threaded for determinism. Keep the wire-shape regression focused:
+    # this target contains many API contracts, but only textDocumentSync owns
+    # the reviewed recurrence claim in #6776.
     command: >-
       env -u RUSTC_WRAPPER
       RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
       cargo test -p perl-lsp-rs --test semantic_definition --locked
       -- --test-threads=1
+      &&
+      env -u RUSTC_WRAPPER
+      RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
+      cargo test -p perl-lsp-rs --test lsp_api_contracts --locked
+      test_text_document_sync_option_keys_use_lsp_camel_case
+      -- --exact --test-threads=1
     timeout_seconds: 300
     retry_count: 1
     budgets:

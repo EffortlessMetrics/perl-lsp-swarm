@@ -261,6 +261,38 @@ fn validate_raw_shape(raw: &Value) -> Result<()> {
         }
     }
 
+    let findings = object
+        .get("findings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| color_eyre::eyre::eyre!("findings must be an array"))?;
+    for finding in findings {
+        let finding = finding
+            .as_object()
+            .ok_or_else(|| color_eyre::eyre::eyre!("findings[] must be an object"))?;
+        if !finding.contains_key("linked_issue") {
+            bail!("missing required finding field: linked_issue");
+        }
+    }
+
+    let steps = object
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or_else(|| color_eyre::eyre::eyre!("steps must be an array"))?;
+    for step in steps {
+        let step =
+            step.as_object().ok_or_else(|| color_eyre::eyre::eyre!("steps[] must be an object"))?;
+        let limitations = step
+            .get("limitations")
+            .and_then(Value::as_array)
+            .ok_or_else(|| color_eyre::eyre::eyre!("steps[].limitations must be an array"))?;
+        let mut unique = BTreeSet::new();
+        for limitation in limitations {
+            if !unique.insert(limitation.to_string()) {
+                bail!("steps[].limitations must not contain duplicate items");
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -672,6 +704,51 @@ mod tests {
             .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no issue identity"))?;
         issues.push(first);
         assert!(validate_raw_shape(&raw).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_required_finding_linked_issue_cannot_be_omitted() -> Result<()> {
+        let mut raw: serde_json::Value = serde_json::from_str(include_str!(
+            "../../fixtures/experience/first_ten_minutes/valid.json"
+        ))?;
+        raw.get_mut("findings")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|findings| findings.first_mut())
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no finding object"))?
+            .remove("linked_issue");
+        if validate_raw_shape(&raw).is_ok() {
+            return Err(color_eyre::eyre::eyre!(
+                "omitted findings[].linked_issue unexpectedly passed raw validation"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn schema_step_limitations_cannot_contain_duplicates() -> Result<()> {
+        let mut raw: serde_json::Value = serde_json::from_str(include_str!(
+            "../../fixtures/experience/first_ten_minutes/valid.json"
+        ))?;
+        let limitations = raw
+            .get_mut("steps")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|steps| steps.first_mut())
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|step| step.get_mut("limitations"))
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no step limitations"))?;
+        let first = limitations
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture has no step limitation"))?;
+        limitations.push(first);
+        if validate_raw_shape(&raw).is_ok() {
+            return Err(color_eyre::eyre::eyre!(
+                "duplicate steps[].limitations unexpectedly passed raw validation"
+            ));
+        }
         Ok(())
     }
 }
