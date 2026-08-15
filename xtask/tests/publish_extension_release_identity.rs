@@ -24,6 +24,11 @@ const JOB: &str = "github-release-asset";
 const GUARD_STEP: &str = "Verify release tag resolves to the built subject";
 const UPLOAD_STEP: &str = "Create GitHub Release asset";
 
+/// The guard's success line. Asserted present on the accept path and absent on
+/// every refuse path, so rewording it in the workflow fails loudly here rather
+/// than silently turning the refuse-path assertions into no-ops.
+const ACCEPTED_MARKER: &str = "share subject";
+
 /// The commit the VSIX was actually built from.
 const BUILT_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 /// A different commit — what an older release tag points at.
@@ -45,7 +50,7 @@ fn workflow() -> Result<Value> {
 fn steps(workflow: &Value, job_name: &str) -> Result<Vec<Value>> {
     workflow
         .get("jobs")
-        .and_then(|jobs| jobs.get(Value::String(job_name.into())))
+        .and_then(|jobs| jobs.get(job_name))
         .and_then(|job| job.get("steps"))
         .and_then(Value::as_sequence)
         .cloned()
@@ -187,6 +192,14 @@ fn mismatched_release_tag_is_refused() -> Result<()> {
 fn tag_pointing_at_the_built_commit_is_accepted() -> Result<()> {
     let output = run_guard(BUILT_SHA, &lightweight_tag(BUILT_SHA), "")?;
     assert_exit(&output, 0, "tag matching the built subject")?;
+
+    // Positive control for `ACCEPTED_MARKER`: the refuse-path tests assert this
+    // string is absent, which only means something while it is what acceptance
+    // actually prints.
+    let text = combined(&output);
+    if !text.contains(ACCEPTED_MARKER) {
+        bail!("acceptance must report the shared subject, got:\n{text}");
+    }
     Ok(())
 }
 
@@ -224,7 +237,7 @@ fn empty_tag_object_is_reported_as_unresolvable() -> Result<()> {
     assert_exit(&output, 1, "tag object without a sha")?;
 
     let text = combined(&output);
-    if text.contains("share subject") {
+    if text.contains(ACCEPTED_MARKER) {
         bail!("an unresolvable tag object must not be reported as a match:\n{text}");
     }
     if !text.contains("Could not resolve") {
