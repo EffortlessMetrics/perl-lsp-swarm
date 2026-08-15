@@ -188,7 +188,6 @@ if (require.main === module) {
 module.exports = {
   baselineForPlatform,
   classifyInventoryViolations,
-  collectPackagedFiles,
   compareInventory,
   currentSourceBundleFile,
   bundleTargetForPackagedFile,

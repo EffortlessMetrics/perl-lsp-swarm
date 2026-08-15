@@ -140,6 +140,48 @@ function writeJsonAtomic(destination, value) {
   fs.renameSync(temporary, destination);
 }
 
+/**
+ * One stage fact inside the orchestration receipt. Stages stay independent:
+ * a stage carries its own status and never inherits another stage's verdict.
+ *
+ * @typedef {{
+ *   status: string,
+ *   reason?: string,
+ *   exit_code?: number | null,
+ *   classification?: string,
+ *   behavior_safe?: boolean,
+ *   transition_state?: string,
+ *   violations?: string[],
+ *   transition?: unknown,
+ * }} SmokeStage
+ */
+
+/**
+ * @typedef {{
+ *   schema_version: string,
+ *   receipt_kind: string,
+ *   repository_sha: string,
+ *   platform: string,
+ *   architecture: string,
+ *   vscode_version: string,
+ *   source_label: string,
+ *   server: { source_sha: string | null, path: string | null, sha256: string | null },
+ *   vsix: { path: string | null, sha256: string | null },
+ *   stages: {
+ *     package_creation: SmokeStage,
+ *     package_inventory: SmokeStage,
+ *     behavioral_smoke: SmokeStage,
+ *   },
+ *   instrument_failure: string | null,
+ *   cleanup_failure: Record<string, string> | null,
+ *   overall: string,
+ * }} SmokeReceipt
+ */
+
+/**
+ * @param {string} revision
+ * @returns {SmokeReceipt}
+ */
 function initialReceipt(revision) {
   const serverExists = Boolean(serverPath && fs.existsSync(serverPath));
   return {
@@ -366,9 +408,9 @@ function interpretTransitionResult(
   };
 }
 
-function runInventoryTransition(env, expectedRevision) {
+function runInventoryTransition(env, expectedRevision, vsixPath) {
   const scriptPath = path.join(__dirname, 'check-vsix-inventory-transition.js');
-  const args = [scriptPath];
+  const args = [scriptPath, '--vsix', vsixPath];
   const explicitBase = (env.PERL_LSP_PACKAGE_BASE_SHA || '').trim();
   if (explicitBase) {
     args.push('--base', explicitBase);
@@ -380,6 +422,108 @@ function runInventoryTransition(env, expectedRevision) {
     windowsHide: true,
   });
   return interpretTransitionResult(result, expectedRevision);
+}
+
+const CHILD_RECEIPT_NAME = 'first_hour_vscode_receipt.json';
+
+function childReceiptPath() {
+  return path.join(receiptsRoot(), CHILD_RECEIPT_NAME);
+}
+
+/**
+ * A zero exit code from the extension-host smoke is not behavioral proof: a
+ * no-op script, a swallowed receipt write, or a receipt left behind by an
+ * earlier run would all produce it. Behavior only counts when the child wrote
+ * a fresh receipt that binds itself to this candidate, this VSIX, this server,
+ * and this matrix leg.
+ *
+ * @param {{
+ *   receiptFile: string,
+ *   expectedRevision: string,
+ *   expectedVsixSha256: string | null,
+ *   expectedServerSourceSha: string,
+ *   expectedVscodeVersion: string,
+ *   expectedSourceLabel: string,
+ *   readFile?: (file: string) => string,
+ *   exists?: (file: string) => boolean,
+ * }} input
+ * @returns {{ ok: true, receipt: any } | { ok: false, violations: string[] }}
+ */
+function validateChildSmokeReceipt({
+  receiptFile,
+  expectedRevision,
+  expectedVsixSha256,
+  expectedServerSourceSha,
+  expectedVscodeVersion,
+  expectedSourceLabel,
+  readFile = (file) => fs.readFileSync(file, 'utf8'),
+  exists = (file) => fs.existsSync(file),
+}) {
+  if (!exists(receiptFile)) {
+    return { ok: false, violations: ['extension-host smoke did not write a first-hour receipt'] };
+  }
+
+  let receipt;
+  try {
+    receipt = JSON.parse(readFile(receiptFile));
+  } catch (error) {
+    return {
+      ok: false,
+      violations: [
+        `first-hour receipt was not valid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ],
+    };
+  }
+
+  const violations = [];
+  const environment =
+    receipt && typeof receipt === 'object' && receipt.environment && typeof receipt.environment === 'object'
+      ? receipt.environment
+      : null;
+  if (!environment) {
+    return { ok: false, violations: ['first-hour receipt is missing its environment identity'] };
+  }
+
+  if (receipt.outcome !== 'completed') {
+    violations.push(`first-hour receipt outcome is ${JSON.stringify(receipt.outcome)}, not completed`);
+  }
+  if (!Array.isArray(receipt.failures) || receipt.failures.length > 0) {
+    violations.push('first-hour receipt reported failures');
+  }
+  if (environment.source_revision !== expectedRevision) {
+    violations.push(
+      `first-hour receipt source revision ${JSON.stringify(environment.source_revision)} is not the smoke subject`,
+    );
+  }
+  if (environment.server_source_revision !== expectedServerSourceSha) {
+    violations.push(
+      `first-hour receipt server source revision ${JSON.stringify(environment.server_source_revision)} is not the staged server`,
+    );
+  }
+  if (!expectedVsixSha256 || environment.vsix_sha256 !== expectedVsixSha256) {
+    violations.push(
+      `first-hour receipt VSIX digest ${JSON.stringify(environment.vsix_sha256)} is not the package this run created`,
+    );
+  }
+  if (environment.requested_vscode_version !== expectedVscodeVersion) {
+    violations.push(
+      `first-hour receipt VS Code version ${JSON.stringify(environment.requested_vscode_version)} is not this matrix leg`,
+    );
+  }
+  if (environment.extension_id !== 'EffortlessMetrics.perl-lsp-rs') {
+    violations.push(
+      `first-hour receipt extension id ${JSON.stringify(environment.extension_id)} is not the packaged extension`,
+    );
+  }
+  if (expectedSourceLabel && receipt.source_label && receipt.source_label !== expectedSourceLabel) {
+    violations.push(
+      `first-hour receipt source label ${JSON.stringify(receipt.source_label)} is not this run's label`,
+    );
+  }
+
+  return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
 }
 
 function exitCodeFor(overall) {
@@ -570,7 +714,7 @@ function main() {
       receipt.stages.package_creation = { status: 'pass', exit_code: 0 };
       persistReceipt(destination, receipt);
 
-      receipt.stages.package_inventory = runInventoryTransition(packageEnv, revision);
+      receipt.stages.package_inventory = runInventoryTransition(packageEnv, revision, vsixPath);
       persistReceipt(destination, receipt);
 
       if (shouldRunBehavioralSmoke(receipt.stages)) {
@@ -590,6 +734,23 @@ function main() {
           PERL_LSP_VSIX_SHA256: receipt.vsix.sha256,
         };
 
+        // Clear any receipt left by an earlier run so a stale artifact can
+        // never be mistaken for this run's behavioral evidence.
+        const childReceiptFile = childReceiptPath();
+        try {
+          fs.rmSync(childReceiptFile, { force: true });
+        } catch (error) {
+          receipt.stages.behavioral_smoke = {
+            status: 'not_proven',
+            exit_code: null,
+            reason: `unable to clear the previous first-hour receipt: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          };
+          persistReceipt(destination, receipt);
+          return;
+        }
+
         const smokeResult = runNpm(['run', 'test:published'], smokeEnv);
         if (smokeResult.error) {
           receipt.stages.behavioral_smoke = {
@@ -598,7 +759,24 @@ function main() {
             reason: smokeResult.error.message,
           };
         } else if (smokeResult.status === 0) {
-          receipt.stages.behavioral_smoke = { status: 'pass', exit_code: 0 };
+          const childReceipt = validateChildSmokeReceipt({
+            receiptFile: childReceiptFile,
+            expectedRevision: revision,
+            expectedVsixSha256: receipt.vsix.sha256,
+            expectedServerSourceSha: serverSourceRevision,
+            // Mirror the child's own default so an unset matrix version is not
+            // reported as an identity mismatch.
+            expectedVscodeVersion: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+            expectedSourceLabel: receipt.source_label,
+          });
+          receipt.stages.behavioral_smoke = childReceipt.ok
+            ? { status: 'pass', exit_code: 0 }
+            : {
+                status: 'not_proven',
+                exit_code: 0,
+                reason: 'child_receipt_did_not_bind_this_run',
+                violations: childReceipt.violations,
+              };
         } else {
           receipt.stages.behavioral_smoke = {
             status: 'failed',
@@ -641,6 +819,7 @@ module.exports = {
   interpretTransitionResult,
   receiptPath,
   shouldRunBehavioralSmoke,
+  validateChildSmokeReceipt,
   stageServerForPackage,
   writeJsonAtomic,
 };

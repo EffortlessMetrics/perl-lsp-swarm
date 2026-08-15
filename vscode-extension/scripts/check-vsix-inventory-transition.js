@@ -4,10 +4,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const AdmZip = require('adm-zip');
 const {
   bundleTargetForPackagedFile,
   classifyInventoryViolations,
-  collectPackagedFiles,
   compareInventory,
   currentSourceBundleFile,
   summarizeInventory,
@@ -31,10 +31,10 @@ const DECLARATION_KEYS = [
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 function parseArgs(argv) {
-  const result = { base: '', receipt: '' };
+  const result = { base: '', receipt: '', vsix: '' };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === '--base' || argument === '--receipt') {
+    if (argument === '--base' || argument === '--receipt' || argument === '--vsix') {
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`${argument} requires a value`);
@@ -48,33 +48,42 @@ function parseArgs(argv) {
   return result;
 }
 
-function runGitResult(args, encoding = 'utf8') {
+function runGitTextResult(args) {
   return spawnSync('git', args, {
     cwd: repoRoot,
-    encoding,
+    encoding: 'utf8',
     windowsHide: true,
   });
 }
 
-function runGit(args, allowFailure = false) {
-  const result = runGitResult(args);
+function runGitBytesResult(args) {
+  return spawnSync('git', args, {
+    cwd: repoRoot,
+    windowsHide: true,
+  });
+}
+
+function runGit(args) {
+  const result = runGitTextResult(args);
   if (result.error) {
-    if (allowFailure) {
-      return null;
-    }
     throw result.error;
   }
   if (result.status !== 0) {
-    if (allowFailure) {
-      return null;
-    }
     throw new Error(`git ${args.join(' ')} failed: ${(result.stderr || result.stdout || '').trim()}`);
   }
   return result.stdout.trim();
 }
 
+function runGitOptional(args) {
+  const result = runGitTextResult(args);
+  if (result.error || result.status !== 0) {
+    return null;
+  }
+  return result.stdout.trim();
+}
+
 function runGitRaw(args) {
-  const result = runGitResult(args, null);
+  const result = runGitBytesResult(args);
   if (result.error) {
     throw result.error;
   }
@@ -88,7 +97,7 @@ function runGitRaw(args) {
 }
 
 function resolveRevision(revision) {
-  return runGit(['rev-parse', `${revision}^{commit}`]).trim();
+  return runGit(['rev-parse', `${revision}^{commit}`]);
 }
 
 function ensureDistinctBase(candidateSha, baseSha, source = 'base revision') {
@@ -107,13 +116,13 @@ function resolveBaseRevision(candidateSha, explicitBase = '') {
     return ensureDistinctBase(candidateSha, resolveRevision(requested), 'requested base revision');
   }
 
-  const mergeBase = runGit(['merge-base', 'HEAD', 'origin/main'], true);
-  if (mergeBase && mergeBase.trim() !== candidateSha) {
-    return mergeBase.trim();
+  const mergeBase = runGitOptional(['merge-base', 'HEAD', 'origin/main']);
+  if (mergeBase && mergeBase !== candidateSha) {
+    return mergeBase;
   }
 
-  const parent = runGit(['rev-parse', 'HEAD^'], true);
-  return ensureDistinctBase(candidateSha, parent ? parent.trim() : null, 'fallback parent revision');
+  const parent = runGitOptional(['rev-parse', 'HEAD^']);
+  return ensureDistinctBase(candidateSha, parent, 'fallback parent revision');
 }
 
 function sha256Bytes(bytes) {
@@ -158,6 +167,74 @@ function assertCanonicalPackagePath(file) {
 
 function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+const VSIX_PAYLOAD_PREFIX = 'extension/';
+
+/**
+ * Read the package inventory from the exact VSIX archive that was produced,
+ * never from the mutable worktree projection that `vsce ls` reports.
+ *
+ * Packaging hooks, archive metadata, or a post-package worktree mutation can
+ * make the two disagree; only the archive is the artifact that ships.
+ *
+ * @param {string} vsixPath
+ * @returns {{
+ *   inventory: { schema_version: number, total_files: number, total_bytes: number, files: Record<string, number> },
+ *   archive_sha256: string,
+ *   metadata_entries: string[],
+ * }}
+ */
+function collectArchiveInventory(vsixPath) {
+  const archiveBytes = fs.readFileSync(vsixPath);
+
+  let zip;
+  try {
+    zip = new AdmZip(archiveBytes);
+  } catch (error) {
+    throw new Error(
+      `unable to read VSIX archive ${vsixPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  /** @type {{ file: string, bytes: number }[]} */
+  const entries = [];
+  /** @type {string[]} */
+  const metadataEntries = [];
+  const seen = new Set();
+
+  for (const entry of zip.getEntries()) {
+    const rawName = String(entry.entryName);
+    if (seen.has(rawName)) {
+      throw new Error(`VSIX archive contains a duplicate entry name: ${JSON.stringify(rawName)}`);
+    }
+    seen.add(rawName);
+    if (entry.isDirectory) {
+      continue;
+    }
+    if (!rawName.startsWith(VSIX_PAYLOAD_PREFIX)) {
+      // `[Content_Types].xml` and `extension.vsixmanifest` are vsce packaging
+      // metadata; they are outside the inventory baseline's claim but are
+      // still named in the receipt and covered by the whole-archive digest.
+      metadataEntries.push(rawName);
+      continue;
+    }
+    const file = rawName.slice(VSIX_PAYLOAD_PREFIX.length);
+    assertCanonicalPackagePath(file);
+    const bytes = entry.header.size;
+    assertNonNegativeSafeInteger(bytes, `VSIX archive entry ${JSON.stringify(rawName)} size`);
+    entries.push({ file, bytes });
+  }
+
+  if (entries.length === 0) {
+    throw new Error(`VSIX archive ${vsixPath} contains no ${VSIX_PAYLOAD_PREFIX} payload entries`);
+  }
+
+  return {
+    inventory: summarizeInventory(entries),
+    archive_sha256: sha256Bytes(archiveBytes),
+    metadata_entries: metadataEntries.sort(),
+  };
 }
 
 function validateInventoryObject(value, label = 'inventory') {
@@ -358,6 +435,17 @@ function inventoryDelta(before, after) {
   return { additions, removals, changed };
 }
 
+/**
+ * @param {{
+ *   actual: any,
+ *   baseDocument: any,
+ *   candidateDocument: any,
+ *   declaration: any,
+ *   platform: NodeJS.Platform,
+ *   arch: NodeJS.Architecture,
+ *   ignoredFiles?: string[],
+ * }} input
+ */
 function evaluateTransition({
   actual,
   baseDocument,
@@ -399,10 +487,12 @@ function evaluateTransition({
     passed = policyViolations.length === 0;
   }
 
+  // Fail closed: only explicitly behavior-safe package classes admit installed
+  // behavior. Any future classification (including `not_proven`) stays unsafe
+  // until it is deliberately listed here.
   const behaviorSafe =
     state !== 'invalid_baseline_update' &&
-    packagePolicyClass !== 'structural' &&
-    packagePolicyClass !== 'not_proven';
+    (packagePolicyClass === 'pass' || packagePolicyClass === 'size_only');
 
   return {
     state,
@@ -436,8 +526,9 @@ function safeFilePart(value) {
 }
 
 function defaultReceiptPath(candidateSha) {
-  const root = (process.env.PERL_LSP_SMOKE_RECEIPTS_DIR || '').trim()
-    ? path.resolve(process.env.PERL_LSP_SMOKE_RECEIPTS_DIR)
+  const configuredRoot = (process.env.PERL_LSP_SMOKE_RECEIPTS_DIR || '').trim();
+  const root = configuredRoot
+    ? path.resolve(configuredRoot)
     : path.join(repoRoot, 'target', 'receipts', 'vscode-smoke');
   return path.join(root, `vsix-inventory-transition-${safeFilePart(candidateSha)}.json`);
 }
@@ -447,6 +538,13 @@ function boundedError(error) {
   return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 1024) || 'unknown error';
 }
 
+/**
+ * @param {{
+ *   candidateSha?: string | null,
+ *   baseSha?: string | null,
+ *   reason: unknown,
+ * }} input
+ */
 function notProvenReceipt({ candidateSha = null, baseSha = null, reason }) {
   return {
     schema_version: 'vsix_inventory_transition.v1',
@@ -467,7 +565,9 @@ function notProvenReceipt({ candidateSha = null, baseSha = null, reason }) {
 
 function main() {
   let args = { base: '', receipt: '' };
+  /** @type {string | null} */
   let candidateSha = null;
+  /** @type {string | null} */
   let baseSha = null;
   let receiptPath = defaultReceiptPath('unknown');
 
@@ -477,7 +577,13 @@ function main() {
     receiptPath = args.receipt ? path.resolve(args.receipt) : defaultReceiptPath(candidateSha);
     baseSha = resolveBaseRevision(candidateSha, args.base);
 
-    const actual = summarizeInventory(collectPackagedFiles());
+    if (!args.vsix) {
+      throw new Error(
+        '--vsix must point to the exact package this candidate produced; the worktree projection cannot authorize a transition',
+      );
+    }
+    const archive = collectArchiveInventory(path.resolve(args.vsix));
+    const actual = archive.inventory;
     const baseDocument = readBaselineAtRevision(baseSha);
     const candidateDocument = readCandidateBaseline();
     const ignoredFiles =
@@ -501,6 +607,12 @@ function main() {
       base_sha: baseSha,
       platform: process.platform,
       architecture: process.arch,
+      measured_package: {
+        path: path.relative(repoRoot, path.resolve(args.vsix)).replaceAll('\\', '/'),
+        archive_sha256: archive.archive_sha256,
+        metadata_entries: archive.metadata_entries,
+        source: 'vsix_archive',
+      },
       inputs: {
         package_json_sha256: fileDigest('vscode-extension/package.json'),
         package_lock_sha256: fileDigest('vscode-extension/package-lock.json'),
@@ -535,6 +647,7 @@ if (require.main === module) {
 
 module.exports = {
   canonicalJson,
+  collectArchiveInventory,
   ensureDistinctBase,
   evaluateTransition,
   inventoriesEqual,

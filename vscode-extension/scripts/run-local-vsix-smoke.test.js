@@ -10,6 +10,7 @@ const {
   interpretTransitionResult,
   shouldRunBehavioralSmoke,
   stageServerForPackage,
+  validateChildSmokeReceipt,
   writeJsonAtomic,
 } = require('./run-local-vsix-smoke');
 
@@ -318,4 +319,110 @@ void test('independent cleanup failures are accumulated before receipt persisten
     vsix_deletion: 'delete failed',
     staged_server_restoration: 'restore failed',
   });
+});
+
+const CHILD_SUBJECT = {
+  expectedRevision: 'a'.repeat(40),
+  expectedVsixSha256: 'b'.repeat(64),
+  expectedServerSourceSha: 'a'.repeat(40),
+  expectedVscodeVersion: 'stable',
+  expectedSourceLabel: 'hosted-linux-current-source',
+};
+
+function childReceipt(overrides = {}, environmentOverrides = {}) {
+  return {
+    outcome: 'completed',
+    failures: [],
+    environment: {
+      source_revision: CHILD_SUBJECT.expectedRevision,
+      server_source_revision: CHILD_SUBJECT.expectedServerSourceSha,
+      vsix_sha256: CHILD_SUBJECT.expectedVsixSha256,
+      requested_vscode_version: CHILD_SUBJECT.expectedVscodeVersion,
+      extension_id: 'EffortlessMetrics.perl-lsp-rs',
+      ...environmentOverrides,
+    },
+    ...overrides,
+  };
+}
+
+function validateChild(receipt, { present = true } = {}) {
+  return validateChildSmokeReceipt({
+    ...CHILD_SUBJECT,
+    receiptFile: '/fixture/first_hour_vscode_receipt.json',
+    exists: () => present,
+    readFile: () => JSON.stringify(receipt),
+  });
+}
+
+void test('a child receipt bound to this run admits behavioral proof', () => {
+  const result = validateChild(childReceipt());
+  assert.equal(result.ok, true);
+});
+
+void test('a missing child receipt is never behavioral proof', () => {
+  const result = validateChild(childReceipt(), { present: false });
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /did not write a first-hour receipt/);
+});
+
+void test('a child receipt from another source revision is rejected', () => {
+  const result = validateChild(childReceipt({}, { source_revision: 'c'.repeat(40) }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /source revision .* is not the smoke subject/);
+});
+
+void test('a child receipt describing a different VSIX is rejected', () => {
+  const result = validateChild(childReceipt({}, { vsix_sha256: 'd'.repeat(64) }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /VSIX digest .* is not the package this run created/);
+});
+
+void test('a child receipt with no VSIX digest is rejected', () => {
+  const result = validateChild(childReceipt({}, { vsix_sha256: null }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /VSIX digest/);
+});
+
+void test('a child receipt from another server build is rejected', () => {
+  const result = validateChild(childReceipt({}, { server_source_revision: 'e'.repeat(40) }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /server source revision .* is not the staged server/);
+});
+
+void test('a child receipt from another matrix leg is rejected', () => {
+  const result = validateChild(childReceipt({}, { requested_vscode_version: '1.125.0' }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /VS Code version .* is not this matrix leg/);
+});
+
+void test('a non-terminal or failing child receipt is rejected', () => {
+  const incomplete = validateChild(childReceipt({ outcome: 'aborted' }));
+  assert.equal(incomplete.ok, false);
+  assert.match(incomplete.violations.join('; '), /outcome .* not completed/);
+
+  const failed = validateChild(childReceipt({ failures: ['activation timed out'] }));
+  assert.equal(failed.ok, false);
+  assert.match(failed.violations.join('; '), /reported failures/);
+});
+
+void test('a malformed child receipt is rejected rather than parsed optimistically', () => {
+  const result = validateChildSmokeReceipt({
+    ...CHILD_SUBJECT,
+    receiptFile: '/fixture/first_hour_vscode_receipt.json',
+    exists: () => true,
+    readFile: () => 'not json',
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /was not valid JSON/);
+});
+
+void test('a child receipt without environment identity is rejected', () => {
+  const result = validateChildSmokeReceipt({
+    ...CHILD_SUBJECT,
+    receiptFile: '/fixture/first_hour_vscode_receipt.json',
+    exists: () => true,
+    readFile: () => JSON.stringify({ outcome: 'completed', failures: [] }),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.violations.join('; '), /missing its environment identity/);
 });
