@@ -38,6 +38,12 @@ struct IncrementalEditExpectation {
     new_text: String,
 }
 
+/// Three single-line declarations surrounding one editable numeric literal.
+///
+/// Shared so every edit-family proof exercises the same before/after context.
+const THREE_DECLARATION_SOURCE: &str =
+    concat!("my $before = 1;\n", "my $value = 20;\n", "my $after = 3;\n");
+
 type TestError = Box<dyn std::error::Error>;
 type TestResult = Result<(), TestError>;
 
@@ -134,13 +140,39 @@ fn assert_ast_equivalent(incremental: &Node, fresh: &Node, context: &str) -> Tes
     Ok(())
 }
 
+/// The production path an edit family is expected to take.
+///
+/// Pinned in both directions. The incremental-path result is the only
+/// production-path oracle the pure insertion/deletion proofs have, so it must be
+/// required where it applies; and a structural reclassification must be shown to
+/// take the documented full-parse fallback rather than silently drifting into an
+/// incremental path that cannot rebuild the reclassified tree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExpectedPath {
+    /// The incremental edit path must accept the edit and return its tree.
+    Incremental,
+    /// The parser must decline the edit and fall back to a full parse.
+    FullParseFallback,
+}
+
 fn assert_incremental_outcome(
     incremental: &IncrementalParserV2,
     root: &Node,
     context: &str,
+    expected_path: ExpectedPath,
 ) -> TestResult {
-    if !incremental.used_incremental_path() {
-        return Err(format!("{context}: edit was not accepted by the incremental path").into());
+    match (expected_path, incremental.used_incremental_path()) {
+        (ExpectedPath::Incremental, false) => {
+            return Err(format!("{context}: edit was not accepted by the incremental path").into());
+        }
+        (ExpectedPath::FullParseFallback, true) => {
+            return Err(format!(
+                "{context}: edit took the incremental path, but this family is proven only \
+                 through the full-parse fallback"
+            )
+            .into());
+        }
+        _ => {}
     }
 
     let mut actual_spans = Vec::new();
@@ -216,7 +248,12 @@ fn assert_incremental_edit_matches_fresh(
     let new_source =
         apply_incremental_edit(&mut incremental, source, old_text, new_text, expectation_id)?;
     let incremental_ast = incremental.parse(&new_source)?;
-    assert_incremental_outcome(&incremental, &incremental_ast, expectation_id)?;
+    assert_incremental_outcome(
+        &incremental,
+        &incremental_ast,
+        expectation_id,
+        ExpectedPath::Incremental,
+    )?;
 
     if require_reuse {
         if incremental.reused_nodes == 0 {
@@ -291,7 +328,7 @@ fn manifest_incremental_edits_match_a_fresh_parse() -> TestResult {
 
 #[test]
 fn pure_insertion_edit_matches_fresh_parse() -> TestResult {
-    let source = concat!("my $before = 1;\n", "my $value = 20;\n", "my $after = 3;\n",);
+    let source = THREE_DECLARATION_SOURCE;
     let fresh_ast = assert_incremental_edit_matches_fresh(
         source,
         "$value = 20",
@@ -329,7 +366,7 @@ fn pure_deletion_edit_matches_fresh_parse() -> TestResult {
 
 #[test]
 fn reuse_analysis_is_scoped_to_the_last_parse() -> TestResult {
-    let source = concat!("my $before = 1;\n", "my $value = 20;\n", "my $after = 3;\n",);
+    let source = THREE_DECLARATION_SOURCE;
     let config = ReuseConfig { min_confidence: 0.2, ..ReuseConfig::default() };
     let mut incremental = IncrementalParserV2::with_reuse_config(config);
     incremental.parse(source)?;
@@ -341,7 +378,12 @@ fn reuse_analysis_is_scoped_to_the_last_parse() -> TestResult {
         "analysis_scope_edit",
     )?;
     let edited_ast = incremental.parse(&edited_source)?;
-    assert_incremental_outcome(&incremental, &edited_ast, "analysis_scope_edit")?;
+    assert_incremental_outcome(
+        &incremental,
+        &edited_ast,
+        "analysis_scope_edit",
+        ExpectedPath::Incremental,
+    )?;
     if incremental.get_last_reuse_analysis().is_none() {
         return Err("analysis_scope_edit: expected current edit analysis".into());
     }
@@ -393,6 +435,7 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
         &incremental,
         &intermediate_incremental_ast,
         "intermediate division-to-regex edit",
+        ExpectedPath::FullParseFallback,
     )?;
     let intermediate_fresh_ast = Parser::new(&with_match_operator).parse()?;
     assert_ast_equivalent(
@@ -419,7 +462,12 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
     }
 
     let incremental_ast = incremental.parse(&final_source)?;
-    assert_incremental_outcome(&incremental, &incremental_ast, "final slash-preserving edit")?;
+    assert_incremental_outcome(
+        &incremental,
+        &incremental_ast,
+        "final slash-preserving edit",
+        ExpectedPath::FullParseFallback,
+    )?;
     let fresh_ast = Parser::new(&final_source).parse()?;
     assert_ast_equivalent(
         &incremental_ast,
@@ -441,17 +489,10 @@ fn slash_reclassification_preserves_the_original_slash_tokens() -> TestResult {
 }
 
 #[test]
-fn selected_advanced_reuse_contains_only_materialized_subtrees() -> TestResult {
+fn selected_advanced_reuse_selects_only_exactly_matching_old_subtrees() -> TestResult {
     let config = ReuseConfig { min_confidence: 0.2, ..ReuseConfig::default() };
     let mut incremental = IncrementalParserV2::with_reuse_config(config);
-    let source = concat!(
-        "my $before = 1;
-",
-        "my $value = 20;
-",
-        "my $after = 3;
-",
-    );
+    let source = THREE_DECLARATION_SOURCE;
     incremental.parse(source)?;
     let edited = apply_incremental_edit(
         &mut incremental,
@@ -461,7 +502,12 @@ fn selected_advanced_reuse_contains_only_materialized_subtrees() -> TestResult {
         "materialized-advanced-reuse",
     )?;
     let incremental_ast = incremental.parse(&edited)?;
-    assert_incremental_outcome(&incremental, &incremental_ast, "materialized-advanced-reuse")?;
+    assert_incremental_outcome(
+        &incremental,
+        &incremental_ast,
+        "materialized-advanced-reuse",
+        ExpectedPath::Incremental,
+    )?;
     if !incremental.used_advanced_reuse() {
         return Err("the low-threshold proof must select materialized advanced reuse".into());
     }
@@ -469,7 +515,7 @@ fn selected_advanced_reuse_contains_only_materialized_subtrees() -> TestResult {
         .get_last_reuse_analysis()
         .ok_or("selected advanced reuse must expose its accepted analysis")?;
     if analysis.reuse_map.is_empty() {
-        return Err("selected advanced reuse must materialize at least one old subtree".into());
+        return Err("selected advanced reuse must retain at least one old subtree".into());
     }
     if analysis.reuse_map.values().any(|strategy| {
         !matches!(strategy.reuse_type, ReuseType::Direct | ReuseType::PositionShift)
@@ -477,8 +523,12 @@ fn selected_advanced_reuse_contains_only_materialized_subtrees() -> TestResult {
         return Err("selected advanced reuse exposed a non-materializable strategy".into());
     }
     if incremental.get_materialized_reuse_count() == 0 {
+        // The count is the number of old subtrees that compared exactly equal to the
+        // node they would stand in for, so a non-zero value cannot come from a
+        // counter that was incremented without a matching subtree.
         return Err(
-            "selected advanced reuse must materialize an old subtree rather than only fake counters"
+            "selected advanced reuse must select an exactly matching old subtree rather than \
+             only report counters"
                 .into(),
         );
     }
@@ -489,7 +539,10 @@ fn selected_advanced_reuse_contains_only_materialized_subtrees() -> TestResult {
 
 #[test]
 fn rejected_advanced_analysis_is_not_exposed_as_last_parse() -> TestResult {
-    let config = ReuseConfig { min_confidence: 1.1, ..ReuseConfig::default() };
+    // Stay inside the documented 0.0-1.0 range: 1.0 demands that every old node be
+    // reused, which the changed literal makes unreachable, so the advanced analysis
+    // is rejected without relying on an out-of-range configuration value.
+    let config = ReuseConfig { min_confidence: 1.0, ..ReuseConfig::default() };
     let mut incremental = IncrementalParserV2::with_reuse_config(config);
     let source = "my $x = 1;";
     incremental.parse(source)?;

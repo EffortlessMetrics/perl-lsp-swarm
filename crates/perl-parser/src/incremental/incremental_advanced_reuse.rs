@@ -446,10 +446,8 @@ impl AdvancedReuseAnalyzer {
         reuse_map: &mut HashMap<usize, ReuseStrategy>,
         config: &ReuseConfig,
     ) {
-        let mut used_target_positions: HashSet<usize> = reuse_map
-            .values()
-            .map(|strategy| strategy.target_position)
-            .collect();
+        let mut used_target_positions: HashSet<usize> =
+            reuse_map.values().map(|strategy| strategy.target_position).collect();
 
         for (old_pos, old_info) in &old_analysis.node_info {
             if reuse_map.contains_key(old_pos) {
@@ -475,8 +473,7 @@ impl AdvancedReuseAnalyzer {
                                     target_position: *new_pos,
                                     reuse_type: ReuseType::ContentUpdate,
                                     confidence_score: confidence,
-                                    position_adjustment: (*new_pos as isize)
-                                        - (*old_pos as isize),
+                                    position_adjustment: (*new_pos as isize) - (*old_pos as isize),
                                 },
                             );
                             used_target_positions.insert(*new_pos);
@@ -497,10 +494,8 @@ impl AdvancedReuseAnalyzer {
         reuse_map: &mut HashMap<usize, ReuseStrategy>,
         config: &ReuseConfig,
     ) {
-        let mut used_target_positions: HashSet<usize> = reuse_map
-            .values()
-            .map(|strategy| strategy.target_position)
-            .collect();
+        let mut used_target_positions: HashSet<usize> =
+            reuse_map.values().map(|strategy| strategy.target_position).collect();
 
         // This is the most sophisticated matching - look for structural patterns
         // even when exact hashes don't match
@@ -543,8 +538,7 @@ impl AdvancedReuseAnalyzer {
                             target_position: best_pos,
                             reuse_type: ReuseType::StructuralEquivalent,
                             confidence_score: confidence,
-                            position_adjustment: (best_pos as isize)
-                                - (*old_pos as isize),
+                            position_adjustment: (best_pos as isize) - (*old_pos as isize),
                         },
                     );
                     used_target_positions.insert(best_pos);

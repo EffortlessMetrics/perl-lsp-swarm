@@ -448,7 +448,17 @@ impl IncrementalParserV2 {
         (materialized_map, replacements)
     }
 
-    fn find_analyzed_node_at_start<'a>(node: &'a Node, start: usize) -> Option<&'a Node> {
+    /// Resolve the node the analyzer keyed at byte offset `start`.
+    ///
+    /// INVARIANT: this traversal must mirror
+    /// `AdvancedReuseAnalyzer::analyze_node_recursive`. That function keys its
+    /// `TreeAnalysis` entries by `node.location.start`, so when a parent and its
+    /// first child share a start offset the later insertion wins. This lookup
+    /// reproduces that by visiting children first, in reverse order, before the
+    /// node itself. If either traversal order changes, the two disagree, the
+    /// exact-equality check in `collect_materializable_reuse` silently rejects
+    /// every candidate, and reuse drops to zero with no test failure.
+    fn find_analyzed_node_at_start(node: &Node, start: usize) -> Option<&Node> {
         match &node.kind {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
                 for statement in statements.iter().rev() {
@@ -512,86 +522,6 @@ impl IncrementalParserV2 {
         }
 
         (node.location.start == start).then_some(node)
-    }
-
-    fn materialize_advanced_reuse_tree(
-        &mut self,
-        new_node: &Node,
-        replacements: &HashMap<usize, Vec<(Node, Node)>>,
-    ) -> Node {
-        if let Some(candidates) = replacements.get(&new_node.location.start)
-            && let Some((_, replacement)) = candidates.iter().find(|(target, _)| target == new_node)
-        {
-            self.materialized_reuse_nodes += 1;
-            return replacement.clone();
-        }
-
-        let kind = match &new_node.kind {
-            NodeKind::Program { statements } => NodeKind::Program {
-                statements: statements
-                    .iter()
-                    .map(|statement| self.materialize_advanced_reuse_tree(statement, replacements))
-                    .collect(),
-            },
-            NodeKind::Block { statements } => NodeKind::Block {
-                statements: statements
-                    .iter()
-                    .map(|statement| self.materialize_advanced_reuse_tree(statement, replacements))
-                    .collect(),
-            },
-            NodeKind::VariableDeclaration { declarator, variable, attributes, initializer } => {
-                NodeKind::VariableDeclaration {
-                    declarator: declarator.clone(),
-                    variable: Box::new(
-                        self.materialize_advanced_reuse_tree(variable, replacements),
-                    ),
-                    attributes: attributes.clone(),
-                    initializer: initializer.as_ref().map(|initializer| {
-                        Box::new(self.materialize_advanced_reuse_tree(initializer, replacements))
-                    }),
-                }
-            }
-            NodeKind::Binary { op, left, right } => NodeKind::Binary {
-                op: op.clone(),
-                left: Box::new(self.materialize_advanced_reuse_tree(left, replacements)),
-                right: Box::new(self.materialize_advanced_reuse_tree(right, replacements)),
-            },
-            NodeKind::Unary { op, operand } => NodeKind::Unary {
-                op: op.clone(),
-                operand: Box::new(self.materialize_advanced_reuse_tree(operand, replacements)),
-            },
-            NodeKind::FunctionCall { name, args } => NodeKind::FunctionCall {
-                name: name.clone(),
-                args: args
-                    .iter()
-                    .map(|argument| self.materialize_advanced_reuse_tree(argument, replacements))
-                    .collect(),
-            },
-            NodeKind::If {
-                condition, then_branch, elsif_branches, else_branch, keyword, ..
-            } => NodeKind::If {
-                condition: Box::new(self.materialize_advanced_reuse_tree(condition, replacements)),
-                then_branch: Box::new(
-                    self.materialize_advanced_reuse_tree(then_branch, replacements),
-                ),
-                elsif_branches: elsif_branches
-                    .iter()
-                    .map(|(condition, branch)| {
-                        (
-                            Box::new(self.materialize_advanced_reuse_tree(condition, replacements)),
-                            Box::new(self.materialize_advanced_reuse_tree(branch, replacements)),
-                        )
-                    })
-                    .collect(),
-                else_branch: else_branch.as_ref().map(|branch| {
-                    Box::new(self.materialize_advanced_reuse_tree(branch, replacements))
-                }),
-                keyword: keyword.clone(),
-            },
-            _ => new_node.kind.clone(),
-        };
-
-        Node::new(kind, new_node.location)
     }
 
     fn is_simple_value_edit(&self, tree: &IncrementalTree) -> bool {
@@ -1187,7 +1117,24 @@ impl IncrementalParserV2 {
 
     fn is_node_affected(&self, node: &Node) -> bool {
         let node_range = Range::from(node.location);
-        self.pending_edits.affects_range(&node_range)
+        if self.pending_edits.affects_range(&node_range) {
+            return true;
+        }
+
+        // `Edit::overlaps_range` requires a strict interior overlap
+        // (`start < old_end_byte && end > start_byte`). A pure insertion has an
+        // empty old range, so an insertion landing exactly on a node boundary
+        // reports no overlap even though the inserted text becomes part of that
+        // node's source text. Without this window a boundary insertion leaves the
+        // node's cached content stale (for example typing a digit at the end of a
+        // numeric literal), so the incremental tree diverges from a fresh parse.
+        // `EditSet::affected_ranges` already widens pure insertions for the same
+        // reason; this keeps the two invalidation paths consistent.
+        self.pending_edits.edits().iter().any(|edit| {
+            edit.start_byte == edit.old_end_byte
+                && edit.start_byte >= node.location.start
+                && edit.start_byte <= node.location.end
+        })
     }
 
     fn clone_with_shifted_positions(&self, node: &Node, shift: isize) -> Node {
@@ -1275,68 +1222,32 @@ impl IncrementalParserV2 {
         self.reparsed_nodes = reparsed;
     }
 
+    /// Classify every node of the produced tree as reused or reparsed.
+    ///
+    /// The traversal walks the canonical [`Node::children`] surface so that
+    /// `reused + reparsed` always reconciles to the produced tree's node count.
+    /// A per-kind traversal cannot hold that invariant: any node kind it does not
+    /// descend into contributes a single count for an entire subtree, which
+    /// leaves the public reuse counters unable to describe the tree they report on.
     fn analyze_reuse(&self, old_node: &Node, new_node: &Node) -> (usize, usize) {
-        // Check if nodes are structurally equivalent
-        match (&old_node.kind, &new_node.kind) {
-            (
-                NodeKind::Program { statements: old_stmts },
-                NodeKind::Program { statements: new_stmts },
-            ) => {
-                let mut reused = 1; // Program node itself
-                let mut reparsed = 0;
+        let (mut reused, mut reparsed) =
+            if self.nodes_match(old_node, new_node) { (1, 0) } else { (0, 1) };
 
-                for (old_stmt, new_stmt) in old_stmts.iter().zip(new_stmts.iter()) {
-                    let (r, p) = self.analyze_reuse(old_stmt, new_stmt);
-                    reused += r;
-                    reparsed += p;
+        let old_children = old_node.children();
+        let new_children = new_node.children();
+        for (index, new_child) in new_children.iter().enumerate() {
+            match old_children.get(index) {
+                Some(old_child) => {
+                    let (child_reused, child_reparsed) = self.analyze_reuse(old_child, new_child);
+                    reused += child_reused;
+                    reparsed += child_reparsed;
                 }
-
-                (reused, reparsed)
-            }
-            (
-                NodeKind::VariableDeclaration { variable: old_var, initializer: old_init, .. },
-                NodeKind::VariableDeclaration { variable: new_var, initializer: new_init, .. },
-            ) => {
-                let mut reused = 1; // VarDecl itself
-                let mut reparsed = 0;
-
-                let (r, p) = self.analyze_reuse(old_var, new_var);
-                reused += r;
-                reparsed += p;
-
-                if let (Some(old_i), Some(new_i)) = (old_init, new_init) {
-                    let (r, p) = self.analyze_reuse(old_i, new_i);
-                    reused += r;
-                    reparsed += p;
-                }
-
-                (reused, reparsed)
-            }
-            (NodeKind::Number { value: old_val }, NodeKind::Number { value: new_val }) => {
-                if old_val != new_val {
-                    (0, 1) // Value changed - reparsed
-                } else {
-                    (1, 0) // Value same - could have been reused
-                }
-            }
-            (
-                NodeKind::Variable { sigil: old_s, name: old_n },
-                NodeKind::Variable { sigil: new_s, name: new_n },
-            ) => {
-                if old_s == new_s && old_n == new_n {
-                    (1, 0) // Reused
-                } else {
-                    (0, 1) // Reparsed
-                }
-            }
-            _ => {
-                if self.nodes_match(old_node, new_node) {
-                    (1, 0)
-                } else {
-                    (0, 1)
-                }
+                // A produced child with no positional counterpart is new work.
+                None => reparsed += self.count_nodes(new_child),
             }
         }
+
+        (reused, reparsed)
     }
 
     /// Check if two nodes are structurally equivalent for reuse purposes
@@ -1423,48 +1334,12 @@ impl IncrementalParserV2 {
         }
     }
 
+    /// Count every node of `node`'s subtree over the canonical child surface.
+    ///
+    /// This must stay canonical: the reuse counters are reconciled against it,
+    /// and a per-kind traversal would silently omit whole subtrees.
     fn count_nodes(&self, node: &Node) -> usize {
-        let mut count = 1;
-
-        match &node.kind {
-            NodeKind::Program { statements } | NodeKind::Block { statements } => {
-                for stmt in statements {
-                    count += self.count_nodes(stmt);
-                }
-            }
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                count += self.count_nodes(variable);
-                if let Some(init) = initializer {
-                    count += self.count_nodes(init);
-                }
-            }
-            NodeKind::Binary { left, right, .. } => {
-                count += self.count_nodes(left);
-                count += self.count_nodes(right);
-            }
-            NodeKind::Unary { operand, .. } => {
-                count += self.count_nodes(operand);
-            }
-            NodeKind::FunctionCall { args, .. } => {
-                for arg in args {
-                    count += self.count_nodes(arg);
-                }
-            }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                count += self.count_nodes(condition);
-                count += self.count_nodes(then_branch);
-                for (cond, branch) in elsif_branches {
-                    count += self.count_nodes(cond);
-                    count += self.count_nodes(branch);
-                }
-                if let Some(branch) = else_branch {
-                    count += self.count_nodes(branch);
-                }
-            }
-            _ => {}
-        }
-
-        count
+        1 + node.children().into_iter().map(|child| self.count_nodes(child)).sum::<usize>()
     }
 }
 
@@ -1564,7 +1439,7 @@ mod tests {
     }
 
     #[test]
-    fn advanced_reuse_materializes_only_exact_old_subtrees() {
+    fn advanced_reuse_selects_only_exact_old_subtrees() {
         let mut parser = IncrementalParserV2::new();
         let location = |start, end| SourceLocation { start, end };
         let old_tree = Node::new(
@@ -1614,8 +1489,14 @@ mod tests {
             Some(ReuseType::Direct)
         ));
         assert!(!materialized_map.contains_key(&3));
-        assert_eq!(parser.materialize_advanced_reuse_tree(&new_tree, &replacements), new_tree);
-        assert_eq!(parser.get_materialized_reuse_count(), 1);
+
+        // Each recorded replacement must be an exact clone of the produced node it
+        // would stand in for, which is what makes the selection safe to report.
+        let selected: Vec<&(Node, Node)> = replacements.values().flatten().collect();
+        assert_eq!(selected.len(), 1);
+        let (produced, replacement) = selected[0];
+        assert_eq!(produced, replacement);
+        assert_eq!(replacements.values().map(Vec::len).sum::<usize>(), 1);
     }
 
     #[test]

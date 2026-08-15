@@ -8,9 +8,7 @@ use super::incremental_advanced_reuse_engine as engine;
 use perl_parser_core::{ast::Node, edit::EditSet};
 use std::collections::HashMap;
 
-pub use engine::{
-    ReuseAnalysisResult, ReuseAnalysisStats, ReuseConfig, ReuseStrategy, ReuseType,
-};
+pub use engine::{ReuseAnalysisResult, ReuseAnalysisStats, ReuseConfig, ReuseStrategy, ReuseType};
 
 /// Advanced reuse analyzer with canonical whole-tree metrics.
 #[derive(Debug)]
@@ -25,20 +23,14 @@ impl AdvancedReuseAnalyzer {
     pub fn new() -> Self {
         let inner = engine::AdvancedReuseAnalyzer::new();
         let analysis_stats = inner.analysis_stats.clone();
-        Self {
-            inner,
-            analysis_stats,
-        }
+        Self { inner, analysis_stats }
     }
 
     /// Create an analyzer with a caller-supplied reuse configuration.
     pub fn with_config(config: ReuseConfig) -> Self {
         let inner = engine::AdvancedReuseAnalyzer::with_config(config);
         let analysis_stats = inner.analysis_stats.clone();
-        Self {
-            inner,
-            analysis_stats,
-        }
+        Self { inner, analysis_stats }
     }
 
     /// Analyze reuse opportunities and report totals for the complete ASTs.
@@ -49,9 +41,7 @@ impl AdvancedReuseAnalyzer {
         edits: &EditSet,
         config: &ReuseConfig,
     ) -> ReuseAnalysisResult {
-        let mut result = self
-            .inner
-            .analyze_reuse_opportunities(old_tree, new_tree, edits, config);
+        let mut result = self.inner.analyze_reuse_opportunities(old_tree, new_tree, edits, config);
         self.analysis_stats = result.analysis_stats.clone();
 
         result.total_old_nodes = canonical_node_count(old_tree);
@@ -78,13 +68,7 @@ impl AdvancedReuseAnalyzer {
         reuse_type: ReuseType,
         confidence: f64,
     ) -> bool {
-        self.inner.try_register_match(
-            reuse_map,
-            old_pos,
-            new_pos,
-            reuse_type,
-            confidence,
-        )
+        self.inner.try_register_match(reuse_map, old_pos, new_pos, reuse_type, confidence)
     }
 }
 
@@ -95,11 +79,7 @@ impl Default for AdvancedReuseAnalyzer {
 }
 
 fn canonical_node_count(node: &Node) -> usize {
-    1 + node
-        .children()
-        .into_iter()
-        .map(canonical_node_count)
-        .sum::<usize>()
+    1 + node.children().into_iter().map(canonical_node_count).sum::<usize>()
 }
 
 #[cfg(test)]
@@ -110,21 +90,15 @@ mod tests {
     #[test]
     fn public_totals_include_children_of_every_node_kind() {
         let value = Node::new(
-            NodeKind::Number {
-                value: "1".to_string(),
-            },
+            NodeKind::Number { value: "1".to_string() },
             SourceLocation { start: 7, end: 8 },
         );
         let return_statement = Node::new(
-            NodeKind::Return {
-                value: Some(Box::new(value)),
-            },
+            NodeKind::Return { value: Some(Box::new(value)) },
             SourceLocation { start: 0, end: 8 },
         );
         let tree = Node::new(
-            NodeKind::Program {
-                statements: vec![return_statement],
-            },
+            NodeKind::Program { statements: vec![return_statement] },
             SourceLocation { start: 0, end: 8 },
         );
 
@@ -146,15 +120,11 @@ mod tests {
             NodeKind::Program {
                 statements: vec![
                     Node::new(
-                        NodeKind::Number {
-                            value: "1".to_string(),
-                        },
+                        NodeKind::Number { value: "1".to_string() },
                         SourceLocation { start: 1, end: 2 },
                     ),
                     Node::new(
-                        NodeKind::Number {
-                            value: "2".to_string(),
-                        },
+                        NodeKind::Number { value: "2".to_string() },
                         SourceLocation { start: 10, end: 11 },
                     ),
                 ],
@@ -165,15 +135,11 @@ mod tests {
             NodeKind::Program {
                 statements: vec![
                     Node::new(
-                        NodeKind::Number {
-                            value: "3".to_string(),
-                        },
+                        NodeKind::Number { value: "3".to_string() },
                         SourceLocation { start: 1, end: 2 },
                     ),
                     Node::new(
-                        NodeKind::Number {
-                            value: "4".to_string(),
-                        },
+                        NodeKind::Number { value: "4".to_string() },
                         SourceLocation { start: 10, end: 11 },
                     ),
                 ],
