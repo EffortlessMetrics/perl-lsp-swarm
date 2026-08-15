@@ -606,6 +606,121 @@ mod tests {
         Ok(())
     }
 
+    /// ripr seam `238b96ead57bf174`: after shutdown, `method != "exit"` is rejected.
+    #[test]
+    fn ripr_seam_proof_route_request_after_shutdown_rejects_non_exit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.shutdown_received.store(true, Ordering::Release);
+
+        let routed = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(77081)),
+                method: "textDocument/hover".to_string(),
+                params: None,
+            },
+            Some(json!(77081)),
+            true,
+        );
+
+        let RoutedResponse::Handler { result, .. } = routed else {
+            return Err("post-shutdown non-exit route must return a Handler response".into());
+        };
+        let error = result.err().ok_or("post-shutdown non-exit must be InvalidRequest")?;
+        assert_eq!(error.code, -32600, "exact InvalidRequest for method != \"exit\"");
+        assert!(
+            error.message.contains("shutdown"),
+            "rejection must name the post-shutdown gate: {}",
+            error.message
+        );
+        Ok(())
+    }
+
+    /// ripr seam `238e98ead57e2ab1`: `method != "shutdown"` is required for the
+    /// post-shutdown reject — `shutdown` itself must still reach the handler.
+    #[test]
+    fn ripr_seam_proof_route_request_shutdown_bypasses_post_shutdown_gate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.shutdown_received.store(true, Ordering::Release);
+
+        let routed = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(77082)),
+                method: "shutdown".to_string(),
+                params: None,
+            },
+            Some(json!(77082)),
+            true,
+        );
+
+        let RoutedResponse::Handler { result, .. } = routed else {
+            return Err("shutdown must route to the lifecycle handler after shutdown flag".into());
+        };
+        let error = result.err().ok_or("second shutdown must be InvalidRequest from handler")?;
+        assert_eq!(error.code, -32600);
+        assert!(
+            error.message.contains("only be sent once"),
+            "must be the handler idempotence error, not the post-shutdown gate: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("Server has been shutdown"),
+            "method == \"shutdown\" must bypass the post-shutdown early reject"
+        );
+        Ok(())
+    }
+
+    /// ripr seam `fe813eac7a1c99cf`: `!initialize_requested && method != "shutdown"`.
+    #[test]
+    fn ripr_seam_proof_route_request_before_initialize_rejects_non_shutdown()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        assert!(
+            !server.initialize_requested.load(Ordering::Acquire),
+            "fresh server must start with initialize_requested == false"
+        );
+
+        let rejected = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(77083)),
+                method: "textDocument/hover".to_string(),
+                params: None,
+            },
+            Some(json!(77083)),
+            true,
+        );
+        let RoutedResponse::Handler { result, .. } = rejected else {
+            return Err("pre-initialize non-shutdown must return a Handler response".into());
+        };
+        let error =
+            result.err().ok_or("pre-initialize non-shutdown must be ServerNotInitialized")?;
+        assert_eq!(error.code, -32002, "exact ServerNotInitialized (-32002)");
+
+        let shutdown = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Integer(77084)),
+                method: "shutdown".to_string(),
+                params: None,
+            },
+            Some(json!(77084)),
+            true,
+        );
+        let RoutedResponse::Handler { result, .. } = shutdown else {
+            return Err("pre-initialize shutdown must reach the lifecycle handler".into());
+        };
+        assert_eq!(
+            result.map_err(|e| format!("first shutdown must succeed: {e:?}"))?,
+            Some(json!(null)),
+            "method == \"shutdown\" must bypass the pre-initialize reject"
+        );
+        Ok(())
+    }
+
     fn handler_result(
         routed: RoutedResponse,
         method: &str,
