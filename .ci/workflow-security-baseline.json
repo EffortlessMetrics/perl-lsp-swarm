@@ -30,118 +30,6 @@
       "rule": "pr_secret_reference"
     },
     {
-      "evidence": "- **Release**: ${{ steps.release.outputs.tag }}",
-      "fingerprint": "0e2e825a69838fe5dcf6a8b78a9182d3e5b6a1d6c747c6ec35a085d3a4fbc907",
-      "line": 111,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "- **Release**: ${{ steps.release.outputs.tag }}",
-      "fingerprint": "d8144d8530ab10ba907d0ec38681c4bdf077e1c260100b2de2094ebddac6e85e",
-      "line": 319,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "- **PR**: ${{ steps.cpr.outputs.pull-request-url }}",
-      "fingerprint": "abbb15294b90a8bb7fd43f9a9ce87b068fc905ac7d10d1da0628846c4bd76550",
-      "line": 321,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "- **Channel**: owned tap (${HOMEBREW_TAP_NAME})",
-      "fingerprint": "de02b4bd7dc801f7656c12ef2766e3d35058f2049e60101bd9f32b44aa156a4f",
-      "line": 108,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **Repository**: ${HOMEBREW_TAP_REPOSITORY}",
-      "fingerprint": "599d698a94df04e9edf7fe745ed1601c9b24347b59b8c699852bff9e36c5d3f5",
-      "line": 109,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **Formula**: ${FORMULA_NAME}",
-      "fingerprint": "97721409de0dc214f8104ed72e2c45e04ee4f8588c6cd051f97bb3b9361a329a",
-      "line": 110,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **Release**: ${{ steps.release.outputs.tag }}",
-      "fingerprint": "831aa99fccbe724da5a18182cffb31d8ef3647851e49dd6883cbc167593f48d7",
-      "line": 111,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **Reason**: prerelease; rerun manually with `include_prerelease=true` to bump it.",
-      "fingerprint": "c854ab2cf1ec39127642d1cc4bfc5e6cb5e594573e5d3080b28ae5b1550b05f4",
-      "line": 112,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **Channel**: owned tap (${HOMEBREW_TAP_NAME})",
-      "fingerprint": "3e0d7bc2bcebb5273060078cedc31d83b2cd23a57cf5b4d49573d99e125e91f9",
-      "line": 316,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **Repository**: ${HOMEBREW_TAP_REPOSITORY}",
-      "fingerprint": "161f1bebbdb68402f1278522ef36de77f3f62d3d14cd4e13b29adcf26262e07b",
-      "line": 317,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **Formula**: ${FORMULA_NAME}",
-      "fingerprint": "d90943f8353fb7afdb7029fc979cf402f063b80ecdf399467498a48c585319c5",
-      "line": 318,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **Release**: ${{ steps.release.outputs.tag }}",
-      "fingerprint": "cfbfd72866cf98194df3fdc2d9417234f31ca028e859da3556e2dc16e6f71d11",
-      "line": 319,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **Install**: \\`brew install ${HOMEBREW_TAP_NAME}/${FORMULA_NAME}\\`",
-      "fingerprint": "d5aaeb78cfb6b0f72026254291738f4d5c6e9034d23d21f91fda6a7f594997ed",
-      "line": 320,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
-      "evidence": "- **PR**: ${{ steps.cpr.outputs.pull-request-url }}",
-      "fingerprint": "6de58ceb8b3e54d53ca07087d3516c6cb77e49cfa5ffe02cc68be61213a1eacd",
-      "line": 321,
-      "message": "security-sensitive YAML indirection is not accepted by the ratchet",
-      "path": ".github/workflows/brew-bump.yml",
-      "rule": "unsupported_security_yaml_indirection"
-    },
-    {
       "evidence": "base=\"${{ github.event.pull_request.base.sha }}\"",
       "fingerprint": "e7db7c63af3d70b6b9437553fd7eb3014eedfb87898995b5047b0b8c95cb5cd7",
       "line": 81,
@@ -152,7 +40,7 @@
     {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "aee7fad4ccdea8f94f49c0401a88561494480138895885be2237173b1e654c85",
-      "line": 89,
+      "line": 92,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-gate-self-tests.yml",
       "rule": "expression_in_run_source"
@@ -160,7 +48,7 @@
     {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "17ad72b7d4c0e4e33fa3e053c2e9f02123d9ecdcac067368a35f45f382de6c9d",
-      "line": 118,
+      "line": 121,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-gate-self-tests.yml",
       "rule": "expression_in_run_source"
@@ -168,7 +56,7 @@
     {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "82d22bc5e4dd0eec0ccf9d79a95dcdf559f7411580234d78bffb865e8845dd77",
-      "line": 143,
+      "line": 146,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-gate-self-tests.yml",
       "rule": "expression_in_run_source"
@@ -176,7 +64,7 @@
     {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "dfb4e76b4eaa1fd203ae3b44f4dee543c0474d30ce7c26a8313d13552ae2f140",
-      "line": 168,
+      "line": 225,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-gate-self-tests.yml",
       "rule": "expression_in_run_source"
@@ -184,7 +72,7 @@
     {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "83d6a4f79a607920e50e848280f2584562d71458fea1643fd98e23a0d67c3d5f",
-      "line": 193,
+      "line": 250,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-gate-self-tests.yml",
       "rule": "expression_in_run_source"
@@ -192,7 +80,7 @@
     {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "9f0430855c618c17224e1107619b68ef58e653af5f93a793e1b8ec94f1ccfedd",
-      "line": 218,
+      "line": 275,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-gate-self-tests.yml",
       "rule": "expression_in_run_source"
@@ -200,7 +88,7 @@
     {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "ed1a787441320950672d1925c0eb68c800b171a6b93a56f098eec2024861b368",
-      "line": 243,
+      "line": 300,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-gate-self-tests.yml",
       "rule": "expression_in_run_source"
@@ -208,7 +96,7 @@
     {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "b6de23089bd3244db86cc766bf7b2b9683877d62b29533e2f9963218fa20ddb4",
-      "line": 268,
+      "line": 325,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-gate-self-tests.yml",
       "rule": "expression_in_run_source"
@@ -216,7 +104,7 @@
     {
       "evidence": "if [ \"${{ job.status }}\" = \"success\" ]; then",
       "fingerprint": "e1a9543ddae6bdf0a9c749bf04411bd71d790f86f5cd137bfc18f93f669b68af",
-      "line": 298,
+      "line": 355,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci-gate-self-tests.yml",
       "rule": "expression_in_run_source"
@@ -440,7 +328,7 @@
     {
       "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
       "fingerprint": "3e205874484beb49b21c274d608e79ea2b3e98fa0ee240dc55edf01248ec238d",
-      "line": 410,
+      "line": 411,
       "message": "write-capable workflow checkout must set persist-credentials: false",
       "path": ".github/workflows/ci.yml",
       "rule": "checkout_persists_credentials_on_write_surface"
@@ -448,7 +336,7 @@
     {
       "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
       "fingerprint": "88de04c1ab050ae856ff549bb737563dd9fb0f43238ec22b5c19bff218a53353",
-      "line": 731,
+      "line": 733,
       "message": "write-capable workflow checkout must set persist-credentials: false",
       "path": ".github/workflows/ci.yml",
       "rule": "checkout_persists_credentials_on_write_surface"
@@ -456,7 +344,7 @@
     {
       "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
       "fingerprint": "d13110a66fec256decc55e90e1835a2a7c5feb23335021098eaff1cb772ab02a",
-      "line": 928,
+      "line": 932,
       "message": "write-capable workflow checkout must set persist-credentials: false",
       "path": ".github/workflows/ci.yml",
       "rule": "checkout_persists_credentials_on_write_surface"
@@ -464,7 +352,7 @@
     {
       "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
       "fingerprint": "0379e8a8e14024cc93d8f3c5590007c4a8fae07c933bc7f0d494b8d72b6be6d1",
-      "line": 961,
+      "line": 971,
       "message": "write-capable workflow checkout must set persist-credentials: false",
       "path": ".github/workflows/ci.yml",
       "rule": "checkout_persists_credentials_on_write_surface"
@@ -520,7 +408,7 @@
     {
       "evidence": "printf 'ci-gate shard %s still running at %s\\n' \"${{ matrix.name }}\" \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"",
       "fingerprint": "cd9a1c643260f289e56f5d963b100882252ab32b1a097e28533b94c6082a122e",
-      "line": 461,
+      "line": 462,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -528,7 +416,7 @@
     {
       "evidence": "for gate in ${{ matrix.gates }}; do",
       "fingerprint": "9e4b71047376a80b25cdd483c48042cac777bd86677c8f83a1fefca742906117",
-      "line": 467,
+      "line": 468,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -536,7 +424,7 @@
     {
       "evidence": "--output target/test-results/gate-shard-${{ matrix.name }}-junit.xml \\",
       "fingerprint": "f097825769c65399a652916281a93e3557e601a52e609ef78a595acf4381cdb0",
-      "line": 517,
+      "line": 518,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -544,7 +432,7 @@
     {
       "evidence": "--suite-name \"gate-${{ matrix.name }}\"",
       "fingerprint": "091efb47cec2aa64b6564c5850f019a950312b27edb24715db5aa3cf82d0339b",
-      "line": 518,
+      "line": 519,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -552,7 +440,7 @@
     {
       "evidence": "--workflow \"${{ github.workflow }}\" \\",
       "fingerprint": "e588951892d7da00ab5f3301e6ed04086c45944a2b0f34d1d931a9d7190e4ef3",
-      "line": 531,
+      "line": 532,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -560,7 +448,7 @@
     {
       "evidence": "--sha \"${{ github.sha }}\" \\",
       "fingerprint": "f250c8d7750939bbb1bbc76a566cf5fe5a27124d71f24f334b34afd6d418d58b",
-      "line": 532,
+      "line": 533,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -568,7 +456,7 @@
     {
       "evidence": "--pr \"${{ github.event.pull_request.number || 0 }}\" \\",
       "fingerprint": "d33c454fea4c696db19fbba3d087e2bd904012e2ca691c7ebbfb3f5c3f4b535a",
-      "line": 533,
+      "line": 534,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -576,7 +464,7 @@
     {
       "evidence": "--json-out \"target/ci/ci-actuals-${{ matrix.name }}.json\" || true",
       "fingerprint": "303ae927d5a51f99906b10595afda23880916588de594790c60b9f9d93995281",
-      "line": 534,
+      "line": 535,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/ci.yml",
       "rule": "expression_in_run_source"
@@ -608,7 +496,7 @@
     {
       "evidence": "token: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "032fd9ee46cbf4fc5f9c2b3f691b7c75cae0046502b33ff166e0928ddbefb33e",
-      "line": 353,
+      "line": 354,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -616,7 +504,7 @@
     {
       "evidence": "CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "40a3c7e5839aaafdd1e6c2d87710a13d276bcaf06419a72a5c50675de3224768",
-      "line": 356,
+      "line": 357,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -624,7 +512,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "71b257ba94e451ddf8934f5b400fc7e0634daceb48d6ffe2e54e33cf87194627",
-      "line": 412,
+      "line": 413,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -632,7 +520,7 @@
     {
       "evidence": "token: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "a77a563231e864f755492b740bbbebdee32e3a364c5c5f57f0e2b23c1f41683c",
-      "line": 551,
+      "line": 553,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -640,7 +528,7 @@
     {
       "evidence": "CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "ad98dc7df4122b78a1476ca29593e2806b180999a9e9e4df3302f3919e3d8eaa",
-      "line": 554,
+      "line": 556,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -648,7 +536,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "6bb9cb30d700ffe49f96105a960aa3258f4a8a082975d3d3afb53cc3ee831f3e",
-      "line": 733,
+      "line": 735,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -656,7 +544,7 @@
     {
       "evidence": "token: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "7dccb113c08ddf6483727dc82c21234329743d195b7c395be943e859ad61f789",
-      "line": 872,
+      "line": 875,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -664,7 +552,7 @@
     {
       "evidence": "CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}",
       "fingerprint": "80a068d4c889e32944e0ae2bbf29ed65033e5a488dd827c91f3893d39349d3f8",
-      "line": 875,
+      "line": 878,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -672,7 +560,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "39da5683794bc002cfd2dd8571b2bcaef69c635f8b7bb5e80f22ee09a959cfbc",
-      "line": 930,
+      "line": 934,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -680,7 +568,7 @@
     {
       "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
       "fingerprint": "0c3d26282dab7be7a0db8177266b8ebc03876f22c15642b5f556e49c318f5bb6",
-      "line": 963,
+      "line": 973,
       "message": "PR-triggered workflow references a secret",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_secret_reference"
@@ -688,7 +576,7 @@
     {
       "evidence": "statuses: write",
       "fingerprint": "c2f030ad5b52a7abebeeb8ddc9c63c4f232e039ac378c493c10a1c54b92c0e5f",
-      "line": 636,
+      "line": 638,
       "message": "PR-triggered workflow grants write authority",
       "path": ".github/workflows/ci.yml",
       "rule": "pr_write_permission"
@@ -1035,110 +923,6 @@
       "line": 176,
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/publish-dry-run.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "1e9cf00f4da597f1eef32333329d5f4f9138c83671851b6483b6b34eb639be75",
-      "line": 35,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "fc726982dfae42c1d181c1fbca8201b24c984a1134471cefe49a316dc56f47da",
-      "line": 133,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "7da57f39550e5e0a7375a8a14f46be73db6c2647a0669f9eac2745e8f9bcb160",
-      "line": 183,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "4ffd261a696bb552bb8e7b32e74fc8325201bb1c0cdbdcb19a9576c594b9fbed",
-      "line": 268,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "c8ae4dd4c2a1e6aa51fcc72bc3de627629dff646c12ffe3e9f4421ec777fde6b",
-      "line": 298,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "echo \"- Version: ${{ needs.prepare-vsix.outputs.version }}\"",
-      "fingerprint": "83d38dcb4a8eaf756abd1f1949609b4c11734125ecc617bf64200c6fea676c48",
-      "line": 325,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- VSIX artifact: ${{ needs.prepare-vsix.outputs.artifact_name }}\"",
-      "fingerprint": "e1b91e843bb7a0a72c521a22ca5de3d279912fd8ce49d5abb0bf6289a2316036",
-      "line": 326,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- VS Code Marketplace job: ${{ needs.publish-vscode-marketplace.result }}\"",
-      "fingerprint": "2ae462d8353191957209edc067edfd073e4f382cc7131ce599279a5bdd7fd29a",
-      "line": 327,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- Open VSX job: ${{ needs.publish-open-vsx.result }}\"",
-      "fingerprint": "fa7a1ef14bbcc8d3b297ae562116da6061442984dcfd6244073e149317d4acf9",
-      "line": 328,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- GitHub release asset job: ${{ needs.github-release-asset.result }}\"",
-      "fingerprint": "3baabc40ac2b1c9fa02106fae3de3ade714b2a40fa38a6750f26c17f0c6782e5",
-      "line": 329,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- Published Marketplace smoke job: ${{ needs.published-marketplace-smoke.result }}\"",
-      "fingerprint": "802d4940e6071299be597a958aecbb9ceac8c74773f69104b92b40715ff3a0ed",
-      "line": 330,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- Published Open VSX smoke job: ${{ needs.published-open-vsx-smoke.result }}\"",
-      "fingerprint": "21696af3505c829347145ffec03bfa3f18c55478af34d30aed21f1959a8fe39e",
-      "line": 331,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/publish-extension.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "if [ \"${{ needs.prepare-vsix.outputs.is_prerelease }}\" = \"true\" ]; then",
-      "fingerprint": "463b2416f7ea6fdd9838874edc195e27dd68e287d51b7c19e2ae89d647dcd670",
-      "line": 332,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/publish-extension.yml",
       "rule": "expression_in_run_source"
     },
     {

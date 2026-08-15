@@ -9,81 +9,110 @@ from scripts.zed_host import prepare
 
 
 class ZedHostPrepareTests(unittest.TestCase):
+    @staticmethod
+    def _write_subject(root: Path) -> dict[str, Path]:
+        extension = root / "extension"
+        extension.mkdir()
+        (extension / "extension.toml").write_text(
+            "id = 'perl'\n"
+            "version = '0.5.0'\n"
+            "repository = 'https://github.com/tree-sitter-perl/zed-perl'\n",
+            encoding="utf-8",
+        )
+        wasm = extension / "target" / "zed_perl.wasm"
+        wasm.parent.mkdir()
+        wasm.write_bytes(b"wasm")
+        workspace = root / "workspace"
+        workspace.mkdir()
+        (workspace / "fixture.pl").write_text(
+            "my $answer = 42;\n", encoding="utf-8"
+        )
+        zed_cli = root / "zed-cli"
+        zed_app = root / "zed"
+        perllsp = root / "perllsp"
+        for path in (zed_cli, zed_app, perllsp):
+            path.write_bytes(b"test binary")
+        (root / ".ci" / "fixtures" / "zed-perl-upstream" / "receipts").mkdir(
+            parents=True
+        )
+        (
+            root
+            / ".ci"
+            / "fixtures"
+            / "zed-perl-upstream"
+            / "receipts"
+            / "exact-source-observations-template.json"
+        ).write_text(
+            '{"language_server_log": {"path": null, "sha256": null}}\n',
+            encoding="utf-8",
+        )
+        return {
+            "extension": extension,
+            "wasm": wasm,
+            "workspace": workspace,
+            "zed_cli": zed_cli,
+            "zed_app": zed_app,
+            "perllsp": perllsp,
+        }
+
+    @staticmethod
+    def _args(root: Path, subject: dict[str, Path], route: str) -> Namespace:
+        return Namespace(
+            run_dir=root / "run",
+            zed_cli=subject["zed_cli"],
+            zed_app=subject["zed_app"],
+            zed_version="0.224.8",
+            zed_channel="stable",
+            zed_build="169",
+            extension_dir=subject["extension"],
+            extension_base="b" * 40,
+            extension_candidate="c" * 40,
+            extension_version="0.5.0",
+            wasm=subject["wasm"],
+            perllsp=subject["perllsp"],
+            perllsp_version="0.17.0",
+            perllsp_build="a" * 40,
+            resolution_route=route,
+            workspace=subject["workspace"],
+            fixture_id="fixture-v1",
+            root_identity=None,
+            perl_settings=None,
+        )
+
+    @staticmethod
+    def _fake_run_checked(subject: dict[str, Path]):
+        zed_cli = subject["zed_cli"]
+        zed_app = subject["zed_app"]
+        perllsp = subject["perllsp"]
+
+        def fake_run_checked(command: list[str], cwd: Path | None = None) -> str:
+            del cwd
+            if command[0] == str(zed_cli):
+                return f"Zed 0.224.8 – {zed_app.resolve()}"
+            if command[0] == str(zed_app):
+                return "Zed: v0.224.8+stable.169 (Zed)\n"
+            if command[0] == str(perllsp):
+                return "perllsp 0.17.0\nGit commit: aaaaaaa\n"
+            raise AssertionError(f"unexpected command: {command}")
+
+        return fake_run_checked
+
+    def _run_prepare(
+        self, root: Path, subject: dict[str, Path], route: str
+    ) -> int:
+        with (
+            patch.object(prepare, "require_clean_git_checkout"),
+            patch.object(
+                prepare, "run_checked", side_effect=self._fake_run_checked(subject)
+            ),
+        ):
+            return prepare.prepare(self._args(root, subject, route), root)
+
     def test_prepare_writes_only_verified_identity_values(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            extension = root / "extension"
-            extension.mkdir()
-            (extension / "extension.toml").write_text(
-                "id = 'perl'\n"
-                "version = '0.5.0'\n"
-                "repository = 'https://github.com/tree-sitter-perl/zed-perl'\n",
-                encoding="utf-8",
-            )
-            wasm = extension / "target" / "zed_perl.wasm"
-            wasm.parent.mkdir()
-            wasm.write_bytes(b"wasm")
-            workspace = root / "workspace"
-            workspace.mkdir()
-            (workspace / "fixture.pl").write_text(
-                "my $answer = 42;\n", encoding="utf-8"
-            )
-            zed_cli = root / "zed-cli"
-            zed_app = root / "zed"
-            perllsp = root / "perllsp"
-            for path in (zed_cli, zed_app, perllsp):
-                path.write_bytes(b"test binary")
-            (root / ".ci" / "fixtures" / "zed-perl-upstream" / "receipts").mkdir(
-                parents=True
-            )
-            (
-                root
-                / ".ci"
-                / "fixtures"
-                / "zed-perl-upstream"
-                / "receipts"
-                / "exact-source-observations-template.json"
-            ).write_text(
-                '{"language_server_log": {"path": null, "sha256": null}}\n',
-                encoding="utf-8",
-            )
-            args = Namespace(
-                run_dir=root / "run",
-                zed_cli=zed_cli,
-                zed_app=zed_app,
-                zed_version="0.224.8",
-                zed_channel="stable",
-                zed_build="169",
-                extension_dir=extension,
-                extension_base="b" * 40,
-                extension_candidate="c" * 40,
-                extension_version="0.5.0",
-                wasm=wasm,
-                perllsp=perllsp,
-                perllsp_version="0.17.0",
-                perllsp_build="a" * 40,
-                resolution_route="binary_override",
-                workspace=workspace,
-                fixture_id="fixture-v1",
-                root_identity=None,
-                perl_settings=None,
-            )
-
-            def fake_run_checked(command: list[str], cwd: Path | None = None) -> str:
-                del cwd
-                if command[0] == str(zed_cli):
-                    return f"Zed 0.224.8 – {zed_app.resolve()}"
-                if command[0] == str(zed_app):
-                    return "Zed: v0.224.8+stable.169 (Zed)\n"
-                if command[0] == str(perllsp):
-                    return "perllsp 0.17.0\nGit commit: aaaaaaa\n"
-                raise AssertionError(f"unexpected command: {command}")
-
-            with (
-                patch.object(prepare, "require_clean_git_checkout"),
-                patch.object(prepare, "run_checked", side_effect=fake_run_checked),
-            ):
-                self.assertEqual(prepare.prepare(args, root), 0)
+            subject = self._write_subject(root)
+            self.assertEqual(self._run_prepare(root, subject, "binary_override"), 0)
 
             manifest = json.loads(
                 (root / "run" / "manifest.json").read_text(encoding="utf-8")
@@ -93,8 +122,18 @@ class ZedHostPrepareTests(unittest.TestCase):
             self.assertEqual(
                 manifest["extension"]["wasm_relative_path"], "target/zed_perl.wasm"
             )
+            self.assertIsNone(manifest["perllsp"]["worktree_resolution"])
             self.assertTrue(
                 manifest["extension"]["manifest_sha256"].startswith("sha256:")
+            )
+            settings = json.loads(
+                (root / "run" / "profile" / "config" / "settings.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                settings["lsp"]["perllsp"]["binary"],
+                {"path": str(subject["perllsp"]), "arguments": []},
             )
             observations = json.loads(
                 (root / "run" / "observations.json").read_text(encoding="utf-8")
@@ -105,6 +144,74 @@ class ZedHostPrepareTests(unittest.TestCase):
                 observations["language_server_log"]["prepared_manifest_sha256"],
                 binding,
             )
+
+    def test_worktree_path_route_omits_binary_override_and_binds_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subject = self._write_subject(root)
+            perllsp = subject["perllsp"]
+
+            with (
+                patch.object(prepare, "require_clean_git_checkout"),
+                patch.object(
+                    prepare, "run_checked", side_effect=self._fake_run_checked(subject)
+                ),
+                patch.object(prepare.shutil, "which", return_value=str(perllsp)),
+            ):
+                self.assertEqual(self._run_prepare(root, subject, "worktree_path"), 0)
+
+            manifest = json.loads(
+                (root / "run" / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                manifest["perllsp"]["resolution_route"], "worktree_path"
+            )
+            self.assertEqual(
+                manifest["perllsp"]["worktree_resolution"],
+                {"lookup": "perllsp", "resolved_path": str(perllsp)},
+            )
+            settings = json.loads(
+                (root / "run" / "profile" / "config" / "settings.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertNotIn("binary", settings["lsp"]["perllsp"])
+            self.assertEqual(
+                settings["lsp"]["perllsp"]["settings"], {"perl": {}}
+            )
+
+    def test_worktree_path_route_rejects_foreign_path_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subject = self._write_subject(root)
+            foreign = root / "elsewhere" / "perllsp"
+            foreign.parent.mkdir()
+            foreign.write_bytes(b"other binary")
+
+            with (
+                patch.object(prepare, "require_clean_git_checkout"),
+                patch.object(
+                    prepare, "run_checked", side_effect=self._fake_run_checked(subject)
+                ),
+                patch.object(
+                    prepare.shutil, "which", return_value=str(foreign)
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    prepare.HostReceiptError, "PATH `perllsp` to be the prepared"
+                ):
+                    prepare.prepare(
+                        self._args(root, subject, "worktree_path"), root
+                    )
+            self.assertFalse((root / "run").exists())
+
+            with patch.object(prepare.shutil, "which", return_value=None):
+                with self.assertRaisesRegex(
+                    prepare.HostReceiptError, "session's PATH"
+                ):
+                    prepare.prepare(
+                        self._args(root, subject, "worktree_path"), root
+                    )
 
     def test_zed_identity_is_bound_to_cli_path_and_system_specs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

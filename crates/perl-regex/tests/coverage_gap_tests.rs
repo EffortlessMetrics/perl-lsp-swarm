@@ -172,13 +172,12 @@ fn extract_named_captures_empty_angle_bracket_name_ignored()
 }
 
 #[test]
-fn extract_named_captures_empty_angle_name_does_not_affect_subsequent_capture_index()
+fn extract_named_captures_empty_angle_name_does_not_invent_subsequent_capture_index()
 -> Result<(), Box<dyn std::error::Error>> {
-    // (?<>...) is skipped; (?<real>...) that follows starts at index 1 because
-    // the empty-name group falls through without incrementing the capture counter.
+    // The malformed empty-name group makes later numbering structurally unknown,
+    // so the compatibility projection must not invent an exact index.
     let caps = RegexAnalyzer::extract_named_captures(r"(?<>\w+)(?<real>\d+)");
-    assert_eq!(caps.len(), 1, "only the real named capture should appear");
-    assert_eq!(caps[0].name, "real");
+    assert!(caps.is_empty(), "malformed numbering must fail closed: {caps:?}");
     Ok(())
 }
 

@@ -10,7 +10,6 @@ use super::super::{
     WirePosition, WireRange, actual_engine_for_decisions, actual_engine_for_mode,
     cancellation_token, digest, invalid_params, json, parse_range, sanitized_outcome,
 };
-use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct PositionRecord {
@@ -693,6 +692,7 @@ pub(super) fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Value {
         json!({

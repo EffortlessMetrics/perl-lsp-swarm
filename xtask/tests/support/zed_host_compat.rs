@@ -135,14 +135,20 @@ pub fn exact_sha256(value: &Value, pointer: &str) -> bool {
     value.pointer(pointer).and_then(Value::as_str).is_some_and(is_sha256_digest)
 }
 
+/// The declared schema patterns anchor lowercase hex (`^[0-9a-f]{…}$`), so
+/// uppercase Git object IDs must be rejected instead of accepted.
+fn is_ascii_lowercase_hexdigit(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+}
+
 fn is_sha256_digest(text: &str) -> bool {
     text.len() == "sha256:".len() + 64
         && text.starts_with("sha256:")
-        && text["sha256:".len()..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        && text["sha256:".len()..].bytes().all(is_ascii_lowercase_hexdigit)
 }
 
 fn is_full_commit(text: &str) -> bool {
-    text.len() == 40 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+    text.len() == 40 && text.bytes().all(is_ascii_lowercase_hexdigit)
 }
 
 pub fn content_sha256(bytes: &[u8]) -> String {

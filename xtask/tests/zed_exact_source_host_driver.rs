@@ -35,14 +35,24 @@ fn observation_template_is_not_run_bound_and_cell_complete() -> Result<(), Box<d
         Some("zed_exact_source_observations.v1")
     );
     assert_eq!(template.get("result").and_then(Value::as_str), Some("not_run"));
-    assert!(template.get("prepared_manifest_sha256").is_some_and(Value::is_null));
+    assert!(
+        template.get("prepared_manifest_sha256").is_some_and(Value::is_null),
+        "template must declare an unbound prepared_manifest_sha256"
+    );
     assert!(
         template
             .pointer("/language_server_log/prepared_manifest_sha256")
-            .is_some_and(Value::is_null)
+            .is_some_and(Value::is_null),
+        "language_server_log must declare an unbound prepared_manifest_sha256"
     );
-    assert!(template.pointer("/language_server_log/path").is_some_and(Value::is_null));
-    assert!(template.pointer("/language_server_log/sha256").is_some_and(Value::is_null));
+    assert!(
+        template.pointer("/language_server_log/path").is_some_and(Value::is_null),
+        "language_server_log.path must be null in the template"
+    );
+    assert!(
+        template.pointer("/language_server_log/sha256").is_some_and(Value::is_null),
+        "language_server_log.sha256 must be null in the template"
+    );
     assert_eq!(
         template
             .pointer("/configuration/workspace_configuration_observed")
@@ -129,6 +139,7 @@ fn shared_rust_validator_checks_schema_then_semantics() -> Result<(), Box<dyn Er
     assert!(validator.contains("support/zed_host_compat.rs"));
     assert!(validator.contains("validate_schema(&receipt)"));
     assert!(validator.contains("validate_pass(&receipt, None)"));
+    assert!(validator.contains("--schema-only"));
     assert!(!validator.contains("public_subject"));
     Ok(())
 }

@@ -21,15 +21,23 @@ from .common import (
 )
 
 
-def _linux_processes(executable: Path) -> list[dict[str, Any]]:
+def _linux_processes(
+    executable: Path,
+) -> tuple[list[dict[str, Any]], dict[int, int]]:
     expected = executable.resolve()
     processes: list[dict[str, Any]] = []
+    table: dict[int, int] = {}
     proc = Path("/proc")
     if not proc.is_dir():
         raise HostReceiptError("Linux exact process inventory requires /proc")
     for entry in proc.iterdir():
         if not entry.name.isdigit():
             continue
+        parent_pid = _linux_parent_pid(entry)
+        if parent_pid is None:
+            continue
+        pid = int(entry.name)
+        table[pid] = parent_pid
         try:
             actual = (entry / "exe").resolve(strict=True)
             command = (
@@ -42,14 +50,31 @@ def _linux_processes(executable: Path) -> list[dict[str, Any]]:
             continue
         if actual == expected:
             processes.append(
-                {"pid": int(entry.name), "executable": str(actual), "command": command}
+                {
+                    "pid": pid,
+                    "parent_pid": parent_pid,
+                    "executable": str(actual),
+                    "command": command,
+                }
             )
-    return processes
+    return processes, table
 
 
-def _macos_processes(executable: Path) -> list[dict[str, Any]]:
+def _linux_parent_pid(entry: Path) -> int | None:
+    try:
+        for line in (entry / "status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("PPid:"):
+                return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _macos_processes(
+    executable: Path,
+) -> tuple[list[dict[str, Any]], dict[int, int]]:
     completed = subprocess.run(
-        ["ps", "-axo", "pid=,command="],
+        ["ps", "-axo", "pid=,ppid=,command="],
         check=True,
         capture_output=True,
         text=True,
@@ -57,10 +82,15 @@ def _macos_processes(executable: Path) -> list[dict[str, Any]]:
     )
     expected = executable.resolve()
     processes: list[dict[str, Any]] = []
+    table: dict[int, int] = {}
     for line in completed.stdout.splitlines():
-        pid_text, separator, command = line.strip().partition(" ")
-        if not separator or not pid_text.isdigit():
+        stripped = line.strip()
+        pid_text, separator, remainder = stripped.partition(" ")
+        ppid_text, _, command = remainder.strip().partition(" ")
+        if not separator or not pid_text.isdigit() or not ppid_text.isdigit():
             continue
+        pid, parent_pid = int(pid_text), int(ppid_text)
+        table[pid] = parent_pid
         try:
             executable_token = shlex.split(command)[0]
             actual = Path(executable_token).expanduser().resolve()
@@ -68,9 +98,14 @@ def _macos_processes(executable: Path) -> list[dict[str, Any]]:
             continue
         if actual == expected:
             processes.append(
-                {"pid": int(pid_text), "executable": str(expected), "command": command}
+                {
+                    "pid": pid,
+                    "parent_pid": parent_pid,
+                    "executable": str(expected),
+                    "command": command,
+                }
             )
-    return processes
+    return processes, table
 
 
 def _windows_powershell() -> str:
@@ -81,11 +116,14 @@ def _windows_powershell() -> str:
     raise HostReceiptError("Windows process inventory requires pwsh or powershell.exe")
 
 
-def _windows_processes(executable: Path) -> list[dict[str, Any]]:
+def _windows_processes(
+    executable: Path,
+) -> tuple[list[dict[str, Any]], dict[int, int]]:
     query = (
         "$ErrorActionPreference='Stop';"
         "Get-CimInstance Win32_Process | "
-        "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
+        "Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine"
+        " | ConvertTo-Json -Compress"
     )
     completed = subprocess.run(
         [_windows_powershell(), "-NoLogo", "-NoProfile", "-Command", query],
@@ -95,30 +133,37 @@ def _windows_processes(executable: Path) -> list[dict[str, Any]]:
         timeout=20,
     )
     payload = completed.stdout.strip()
+    processes: list[dict[str, Any]] = []
+    table: dict[int, int] = {}
     if not payload:
-        return []
+        return processes, table
     value = json.loads(payload)
     rows = value if isinstance(value, list) else [value]
     expected = os.path.normcase(str(executable.resolve()))
-    processes: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         actual = row.get("ExecutablePath")
         pid = row.get("ProcessId")
+        parent_pid = row.get("ParentProcessId")
+        if isinstance(pid, int) and isinstance(parent_pid, int):
+            table[pid] = parent_pid
         if isinstance(actual, str) and isinstance(pid, int):
             if os.path.normcase(actual) == expected:
                 processes.append(
                     {
                         "pid": pid,
+                        "parent_pid": parent_pid if isinstance(parent_pid, int) else None,
                         "executable": actual,
                         "command": row.get("CommandLine") or "",
                     }
                 )
-    return processes
+    return processes, table
 
 
-def matching_processes(executable: Path) -> list[dict[str, Any]]:
+def matching_processes(
+    executable: Path,
+) -> tuple[list[dict[str, Any]], dict[int, int]]:
     if os.name == "nt":
         return _windows_processes(executable)
     if sys.platform == "darwin":
@@ -126,8 +171,36 @@ def matching_processes(executable: Path) -> list[dict[str, Any]]:
     return _linux_processes(executable)
 
 
+def _descends_from(pid: int, table: dict[int, int], root_pid: int) -> bool:
+    current = pid
+    for _ in range(len(table) + 1):
+        if current == root_pid:
+            return True
+        parent = table.get(current)
+        if parent is None:
+            return False
+        current = parent
+    return False
+
+
 def _process_ids(rows: list[dict[str, Any]]) -> set[int]:
     return {row["pid"] for row in rows if isinstance(row.get("pid"), int)}
+
+
+def _require_worktree_resolution(manifest: dict[str, Any], perllsp: Path) -> None:
+    """Re-bind the worktree route to this launch environment before Zed starts."""
+    if manifest.get("perllsp", {}).get("resolution_route") != "worktree_path":
+        return
+    resolved = shutil.which("perllsp")
+    if resolved is None:
+        raise HostReceiptError(
+            "resolution_route worktree_path requires `perllsp` on this session's PATH"
+        )
+    if Path(resolved).expanduser().resolve() != perllsp:
+        raise HostReceiptError(
+            "resolution_route worktree_path requires PATH `perllsp` to be the"
+            " prepared binary"
+        )
 
 
 def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int:
@@ -147,7 +220,8 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
     stderr_path = artifacts / "zed-foreground.stderr.log"
     process_path = artifacts / "process-inventory.json"
 
-    before = matching_processes(perllsp)
+    before, _ = matching_processes(perllsp)
+    _require_worktree_resolution(manifest, perllsp)
     command = [
         str(zed_cli),
         "--zed",
@@ -170,9 +244,16 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
     started_at = time.monotonic()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
+        zed_pid = process.pid
         while process.poll() is None:
-            rows = matching_processes(perllsp)
-            new_rows = [row for row in rows if row.get("pid") not in before_pids]
+            rows, table = matching_processes(perllsp)
+            new_rows = [
+                row
+                for row in rows
+                if row.get("pid") not in before_pids
+                and isinstance(row.get("pid"), int)
+                and _descends_from(row["pid"], table, zed_pid)
+            ]
             if new_rows:
                 samples.append(
                     {
@@ -193,7 +274,7 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
             time.sleep(1.0)
         return_code = process.returncode
 
-    after = matching_processes(perllsp)
+    after, _ = matching_processes(perllsp)
     leaked = sorted(_process_ids(after) - _process_ids(before))
     replacements = redactions(manifest, run_dir)
     for sample in samples:
@@ -217,6 +298,7 @@ def launch(manifest: dict[str, Any], run_dir: Path, timeout_seconds: int) -> int
             "<workspace>",
         ],
         "zed_return_code": return_code,
+        "zed_pid": zed_pid,
         "perllsp_observed": bool(samples),
         "perllsp_samples": samples,
         "preexisting_perllsp_pids": sorted(_process_ids(before)),
