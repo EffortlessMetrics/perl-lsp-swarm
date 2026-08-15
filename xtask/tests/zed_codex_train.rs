@@ -25,7 +25,7 @@ fn load_train() -> Result<Value, Box<dyn Error>> {
 
 fn load_registry_manifest() -> Result<toml::Value, Box<dyn Error>> {
     let root = repo_root()?;
-    Ok(fs::read_to_string(root.join(REGISTRY_MANIFEST_PATH))?.parse()?)
+    Ok(toml::from_str(&fs::read_to_string(root.join(REGISTRY_MANIFEST_PATH))?)?)
 }
 
 fn stages(train: &Value) -> Result<&[Value], Box<dyn Error>> {
@@ -83,14 +83,20 @@ fn merged_upstream_subject_is_accepted(
     registry: &toml::Value,
 ) -> Result<bool, Box<dyn Error>> {
     let index = index_by_id(train)?;
-    let p18 = index.get("P18").copied().ok_or_else(|| io::Error::other("missing P18"))?;
+    index.get("P18").ok_or_else(|| io::Error::other("missing P18"))?;
     let m01_complete =
         index.get("M01").and_then(|stage| stage.get("state")).and_then(Value::as_str)
             == Some("complete");
-    let acceptance = p18
+    let upstream_acceptance_complete =
+        index.get("U01").and_then(|stage| stage.get("state")).and_then(Value::as_str)
+            == Some("complete");
+    let acceptance = index
+        .get("U01")
+        .copied()
+        .ok_or_else(|| io::Error::other("missing U01"))?
         .get("upstream_acceptance")
         .and_then(Value::as_object)
-        .ok_or_else(|| io::Error::other("P18 lacks upstream_acceptance"))?;
+        .ok_or_else(|| io::Error::other("U01 lacks upstream_acceptance"))?;
     let extension = registry.get("extension").and_then(toml::Value::as_table);
     let validation = registry.get("validation").and_then(toml::Value::as_table);
     let string_field = |table: Option<&toml::map::Map<String, toml::Value>>, key: &str| {
@@ -105,6 +111,7 @@ fn merged_upstream_subject_is_accepted(
     let new_version = extension.and_then(|table| table.get("new_version"));
     let current_version = extension.and_then(|table| table.get("current_version"));
     Ok(m01_complete
+        && upstream_acceptance_complete
         && acceptance.get("repository").and_then(Value::as_str)
             == Some("tree-sitter-perl/zed-perl")
         && string_field(extension, "new_commit")
@@ -181,7 +188,8 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
         ("P15", BTreeSet::from(["P10", "P11", "P12", "P13", "P14"])),
         ("P16", BTreeSet::from(["P15"])),
         ("P17", BTreeSet::from(["P13"])),
-        ("P18", BTreeSet::from(["M01"])),
+        ("U01", BTreeSet::from(["M01"])),
+        ("P18", BTreeSet::from(["M01", "U01"])),
         ("P19", BTreeSet::from(["C01", "M02", "P08", "P10", "P13", "P14"])),
         ("P20", BTreeSet::from(["P09", "P19"])),
         ("P21", BTreeSet::from(["P20"])),
@@ -219,10 +227,10 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
     assert_eq!(string(index["P00"], "state")?, "static_substrate_complete_execution_not_proven");
     assert_eq!(string(index["P01"], "state")?, "ready_after_dependency");
     assert_eq!(string(index["P02"], "state")?, "ready_after_dependency");
-    let acceptance = index["P18"]
+    let acceptance = index["U01"]
         .get("upstream_acceptance")
         .and_then(Value::as_object)
-        .ok_or_else(|| io::Error::other("P18 lacks upstream_acceptance"))?;
+        .ok_or_else(|| io::Error::other("U01 lacks upstream_acceptance"))?;
     assert_eq!(acceptance.get("source_of_truth").and_then(Value::as_array).map(Vec::len), Some(2));
     assert_eq!(
         acceptance.get("repository").and_then(Value::as_str),
@@ -258,11 +266,15 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
 }
 
 #[test]
-fn p18_rejects_m01_without_a_merged_upstream_subject() -> Result<(), Box<dyn Error>> {
+fn p18_rejects_m01_without_merged_upstream_acceptance() -> Result<(), Box<dyn Error>> {
     let mut train = load_train()?;
     set_stage_state(&mut train, "M01", "complete")?;
     let blocked_registry = load_registry_manifest()?;
 
+    assert_eq!(string(index_by_id(&train)?["U01"], "state")?, "blocked_on_external_subject");
+    assert!(!merged_upstream_subject_is_accepted(&train, &blocked_registry)?);
+
+    set_stage_state(&mut train, "U01", "complete")?;
     assert!(!merged_upstream_subject_is_accepted(&train, &blocked_registry)?);
 
     let mut merged_registry = blocked_registry.clone();
@@ -293,9 +305,15 @@ fn p18_rejects_m01_without_a_merged_upstream_subject() -> Result<(), Box<dyn Err
 fn prose_dependency_edges_match_the_machine_checked_fan_in() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let prose = fs::read_to_string(root.join(TRAIN_DOC_PATH))?;
-    for (dependency, stage) in
-        [("P01", "P07"), ("P07", "P14"), ("P11", "P12"), ("P11", "P13"), ("P11", "P14")]
-    {
+    for (dependency, stage) in [
+        ("P01", "P07"),
+        ("P07", "P14"),
+        ("P11", "P12"),
+        ("P11", "P13"),
+        ("P11", "P14"),
+        ("M01", "U01"),
+        ("U01", "P18"),
+    ] {
         let edge = format!("`{dependency} -> {stage}`");
         assert!(prose.contains(&edge), "prose graph lacks dependency edge {edge}");
     }

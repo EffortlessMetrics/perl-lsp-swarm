@@ -160,10 +160,19 @@ Refresh `zed-industries/zed`, apply the evidence-derived publication order, reta
 **Depends on:** P16 + P17.  
 The maintainer manually submits extension/defaults work in the validated order. Codex performs no external branch/PR/merge/release mutation.
 
+### U01 — merged upstream subject acceptance
+
+**Depends on:** M01.
+This is an explicit acceptance stage, not metadata attached to P18. It accepts the
+actual merged `tree-sitter-perl/zed-perl` subject only when the registry packet and
+[registry submission contract](ZED_REGISTRY_SUBMISSION.md) provide a non-empty
+branch-reachable commit, manifest version, and upstream branch, with matching
+validation. A blocked packet remains parseable evidence, but it cannot complete U01.
+
 ### P18 — #7910: freeze the official existing-`perl` registry packet
 
-**Depends on:** M01 and the actual merged upstream extension subject.  
-Refresh `zed-industries/extensions`, update only the existing `perl` identity/version/ref, bind merged upstream identity, and emit copy-ready registry material. P18 is not accepted from M01 alone: the authoritative registry packet at `.ci/fixtures/zed-perl-upstream/registry/manifest.toml` and [the registry submission contract](ZED_REGISTRY_SUBMISSION.md) must contain a non-empty merged `tree-sitter-perl/zed-perl` commit, manifest version, and upstream branch, with branch reachability and manifest/version equality validated. The new commit and version must differ from the captured registry subject. This remains a planned/not-proven packet boundary; it performs no registry write.
+**Depends on:** M01 + U01.
+Refresh `zed-industries/extensions`, update only the existing `perl` identity/version/ref, bind merged upstream identity, and emit copy-ready registry material. P18 is not accepted from M01 alone: U01 must independently accept the authoritative registry packet at `.ci/fixtures/zed-perl-upstream/registry/manifest.toml` and [the registry submission contract](ZED_REGISTRY_SUBMISSION.md). That packet must contain a non-empty merged `tree-sitter-perl/zed-perl` commit, manifest version, and upstream branch, with branch reachability and manifest/version equality validated. The new commit and version must differ from the captured registry subject. This remains a planned/not-proven packet boundary; it performs no registry write.
 
 ### M02 — maintainer registry submission + released defaults
 
@@ -203,6 +212,8 @@ P10 + P11 + P12 + P13 + P14 ── P15 #7907
                                   ├─ P16 #7909 ─┐
 P13 ──────────────────────────────└─ P17 #7908 ─┴─ M01
                                                    │
+                                                   U01 (merged upstream acceptance)
+                                                   │
                                                    P18 #7910 ─ M02
                                                                 │
 P08 + P10 + P13 + P14 + C01 + M02 ─────────────── P19 #7912
@@ -213,7 +224,8 @@ P09 ─────────────────────────�
 ```
 
 The prose graph retains the fixture's required fan-in edges, including `P01 -> P07`,
-`P07 -> P14`, and `P11 -> P12`, `P11 -> P13`, and `P11 -> P14`. These edges are
+`P07 -> P14`, `P11 -> P12`, `P11 -> P13`, `P11 -> P14`, `M01 -> U01`, and
+`U01 -> P18`. These edges are
 dependency constraints, not ownership transfers: P07 remains the managed-route
 authority, P11 remains the exact-source receipt owner, and P14 remains the
 managed-route/recovery receipt owner.
