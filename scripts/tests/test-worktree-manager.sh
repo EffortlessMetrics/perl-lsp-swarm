@@ -14,16 +14,23 @@
 #   Case 4: invocation from a linked worktree resolves the same primary
 #           repository root as the main checkout.
 #   Case 5: a recorded owner rejects missing or different owners; the correct
-#           owner succeeds; an explicit --force bypasses the guard.
+#           owner succeeds; an explicit --force bypasses the guard; and
+#           --dry-run predicts the real outcome for both owners rather than
+#           reporting "would release" for a slot the guard would reject.
 #   Case 6: state mutations serialize on the lock file — proven by holding
 #           that lock externally and asserting the manager blocks, fails at
 #           its bound, and proceeds once released; plus an end-to-end check
 #           that two concurrent allocations both survive.
 #   Case 7: an injected write failure leaves the previous JSON readable
 #           (atomic temp-file + rename write).
-#   Case 8: the module imports cleanly on a platform without fcntl.
+#   Case 8: the module imports cleanly on a platform without fcntl, and
+#           _make_lock reports the absence of any backend as None rather than
+#           substituting a silent no-op.
+#   Case 8b/8c: with neither fcntl nor msvcrt, state mutation fails closed by
+#           default and proceeds only under WORKTREE_MANAGER_ALLOW_UNLOCKED.
 #   Case 9: Windows locking behavior — NOT_PROVEN on this platform; must be
-#           exercised by Windows release-preparation CI.
+#           exercised by Windows release-preparation CI.  The POSIX backend is
+#           proven by Case 6; the accepted claim is narrowed accordingly.
 #   Case 10: the atomic write preserves the destination file's permission
 #           mode instead of tightening it to mkstemp's 0600.
 #
@@ -361,6 +368,44 @@ else
       fail "owner guard: --force did not bypass the owner check: ${CASE5D_OUT}"
     fi
   fi
+
+  # 5e: --dry-run must predict the *real* outcome.  If the guard runs after
+  # the dry-run return, --dry-run prints "would release" for another owner's
+  # slot while the real command raises — wrong in exactly the case the guard
+  # protects.  Callers use --dry-run to decide whether to release.
+  CASE5E_SETUP_EXIT=0
+  run_manager5 allocate --slot case5-dryrun --branch test/case5-dryrun --owner alice \
+    >/dev/null 2>&1 || CASE5E_SETUP_EXIT=$?
+  if [[ "${CASE5E_SETUP_EXIT}" -ne 0 ]]; then
+    fail "Case 5e setup: allocate case5-dryrun with --owner alice failed (exit ${CASE5E_SETUP_EXIT})"
+  else
+    CASE5E_EXIT=0
+    CASE5E_OUT="$(run_manager5 release --slot case5-dryrun --owner bob --dry-run 2>&1)" \
+      || CASE5E_EXIT=$?
+    if [[ "${CASE5E_EXIT}" -ne 0 && "${CASE5E_OUT}" != *"would release"* ]]; then
+      pass "owner guard: --dry-run release predicts the real wrong-owner rejection"
+    else
+      fail "owner guard: --dry-run predicted success for a wrong-owner release: ${CASE5E_OUT}"
+    fi
+
+    # And it must still predict success for the owner who may actually
+    # release, without mutating the slot.
+    CASE5F_EXIT=0
+    CASE5F_OUT="$(run_manager5 release --slot case5-dryrun --owner alice --dry-run 2>&1)" \
+      || CASE5F_EXIT=$?
+    CASE5F_STATUS="$(python3 -c "
+import json, sys
+state = json.load(open('${CASE5_STATE}'))
+slot = next(s for s in state['slots'] if s.get('slot_id') == 'case5-dryrun')
+print(slot.get('status', ''))
+" 2>/dev/null || echo "unreadable")"
+    if [[ "${CASE5F_EXIT}" -eq 0 && "${CASE5F_OUT}" == *"would release"* \
+          && "${CASE5F_STATUS}" != "idle" && "${CASE5F_STATUS}" != "retired" ]]; then
+      pass "owner guard: --dry-run release for the correct owner predicts success without mutating"
+    else
+      fail "owner guard: correct-owner --dry-run wrong (exit ${CASE5F_EXIT}, status '${CASE5F_STATUS}'): ${CASE5F_OUT}"
+    fi
+  fi
 fi
 
 # ── Case 6: state mutations serialize on the lock file (issue #5444
@@ -553,7 +598,8 @@ fi
 #
 # Simulates a Windows-like environment where fcntl is absent by setting
 # sys.modules['fcntl'] = None before importing the module.  Import must
-# succeed without ImportError; _make_lock falls back to msvcrt then _NoopLock.
+# succeed without ImportError; _make_lock then selects msvcrt, or reports
+# None when this platform has no locking backend at all.
 CASE8_SCRIPT="${TMPDIR_BASE}/case8_no_fcntl.py"
 
 cat > "${CASE8_SCRIPT}" << PYEOF
@@ -576,18 +622,19 @@ except Exception as exc:
     print(f'FAIL: unexpected import error: {type(exc).__name__}: {exc}')
     sys.exit(1)
 
-# Verify _make_lock falls back gracefully without fcntl.  Use a temporary
-# file rather than '/dev/null', which does not exist on the very platforms
-# this case simulates.
+# _make_lock must report the *absence* of a backend as None rather than
+# substituting a no-op that satisfies the type while dropping serialization.
+# Use a temporary file rather than '/dev/null', which does not exist on the
+# very platforms this case simulates.
 import tempfile
 dummy_fh = tempfile.TemporaryFile(mode='w+b')
 lock = wm._make_lock(dummy_fh)
 dummy_fh.close()
-if isinstance(lock, (wm._MsvcrtLock, wm._NoopLock)):
-    print('PASS: module imports cleanly without fcntl; _make_lock uses fallback backend')
+if isinstance(lock, wm._MsvcrtLock) or lock is None:
+    print('PASS: module imports cleanly without fcntl; _make_lock reports msvcrt or None')
     sys.exit(0)
 else:
-    print(f'FAIL: expected _MsvcrtLock or _NoopLock fallback, got {type(lock).__name__}')
+    print(f'FAIL: expected _MsvcrtLock or None, got {type(lock).__name__}')
     sys.exit(1)
 PYEOF
 
@@ -595,9 +642,65 @@ CASE8_EXIT=0
 CASE8_OUT="$(python3 "${CASE8_SCRIPT}" 2>&1)" || CASE8_EXIT=$?
 
 if [[ "${CASE8_EXIT}" -eq 0 && "${CASE8_OUT}" == *"PASS"* ]]; then
-  pass "module imports cleanly on a platform without fcntl; _make_lock falls back gracefully"
+  pass "module imports cleanly on a platform without fcntl; _make_lock reports the backend honestly"
 else
   fail "fcntl-absent import: ${CASE8_OUT}"
+fi
+
+# ── Case 8b/8c: with NO locking backend, state mutation fails closed by
+#    default and proceeds only under the explicit opt-in.  This is the
+#    control for the review finding that a claimed-portable lock must not
+#    silently degrade to no lock on an unproven platform. ─────────────────
+CASE8B_SCRIPT="${TMPDIR_BASE}/case8b_no_backend.py"
+
+cat > "${CASE8B_SCRIPT}" << PYEOF
+import os, sys, importlib.util, pathlib
+
+# Poison BOTH backends: this platform can take no lock at all.
+sys.modules['fcntl'] = None   # type: ignore[assignment]
+sys.modules['msvcrt'] = None  # type: ignore[assignment]
+
+spec = importlib.util.spec_from_file_location(
+    'worktree_manager_no_backend',
+    '${AGENT_ONE}/scripts/worktree-manager.py',
+)
+wm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(wm)
+
+state_path = pathlib.Path('${TMPDIR_BASE}/case8b-state.json')
+
+# 8b: default must refuse to mutate rather than run unserialized.
+os.environ.pop(wm.ALLOW_UNLOCKED_ENV_VAR, None)
+try:
+    with wm._state_transaction(state_path):
+        print('FAIL: _state_transaction proceeded with no locking backend and no opt-in')
+        sys.exit(1)
+except RuntimeError as exc:
+    if wm.ALLOW_UNLOCKED_ENV_VAR not in str(exc):
+        print(f'FAIL: fail-closed error does not name the opt-in variable: {exc}')
+        sys.exit(1)
+
+# 8c: the explicit opt-in must still work, so an operator on an exotic
+# runtime is warned rather than hard-blocked.
+os.environ[wm.ALLOW_UNLOCKED_ENV_VAR] = '1'
+try:
+    with wm._state_transaction(state_path):
+        pass
+except RuntimeError as exc:
+    print(f'FAIL: opt-in did not permit unlocked operation: {exc}')
+    sys.exit(1)
+
+print('PASS: no-backend mutation fails closed by default and honors the opt-in')
+sys.exit(0)
+PYEOF
+
+CASE8B_EXIT=0
+CASE8B_OUT="$(python3 "${CASE8B_SCRIPT}" 2>&1)" || CASE8B_EXIT=$?
+
+if [[ "${CASE8B_EXIT}" -eq 0 && "${CASE8B_OUT}" == *"PASS"* ]]; then
+  pass "no locking backend: state mutation fails closed by default, opt-in still available"
+else
+  fail "no-backend fail-closed: ${CASE8B_OUT}"
 fi
 
 # ── Case 9: Windows locking ─────────────────────────────────────────────────

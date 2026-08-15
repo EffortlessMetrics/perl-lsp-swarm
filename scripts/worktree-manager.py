@@ -90,6 +90,11 @@ LOCK_TIMEOUT_ENV_VAR = "WORKTREE_MANAGER_LOCK_TIMEOUT"
 DEFAULT_LOCK_TIMEOUT_SECONDS = 120.0
 LOCK_POLL_SECONDS = 0.1
 
+# Explicit opt-in to running without any file-locking backend.  Absent this,
+# a platform with neither fcntl nor msvcrt fails closed rather than silently
+# running unserialized (see the platform matrix above _StateLock).
+ALLOW_UNLOCKED_ENV_VAR = "WORKTREE_MANAGER_ALLOW_UNLOCKED"
+
 
 def lock_timeout_seconds() -> float:
     """Return the state-lock wait bound, overridable for tests and slow links.
@@ -115,10 +120,26 @@ def lock_timeout_seconds() -> float:
 # releases could lose each other's updates; an interrupted write could leave
 # partial JSON.
 #
-# Fix: one portable serialization boundary using a lock file adjacent to the
-# state file, and an atomic temp-file + rename write.  Both locking backends
-# (fcntl on POSIX, msvcrt on Windows) are imported *lazily inside the
-# function* so this module can be imported on any platform without error.
+# Fix: one serialization boundary using a lock file adjacent to the state
+# file, and an atomic temp-file + rename write.  Both locking backends (fcntl
+# on POSIX, msvcrt on Windows) are imported *lazily inside the function* so
+# this module can be imported on any platform without error.
+#
+# Serialization strength is NOT uniform across platforms, and this module does
+# not pretend otherwise:
+#
+#   POSIX (fcntl.flock)   — PROVEN.  Exercised by Case 6, which holds the
+#                           manager's own lock file from an external process
+#                           and asserts the manager blocks, times out citing
+#                           the lock, and proceeds once released.
+#   Windows (msvcrt)      — IMPLEMENTED, NOT_PROVEN.  No Windows CI lane runs
+#                           the competing-mutation control yet (issue #5444).
+#                           A defect here surfaces as a raised exception, not
+#                           as silent non-serialization.
+#   Neither available     — FAILS CLOSED.  There is no lock at all, so a
+#                           mutation would be silently unserialized; that is
+#                           the one case that cannot be allowed to proceed by
+#                           default.  See ``ALLOW_UNLOCKED_ENV_VAR``.
 
 
 class _StateLock(Protocol):
@@ -134,13 +155,22 @@ class _StateLock(Protocol):
     def release(self) -> None: ...
 
 
-class _NoopLock:
-    """Fallback when no native locking backend is available."""
+class _UnlockedFallback:
+    """Explicitly opted-in, unserialized operation when no backend exists.
+
+    This is *not* a lock.  It exists only so a single-process operator on a
+    Python build without ``fcntl`` or ``msvcrt`` is not hard-blocked, and it
+    is reachable only via ``ALLOW_UNLOCKED_ENV_VAR``.  Without that opt-in,
+    ``_state_transaction`` refuses to run rather than silently dropping the
+    serialization guarantee the caller is entitled to assume.
+    """
 
     def try_acquire(self) -> bool:
         print(
-            "WARNING: no file-locking backend (fcntl/msvcrt) is available; "
-            "concurrent state mutations are not serialized",
+            f"WARNING: {ALLOW_UNLOCKED_ENV_VAR} is set and no file-locking "
+            "backend (fcntl/msvcrt) is available; state mutations are NOT "
+            "serialized. Concurrent manager processes can lose each other's "
+            "updates. Run one manager process at a time.",
             file=sys.stderr,
         )
         return True
@@ -207,8 +237,13 @@ class _MsvcrtLock:
         _msvcrt.locking(self._fh.fileno(), _msvcrt.LK_UNLCK, self._NBYTES)
 
 
-def _make_lock(fh: Any) -> _StateLock:
-    """Return the best available exclusive-lock implementation for *fh*."""
+def _make_lock(fh: Any) -> _StateLock | None:
+    """Return the exclusive-lock backend for *fh*, or ``None`` if there is none.
+
+    ``None`` means this platform offers no file locking at all.  The caller
+    decides what to do about that; this function does not substitute a no-op
+    that would satisfy the type while dropping the guarantee.
+    """
     try:
         import fcntl  # noqa: F401, PLC0415
 
@@ -221,7 +256,7 @@ def _make_lock(fh: Any) -> _StateLock:
         return _MsvcrtLock(fh)
     except ImportError:
         pass
-    return _NoopLock()
+    return None
 
 
 @contextlib.contextmanager
@@ -242,8 +277,11 @@ def _state_transaction(state_path: Path):
 
     Lock acquisition uses the platform-native mechanism (``fcntl.flock`` on
     POSIX, ``msvcrt.locking`` on Windows).  Both modules are imported lazily
-    so this file can be imported cleanly on any platform.  Windows locking
-    behavior is exercised by Windows CI or reported NOT_PROVEN (issue #5444).
+    so this file can be imported cleanly on any platform — importing the
+    module never requires a locking backend, only *mutating state* does.  When
+    neither backend exists this fails closed with an actionable error naming
+    ``ALLOW_UNLOCKED_ENV_VAR``, rather than proceeding unserialized behind a
+    stderr warning a caller may never read.
     """
     lock_path = state_path.with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -253,6 +291,19 @@ def _state_transaction(state_path: Path):
     lock_path.touch(exist_ok=True)
     with open(lock_path, "r+b") as lock_fh:
         lock = _make_lock(lock_fh)
+        if lock is None:
+            if os.environ.get(ALLOW_UNLOCKED_ENV_VAR, "") not in {"", "0"}:
+                lock = _UnlockedFallback()
+            else:
+                raise RuntimeError(
+                    "no file-locking backend is available on this Python "
+                    "runtime (neither fcntl nor msvcrt could be imported), so "
+                    "concurrent worktree-manager processes cannot be "
+                    "serialized and would lose each other's state updates. "
+                    f"Refusing to continue. Set {ALLOW_UNLOCKED_ENV_VAR}=1 to "
+                    "proceed anyway if you are certain only one manager "
+                    "process runs at a time."
+                )
         deadline = time.monotonic() + timeout
         announced = False
         while not lock.try_acquire():
@@ -803,10 +854,6 @@ def release(
     if slot_path.exists() and worktree_dirty(slot_path) and not args.force:
         raise RuntimeError(f"slot {args.slot!r} is dirty; clean it before release or use --force")
 
-    if args.dry_run:
-        print(f"would release slot={args.slot} path={slot.get('path', '')}")
-        return
-
     owner = resolve_owner(args.owner)
     recorded_owner = normalize_owner(slot.get("owner"))
 
@@ -815,11 +862,21 @@ def release(
     # which allowed an ownerless caller (owner is None) to release a slot with
     # a recorded owner.  The correct invariant: when a slot carries a recorded
     # owner, release requires the *same* owner unless --force is explicit.
+    #
+    # This runs *before* the --dry-run return so the prediction matches the
+    # real command.  Callers use --dry-run to decide whether to release; a
+    # dry run that printed "would release" for another owner's slot would be
+    # wrong in exactly the case this guard exists to protect.  The
+    # dirty-worktree check above is ordered the same way for the same reason.
     if recorded_owner and (owner is None or owner != recorded_owner) and not args.force:
         raise RuntimeError(
             f"slot {args.slot!r} is owned by {recorded_owner!r}; "
             "supply --owner with the same owner or use --force to bypass"
         )
+
+    if args.dry_run:
+        print(f"would release slot={args.slot} path={slot.get('path', '')}")
+        return
 
     slot["status"] = "retired" if args.retire else "idle"
     slot["last_released_at"] = utc_now()
