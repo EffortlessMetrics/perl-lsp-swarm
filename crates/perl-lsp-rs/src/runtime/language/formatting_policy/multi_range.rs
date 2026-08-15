@@ -1,6 +1,6 @@
 //! Atomic multi-range formatting plan builder plus rangesFormatting wiring.
 //!
-//! Compose-heavy unit coverage remains a follow-up packet for ripr-safe size.
+//! Compose units cover empty-point bounds and same-line adjacent edit merges.
 
 use serde::Serialize;
 
@@ -905,6 +905,67 @@ mod tests {
         let conflict = PlanError::new("edit_conflict", "formatter edits overlap");
         assert_eq!(conflict.json_rpc_code(), -32603);
         assert_eq!(conflict.error_kind(), "formatting_outcome_contract");
+        Ok(())
+    }
+
+    fn text_edit(sl: u32, sc: u32, el: u32, ec: u32, new_text: &str) -> FormatTextEdit {
+        use crate::features::formatting::{FormatPosition, FormatRange};
+        FormatTextEdit {
+            range: FormatRange::new(FormatPosition::new(sl, sc), FormatPosition::new(el, ec)),
+            new_text: new_text.to_string(),
+        }
+    }
+
+    #[test]
+    fn empty_point_compose_keeps_zero_width_bound() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "abcdef\n";
+        let plan = build_plan(source, &[range(0, 3, 0, 3)])?;
+        let ok = compose_edits(source, &plan, vec![vec![text_edit(0, 3, 0, 3, "X")]], 1, "cfg")?;
+        assert_eq!(ok.0.len(), 1);
+        assert_eq!(ok.0[0].new_text, "X");
+
+        // Bound each side independently so a one-sided gate regression cannot hide.
+        let left_escape =
+            compose_edits(source, &plan, vec![vec![text_edit(0, 2, 0, 3, "X")]], 1, "cfg")
+                .err()
+                .ok_or("empty-point span must reject lower-bound escape")?;
+        assert_eq!(left_escape.reason, "edit_outside_range");
+
+        let right_escape =
+            compose_edits(source, &plan, vec![vec![text_edit(0, 3, 0, 4, "X")]], 1, "cfg")
+                .err()
+                .ok_or("empty-point span must reject upper-bound escape")?;
+        assert_eq!(right_escape.reason, "edit_outside_range");
+        Ok(())
+    }
+
+    #[test]
+    fn same_line_adjacent_edits_compose_in_order() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "abcdefgh\n";
+        // One admitted span with right-to-left formatter edits proves canonical sort.
+        let plan = build_plan(source, &[range(0, 0, 0, 8)])?;
+        let (edits, digest) = compose_edits(
+            source,
+            &plan,
+            vec![vec![text_edit(0, 4, 0, 8, "BBBB"), text_edit(0, 0, 0, 4, "AAAA")]],
+            7,
+            "cfg-fingerprint",
+        )?;
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].new_text, "AAAA");
+        assert_eq!(edits[1].new_text, "BBBB");
+        assert!(!digest.is_empty(), "composed edit digest must be non-empty");
+
+        let conflict = compose_edits(
+            source,
+            &plan,
+            vec![vec![text_edit(0, 0, 0, 5, "AAAAA"), text_edit(0, 4, 0, 8, "BBBB")]],
+            7,
+            "cfg-fingerprint",
+        )
+        .err()
+        .ok_or("overlapping same-line edits must refuse")?;
+        assert_eq!(conflict.reason, "edit_conflict");
         Ok(())
     }
 }
