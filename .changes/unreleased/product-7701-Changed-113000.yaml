@@ -2,9 +2,10 @@ project: product
 component: Language server
 kind: Changed
 body: >-
-  Add exact released-stable and current-master Helix capability profiles with
-  shipped-process negotiation tests for diagnostic, configuration, watcher,
-  markup, snippet, and position-encoding boundaries.
+  Add source-derived released-stable and current-master Helix capability
+  profiles, replayed through the shipped server process to cover the watcher,
+  workspace-configuration, and position-encoding negotiation boundaries that
+  differ between the two clients.
 time: 2026-08-13T11:30:00Z
 custom:
   PR: "7701"
