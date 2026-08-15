@@ -3,7 +3,7 @@
   "name": "Perl Language Server",
   "url": "https://github.com/EffortlessMetrics/perl-lsp",
   "programArgs": {
-    "default": "sh -c ${BASE_DIR}/perllsp --stdio",
+    "default": "sh -c \"${BASE_DIR}/perllsp --stdio\"",
     "windows": "${BASE_DIR}/perllsp.exe --stdio"
   },
   "expandConfiguration": true,
