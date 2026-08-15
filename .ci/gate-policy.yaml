@@ -903,7 +903,19 @@ gates:
     # Single-threaded for determinism. Keep the wire-shape regression focused:
     # this target contains many API contracts, but only textDocumentSync owns
     # the reviewed recurrence claim in #6776.
+    #
+    # Build the server binary first, for the same reason the routed integration
+    # gate above does (#9464): `perllsp` is its own workspace package, so
+    # `cargo test -p perl-lsp-rs` never builds it. The harness then resolves
+    # PERL_LSP_BIN -> CARGO_BIN_EXE -> target/debug/perllsp -> PATH ->
+    # cargo-run fallback, and that fallback has to compile the whole binary
+    # inside each test's 16s initialize timeout. Every test in
+    # semantic_definition that spawns a server times out twice and fails,
+    # which is what made this gate red on main (#9677). With the binary
+    # prebuilt the same suite is 16/16 in about a second.
     command: >-
+      cargo build -p perllsp --locked
+      &&
       env -u RUSTC_WRAPPER
       RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
       cargo test -p perl-lsp-rs --test semantic_definition --locked
