@@ -37,6 +37,9 @@ serde_json.workspace = true
 # Error handling
 anyhow.workspace = true
 
+# OS-backed entropy for external-peer session bearer tokens (#6949)
+getrandom = "0.3.4"
+
 # Regex for parsing debugger output
 regex.workspace = true
 
@@ -395,6 +398,11 @@ path = "tests/wave_h_external_red_tests.rs"
 name = "prop_dap_protocol_roundtrip"
 path = "tests/prop_dap_protocol_roundtrip.rs"
 # Property tests: DAP protocol message JSON round-trip invariants
+
+[[test]]
+name = "prop_perl_value"
+path = "tests/prop_perl_value.rs"
+# Property tests: PerlValue JSON round-trip, renderer metadata, and constructor preservation
 
 # Tests that call test-seed helpers gated behind #[cfg(any(test, feature = "test-helpers"))].
 # Run with: cargo test -p perl-dap --features test-helpers

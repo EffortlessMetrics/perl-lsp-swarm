@@ -5,6 +5,7 @@
 
 use super::items::{CompletionItemKind, InsertTextFormat};
 use super::{context::CompletionContext, items::CompletionItem};
+use std::borrow::Cow;
 
 /// A single regex completion suggestion.
 struct RegexSuggestion {
@@ -370,13 +371,13 @@ pub fn add_regex_flag_completions(
             continue; // skip already-used flags
         }
         completions.push(CompletionItem {
-            label: flag.to_string(),
+            label: Cow::Borrowed(flag),
             kind: CompletionItemKind::Keyword,
-            detail: Some("regex flag".to_string()),
-            documentation: Some(doc.to_string()),
-            insert_text: Some(flag.to_string()),
-            sort_text: Some(format!("5_flag_{flag}")),
-            filter_text: Some(flag.to_string()),
+            detail: Some(Cow::Borrowed("regex flag")),
+            documentation: Some(Cow::Borrowed(doc)),
+            insert_text: Some(Cow::Borrowed(flag)),
+            sort_text: Some(Cow::Owned(format!("5_flag_{flag}"))),
+            filter_text: Some(Cow::Borrowed(flag)),
             additional_edits: vec![],
             text_edit_range: Some((context.position, context.position)),
             commit_characters: None,
@@ -408,13 +409,13 @@ pub fn add_regex_completions(
     for suggestion in regex_suggestions() {
         if prefix.is_empty() || suggestion.label.starts_with(prefix) {
             completions.push(CompletionItem {
-                label: suggestion.label.to_string(),
+                label: Cow::Borrowed(suggestion.label),
                 kind: CompletionItemKind::Snippet,
-                detail: Some(format!("regex {}", suggestion.detail)),
-                documentation: Some(suggestion.doc.to_string()),
-                insert_text: Some(suggestion.insert.to_string()),
-                sort_text: Some(suggestion.sort_key.to_string()),
-                filter_text: Some(suggestion.label.to_string()),
+                detail: Some(Cow::Owned(format!("regex {}", suggestion.detail))),
+                documentation: Some(Cow::Borrowed(suggestion.doc)),
+                insert_text: Some(Cow::Borrowed(suggestion.insert)),
+                sort_text: Some(Cow::Borrowed(suggestion.sort_key)),
+                filter_text: Some(Cow::Borrowed(suggestion.label)),
                 additional_edits: vec![],
                 text_edit_range: Some((replace_start, context.position)),
                 commit_characters: None,

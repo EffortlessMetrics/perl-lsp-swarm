@@ -385,8 +385,8 @@ fn emit_triple(
     let anchor = AnchorFact {
         id: anchor_id,
         file_id,
-        span_start_byte: node_start_byte as u32,
-        span_end_byte: span_end as u32,
+        span_start_byte: node_start_byte.min(u32::MAX as usize) as u32,
+        span_end_byte: span_end.min(u32::MAX as usize) as u32,
         scope_id: None,
         provenance: Provenance::DynamicBoundary,
         confidence: Confidence::Low,

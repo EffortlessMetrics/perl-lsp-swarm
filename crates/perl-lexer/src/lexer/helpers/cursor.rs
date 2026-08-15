@@ -96,8 +96,14 @@ impl PerlLexer<'_> {
     /// Check if the next bytes match a pattern (ASCII only)
     #[inline]
     pub(crate) fn matches_bytes(&self, pattern: &[u8]) -> bool {
+        if pattern.is_empty() {
+            // An empty pattern matches nothing — returning true for empty
+            // patterns caused incorrect delimiter matching in edge cases (#2381).
+            return false;
+        }
+
         let Some(end_offset) = pattern.len().checked_sub(1) else {
-            return true;
+            return false;
         };
 
         if end_offset > self.config.max_lookahead {
@@ -165,4 +171,20 @@ impl PerlLexer<'_> {
 #[cfg(test)]
 mod tests {
     include!("../../../tests/fixtures/ripr_seam_proof_peek_char_unit.inc");
+
+    use crate::PerlLexer;
+
+    #[test]
+    fn matches_bytes_empty_pattern_returns_false() {
+        // An empty pattern should not match anything (#2381).
+        let lexer = PerlLexer::new("hello");
+        assert!(!lexer.matches_bytes(b""), "empty pattern must not match");
+    }
+
+    #[test]
+    fn matches_bytes_non_empty_pattern_works() {
+        let lexer = PerlLexer::new("hello");
+        assert!(lexer.matches_bytes(b"hel"));
+        assert!(!lexer.matches_bytes(b"xyz"));
+    }
 }

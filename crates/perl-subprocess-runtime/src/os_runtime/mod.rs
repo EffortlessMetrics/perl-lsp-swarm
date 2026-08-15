@@ -1,5 +1,6 @@
 //! OS-backed subprocess runtime.
 
+mod cmd_quote;
 mod invocation;
 mod path_selection;
 mod process;
@@ -25,7 +26,7 @@ pub(crate) use path_selection::{candidate_priority, select_path_candidate};
 pub(crate) use path_selection::candidate_priority as windows_program_priority;
 
 #[cfg(all(windows, test))]
-pub(crate) use windows::{resolve_cmd_exe, windows_quote_for_cmd};
+pub(crate) use windows::resolve_cmd_exe;
 
 /// Re-export of [`windows::resolve_windows_program`] for use by
 /// [`crate::resolve_program`].  The inner function is `pub(crate)`; this

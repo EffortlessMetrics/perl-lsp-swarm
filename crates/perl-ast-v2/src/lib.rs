@@ -61,10 +61,13 @@ impl Node {
         Node { id, kind, range }
     }
 
-    /// Convert to tree-sitter compatible S-expression
+    /// Convert to tree-sitter compatible S-expression.
+    ///
+    /// Recursion is depth-limited to prevent stack overflow on deeply nested
+    /// ASTs (e.g., chains from error recovery). At the depth limit, children
+    /// are rendered as `...` (#2127).
     pub fn to_sexp(&self) -> String {
-        // Delegate to existing implementation
-        self.kind.to_sexp()
+        self.kind.to_sexp_depth(0)
     }
 }
 
@@ -146,8 +149,11 @@ pub enum NodeKind {
     /// let output = parser.parse_with_recovery();
     /// for node in output.ast.walk() {
     ///     if let NodeKind::ErrorRef { diag_id } = &node.kind {
-    ///         let diagnostic = &output.diagnostics[*diag_id as usize];
-    ///         println!("Error at {:?}: {}", node.range, diagnostic);
+    ///         // Use safe indexing — diag_id is a u32 that should always be
+    ///         // a valid index, but verify defensively (#2135).
+    ///         if let Some(diagnostic) = output.diagnostics.get(*diag_id as usize) {
+    ///             println!("Error at {:?}: {}", node.range, diagnostic);
+    ///         }
     ///     }
     /// }
     /// ```
@@ -228,18 +234,38 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    /// Convert to S-expression format
+    /// Maximum nesting depth before children are elided as `...` (#2127).
+    const SEXP_MAX_DEPTH: usize = 128;
+
+    /// Convert to S-expression format with depth tracking.
     pub fn to_sexp(&self) -> String {
+        self.to_sexp_depth(0)
+    }
+
+    fn to_sexp_depth(&self, depth: usize) -> String {
         use NodeKind::*;
+
+        // At the depth limit, elide children to prevent stack overflow.
+        if depth >= Self::SEXP_MAX_DEPTH {
+            return "...".to_string();
+        }
 
         match self {
             Program { statements } => {
-                let stmts = statements.iter().map(|s| s.to_sexp()).collect::<Vec<_>>().join(" ");
+                let stmts = statements
+                    .iter()
+                    .map(|s| s.kind.to_sexp_depth(depth + 1))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 format!("(source_file {})", stmts)
             }
 
             Block { statements } => {
-                let stmts = statements.iter().map(|s| s.to_sexp()).collect::<Vec<_>>().join(" ");
+                let stmts = statements
+                    .iter()
+                    .map(|s| s.kind.to_sexp_depth(depth + 1))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 format!("(block {})", stmts)
             }
 
@@ -260,22 +286,33 @@ impl NodeKind {
             }
 
             Binary { op, left, right } => {
-                format!("(binary_{} {} {})", op, left.to_sexp(), right.to_sexp())
+                format!(
+                    "(binary_{} {} {})",
+                    op,
+                    left.kind.to_sexp_depth(depth + 1),
+                    right.kind.to_sexp_depth(depth + 1)
+                )
             }
 
-            Unary { op, operand } => format!("(unary_{} {})", op, operand.to_sexp()),
+            Unary { op, operand } => {
+                format!("(unary_{} {})", op, operand.kind.to_sexp_depth(depth + 1))
+            }
 
             If { condition, then_branch, elsif_branches, else_branch } => {
-                let mut s = format!("(if {} {}", condition.to_sexp(), then_branch.to_sexp());
+                let mut s = format!(
+                    "(if {} {}",
+                    condition.kind.to_sexp_depth(depth + 1),
+                    then_branch.kind.to_sexp_depth(depth + 1)
+                );
                 for (elsif_cond, elsif_block) in elsif_branches {
                     s.push_str(&format!(
                         " (elsif {} {})",
-                        elsif_cond.to_sexp(),
-                        elsif_block.to_sexp()
+                        elsif_cond.kind.to_sexp_depth(depth + 1),
+                        elsif_block.kind.to_sexp_depth(depth + 1)
                     ));
                 }
                 if let Some(eb) = else_branch {
-                    s.push_str(&format!(" (else {})", eb.to_sexp()));
+                    s.push_str(&format!(" (else {})", eb.kind.to_sexp_depth(depth + 1)));
                 }
                 s.push(')');
                 s
@@ -285,20 +322,28 @@ impl NodeKind {
                 Some(init) => format!(
                     "(variable_declaration {} {} {})",
                     declarator,
-                    variable.to_sexp(),
-                    init.to_sexp()
+                    variable.kind.to_sexp_depth(depth + 1),
+                    init.kind.to_sexp_depth(depth + 1)
                 ),
-                None => format!("(variable_declaration {} {})", declarator, variable.to_sexp()),
+                None => format!(
+                    "(variable_declaration {} {})",
+                    declarator,
+                    variable.kind.to_sexp_depth(depth + 1)
+                ),
             },
 
             VariableListDeclaration { declarator, variables, initializer, .. } => {
-                let vars = variables.iter().map(|v| v.to_sexp()).collect::<Vec<_>>().join(" ");
+                let vars = variables
+                    .iter()
+                    .map(|v| v.kind.to_sexp_depth(depth + 1))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 match initializer {
                     Some(init) => format!(
                         "(variable_list_declaration {} {} {})",
                         declarator,
                         vars,
-                        init.to_sexp()
+                        init.kind.to_sexp_depth(depth + 1)
                     ),
                     None => format!("(variable_list_declaration {} {})", declarator, vars),
                 }

@@ -26,6 +26,12 @@ problem is usually in editor integration, workspace roots, or a stale cache.
 2. Turn on logging and read stderr:
 
    ```bash
+   perllsp --log --stdio
+   ```
+
+   Or use `RUST_LOG` for finer-grained control:
+
+   ```bash
    RUST_LOG=perl_lsp=debug perllsp --stdio
    ```
 
@@ -179,42 +185,30 @@ If the editor is using a helper extension or plugin, check its own logs too.
 If you are debugging with `perl-dap`, check the DAP guide:
 [DAP_USER_GUIDE.md](../tutorials/DAP_USER_GUIDE.md).
 
-
 ## Zed Does Not Start `perllsp`
 
-1. Confirm `perllsp` works outside Zed:
+This is currently an integration-availability problem, not an ordinary binary
+troubleshooting path. The public Perl extension does not register `perllsp`, so
+installing `perllsp` alone cannot make Zed start it.
 
-   ```bash
-   perllsp --version
-   perllsp --health
-   perllsp --info
-   ```
+The extension's existing IDs belong to other products:
 
-2. Confirm the installed Zed extension registers the same server ID used in
-   `settings.json`, for example `perl-lsp`.
+```text
+perlnavigator-server -> Perl Navigator
+perl-lsp             -> tree-sitter-perl/perl-tree-sitter-lsp
+```
 
-3. If Zed logs `no language server found matching 'perl-lsp'`, the server is
-   not registered. Installing `perllsp` alone is not enough.
+Do not override the existing `perl-lsp` ID to run `perllsp`. Doing so hides the
+winning product identity and invalidates support evidence.
 
-4. If Zed cannot find the binary, start Zed from the project shell:
+For contributors preparing the upstream change, use the exact-base candidate
+and apply script documented in
+[ZED_UPSTREAM_SUBMISSION.md](../integrations/ZED_UPSTREAM_SUBMISSION.md). That
+candidate remains `not_proven` until an actual Zed development-extension receipt
+binds the host, extension, binary, platform, requests, edits, and shutdown.
 
-   ```bash
-   zed .
-   ```
-
-   Or use an absolute `lsp.perl-lsp.binary.path`.
-
-5. Check Zed logs with `zed: open log`. For more startup detail, relaunch Zed
-   from a terminal:
-
-   ```bash
-   zed --foreground .
-   ```
-   ```bash
-   perllsp --version
-   perllsp --health
-   perllsp --info
-   ```
+Public-user runtime troubleshooting will be added only after a released Perl
+extension registers `perllsp` and a public-artifact host receipt exists.
 
 ## When To Escalate
 

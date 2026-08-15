@@ -121,8 +121,20 @@ fn inspect_statement(node: &Node) -> StatementFacts {
 
 fn inspect_node(node: &Node, facts: &mut StatementFacts) {
     match &node.kind {
-        NodeKind::Eval { .. } | NodeKind::Try { .. } => {
+        NodeKind::Eval { .. } => {
             facts.has_source = true;
+        }
+        // `try { } catch ($e) { }` captures the error in `$e`, NOT in `$@`.
+        // Only treat the try block as a `$@` source when ALL catch blocks use
+        // the implicit variable form (`catch { }` with no explicit variable),
+        // which does set `$@`. If any catch has an explicit variable, `$@` is
+        // NOT set and subsequent `$@` reads should not be treated as
+        // "after a source" (#1725).
+        NodeKind::Try { catch_blocks, .. } => {
+            let all_implicit = catch_blocks.iter().all(|(var, _)| var.is_none());
+            if all_implicit {
+                facts.has_source = true;
+            }
         }
         NodeKind::Variable { sigil, name } if is_error_variable(sigil, name) => {
             facts.reads_error_var = true;
@@ -279,7 +291,7 @@ if ($ok) {
         );
     }
 
-    // Covers the elsif branch of the fix â€” the PR modifies both elsif_branches and
+    // Covers the elsif branch of the fix â€" the PR modifies both elsif_branches and
     // else_branch to inherit caller flow state, but the original two tests only
     // exercise the else path.
     #[test]
@@ -317,7 +329,7 @@ if ($ok) {
         );
     }
 
-    // For/foreach loop bodies reset flow state (FlowState::default()) â€” verify that
+    // For/foreach loop bodies reset flow state (FlowState::default()) â€" verify that
     // $@ inside a foreach body after an eval IS flagged even though eval is immediate.
     // This ensures the PR's change to if/elsif/else did not accidentally affect loops.
     #[test]
@@ -331,7 +343,61 @@ foreach my $item (@items) {
         let diagnostics = eval_error_flow_diags(source);
         assert!(
             diagnostics.iter().any(|diag| diag.code.as_deref() == Some("PL407")),
-            "foreach body resets flow state â€” $@ after eval inside loop body should be flagged: {diagnostics:?}"
+            "foreach body resets flow state - $@ after eval inside loop body should be flagged: {diagnostics:?}"
+        );
+    }
+
+    // #1725: `try { } catch ($e) { }` captures the error in $e, NOT in $@.
+    // A subsequent $@ read should be flagged as context-free (no source),
+    // NOT treated as "after a source".
+    #[test]
+    fn try_with_explicit_catch_var_does_not_set_error_var_source() {
+        let source = r#"
+use feature 'try';
+try {
+    die "error";
+} catch ($e) {
+    print "Caught: $e\n";
+}
+warn $@;
+"#;
+        let diagnostics = eval_error_flow_diags(source);
+        assert!(
+            diagnostics.iter().any(|diag| diag.code.as_deref() == Some("PL407")),
+            "try/catch($e) does NOT set $@ -- subsequent $@ read should be flagged as context-free (#1725): {diagnostics:?}"
+        );
+    }
+
+    // #1725: `try { } catch { }` (implicit variable) DOES set $@.
+    // A subsequent $@ read should NOT be flagged (it's immediately after a source).
+    #[test]
+    fn try_with_implicit_catch_sets_error_var_source() {
+        let source = r#"
+use feature 'try';
+try {
+    die "error";
+} catch {
+    warn $@;
+}
+"#;
+        let diagnostics = eval_error_flow_diags(source);
+        assert!(
+            diagnostics.iter().all(|diag| diag.code.as_deref() != Some("PL407")),
+            "try/catch (implicit) DOES set $@ -- $@ read inside catch should NOT be flagged (#1725): {diagnostics:?}"
+        );
+    }
+
+    // #1725: `eval { }` still sets $@ (existing behavior, regression guard).
+    #[test]
+    fn eval_still_sets_error_var_source() {
+        let source = r#"
+eval { die "error" };
+warn $@;
+"#;
+        let diagnostics = eval_error_flow_diags(source);
+        assert!(
+            diagnostics.iter().all(|diag| diag.code.as_deref() != Some("PL407")),
+            "eval still sets $@ -- immediate $@ read should NOT be flagged: {diagnostics:?}"
         );
     }
 }

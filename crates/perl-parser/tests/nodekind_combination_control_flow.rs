@@ -1049,5 +1049,6 @@ where
                 find_nodes_recursive(item, predicate, results);
             }
         }
+        &_ => {}
     }
 }

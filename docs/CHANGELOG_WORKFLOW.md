@@ -528,4 +528,4 @@ diff CHANGELOG.md CHANGELOG.md.backup
 
 - [Release Process](./RELEASE_PROCESS.md) - Complete release workflow
 - [Contributing Guide](../CONTRIBUTING.md) - Commit message guidelines
-- [CI/CD Documentation](./CI_README.md) - CI pipeline integration
+- [CI Configuration](../.ci/) - CI pipeline configuration and scripts

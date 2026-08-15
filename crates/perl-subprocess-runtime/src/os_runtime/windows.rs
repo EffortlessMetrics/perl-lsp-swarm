@@ -1,40 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use super::path_selection::select_path_candidate;
-
-/// Quote a single argument for use inside a `cmd.exe /V:OFF /S /C "..."` command line.
-///
-/// ## cmd.exe quoting rules inside double-quoted regions
-///
-/// Once cmd.exe sees an opening `"` it enters a quoted region. Inside that region:
-///
-/// - Characters like `&`, `|`, `<`, `>`, `(`, and `)` are literal; they do not
-///   need `^` escaping.
-/// - `^` is also literal in a quoted region, so doubling it would change the
-///   argument seen by the child process.
-/// - `%` is still processed by the variable-substitution pass, which runs before
-///   the shell-metachar pass and is not suppressed by quoting. Double it (`%%`)
-///   to produce a literal `%`.
-/// - `!` would be processed by the delayed-expansion pass when `/V:ON` is in
-///   effect. We invoke cmd.exe with `/V:OFF` to suppress this entirely, so `!`
-///   needs no escaping here.
-/// - To embed a literal `"` inside a double-quoted cmd.exe token, use `""` (the
-///   cmd.exe shell convention). The `\"` form is for `CommandLineToArgvW` (the
-///   Win32 C-runtime argv parser), which is a different parser from the cmd.exe
-///   shell command-line parser.
-pub(crate) fn windows_quote_for_cmd(arg: &str) -> String {
-    let mut escaped = String::with_capacity(arg.len() + 2);
-    escaped.push('"');
-    for ch in arg.chars() {
-        match ch {
-            '%' => escaped.push_str("%%"),
-            '"' => escaped.push_str("\"\""),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped.push('"');
-    escaped
-}
+// Re-export the pure quoting/extension helpers so Windows-only callers
+// (`invocation.rs`) can import everything from `super::windows` as before.
+// The implementations live in `cmd_quote.rs` so they are tested on all
+// platforms, not just Windows CI runners (#5012).
+pub(crate) use super::cmd_quote::{windows_quote_for_cmd, windows_requires_cmd_shell};
 
 /// Resolve a program name to an absolute path by searching the `PATH`
 /// environment variable directories.
@@ -135,14 +106,6 @@ fn pathext_from_env() -> Vec<String> {
         .split(';')
         .map(str::to_string)
         .collect()
-}
-
-pub(crate) fn windows_requires_cmd_shell(program: &str) -> bool {
-    Path::new(program)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd"))
-        .unwrap_or(false)
 }
 
 /// Resolve the absolute path to `cmd.exe`, used to execute `.bat`/`.cmd`

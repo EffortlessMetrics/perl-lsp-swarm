@@ -9,6 +9,7 @@ mod snippet;
 pub use snippet::{InsertTextFormat, render_snippet_plaintext, snippet_body_defects};
 
 use perl_parser_core::SourceLocation;
+use std::borrow::Cow;
 
 /// Type of completion item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -45,18 +46,24 @@ pub struct CompletionItemLabelDetails {
 }
 
 /// A single completion suggestion.
+///
+/// String fields that carry static data (builtin names, keyword strings,
+/// regex pattern labels) use `Cow::Borrowed(&'static str)` — zero heap
+/// allocation. Runtime-derived strings (user symbol names, formatted sort
+/// keys, workspace identifiers) use `Cow::Owned(String)` with the same
+/// cost as before.
 #[derive(Debug, Clone)]
 pub struct CompletionItem {
     /// The text to insert.
-    pub label: String,
+    pub label: Cow<'static, str>,
     /// Kind of completion.
     pub kind: CompletionItemKind,
     /// Optional detail text.
-    pub detail: Option<String>,
+    pub detail: Option<Cow<'static, str>>,
     /// Optional documentation.
-    pub documentation: Option<String>,
+    pub documentation: Option<Cow<'static, str>>,
     /// Text to insert (if different from label).
-    pub insert_text: Option<String>,
+    pub insert_text: Option<Cow<'static, str>>,
     /// How the client must interpret `insert_text`.
     ///
     /// Independent of `kind`: LSP's `insertTextFormat` describes insertion
@@ -65,9 +72,9 @@ pub struct CompletionItem {
     /// to `Snippet`.
     pub insert_text_format: InsertTextFormat,
     /// Sort priority (lower is better).
-    pub sort_text: Option<String>,
+    pub sort_text: Option<Cow<'static, str>>,
     /// Filter text for matching.
-    pub filter_text: Option<String>,
+    pub filter_text: Option<Cow<'static, str>>,
     /// Additional text edits to apply.
     pub additional_edits: Vec<(SourceLocation, String)>,
     /// Range to replace in the document (for proper prefix handling).
@@ -88,6 +95,7 @@ pub fn deduplicate_and_sort(mut completions: Vec<CompletionItem>) -> Vec<Complet
     }
 
     // Remove duplicates based on label, keeping the one with better sort_text.
+    // HashMap key is String so we can look up via &str (String: Borrow<str>).
     let mut seen = std::collections::HashMap::<String, usize>::new();
     let mut to_remove = std::collections::HashSet::<usize>::new();
 
@@ -98,23 +106,23 @@ pub fn deduplicate_and_sort(mut completions: Vec<CompletionItem>) -> Vec<Complet
             continue;
         }
 
-        if let Some(&existing_idx) = seen.get(&item.label) {
+        if let Some(&existing_idx) = seen.get(item.label.as_ref()) {
             let existing_sort = completions[existing_idx]
                 .sort_text
-                .as_ref()
-                .unwrap_or(&completions[existing_idx].label);
-            let current_sort = item.sort_text.as_ref().unwrap_or(&item.label);
+                .as_deref()
+                .unwrap_or(completions[existing_idx].label.as_ref());
+            let current_sort = item.sort_text.as_deref().unwrap_or(item.label.as_ref());
 
             if current_sort < existing_sort {
                 // Current item is better, remove the existing one.
                 to_remove.insert(existing_idx);
-                seen.insert(item.label.clone(), i);
+                seen.insert(item.label.to_string(), i);
             } else {
                 // Existing item is better, remove current one.
                 to_remove.insert(i);
             }
         } else {
-            seen.insert(item.label.clone(), i);
+            seen.insert(item.label.to_string(), i);
         }
     }
 
@@ -127,8 +135,8 @@ pub fn deduplicate_and_sort(mut completions: Vec<CompletionItem>) -> Vec<Complet
 
     // Sort with stable, deterministic ordering.
     completions.sort_by(|a, b| {
-        let a_sort = a.sort_text.as_ref().unwrap_or(&a.label);
-        let b_sort = b.sort_text.as_ref().unwrap_or(&b.label);
+        let a_sort = a.sort_text.as_deref().unwrap_or(a.label.as_ref());
+        let b_sort = b.sort_text.as_deref().unwrap_or(b.label.as_ref());
 
         // Primary sort: by sort_text/label.
         match a_sort.cmp(b_sort) {
@@ -153,16 +161,17 @@ pub fn deduplicate_and_sort(mut completions: Vec<CompletionItem>) -> Vec<Complet
 mod tests {
     use super::{CompletionItem, CompletionItemKind, InsertTextFormat, deduplicate_and_sort};
     use proptest::prelude::*;
+    use std::borrow::Cow;
     use std::collections::{BTreeMap, HashSet};
 
     fn item(label: &str, kind: CompletionItemKind, sort_text: Option<&str>) -> CompletionItem {
         CompletionItem {
-            label: label.to_string(),
+            label: label.to_string().into(),
             kind,
             detail: None,
             documentation: None,
             insert_text: None,
-            sort_text: sort_text.map(str::to_string),
+            sort_text: sort_text.map(|s| s.to_string().into()),
             filter_text: None,
             additional_edits: Vec::new(),
             text_edit_range: None,
@@ -192,12 +201,12 @@ mod tests {
             prop::option::of("[0-9]{0,3}[_A-Za-z]{0,8}"),
         )
             .prop_map(|(label, kind, sort_text)| CompletionItem {
-                label,
+                label: label.into(),
                 kind,
                 detail: None,
                 documentation: None,
                 insert_text: None,
-                sort_text,
+                sort_text: sort_text.map(Into::into),
                 filter_text: None,
                 additional_edits: Vec::new(),
                 text_edit_range: None,
@@ -208,13 +217,26 @@ mod tests {
     }
 
     fn sort_key(item: &CompletionItem) -> (String, CompletionItemKind, String) {
-        (item.sort_text.as_ref().unwrap_or(&item.label).clone(), item.kind, item.label.clone())
+        (
+            item.sort_text.as_deref().unwrap_or(item.label.as_ref()).to_string(),
+            item.kind,
+            item.label.to_string(),
+        )
     }
 
     fn visible_shape(
         items: &[CompletionItem],
     ) -> Vec<(String, CompletionItemKind, Option<String>)> {
-        items.iter().map(|item| (item.label.clone(), item.kind, item.sort_text.clone())).collect()
+        items
+            .iter()
+            .map(|item| {
+                (
+                    item.label.to_string(),
+                    item.kind,
+                    item.sort_text.as_ref().map(|s: &Cow<'static, str>| s.to_string()),
+                )
+            })
+            .collect()
     }
 
     proptest! {
@@ -227,7 +249,7 @@ mod tests {
 
             for item in &result {
                 prop_assert!(!item.label.is_empty());
-                prop_assert!(labels.insert(item.label.clone()));
+                prop_assert!(labels.insert(item.label.to_string()));
             }
         }
 
@@ -258,9 +280,9 @@ mod tests {
                     continue;
                 }
 
-                let rank = item.sort_text.as_ref().unwrap_or(&item.label).clone();
+                let rank = item.sort_text.as_deref().unwrap_or(item.label.as_ref()).to_string();
                 best_by_label
-                    .entry(item.label.clone())
+                    .entry(item.label.to_string())
                     .and_modify(|best| {
                         if rank < *best {
                             *best = rank.clone();
@@ -272,9 +294,9 @@ mod tests {
             let result = deduplicate_and_sort(items);
 
             for item in &result {
-                let actual_rank = item.sort_text.as_ref().unwrap_or(&item.label);
-                let expected_rank = best_by_label.get(&item.label);
-                prop_assert_eq!(expected_rank, Some(actual_rank));
+                let actual_rank = item.sort_text.as_deref().unwrap_or(item.label.as_ref());
+                let expected_rank = best_by_label.get(item.label.as_ref());
+                prop_assert_eq!(expected_rank, Some(&actual_rank.to_string()));
             }
         }
 

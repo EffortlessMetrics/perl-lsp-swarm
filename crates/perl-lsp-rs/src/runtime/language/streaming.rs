@@ -48,14 +48,32 @@ impl LspServer {
         let text = {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
-                Some(doc) => doc.text.clone(),
+                Some(doc) => doc.text_arc.to_string(),
                 None => return Ok(Some(json!(null))),
             }
         };
 
         // Check AI config
-        let ai_config = self.config.lock().ai_completion.clone();
-        if !ai_config.enabled || !ai_config.streaming.enabled {
+        let (
+            ai_enabled,
+            streaming_enabled,
+            ai_fallback,
+            ai_max_output_tokens,
+            ai_timeout_ms,
+            streaming_debounce_ms,
+        ) = {
+            let cfg = self.config.lock();
+            let a = &cfg.ai_completion;
+            (
+                a.enabled,
+                a.streaming.enabled,
+                a.fallback,
+                a.max_output_tokens,
+                a.timeout_ms,
+                a.streaming.update_debounce_ms,
+            )
+        };
+        if !ai_enabled || !streaming_enabled {
             // Fall back to one-shot
             return self.handle_inline_completion(Some(params));
         }
@@ -80,8 +98,8 @@ impl LspServer {
         // Build request
         let req = perl_lsp_rs_core::providers::inline_completion::BackendRequest {
             context: context.clone(),
-            max_output_tokens: ai_config.max_output_tokens,
-            timeout_ms: ai_config.timeout_ms,
+            max_output_tokens: ai_max_output_tokens,
+            timeout_ms: ai_timeout_ms,
         };
 
         let session_id = session.session_id.clone();
@@ -91,7 +109,7 @@ impl LspServer {
         let backend = match self.ai_backend() {
             Some(b) => b,
             None => {
-                if ai_config.fallback {
+                if ai_fallback {
                     return self.handle_inline_completion(Some(params));
                 }
                 // No backend and no fallback -- emit empty final and return
@@ -122,7 +140,7 @@ impl LspServer {
         // the (potentially slow) network streaming call.
         // Track whether we sent any chunk so we know if a final is needed
         let mut sent_final = false;
-        let debounce = Duration::from_millis(ai_config.streaming.update_debounce_ms);
+        let debounce = Duration::from_millis(streaming_debounce_ms);
         let mut last_emitted_at: Option<Instant> = None;
 
         // Stream from the backend -- each chunk carries cumulative text

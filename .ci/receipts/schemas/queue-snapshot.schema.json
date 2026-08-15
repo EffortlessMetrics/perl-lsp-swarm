@@ -1,6 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp/.ci/receipts/schemas/queue-snapshot.schema.json",
   "title": "Queue Snapshot",
+  "description": "Queue state snapshot. NOT a gate receipt — intentionally exempt from the common envelope (schema_version/check/head_sha/created_at) because this artifact captures orchestration queue state, not CI gate evidence (#2093 §7.5).",
   "type": "object",
   "required": ["snapshot_id", "captured_at", "repository", "default_branch", "master_sha", "prs", "buckets"],
   "properties": {

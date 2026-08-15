@@ -46,3 +46,21 @@ impl Outcome {
         }
     }
 }
+
+/// Receipt freshness predicate, shared by every receipt-backed evidence reader.
+///
+/// A receipt is stale when it carries a non-empty commit SHA that does not match
+/// the current expected commit. An empty or `"unknown"` expected commit means the
+/// current commit could not be resolved, so no downgrade is applied (the receipt
+/// is trusted as-is). An empty receipt commit means the generator did not stamp
+/// one, which is also trusted rather than downgraded — generators that omit the
+/// stamp should be fixed separately.
+///
+/// Used by [`readiness`], [`quality_gate`], and [`nightly`] so the same rule is
+/// applied uniformly and a fourth reader cannot silently omit it.
+pub(crate) fn is_stale(receipt_commit: &str, expected_commit: &str) -> bool {
+    !expected_commit.is_empty()
+        && expected_commit != "unknown"
+        && !receipt_commit.is_empty()
+        && receipt_commit != expected_commit
+}

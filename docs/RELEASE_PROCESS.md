@@ -574,7 +574,7 @@ docker pull effortlessmetrics/perl-lsp:latest
 
 ### Changes
 
-See [CHANGELOG.md](CHANGELOG.md) for detailed changes.
+See [CHANGELOG.md](../CHANGELOG.md) for detailed changes.
 
 ### Upgrade Notes
 

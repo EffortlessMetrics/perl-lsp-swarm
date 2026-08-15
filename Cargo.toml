@@ -18,7 +18,7 @@ members = [
     "crates/perl-semantic-analyzer",
     "crates/perl-semantic-facts",
     "crates/perl-workspace",
-    "crates/perl-refactoring",
+    # (perl-refactoring absorbed into perl-parser::refactor — Wave 4-Completion, deleted #5840)
     "crates/perl-incremental-parsing",
     "crates/perl-tdd-support",
     "crates/perl-test-must",
@@ -104,6 +104,7 @@ allow = [
     # Tier 1 — Leaf crates (no workspace deps)
     "perl-position-tracking",
     "perl-token",
+    "perl-test-facts",
     # (perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing — Wave Final PR B)
     # (perl-percentile absorbed into perl-parser — Wave D)
     "perl-subprocess-runtime",
@@ -177,7 +178,7 @@ allow = [
     # (perl-lsp-providers absorbed into perl-lsp-rs-core::providers::lsp_compat — Wave G1b)
     # (perl-ast-utils, perl-qualified-name absorbed into perl-parser — Wave D)
     # (perl-lsp-import-management absorbed into perl-lsp-rs-core::providers — Wave G1a)
-    # (perl-refactoring absorbed into perl-parser::refactor — Wave 4-Completion)
+    # (perl-refactoring absorbed into perl-parser::refactor — Wave 4-Completion, deleted #5840)
 
     # Tier 5 — Application crates
     # (perl-dead-code absorbed into perl-parser::dead_code — Wave 4-Completion)
@@ -317,7 +318,7 @@ perl-diagnostics = { path = "crates/perl-diagnostics", version = "0.17.0" }
 # Tier 3: Two-level dependencies
 perl-workspace = { path = "crates/perl-workspace", version = "0.17.0" }
 perl-incremental-parsing = { path = "crates/perl-incremental-parsing", version = "0.17.0" }
-perl-refactoring = { path = "crates/perl-refactoring", version = "0.17.0" }
+# (perl-refactoring deleted — absorbed into perl-parser::refactor, Wave 4-Completion, #5840)
 
 # Tier 4: Three-level dependencies
 perl-semantic-analyzer = { path = "crates/perl-semantic-analyzer", version = "0.17.0" }
@@ -391,24 +392,32 @@ lto = "thin"
 
 # Workspace lints
 [workspace.lints.clippy]
-collapsible_if = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
+# Async discipline: lock-across-await is a deadlock/perf risk (#2899).
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+# mutex_atomic: prefer proper Mutex over atomic-loaded Mutex guards (#2899).
+mutex_atomic = "warn"
 # collapsible_match: ~20 lib sites across perl-lsp-rs-core; tracked in #8561; defer to post-0.14.0 cleanup.
 collapsible_match = { level = "allow", priority = 1 }
 decimal_bitwise_operands = "warn"
 duration_suboptimal_units = "warn"
 needless_type_cast = "warn"
 manual_ilog2 = "warn"
+manual_take = "warn"
 unnecessary_trailing_comma = "warn"
 # wildcard_imports: Phase 1 (warn) — measures violations before crate-by-crate fix (#2333).
 wildcard_imports = "warn"
 print_stderr = "deny"
 print_stdout = "deny"
+# disallowed_fields: architectural seam protection (#6114).
+# The actual field denylist lives in clippy.toml `disallowed-fields = []`.
+disallowed_fields = "deny"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ci)', 'cfg(feature, values("slow_tests"))'] }

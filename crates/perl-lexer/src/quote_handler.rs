@@ -22,13 +22,14 @@ pub struct ModSpec {
     pub allow_charset: bool,  // whether one charset suffix is allowed
 }
 
-pub const QR_SPEC: ModSpec = ModSpec { run: &['i', 'm', 's', 'x', 'p', 'n'], allow_charset: true };
+pub const QR_SPEC: ModSpec =
+    ModSpec { run: &['i', 'm', 's', 'x', 'p', 'n', 'o'], allow_charset: true };
 
 pub const M_SPEC: ModSpec =
-    ModSpec { run: &['i', 'm', 's', 'x', 'p', 'n', 'g', 'c'], allow_charset: true };
+    ModSpec { run: &['i', 'm', 's', 'x', 'p', 'n', 'g', 'c', 'o'], allow_charset: true };
 
 pub const S_SPEC: ModSpec =
-    ModSpec { run: &['i', 'm', 's', 'x', 'p', 'n', 'e', 'r'], allow_charset: true };
+    ModSpec { run: &['i', 'm', 's', 'x', 'p', 'n', 'e', 'r', 'g', 'o', 'c'], allow_charset: true };
 
 pub const TR_SPEC: ModSpec = ModSpec { run: &['c', 'd', 's', 'r'], allow_charset: false };
 

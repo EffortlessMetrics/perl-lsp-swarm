@@ -182,6 +182,10 @@ pub fn hir_kinds_for(ast_kind: &str) -> &'static [&'static str] {
         "Try" => &["TryExpr"],
         "Class" => &["ClassDecl"],
         "Defer" => &["DeferExpr"],
+        "Heredoc" => &["HeredocMigrationAdapter"],
+        "Readline" => &["ReadlineMigrationAdapter"],
+        "Diamond" => &["ReadlineMigrationAdapter"],
+        "Glob" => &["GlobMigrationAdapter"],
         _ => &[],
     }
 }
@@ -281,6 +285,38 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             "Lowered and updates package context plus package scope."
         ),
         "String" => disp!(true, false, false, false, true, "Lowered as string literal shell."),
+        "Heredoc" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "Flat migration adapter retains source facts; canonical heredoc semantics live in body HIR."
+        ),
+        "Readline" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "Flat migration adapter retains source facts; canonical readline semantics live in body HIR."
+        ),
+        "Diamond" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "Flat migration adapter retains the diamond source fact; canonical readline semantics live in body HIR."
+        ),
+        "Glob" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "Flat migration adapter retains source facts; canonical glob semantics live in body HIR."
+        ),
         "Subroutine" => disp!(
             true,
             true,
@@ -693,10 +729,6 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
         "ChainedComparison" => {
             disp!(false, false, true, false, false, "No first-slice HIR shell yet.")
         }
-        "Heredoc" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Readline" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Glob" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
-        "Diamond" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Ellipsis" => disp!(false, false, true, false, false, "No first-slice HIR shell yet."),
         "Typeglob" => disp!(
             false,
@@ -1062,27 +1094,20 @@ mod tests {
     fn not_yet_modeled_kinds_have_correct_multi_axis_flags() -> TestResult {
         // All `NotYetModeled` kinds must fall to `_ => visit_children` and must
         // therefore have `traverses_children=true` and `is_intentional=false`.
-        for kind in [
-            "Binary",
-            "ArraySlice",
-            "HashSlice",
-            "KeyValueSlice",
-            "ChainedComparison",
-            "Heredoc",
-            "Readline",
-            "Glob",
-            "Diamond",
-            "Ellipsis",
-            "Typeglob",
-            "Given",
-            "When",
-            "Default",
-            "Tie",
-            "Untie",
-            "DataSection",
-            "VString",
-            "AmperCall",
-        ] {
+        //
+        // The set is derived from the registry rather than hardcoded: a literal
+        // list is a second source of truth for the same classification, and it
+        // silently rots the moment a kind is promoted out of `NotYetModeled`
+        // (which is exactly how a stale `Heredoc`/`Readline`/`Glob`/`Diamond`
+        // entry survived their promotion in #2210). Membership is already
+        // pinned by `hir_completeness_classification_covers_all_variants` and by
+        // the generated `hir-coverage` status doc; this test owns the flags.
+        let not_yet_modeled = NodeKind::ALL_KIND_NAMES.iter().copied().filter(|name| {
+            disposition_for(name)
+                .is_some_and(|d| d.legacy_category() == LegacyCategory::NotYetModeled)
+        });
+
+        for kind in not_yet_modeled {
             let d = disposition_for(kind).ok_or_else(|| format!("no disposition for {kind}"))?;
             assert!(!d.emits_items, "{kind} (NotYetModeled) must NOT emit HIR items");
             assert!(!d.may_emit_boundary, "{kind} (NotYetModeled) must NOT emit boundaries");

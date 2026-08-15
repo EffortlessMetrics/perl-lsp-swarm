@@ -146,7 +146,13 @@ impl AstBreakpointValidator {
         let mut pod_start: Option<usize> = None;
         let mut offset = 0;
 
-        for line in source.split('\n') {
+        // Track whether each segment is followed by a newline. split('\n')
+        // drops the delimiter, so the last segment of a file that doesn't end
+        // with a newline has no trailing '\n' to account for (#2394).
+        let lines: Vec<&str> = source.split('\n').collect();
+        let last_idx = lines.len().saturating_sub(1);
+
+        for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim_end_matches('\r');
             if pod_start.is_some() {
                 // We are inside a POD section -- look for =cut
@@ -159,7 +165,12 @@ impl AstBreakpointValidator {
             } else if Self::is_pod_directive(trimmed) {
                 pod_start = Some(offset);
             }
-            offset += line.len() + 1; // +1 for the '\n' delimiter
+            // +1 for the '\n' delimiter, except the last segment when the
+            // source does not end with '\n'.
+            offset += line.len();
+            if i < last_idx || source.ends_with('\n') {
+                offset += 1;
+            }
         }
 
         // If POD was never closed, extend to EOF
@@ -268,10 +279,11 @@ impl AstBreakpointValidator {
     #[allow(clippy::only_used_in_recursion)]
     fn is_inside_heredoc_interior_node(&self, node: &Node, byte_offset: usize) -> bool {
         // Check if this is a heredoc with a body span containing the offset
-        if let NodeKind::Heredoc { body_span: Some(span), .. } = &node.kind {
-            if byte_offset >= span.start && byte_offset < span.end {
-                return true;
-            }
+        if let NodeKind::Heredoc { body_span: Some(span), .. } = &node.kind
+            && byte_offset >= span.start
+            && byte_offset < span.end
+        {
+            return true;
         }
 
         // Recursively check all children
@@ -728,5 +740,49 @@ mod tests {
         let regions = AstBreakpointValidator::find_pod_regions(source);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].end, source.len());
+    }
+
+    #[test]
+    fn test_find_pod_regions_no_trailing_newline() {
+        let source = "my $x = 1;\n=head1 NAME\nTest\n=cut\nmy $y = 2;";
+        let regions = AstBreakpointValidator::find_pod_regions(source);
+        assert_eq!(regions.len(), 1);
+        let text = &source[regions[0].start..regions[0].end];
+        assert!(text.starts_with("=head1"));
+        assert!(text.ends_with("=cut"));
+        assert!(regions[0].end <= source.len());
+    }
+
+    #[test]
+    fn test_find_pod_regions_exact_offsets_with_newline() {
+        let source = "line1;\n=pod\nDocs\n=cut\nline5;\n";
+        let regions = AstBreakpointValidator::find_pod_regions(source);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].start, 7);
+        assert_eq!(regions[0].end, 21);
+        assert_eq!(&source[regions[0].start..regions[0].end], "=pod\nDocs\n=cut");
+    }
+
+    #[test]
+    fn test_find_pod_regions_pod_at_eof_no_newline() {
+        let source = "code;\n=pod\nDocs without trailing newline";
+        let regions = AstBreakpointValidator::find_pod_regions(source);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].start, 6);
+        assert_eq!(regions[0].end, source.len());
+    }
+
+    #[test]
+    fn test_find_pod_regions_multiple_sections_no_trailing_newline() {
+        let source = "=pod\nA\n=cut\ncode;\n=head1 B\nMore\n=cut";
+        let regions = AstBreakpointValidator::find_pod_regions(source);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(&source[regions[0].start..regions[0].end], "=pod\nA\n=cut");
+        assert_eq!(&source[regions[1].start..regions[1].end], "=head1 B\nMore\n=cut");
+    }
+
+    #[test]
+    fn test_find_pod_regions_empty_source() {
+        assert!(AstBreakpointValidator::find_pod_regions("").is_empty());
     }
 }

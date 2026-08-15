@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/release_build_identity_receipt.v1.schema.json",
+  "title": "perl_lsp.release_build_identity_receipt.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "input_sha256",
+    "input",
+    "runner",
+    "build_execution",
+    "build_commands",
+    "binaries",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "perl_lsp.release_build_identity_receipt.v1"
+    },
+    "status": {
+      "const": "pass"
+    },
+    "input_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "input": {
+      "$ref": "release_build_identity.v1.schema.json"
+    },
+    "runner": {
+      "enum": [
+        "cargo",
+        "cross"
+      ]
+    },
+    "build_execution": {
+      "enum": [
+        "adapter",
+        "external_release_workflow"
+      ]
+    },
+    "build_commands": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    },
+    "binaries": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "executable",
+          "path_role",
+          "file_sha256",
+          "packet_sha256",
+          "packet"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "server",
+              "dap"
+            ]
+          },
+          "executable": {
+            "enum": [
+              "perllsp",
+              "perl-dap"
+            ]
+          },
+          "path_role": {
+            "type": "string",
+            "pattern": "^target/[0-9A-Za-z_.-]+/release/(perllsp|perl-dap)(\\.exe)?$",
+            "maxLength": 256
+          },
+          "file_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "packet_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "packet": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    }
+  }
+}

@@ -611,6 +611,9 @@ impl DebugAdapter {
                 variables_reference: 0,
                 named_variables: None,
                 indexed_variables: None,
+                // The user-supplied expression is itself the canonical
+                // re-evaluable form per DAP §8.4 (#6050 review).
+                evaluate_name: Some(expression.to_string()),
             };
             session.variable_cache.upsert(
                 eval_ref,

@@ -4,6 +4,7 @@ export interface NavigationCommandContext {
   readonly openDemoProject: () => Promise<void>;
   readonly organizeImports: () => Promise<void>;
   readonly showVersion: () => Promise<void>;
+  readonly showWorkspaceStatus: () => Promise<void>;
   readonly showStatusMenu: () => Promise<void>;
 }
 
@@ -26,11 +27,16 @@ export function registerNavigationCommandGroup(
     'perl-lsp.showStatusMenu',
     dependencies.showStatusMenu,
   );
+  const showWorkspaceStatusCommand = vscode.commands.registerCommand(
+    'perl-lsp.showWorkspaceStatus',
+    dependencies.showWorkspaceStatus,
+  );
 
   return [
     openDemoProjectCommand,
     organizeImportsCommand,
     showVersionCommand,
     showStatusMenuCommand,
+    showWorkspaceStatusCommand,
   ];
 }

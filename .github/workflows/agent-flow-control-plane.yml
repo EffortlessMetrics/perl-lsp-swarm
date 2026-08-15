@@ -10,6 +10,9 @@ on:
       - 'AGENTS.md'
       - 'CLAUDE.md'
       - 'docs/agents/**'
+      - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+      - 'docs/specs/README.md'
+      - 'docs/INDEX.md'
       - '.agents/skills/**'
       - '.claude/skills/**'
       - '.claude/settings.json'
@@ -17,6 +20,8 @@ on:
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/agent_flow.rs'
       - 'xtask/src/tasks/mod.rs'
+      - 'xtask/tests/agent_merge_review_backstop.rs'
+      - 'xtask/tests/pr_convergence_contract.rs'
       - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
       - '.github/workflows/agent-flow-control-plane.yml'
   push:
@@ -25,6 +30,9 @@ on:
       - 'AGENTS.md'
       - 'CLAUDE.md'
       - 'docs/agents/**'
+      - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+      - 'docs/specs/README.md'
+      - 'docs/INDEX.md'
       - '.agents/skills/**'
       - '.claude/skills/**'
       - '.claude/settings.json'
@@ -32,6 +40,8 @@ on:
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/agent_flow.rs'
       - 'xtask/src/tasks/mod.rs'
+      - 'xtask/tests/agent_merge_review_backstop.rs'
+      - 'xtask/tests/pr_convergence_contract.rs'
       - 'scripts/tests/test-agent-flow-control-plane-trigger.sh'
       - '.github/workflows/agent-flow-control-plane.yml'
 
@@ -52,7 +62,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
         with:
           toolchain: stable
 
@@ -64,3 +74,9 @@ jobs:
 
       - name: Check deterministic route scenarios
         run: cargo xtask agent-flow scenarios --format json
+
+      - name: Check merge review/integration backstop
+        run: cargo test -p xtask --test agent_merge_review_backstop --locked
+
+      - name: Check PR convergence contract
+        run: cargo test -p xtask --test pr_convergence_contract --locked

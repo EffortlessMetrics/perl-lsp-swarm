@@ -1569,10 +1569,9 @@ fn first_named_function_call_span(source: &str) -> Option<(usize, usize, usize)>
                         if !is_call_prefix_blocker(prev)
                             && !is_non_call_keyword(name)
                             && !is_declaration_name_context(source, run_start)
+                            && let Some(call_end) = string_aware_call_end(source, paren_open)
                         {
-                            if let Some(call_end) = string_aware_call_end(source, paren_open) {
-                                return Some((run_start, paren_open, call_end));
-                            }
+                            return Some((run_start, paren_open, call_end));
                         }
                     }
 

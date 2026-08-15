@@ -1,0 +1,47 @@
+{
+  "check": "install-transition",
+  "schema_version": "install_transition.v1",
+  "status": "not_proven",
+  "claim_boundary": "Fresh documented PowerShell install of one topology-bound candidate into an isolated prefix with no prior supported version.",
+  "candidate": {
+    "artifact_set_id": "v0.18.0-rc1-primary",
+    "frozen_product_sha": "0123456789abcdef0123456789abcdef01234567",
+    "prepared_swarm_sha": "1111111111111111111111111111111111111111",
+    "release_repo_sha": "2222222222222222222222222222222222222222",
+    "release_topology_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "candidate_id": "v0.18.0-rc1",
+    "previous_version": null,
+    "candidate_version": "0.18.0",
+    "extension_version": "0.18.0",
+    "server_version": "0.18.0",
+    "dap_version": "0.18.0",
+    "platform": "windows-x86_64",
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "transition": {
+    "topology_path_id": "powershell-windows-x86_64",
+    "path": "powershell_installer",
+    "class": "clean_install",
+    "documented_primary": true,
+    "expected_asset": "perllsp-0.18.0-x86_64-pc-windows-msvc.zip",
+    "resolved_asset": "perllsp-0.18.0-x86_64-pc-windows-msvc.zip",
+    "intended_disposition": "applied",
+    "observed_disposition": "applied",
+    "outcome": "not_proven",
+    "observed_release_identity": "0.18.0",
+    "artifact_verified": false,
+    "artifact_sha256": null,
+    "known_good_preserved": true,
+    "partial_artifact_promoted": false,
+    "mixed_version_reported_ready": false,
+    "unsupported_target_selected": false,
+    "rollback_completed": false,
+    "candidate_process_left_running": false,
+    "compatibility_mismatch_detected": false,
+    "user_action": "No intervention required; the installer selected the exact candidate archive.",
+    "limitations": []
+  },
+  "limitations": [
+    "The candidate archive is local and unpublished."
+  ]
+}

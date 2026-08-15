@@ -112,6 +112,19 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            // Preserve the established qw diagnostic while naming other quote-like operators.
+            if depth > 0 {
+                let message = if op == "qw" {
+                    "Unclosed qw() delimiter: missing closing delimiter before end of file".to_string()
+                } else {
+                    format!(
+                        "Unclosed {}{}{} delimiter: missing closing delimiter before end of file",
+                        op, opening_delim, closing_delim
+                    )
+                };
+                let position = self.current_position();
+                self.errors.push(ParseError::syntax(message, position));
+            }
         } else {
             // For non-balanced delimiters, just scan for the closing char.
             //
@@ -149,18 +162,18 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Parse modifiers for regex operators
+        // Parse modifiers for qr// only. The m// arm below does its own scan
+        // because m// accepts g and c which qr// does not (#1727).
         let mut modifiers = String::new();
-        if matches!(op, "m" | "qr") {
-            // Check for modifiers (letters after closing delimiter)
+        if op == "qr" {
             while let Ok(token) = self.tokens.peek() {
                 if token.kind == TokenKind::Identifier && token.text.len() == 1 {
-                    // Single letter identifier could be a modifier
-                    let ch =
-                        token.text.chars().next().ok_or_else(|| {
-                            ParseError::syntax("Empty identifier token", token.start)
-                        })?;
-                    if ch.is_ascii_alphabetic() {
+                    let ch = token.text.chars().next().ok_or_else(|| {
+                        ParseError::syntax("Empty identifier token", token.start)
+                    })?;
+                    if ch.is_ascii_alphabetic()
+                        && matches!(ch, 'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'o' | 'a' | 'd' | 'l' | 'u')
+                    {
                         modifiers.push(ch);
                         self.tokens.next()?;
                     } else {
@@ -238,7 +251,13 @@ impl<'a> Parser<'a> {
                         let ch = token.text.chars().next().ok_or_else(|| {
                             ParseError::syntax("Empty identifier token", token.start)
                         })?;
-                        if ch.is_ascii_alphabetic() {
+                        if ch.is_ascii_alphabetic()
+                            && matches!(
+                                ch,
+                                'i' | 'm' | 's' | 'x' | 'p' | 'n' | 'c' | 'g' | 'o' | 'a' | 'd'
+                                    | 'l' | 'u'
+                            )
+                        {
                             modifiers.push(ch);
                             self.tokens.next()?;
                         } else {
@@ -337,10 +356,11 @@ impl<'a> Parser<'a> {
             if !ch.is_ascii_alphabetic() {
                 break;
             }
-            if !matches!(ch, 'g' | 'i' | 'm' | 's' | 'x' | 'o' | 'e' | 'r') {
+            if !matches!(ch, 'g' | 'i' | 'm' | 's' | 'x' | 'o' | 'e' | 'r' | 'p' | 'n' | 'a' | 'd' | 'l' | 'u' | 'c') {
                 return Err(ParseError::syntax(
                     format!(
-                        "Invalid substitution modifier '{}'. Valid modifiers are: g, i, m, s, x, o, e, r",
+                        "Invalid substitution modifier '{}'. Valid modifiers are: \
+                         g, i, m, s, x, o, e, r, p, n, a, d, l, u, c",
                         ch
                     ),
                     token.start,
@@ -517,4 +537,79 @@ impl<'a> Parser<'a> {
         Ok(words)
     }
 
+}
+
+#[cfg(test)]
+mod modifier_tests {
+    use crate::Parser;
+
+    /// Parse a Perl expression and return the parse output (#1727).
+    fn parse(source: &str) -> crate::error::ParseOutput {
+        let mut parser = Parser::new(source);
+        parser.parse_with_recovery()
+    }
+
+    #[test]
+    fn m_with_valid_modifier_i() {
+        // /i is a standard modifier — should parse cleanly.
+        let result = parse("m/pattern/i");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn m_with_charset_modifier_u() {
+        // /u is a valid charset modifier (5.14+).
+        let result = parse("m/pattern/u");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn m_with_preserve_modifier_p() {
+        // /p is a valid modifier (5.10+).
+        let result = parse("m/pattern/p");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn qr_with_global_modifier_g() {
+        // /g should be accepted for qr// (and m//).
+        let result = parse("qr/pattern/g");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn s_with_preserve_and_global() {
+        // /gp is valid for s///.
+        let result = parse("s/pattern/replacement/gp");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn s_with_charset_modifier_a() {
+        // /a is a valid charset modifier for s///.
+        let result = parse("s/pattern/replacement/a");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn s_with_continue_modifier_c() {
+        // /c is valid for s/// (was previously rejected).
+        let result = parse("s/pattern/replacement/c");
+        assert!(result.diagnostics.is_empty(), "expected no errors, got: {:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn m_does_not_crash_on_unknown_modifier_z() {
+        // /z is NOT a valid regex modifier. The parser should handle it
+        // gracefully without crashing — either by consuming it as a modifier
+        // (the lexer pre-tokenizes m//z as a single token) or by breaking
+        // out of the modifier scan. Either way, no panic.
+        let result = parse("m/pattern/z");
+        // The regex was parsed into some node.
+        assert!(
+            result.ast.to_sexp().contains("/pattern/"),
+            "expected pattern in AST, got: {}",
+            result.ast.to_sexp()
+        );
+    }
 }

@@ -445,6 +445,45 @@ fn pl701_respects_use_lib_paths_from_document() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+/// A pragma whose semicolon has not been typed yet must still contribute its
+/// path to a later use-site (#1683).
+///
+/// This is the mid-edit buffer state: the statement splitter returns one slice
+/// spanning `use lib 'lib'` and `use My::Test;`, so an implementation that keys
+/// `use lib` activation on the enclosing statement's terminator hides `lib`
+/// from the use-site and emits a spurious PL701 while the user types.
+#[test]
+fn pl701_respects_use_lib_without_terminating_semicolon() -> Result<(), Box<dyn std::error::Error>>
+{
+    let provider = PullDiagnosticsProvider::new();
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let project_root = env::temp_dir().join(format!("perl_lsp_pull_diag_inc_incomplete_{nonce}"));
+    let lib_dir = project_root.join("lib").join("My");
+    fs::create_dir_all(&lib_dir)?;
+    fs::write(lib_dir.join("Test.pm"), "package My::Test; 1;\n")?;
+    let script_path = project_root.join("script.pl");
+    let uri: Uri = Url::from_file_path(&script_path)
+        .map_err(|_| "failed to create script URI for incomplete-pragma @INC test")?
+        .to_string()
+        .parse()?;
+
+    // No semicolon after the pragma — the buffer state while typing.
+    let content = "use lib 'lib'\nuse My::Test;\n";
+    let items = items_from_report(provider.get_document_diagnostics(&uri, content, None, None))?;
+    let has_pl701 = items.iter().any(|d| has_code(d, "PL701"));
+
+    let _ = fs::remove_dir_all(&project_root);
+
+    if has_pl701 {
+        return Err(format!(
+            "PL701 must not be emitted for a module reachable through an unterminated `use lib` pragma. Diagnostics: {items:#?}"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Parse-error position regressions.
 //

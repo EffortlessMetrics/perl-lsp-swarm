@@ -1,67 +1,43 @@
 name: Droid Security Scan
 
+# Automatic and secret-bearing Droid security execution is paused until #6098
+# proves immutable CLI/plugin identities, temporary state, read-only execution,
+# and a separate trusted publication boundary.
+
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 8 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 concurrency:
-  group: droid-security-scan-${{ github.repository }}
+  group: droid-security-scan-paused-${{ github.repository }}
   cancel-in-progress: false
 
-env:
-  MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
-
 jobs:
-  droid-security-scan:
-    runs-on: [self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review]
-    timeout-minutes: 30
-
+  paused:
+    name: Droid security scan paused pending immutable-tool isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write
-      actions: read
-
+      contents: read
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 1
-
-      - name: Configure MiniMax BYOK for Factory Droid
-        shell: bash
+      - name: Record bounded pause
         run: |
-          mkdir -p "$HOME/.factory"
-          cat > "$HOME/.factory/settings.local.json" <<JSON
-          {
-            "customModels": [
-              {
-                "displayName": "MiniMax-M2.7",
-                "model": "MiniMax-M2.7",
-                "baseUrl": "https://api.minimax.io/anthropic",
-                "apiKey": "${MINIMAX_API_KEY}",
-                "provider": "anthropic",
-                "maxOutputTokens": 64000,
-                "noImageSupport": true,
-                "extraArgs": {
-                  "temperature": 1
-                }
-              }
-            ]
-          }
-          JSON
+          cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ## Droid security scan is paused
 
-      - name: Run Droid scheduled security scan
-        uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec # based on Factory-AI/droid-action v5; raw debug artifact upload disabled
-        with:
-          factory_api_key: ${{ secrets.FACTORY_API_KEY }}
-          upload_debug_artifacts: false
-          security_scan_schedule: true
-          security_scan_days: 7
-          security_model: "custom:MiniMax-M2.7-0"
-          security_severity_threshold: medium
-          security_block_on_critical: true
-          security_block_on_high: false
-          show_full_output: false
+          Automatic and secret-bearing Droid security execution is disabled while
+          [#6098](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6098)
+          establishes immutable CLI/plugin identities, temporary runtime state,
+          read-only model execution, exact runner proof, and a separate trusted
+          publication boundary.
+
+          This workflow intentionally performs no checkout, package or plugin
+          installation, model call, provider-secret access, GitHub mutation,
+          OIDC exchange, self-hosted execution, or artifact attestation.
+
+          Explicit interactive Droid work remains a separately classified manual
+          path. This paused workflow supplies no review, finding, clean result,
+          publication state, or merge authority.
+          EOF

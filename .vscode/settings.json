@@ -17,7 +17,7 @@
   "//": "Alternative: Use internal hosting instead of serverPath",
   "// perl-lsp.autoDownload": true,
   "// perl-lsp.downloadBaseUrl": "https://your-internal-server.com/binaries",
-  "// perl-lsp.versionTag": "v0.8.3",
+  "// perl-lsp.versionTag": "v0.17.0",
   
   "//": "Recommended LSP settings for development",
   "perl-lsp.enableSemanticTokens": true,

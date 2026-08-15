@@ -26,6 +26,26 @@ pub use native_contract::{
 pub use native_registry::{NativeCriticProfile, NativeCriticRegistry};
 pub use native_suppressions::{CriticSuppression, CriticSuppressionMap, CriticSuppressionScope};
 
+/// Resolve scope analysis issues for a rule, using pre-computed results from
+/// the context when available (the common path after #4999 item 3), or
+/// falling back to a fresh analysis when the context doesn't carry one.
+///
+/// Returns a slice of issues. When the context carries pre-computed results,
+/// this is a zero-allocation borrow; otherwise it builds the pragma map and
+/// runs the analyzer fresh.
+fn resolve_scope_analysis_owned<'a>(
+    ctx: &'a CriticContext<'a>,
+) -> std::borrow::Cow<'a, [ScopeIssue]> {
+    use std::borrow::Cow;
+    if let Some(si) = ctx.scope_issues {
+        Cow::Borrowed(si)
+    } else {
+        let pm = PragmaTracker::build(ctx.ast);
+        let si = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pm);
+        Cow::Owned(si)
+    }
+}
+
 /// Native rule that requires a file-level `use strict;` pragma.
 ///
 /// This is the first built-in rule expressed through the native critic
@@ -489,14 +509,13 @@ impl CriticRule for UnusedLexicalVariableRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UnusedVariable)
-                .map(|issue| unused_lexical_finding(self, ctx.source, &issue)),
+                .map(|issue| unused_lexical_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -522,14 +541,13 @@ impl CriticRule for UnusedParameterRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UnusedParameter)
-                .map(|issue| unused_parameter_finding(self, ctx.source, &issue)),
+                .map(|issue| unused_parameter_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -555,14 +573,13 @@ impl CriticRule for DuplicateParameterRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::DuplicateParameter)
-                .map(|issue| duplicate_parameter_finding(self, ctx.source, &issue)),
+                .map(|issue| duplicate_parameter_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -588,14 +605,13 @@ impl CriticRule for ParameterShadowsGlobalRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::ParameterShadowsGlobal)
-                .map(|issue| parameter_shadows_global_finding(self, ctx.source, &issue)),
+                .map(|issue| parameter_shadows_global_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -621,14 +637,13 @@ impl CriticRule for DuplicateLexicalDeclarationRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::VariableRedeclaration)
-                .map(|issue| duplicate_lexical_finding(self, ctx.source, &issue)),
+                .map(|issue| duplicate_lexical_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -654,14 +669,13 @@ impl CriticRule for ShadowedLexicalVariableRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::VariableShadowing)
-                .map(|issue| shadowed_lexical_finding(self, ctx.source, &issue)),
+                .map(|issue| shadowed_lexical_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -687,14 +701,13 @@ impl CriticRule for CaptureVarWithoutRegexMatchRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::CaptureVarWithoutRegexMatch)
-                .map(|issue| capture_var_without_match_finding(self, ctx.source, &issue)),
+                .map(|issue| capture_var_without_match_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -720,14 +733,13 @@ impl CriticRule for UndeclaredVariableRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UndeclaredVariable)
-                .map(|issue| undeclared_variable_finding(self, ctx.source, &issue)),
+                .map(|issue| undeclared_variable_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -753,14 +765,13 @@ impl CriticRule for UninitializedVariableRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UninitializedVariable)
-                .map(|issue| uninitialized_variable_finding(self, ctx.source, &issue)),
+                .map(|issue| uninitialized_variable_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -786,15 +797,14 @@ impl CriticRule for UnquotedBarewordRule {
     }
 
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
-        let pragma_map = PragmaTracker::build(ctx.ast);
-        let issues = ScopeAnalyzer::new().analyze(ctx.ast, ctx.source, &pragma_map);
+        let issues = resolve_scope_analysis_owned(ctx);
 
         out.extend(
             issues
-                .into_iter()
+                .iter()
                 .filter(|issue| issue.kind == IssueKind::UnquotedBareword)
                 .filter(|issue| !bareword_is_fat_comma_key(ctx.source, issue))
-                .map(|issue| unquoted_bareword_finding(self, ctx.source, &issue)),
+                .map(|issue| unquoted_bareword_finding(self, ctx.source, issue)),
         );
     }
 }
@@ -2437,10 +2447,10 @@ fn collect_leading_zeros_findings(
     node: &Node,
     out: &mut Vec<CriticFinding>,
 ) {
-    if let NodeKind::Number { value } = &node.kind {
-        if is_octal_leading_zero(value) {
-            out.push(leading_zeros_finding(rule, source, node, value));
-        }
+    if let NodeKind::Number { value } = &node.kind
+        && is_octal_leading_zero(value)
+    {
+        out.push(leading_zeros_finding(rule, source, node, value));
     }
 
     for child in node.children() {
@@ -3559,7 +3569,7 @@ mod tests {
         assert_eq!(finding.severity, Severity::Harsh);
         assert_eq!(finding.message, "Unreachable code: this statement cannot be executed");
         assert_eq!(finding.suppression_key, "native.common.unreachable_code");
-        assert_eq!(&source[finding.range.start.byte..finding.range.end.byte], "my $dead");
+        assert_eq!(&source[finding.range.start.byte..finding.range.end.byte], "my $dead = 2");
         let fix = must_some(finding.fix.as_ref());
         assert_eq!(fix.title, "Remove unreachable code");
         assert_eq!(fix.safety, FixSafety::Safe);

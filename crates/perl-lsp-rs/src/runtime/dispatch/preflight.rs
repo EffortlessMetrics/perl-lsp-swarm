@@ -55,7 +55,7 @@ pub(super) fn prepare_request(
             return PreflightOutcome::NotificationHandled;
         }
         return PreflightOutcome::Respond(JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0",
             id: context.id.as_ref().and_then(JsonRpcId::from_value),
             result: None,
             error: Some(JsonRpcError {
@@ -81,6 +81,11 @@ fn auto_initialize_for_compat(server: &LspServer, request: &JsonRpcRequest) {
         && !is_lifecycle_method(&request.method)
     {
         server.auto_initialize_for_compat(&request.method);
+        // Mirror the post-`initialized` configuration pull for clients that
+        // skip the notification (#7708).
+        if server.initialized.load(Ordering::Acquire) {
+            server.request_workspace_configuration_for_folders();
+        }
     }
 }
 

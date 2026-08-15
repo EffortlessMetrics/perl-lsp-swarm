@@ -4,7 +4,7 @@ This guide gets you from zero to a working Perl language server in your editor.
 
 ## Prerequisites
 
-- **Rust 1.92+** (for building from source)
+- **Rust 1.95+** (for building from source)
 - **A supported editor**: VS Code, Neovim, Emacs, Helix, or Sublime Text
 
 ## Installation
@@ -16,6 +16,7 @@ Choose one method:
 ```bash
 cargo install perllsp
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 ### Option 2: Install Script (Linux/macOS)
 

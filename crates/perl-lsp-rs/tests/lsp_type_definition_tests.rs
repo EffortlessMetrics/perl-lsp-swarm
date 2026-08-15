@@ -146,7 +146,13 @@ $obj->method();
     // Request type definition on method call
     let response = harness.type_definition(doc_uri, 9, 5)?;
 
-    // Check we get a result (even if positions are dummy for now)
+    // TODO(#992): This weak assertion should be strengthened to require a
+    // non-empty array pointing to `package Base;`. Currently the type
+    // definition provider returns null for inherited method calls in the
+    // same file — a real gap. The strong companion test
+    // `test_type_definition_method_call_strong_assertion` validates the
+    // cross-file case. This test documents the same-file gap and should
+    // be strengthened when the provider is fixed.
     assert!(
         response.is_array() || response.is_null(),
         "Type definition should return array or null"

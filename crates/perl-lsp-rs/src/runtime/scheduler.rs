@@ -800,6 +800,30 @@ impl Scheduler {
         Some(StaleReason::DocumentGenerationAdvanced { captured, current })
     }
 
+    /// Re-capture completion freshness after its ordered mutation barrier.
+    ///
+    /// Completion requests intentionally describe the document produced by
+    /// all preceding `didChange` notifications. Their ingress snapshot can be
+    /// stale by construction while those mutations are still queued, so the
+    /// barrier result becomes the baseline for dispatch and response delivery.
+    fn refresh_read_freshness(
+        server: &LspServer,
+        freshness: Option<&ReadFreshness>,
+    ) -> Option<ReadFreshness> {
+        let freshness = freshness?;
+        let (document_generation, document_version, document_instance) = server
+            .document_freshness(&freshness.uri)
+            .map_or((None, None, None), |(generation, version, instance)| {
+                (Some(generation), Some(version), Some(instance))
+            });
+        Some(ReadFreshness {
+            uri: freshness.uri.clone(),
+            document_generation,
+            document_instance,
+            document_version,
+        })
+    }
+
     fn send_response(outbound: &OutboundSender, response: JsonRpcResponse) {
         log_response(&response);
         let _ = outbound.send_response(response);
@@ -840,7 +864,7 @@ impl Scheduler {
                 // the method name is enough for the user to know what broke.
                 tracing::error!(method = %method, "Request handler panicked: {detail}");
                 HandlerOutcome::Panicked(JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: "2.0",
                     id: Some(id),
                     result: None,
                     error: Some(JsonRpcError {
@@ -933,7 +957,7 @@ impl Scheduler {
             ),
         };
         let cancelled_response = JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0",
             id,
             result: None,
             error: Some(JsonRpcError { code: REQUEST_CANCELLED, message, data: None }),
@@ -952,28 +976,32 @@ impl Scheduler {
         mutation_seq_done: &Arc<AtomicU64>,
         mutation_notify: &Arc<Notify>,
     ) {
+        let refresh_after_barrier =
+            queued.request.method == "textDocument/completion" && queued.wait_for_seq > 0;
+
         // Stale check 1: position dedupe — newer same-position request supersedes.
-        if let Some(ref key) = queued.dedup_key {
-            if let Some(&latest) = latest_seq.get(key) {
-                if queued.arrival_seq < latest {
-                    if let Some(id) = queued.request.id.as_ref() {
-                        server.clear_request_pending(id);
-                    }
-                    Self::send_cancellation(
-                        server,
-                        queued.request.id,
-                        &queued.request.method,
-                        StaleReason::PositionSuperseded,
-                    );
-                    return;
-                }
+        if let Some(ref key) = queued.dedup_key
+            && let Some(&latest) = latest_seq.get(key)
+            && queued.arrival_seq < latest
+        {
+            if let Some(id) = queued.request.id.as_ref() {
+                server.clear_request_pending(id);
             }
+            Self::send_cancellation(
+                server,
+                queued.request.id,
+                &queued.request.method,
+                StaleReason::PositionSuperseded,
+            );
+            return;
         }
 
         // Stale check 2: generation freshness — document moved on between
         // ingress and dispatch. This catches the typing-storm case where
         // every keystroke produces a unique position dedup key.
-        if let Some(reason) = Self::stale_read_reason(server, queued.freshness.as_ref()) {
+        if !refresh_after_barrier
+            && let Some(reason) = Self::stale_read_reason(server, queued.freshness.as_ref())
+        {
             if let Some(id) = queued.request.id.as_ref() {
                 server.clear_request_pending(id);
             }
@@ -1000,7 +1028,7 @@ impl Scheduler {
         // we can attribute the mutation-barrier wait to a concrete read request.
         let read_wait_method =
             crate::runtime::timing::is_enabled().then(|| queued.request.method.clone());
-        let freshness = queued.freshness.clone();
+        let mut freshness = queued.freshness.clone();
         let method = queued.request.method.clone();
         let id = queued.request.id.clone();
 
@@ -1037,6 +1065,10 @@ impl Scheduler {
                 ));
             }
 
+            if refresh_after_barrier {
+                freshness = Self::refresh_read_freshness(&srv, freshness.as_ref());
+            }
+
             if let Some(reason) = Self::stale_read_reason(&srv, freshness.as_ref()) {
                 if let Some(id) = id.as_ref() {
                     srv.clear_request_pending(id);
@@ -1069,7 +1101,8 @@ impl Scheduler {
                     // (for example, waiting for an AI completion backend). A
                     // mutation can advance the document generation while that
                     // work is running, so make the final send decision against
-                    // the same freshness snapshot used at dispatch ingress.
+                    // the freshness baseline established before the handler
+                    // (at ingress, or after the ordered completion barrier).
                     if response.error.as_ref().is_some_and(|error| error.code == REQUEST_CANCELLED)
                     {
                         // Preserve a cancellation response that the handler
@@ -1897,9 +1930,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn stale_read_cancelled_after_mutation_wait_before_handle_request()
-    -> Result<(), JsonRpcError> {
+    async fn completion_refreshes_freshness_after_ordered_mutation_wait()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (server, output) = server_with_captured_output();
+        initialize_scheduler_test_server(&server)?;
+        output.lock().clear();
         let uri = "file:///mutation-wait-race.pl";
         server.test_apply_did_open(uri, &rapid_typing_source(1), 1)?;
 
@@ -1931,20 +1966,58 @@ mod tests {
         let completed =
             tokio::time::timeout(std::time::Duration::from_millis(500), in_flight.join_next())
                 .await;
-        assert!(completed.is_ok(), "read should cancel promptly after mutation barrier opens");
+        assert!(completed.is_ok(), "completion should run promptly after mutation barrier opens");
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let bytes = output.lock().clone();
         let text = String::from_utf8_lossy(&bytes);
         assert!(
-            text.contains("document moved from generation 0 to 1"),
-            "post-wait stale read must send cancellation before handle_request; output={text}"
+            !text.contains("document moved from generation 0 to 1"),
+            "ordered mutations must become the completion freshness baseline; output={text}"
         );
         assert!(
-            !text.contains("result"),
-            "cancelled stale read must not run handle_request; output={text}"
+            text.contains("\"id\":77"),
+            "completion handler must answer after the ordered mutation barrier; output={text}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn refreshed_completion_rejects_a_later_mutation_at_delivery() -> Result<(), JsonRpcError> {
+        let (server, output) = server_with_captured_output();
+        let uri = "file:///completion-refresh-race.pl";
+        server.test_apply_did_open(uri, "my $value;\n", 1)?;
+        let ingress = must_some(extract_freshness(
+            &server,
+            "textDocument/completion",
+            Some(&position_params(uri)),
+            RequestPriority::Completion,
+        ));
+
+        server.test_apply_did_change(uri, "my $value = 1;\n", 2)?;
+        let refreshed = must_some(Scheduler::refresh_read_freshness(&server, Some(&ingress)));
+        assert_eq!(Scheduler::stale_read_reason(&server, Some(&refreshed)), None);
+
+        server.test_apply_did_change(uri, "my $value = 12;\n", 3)?;
+        assert_eq!(
+            Scheduler::send_response_if_fresh(
+                &server,
+                Some(&refreshed),
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: JsonRpcId::from_value(&serde_json::json!(78)),
+                    result: Some(serde_json::json!([])),
+                    error: None,
+                },
+            ),
+            Some(StaleReason::DocumentGenerationAdvanced { captured: 1, current: 2 })
+        );
+        let output = String::from_utf8_lossy(&output.lock().clone()).to_string();
+        assert!(
+            !output.contains("\"id\":78"),
+            "post-handler stale completion result must not be delivered; output={output}"
+        );
         Ok(())
     }
 
@@ -2384,7 +2457,7 @@ mod tests {
         // Guards the refactor: the non-panicking paths must behave exactly as
         // the previous `if let Ok(Some(response))` did.
         let response = JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0",
             id: Some(JsonRpcId::Integer(3)),
             result: Some(serde_json::json!({"ok": true})),
             error: None,

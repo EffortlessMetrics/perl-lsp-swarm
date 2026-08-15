@@ -82,15 +82,15 @@ pub fn normalize_import_arg(arg: &str) -> Vec<String> {
     // qw(...) and its delimiter variants — but only when `qw` is immediately
     // followed by a real delimiter, so a bareword like `qword` or `qwerty` is
     // NOT mistaken for a quote-word list.
-    if let Some(rest) = arg.strip_prefix("qw") {
-        if rest.starts_with(|c: char| !c.is_alphanumeric() && c != '_') {
-            let inner = rest
-                .trim_start_matches(['(', '[', '{', '<', '/', '!', '|'])
-                .trim_end_matches([')', ']', '}', '>', '/', '!', '|']);
-            return inner.split_whitespace().map(str::to_string).collect();
-        }
-        // Otherwise fall through: `qword` is an ordinary import symbol.
+    if let Some(rest) = arg.strip_prefix("qw")
+        && rest.starts_with(|c: char| !c.is_alphanumeric() && c != '_')
+    {
+        let inner = rest
+            .trim_start_matches(['(', '[', '{', '<', '/', '!', '|'])
+            .trim_end_matches([')', ']', '}', '>', '/', '!', '|']);
+        return inner.split_whitespace().map(str::to_string).collect();
     }
+    // Otherwise fall through: `qword` is an ordinary import symbol.
     // Flags like `-norequire` are not imported symbols.
     if arg.starts_with('-') {
         return Vec::new();

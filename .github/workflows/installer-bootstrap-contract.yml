@@ -1,0 +1,48 @@
+name: Installer Bootstrap Contract
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'install.sh'
+      - 'scripts/tests/test-install-bootstrap-identity.sh'
+      - 'docs/how-to/INSTALLATION.md'
+      - 'README.md'
+      - '.github/workflows/installer-bootstrap-contract.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'install.sh'
+      - 'scripts/tests/test-install-bootstrap-identity.sh'
+      - 'docs/how-to/INSTALLATION.md'
+      - 'README.md'
+      - '.github/workflows/installer-bootstrap-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Installer bootstrap identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify checkout identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Parse shell sources
+        run: bash -n install.sh scripts/tests/test-install-bootstrap-identity.sh
+
+      - name: Run bootstrap identity negative controls
+        run: bash scripts/tests/test-install-bootstrap-identity.sh

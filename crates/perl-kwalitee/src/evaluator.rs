@@ -255,18 +255,22 @@ fn obtain_outcome(spec: &IndicatorSpec, options: &KwaliteeOptions) -> Outcome {
         ),
         EvalSource::NightlyReceipt => {
             let ev = &options.evidence;
+            let commit = &options.commit;
             match spec.id {
                 "formatter.corpus_idempotent" => {
-                    nightly::formatter_corpus_idempotent(ev.native_format_corpus.as_deref())
+                    nightly::formatter_corpus_idempotent(ev.native_format_corpus.as_deref(), commit)
                 }
-                "critic.no_false_positives" => {
-                    nightly::critic_no_false_positives(ev.native_critic_false_positive.as_deref())
-                }
-                "formatter.perltidy_compat_no_external_only" => {
-                    nightly::formatter_perltidy_compat(ev.native_format_perltidy_compat.as_deref())
-                }
+                "critic.no_false_positives" => nightly::critic_no_false_positives(
+                    ev.native_critic_false_positive.as_deref(),
+                    commit,
+                ),
+                "formatter.perltidy_compat_no_external_only" => nightly::formatter_perltidy_compat(
+                    ev.native_format_perltidy_compat.as_deref(),
+                    commit,
+                ),
                 "critic.perlcritic_compat_no_external_only" => nightly::critic_perlcritic_compat(
                     ev.native_tooling_perlcritic_compat.as_deref(),
+                    commit,
                 ),
                 other => Outcome::unverified(
                     vec![EvidenceRef::new("note", format!("no nightly mapping for {other}"))],

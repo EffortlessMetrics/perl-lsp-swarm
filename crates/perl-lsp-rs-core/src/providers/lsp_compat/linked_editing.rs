@@ -164,11 +164,11 @@ fn find_heredoc_pair(text: &str, start_byte: usize) -> Option<(usize, usize, usi
         let label_end_in_line = label_start_in_line + ident_len;
 
         // Check if there is an expected closing quote
-        if let Some(q) = quote_char {
-            if line_text.as_bytes().get(label_end_in_line) != Some(&q) {
-                search_pos = abs_rel + 1;
-                continue;
-            }
+        if let Some(q) = quote_char
+            && line_text.as_bytes().get(label_end_in_line) != Some(&q)
+        {
+            search_pos = abs_rel + 1;
+            continue;
         }
 
         // The cursor must be within the label (or on the `<<` / `~` / quote prefix)
@@ -286,10 +286,10 @@ fn find_regex_delimiter_pair(text: &str, start_byte: usize) -> Option<(usize, us
         let first_delim_byte = line_start + first_delim_rel;
 
         if !two_pair {
-            if let Some(second_delim_byte) = find_non_bracket_close(text, first_delim_byte, ch) {
-                if start_byte == first_delim_byte || start_byte == second_delim_byte {
-                    return Some((first_delim_byte, second_delim_byte));
-                }
+            if let Some(second_delim_byte) = find_non_bracket_close(text, first_delim_byte, ch)
+                && (start_byte == first_delim_byte || start_byte == second_delim_byte)
+            {
+                return Some((first_delim_byte, second_delim_byte));
             }
             pos += op.len() + 1;
             continue;

@@ -11,7 +11,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::evidence::Outcome;
+use crate::evidence::{Outcome, is_stale};
 use crate::indicator::{EvidenceRef, IndicatorStatus};
 
 /// Minimal projection of the native-tooling readiness receipt.
@@ -83,10 +83,7 @@ fn native_default(path: Option<&Path>, expected_commit: &str, area: &str, fix: &
     let mut evidence = vec![receipt_ev, EvidenceRef::new("criterion", criterion.name.clone())];
 
     // Freshness: a receipt from a different commit is not trustworthy as a pass.
-    let stale = !expected_commit.is_empty()
-        && expected_commit != "unknown"
-        && !receipt.commit.is_empty()
-        && receipt.commit != expected_commit;
+    let stale = is_stale(&receipt.commit, expected_commit);
     if stale {
         evidence.push(EvidenceRef::new(
             "note",

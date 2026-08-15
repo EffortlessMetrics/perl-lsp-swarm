@@ -65,10 +65,12 @@ jobs:
             run_rust_smoke: true
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Perl ${{ matrix.perl }}
-        uses: shogo82148/actions-setup-perl@0f12f8929f8062f1f7795f8a89e9f2f88c5f6ce2  # v1.34.0
+        uses: shogo82148/actions-setup-perl@53e33bb27be492a926eee378e8a5f7ff6618b061  # v1.43.1
         with:
           perl-version: ${{ matrix.perl }}
 
@@ -111,13 +113,13 @@ jobs:
 
       - name: Install Rust toolchain (smoke lanes)
         if: matrix.run_rust_smoke
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
         with:
           toolchain: 1.95.0
 
       - name: Cache cargo dependencies (smoke lanes)
         if: matrix.run_rust_smoke
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
           key: ${{ runner.os }}-perl-matrix-smoke-${{ matrix.perl }}-${{ hashFiles('Cargo.lock') }}

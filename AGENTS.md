@@ -6,7 +6,7 @@ perl-lsp is becoming a compiler-backed Perl toolchain whose parser, compiler fac
 workspace model, LSP, DAP, packaging, and editor behavior remain honest about source,
 freshness, confidence, fallback, and dynamic boundaries.
 
-Optimize for real user-visible closure, semantic ownership, deterministic proof, and
+Optimize for user-visible closure, semantic ownership, deterministic proof, and
 maintainable current-main behavior—not local component completion or workflow
 compliance.
 
@@ -14,211 +14,230 @@ compliance.
 
 Use the highest applicable current authority:
 
-1. current `origin/main`, live GitHub issues, PRs, reviews, checks, rulesets, and
-   actual repository behavior;
-2. accepted specifications, ADRs, policies, generated contracts, and independent
-   proof;
-3. this file and the nearest package-local `AGENTS.md` guidance;
-4. runtime plans, subagents, worktrees, memory, and conversation.
+1. current `origin/main`, live GitHub issues, PRs, reviews, checks, rulesets, and actual
+   repository behavior;
+2. accepted specifications, ADRs, policies, generated contracts, and independent proof;
+3. this file, `.agents/skills/`, and nearest package-local `AGENTS.md` guidance;
+4. shared method/reference docs under `docs/agents/`;
+5. runtime plans, workers, worktrees, memory, and conversation.
 
-GitHub owns live transaction state. The repository owns durable product,
-architecture, method, and proof contracts. Runtime agent topology, task lists,
-liveness, and temporary plans are not repository authority.
+This file is Codex's route map. `.agents/skills/` contains the executable provider-
+native procedures. Shared docs define invariants and GitHub surface ownership; they do
+not replace a named `$skill`.
 
-Do not use labels, dashboards, tracked active-goal pointers, task completion, agent
-identity, or conversational self-report as proof that work is ready.
+GitHub owns durable live transaction state. Runtime topology, frontier, task order,
+liveness, retries, and temporary plans are not repository authority and must not be
+written to tracked state files.
 
-## Select the public flow
-
-Use the narrowest applicable Codex skill under `.agents/skills/`:
-
-- `$deliver-goal` — advance a durable multi-PR outcome or umbrella;
-- `$deliver-pr` — carry one issue, PR, branch, candidate, or coherent claim;
-- `$prepare-issue` — settle the problem, owner, scope, proof seam, or plan;
-- `$prepare-proof` — turn settled intent into discriminating proof;
-- `$build-candidate` — implement, harden tests, simplify, or challenge a candidate;
-- `$finish-pr` — publish or resume, repair feedback, review, integrate, merge, and
-  reconcile.
-
-Enter at the earliest absent or stale useful judgment. Existing coherent work enters
-midstream. Do not replay completed stages merely to manufacture process evidence, and
-do not run a lifecycle locator between skills.
-
-Follow each skill's named normal route. Route backward only when material evidence
-changes behavior, ownership, scope, architecture, proof, risk, rollback, or support
-meaning.
-
-## Operating posture
-
-**Default-complete, recovery-forward.** Normally perform every applicable research,
-vision, planning, proof, hardening, simplification, review, and reconciliation pass
-before creating the next more expensive artifact.
-
-When an earlier pass was missed, perform the cheapest version that can still improve
-the current artifact and continue. Missing historical ceremony, labels, or receipts
-is not a reason to discard coherent work.
-
-Make reasonable documented engineering decisions and proceed. Return only for a
-genuine product or semantic decision, a concrete safety hazard, or honest
-`NOT_PROVEN` evidence.
-
-## Execution and delegation
-
-The root session is the warm accountable owner unless it was explicitly spawned with
-a bounded brief. Naming one issue or PR does not convert the root into a disposable
-worker.
-
-Use the internal `orchestrate-work` skill for proportional execution shape:
-
-```text
-tiny or tightly coupled work
-→ direct root execution is often cheapest
-
-substantive work
-→ the root normally orchestrates
-→ focused agents consume bounded skills or questions
-→ one writer integrates each current candidate
-
-campaign work
-→ whole-flow claim lanes may run under the campaign root
-→ the root retains goal interpretation and reconciliation
-```
-
-Delegation is worth its cost when it preserves root context, changes the source,
-oracle, tool, environment, or review method, compresses high-output evidence, or
-reduces elapsed time. The brief is the control: bound the target, authority,
-mutation boundary, sufficient result, falsifiers, stop conditions, and non-goals.
-An unknown conclusion may be explored when the search boundary is bounded.
-
-Delegate when the evidence-to-answer compression ratio is high: CI or log triage,
-corpus or repository-wide searches, dependency/API audits, external-source collection,
-failure bisection, broad inventories, or an independently useful proof adversary. The
-child returns bounded evidence and references; the warm root keeps decisions,
-contradictions, and integration. This is an evidence-cost trigger, not a required relay.
-
-One coherent claim normally has one current candidate, and one writer mutates that
-candidate at a time. Before creating another candidate, check only for an equivalent
-current PR and explicit prerequisites. Otherwise focus on the selected claim. If Git
-or required integration evidence later presents a real conflict, the affected lane
-repairs it and refreshes only the affected proof and review.
-
-Use a direct issue or PR comment when another lane genuinely needs a material fact:
-a prerequisite changed, a governing ruling changed, one claim superseded another, or
-an actual integration interaction was found. No additional coordination state is
-needed.
-
-Detailed method and contracts:
+Detailed cross-provider contracts remain in
 [`docs/agents/DEVELOPMENT_METHOD.md`](docs/agents/DEVELOPMENT_METHOD.md),
 [`docs/agents/GITHUB_SURFACES.md`](docs/agents/GITHUB_SURFACES.md),
 [`docs/agents/REVIEW_CURRENTNESS.md`](docs/agents/REVIEW_CURRENTNESS.md), and
 [`docs/agents/SKILL_CONTRACT.md`](docs/agents/SKILL_CONTRACT.md).
 
-## GitHub-native work
+## Select and run the route
 
-- issues hold research, corrections, current synthesis, plans, dependencies, and next
-  coherent actions;
-- pull requests hold one acceptance-and-rollback candidate;
-- submitted reviews and inline threads hold findings and evidence-backed
-  dispositions;
-- checks and rulesets hold current machine and integration evidence;
-- merge closeout records what landed, what remains, and what becomes actionable next.
+Choose the narrowest applicable public flow:
 
-Use labels only for stable area, kind, risk, release, blocker, or requested-attention
-classification.
+- `$deliver-goal` — durable multi-PR outcome or umbrella;
+- `$deliver-pr` — one issue, PR, branch, candidate, or coherent claim;
+- `$prepare-issue` — problem, owner, scope, proof seam, or plan;
+- `$prepare-proof` — discriminating executable proof;
+- `$build-candidate` — implementation, test hardening, simplification, candidate
+  challenge;
+- `$finish-pr` — publication/resume, repair, substantive review, integration, merge,
+  reconciliation.
 
-Publish locally complete candidates ready by default. Draft is an explicit exception
-for remote-only proof, real collaboration, early visible ownership, or a protected
-integration experiment.
+Enter at the earliest absent or stale useful judgment. Existing coherent work enters
+midstream. Selecting a route is not completion: invoke it, follow its named normal and
+material backward edges, and do not invent a parallel lifecycle or run a stage locator.
 
-A clean review is valid. Never manufacture a finding or edit to prove review effort.
+## Operating posture
 
-## Review
+**Default-complete, recovery-forward.** Continue through every applicable judgment in
+the selected route until the claim is reconciled, reaches a real remote-owned wait, or
+returns a precise blocker or `NOT_PROVEN` boundary. Do not stop at research, a plan, a
+worker result, or green checks when the route still contains useful work.
 
-Review is not reading a diff, relaying CI green, posting a head/claim hash, or repeating
-a subagent verdict. For substantive work it is a directed, falsifying, and verified
-judgment:
+Make reasonable documented engineering decisions and proceed. Missing historical
+ceremony, labels, receipts, or named-agent handoffs is not a reason to discard coherent
+work; perform the cheapest still-useful repair and continue.
 
-- **discrimination** — what realistic wrong implementation does the proof reject?
-- **production reachability** — what live request, consumer, or protocol path reaches the change?
-- **external truth** — what competent authority establishes user-visible or protocol semantics?
-- **claim honesty** — what does the evidence establish, and what remains unproved?
-- **authority and complexity** — is this the semantic owner, and is the result free of duplicate authority, residue, or unnecessary API?
-- **risk and rollback** — what compatibility, security, packaging, migration, or support boundary moved?
+## Scope hierarchy
 
-The construction context must not be the only detection surface supporting merge.
-Fresh context is useful when it brings a different source, oracle, threat model,
-method, or attention surface; identity separation by itself is neither necessary
-nor sufficient.
+### Campaign root
 
-Review is cumulative and semantic. A submitted review, inline finding, reply, and
-evidence-backed disposition are the durable record. Do not post `Review pass (...) at
-head ... and claim ...` receipt comments. A later commit does not invalidate review
-merely because the SHA changed.
+Owns goal meaning, acceptance predicates, claim selection, cross-lane dependencies,
+contradictions, runtime-local frontier, joined evidence, exceptions, and goal
+reconciliation.
 
-After repair:
+For substantive work the campaign root normally orchestrates. Leaf implementation,
+broad archaeology, raw logs, repetitive proof, and review exploration should run in
+claim-local lanes or focused workers so the campaign context remains decision-rich and
+raw-output-light.
 
-- verify the affected finding, proof, and changed seam;
-- revisit claim, authority, reachability, risk, rollback, or compatibility only when
-  the repair materially changes them;
-- do not restart a full `deep` review for formatting, editorial cleanup, generated
-  receipt refresh, or stronger tests unless they change a substantive conclusion;
-- review actual conflict or integration repairs at the affected seam.
+### Lane root
 
-A clean review is valid and should leave a concise conclusion that helps the next
-session understand what was checked and what remains unproved.
+Owns one coherent acceptance-and-rollback claim. It runs `$deliver-pr`, invokes
+`$orchestrate-work`, keeps one candidate writer, joins claim-local evidence, publishes
+useful GitHub updates, and returns a typed result to its campaign root.
+
+A lane root may directly perform tiny tightly coupled claim-local work when briefing
+and joining cost more than the context saved. That does not make campaign-root leaf
+execution the default.
+
+### Worker, writer, and reviewer
+
+- read-only workers answer one bounded question or consume one named `$skill`;
+- one writer mutates the selected candidate branch/worktree;
+- reviewers change the evidence surface and return findings, falsifiers,
+  contradictions, uncertainty, and references—not approval.
+
+A leaf worker may not widen into claim orchestration unless the brief explicitly grants
+lane-root authority.
+
+## Codex orchestration
+
+Use `$orchestrate-work` after selecting a public flow or substantive atomic skill.
+
+Normal shapes:
+
+```text
+campaign outcome
+→ campaign root runs `$deliver-goal`
+→ substantial claims become whole-flow `$deliver-pr` lane roots
+
+claim lane
+→ lane root runs the named route
+→ focused workers/explorers consume named `$skills` or bounded questions
+→ one writer integrates candidate mutation
+→ differentiated reviewers challenge proof and candidate
+→ lane root joins evidence and returns a typed result
+```
+
+Use a compact whole-flow brief:
+
+```text
+Take issue #123 through `$deliver-pr`.
+You are the accountable lane root for this claim. Use GitHub as durable state, invoke
+`$orchestrate-work` within the claim, keep one candidate writer, follow the public
+flow's normal and material backward routes, and return the typed lane result.
+Do not select unrelated claims or alter the parent goal.
+```
+
+For focused work, name the `$skill`, exact subject, accepted authority and facts,
+read/write boundary, falsifiers, sufficient return, stop conditions, and non-goals.
+Require the child to consume the named skill when supplied.
+
+Choose agents when they preserve campaign/lane context, compress high-output evidence,
+change source/oracle/tool/environment/threat model, reduce elapsed time, improve
+recovery, or avoid expensive CI cycles. Stop adding agents when another result cannot
+change a decision.
+
+Keep campaign frontier and wake events in runtime memory only. Reconstruct them from
+issues, PRs, reviews, checks, merges, and repository artifacts after replacement.
+Do not poll unchanged remote state.
+
+## Useful GitHub handoffs
+
+Post or update GitHub only when information remains useful after the current context
+disappears:
+
+- claim, authority, plan, proof obligation, route, prerequisite, support, risk, or
+  rollback meaning changed;
+- source-backed evidence would otherwise be rediscovered;
+- a localized finding belongs in an inline review;
+- a finding receives an evidence-backed disposition;
+- a real external wait and wake event need to survive handoff;
+- a useful cumulative review, merged effect, or goal synthesis is ready.
+
+Use issues for durable research/rulings/plans/dependencies/goal synthesis; PR bodies or
+comments for candidate-wide route/proof/limitation summaries; inline reviews for
+localized findings; review replies for dispositions; submitted reviews for cumulative
+judgment; and issue closeout for landed effects and residual claims.
+
+Keep agent identity, topology, liveness, retries, task state, provisional reasoning,
+raw logs, unchanged polling, and routine skill transitions runtime-local.
+
+When another context benefits and the route is not obvious, post one compact route
+declaration with parent goal, claim, entry flow, current named transition, reason,
+durable subject, and wake event. Update it only when the material route changes. It is
+a resumability aid, not lifecycle authority.
+
+## Codex-native PR review
+
+For substantive PRs the native route is:
+
+```text
+`$finish-pr`
+→ `$address-review-comments` for existing findings
+→ `$final-challenge`
+→ `$orchestrate-work` for differentiated review lenses
+→ cumulative `$review-pr`
+→ REVIEW_CURRENT | CHANGES_REQUIRED | NOT_PROVEN |
+  BLOCKED_BY_PREREQUISITE | SUPERSEDED_OR_CLOSE
+→ only REVIEW_CURRENT enters `$verify-live-ci`
+→ INTEGRATION_READY | PR_IN_FLIGHT | MERGE_BLOCKED | NOT_PROVEN
+→ `$merge-reconcile`
+```
+
+Review is not diff reading, green CI, mergeability, zero threads, bot approval, or a
+worker verdict. It must proportionately challenge proof discrimination, production
+reachability, external truth, claim honesty, semantic authority/complexity, and
+risk/rollback.
+
+The construction context must not be the only detection surface supporting a
+substantive merge. Independence comes from changed evidence, oracle, method, threat
+model, environment, or attention—not identity alone.
+
+A clean review is valid. Do not manufacture findings or edits to demonstrate that the
+review happened.
+
+Substantive review and integration posture remain separate. Pending remote checks leave
+review current and return `PR_IN_FLIGHT`.
 
 ## Proof and currentness
 
 Keep candidate, integration, and landed evidence distinct.
 
-- candidate behavior or material claim changes → rerun affected proof and review;
-- actual merge conflict → resolve it, rerun conflict-affected proof, and review the
-  repaired seam;
-- explicit prerequisite change or actual merge-group/combined-tree failure → targeted
-  analysis and lane-local repair;
-- unrelated `main` movement with a conflict-free candidate → no rebase, update-branch,
-  empty commit, full CI replay, or review churn;
-- a head SHA change by itself → no review invalidation.
-
-At merge time, the current head SHA may be used as compare-and-swap protection so the
-branch cannot move between inspection and merge. That is merge safety, not review
-currentness.
-
-This repository squash-merges. GitHub creates the landed squash commit;
-reconciliation verifies its effect on current `main`.
+- material candidate change → rerun affected proof and review;
+- actual conflict or combined-tree interaction → repair and review the affected seam;
+- unrelated `main` movement with a conflict-free candidate → no rebase, branch refresh,
+  full CI replay, or review churn;
+- head SHA change alone → no review invalidation;
+- merge uses current head only as compare-and-swap protection.
 
 Never weaken a test, ratchet, support claim, or required proof merely to obtain green
-status. Use `NOT_PROVEN` for missing, partial, stale, contradictory, or
-instrument-failed evidence.
+status. Missing, partial, stale, contradictory, or instrument-failed evidence is
+`NOT_PROVEN`.
 
 ## Hard stops
 
-Stop only for concrete preventable hazards:
+Stop only for concrete hazards:
 
-- two writers would mutate the same candidate branch or worktree concurrently;
+- two writers would mutate the same candidate concurrently;
 - destructive cleanup would lose unsalvaged work;
-- repository, branch, candidate, or material claim identity cannot be established;
+- repository/candidate/material-claim identity or authority cannot be established;
 - a secret or unsafe release would be published;
 - a durable contract is structurally invalid;
-- substantive review findings remain unresolved;
-- current GitHub branch protection, rulesets, merge queue, or required checks block
-  merge.
+- substantive findings remain unresolved or review is missing/`NOT_PROVEN` at merge;
+- current rulesets, required checks, mergeability, or queue state block integration.
 
 Otherwise detect, explain, repair, and continue.
 
 ## Repository hygiene and local proof
 
-- read the nearest package-local owner guidance before modifying an owning crate;
+- read nearest package-local owner guidance before modifying an owning crate;
 - production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
 - never use `git stash` in worktrees; use scoped restore or a WIP commit;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
-- run focused proof first, then affected package proof, then broader proof only when
-  the candidate's risk or merge gate selects it;
+- run focused proof, then affected package proof, then broader proof only when risk or
+  the merge gate selects it;
 - do not run repository-wide Clippy or tests after every edit.
 
-Useful current commands:
+Useful commands:
 
 ```bash
 just doctor

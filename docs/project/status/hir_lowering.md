@@ -9,12 +9,12 @@ This status tracks parser AST construct coverage for the crate-local HIR baselin
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `lowered` | 33 | Emits one or more HIR items today. |
+| `lowered` | 37 | Emits one or more HIR items today. |
 | `dynamic_boundary` | 3 | Emits an explicit dynamic-boundary HIR item for unsupported static truth. |
 | `intentionally_skipped` | 20 | Traversal, metadata, or recovery placeholder; no standalone HIR item expected. |
-| `not_yet_modeled` | 20 | Parser AST construct exists, but HIR has no shell yet. |
+| `not_yet_modeled` | 16 | Parser AST construct exists, but HIR has no shell yet. |
 
-AST kinds tracked: `76`. HIR construct kinds tracked: `25`.
+AST kinds tracked: `76`. HIR construct kinds tracked: `28`.
 
 ## Inventory
 
@@ -35,16 +35,16 @@ AST kinds tracked: `76`. HIR construct kinds tracked: `25`.
 | `ChainedComparison` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `Ternary` | `lowered` | `BranchShell` | Ternary expression lowered as a branch shell with both arms present. |
 | `Unary` | `lowered` | `DerefExpr`, `DynamicBoundary` | Aggregate dereferences emit `DerefExpr`; proven-symbolic dereferences (string-literal, `.`-concatenation, or interpolated-string operands) under no-strict-refs additionally emit `DynamicBoundary`; operand always traversed. |
-| `Diamond` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `Diamond` | `lowered` | `ReadlineMigrationAdapter` | Flat migration adapter retains the diamond source fact; canonical readline semantics live in body HIR. |
 | `Ellipsis` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
 | `Undef` | `lowered` | `LiteralExpr` | Lowered as undef literal shell. |
-| `Readline` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
-| `Glob` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `Readline` | `lowered` | `ReadlineMigrationAdapter` | Flat migration adapter retains source facts; canonical readline semantics live in body HIR. |
+| `Glob` | `lowered` | `GlobMigrationAdapter` | Flat migration adapter retains source facts; canonical glob semantics live in body HIR. |
 | `Typeglob` | `not_yet_modeled` | - | No standalone HIR shell yet; typeglob assignments can contribute StashGraph slots or boundaries. |
 | `Number` | `lowered` | `LiteralExpr` | Lowered as numeric literal shell. |
 | `String` | `lowered` | `LiteralExpr` | Lowered as string literal shell. |
 | `VString` | `not_yet_modeled` | - | No standalone HIR literal shell yet; falls through after parser-level v-string classification. |
-| `Heredoc` | `not_yet_modeled` | - | No first-slice HIR shell yet. |
+| `Heredoc` | `lowered` | `HeredocMigrationAdapter` | Flat migration adapter retains source facts; canonical heredoc semantics live in body HIR. |
 | `ArrayLiteral` | `lowered` | `LiteralExpr` | Lowered as aggregate literal shell; children (elements) are traversed. |
 | `HashLiteral` | `lowered` | `LiteralExpr` | Lowered as aggregate literal shell; pairs are traversed. |
 | `Block` | `lowered` | `BlockShell` | Lowered as block shell and contributes a ScopeGraph block frame. |

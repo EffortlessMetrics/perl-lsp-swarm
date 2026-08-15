@@ -102,17 +102,6 @@ expires = "2026-09-30"
 # #1622, but RIPR 0.9.x cannot connect those oracles through the scanner state
 # machine and reports the seams as weakly_exposed.
 # -----------------------------------------------------------------------------
-[[suppress]]
-id = "ripr-suppress-completion-lexical-string-scanner-boundaries"
-kind = "predicate_infection_untraceable"
-paths = ["crates/perl-lsp-rs-core/src/providers/completion/completion/lexical_context.rs"]
-classification = ["weakly_exposed"]
-owner = "editor-trust"
-issue = "EffortlessMetrics/ripr#1429"
-reason = "Issue #1622 adds string-context completion suppression. Focused tests cover the exact quote-parity boundary and the qr/qq/qw/qx/tr quote-like operator boundaries through literal_scan_quote_parity_boundary_discriminator, literal_scan_quote_like_operator_boundary_discriminator, quote_like_literal_start_discriminates_qr_from_q_strings, quote_like_literal_start_discriminates_q_string_variants, quote_like_literal_start_discriminates_tr_operator, and end-to-end string completion hard rejects. RIPR 0.9.x sees the tests as related and reports strong exact-value oracles, but still cannot trace the scanner-state propagation through is_in_string and scan_segment, the same EffortlessMetrics/ripr#1429 limitation as the neighboring resolver and hover predicate suppressions. Remove when RIPR can trace these state-machine predicates or targeted mutation replaces this advisory path."
-created = "2026-06-22"
-review_after = "2026-07-22"
-expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
 # LSP cancellation performance receipt: test harness timing policy, not
@@ -310,13 +299,10 @@ expires = "2026-09-30"
 # PR #1288 (fix #956) extracted char-aware word-boundary predicate helpers
 # from inline logic in find_occurrences:
 #   crates/perl-parser/src/refactor/workspace_rename.rs
-#   crates/perl-refactoring/src/refactor/workspace_rename.rs
 #
-# Both helpers are covered by 4 inline #[cfg(test)] unit tests in each file:
+# Both helpers are covered by 4 inline #[cfg(test)] unit tests:
 #   test_is_word_boundary_before_ascii, test_is_word_boundary_before_unicode,
 #   test_is_word_boundary_after_ascii, test_is_word_boundary_after_unicode
-# plus the 3 integration regression tests in:
-#   crates/perl-refactoring/tests/workspace_rename_tests.rs
 #
 # ripr 0.5.0 cannot statically trace activation from test inputs through the
 # helper call chain (text[..offset].chars().next_back() -> is_perl_ident_char)
@@ -329,12 +315,11 @@ id = "ripr-suppress-workspace-rename-char-boundary-helpers"
 kind = "predicate_infection_untraceable"
 paths = [
   "crates/perl-parser/src/refactor/workspace_rename.rs",
-  "crates/perl-refactoring/src/refactor/workspace_rename.rs",
 ]
 classification = ["static_unknown", "no_static_path"]
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1429"
-reason = "is_word_boundary_before and is_word_boundary_after are char-aware word-boundary predicate helpers extracted for Codecov --lib coverage in PR #1288 (fix #956). Both predicates are covered by 4 inline #[cfg(test)] unit tests each (test_is_word_boundary_before_ascii, test_is_word_boundary_before_unicode, test_is_word_boundary_after_ascii, test_is_word_boundary_after_unicode) plus 3 integration regression tests. ripr 0.5.0 cannot statically trace activation from test inputs through the helper call chain — same ripr#1429 limitation as sibling suppressions. Remove when ripr#1429 is fixed upstream."
+reason = "is_word_boundary_before and is_word_boundary_after are char-aware word-boundary predicate helpers extracted for Codecov --lib coverage in PR #1288 (fix #956). Both predicates are covered by 4 inline #[cfg(test)] unit tests each (test_is_word_boundary_before_ascii, test_is_word_boundary_before_unicode, test_is_word_boundary_after_ascii, test_is_word_boundary_after_unicode). ripr 0.5.0 cannot statically trace activation from test inputs through the helper call chain — same ripr#1429 limitation as sibling suppressions. Remove when ripr#1429 is fixed upstream."
 created = "2026-06-11"
 review_after = "2026-07-11"
 expires = "2026-09-30"
@@ -2054,17 +2039,6 @@ removal_criteria = "perl-workspace-core / perl-tree-sitter-compat are consumed b
 # ripr 0.9.x run mis-associates them — its guidance pass timed out (210s) and
 # the mis-association reproduced on a clean re-run of the same head.
 # -----------------------------------------------------------------------------
-[[suppress]]
-id = "ripr-suppress-lsp-timing-parse-mode-exact-values"
-kind = "predicate_infection_untraceable"
-paths = ["crates/perl-lsp-rs/src/runtime/timing.rs"]
-classification = ["weakly_exposed"]
-owner = "proof-lane"
-issue = "EffortlessMetrics/ripr#1429"
-reason = "PR #3397 (#3396) adds the PERL_LSP_TIMING instrumentation sink. ripr 0.9.x reports 2 weakly_exposed severe seams for the exact-value predicates trimmed == \"0\" (timing.rs:108) and trimmed == \"1\" (timing.rs:113) in parse_mode, claiming no related test uses those values — but parse_mode is a pure function and the same file's test module already calls it directly with the exact target literals: parse_mode_off_variants asserts parse_mode(\"0\") -> TimingMode::Off and parse_mode_stderr_variants asserts parse_mode(\"1\") -> TimingMode::Stderr, plus case-insensitive neighbors (off/OFF/false, stderr/STDERR/true) and the file-path fallthrough in parse_mode_file_path. The flagging run's own guidance pass reported tool_error: ripr timed out after 210s with zero annotations, and the identical mis-association reproduced on a clean re-run (run 28712164718) — an instrument-degradation case of the EffortlessMetrics/ripr#1429 class (tracer fails to associate direct exact-value oracles). Suppression is narrow (one production file, one PR). Remove when ripr#1429 is fixed upstream, when PR #3363 (#2015) makes weakly_exposed-only findings non-blocking, or when targeted mutation replaces this advisory path."
-created = "2026-07-04"
-review_after = "2026-08-04"
-expires = "2026-10-04"
 
 # -----------------------------------------------------------------------------
 # INDIRECT_METHOD_EXCLUDED const array (PR #1914, #1758): no_static_path on a
@@ -2205,3 +2179,82 @@ created = "2026-07-17"
 review_after = "2026-08-17"
 expires = "2026-09-30"
 removal_criteria = "RIPR can trace the exact-head receipt/check runner through its focused contract oracles, or targeted mutation replaces this advisory static path."
+
+# -----------------------------------------------------------------------------
+# Formatting policy handlers (#7082 slice 2): advertise-gate / missing-params /
+# admit / CodeFormatter call sites are covered by named call_presence observers
+# colocated in handlers.rs plus live JSON-RPC dispatch tests, but RIPR 0.9.x
+# still reports weakly_gripped call_presence (unchanged_tests=true across
+# multiple observer iterations). Same static-tracing limit class as
+# ripr-suppress-type-hierarchy-cancellation-routing / EffortlessMetrics/ripr#1429.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-formatting-policy-handler-call-presence"
+kind = "call_presence_static_tracing_limit"
+paths = ["crates/perl-lsp-rs/src/runtime/language/formatting_policy/handlers.rs"]
+classification = ["weakly_gripped", "reachable_unrevealed", "call_presence", "static_unknown", "infection_unknown", "propagation_unknown"]
+owner = "lsp-lane"
+issue = "#7082"
+reason = "PR #7554 (#7082 slice 2) wires textDocument/formatting through handle_formatting_policy. Focused observers colocated in handlers.rs (handle_formatting_policy_call_presence_observer, _ensure_surface_advertised, _missing_params) assert the exact ripr candidate strings for ensure_surface_advertised, params.ok_or_else/invalid_params, admit, CodeFormatter::with_config_and_mode, and snapshot URI/generation bindings; live_dispatch_routes_document_formatting_through_receipt_policy and live_stale_request_returns_content_modified_not_successful_empty exercise the JSON-RPC dispatcher path. RIPR 0.9.x still reports weakly_gripped call_presence / reachable_unrevealed on those call sites with unchanged_tests=true because the static tracer cannot connect assertion messages and Result error codes through the handler. Narrow single-file suppression; remove when ripr#1429 can grip colocated call_presence observers or targeted mutation replaces this path."
+created = "2026-08-13"
+review_after = "2026-09-13"
+expires = "2026-10-31"
+removal_criteria = "RIPR grips the colocated handle_formatting_policy_call_presence_observer* tests against handlers.rs call sites, or targeted mutation replaces this advisory static path."
+
+# -----------------------------------------------------------------------------
+# Heredoc queue contract integration test (PR #6760 / issue #6727):
+# Result-style test plumbing misclassified as production seams (ripr#1428).
+#
+# The exact-head RIPR 0.9.0 artifact reports 639 findings in the newly added
+# integration-test file: 447 exposed, 28 reachable_unrevealed/error_path,
+# 2 weakly_exposed/predicate, 11 infection_unknown, 3 propagation_unknown,
+# and 148 static_unknown. The current matcher is path-only and ignores the
+# documentary `classification` field, so this exact-path entry suppresses all
+# 639, not only the 30 pre-suppression actionable/severe findings. It suppresses
+# zero production findings; the post-suppression actionable/severe count is 0
+# and the new-gap quality gate passes. The focused 7-case contract directly
+# observes FIFO queueing, opener/body/source geometry, complete false-opener
+# token streams, exact terminator exclusion, recovery absence, tail resumption,
+# and EOF.
+#
+# Suppression is exact-path and test-only: no production path, glob, severity
+# threshold, or repository-wide RIPR behavior is weakened. Remove when RIPR
+# distinguishes Result-style integration-test plumbing, when the matcher honors
+# classification filters, or when exact-head evidence no longer needs this
+# whole-file exception.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-heredoc-queue-contract-test-surface"
+kind = "test_receipt_surface"
+paths = ["crates/perl-lexer/tests/heredoc_queue_contract.rs"]
+owner = "lexer-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #6760 (issue #6727) adds heredoc_queue_contract.rs, an integration-test contract using the fallible `type R<T = ()> = Result<T, Box<dyn std::error::Error>>` alias required by repository policy. The fresh exact-head RIPR 0.9.0 receipt reports 639 findings in this test-only file: 447 exposed, 28 reachable_unrevealed/error_path, 2 weakly_exposed/predicate, 11 infection_unknown, 3 propagation_unknown, and 148 static_unknown. The repository matcher currently applies suppressions by path and ignores documentary classification filters, so this exact-path entry truthfully suppresses all 639 current findings, not only the 30 pre-suppression actionable/severe findings. Production findings suppressed are exactly 0; post-suppression actionable/severe findings are 0 and the new-gap quality gate passes. The 7 focused tests directly assert FIFO heredoc queueing, opener/body/source geometry, full false-opener token projections, exact terminator exclusion and non-overlap, recovery absence, tail resumption, and one terminal EOF. This time-boxed whole-test-file exception matches the ripr#1428 test_receipt_surface precedent. It changes no production path, glob, RIPR parser, or severity threshold."
+created = "2026-08-13"
+review_after = "2026-09-30"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr#1428 is fixed so Result-style integration-test helpers are not treated as production seams, OR the suppression matcher enforces finding-level classification filters and a narrower evidence-backed rule can replace this path-wide exception, OR an exact-head RIPR artifact no longer needs suppression for this file; then delete or narrow this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# Zed host/public-registry shared fail-closed validators (PR #7958 / #7912):
+# test-support helpers under xtask/tests/support misclassified as production
+# seams (ripr#1428).
+#
+# Exact-head RIPR reports 33 no_static_path + 2 weakly_exposed findings in
+# xtask/tests/support/zed_host_compat.rs (match arms, Ok(()) markers, public
+# pass identity predicates). The helpers are compiled only into Zed programme
+# contract tests; public-registry loaders exercise the remaining reachable
+# error paths in zed_public_registry_receipt.rs. Suppress this single
+# test-support file; do not suppress the contract tests or fixtures.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-zed-host-compat-test-support"
+kind = "test_receipt_surface"
+paths = ["xtask/tests/support/zed_host_compat.rs"]
+owner = "integrations-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #7958 adds xtask/tests/support/zed_host_compat.rs as shared fail-closed validators for the Zed host and public-registry programme contracts. Exact-head RIPR 0.9.x reports 33 no_static_path and 2 weakly_exposed findings on match-arm/Ok(())/predicate plumbing inside that support module even though it is compiled only into xtask tests and the discriminating oracles live in zed_host_receipt.rs / zed_public_registry_receipt.rs (including explicit public-subject read/parse failure coverage). Same ripr#1428 test_receipt_surface class as ripr-suppress-heredoc-queue-contract-test-surface and ripr-suppress-seam-proof-tests. Exact-path, test-support-only; production findings suppressed are 0."
+created = "2026-08-13"
+review_after = "2026-09-13"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr#1428 distinguishes xtask/tests/support helpers from production seams, or exact-head RIPR no longer reports actionable gaps in zed_host_compat.rs after the contract tests grip the validators; then delete this entry and rerun the RIPR new-gap gate."

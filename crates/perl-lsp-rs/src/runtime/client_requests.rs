@@ -7,10 +7,24 @@ use crate::protocol::methods::WORKSPACE_APPLY_EDIT;
 
 #[allow(dead_code)]
 impl LspServer {
-    /// Send a server-to-client request with no parameters (for refresh requests)
+    /// Send a server-to-client request.
+    ///
+    /// LSP 3.17 permits only a narrow notification set before the initialize
+    /// response; server-originated *requests* are not legal until
+    /// initialization completes. The initialize-time `workspace/configuration`
+    /// call site was removed in #7708, and this guard keeps the invariant at
+    /// the common request seam so a future call site cannot silently
+    /// reintroduce a frame while `initialize` is still being handled.
     pub(crate) fn send_request(&self, method: &str, params: Value) -> io::Result<ServerRequestId> {
+        if !self.initialized.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("server request `{method}` is deferred until initialization completes"),
+            ));
+        }
+
         let id = self.next_server_request_id();
-        self.outbound.send_request(id, method, params)?;
+        self.outbound_sink().send_request(id, method, params)?;
         Ok(id)
     }
 
@@ -22,10 +36,9 @@ impl LspServer {
                 .next_request_id
                 .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
+                && let Some(id) = ServerRequestId::new(current.max(1))
             {
-                if let Some(id) = ServerRequestId::new(current.max(1)) {
-                    return id;
-                }
+                return id;
             }
         }
     }
@@ -160,12 +173,75 @@ mod tests {
         }
     }
 
-    fn server_with_output_capture() -> (LspServer, OutputCapture) {
+    fn uninitialized_server_with_output_capture() -> (LspServer, OutputCapture) {
         let output = OutputCapture::default();
         let server = LspServer::with_output(Arc::new(Mutex::new(
             Box::new(output.clone()) as Box<dyn Write + Send>
         )));
         (server, output)
+    }
+
+    /// Server-to-client requests are only legal after initialization completes
+    /// (#7708), so the default fixture for request-shape tests is an already
+    /// initialized server. Use [`uninitialized_server_with_output_capture`] to
+    /// exercise the pre-initialization lifecycle boundary itself.
+    fn server_with_output_capture() -> (LspServer, OutputCapture) {
+        let (server, output) = uninitialized_server_with_output_capture();
+        server.initialized.store(true, Ordering::Release);
+        (server, output)
+    }
+
+    /// ripr discriminator: `!self.initialized` rejects server→client requests (#7708).
+    #[test]
+    fn ripr_seam_proof_send_request_before_initialized_would_block() -> TestResult {
+        let (server, output) = uninitialized_server_with_output_capture();
+
+        let error = match server.send_request("workspace/configuration", json!({"items": []})) {
+            Ok(id) => {
+                return Err(format!(
+                    "pre-initialization server request must be rejected, got id {id:?}"
+                )
+                .into());
+            }
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::WouldBlock,
+            "exact WouldBlock on !initialized send_request boundary"
+        );
+        assert!(
+            error.to_string().contains("initialization completes"),
+            "rejection should name the lifecycle boundary: {error}"
+        );
+        // The outbound sink drains on a writer thread, so give it the same
+        // window the positive tests use. Without this the absence assertion
+        // would pass even if a frame had been queued.
+        thread::sleep(Duration::from_millis(50));
+        assert!(
+            output.messages()?.is_empty(),
+            "no server request frame may escape before initialization"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn server_request_after_initialized_is_emitted() -> TestResult {
+        let (server, output) = server_with_output_capture();
+
+        let request_id = server.send_request("workspace/configuration", json!({"items": []}))?;
+
+        thread::sleep(Duration::from_millis(50));
+        let messages = output.messages()?;
+        let request = messages
+            .iter()
+            .find(|message| {
+                message.get("method").and_then(Value::as_str) == Some("workspace/configuration")
+            })
+            .ok_or_else(|| format!("expected workspace/configuration request: {messages:?}"))?;
+        assert_eq!(request.get("id").and_then(Value::as_i64), Some(i64::from(request_id.as_i32())));
+        Ok(())
     }
 
     #[test]

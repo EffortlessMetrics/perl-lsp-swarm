@@ -125,8 +125,22 @@ fn safe_relative_path_resolves_under_workspace() -> TestResult {
 
     let resolved = validate_workspace_path(&PathBuf::from("lib/Foo.pm"), ws)?;
 
-    // The resolved path must start with the workspace root.
+    // The resolved path must start with the workspace root. On Windows,
+    // canonicalize() returns a \\?\-prefixed verbatim path, but
+    // validate_workspace_path normalizes that prefix away internally.
+    // Strip it here so the starts_with comparison is consistent (#5934).
     let canonical_ws = ws.canonicalize()?;
+    #[cfg(windows)]
+    let canonical_ws = {
+        let s = canonical_ws.to_string_lossy().into_owned();
+        let stripped = s
+            .strip_prefix(r"\\?\UNC\")
+            .map(|v| format!(r"\\{}", v))
+            .or_else(|| s.strip_prefix(r"\\?\").map(std::string::ToString::to_string))
+            .unwrap_or(s);
+        PathBuf::from(stripped)
+    };
+
     assert!(
         resolved.starts_with(&canonical_ws),
         "resolved path '{resolved:?}' must be under workspace '{canonical_ws:?}'"

@@ -1,0 +1,86 @@
+{
+  "check": "first-ten-minutes",
+  "schema_version": "first_ten_minutes.v1",
+  "status": "pass",
+  "claim_boundary": "Release-shaped observation of one reviewed fixture through install, core editor use, mutation, recovery, and shutdown; does not establish all-project or all-editor quality.",
+  "study_pass": "pre_freeze_release_shaped",
+  "candidate": {
+    "candidate_id": "v0.18.0-pre-freeze",
+    "repository_sha": "0123456789abcdef0123456789abcdef01234567",
+    "artifact_set_id": "v0.18.0-pre-freeze-linux-x86_64",
+    "vsix_version": "0.18.0",
+    "vsix_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "perllsp_version": "0.18.0",
+    "perllsp_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "perl_dap_version": "0.18.0",
+    "perl_dap_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "vscode_version": "1.131.0",
+    "platform": "linux-x86_64",
+    "clean_profile_id": "first-ten-minutes-conventional-modules"
+  },
+  "project": {
+    "fixture_id": "conventional-modules-v1",
+    "content_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "family": "conventional_modules"
+  },
+  "steps": [
+    {
+      "id": "install_startup",
+      "status": "completed",
+      "evidence_ref": "receipt://startup/conventional-modules-v1",
+      "limitations": []
+    },
+    {
+      "id": "understand_project",
+      "status": "completed",
+      "evidence_ref": "receipt://providers/conventional-modules-v1",
+      "limitations": []
+    },
+    {
+      "id": "change_project",
+      "status": "completed",
+      "evidence_ref": "receipt://freshness/conventional-modules-v1",
+      "limitations": []
+    },
+    {
+      "id": "diagnose_recover",
+      "status": "completed",
+      "evidence_ref": "receipt://recovery/conventional-modules-v1",
+      "limitations": []
+    }
+  ],
+  "first_useful_ms": 480,
+  "first_correct_ms": 710,
+  "counts": {
+    "false_exact": 0,
+    "stale_exact": 0,
+    "unsafe_edit": 0,
+    "unexplained_empty": 0,
+    "silent_startup_failure": 0,
+    "broken_documented_install": 0,
+    "wrong_binary_or_version": 0,
+    "orphaned_server_or_debuggee": 0,
+    "notifications": 0,
+    "interventions": 0
+  },
+  "findings": [
+    {
+      "id": "beta-dynamic-method-control",
+      "class": "expected_beta_boundary",
+      "summary": "Dynamic method dispatch produced a bounded explanation rather than manufactured exactness.",
+      "evidence_ref": "receipt://provider-decision/dynamic-method-control",
+      "linked_issue": null
+    }
+  ],
+  "expected_beta_boundaries": [
+    "Dynamic dispatch may produce a bounded fallback or refusal with an explanation."
+  ],
+  "linked_issues": [
+    "#5900",
+    "#5901",
+    "#5902"
+  ],
+  "limitations": [
+    "This fixture does not exercise DAP preview or a framework-shaped project."
+  ]
+}

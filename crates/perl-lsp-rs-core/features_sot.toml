@@ -180,14 +180,14 @@ area = "text_document"
 maturity = "ga"
 advertised = true
 tests = [
-  "crates/perl-refactoring/tests/comprehensive_unit_tests.rs",
-  "crates/perl-refactoring/tests/comprehensive_unit_tests_v2.rs",
-  "crates/perl-refactoring/tests/workspace_rename_tests.rs",
-  "crates/perl-refactoring/tests/bdd_refactoring_workflows.rs",
-  "crates/perl-refactoring/tests/subroutine_inline_tests.rs",
-  "crates/perl-refactoring/tests/rename_extract_coverage.rs",
-  "crates/perl-refactoring/tests/edge_case_coverage.rs",
-  "crates/perl-refactoring/tests/scoped_rename_integration.rs",
+  "crates/perl-parser/src/refactor/workspace_rename.rs",
+  "crates/perl-parser/src/refactor/scoped_rename_tests.rs",
+  "crates/perl-parser/src/refactor/import_optimizer.rs",
+  "crates/perl-parser/src/refactor/inline.rs",
+  "crates/perl-parser/src/refactor/modernize.rs",
+  "crates/perl-parser/src/refactor/refactoring.rs",
+  "crates/perl-parser/src/refactor/workspace_refactor.rs",
+  "crates/perl-parser/tests/modernize_perl_tests.rs",
 ]
 description = "Perl-specific refactoring engine (264 tests) providing workspace-wide atomic symbol rename with rollback, import optimization (analyze and rewrite use/require statements), code modernization (bareword filehandles, two-arg open, missing pragmas), extract-module, move-subroutine, inline-variable, and inline-subroutine — all via the RefactoringEngine with backup/rollback support"
 
@@ -476,21 +476,21 @@ description = "Detailed work progress"
 id = "lsp.notebook_document_sync"
 spec = "LSP 3.17"
 area = "notebook"
-maturity = "ga"
-advertised = true
+maturity = "preview"
+advertised = false
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs"]
-description = "Notebook document synchronization (didOpen/didChange/didSave/didClose handlers)"
+tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs", "crates/perl-lsp-rs/tests/ripr_seam_proof_notebook_preview_boundary.rs"]
+description = "Preview implementation evidence only. Limited to in-process lifecycle/store tests; transactional versioning, mixed-language lifecycle, save semantics, cleanup, and real Jupyter/VS Code receipts remain unproven. Promotion owners: #7130 and #7132; this row is not GA evidence for #7032."
 
 [[feature]]
 id = "lsp.notebook_cell_execution"
 spec = "LSP 3.17"
 area = "notebook"
-maturity = "ga"
+maturity = "preview"
 advertised = false
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs"]
-description = "Notebook cell execution summary tracking (LSP does not execute cells; this tracks executionSummary metadata)"
+tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs", "crates/perl-lsp-rs/tests/ripr_seam_proof_notebook_preview_boundary.rs"]
+description = "Preview metadata tracking only; the LSP server does not execute cells and no editor lifecycle receipt exists. Promotion owners: #7130 and #7132; this row is not GA evidence for #7032."
 
 # Debug Features (DAP)
 

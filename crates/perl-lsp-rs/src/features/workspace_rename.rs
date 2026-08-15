@@ -88,6 +88,28 @@ pub fn build_rename_edit(
     // 1) Get all references across the workspace
     let mut locs = idx.find_refs(key);
 
+    // Qualified reference lookup intentionally filters cross-package bare
+    // functions (#6110). Rename still has to refuse when such a call exists,
+    // rather than silently renaming only the definition.
+    if key.kind == SymKind::Sub {
+        for loc in idx.find_cross_package_bare_refs(key) {
+            if is_ambiguous_sub_reference(
+                idx,
+                key,
+                &loc.uri,
+                loc.range.start.line,
+                loc.range.start.column,
+                loc.range.end.line,
+                loc.range.end.column,
+            ) {
+                return Err(RenameRefusal::AmbiguousIdentity(format!(
+                    "unqualified `{}` reference outside package `{}`",
+                    key.name, key.pkg
+                )));
+            }
+        }
+    }
+
     // 2) Also include the definition itself
     locs.push(def);
 
@@ -153,22 +175,23 @@ pub fn build_rename_edit(
                 // For subroutines, preserve any existing package qualifier
                 let mut replacement = new_name_bare.to_string();
 
-                if !narrowed_sub_name && let Some(doc) = idx.document_store().get(&loc.uri) {
-                    if let (Some(start_off), Some(end_off)) = (
+                if !narrowed_sub_name
+                    && let Some(doc) = idx.document_store().get(&loc.uri)
+                    && let (Some(start_off), Some(end_off)) = (
                         doc.line_index.position_to_offset(start_line, start_char),
                         doc.line_index.position_to_offset(end_line, end_char),
-                    ) {
-                        if let Some(original) = doc.text().get(start_off..end_off) {
-                            if let Some((qual, _)) = original.rsplit_once("::") {
-                                replacement = format!("{}::{}", qual, new_name_bare);
-                            }
-                        }
-                    }
+                    )
+                    && let Some(original) = doc.text().get(start_off..end_off)
+                    && let Some((qual, _)) = original.rsplit_once("::")
+                {
+                    replacement = format!("{}::{}", qual, new_name_bare);
                 }
 
                 replacement
             }
             SymKind::Pack => new_name_bare.to_string(),
+            // Forward-compatible fallback for future variants (#2898)
+            _ => new_name_bare.to_string(),
         };
 
         grouped.entry(loc.uri.clone()).or_default().push(TextEdit {
@@ -422,12 +445,12 @@ fn is_non_target_package_declaration(
                 .and_then(|end_off| doc.text().get(start_off..end_off))
         });
 
-    if let Some(original) = maybe_original {
-        if let Some((qualifier, _)) = original.rsplit_once("::") {
-            return qualifier != key.pkg.as_ref();
-        }
-        // Unqualified bare name — rely on package context below.
+    if let Some(original) = maybe_original
+        && let Some((qualifier, _)) = original.rsplit_once("::")
+    {
+        return qualifier != key.pkg.as_ref();
     }
+    // Unqualified bare name — rely on package context below.
 
     let package_at_line = package_name_for_line(doc.text(), start_line);
     if package_at_line == key.pkg.as_ref() {
@@ -829,6 +852,38 @@ $var;
             child_edit.is_some(),
             "rename must produce edits for Child.pm inherited call site. Got URIs: {:?}",
             edits.iter().map(|e| &e.uri).collect::<Vec<_>>()
+        );
+
+        Ok(())
+    }
+
+    /// A same-package call through an arbitrary receiver must not be attributed
+    /// to the package's method definition.  The workspace index retains the
+    /// conventional `$self`/`$this` dispatch forms needed for inheritance, but
+    /// fails closed for receivers whose class cannot be established.
+    #[test]
+    fn rename_arrow_method_call_with_unrelated_receiver_is_not_rewritten()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+
+        let base_text = "package Base;\nsub shared { return 'shared'; }\n1;\n";
+        let caller_text =
+            "package Base;\nsub run {\n    my ($other) = @_;\n    return $other->shared;\n}\n1;\n";
+
+        index_text(&idx, "file:///Base.pm", base_text)?;
+        index_text(&idx, "file:///OtherReceiver.pm", caller_text)?;
+
+        let key = SymbolKey {
+            pkg: Arc::from("Base"),
+            name: Arc::from("shared"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        let edits = build_rename_edit(&idx, &key, "shared_renamed")?;
+        assert!(
+            edits.iter().all(|edit| !edit.uri.contains("OtherReceiver.pm")),
+            "rename must not rewrite an arbitrary receiver; got {edits:?}"
         );
 
         Ok(())

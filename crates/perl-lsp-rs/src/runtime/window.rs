@@ -47,6 +47,34 @@ impl LspServer {
         self.notify("window/showMessage", params)
     }
 
+    /// Send a user-facing notification, falling back to `tracing` when the
+    /// client channel is broken.
+    ///
+    /// Use this instead of `let _ = self.show_message(...)` at every call site
+    /// that would otherwise silently discard the notification. If the client
+    /// channel is broken (e.g. the transport is closed), the warning the user
+    /// was supposed to see is emitted to the server log instead of being
+    /// dropped on the floor (#5013 item 5).
+    pub fn show_message_or_log(&self, typ: MessageType, message: &str) {
+        if let Err(e) = self.show_message(typ, message) {
+            // tracing requires a static level; branch to the correct macro.
+            match typ {
+                MessageType::Error => {
+                    tracing::error!("showMessage failed ({e}); message was: {message}")
+                }
+                MessageType::Warning => {
+                    tracing::warn!("showMessage failed ({e}); message was: {message}")
+                }
+                MessageType::Info => {
+                    tracing::info!("showMessage failed ({e}); message was: {message}")
+                }
+                MessageType::Log | MessageType::Debug => {
+                    tracing::debug!("showMessage failed ({e}); message was: {message}")
+                }
+            }
+        }
+    }
+
     /// Send a window/logMessage notification
     ///
     /// # Arguments
@@ -125,10 +153,10 @@ impl LspServer {
 
         if let Some(obj) = params.as_object_mut() {
             if options.external {
-                obj.insert("external".to_string(), json!(true));
+                obj.insert("external".to_string(), Value::Bool(true));
             }
             if options.take_focus {
-                obj.insert("takeFocus".to_string(), json!(true));
+                obj.insert("takeFocus".to_string(), Value::Bool(true));
             }
             if let Some(range) = options.selection {
                 obj.insert("selection".to_string(), json!(range));
@@ -203,10 +231,10 @@ impl LspServer {
             "title": title,
         });
 
-        if let Some(msg) = message {
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert("message".to_string(), json!(msg));
-            }
+        if let Some(msg) = message
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert("message".to_string(), json!(msg));
         }
 
         let params = json!({
@@ -264,10 +292,10 @@ impl LspServer {
             "kind": "end",
         });
 
-        if let Some(msg) = message {
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert("message".to_string(), json!(msg));
-            }
+        if let Some(msg) = message
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert("message".to_string(), json!(msg));
         }
 
         let params = json!({
@@ -335,26 +363,26 @@ impl LspServer {
     /// # Arguments
     /// * `params` - Notification params containing the token
     pub(super) fn handle_progress_cancel(&self, params: Option<Value>) {
-        if let Some(params) = params {
-            if let Some(token) = params.get("token").and_then(|v| v.as_str()) {
-                // Remove from active tokens
-                let removed = self.progress_tokens.lock().remove(token);
+        if let Some(params) = params
+            && let Some(token) = params.get("token").and_then(|v| v.as_str())
+        {
+            // Remove from active tokens
+            let removed = self.progress_tokens.lock().remove(token);
 
-                if removed {
-                    tracing::debug!(token, "Progress cancelled by client");
+            if removed {
+                tracing::debug!(token, "Progress cancelled by client");
 
-                    // Look up the request ID associated with this progress token
-                    // and signal cancellation via the global registry
-                    let request_id = self.progress_token_to_request.lock().remove(token);
-                    if let Some(req_id) = request_id {
-                        tracing::debug!(request = ?req_id, token, "Signalling cancellation via progress token");
-                        if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&req_id) {
-                            tracing::warn!(error = %e, "Failed to cancel request via registry");
-                        }
+                // Look up the request ID associated with this progress token
+                // and signal cancellation via the global registry
+                let request_id = self.progress_token_to_request.lock().remove(token);
+                if let Some(req_id) = request_id {
+                    tracing::debug!(request = ?req_id, token, "Signalling cancellation via progress token");
+                    if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&req_id) {
+                        tracing::warn!(error = %e, "Failed to cancel request via registry");
                     }
-                } else {
-                    tracing::debug!(token, "Progress cancel for unknown token");
                 }
+            } else {
+                tracing::debug!(token, "Progress cancel for unknown token");
             }
         }
     }

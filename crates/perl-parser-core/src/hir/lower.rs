@@ -9,6 +9,7 @@ use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
     HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
+    diamond_expr, glob_expr, heredoc_expr, readline_expr,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -17,16 +18,18 @@ use super::model::{
     CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase, CompilePhaseBlock,
     CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr, DerefAggregateKind,
     DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind, ExportDeclaration,
-    ExportDeclarationKind, GlobSlot, GlobSlotKind, GlobSlotSource, HIR_BODY_MODEL_VERSION,
-    HirBindingId, HirFile, HirId, HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact,
-    IncRootKind, IndirectCallExpr, InheritanceSource, LiteralExpr, LiteralKind, LoopKind,
-    LoopShell, MatchExpr, MethodCallExpr, MethodDecl, ModuleRequest, ModuleRequestKind,
-    ModuleResolutionStatus, PackageDecl, PackageInheritanceEdge, PackageStash, PragmaArgumentKind,
-    PragmaEffect, PragmaStateFact, PrototypeFact, PrototypeTable, RecoveryConfidence, RegexExpr,
-    RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
+    ExportDeclarationKind, GlobMigrationAdapter, GlobSlot, GlobSlotKind, GlobSlotSource,
+    HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId, HirFile, HirId, HirItem,
+    HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
+    InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr,
+    MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionStatus, PackageDecl,
+    PackageInheritanceEdge, PackageStash, PragmaArgumentKind, PragmaEffect, PragmaStateFact,
+    PrototypeFact, PrototypeTable, ReadlineMigrationAdapter, ReadlineSource, RecoveryConfidence,
+    RegexExpr, RegexTargetKind, RequireDecl, ScopeFrame, ScopeGraph, ScopeKind, StashConfidence,
     StashDynamicBoundary, StashDynamicBoundaryKind, StashGraph, StashProvenance,
     StatementModifierKind, StatementModifierShell, StorageClass, SubDecl, SubstitutionExpr,
     TransliterationExpr, TryExpr, UseDecl, VariableBinding, VariableDecl,
+    glob_pattern_interpolates,
 };
 
 /// Lower a parser AST into first-slice HIR items plus canonical body arenas.
@@ -507,6 +510,66 @@ impl Lowerer {
                         interpolated: Some(*interpolated),
                         element_count: None,
                         pair_count: None,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => {
+                // The body text stays in the source buffer; `body_range` is the
+                // handle to it. A command heredoc (`<<`CMD``) runs the shell at
+                // runtime, so `command` marks it as a non-literal value.
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::HeredocMigrationAdapter(HeredocMigrationAdapter {
+                        delimiter: delimiter.clone(),
+                        interpolated: *interpolated,
+                        indented: *indented,
+                        command: *command,
+                        body_range: *body_span,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Readline { filehandle } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::ReadlineMigrationAdapter(ReadlineMigrationAdapter {
+                        source: ReadlineSource::from_filehandle(filehandle.as_deref()),
+                        filehandle: filehandle.clone(),
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Diamond => {
+                // `<>` and `<<>>` both read the files named in `@ARGV`, falling
+                // back to STDIN. The parser keeps no filehandle for either form.
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::ReadlineMigrationAdapter(ReadlineMigrationAdapter {
+                        source: ReadlineSource::ArgvDiamond,
+                        filehandle: None,
+                    }),
+                    self.package_context.clone(),
+                    Some(self.current_scope()),
+                );
+            }
+            NodeKind::Glob { pattern } => {
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::GlobMigrationAdapter(GlobMigrationAdapter {
+                        pattern: pattern.clone(),
+                        interpolated: glob_pattern_interpolates(pattern),
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),
@@ -2608,6 +2671,12 @@ fn is_compile_environment_target(node: &Node) -> bool {
         NodeKind::Binary { op, left, .. } if op == "{}" || op == "[]" => {
             is_compile_environment_target(left)
         }
+        // Array slice `@INC[0]` and hash slice `@INC{...}` — the target is the
+        // underlying variable, which may be a compile-environment target like
+        // @INC (#5929).
+        NodeKind::ArraySlice { target, .. } | NodeKind::HashSlice { target, .. } => {
+            is_compile_environment_target(target)
+        }
         _ => false,
     }
 }
@@ -3404,6 +3473,380 @@ impl<'a> BodyBuilder2<'a> {
                     HirExpr::Call {
                         args: arg_ids,
                         ast_kind: "AmperCall".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::IndirectCall { method: _, object, args } => {
+                // Lower indirect object call (e.g. `new Class @args`) with
+                // structured children so variable reads in object/arg
+                // positions produce correct PIR facts. Without this arm,
+                // IndirectCall fell through to HirExpr::Opaque, hiding the
+                // call site from effect analysis and dropping argument
+                // variable reads (#5043).
+                let mut arg_ids = vec![self.lower_expr(object)];
+                arg_ids.extend(args.iter().map(|a| self.lower_expr(a)));
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "IndirectCall".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // String/IO value shells. The payloads are built by the shared
+            // constructors in `hir::body` so this lowerer and
+            // `hir::body::lower_expr` cannot drift apart — they already did once,
+            // when only one of the two gained these arms.
+            NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => self
+                .alloc_expr(
+                    heredoc_expr(delimiter, *interpolated, *indented, *command, *body_span),
+                    range,
+                ),
+
+            NodeKind::Readline { filehandle } => {
+                self.alloc_expr(readline_expr(filehandle.as_deref()), range)
+            }
+
+            NodeKind::Diamond => self.alloc_expr(diamond_expr(), range),
+
+            NodeKind::Glob { pattern } => self.alloc_expr(glob_expr(pattern), range),
+
+            // Regex/Match/Substitution lowering (#5043): these are important
+            // for effect analysis because has_embedded_code means the pattern
+            // or replacement can execute arbitrary Perl code via (?{...}) or
+            // the /e modifier. Lower the matched expression as a structured
+            // child so variable reads are captured.
+            NodeKind::Regex { has_embedded_code: _, .. } => {
+                // A bare regex literal (qr//) has no target expression to lower.
+                // Model as Opaque but tag it so effect analysis can check for
+                // embedded code without string sniffing.
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "Regex".to_string() }, range)
+            }
+
+            NodeKind::Match { expr, has_embedded_code, negated: _, .. } => {
+                // Lower the matched expression so variable reads are captured.
+                // The match itself is modeled as a Call so effect analysis can
+                // see it as a potential code-execution site when
+                // has_embedded_code is true.
+                let arg_ids = vec![self.lower_expr(expr)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: if *has_embedded_code {
+                            "MatchWithEmbeddedCode".to_string()
+                        } else {
+                            "Match".to_string()
+                        },
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Substitution { expr, has_embedded_code, .. } => {
+                // Lower the target expression. Substitution with /e modifier
+                // evaluates the replacement as Perl code — model as Call so
+                // effect analysis can see the code-execution site.
+                let arg_ids = vec![self.lower_expr(expr)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: if *has_embedded_code {
+                            "SubstitutionWithEmbeddedCode".to_string()
+                        } else {
+                            "Substitution".to_string()
+                        },
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Transliteration { expr, .. } => {
+                // tr/// has no code execution risk but the target expression
+                // should still be lowered for variable reads.
+                let arg_ids = vec![self.lower_expr(expr)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Transliteration".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // Code execution constructs (#5043): these involve dynamic
+            // evaluation and must be visible to effect analysis as call-like
+            // sites. Lower the block/expr children for variable reads.
+            NodeKind::Eval { block } => {
+                let arg_ids = vec![self.lower_expr(block)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Eval".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Do { block } => {
+                let arg_ids = vec![self.lower_expr(block)];
+                self.alloc_expr(
+                    HirExpr::Call { args: arg_ids, ast_kind: "Do".to_string(), callee_span: None },
+                    range,
+                )
+            }
+
+            NodeKind::Defer { block } => {
+                let arg_ids = vec![self.lower_expr(block)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Defer".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Try { body, catch_blocks, finally_block } => {
+                // Lower all blocks so variable reads in try/catch/finally
+                // are captured for effect analysis.
+                let mut arg_ids = vec![self.lower_expr(body)];
+                for (_, handler) in catch_blocks {
+                    arg_ids.push(self.lower_expr(handler));
+                }
+                if let Some(fin) = finally_block {
+                    arg_ids.push(self.lower_expr(fin));
+                }
+                self.alloc_expr(
+                    HirExpr::Call { args: arg_ids, ast_kind: "Try".to_string(), callee_span: None },
+                    range,
+                )
+            }
+
+            NodeKind::ChainedComparison { operands, .. } => {
+                // Lower all operands so variable reads are captured.
+                let arg_ids: Vec<HirExprId> = operands.iter().map(|o| self.lower_expr(o)).collect();
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "ChainedComparison".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // Tie/Untie (#5043): these bind variables to objects, so
+            // variable reads in the variable/package/args must be captured.
+            NodeKind::Tie { variable, package, args } => {
+                let mut arg_ids = vec![self.lower_expr(variable), self.lower_expr(package)];
+                arg_ids.extend(args.iter().map(|a| self.lower_expr(a)));
+                self.alloc_expr(
+                    HirExpr::Call { args: arg_ids, ast_kind: "Tie".to_string(), callee_span: None },
+                    range,
+                )
+            }
+
+            NodeKind::Untie { variable } => {
+                let arg_ids = vec![self.lower_expr(variable)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Untie".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // Given/When/Default (#5043): switch-like constructs. Lower
+            // the condition and body expressions for variable reads.
+            NodeKind::Given { expr, body } => {
+                let arg_ids = vec![self.lower_expr(expr), self.lower_expr(body)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Given".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::When { condition, body } => {
+                let arg_ids = vec![self.lower_expr(condition), self.lower_expr(body)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "When".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Default { body } => {
+                let arg_ids = vec![self.lower_expr(body)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Default".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // LoopControl (#5043): next/last/redo with optional label.
+            // Modeled as Opaque since there are no child expressions to lower.
+            NodeKind::LoopControl { .. } => {
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "LoopControl".to_string() }, range)
+            }
+
+            // Goto (#5043): lower the target expression for variable reads.
+            NodeKind::Goto { target, .. } => {
+                let arg_ids = vec![self.lower_expr(target)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Goto".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // VString (#5043): version string literal (v5.38.0). No child
+            // expressions to lower, but tag as Opaque for consistency.
+            NodeKind::VString { .. } => {
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "VString".to_string() }, range)
+            }
+
+            // Declaration constructs (#5043): lower body/children for
+            // variable reads. These are the last high-value variants.
+            NodeKind::Subroutine { body, prototype, signature, .. } => {
+                let mut arg_ids = Vec::new();
+                if let Some(p) = prototype {
+                    arg_ids.push(self.lower_expr(p));
+                }
+                if let Some(s) = signature {
+                    arg_ids.push(self.lower_expr(s));
+                }
+                arg_ids.push(self.lower_expr(body));
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Subroutine".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Method { body, signature, .. } => {
+                let mut arg_ids = Vec::new();
+                if let Some(s) = signature {
+                    arg_ids.push(self.lower_expr(s));
+                }
+                arg_ids.push(self.lower_expr(body));
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Method".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Package { block, .. } => {
+                let mut arg_ids = Vec::new();
+                if let Some(b) = block {
+                    arg_ids.push(self.lower_expr(b));
+                }
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Package".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Use { has_filter_risk, .. } => self.alloc_expr(
+                HirExpr::Opaque {
+                    ast_kind: if *has_filter_risk {
+                        "UseWithFilterRisk".to_string()
+                    } else {
+                        "Use".to_string()
+                    },
+                },
+                range,
+            ),
+
+            NodeKind::No { .. } => {
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "No".to_string() }, range)
+            }
+
+            NodeKind::PhaseBlock { block, .. } => {
+                let arg_ids = vec![self.lower_expr(block)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "PhaseBlock".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            NodeKind::Class { body, .. } => {
+                let arg_ids = vec![self.lower_expr(body)];
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "Class".to_string(),
+                        callee_span: None,
+                    },
+                    range,
+                )
+            }
+
+            // Leaf constructs: no children to lower, tag as Opaque.
+            NodeKind::Ellipsis => {
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "Ellipsis".to_string() }, range)
+            }
+
+            NodeKind::Typeglob { .. } => {
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "Typeglob".to_string() }, range)
+            }
+
+            NodeKind::DataSection { .. } => {
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "DataSection".to_string() }, range)
+            }
+
+            NodeKind::Format { .. } => {
+                self.alloc_expr(HirExpr::Opaque { ast_kind: "Format".to_string() }, range)
+            }
+
+            // NestedVariableList (#5043): `my ($a, ($b, $c)) = ...`
+            // Lower all items so variable reads are captured.
+            NodeKind::NestedVariableList { items } => {
+                let arg_ids: Vec<HirExprId> = items.iter().map(|i| self.lower_expr(i)).collect();
+                self.alloc_expr(
+                    HirExpr::Call {
+                        args: arg_ids,
+                        ast_kind: "NestedVariableList".to_string(),
                         callee_span: None,
                     },
                     range,

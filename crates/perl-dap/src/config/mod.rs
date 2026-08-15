@@ -294,14 +294,16 @@ impl AttachConfiguration {
         }
 
         // Verify timeout is reasonable (if specified)
-        if let Some(timeout) = self.timeout_ms {
-            if timeout == 0 {
-                anyhow::bail!("Timeout must be greater than 0 milliseconds");
-            }
-            if timeout > 300_000 {
-                // 5 minutes max
-                anyhow::bail!("Timeout cannot exceed 300000 milliseconds (5 minutes)");
-            }
+        if let Some(timeout) = self.timeout_ms
+            && timeout == 0
+        {
+            anyhow::bail!("Timeout must be greater than 0 milliseconds");
+        }
+        if let Some(timeout) = self.timeout_ms
+            && timeout > 300_000
+        {
+            // 5 minutes max
+            anyhow::bail!("Timeout cannot exceed 300000 milliseconds (5 minutes)");
         }
 
         Ok(())

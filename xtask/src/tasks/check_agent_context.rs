@@ -693,6 +693,14 @@ mod tests {
 
     #[test]
     fn real_workspace_has_no_unaccounted_members() -> Result<()> {
+        // FakeCargo changes process-wide Cargo environment variables. Hold the
+        // same lock while reading real workspace metadata so this test cannot
+        // observe a synthetic workspace from a concurrent fixture test.
+        #[cfg(unix)]
+        let _env_guard = crate::test_support::ENV_LOCK
+            .lock()
+            .map_err(|_| eyre!("fake cargo environment lock poisoned"))?;
+
         let root = project_root()?;
         let policy = load_policy(&root.join(POLICY_PATH))?;
         let members = load_members(&root)?;

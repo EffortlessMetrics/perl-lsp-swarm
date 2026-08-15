@@ -135,7 +135,7 @@ impl ImportExtractor {
             file_id: Some(file_id),
             anchor_id: Some(anchor_id),
             scope_id: None,
-            span_start_byte: Some(node.location.start as u32),
+            span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
         })
     }
 
@@ -213,7 +213,7 @@ impl ImportExtractor {
                     file_id: Some(file_id),
                     anchor_id: Some(anchor_id),
                     scope_id: None,
-                    span_start_byte: Some(require_node.location.start as u32),
+                    span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
                 });
                 consumed.insert(i);
                 consumed.insert(i + 1);
@@ -232,7 +232,7 @@ impl ImportExtractor {
                     file_id: Some(file_id),
                     anchor_id: Some(anchor_id),
                     scope_id: None,
-                    span_start_byte: Some(require_node.location.start as u32),
+                    span_start_byte: Some(require_node.location.start.min(u32::MAX as usize) as u32),
                 });
                 consumed.insert(i);
             }
@@ -296,7 +296,7 @@ impl ImportExtractor {
             file_id: Some(file_id),
             anchor_id: Some(anchor_id),
             scope_id: None,
-            span_start_byte: Some(node.location.start as u32),
+            span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
         }
     }
 
@@ -459,7 +459,7 @@ impl ImportExtractor {
             file_id: Some(file_id),
             anchor_id: Some(anchor_id),
             scope_id: None,
-            span_start_byte: Some(node.location.start as u32),
+            span_start_byte: Some(node.location.start.min(u32::MAX as usize) as u32),
         })
     }
 

@@ -396,6 +396,33 @@
             "order": 50,
             "description": "Enable semantic syntax highlighting. When disabled, the editor falls back to TextMate grammar coloring only.",
             "markdownDescription": "Enable semantic syntax highlighting. When disabled, the editor falls back to TextMate grammar coloring only."
+          },
+          "perl-lsp.testAdapterTimeoutMs": {
+            "type": "number",
+            "default": 120000,
+            "minimum": 1,
+            "scope": "resource",
+            "order": 51,
+            "description": "Maximum time in milliseconds for a Perl Test Explorer prove run before it is terminated.",
+            "markdownDescription": "Maximum time in milliseconds for a Perl Test Explorer `prove` run before it is terminated."
+          },
+          "perl-lsp.testAdapterMaxOutputBytes": {
+            "type": "number",
+            "default": 1048576,
+            "minimum": 1,
+            "scope": "resource",
+            "order": 52,
+            "description": "Maximum combined stdout and stderr captured from a Perl Test Explorer prove run.",
+            "markdownDescription": "Maximum combined `stdout` and `stderr` captured from a Perl Test Explorer `prove` run."
+          },
+          "perl-lsp.testAdapterTerminationGraceMs": {
+            "type": "number",
+            "default": 1000,
+            "minimum": 1,
+            "scope": "resource",
+            "order": 53,
+            "description": "Grace period in milliseconds between requesting prove termination and forcing it.",
+            "markdownDescription": "Grace period in milliseconds between requesting `prove` termination and forcing it."
           }
         }
       },
@@ -771,8 +798,10 @@
             "scope": "machine",
             "order": 95,
             "default": [],
-            "description": "Optional MCP stdio servers exposed to VS Code language models. Each entry supports label, command, args, cwd, env, version, and enabled.",
-            "markdownDescription": "Optional MCP stdio servers exposed to VS Code language models. Each entry supports `label`, `command`, `args`, `cwd`, `env`, `version`, and `enabled`.",
+            "description": "Removed and inert. The generic configured-command MCP passthrough is disabled; values here are read by nothing and start no process.",
+            "markdownDescription": "Removed and inert. The generic configured-command MCP passthrough is disabled; values here are read by nothing and start no process.",
+            "deprecationMessage": "Removed. This setting is inert: perl-lsp no longer publishes arbitrary configured commands as MCP servers.",
+            "markdownDeprecationMessage": "Removed. This setting is inert: perl-lsp no longer publishes arbitrary configured commands as MCP servers.",
             "items": {
               "type": "object",
               "required": [
@@ -855,6 +884,12 @@
         "title": "%command.showStatusMenu.title%",
         "category": "Perl",
         "icon": "$(menu)"
+      },
+      {
+        "command": "perl-lsp.showWorkspaceStatus",
+        "title": "%command.showWorkspaceStatus.title%",
+        "category": "Perl",
+        "icon": "$(pulse)"
       },
       {
         "command": "perl-lsp.reinstall",
@@ -1194,6 +1229,13 @@
           "when": "editorLangId == perl",
           "group": "navigation"
         }
+      ],
+      "problem/context": [
+        {
+          "command": "perl-lsp.explainDiagnostic",
+          "when": "resourceLangId == perl",
+          "group": "navigation"
+        }
       ]
     },
     "keybindings": [
@@ -1283,7 +1325,7 @@
           {
             "id": "verify-perl",
             "title": "Verify Your Perl Installation",
-            "description": "Run the health check to confirm your Perl interpreter is available (used by the test runner and debugger). Native formatting and native critic diagnostics are built in — perltidy and perlcritic are optional and only used for explicit external-compatibility modes.",
+            "description": "Run [Perl: Run Health Check](command:perl-lsp.runHealthCheck) to confirm your Perl interpreter is available (used by the test runner and debugger). Native formatting and native critic diagnostics are built in — perltidy and perlcritic are optional and only used for explicit external-compatibility modes.",
             "media": {
               "image": "media/walkthrough/verify-perl.svg",
               "altText": "Verify Perl"
@@ -1355,7 +1397,8 @@
     "typecheck:integration": "tsc --noEmit -p ./tsconfig.integration.json",
     "typecheck:published": "tsc --noEmit -p ./tsconfig.published-smoke.json",
     "typecheck:scripts": "tsc --noEmit -p ./tsconfig.scripts.json",
-    "typecheck:all": "npm run typecheck && npm run typecheck:test && npm run typecheck:integration && npm run typecheck:published && npm run typecheck:scripts",
+    "typecheck:authority": "node scripts/check-typescript-authority.js",
+    "typecheck:all": "npm run typecheck:authority && npm run typecheck && npm run typecheck:test && npm run typecheck:integration && npm run typecheck:published && npm run typecheck:scripts",
     "clean:out": "node -e \"const fs=require('fs'),path=require('path'); if(fs.existsSync('out')){for(const f of fs.readdirSync('out')){if(f!=='test')fs.rmSync(path.join('out',f),{recursive:true,force:true});}}\"",
     "compile": "npm run clean:out && rolldown -c rolldown.config.mjs",
     "clean:test": "node -e \"require('fs').rmSync('out-test',{recursive:true,force:true})\"",
@@ -1371,7 +1414,7 @@
     "test:ci": "npm run compile:test && npm run test:receipt-summary && node scripts/run-jest.js --ci --coverage --verbose",
     "test:grammar": "vscode-tmgrammar-snap --config package.json \"test/grammar/fixtures/*.pl\"",
     "test:grammar:update": "vscode-tmgrammar-snap --config package.json -u \"test/grammar/fixtures/*.pl\"",
-    "test:receipt-summary": "node --test scripts/summarize-vscode-receipts.test.js && node --test scripts/sample-local-vsix-smoke.test.js && node --test scripts/run-local-vsix-smoke.test.js && node --test scripts/check-vsix-inventory.test.js && node --test scripts/check-publisher-tools.test.js && node --test scripts/vscode-toolchain-workflows.test.js && node --test scripts/check-source-map.test.js && node --test scripts/reporter.test.js",
+    "test:receipt-summary": "node --test scripts/summarize-vscode-receipts.test.js && node --test scripts/sample-local-vsix-smoke.test.js && node --test scripts/run-local-vsix-smoke.test.js && node --test scripts/check-vsix-inventory.test.js && node --test scripts/check-publisher-tools.test.js && node --test scripts/vscode-toolchain-workflows.test.js && node --test scripts/check-source-map.test.js && node --test scripts/check-typescript-authority.test.js && node --test scripts/reporter.test.js",
     "check:package-inventory": "node scripts/check-vsix-inventory.js",
     "check:source-map": "node scripts/check-source-map.js",
     "summarize:vscode": "node scripts/summarize-vscode-receipts.js",
@@ -1408,12 +1451,12 @@
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "3.9.2",
     "jest": "^30.4.2",
-    "mocha": "^11.7.6",
+    "mocha": "^11.8.0",
     "ovsx": "1.0.2",
-    "oxfmt": "0.61.0",
-    "oxlint": "1.76.0",
+    "oxfmt": "0.62.0",
+    "oxlint": "1.77.0",
     "oxlint-tsgolint": "7.0.2001",
-    "rolldown": "1.2.0",
+    "rolldown": "1.2.3",
     "source-map": "0.8.0",
     "typescript": "^7.0.2",
     "vscode-tmgrammar-test": "^0.1.3"

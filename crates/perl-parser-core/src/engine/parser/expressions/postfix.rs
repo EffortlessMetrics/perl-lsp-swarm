@@ -1325,11 +1325,18 @@ impl<'a> Parser<'a> {
                 "m" | "s" | "q" | "qq" | "qw" | "qr" | "qx" | "tr" | "y"
             );
             if is_quote_op_name {
-                // Only treat as a bareword key if the NEXT token is `}` or `,`
-                // (meaning there is no delimiter to start a real quote expression).
-                if let Ok(second) = self.tokens.peek_second() {
-                    return matches!(second.kind, TokenKind::RightBrace | TokenKind::Comma);
-                }
+                // Only treat as a bareword key if the NEXT token is `}`, `,`,
+                // or EOF (meaning there is no delimiter to start a real quote
+                // expression). When peek_second() returns Err or an Eof token,
+                // there is no delimiter, so the token is a bareword key, not a
+                // quote-op start (#2467).
+                return match self.tokens.peek_second() {
+                    Ok(second) => matches!(
+                        second.kind,
+                        TokenKind::RightBrace | TokenKind::Comma | TokenKind::Eof
+                    ),
+                    Err(_) => true,
+                };
             }
         }
         false

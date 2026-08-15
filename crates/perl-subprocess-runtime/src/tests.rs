@@ -3,9 +3,7 @@
 // ripr quality gate can observe call paths to these seams on Linux CI runners.
 use crate::os_runtime::{candidate_priority, select_path_candidate};
 #[cfg(windows)]
-use crate::os_runtime::{
-    resolve_cmd_exe, resolve_command_invocation, windows_program_priority, windows_quote_for_cmd,
-};
+use crate::os_runtime::{resolve_cmd_exe, resolve_command_invocation, windows_program_priority};
 use crate::*;
 
 #[test]
@@ -124,63 +122,6 @@ fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
             "\"C:\\Strawberry\\perl\\bin\\perltidy.bat\" \"-st\" \"-se\"".to_string(),
         ]
     );
-}
-
-/// Verify that cmd.exe shell metacharacters are handled correctly inside
-/// double-quoted tokens.
-///
-/// Inside a cmd.exe double-quoted region, shell metacharacters (`&`, `|`,
-/// `<`, `>`, `(`, `)`) are already literal — no `^` prefix is used.
-/// `^` is also literal and must not be doubled.
-/// `%` is doubled to prevent `%VAR%` expansion.
-/// `"` is doubled (`""`) per the cmd.exe shell convention.
-#[cfg(windows)]
-#[test]
-fn test_windows_quote_for_cmd_metacharacters_are_literal_inside_quotes() {
-    // Metacharacters & | < > are passed through literally — no ^ prefix.
-    // ^ is literal — must NOT be doubled.
-    // % is doubled to prevent %VAR% expansion.
-    // " is doubled (cmd.exe "" convention), not backslash-escaped.
-    let quoted = windows_quote_for_cmd(r#"profile&name|1>%TEMP%^"x""#);
-    assert_eq!(quoted, r#""profile&name|1>%%TEMP%%^""x""""#);
-}
-
-/// Verify that a caret in an argument is not doubled.
-///
-/// The original PR erroneously included `'^'` in the metacharacter match
-/// arm, which caused `windows_quote_for_cmd("foo^bar")` to return
-/// `"foo^^bar"` — delivering two carets to the program.  Inside a
-/// cmd.exe double-quoted region `^` is literal and must not be escaped.
-#[cfg(windows)]
-#[test]
-fn test_windows_quote_for_cmd_caret_not_doubled() {
-    let quoted = windows_quote_for_cmd(r"foo^bar");
-    assert_eq!(quoted, r#""foo^bar""#);
-}
-
-/// Verify that an embedded double-quote uses the cmd.exe `""` convention.
-///
-/// The original PR used `\"` which is the `CommandLineToArgvW` / C-runtime
-/// convention.  In cmd.exe context the backslash is literal and the `"`
-/// terminates the quoted region, breaking argument boundaries.
-#[cfg(windows)]
-#[test]
-fn test_windows_quote_for_cmd_embedded_quote_uses_doubling() {
-    let quoted = windows_quote_for_cmd(r#"arg"with"quotes"#);
-    // cmd.exe convention: "" represents a literal " inside a quoted token.
-    assert_eq!(quoted, r#""arg""with""quotes""#);
-}
-
-/// Verify that an attacker-controlled injection attempt is rendered inert.
-///
-/// An arg like `&calc.exe` must not break out of the quoted token.
-/// After quoting, cmd.exe sees `&` as a literal character inside the
-/// double-quoted region.
-#[cfg(windows)]
-#[test]
-fn test_windows_quote_for_cmd_injection_attempt_is_inert() {
-    let quoted = windows_quote_for_cmd("&calc.exe");
-    assert_eq!(quoted, "\"&calc.exe\"");
 }
 
 /// Verify that /V:OFF is present in the cmd.exe argument list.
