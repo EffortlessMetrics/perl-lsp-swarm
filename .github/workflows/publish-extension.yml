@@ -60,7 +60,14 @@ jobs:
           fi
 
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            printf '::error::Invalid extension version: %s\n' "$VERSION"
+            # This value failed validation, so it is still fully attacker-shaped.
+            # `::error::` is GitHub's workflow-command protocol, not plain text:
+            # percent-encode so a crafted version cannot close this annotation and
+            # emit a further command (e.g. a newline followed by `::add-mask::`).
+            ENCODED=${VERSION//%/%25}
+            ENCODED=${ENCODED//$'\r'/%0D}
+            ENCODED=${ENCODED//$'\n'/%0A}
+            printf '::error::Invalid extension version: %s\n' "$ENCODED"
             exit 1
           fi
 
