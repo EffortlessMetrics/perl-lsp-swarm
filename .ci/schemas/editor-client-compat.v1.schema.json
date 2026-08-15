@@ -195,10 +195,10 @@
         },
         "registration_state": {
           "enum": [
-            "manual",
-            "upstream_source",
-            "accepted_unreleased",
-            "builtin_released"
+            "manual_client_registration",
+            "upstream_source_registration",
+            "upstream_accepted_unreleased",
+            "upstream_builtin_released"
           ]
         },
         "configuration_sha256": { "$ref": "#/$defs/sha256" },

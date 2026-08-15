@@ -37,11 +37,17 @@ pub enum IntegrationMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Registration-discovery state of the client under test.
+///
+/// The variant names and their `snake_case` wire spellings are deliberately
+/// identical to `actual_host_receipt.v1`'s `registration_state` enum
+/// (`xtask/src/actual_host_receipt.rs`), so a receipt in either dialect names
+/// this fact the same way and no translation table is needed between them.
 pub enum RegistrationState {
-    Manual,
-    UpstreamSource,
-    AcceptedUnreleased,
-    BuiltinReleased,
+    ManualClientRegistration,
+    UpstreamSourceRegistration,
+    UpstreamAcceptedUnreleased,
+    UpstreamBuiltinReleased,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,6 +404,14 @@ impl EditorClientCompatReceipt {
                     ObservationResult::Pass | ObservationResult::Unsupported
                 )),
                 "passing receipt cannot contain fail/partial/not_proven journey cells"
+            );
+            // `all(Pass | Unsupported)` alone is satisfied by a receipt whose every
+            // cell is `Unsupported`, which would let a host that demonstrated nothing
+            // at all publish a passing actual-host receipt. A pass must rest on at
+            // least one thing actually observed to work.
+            ensure!(
+                self.journey.iter().any(|cell| cell.result == ObservationResult::Pass),
+                "passing receipt requires at least one observed passing journey cell"
             );
             for required in [
                 ArtifactKind::ClientLog,

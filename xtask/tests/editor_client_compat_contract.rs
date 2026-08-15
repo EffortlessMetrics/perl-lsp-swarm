@@ -82,7 +82,7 @@ fn valid_receipt() -> Result<EditorClientCompatReceipt> {
         },
         integration: IntegrationIdentity {
             mode: IntegrationMode::GenericLsp,
-            registration_state: RegistrationState::Manual,
+            registration_state: RegistrationState::ManualClientRegistration,
             configuration_sha256: sha256('2'),
             driver_sha256: sha256('3'),
         },
@@ -197,10 +197,10 @@ fn evidence_registration_source_and_diagnostic_boundaries_serialize_distinctly()
     );
 
     let registrations = [
-        RegistrationState::Manual,
-        RegistrationState::UpstreamSource,
-        RegistrationState::AcceptedUnreleased,
-        RegistrationState::BuiltinReleased,
+        RegistrationState::ManualClientRegistration,
+        RegistrationState::UpstreamSourceRegistration,
+        RegistrationState::UpstreamAcceptedUnreleased,
+        RegistrationState::UpstreamBuiltinReleased,
     ];
     let registration_json = registrations
         .iter()
@@ -209,10 +209,10 @@ fn evidence_registration_source_and_diagnostic_boundaries_serialize_distinctly()
     ensure!(
         registration_json
             == vec![
-                Value::String("manual".to_string()),
-                Value::String("upstream_source".to_string()),
-                Value::String("accepted_unreleased".to_string()),
-                Value::String("builtin_released".to_string()),
+                Value::String("manual_client_registration".to_string()),
+                Value::String("upstream_source_registration".to_string()),
+                Value::String("upstream_accepted_unreleased".to_string()),
+                Value::String("upstream_builtin_released".to_string()),
             ],
         "registration states changed serialization identity"
     );
@@ -348,6 +348,16 @@ fn validation_rejects_false_green_cells_and_unsafe_artifact_identity() -> Result
         "unsupported journey cell omitted its limitation"
     );
 
+    let mut nothing_observed = valid_receipt()?;
+    for cell in &mut nothing_observed.journey {
+        cell.result = ObservationResult::Unsupported;
+        cell.limitation = Some("host does not implement this action".to_string());
+    }
+    ensure!(
+        nothing_observed.validate().is_err(),
+        "passing receipt accepted a journey in which nothing was observed to work"
+    );
+
     let mut absolute_artifact = valid_receipt()?;
     absolute_artifact.artifacts[0].id = "/home/user/emacs-events.log".to_string();
     ensure!(absolute_artifact.validate().is_err(), "Unix absolute artifact identity was accepted");
@@ -407,7 +417,7 @@ fn subject_invalidation_is_identity_based_not_age_based() -> Result<()> {
     current.candidate_sha = "b".repeat(40);
     current.platform.arch = "aarch64".to_string();
     current.host.version = "31.2".to_string();
-    current.integration.registration_state = RegistrationState::BuiltinReleased;
+    current.integration.registration_state = RegistrationState::UpstreamBuiltinReleased;
     current.integration.configuration_sha256 = sha256('a');
     current.integration.driver_sha256 = sha256('b');
     current.server.artifact_sha256 = sha256('c');
@@ -514,7 +524,12 @@ fn checked_in_schema_names_the_same_contract_and_subject_boundaries() -> Result<
             "missing evidence stage {expected}"
         );
     }
-    for expected in ["manual", "upstream_source", "accepted_unreleased", "builtin_released"] {
+    for expected in [
+        "manual_client_registration",
+        "upstream_source_registration",
+        "upstream_accepted_unreleased",
+        "upstream_builtin_released",
+    ] {
         ensure!(
             schema["$defs"]["integration"]["properties"]["registration_state"]["enum"]
                 .as_array()
