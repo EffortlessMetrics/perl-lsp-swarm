@@ -92,27 +92,59 @@ describe('VS Code client measurement recorder', () => {
 
   test('rejects negative or non-finite resource counts', () => {
     const recorder = new VscodeClientMeasurementRecorder(subject(), 0);
-    expect(() => recorder.observeResource('timers', -1)).toThrow();
-    expect(() => recorder.observeResource('timers', Number.NaN)).toThrow();
+    expect(() => recorder.observeResource('extension_owned_timers', -1)).toThrow();
+    expect(() => recorder.observeResource('extension_owned_timers', Number.NaN)).toThrow();
+  });
+
+  test('rejects unsupported resource ids', () => {
+    const recorder = new VscodeClientMeasurementRecorder(subject(), 0);
+    expect(() => recorder.observeResource('timers', 1)).toThrow(/unsupported client resource id/);
+    expect(() => recorder.markResourceNotProven('event_listeners', 'x')).toThrow(
+      /unsupported client resource id/,
+    );
+  });
+
+  test('snapshot clones resource records so callers cannot mutate recorder state', () => {
+    const recorder = new VscodeClientMeasurementRecorder(subject(), 0);
+    recorder.observeResource('extension_owned_timers', 2);
+    const first = recorder.snapshot();
+    first.resources[0].value = 99;
+    expect(recorder.snapshot().resources[0].value).toBe(2);
   });
 
   test('compares restart/reload resource baselines only when both observations exist', () => {
     expect(
       resourceReturnedToBaseline(
-        { id: 'timers', availability: 'observed', value: 4, reason: null },
-        { id: 'timers', availability: 'observed', value: 3, reason: null },
+        { id: 'extension_owned_timers', availability: 'observed', value: 4, reason: null },
+        { id: 'extension_owned_timers', availability: 'observed', value: 3, reason: null },
       ),
     ).toBe(true);
     expect(
       resourceReturnedToBaseline(
-        { id: 'timers', availability: 'observed', value: 4, reason: null },
-        { id: 'timers', availability: 'observed', value: 5, reason: null },
+        { id: 'extension_owned_timers', availability: 'observed', value: 4, reason: null },
+        { id: 'extension_owned_timers', availability: 'observed', value: 5, reason: null },
       ),
     ).toBe(false);
     expect(
       resourceReturnedToBaseline(
-        { id: 'timers', availability: 'not_proven', value: null, reason: 'missing' },
-        { id: 'timers', availability: 'observed', value: 3, reason: null },
+        {
+          id: 'extension_owned_timers',
+          availability: 'not_proven',
+          value: null,
+          reason: 'missing',
+        },
+        { id: 'extension_owned_timers', availability: 'observed', value: 3, reason: null },
+      ),
+    ).toBeNull();
+    expect(
+      resourceReturnedToBaseline(
+        { id: 'extension_owned_timers', availability: 'observed', value: 4, reason: null },
+        {
+          id: 'extension_owned_event_listeners',
+          availability: 'observed',
+          value: 1,
+          reason: null,
+        },
       ),
     ).toBeNull();
   });

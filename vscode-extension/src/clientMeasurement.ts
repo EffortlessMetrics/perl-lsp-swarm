@@ -14,6 +14,20 @@ export type ClientMeasurementPhase =
 
 export type ClientMeasurementAvailability = 'observed' | 'not_proven';
 
+/** Closed set of extension-owned / declared host resource counters. */
+export type ClientResourceId =
+  | 'extension_owned_timers'
+  | 'extension_owned_event_listeners'
+  | 'extension_owned_disposables'
+  | 'extension_host_rss_bytes';
+
+const CLIENT_RESOURCE_IDS: ReadonlySet<ClientResourceId> = new Set([
+  'extension_owned_timers',
+  'extension_owned_event_listeners',
+  'extension_owned_disposables',
+  'extension_host_rss_bytes',
+]);
+
 export interface ClientMeasurementSubject {
   candidate: string;
   vscode_version: string;
@@ -33,7 +47,7 @@ export interface ClientPhaseMeasurement {
 }
 
 export interface ClientResourceMeasurement {
-  id: string;
+  id: ClientResourceId;
   availability: ClientMeasurementAvailability;
   value: number | null;
   reason: string | null;
@@ -62,11 +76,18 @@ const PHASE_ORDER: ClientMeasurementPhase[] = [
   'deactivate_complete',
 ];
 
+function assertClientResourceId(id: string): ClientResourceId {
+  if (!CLIENT_RESOURCE_IDS.has(id as ClientResourceId)) {
+    throw new Error(`unsupported client resource id: ${id}`);
+  }
+  return id as ClientResourceId;
+}
+
 export class VscodeClientMeasurementRecorder {
   private readonly originMs: number;
   private readonly phaseOffsets = new Map<ClientMeasurementPhase, number>();
   private readonly unavailablePhases = new Set<ClientMeasurementPhase>();
-  private readonly resources = new Map<string, ClientResourceMeasurement>();
+  private readonly resources = new Map<ClientResourceId, ClientResourceMeasurement>();
 
   public constructor(
     private readonly subject: ClientMeasurementSubject,
@@ -90,11 +111,12 @@ export class VscodeClientMeasurementRecorder {
   }
 
   public observeResource(id: string, value: number): void {
+    const resourceId = assertClientResourceId(id);
     if (!Number.isFinite(value) || value < 0) {
-      throw new Error(`resource measurement must be a finite non-negative number: ${id}`);
+      throw new Error(`resource measurement must be a finite non-negative number: ${resourceId}`);
     }
-    this.resources.set(id, {
-      id,
+    this.resources.set(resourceId, {
+      id: resourceId,
       availability: 'observed',
       value,
       reason: null,
@@ -102,12 +124,13 @@ export class VscodeClientMeasurementRecorder {
   }
 
   public markResourceNotProven(id: string, reason: string): void {
+    const resourceId = assertClientResourceId(id);
     const normalizedReason = reason.trim();
     if (normalizedReason.length === 0) {
-      throw new Error(`not-proven resource measurement requires a reason: ${id}`);
+      throw new Error(`not-proven resource measurement requires a reason: ${resourceId}`);
     }
-    this.resources.set(id, {
-      id,
+    this.resources.set(resourceId, {
+      id: resourceId,
       availability: 'not_proven',
       value: null,
       reason: normalizedReason,
@@ -123,9 +146,9 @@ export class VscodeClientMeasurementRecorder {
       return { phase, availability: 'not_proven', offset_ms: null };
     });
 
-    const resources = [...this.resources.values()].sort((left, right) =>
-      left.id.localeCompare(right.id),
-    );
+    const resources = [...this.resources.values()]
+      .map((resource) => ({ ...resource }))
+      .sort((left, right) => left.id.localeCompare(right.id));
 
     return {
       schema_version: 'vscode_client_measurement.v1',
@@ -141,6 +164,9 @@ export function resourceReturnedToBaseline(
   before: ClientResourceMeasurement,
   after: ClientResourceMeasurement,
 ): boolean | null {
+  if (before.id !== after.id) {
+    return null;
+  }
   if (
     before.availability !== 'observed' ||
     after.availability !== 'observed' ||
