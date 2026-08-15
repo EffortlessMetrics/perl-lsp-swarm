@@ -16,6 +16,10 @@
       "invocation_sha256": "98bfa4782cd2d2cc0c011f5c8e8da509d8c54d40a117f43a6e5e8b463fa8c280"
     },
     {
+      "id": "parser.incremental.parse_output",
+      "invocation_sha256": "f89586c06aa3283f287be63d2a7d898da759483bd471416e184e59b271452e2e"
+    },
+    {
       "id": "parser.pir.branch_body",
       "invocation_sha256": "a75a559622e0bd1c033b4cb144ea7baed2fe52da06055135ae74c30a0bb01de9"
     },
