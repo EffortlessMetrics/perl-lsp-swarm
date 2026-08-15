@@ -69,10 +69,14 @@
 //! use perl_lexer::{PerlLexer, LexerConfig};
 //!
 //! let config = LexerConfig {
-//!     parse_interpolation: true,  // Parse string interpolation
-//!     track_positions: true,      // Track line/column positions
-//!     max_lookahead: 1024,        // Maximum lookahead for disambiguation
-//!     symbol_table: None,         // No pre-scanned sub declarations
+//!     // Recognize interpolation islands in ordinary double-quoted strings.
+//!     parse_interpolation: true,
+//!     // Compatibility field: token byte spans are produced in every configuration.
+//!     track_positions: true,
+//!     // Shared cursor bound for character, byte, and fixed-pattern probes.
+//!     max_lookahead: LexerConfig::DEFAULT_MAX_LOOKAHEAD,
+//!     // No pre-scanned sub declarations for bareword/regex disambiguation.
+//!     symbol_table: None,
 //! };
 //!
 //! let mut lexer = PerlLexer::with_config("my $x = 1;", config);
