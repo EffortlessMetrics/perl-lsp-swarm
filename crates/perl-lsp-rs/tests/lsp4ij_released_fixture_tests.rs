@@ -1,7 +1,18 @@
+//! Drift tests for the pinned LSP4IJ 0.20.1 released Perl template evidence snapshot.
+//!
+//! These assert released upstream identity only. They do not establish actual IntelliJ
+//! behavior, managed installation, DAP behavior, or support promotion.
+
+// Tests are permitted to use `.expect()` and `panic!` on Result/Option per the repo's
+// coding standards (unlike production code, where they are banned).
+#![allow(clippy::expect_used, clippy::panic)]
+
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
+    fs,
     io::Write,
+    path::Path,
     process::{Command, Stdio},
 };
 
@@ -20,6 +31,9 @@ const DAP_INSTALLER: &str =
     include_str!("../../../integrations/lsp4ij/upstream/0.20.1/dap/installer.json");
 const LSP_DOC: &str = include_str!("../../../integrations/lsp4ij/upstream/0.20.1/docs/perl-lsp.md");
 const DAP_DOC: &str = include_str!("../../../integrations/lsp4ij/upstream/0.20.1/docs/perl-dap.md");
+
+const FIXTURE_ROOT: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../integrations/lsp4ij/upstream/0.20.1");
 
 const MATERIALIZED_FIXTURES: &[(&str, &[u8])] = &[
     (
@@ -185,11 +199,10 @@ fn materialized_fixture_bytes_match_manifest_git_blobs_and_sizes() {
             .and_then(Value::as_str)
             .expect("materialized source fixture path");
         assert!(matched.insert(fixture_path), "duplicate materialized fixture: {fixture_path}");
-        let Some((_, bytes)) = MATERIALIZED_FIXTURES.iter().find(|(path, _)| *path == fixture_path)
-        else {
-            assert!(false, "manifest fixture path is not included: {fixture_path}");
-            return;
-        };
+        let (_, bytes) = MATERIALIZED_FIXTURES
+            .iter()
+            .find(|(path, _)| *path == fixture_path)
+            .unwrap_or_else(|| panic!("manifest fixture path is not included: {fixture_path}"));
         let expected_blob = source
             .get("git_blob_sha1")
             .and_then(Value::as_str)
@@ -229,10 +242,7 @@ fn changed_materialized_bytes_do_not_reuse_released_identity() {
         .map(|(_, bytes)| *bytes)
         .expect("LSP template fixture");
     let mut changed = original.to_vec();
-    let Some(first) = changed.first_mut() else {
-        assert!(false, "LSP template fixture must not be empty");
-        return;
-    };
+    let first = changed.first_mut().expect("LSP template fixture must not be empty");
     *first ^= 1;
 
     assert_eq!(git_blob_sha1(original), expected_blob);
@@ -312,4 +322,39 @@ fn released_dap_bytes_remain_independent_from_lsp_desired_state() {
         DAP_DOC.starts_with("TODO doc"),
         "placeholder DAP documentation is part of released truth until an upstream release changes it"
     );
+}
+
+fn collect_evidence_files(root: &Path, dir: &Path, found: &mut BTreeSet<String>) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("read evidence directory {}: {error}", dir.display()));
+    for entry in entries {
+        let path = entry.expect("evidence directory entry").path();
+        if path.is_dir() {
+            collect_evidence_files(root, &path, found);
+        } else {
+            let relative = path
+                .strip_prefix(root)
+                .expect("evidence file must live under the fixture root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            found.insert(relative);
+        }
+    }
+}
+
+/// The snapshot claims byte-exact upstream truth, so the namespace must hold exactly the
+/// manifest's materialized fixtures plus its own manifest and README. An unlisted file
+/// would widen that claim without any identity backing it.
+#[test]
+fn evidence_namespace_holds_exactly_the_manifest_inventory() {
+    let root = Path::new(FIXTURE_ROOT);
+    let mut present = BTreeSet::new();
+    collect_evidence_files(root, root, &mut present);
+
+    let mut expected: BTreeSet<String> =
+        MATERIALIZED_FIXTURES.iter().map(|(path, _)| (*path).to_owned()).collect();
+    expected.insert("README.md".to_owned());
+    expected.insert("manifest.json".to_owned());
+
+    assert_eq!(present, expected, "LSP4IJ evidence namespace drifted from the manifest inventory");
 }
