@@ -282,6 +282,26 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 # =============================================================================
+# Control-plane authority contract
+# =============================================================================
+
+[[allow]]
+id = "non-rust-active-authority-contract-test"
+path = "tests/test_active_authority_contract.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Source-aware ratchet for the four highest-retrieval maintainer and contributor entrypoints. Standard-library `unittest` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_active_authority_contract.py",
+  ".github/workflows/active-authority-contract.yml",
+]
+created = "2026-08-15"
+review_after = "2026-11-15"
+
+# =============================================================================
 # Perl fixtures (the corpus the LSP parses)
 # =============================================================================
 
