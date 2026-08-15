@@ -30,7 +30,20 @@ jobs:
         run: cargo test -p perl-parser-comparison --test current_upstream_subject --locked
 
       - name: Run complete parser-comparison tests
-        run: cargo test -p perl-parser-comparison --locked
+        shell: bash
+        run: |
+          mkdir -p target/verification-logs
+          set -o pipefail
+          cargo test -p perl-parser-comparison --locked 2>&1 \
+            | tee target/verification-logs/parser-comparison-full.log
+
+      - name: Upload complete-suite log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: parser-comparison-full-log-${{ github.run_id }}
+          path: target/verification-logs/parser-comparison-full.log
+          if-no-files-found: error
 
       - name: Check all parser-comparison targets
         run: cargo check -p perl-parser-comparison --all-targets --locked
