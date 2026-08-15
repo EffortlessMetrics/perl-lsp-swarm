@@ -47,6 +47,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     zed_default_order::validate_receipt(&receipt, &contract).map_err(io::Error::other)?;
-    println!("Zed default-order receipt checks passed.");
+    writeln!(std::io::stdout(), "Zed default-order receipt checks passed.")?;
     Ok(())
 }
