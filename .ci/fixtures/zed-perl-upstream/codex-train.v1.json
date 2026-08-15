@@ -1,0 +1,630 @@
+{
+  "schema_version": "zed_codex_train.v1",
+  "programme_issue": 7759,
+  "status": "planned_not_proven",
+  "updated": "2026-08-15",
+  "rules": {
+    "branch_from_current_main_after_dependencies": true,
+    "one_semantic_increment_per_pr": true,
+    "templates_are_evidence": false,
+    "external_writes_are_manual": true,
+    "public_support_requires": [
+      "P19",
+      "P20"
+    ],
+    "dap_in_scope": false,
+    "current_core_frontier": [
+      "P02",
+      "P06",
+      "P09",
+      "C01"
+    ],
+    "current_dap_frontier": [
+      "D01"
+    ]
+  },
+  "stages": [
+    {
+      "id": "P00",
+      "issue": 7975,
+      "phase": "static_convergence_repair",
+      "pull_request": 8023,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "complete_static_substrate_execution_not_proven",
+      "depends_on": [],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P01",
+      "issue": 7980,
+      "phase": "public_asset_producer",
+      "pull_request": 8365,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "authority_merged_execution_not_proven",
+      "depends_on": [
+        "P00"
+      ],
+      "external_write": false,
+      "closes_issue": false
+    },
+    {
+      "id": "P02",
+      "issue": 7984,
+      "phase": "exact_source_host_driver",
+      "pull_request": 8369,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "implementation_pr_open",
+      "depends_on": [
+        "P00"
+      ],
+      "external_write": false,
+      "closes_issue": false
+    },
+    {
+      "id": "P03",
+      "issue": 8647,
+      "phase": "deterministic_fixture",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P02"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P04",
+      "issue": 7990,
+      "phase": "settings_behavior_authority",
+      "pull_request": 8373,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P02",
+        "P03"
+      ],
+      "external_write": false,
+      "closes_issue": false
+    },
+    {
+      "id": "P05",
+      "issue": 7992,
+      "phase": "default_order_authority",
+      "pull_request": 8379,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P02",
+        "P03"
+      ],
+      "external_write": false,
+      "closes_issue": false
+    },
+    {
+      "id": "P06",
+      "issue": 8661,
+      "phase": "public_asset_workflow",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "ready",
+      "depends_on": [
+        "P01"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P07",
+      "issue": 8753,
+      "phase": "managed_route_authority",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P01",
+        "P02"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P08",
+      "issue": 9467,
+      "phase": "official_registry_host_driver",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P02",
+        "P03"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P09",
+      "issue": 9468,
+      "phase": "public_support_projection_substrate",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "authority",
+      "state": "ready",
+      "depends_on": [
+        "P00"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "C01",
+      "issue": 9483,
+      "phase": "stable_checks_and_subject_aware_invalidation",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "control_plane",
+      "state": "ready",
+      "depends_on": [
+        "P00"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P10",
+      "issue": 8678,
+      "phase": "public_asset_receipts",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "evidence",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P01",
+        "P06",
+        "C01"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P11",
+      "issue": 8695,
+      "phase": "exact_source_core_receipt",
+      "pull_request": null,
+      "actor": "codex_with_operator",
+      "kind": "evidence",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P02",
+        "P03",
+        "C01"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P12",
+      "issue": 8714,
+      "phase": "settings_behavior_receipts",
+      "pull_request": null,
+      "actor": "codex_with_operator",
+      "kind": "evidence",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P04",
+        "P11"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P13",
+      "issue": 8733,
+      "phase": "default_order_receipts",
+      "pull_request": null,
+      "actor": "codex_with_operator",
+      "kind": "evidence",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P05",
+        "P11"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P14",
+      "issue": 8772,
+      "phase": "managed_route_recovery_receipts",
+      "pull_request": null,
+      "actor": "codex_with_operator",
+      "kind": "evidence",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P07",
+        "P10",
+        "P11"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P15",
+      "issue": 7907,
+      "phase": "exact_source_submission_authority",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "fan_in",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P10",
+        "P11",
+        "P12",
+        "P13",
+        "P14"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P16",
+      "issue": 7909,
+      "phase": "extension_packet_freeze",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "packet",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P15"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P17",
+      "issue": 7908,
+      "phase": "zed_defaults_packet_freeze",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "packet",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P13"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "M01",
+      "issue": null,
+      "phase": "manual_extension_and_defaults_submission",
+      "pull_request": null,
+      "actor": "maintainer",
+      "kind": "manual_checkpoint",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P16",
+        "P17"
+      ],
+      "external_write": true,
+      "closes_issue": false
+    },
+    {
+      "id": "U01",
+      "issue": null,
+      "phase": "merged_upstream_subject_acceptance",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "acceptance",
+      "state": "blocked_on_external_subject",
+      "depends_on": [
+        "M01"
+      ],
+      "external_write": false,
+      "closes_issue": false,
+      "upstream_acceptance": {
+        "source_of_truth": [
+          ".ci/fixtures/zed-perl-upstream/registry/manifest.toml",
+          "docs/integrations/ZED_REGISTRY_SUBMISSION.md"
+        ],
+        "repository": "tree-sitter-perl/zed-perl",
+        "required_fields": [
+          "extension.new_commit",
+          "extension.new_version",
+          "extension.upstream_branch_containing_commit"
+        ],
+        "required_validation": [
+          "validation.submodule_commit_branch_reachable",
+          "validation.manifest_version_matches"
+        ],
+        "requires_changed_subject": true
+      }
+    },
+    {
+      "id": "P18",
+      "issue": 7910,
+      "phase": "registry_packet_freeze",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "packet",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "M01",
+        "U01"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "M02",
+      "issue": null,
+      "phase": "manual_registry_submission_and_released_defaults",
+      "pull_request": null,
+      "actor": "maintainer",
+      "kind": "manual_checkpoint",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P18"
+      ],
+      "external_write": true,
+      "closes_issue": false
+    },
+    {
+      "id": "P19",
+      "issue": 7912,
+      "phase": "official_registry_public_receipt",
+      "pull_request": null,
+      "actor": "codex_with_operator",
+      "kind": "public_evidence",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P08",
+        "P10",
+        "P13",
+        "P14",
+        "C01",
+        "M02"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P20",
+      "issue": 8000,
+      "phase": "public_support_projection",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "projection",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P09",
+        "P19"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    },
+    {
+      "id": "P21",
+      "issue": 7759,
+      "phase": "programme_closeout",
+      "pull_request": null,
+      "actor": "codex",
+      "kind": "closeout",
+      "state": "blocked_on_dependencies",
+      "depends_on": [
+        "P20"
+      ],
+      "external_write": false,
+      "closes_issue": true
+    }
+  ],
+  "non_blocking_sidecars": [
+    {
+      "id": "zed_dap",
+      "controller_issue": 9484,
+      "blocks_programme_closeout": false,
+      "stages": [
+        {
+          "id": "D01",
+          "issue": 9485,
+          "phase": "debug_adapter_authority",
+          "pull_request": null,
+          "actor": "codex",
+          "kind": "authority",
+          "state": "ready",
+          "depends_on_core": [
+            "P00"
+          ],
+          "depends_on_sidecar": [],
+          "external_write": false,
+          "closes_issue": true
+        },
+        {
+          "id": "DA01",
+          "issue": 9516,
+          "phase": "public_perl_dap_asset_receipts",
+          "pull_request": null,
+          "actor": "codex",
+          "kind": "evidence",
+          "state": "blocked_on_dependencies",
+          "depends_on_core": [],
+          "depends_on_sidecar": [
+            "D01"
+          ],
+          "external_write": false,
+          "closes_issue": true
+        },
+        {
+          "id": "D02",
+          "issue": 9486,
+          "phase": "exact_source_real_zed_dap_receipt",
+          "pull_request": null,
+          "actor": "codex_with_operator",
+          "kind": "evidence",
+          "state": "blocked_on_dependencies",
+          "depends_on_core": [
+            "P02",
+            "P03"
+          ],
+          "depends_on_sidecar": [
+            "D01"
+          ],
+          "external_write": false,
+          "closes_issue": true
+        },
+        {
+          "id": "D03",
+          "issue": 9490,
+          "phase": "upstream_extension_packet_freeze",
+          "pull_request": null,
+          "actor": "codex",
+          "kind": "packet",
+          "state": "blocked_on_dependencies",
+          "depends_on_core": [],
+          "depends_on_sidecar": [
+            "D01",
+            "D02"
+          ],
+          "external_write": false,
+          "closes_issue": true
+        },
+        {
+          "id": "DM01",
+          "issue": null,
+          "phase": "manual_dap_extension_submission",
+          "pull_request": null,
+          "actor": "maintainer",
+          "kind": "manual_checkpoint",
+          "state": "blocked_on_dependencies",
+          "depends_on_core": [],
+          "depends_on_sidecar": [
+            "D03"
+          ],
+          "external_write": true,
+          "closes_issue": false
+        },
+        {
+          "id": "DU01",
+          "issue": null,
+          "phase": "merged_released_dap_subject_acceptance",
+          "pull_request": null,
+          "actor": "codex",
+          "kind": "acceptance",
+          "state": "blocked_on_external_subject",
+          "depends_on_core": [],
+          "depends_on_sidecar": [
+            "DM01"
+          ],
+          "external_write": false,
+          "closes_issue": false,
+          "upstream_acceptance": {
+            "repository": "tree-sitter-perl/zed-perl",
+            "required_fields": [
+              "extension.new_commit",
+              "extension.new_version",
+              "extension.upstream_branch_containing_commit"
+            ],
+            "required_validation": [
+              "validation.submodule_commit_branch_reachable",
+              "validation.manifest_version_matches",
+              "validation.released_build_contains_commit"
+            ],
+            "requires_changed_subject": true,
+            "requires_released_build": true
+          }
+        },
+        {
+          "id": "D04",
+          "issue": 9491,
+          "phase": "official_registry_packet_freeze",
+          "pull_request": null,
+          "actor": "codex",
+          "kind": "packet",
+          "state": "blocked_on_dependencies",
+          "depends_on_core": [],
+          "depends_on_sidecar": [
+            "DU01"
+          ],
+          "external_write": false,
+          "closes_issue": true
+        },
+        {
+          "id": "DM02",
+          "issue": null,
+          "phase": "manual_dap_registry_submission",
+          "pull_request": null,
+          "actor": "maintainer",
+          "kind": "manual_checkpoint",
+          "state": "blocked_on_dependencies",
+          "depends_on_core": [],
+          "depends_on_sidecar": [
+            "D04"
+          ],
+          "external_write": true,
+          "closes_issue": false
+        },
+        {
+          "id": "D05",
+          "issue": 9487,
+          "phase": "official_registry_managed_dap_receipt",
+          "pull_request": null,
+          "actor": "codex_with_operator",
+          "kind": "public_evidence",
+          "state": "blocked_on_dependencies",
+          "depends_on_core": [
+            "C01"
+          ],
+          "depends_on_sidecar": [
+            "DA01",
+            "D02",
+            "DM02"
+          ],
+          "external_write": false,
+          "closes_issue": true
+        },
+        {
+          "id": "D06",
+          "issue": 9489,
+          "phase": "dap_support_projection",
+          "pull_request": null,
+          "actor": "codex",
+          "kind": "projection",
+          "state": "blocked_on_dependencies",
+          "depends_on_core": [
+            "P09"
+          ],
+          "depends_on_sidecar": [
+            "D05"
+          ],
+          "external_write": false,
+          "closes_issue": true
+        },
+        {
+          "id": "D07",
+          "issue": 9484,
+          "phase": "dap_programme_closeout",
+          "pull_request": null,
+          "actor": "codex",
+          "kind": "closeout",
+          "state": "blocked_on_dependencies",
+          "depends_on_core": [],
+          "depends_on_sidecar": [
+            "D06"
+          ],
+          "external_write": false,
+          "closes_issue": true
+        }
+      ]
+    }
+  ]
+}
