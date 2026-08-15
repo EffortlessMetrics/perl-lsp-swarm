@@ -3,7 +3,7 @@
 //! The formatter libraries decide whether a result was applied, unchanged,
 //! refused, or not proven. This module admits one current source/configuration
 //! snapshot, binds cancellation, and projects that typed result onto LSP.
-//! Multi-range plan geometry lands under test compilation; live
+//! Multi-range plan geometry compiles in production; live
 //! `rangesFormatting` wiring remains a successor slice.
 
 use super::super::{

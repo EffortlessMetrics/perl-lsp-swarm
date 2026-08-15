@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 
-use super::{Value, digest, json, parse_range};
+use super::{digest, json, parse_range, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct PositionRecord {
@@ -192,7 +192,11 @@ impl SourceGeometry {
             }
             units = next;
         }
-        if units == target { Ok(end) } else { Err(PlanError::outside_line(line, character, units)) }
+        if units == target {
+            Ok(end)
+        } else {
+            Err(PlanError::outside_line(line, character, units))
+        }
     }
 }
 
@@ -450,8 +454,8 @@ mod tests {
     }
 
     #[test]
-    fn byte_offset_observes_outside_surrogate_and_past_end()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn byte_offset_observes_outside_surrogate_and_past_end(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let source = "a🦀b\n";
         let geometry = SourceGeometry::new(source);
         let outside = geometry
@@ -465,19 +469,27 @@ mod tests {
             .err()
             .ok_or("surrogate-splitting byte_offset succeeded")?;
         assert_eq!(surrogate.reason, "invalid_position");
-        assert!(surrogate.message.contains("splits a surrogate pair"));
+        assert!(
+            surrogate.message.contains("splits a surrogate pair"),
+            "surrogate byte offset must reject a split pair: {}",
+            surrogate.message
+        );
         let past =
             geometry.byte_offset(source, 0, 99).err().ok_or("past-end byte_offset succeeded")?;
         assert_eq!(past.reason, "invalid_position");
-        assert!(past.message.contains("outside line 0"));
+        assert!(
+            past.message.contains("outside line 0"),
+            "byte offset must reject a character past line end: {}",
+            past.message
+        );
         assert_eq!(geometry.byte_offset(source, 0, 0)?, 0);
         assert_eq!(geometry.byte_offset(source, 0, 1)?, 1);
         Ok(())
     }
 
     #[test]
-    fn plan_errors_distinguish_invalid_input_from_contract_failures()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn plan_errors_distinguish_invalid_input_from_contract_failures(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let invalid = PlanError::new("invalid_position", "outside document");
         assert_eq!(invalid.json_rpc_code(), -32602);
         assert_eq!(invalid.error_kind(), "invalid_multi_range_plan");
