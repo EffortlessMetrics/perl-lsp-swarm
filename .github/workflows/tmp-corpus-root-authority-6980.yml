@@ -1,0 +1,130 @@
+name: Materialize current corpus root authority stack
+
+on:
+  push:
+    branches:
+      - agent/corpus-root-authority-6980
+    paths:
+      - .github/workflows/tmp-corpus-root-authority-6980.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: corpus-root-authority-6980
+  cancel-in-progress: false
+
+jobs:
+  restack-verify-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact stack base
+        uses: actions/checkout@v5
+        with:
+          ref: agent/corpus-root-authority-6980
+          fetch-depth: 0
+
+      - name: Reapply reviewed root-authority slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/tmp-corpus-root-authority-6980.yml
+          script=.github/scripts/tmp-corpus-root-authority-6980.py
+          test "$(git diff --name-only HEAD^ HEAD)" = "$workflow"
+          test -f "$script"
+
+          git diff --binary \
+            54e20713bb2ac677c8039d277a2ec4280dbdc31f \
+            314af50c83d487aaf5b523537cac66634679e9cc \
+            -- \
+            crates/perl-corpus/CLAUDE.md \
+            crates/perl-corpus/Cargo.toml \
+            crates/perl-corpus/README.md \
+            crates/perl-corpus/src/api.rs \
+            crates/perl-corpus/src/api/root.rs \
+            crates/perl-corpus/src/files.rs \
+            crates/perl-corpus/src/prelude.rs \
+            crates/perl-corpus/tests/distribution_contract.rs \
+            crates/perl-corpus/tests/files_compatibility_contract.rs \
+            crates/perl-corpus/tests/root_path_authority.rs \
+            > /tmp/corpus-root-authority.patch
+          test -s /tmp/corpus-root-authority.patch
+          git apply --3way /tmp/corpus-root-authority.patch
+
+      - name: Reconcile strict and compatibility contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/tmp-corpus-root-authority-6980.py
+          cargo fmt -p perl-corpus
+
+      - name: Check formatting
+        shell: bash
+        run: cargo fmt -p perl-corpus -- --check
+
+      - name: Check all perl-corpus targets
+        shell: bash
+        run: cargo check -p perl-corpus --all-targets --locked
+
+      - name: Test root authority
+        shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+        run: cargo test -p perl-corpus --lib root --locked
+
+      - name: Test compatibility discovery and layout
+        shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+        run: cargo test -p perl-corpus --lib files --locked
+
+      - name: Test package distribution contract
+        shell: bash
+        run: cargo test -p perl-corpus --test distribution_contract --locked
+
+      - name: Test compatibility public surface
+        shell: bash
+        run: cargo test -p perl-corpus --test files_compatibility_contract --locked
+
+      - name: Test public root path authority
+        shell: bash
+        run: cargo test -p perl-corpus --test root_path_authority --locked
+
+      - name: Run focused Clippy
+        shell: bash
+        run: cargo clippy -p perl-corpus --all-targets --locked -- -D warnings -A missing_docs
+
+      - name: Check patch hygiene
+        shell: bash
+        run: git diff --check
+
+      - name: Publish verified stacked candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/tmp-corpus-root-authority-6980.yml
+          script=.github/scripts/tmp-corpus-root-authority-6980.py
+          rm "$workflow" "$script"
+          git add -A -- \
+            "$workflow" \
+            "$script" \
+            crates/perl-corpus/CLAUDE.md \
+            crates/perl-corpus/Cargo.toml \
+            crates/perl-corpus/README.md \
+            crates/perl-corpus/src/api.rs \
+            crates/perl-corpus/src/api/root.rs \
+            crates/perl-corpus/src/files.rs \
+            crates/perl-corpus/src/prelude.rs \
+            crates/perl-corpus/tests/distribution_contract.rs \
+            crates/perl-corpus/tests/files_compatibility_contract.rs \
+            crates/perl-corpus/tests/root_path_authority.rs
+
+          actual=$(git diff --cached --name-only | sort)
+          expected=$'.github/scripts/tmp-corpus-root-authority-6980.py\n.github/workflows/tmp-corpus-root-authority-6980.yml\ncrates/perl-corpus/CLAUDE.md\ncrates/perl-corpus/Cargo.toml\ncrates/perl-corpus/README.md\ncrates/perl-corpus/src/api.rs\ncrates/perl-corpus/src/api/root.rs\ncrates/perl-corpus/src/files.rs\ncrates/perl-corpus/src/prelude.rs\ncrates/perl-corpus/tests/distribution_contract.rs\ncrates/perl-corpus/tests/files_compatibility_contract.rs\ncrates/perl-corpus/tests/root_path_authority.rs'
+          test "$actual" = "$expected"
+
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git commit -m "refactor(corpus): add explicit external root authority (#6980)"
+          git push origin HEAD:agent/corpus-root-authority-6980
