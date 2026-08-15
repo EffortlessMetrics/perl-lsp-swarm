@@ -674,7 +674,7 @@ class ShardRunner:
         # not_proven for that gate, not for the shard.
         results = [self.observations[gate].result for gate in self.gates]
         hard_failures = {"failure", "timeout", "instrument_failure"}
-        if any(result in hard_failures for result in results):
+        if set(results) & hard_failures:
             return 1
         return 0 if "success" in results else 1
 
