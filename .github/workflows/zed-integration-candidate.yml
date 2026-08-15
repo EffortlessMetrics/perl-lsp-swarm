@@ -7,6 +7,10 @@ on:
       - '.ci/schemas/zed-*.json'
       - '.github/workflows/zed-integration-candidate.yml'
       - 'scripts/check-zed-*.sh'
+      - 'scripts/zed_exact_source_*.py'
+      - 'scripts/zed_host/**'
+      - 'scripts/tests/test_zed_host_*.py'
+      - 'xtask/src/bin/validate-zed-*.rs'
       - 'xtask/tests/zed_*.rs'
       - 'xtask/tests/support/zed_host_compat.rs'
   workflow_dispatch:
@@ -55,4 +59,20 @@ jobs:
           cargo test -p xtask --locked \
             --test zed_host_receipt \
             --test zed_public_registry_receipt \
-            --test zed_support_claims
+            --test zed_support_claims \
+            --test zed_exact_source_host_driver
+
+      # The operator-assisted host driver is Python, so its fail-closed controls
+      # are invisible to the Rust contract tests above. Run them here; otherwise
+      # the only code that ever touches a real Zed host has no executed proof.
+      - name: Run exact-source host driver unit tests
+        shell: bash
+        run: |
+          python3 -m unittest \
+            scripts.tests.test_zed_host_prepare \
+            scripts.tests.test_zed_host_process
+          python3 -m py_compile \
+            scripts/zed_exact_source_prepare.py \
+            scripts/zed_exact_source_launch.py \
+            scripts/zed_exact_source_finalize.py \
+            scripts/zed_host/*.py
