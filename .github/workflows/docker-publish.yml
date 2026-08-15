@@ -312,8 +312,13 @@ jobs:
     runs-on: ubuntu-24.04
     if: always()
     # Writes only to GITHUB_STEP_SUMMARY. It reports on the publish and must not
-    # be able to alter it, so it takes no token scopes at all.
-    permissions: {}
+    # be able to alter it, so it takes no token scopes at all. Naming `contents`
+    # explicitly rather than writing `permissions: {}` is deliberate: declaring
+    # any scope drops every unlisted one to none, so this is the same grant, and
+    # the workflow-security ratchet is a line scanner that rejects inline flow
+    # mappings on security-sensitive keys because it cannot read them.
+    permissions:
+      contents: none
 
     steps:
       - name: Summary
