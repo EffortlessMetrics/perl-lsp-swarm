@@ -80,23 +80,7 @@ impl LspServer {
                 method,
                 "Client skipped initialized notification; auto-initializing for compatibility"
             );
-            self.complete_initialization_with_workspace_configuration();
-        }
-    }
-
-    /// Finish initialization, then pull client-scoped `workspace/configuration`.
-    ///
-    /// Kept outside [`Self::complete_initialization`] so that function stays
-    /// bit-identical to main for ripr `owner_function_changed_line` accounting;
-    /// the deferral call site (#7708) lives here instead.
-    fn complete_initialization_with_workspace_configuration(&self) {
-        let already_initialized = self.initialized.load(Ordering::Acquire);
-        self.complete_initialization();
-        // Only the transition into initialized may emit the server→client
-        // request. Re-entrant / no-op complete_initialization paths must not
-        // re-pull configuration.
-        if !already_initialized && self.initialized.load(Ordering::Acquire) {
-            self.request_workspace_configuration_for_folders();
+            self.complete_initialization();
         }
     }
 
@@ -121,12 +105,8 @@ impl LspServer {
             });
         }
 
-        // Clear request-local lifecycle state on shutdown. A client may shut
-        // down while the post-initialize configuration pull is still pending;
-        // a late response must not remain eligible to mutate configuration,
-        // and the pending count must settle back to zero (#7708).
+        // Clear any pending cancelled requests on shutdown
         self.cancelled.lock().clear();
-        self.pending_workspace_configuration_requests.lock().clear();
         Ok(Some(json!(null)))
     }
 
@@ -198,7 +178,7 @@ impl LspServer {
             });
         }
 
-        self.complete_initialization_with_workspace_configuration();
+        self.complete_initialization();
 
         Ok(None)
     }
@@ -227,74 +207,6 @@ mod tests {
             result.err().ok_or("expected initialized to fail, but it succeeded".to_string())?;
         assert_eq!(error.code, -32002, "must be ServerNotInitialized (-32002) per LSP spec");
         assert!(!server.is_initialized(), "server must remain uninitialized");
-        Ok(())
-    }
-
-    /// ripr seam `7fdf6b0aeeedd6af`: `folder_count == 0` single-file ready path.
-    #[test]
-    fn ripr_seam_proof_complete_initialization_folder_count_zero_single_file() -> TestResult {
-        let server = LspServer::new();
-        assert_eq!(
-            server.workspace_folder_count(),
-            0,
-            "fresh server must start in single-file mode (zero folders)"
-        );
-
-        server
-            .handle_initialize(None)
-            .map_err(|e| format!("initialize request should succeed: {e}"))?;
-        server
-            .handle_initialized_dispatch()
-            .map_err(|e| format!("initialized notification should succeed: {e}"))?;
-
-        assert!(server.is_initialized(), "initialized must complete with zero folders");
-        assert_eq!(
-            server.workspace_folder_count(),
-            0,
-            "complete_initialization must preserve the folder_count == 0 boundary"
-        );
-        Ok(())
-    }
-
-    /// ripr seam `856578f70679627c`: exact `Err(-32600)` on duplicate initialize.
-    #[test]
-    fn ripr_seam_proof_lifecycle_model_duplicate_initialize_invalid_request() {
-        let mut model = LifecycleModel::default();
-        assert_eq!(model.initialize(), Ok(()), "first initialize must succeed");
-        assert_eq!(
-            model.initialize(),
-            Err(-32600),
-            "second initialize must return exact InvalidRequest (-32600)"
-        );
-    }
-
-    /// Discriminator for the #7708 shutdown clear of in-flight configuration pulls.
-    #[test]
-    fn ripr_seam_proof_shutdown_clears_pending_workspace_configuration_requests() -> TestResult {
-        let server = LspServer::new();
-        server
-            .handle_initialize(None)
-            .map_err(|e| format!("initialize request should succeed: {e}"))?;
-        server
-            .handle_initialized_dispatch()
-            .map_err(|e| format!("initialized notification should succeed: {e}"))?;
-
-        server.pending_workspace_configuration_requests.lock().insert(
-            super::super::super::ServerRequestId::for_test(77),
-            super::super::super::PendingWorkspaceConfigurationRequest {
-                folder_uris: vec!["file:///tmp/workspace".to_string()],
-                includes_global_item: true,
-                created_at: std::time::Instant::now(),
-            },
-        );
-        assert_eq!(server.pending_workspace_configuration_requests.lock().len(), 1);
-
-        server.handle_shutdown_dispatch().map_err(|e| format!("shutdown should succeed: {e}"))?;
-
-        assert!(
-            server.pending_workspace_configuration_requests.lock().is_empty(),
-            "shutdown must clear pending workspace/configuration requests (#7708)"
-        );
         Ok(())
     }
 

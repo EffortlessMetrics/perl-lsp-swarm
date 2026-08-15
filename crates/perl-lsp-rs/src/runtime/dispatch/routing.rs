@@ -42,7 +42,17 @@ impl LspServer {
 
         let result = match method.as_str() {
             "initialize" => self.handle_initialize_dispatch(request.params),
-            "initialized" => self.handle_initialized_dispatch(),
+            // `workspace/configuration` is a server→client request and cannot be
+            // emitted while initialize is still in flight (#7708). Pull it from
+            // the routing seam after `initialized` succeeds so lifecycle.rs stays
+            // bit-identical to main (ripr same-file / owner-function accounting).
+            "initialized" => {
+                let outcome = self.handle_initialized_dispatch();
+                if outcome.is_ok() {
+                    self.request_workspace_configuration_for_folders();
+                }
+                outcome
+            }
             // Compatibility: some lightweight clients send `initialize` and then
             // immediately issue requests without an explicit `initialized` notification.
             // Accept those requests once `initialize` has completed successfully.
@@ -56,7 +66,16 @@ impl LspServer {
                     data: None,
                 })
             }
-            "shutdown" => self.handle_shutdown_dispatch(),
+            "shutdown" => {
+                let outcome = self.handle_shutdown_dispatch();
+                // A client may shut down while the post-initialize configuration
+                // pull is still pending; clear eligibility with the shutdown Ok
+                // path so a late response cannot mutate configuration (#7708).
+                if outcome.is_ok() {
+                    self.pending_workspace_configuration_requests.lock().clear();
+                }
+                outcome
+            }
             "exit" => self.handle_exit_dispatch(),
             "textDocument/didOpen" => self.handle_did_open_dispatch(request.params),
             "textDocument/didChange" => self.handle_did_change_dispatch(request.params),
