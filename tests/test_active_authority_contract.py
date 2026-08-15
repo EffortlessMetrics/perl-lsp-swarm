@@ -211,6 +211,8 @@ class ActiveAuthorityContractTests(unittest.TestCase):
                 "Behind-only movement requires no action.",
                 "At merge, the current head is used as compare-and-swap protection",
                 "## Specialized contributor workflows",
+                "Production code must not introduce `unwrap`, `expect`, `panic!`, `todo!`, "
+                "`unimplemented!`, `abort`, or `dbg!` outside a documented narrow exception",
                 "docs/assets/gifs/README.md",
                 "Contributions are licensed under both [MIT](LICENSE-MIT) and [Apache-2.0](LICENSE-APACHE).",
             ),
@@ -249,6 +251,8 @@ class ActiveAuthorityContractTests(unittest.TestCase):
                 "Historical articles, forensics, completed implementation specs",
                 "There is no one-rebase quota.",
                 "Required GitHub statuses remain attached to the commit they evaluated.",
+                "`unwrap` or `expect` outside a documented narrow exception",
+                "`panic!`, `todo!`, `unimplemented!`, or `abort`",
             ),
         )
         assert_contains_all(
