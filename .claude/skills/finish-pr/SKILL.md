@@ -19,6 +19,49 @@ mergeability, or the author reading the diff does not establish substantive revi
 Claude's operational path is this skill together with `orchestrate-work`,
 `final-challenge`, `review-pr`, and `verify-live-ci`.
 
+## Orchestration affordances
+
+### Lane-root decisions
+
+The lane root retains the earliest useful route entry, finding validity/disposition,
+which repairs materially change proof/review dimensions, substantive review sufficiency,
+candidate/base/integration failure ownership, remote in-flight/blocking classification,
+protected merge, and current-main reconciliation.
+
+### Useful subagent and workflow work
+
+Use focused subagents, context forks, an Ultracode workflow, or an Agent Team only where
+useful for:
+
+- complete review-thread and submitted-review inventory;
+- source-backed finding verification;
+- high-output CI log/artifact classification;
+- live required-check/ruleset discovery;
+- production-path, external-oracle, proof, candidate, security, package, migration,
+  persistence, support, or release review;
+- merged-effect and residual-claim verification.
+
+Each child receives the exact PR/candidate, accepted claim, current GitHub snapshot,
+named skill where applicable, one bounded question, falsifiers, sufficient evidence,
+uncertainty, and non-goals. Children return graph deltas, not merge verdicts.
+
+### Mutation owner and join
+
+One writer integrates accepted candidate repairs. Read-only reviewers and CI evidence
+agents do not mutate the candidate.
+
+The lane root joins current findings/dispositions, affected proof, cumulative review,
+live integration facts, contradictions, and limitations into one typed route result.
+Repeated bot findings or several agents reading one artifact are not independent
+evidence.
+
+### Return packet
+
+Return PR/candidate identity, claim/non-goals, current finding dispositions,
+proof/review dimensions current or stale, substantive review result, integration
+posture, exact remote wait/wake event, limitations/`NOT_PROVEN`, merge/closeout result,
+and next route.
+
 ## Procedure
 
 Enter at the earliest useful point:
@@ -63,16 +106,19 @@ current; it need not be repeated merely because the head SHA changed.
 
 ## Claude-native review handoff
 
-Before `review-pr`, the main thread uses `orchestrate-work` to select only review
-lenses that can change the decision. It may delegate `review-tests`,
-`review-candidate`, a production-path trace, an external oracle, or a focused
-security/package/migration/persistence/support question to read-only Claude subagents.
-Each child receives the exact candidate, controlling claim, established facts,
-authority, skill, falsifiers, read-only boundary, sufficient evidence, and non-goals.
+Before `review-pr`, the lane root uses `orchestrate-work` to select only review lenses
+that can change the decision. It may delegate `review-tests`, `review-candidate`, a
+production-path trace, an external oracle, or a focused
+security/package/migration/persistence/support question to read-only subagents or
+context forks. Use Agent Teams only when lateral communication changes the result.
 
-The main thread joins evidence rather than votes, inspects the load-bearing seams, and
+Each child receives the exact candidate, controlling claim, established facts,
+authority, named skill, falsifiers, read-only boundary, sufficient evidence, and
+non-goals.
+
+The lane root joins evidence rather than votes, inspects load-bearing seams, and
 publishes one cumulative `review-pr` judgment. Reviewers do not authorize merge. One
-integrating writer repairs accepted findings.
+writer repairs accepted findings.
 
 ## Review-forward repair
 
@@ -101,9 +147,20 @@ review, CI classification, and oracle work may assist.
 - only affected proof and review are refreshed.
 
 When GitHub owns the next transition—pending checks, requested review, merge queue, or
-armed auto-merge—record the exact pending fact once and return `PR_IN_FLIGHT`. Do not
-poll unchanged state or call the wider goal blocked. A remote integration wait does
-not make a still-current substantive review stale.
+armed auto-merge—record the exact pending fact and wake event once when useful and
+return `PR_IN_FLIGHT`. Do not poll unchanged state or call the wider goal blocked. A
+remote integration wait does not make a still-current substantive review stale.
+
+## Useful GitHub boundary
+
+Publish candidate-wide route/proof/limitation changes in the PR body or a compact PR
+comment; localized findings inline; finding dispositions in replies before resolution;
+one cumulative submitted review; one material remote wait/wake update when another
+context needs it; and landed-effect/residual-claim closeout on the issue.
+
+Keep subagent/Team topology, task progress, raw bot/CI logs, repeated check snapshots,
+retries, unchanged polls, and routine route transitions runtime-local. Link stable
+artifacts rather than copying them.
 
 ## Routes
 

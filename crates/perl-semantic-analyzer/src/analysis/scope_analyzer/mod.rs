@@ -65,9 +65,11 @@ use std::ops::Range;
 use std::rc::Rc;
 
 /// Category of scope-related issue detected during analysis.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub enum IssueKind {
     /// A variable declared in an inner scope shadows one in an outer scope.
+    #[default]
     VariableShadowing,
     /// A declared variable is never read.
     UnusedVariable,
@@ -90,10 +92,16 @@ pub enum IssueKind {
     /// A feature-gated keyword (e.g. `say`) was used without the enabling
     /// `use feature '...'` / `use vX.Y` pragma active at that offset.
     FeatureNotEnabled,
+    /// A package-qualified function call (`Foo::bar()`) under `use strict` names
+    /// a sub that is not defined in the (in-file) target package (#3014).
+    /// Only emitted when the target package is itself declared in this file;
+    /// external modules are never flagged.
+    UnresolvedQualifiedCall,
 }
 
 /// A single scope-analysis finding with location and human-readable description.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ScopeIssue {
     /// The category of scope problem detected.
     pub kind: IssueKind,
@@ -105,6 +113,25 @@ pub struct ScopeIssue {
     pub range: (usize, usize),
     /// Human-readable explanation of the issue.
     pub description: String,
+}
+
+impl ScopeIssue {
+    /// Creates a scope issue while keeping construction stable for downstream crates.
+    pub fn new(
+        kind: IssueKind,
+        variable_name: impl Into<String>,
+        line: usize,
+        range: (usize, usize),
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            variable_name: variable_name.into(),
+            line,
+            range,
+            description: description.into(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -399,6 +426,14 @@ pub(super) struct AnalysisContext<'a> {
     /// feature-gate diagnostic when a user has shadowed a feature-gated keyword
     /// with their own `sub` (e.g. `sub say { ... } say(...)`).
     defined_subs: HashSet<String>,
+    /// Package names declared anywhere in this file via `package Foo;` or
+    /// `package Foo { ... }` (excluding the implicit `main`).  Used by the
+    /// strict-subs check for package-qualified calls (#3014): a call to
+    /// `Foo::bar()` only produces a diagnostic when `Foo` is a package defined
+    /// in this file and `bar` is not among its defined subs. External packages
+    /// (loaded via `use`/`require`) are never flagged because we cannot know
+    /// which subs they export.
+    defined_packages: HashSet<String>,
     /// Whether a top-level `use vX.Y` / `use N.NNN` version pragma is declared.
     /// When one is, the feature-gate diagnostic (e.g. for `say`) defers to the
     /// version-compatibility lint (`PL900`), which owns the version-declared case
@@ -431,6 +466,7 @@ impl<'a> AnalysisContext<'a> {
             pragma_cursor: RefCell::new(PragmaQueryCursor::new()),
             imported_barewords: collect_imported_barewords(ast),
             defined_subs: collect_defined_subs(ast),
+            defined_packages: collect_defined_packages(ast),
             has_declared_version: has_declared_perl_version(ast),
             line_starts: RefCell::new(None),
             current_package: RefCell::new("main".to_string()),
@@ -463,6 +499,14 @@ impl<'a> AnalysisContext<'a> {
 
     fn has_declared_version(&self) -> bool {
         self.has_declared_version
+    }
+
+    /// Whether a package named `pkg` (e.g. `"Foo"`) is declared in this file.
+    /// `main` is always considered defined (implicit). Used by the strict-subs
+    /// check for qualified calls (#3014) to avoid false positives on external
+    /// modules we cannot introspect.
+    pub(super) fn has_defined_package(&self, pkg: &str) -> bool {
+        pkg == "main" || self.defined_packages.contains(pkg)
     }
 
     fn get_line(&self, offset: usize) -> usize {
@@ -736,6 +780,7 @@ impl ScopeAnalyzer {
                     context,
                     &pragma_state,
                     strict_vars_mode,
+                    strict_subs_mode,
                 );
             }
             NodeKind::AmperCall { name, args } => {
@@ -1584,6 +1629,12 @@ impl ScopeAnalyzer {
                         issue.variable_name, feature
                     )
                 }
+                IssueKind::UnresolvedQualifiedCall => {
+                    format!(
+                        "Define sub '{}' or correct the call — strict mode cannot resolve it in the target package",
+                        issue.variable_name
+                    )
+                }
             })
             .collect()
     }
@@ -1863,6 +1914,49 @@ fn collect_defined_subs(ast: &Node) -> HashSet<String> {
     // A file with no `package` statement is in `main`.
     visit(ast, "main", &mut subs);
     subs
+}
+
+/// Collect every package name declared in the file via `package Foo;` or
+/// `package Foo { ... }` (excluding the implicit `main`).  Used by the
+/// strict-subs qualified-call check (#3014) to distinguish in-file packages
+/// (whose sub visibility we can prove) from external modules (which we
+/// cannot, and therefore never flag).
+fn collect_defined_packages(ast: &Node) -> HashSet<String> {
+    fn inner(stmt: &Node) -> &Node {
+        if let NodeKind::ExpressionStatement { expression } = &stmt.kind {
+            expression.as_ref()
+        } else {
+            stmt
+        }
+    }
+    let mut packages = HashSet::new();
+    fn visit(node: &Node, packages: &mut HashSet<String>) {
+        match &node.kind {
+            NodeKind::Program { statements } | NodeKind::Block { statements } => {
+                for stmt in statements {
+                    if let NodeKind::Package { name, block: None, .. } = &inner(stmt).kind {
+                        if name != "main" {
+                            packages.insert(name.clone());
+                        }
+                    }
+                    visit(stmt, packages);
+                }
+            }
+            NodeKind::Package { name, block: Some(block), .. } => {
+                if name != "main" {
+                    packages.insert(name.clone());
+                }
+                visit(block, packages);
+            }
+            _ => {
+                for child in node.children() {
+                    visit(child, packages);
+                }
+            }
+        }
+    }
+    visit(ast, &mut packages);
+    packages
 }
 
 /// Map a feature-gated keyword to the `feature` pragma name that enables it.

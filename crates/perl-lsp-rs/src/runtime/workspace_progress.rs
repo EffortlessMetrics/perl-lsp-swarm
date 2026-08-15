@@ -1,9 +1,11 @@
 //! Workspace indexing progress and readiness notifications.
 
 #[cfg(feature = "workspace")]
-use super::outbound::OutboundSender;
+use super::outbound::OutboundSink;
 #[cfg(feature = "workspace")]
 use super::types::ServerRequestId;
+#[cfg(feature = "workspace")]
+use perl_parser::workspace_index::IndexState;
 #[cfg(feature = "workspace")]
 use serde_json::json;
 
@@ -11,15 +13,68 @@ use serde_json::json;
 pub(crate) const WORKSPACE_INDEX_PROGRESS_TOKEN: &str = "workspace-index";
 
 #[cfg(feature = "workspace")]
-pub(super) fn send_index_ready_notification(outbound: &OutboundSender, ready: bool) {
-    if let Err(e) = outbound.send_notification("perl-lsp/index-ready", json!({ "ready": ready })) {
+pub(super) fn send_index_ready_notification(outbound: &dyn OutboundSink, state: &IndexState) {
+    let payload = index_readiness_payload(state);
+    if let Err(e) = outbound.send_notification("perl-lsp/index-ready", payload) {
         tracing::warn!(error = %e, "Failed to send index-ready notification");
     }
 }
 
 #[cfg(feature = "workspace")]
+fn index_readiness_payload(state: &IndexState) -> serde_json::Value {
+    let (ready, state_name, reason) = match state {
+        IndexState::Building { .. } => (false, "building", None),
+        IndexState::Ready { .. } => (true, "ready", None),
+        IndexState::Degraded { reason, .. } => {
+            (false, "ready_limited", Some(format!("{reason:?}")))
+        }
+        // Forward-compatible fallback for future variants (#2898)
+        _ => (false, "unknown", None),
+    };
+
+    let mut payload = json!({
+        "ready": ready,
+        "state": state_name,
+    });
+    if let Some(reason) = reason {
+        payload["reason"] = json!(reason);
+    }
+    payload
+}
+
+#[cfg(all(test, feature = "workspace"))]
+mod tests {
+    use super::index_readiness_payload;
+    use perl_parser::workspace_index::{DegradationReason, IndexState, ResourceKind};
+    use std::time::Instant;
+
+    #[test]
+    fn degraded_index_readiness_is_transportable_as_limited() -> Result<(), String> {
+        let payload = index_readiness_payload(&IndexState::Degraded {
+            reason: DegradationReason::ResourceLimit { kind: ResourceKind::MaxFiles },
+            available_symbols: 12,
+            since: Instant::now(),
+        });
+
+        if payload.get("ready").and_then(|value| value.as_bool()) != Some(false) {
+            return Err(format!("unexpected ready flag: {payload}"));
+        }
+        if payload.get("state").and_then(|value| value.as_str()) != Some("ready_limited") {
+            return Err(format!("unexpected readiness state: {payload}"));
+        }
+        if payload.get("reason").and_then(|value| value.as_str())
+            != Some("ResourceLimit { kind: MaxFiles }")
+        {
+            return Err(format!("unexpected readiness reason: {payload}"));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "workspace")]
 pub(super) fn send_active_document_ready_notification(
-    outbound: &OutboundSender,
+    outbound: &dyn OutboundSink,
     uri: &str,
     generation: u64,
 ) {
@@ -32,7 +87,7 @@ pub(super) fn send_active_document_ready_notification(
 }
 
 #[cfg(feature = "workspace")]
-pub(super) fn send_progress_create(outbound: &OutboundSender, request_id: ServerRequestId) {
+pub(super) fn send_progress_create(outbound: &dyn OutboundSink, request_id: ServerRequestId) {
     if let Err(e) = outbound.send_request(
         request_id,
         "window/workDoneProgress/create",
@@ -43,7 +98,7 @@ pub(super) fn send_progress_create(outbound: &OutboundSender, request_id: Server
 }
 
 #[cfg(feature = "workspace")]
-pub(super) fn send_progress_begin(outbound: &OutboundSender) {
+pub(super) fn send_progress_begin(outbound: &dyn OutboundSink) {
     if let Err(e) = outbound.send_notification(
         "$/progress",
         json!({
@@ -61,7 +116,7 @@ pub(super) fn send_progress_begin(outbound: &OutboundSender) {
 }
 
 #[cfg(feature = "workspace")]
-pub(super) fn send_progress_report(outbound: &OutboundSender, indexed: usize, total: usize) {
+pub(super) fn send_progress_report(outbound: &dyn OutboundSink, indexed: usize, total: usize) {
     let percentage = (indexed * 100).checked_div(total).unwrap_or(0).min(99) as u32;
     let message = format!("Indexed {} of {} files", indexed, total);
     if let Err(e) = outbound.send_notification(
@@ -80,7 +135,7 @@ pub(super) fn send_progress_report(outbound: &OutboundSender, indexed: usize, to
 }
 
 #[cfg(feature = "workspace")]
-pub(super) fn send_progress_end(outbound: &OutboundSender, message: &str) {
+pub(super) fn send_progress_end(outbound: &dyn OutboundSink, message: &str) {
     if let Err(e) = outbound.send_notification(
         "$/progress",
         json!({

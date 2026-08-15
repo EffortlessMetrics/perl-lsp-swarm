@@ -594,6 +594,10 @@ pub struct ProtocolVariable {
     /// Number of indexed child variables
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indexed_variables: Option<i64>,
+    /// Optional evaluable name if a client can pass this to an `evaluate`
+    /// request to obtain the variable's value (DAP spec §8.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluate_name: Option<String>,
 }
 
 /// A stack frame in the call stack

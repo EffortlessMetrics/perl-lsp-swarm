@@ -20,11 +20,17 @@ oracle-aware than coverage, far cheaper than mutation testing.
 
 ## Current routing posture
 
-During the proof-lane rollout, the `ripr` workflow now blocks PRs that introduce
-new diff-scoped RIPR gaps or fail to produce current RIPR receipts. Repo-wide
-RIPR+ total zero remains a burn-down target until the final enforcement slice.
-The workflow still runs for every PR when it is ready for review so docs-only,
-policy-only, workflow-only, and code PRs all carry current proof receipts.
+During the proof-lane rollout, the `ripr` workflow blocks PRs that introduce
+named new diff-scoped gaps in changed production files or fail to produce
+current receipts. This is one required deterministic contract: current diff,
+review, and Repo-wide receipts must be generated and validated. The
+static `ripr` sensor itself remains advisory (`policy/ub-review.toml`); a sensor
+availability failure is not treated as a clean result or as a receipt-integrity
+pass. Non-production-only static findings remain visible in the receipts but do
+not create a merge-blocking repair packet. Repo-wide RIPR+ total zero remains a burn-down target
+until the final enforcement slice. The workflow still runs for
+every PR when it is ready for review so docs-only, policy-only, workflow-only,
+and code PRs all carry current proof receipts.
 
 ## What ripr does
 
@@ -76,8 +82,11 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
   surfaces such as `archive/**` do not count against the final zero target.
 - Produces review guidance under `target/ripr/review/`.
 - Runs `cargo xtask quality-gate --mode enforce-new-ripr`, which blocks new
-  severe RIPR gaps and stale or missing repo-wide, diff-scoped, or
-  review-guidance receipts.
+  named severe RIPR gaps in changed production files and stale or missing
+  repo-wide, diff-scoped, or review-guidance receipts. Identity attribution
+  lives on the upstream receipts: `ripr_pr.receipt_head_sha` is the PR head,
+  `head` is the evaluated merge-test SHA, and `review_guidance.changed_production_files`
+  records the production scope used for the required-vs-advisory decision.
 - Applies the documented suppression policy to diff-scoped PR evidence as well
   as repo-wide RIPR+ receipts. Suppressed paths remain visible in receipts, but
   they do not count as new blocking gaps.
@@ -90,6 +99,11 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 - Uploads the `ripr-pr-evidence` artifact with required-artifact semantics.
 - Appends `target/ripr/pr/summary.md` and
   `target/receipts/quality/quality-gate-ripr.md` to the GitHub step summary.
+
+The evaluated `HEAD` in CI is a merge-test ref. It is not silently presented as
+the contributor's PR head: PR runs pass both identities to `xtask`, while
+`merge_group` runs record a null PR head because one queue ref can contain more
+than one PR.
 
 ---
 
@@ -145,16 +159,16 @@ the current advisory version for this lane.
 ```bash
 cargo install ripr --version 0.9.0 --locked
 ripr doctor
-cargo xtask ripr-pr --base origin/HEAD --head HEAD
+cargo xtask ripr-pr --base origin/HEAD --head HEAD --pr-head "$PR_HEAD_SHA"
 cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
-cargo xtask ripr-review-comments --base origin/HEAD --head HEAD
+cargo xtask ripr-review-comments --base origin/HEAD --head HEAD --pr-head "$PR_HEAD_SHA"
 cargo xtask impacted-evidence
 cargo xtask ripr-pr-summary
 cargo xtask ripr-annotations
 cargo xtask quality-gate --mode enforce-new-ripr --ripr-receipt target/receipts/quality/ripr-plus.json --ripr-pr-receipt target/ripr/pr/repo-exposure.json --review-receipt target/ripr/review/comments.json --ripr-base origin/HEAD --ripr-head HEAD --receipt target/receipts/quality/quality-gate-ripr.json --summary target/receipts/quality/quality-gate-ripr.md
-cargo xtask ripr-pr --base origin/HEAD --head HEAD --check
+cargo xtask ripr-pr --base origin/HEAD --head HEAD --check --pr-head "$PR_HEAD_SHA"
 cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-cargo xtask ripr-review-comments --base origin/HEAD --head HEAD --check
+cargo xtask ripr-review-comments --base origin/HEAD --head HEAD --check --pr-head "$PR_HEAD_SHA"
 cargo xtask impacted-evidence --check
 cargo xtask ripr-pr-summary --check
 cargo xtask ripr-annotations --check

@@ -211,7 +211,7 @@ impl IndexCoordinator {
 
 ## References
 
-- [crates/perl-workspace-index-state-machine/src/lib.rs](../../crates/perl-workspace-index-state-machine/src/lib.rs) - State machine implementation
+- [crates/perl-workspace/src/workspace/state_machine.rs](../../crates/perl-workspace/src/workspace/state_machine.rs) - State machine implementation
 - [crates/perl-parser/tests/index_lifecycle_tests.rs](../../crates/perl-parser/tests/index_lifecycle_tests.rs) - Lifecycle tests
 - [ADR-0009: Dual Indexing Strategy](0009-dual-indexing-strategy.md) - Related indexing approach
 - [LSP Server Implementation Guide](../reference/LSP_IMPLEMENTATION_GUIDE.md)

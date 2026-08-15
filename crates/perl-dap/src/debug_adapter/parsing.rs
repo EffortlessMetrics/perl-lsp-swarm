@@ -63,6 +63,7 @@ impl DebugAdapter {
             variables_reference: Self::i64_to_i32_saturating(rendered.variables_reference),
             named_variables: rendered.named_variables.map(Self::i64_to_i32_saturating),
             indexed_variables: rendered.indexed_variables.map(Self::i64_to_i32_saturating),
+            evaluate_name: rendered.evaluate_name,
         }
     }
 
@@ -270,6 +271,7 @@ impl DebugAdapter {
                     variables_reference: 0,
                     named_variables: None,
                     indexed_variables: None,
+                    evaluate_name: Some("$VERSION".to_string()),
                 }],
                 ScopeKind::Globals => vec![Variable {
                     name: "$_".to_string(),
@@ -278,6 +280,7 @@ impl DebugAdapter {
                     variables_reference: 0,
                     named_variables: None,
                     indexed_variables: None,
+                    evaluate_name: Some("$_".to_string()),
                 }],
                 ScopeKind::Arguments => vec![],
             },

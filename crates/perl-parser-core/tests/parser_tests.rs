@@ -187,7 +187,6 @@ fn parse_package_declaration_with_trailing_separator_and_block()
 }
 
 #[test]
-#[ignore = "vstring version in package declaration not yet implemented; parser extracts 'My::App' without version suffix (#5934)"]
 fn parse_package_declaration_with_vstring_version() -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new("package My::App v5.38;");
     let ast = must(parser.parse());
@@ -200,7 +199,9 @@ fn parse_package_declaration_with_vstring_version() -> Result<(), Box<dyn std::e
 
             match &package_node.kind {
                 V1NodeKind::Package { name, block, .. } => {
-                    assert_eq!(name, "My::App v5.38");
+                    // Version is parsed but NOT concatenated into name since #5265 —
+                    // package-to-file mapping and diagnostic messages must use the bare name.
+                    assert_eq!(name, "My::App");
                     assert!(block.is_none(), "package statement form should not have a block");
                 }
                 other => return Err(format!("expected Package node, got {:?}", other).into()),

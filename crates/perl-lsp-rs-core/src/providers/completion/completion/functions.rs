@@ -6,6 +6,7 @@
 use super::scope_distance::compute_scope_sort_key;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
+use std::borrow::Cow;
 
 /// Add function completions with scope-distance ranking.
 ///
@@ -29,26 +30,26 @@ pub fn add_function_completions(
                 {
                     (
                         super::items::CompletionItemKind::Constant,
-                        Some("constant".to_string()),
-                        Some(name.clone()),
+                        Some(Cow::Borrowed("constant")),
+                        Some(Cow::Owned(name.clone())),
                         "3",
                     )
                 } else {
                     (
                         super::items::CompletionItemKind::Function,
-                        Some("sub".to_string()),
-                        Some(format!("{}()", name)),
+                        Some(Cow::Borrowed("sub")),
+                        Some(Cow::Owned(format!("{}()", name))),
                         "2",
                     )
                 };
                 completions.push(CompletionItem {
-                    label: name.clone(),
+                    label: Cow::Owned(name.clone()),
                     kind,
                     detail,
-                    documentation: symbol.documentation.clone(),
+                    documentation: symbol.documentation.clone().map(Cow::Owned),
                     insert_text,
-                    sort_text: Some(format!("{sort_tier}{scope_sort_key}_{name}")),
-                    filter_text: Some(name.clone()),
+                    sort_text: Some(Cow::Owned(format!("{sort_tier}{scope_sort_key}_{name}"))),
+                    filter_text: Some(Cow::Owned(name.clone())),
                     additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,

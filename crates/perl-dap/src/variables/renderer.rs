@@ -41,6 +41,11 @@ pub struct RenderedVariable {
     /// Memory address (if available)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_reference: Option<String>,
+
+    /// Optional evaluable name a client can pass to an `evaluate` request
+    /// to obtain the variable's value (DAP spec §8.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluate_name: Option<String>,
 }
 
 /// Presentation hints for variable display in the DAP UI.
@@ -73,6 +78,7 @@ impl RenderedVariable {
             indexed_variables: None,
             presentation_hint: None,
             memory_reference: None,
+            evaluate_name: None,
         }
     }
 
@@ -101,6 +107,13 @@ impl RenderedVariable {
     #[must_use]
     pub fn with_named_variables(mut self, count: i64) -> Self {
         self.named_variables = Some(count);
+        self
+    }
+
+    /// Sets the evaluate name for this variable.
+    #[must_use]
+    pub fn with_evaluate_name(mut self, evaluate_name: impl Into<String>) -> Self {
+        self.evaluate_name = Some(evaluate_name.into());
         self
     }
 
@@ -423,6 +436,17 @@ impl VariableRenderer for PerlVariableRenderer {
         let type_name = value.type_name().to_string();
 
         let mut rendered = RenderedVariable::new(name, formatted_value).with_type(type_name);
+
+        // Populate evaluateName (DAP spec §8.4) so a client can pass it to an
+        // `evaluate` request. Top-level variable names already include the Perl
+        // sigil (e.g. `$foo`, `@arr`, `%hash`), so the name itself is a valid
+        // evaluable expression. Child names (array index `[0]`, hash key `foo`)
+        // lack the sigil and parent context, so they are left as `None` — a
+        // follow-up can plumb parent context through render_children to build
+        // `$arr[0]` / `$hash{key}` forms (#5966).
+        if name.starts_with(['$', '@', '%']) {
+            rendered.evaluate_name = Some(name.to_string());
+        }
 
         // Set child counts for expandable types
         match value {
@@ -1089,5 +1113,41 @@ mod tests {
         let rendered = renderer.render("%h", &value);
         assert!(rendered.value.contains("100 keys"));
         assert!(rendered.value.starts_with('{'));
+    }
+
+    // ── evaluateName population (DAP §8.4, #5966) ─────────────────────
+
+    #[test]
+    fn test_evaluate_name_populated_for_sigil_prefixed_scalar() {
+        let renderer = PerlVariableRenderer::new();
+        let rendered = renderer.render("$x", &PerlValue::Integer(42));
+        assert_eq!(rendered.evaluate_name, Some("$x".to_string()));
+    }
+
+    #[test]
+    fn test_evaluate_name_populated_for_array() {
+        let renderer = PerlVariableRenderer::new();
+        let rendered = renderer.render("@arr", &PerlValue::Array(vec![]));
+        assert_eq!(rendered.evaluate_name, Some("@arr".to_string()));
+    }
+
+    #[test]
+    fn test_evaluate_name_populated_for_hash() {
+        let renderer = PerlVariableRenderer::new();
+        let rendered = renderer.render("%h", &PerlValue::Hash(vec![]));
+        assert_eq!(rendered.evaluate_name, Some("%h".to_string()));
+    }
+
+    #[test]
+    fn test_evaluate_name_absent_for_child_names_without_sigil() {
+        // Children rendered by render_children have names like "[0]" or "key"
+        // that lack a sigil and parent context. evaluateName must be None so a
+        // client doesn't try to eval an invalid expression.
+        let renderer = PerlVariableRenderer::new();
+        let rendered = renderer.render("[0]", &PerlValue::Integer(1));
+        assert_eq!(rendered.evaluate_name, None);
+
+        let rendered = renderer.render("my_key", &PerlValue::Scalar("v".to_string()));
+        assert_eq!(rendered.evaluate_name, None);
     }
 }

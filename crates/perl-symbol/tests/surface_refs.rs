@@ -558,3 +558,57 @@ fn static_typeglob_is_still_emitted_after_dynamic_fix() -> Result<()> {
     assert_eq!(refs[0].sigil.as_deref(), Some("*"));
     Ok(())
 }
+
+#[test]
+fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
+    let goto_package = Node::new(
+        NodeKind::Goto {
+            target: Box::new(Node::new(
+                NodeKind::FunctionCall { name: "Package::method".to_string(), args: vec![] },
+                loc(5, 22),
+            )),
+            form: GotoTargetForm::Sub,
+        },
+        loc(0, 22),
+    );
+    let backslash_qualified = Node::new(
+        NodeKind::Unary {
+            op: "\\".to_string(),
+            operand: Box::new(Node::new(
+                NodeKind::FunctionCall { name: "Foo::Bar::baz".to_string(), args: vec![] },
+                loc(23, 37),
+            )),
+        },
+        loc(23, 38),
+    );
+    let goto_deep = Node::new(
+        NodeKind::Goto {
+            target: Box::new(Node::new(
+                NodeKind::FunctionCall { name: "A::B::C::func".to_string(), args: vec![] },
+                loc(42, 56),
+            )),
+            form: GotoTargetForm::Sub,
+        },
+        loc(38, 57),
+    );
+    let program = Node::new(
+        NodeKind::Program { statements: vec![goto_package, backslash_qualified, goto_deep] },
+        loc(0, 57),
+    );
+
+    let refs = extract_symbol_refs(&program);
+    assert_eq!(refs.len(), 3);
+
+    for (reference, (name, qualified_name, package_qualifier)) in refs.iter().zip([
+        ("method", "Package::method", Some("Package")),
+        ("baz", "Foo::Bar::baz", Some("Foo::Bar")),
+        ("func", "A::B::C::func", Some("A::B::C")),
+    ]) {
+        assert_eq!(reference.kind, SymbolRefKind::CoderefReference);
+        assert_eq!(reference.name, name);
+        assert_eq!(reference.qualified_name, qualified_name);
+        assert_eq!(reference.package_qualifier.as_deref(), package_qualifier);
+    }
+
+    Ok(())
+}

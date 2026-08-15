@@ -24,8 +24,9 @@ use perl_lsp_rs_core::tooling::perl_critic::{
     CriticConfig, CriticContext, CriticFinding, NativeCriticProfile, NativeCriticRegistry, Severity,
 };
 use perl_module::resolution::use_lib::{
-    no_lib_cancelled_paths_at_offset, resolve_use_lib_paths_from_source,
-    resolve_use_lib_paths_from_source_at_offset,
+    UseLibOperation, extract_use_lib_operations_with_offsets,
+    no_lib_cancelled_paths_from_operations_at_offset,
+    resolve_use_lib_paths_from_operations_at_offset,
 };
 use perl_parser::Parser;
 use perl_parser::error::{ParseError, ResolvedParseDiagnosticAnchor};
@@ -307,7 +308,7 @@ impl PullDiagnosticsProvider {
                 // Retrieve any collected parse errors from error recovery
                 let parse_errors: Vec<ParseError> = parser.errors().to_vec();
                 let ast = std::sync::Arc::new(ast);
-                let provider = DiagnosticsProvider::new(&ast, content.to_string());
+                let provider = DiagnosticsProvider::new();
                 let uri_str = uri.to_string();
                 let source_path = url::Url::parse(&uri_str)
                     .map_err(|e| {
@@ -325,27 +326,39 @@ impl PullDiagnosticsProvider {
                 // are respected.
                 let base_include_paths = context.include_paths.clone();
 
+                // Extract lexical `use lib` / `no lib` operations once per diagnostic
+                // cycle so each `use Module` resolver call filters the cached ops instead
+                // of re-scanning the source prefix (#1683).
+                let source_path_ref = source_path.as_deref();
+                let workspace_root = context
+                    .workspace_root
+                    .as_deref()
+                    .or_else(|| source_path_ref.and_then(std::path::Path::parent))
+                    .unwrap_or(std::path::Path::new("."));
+                let file_dir = source_path_ref.and_then(std::path::Path::parent);
+                let use_lib_ops = extract_use_lib_operations_with_offsets(content);
+
                 // Position-aware resolver: for each `use Module` statement, recompute the
                 // effective include paths at that statement's byte offset so that `no lib`
                 // directives appearing before it cancel the appropriate `use lib` paths.
                 let resolver = |module: &str, use_site_offset: usize| {
                     let paths = self.effective_include_paths_at_offset(
                         &base_include_paths,
-                        content,
-                        source_path.as_deref(),
-                        context,
+                        &use_lib_ops,
+                        workspace_root,
+                        file_dir,
                         use_site_offset,
                     );
-                    self.resolve_module_with_paths(module, &paths, source_path.as_deref())
+                    self.resolve_module_with_paths(module, &paths, source_path_ref)
                 };
 
                 // Search context for PL701 display: compute once for the whole file (end
                 // offset) so the diagnostic message shows what paths were searched overall.
                 let search_paths: Vec<String> = self.effective_include_paths(
                     &base_include_paths,
-                    content,
-                    source_path.as_deref(),
-                    context,
+                    &use_lib_ops,
+                    workspace_root,
+                    file_dir,
                 );
 
                 // Wire workspace semantic queries when available (pull-text path).
@@ -439,12 +452,12 @@ impl PullDiagnosticsProvider {
         }
 
         // Check relative to source file
-        if let Some(source) = source_path {
-            if let Some(parent) = source.parent() {
-                let relative_path = parent.join(&module_path);
-                if relative_path.exists() {
-                    return true;
-                }
+        if let Some(source) = source_path
+            && let Some(parent) = source.parent()
+        {
+            let relative_path = parent.join(&module_path);
+            if relative_path.exists() {
+                return true;
             }
         }
 
@@ -454,19 +467,17 @@ impl PullDiagnosticsProvider {
     fn effective_include_paths(
         &self,
         include_paths: &[String],
-        content: &str,
-        source_path: Option<&std::path::Path>,
-        context: &PullDiagnosticsContext,
+        use_lib_ops: &[UseLibOperation],
+        workspace_root: &std::path::Path,
+        file_dir: Option<&std::path::Path>,
     ) -> Vec<String> {
         let mut effective_paths = include_paths.to_vec();
-        let workspace_root = context
-            .workspace_root
-            .as_deref()
-            .or_else(|| source_path.and_then(std::path::Path::parent))
-            .unwrap_or(std::path::Path::new("."));
-        let file_dir = source_path.and_then(std::path::Path::parent);
-
-        let dynamic_paths = resolve_use_lib_paths_from_source(content, workspace_root, file_dir);
+        let dynamic_paths = resolve_use_lib_paths_from_operations_at_offset(
+            use_lib_ops,
+            usize::MAX,
+            workspace_root,
+            file_dir,
+        );
         for path in dynamic_paths.into_iter().rev() {
             effective_paths.retain(|existing| existing != &path);
             effective_paths.insert(0, path);
@@ -486,31 +497,28 @@ impl PullDiagnosticsProvider {
     fn effective_include_paths_at_offset(
         &self,
         include_paths: &[String],
-        content: &str,
-        source_path: Option<&std::path::Path>,
-        context: &PullDiagnosticsContext,
+        use_lib_ops: &[UseLibOperation],
+        workspace_root: &std::path::Path,
+        file_dir: Option<&std::path::Path>,
         use_site_offset: usize,
     ) -> Vec<String> {
-        let workspace_root = context
-            .workspace_root
-            .as_deref()
-            .or_else(|| source_path.and_then(std::path::Path::parent))
-            .unwrap_or(std::path::Path::new("."));
-        let file_dir = source_path.and_then(std::path::Path::parent);
-
         // Determine which configured paths were explicitly cancelled by `no lib`
         // at this offset. A `no lib 'lib'` directive removes `lib` from `@INC`
         // regardless of whether it arrived via `use lib` or workspace config.
-        let cancelled =
-            no_lib_cancelled_paths_at_offset(content, use_site_offset, workspace_root, file_dir);
+        let cancelled = no_lib_cancelled_paths_from_operations_at_offset(
+            use_lib_ops,
+            use_site_offset,
+            workspace_root,
+            file_dir,
+        );
 
         // Start from configured paths, excluding any that `no lib` cancelled.
         let mut effective_paths: Vec<String> =
-            include_paths.iter().filter(|p| !cancelled.contains(*p)).cloned().collect();
+            include_paths.iter().filter(|p| !cancelled.contains(p)).cloned().collect();
 
         // Prepend lexical `use lib` paths that are active at this offset.
-        let dynamic_paths = resolve_use_lib_paths_from_source_at_offset(
-            content,
+        let dynamic_paths = resolve_use_lib_paths_from_operations_at_offset(
+            use_lib_ops,
             use_site_offset,
             workspace_root,
             file_dir,
@@ -598,7 +606,7 @@ impl PullDiagnosticsProvider {
             ..CriticConfig::default()
         };
         let critic_context = CriticContext::new(content, ast.as_ref(), &critic_config);
-        let profile = NativeCriticProfile::parse(&context.native_critic_profile)
+        let profile = NativeCriticProfile::parse_legacy(&context.native_critic_profile)
             .unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
 
@@ -653,7 +661,7 @@ impl PullDiagnosticsProvider {
         };
         if let Some(ast) = parsed.ast() {
             let parse_errors = parsed.parse_errors();
-            let provider = DiagnosticsProvider::new(ast, doc_state.text_arc.to_string());
+            let provider = DiagnosticsProvider::new();
             let source_path =
                 url::Url::parse(&uri.to_string()).ok().and_then(|value| value.to_file_path().ok());
             // Build the baseline include paths (configured + PERL5LIB, without lexical
@@ -662,6 +670,17 @@ impl PullDiagnosticsProvider {
             // are respected.
             let base_include_paths = context.include_paths.clone();
             let doc_text = doc_state.text_arc.to_string();
+            let source_path_ref = source_path.as_deref();
+
+            // Extract lexical `use lib` / `no lib` operations once per diagnostic
+            // cycle (#1683).
+            let workspace_root = context
+                .workspace_root
+                .as_deref()
+                .or_else(|| source_path_ref.and_then(std::path::Path::parent))
+                .unwrap_or(std::path::Path::new("."));
+            let file_dir = source_path_ref.and_then(std::path::Path::parent);
+            let use_lib_ops = extract_use_lib_operations_with_offsets(&doc_text);
 
             // Position-aware resolver: for each `use Module` statement, recompute the
             // effective include paths at that statement's byte offset so that `no lib`
@@ -669,21 +688,21 @@ impl PullDiagnosticsProvider {
             let resolver = |module: &str, use_site_offset: usize| {
                 let paths = self.effective_include_paths_at_offset(
                     &base_include_paths,
-                    &doc_text,
-                    source_path.as_deref(),
-                    context,
+                    &use_lib_ops,
+                    workspace_root,
+                    file_dir,
                     use_site_offset,
                 );
-                self.resolve_module_with_paths(module, &paths, source_path.as_deref())
+                self.resolve_module_with_paths(module, &paths, source_path_ref)
             };
 
             // Search context for PL701 display: compute once for the whole file (end
             // offset) so the diagnostic message shows what paths were searched overall.
             let search_paths: Vec<String> = self.effective_include_paths(
                 &base_include_paths,
-                &doc_state.text,
-                source_path.as_deref(),
-                context,
+                &use_lib_ops,
+                workspace_root,
+                file_dir,
             );
             let uri_str = uri.to_string();
 
@@ -859,6 +878,8 @@ impl PullDiagnosticsProvider {
             .map(|t| match t {
                 InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                 InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "Unnecessary".to_string(),
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
@@ -871,12 +892,10 @@ impl PullDiagnosticsProvider {
         if let Some(code_str) = code.as_ref().and_then(|c| match c {
             NumberOrString::String(s) => Some(s.as_str()),
             _ => None,
-        }) {
-            if let Some(dc) = DiagnosticCode::parse_code(code_str)
-                && let Some(hint) = dc.context_hint()
-            {
-                message = format!("{message}\n\n💡 {hint}");
-            }
+        }) && let Some(dc) = DiagnosticCode::parse_code(code_str)
+            && let Some(hint) = dc.context_hint()
+        {
+            message = format!("{message}\n\n💡 {hint}");
         }
         if let Some(ref suggestion) = diagnostic.suggestion {
             message = format!("{message}\nSuggestion: {suggestion}");
@@ -937,6 +956,8 @@ impl PullDiagnosticsProvider {
             .map(|t| match t {
                 InternalDiagnosticTag::Unnecessary => "Unnecessary".to_string(),
                 InternalDiagnosticTag::Deprecated => "Deprecated".to_string(),
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "Unnecessary".to_string(),
             })
             .collect();
         let tags = to_lsp_tags(&diagnostic.tags);
@@ -1025,6 +1046,8 @@ impl PullDiagnosticsProvider {
                 perl_lsp_rs_core::providers::diagnostics::DiagnosticTag::Deprecated => {
                     "Deprecated".to_string()
                 }
+                // Forward-compatible fallback for future variants (#2898)
+                _ => "Unnecessary".to_string(),
             })
             .collect();
 
@@ -1215,6 +1238,8 @@ fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverit
         InternalDiagnosticSeverity::Warning => LspDiagnosticSeverity::WARNING,
         InternalDiagnosticSeverity::Information => LspDiagnosticSeverity::INFORMATION,
         InternalDiagnosticSeverity::Hint => LspDiagnosticSeverity::HINT,
+        // Forward-compatible fallback for future variants (#2898)
+        _ => LspDiagnosticSeverity::ERROR,
     }
 }
 
@@ -1232,6 +1257,8 @@ fn to_lsp_tags(tags: &[InternalDiagnosticTag]) -> Option<Vec<LspDiagnosticTag>> 
             .map(|tag| match tag {
                 InternalDiagnosticTag::Unnecessary => LspDiagnosticTag::UNNECESSARY,
                 InternalDiagnosticTag::Deprecated => LspDiagnosticTag::DEPRECATED,
+                // Forward-compatible fallback for future variants (#2898)
+                _ => LspDiagnosticTag::UNNECESSARY,
             })
             .collect(),
     )
@@ -2060,6 +2087,35 @@ mod tests {
                 )
             }),
             "recommended native critic profile should omit broader variable findings: {items:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = " RECOMMENDED ".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n",
+            None,
+            &context,
+            None,
+        ));
+
+        assert!(
+            items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                )
+            }),
+            "legacy invalid profile fallback must remain strict: {items:?}"
         );
 
         Ok(())

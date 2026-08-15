@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
 
 const CREATE_STEP_DEFINITION_COMMAND = 'perl-lsp.createGherkinStepDefinition';
 const GHERKIN_STEP_RE = /^\s*(Given|When|Then|And|But)\b\s*(.*)$/;
@@ -13,15 +14,13 @@ const MAX_STEP_DEFINITION_FILES = 500;
 const MAX_MATCH_REGEX_LENGTH = 256;
 const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
-// contains a quantifier* (e.g. `(a+)+` or `([a-z]{2,5})+`), a backreference,
-// or a lookaround. A single character class followed by one quantifier
-// (`[^"]+`, `[0-9]+`) is linear-time and safe — flagging it produced false
-// "ambiguous" classifications for ordinary step definitions, including the
-// `"([^"]+)"` patterns this module generates itself (see buildGeneratedStepPattern).
-// Keep this in sync with the identical constant in gherkinProviders.ts.
-const POTENTIALLY_EXPENSIVE_REGEX_RE =
-  /(?:\([^)]*(?:[+*]|\{[0-9]+(?:,[0-9]*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
-
+// contains a quantifier, a backreference, a lookaround, or alternation. A
+// single character class
+// followed by one quantifier (`[^"]+`, `[0-9]+`) is linear-time and safe —
+// flagging it produced false "ambiguous" classifications for ordinary step
+// definitions, including the `"([^"]+)"` patterns this module generates itself
+// (see buildGeneratedStepPattern).
+// The shared parser and denylist live in gherkinRedosGuard.ts.
 export type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But';
 export type StepDefinitionStatus = 'defined' | 'undefined' | 'ambiguous';
 
@@ -396,5 +395,5 @@ function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
     return false;
   }
 
-  return !POTENTIALLY_EXPENSIVE_REGEX_RE.test(source);
+  return !isPotentiallyExpensiveRegex(source);
 }

@@ -190,13 +190,7 @@ impl<'a> Parser<'a> {
             if matches!(self.peek_kind(), Some(k) if Self::is_stmt_modifier_kind(k)) {
                 stmt = self.parse_statement_modifier(stmt)?;
             }
-            // Check for optional semicolon
-            if self.peek_kind() == Some(TokenKind::Semicolon) {
-                let semi_token = self.consume_token()?;
-                if self.pending_heredocs.is_empty() {
-                    self.byte_cursor = semi_token.end;
-                }
-            }
+            self.finish_statement_terminator(&stmt)?;
             self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
             return Ok(stmt);
         }
@@ -486,7 +480,10 @@ impl<'a> Parser<'a> {
                     // We need the text for the indirect call check
                     // We must clone it because is_indirect_call_pattern borrows self mutably to peek ahead
                     let text = self.tokens.peek()?.text.clone();
-                    if self.is_indirect_call_pattern(&text) {
+                    if self.is_unknown_lowercase_bareword_call_pattern(&text) {
+                        let call = self.parse_unknown_lowercase_bareword_call()?;
+                        Ok(self.parse_named_unary_statement_tail(call)?)
+                    } else if self.is_indirect_call_pattern(&text) {
                         // Parse indirect call but DON'T return early - let it go through
                         // the same modifier/semicolon handling as other statements.
                         // Short-circuit operators may follow: `print $fh "msg" or die`,
@@ -512,58 +509,514 @@ impl<'a> Parser<'a> {
             stmt = self.parse_statement_modifier(stmt)?;
         }
 
-        // Check for optional semicolon
-        // Don't use peek_fresh_kind() here as it can cause issues with nested blocks
-        if self.peek_kind() == Some(TokenKind::Semicolon) {
-            let semi_token = self.consume_token()?;
-            // Track cursor after semicolon for heredoc content collection
-            if self.pending_heredocs.is_empty() {
-                self.byte_cursor = semi_token.end;
-            }
-        } else if !self.tokens.is_eof() {
-            // No semicolon and not at EOF — check if the semicolon is genuinely
-            // missing (not optional). Block-terminated constructs (sub, if, for,
-            // package with block, class, etc.) don't need a trailing semicolon.
-            // Also skip for closing delimiters and format-ended statements.
-            let is_block_terminated = matches!(
-                &stmt.kind,
-                NodeKind::Subroutine { .. }
-                    | NodeKind::Package { block: Some(_), .. }
-                    | NodeKind::Class { .. }
-                    | NodeKind::If { .. }
-                    | NodeKind::While { .. }
-                    | NodeKind::For { .. }
-                    | NodeKind::Foreach { .. }
-                    | NodeKind::Given { .. }
-                    | NodeKind::When { .. }
-                    | NodeKind::Default { .. }
-                    | NodeKind::Try { .. }
-                    | NodeKind::Defer { .. }
-                    | NodeKind::Block { .. }
-                    | NodeKind::Use { .. }
-                    | NodeKind::No { .. }
-                    | NodeKind::PhaseBlock { .. }
-                    | NodeKind::Format { .. }
-                    | NodeKind::Method { .. }
-            );
-            let next_is_closer = matches!(
-                self.peek_kind(),
-                Some(TokenKind::RightBrace) | Some(TokenKind::RightParen) | Some(TokenKind::RightBracket)
-            );
-            if !is_block_terminated && !next_is_closer {
-                let pos = self.current_position();
-                self.errors.push(ParseError::Recovered {
-                    site: RecoverySite::InfixRhs,
-                    kind: RecoveryKind::InferredSemicolon,
-                    location: pos,
-                });
-            }
-        }
+        self.finish_statement_terminator(&stmt)?;
 
         // Drain pending heredocs after statement completion (attach content to AST)
         self.drain_pending_heredocs_from(pending_heredoc_start, &mut stmt);
 
         Ok(stmt)
+    }
+
+    /// Consume the statement's terminating `;`, or record that it was missing.
+    ///
+    /// Perl requires `;` between statements. It is omissible in exactly two
+    /// places: before the closing `}` of a block, and at end of file. A
+    /// compound statement (`if`, `while`, `sub`, a bare block, …) is terminated
+    /// by its own closing brace and never needs one.
+    ///
+    /// Treating the `;` as unconditionally optional — as this did — made the
+    /// parser accept `my $x = 1` followed by `print "hi";` and report a clean
+    /// parse, so `--check` answered `ok` for source real `perl` rejects with a
+    /// syntax error. A missing statement terminator is the most common Perl
+    /// syntax error, so that false pass was the likeliest first-contact
+    /// failure (#5474).
+    ///
+    /// The missing `;` is *inferred* rather than fatal: the statement already
+    /// parsed, and the next one parses on its own, so recording a recovery and
+    /// continuing produces a usable tree plus an honest diagnostic. Consuming
+    /// nothing here leaves the next token for the statement loop.
+    ///
+    /// Deliberately does not use `peek_fresh_kind()`, which misbehaves with
+    /// nested blocks.
+    fn finish_statement_terminator(&mut self, stmt: &Node) -> ParseResult<()> {
+        if self.peek_kind() == Some(TokenKind::Semicolon) {
+            if self.pending_heredocs.is_empty()
+                && !Self::contains_heredoc(stmt)
+                && Self::can_arm_heredoc_recovery(stmt)
+            {
+                if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
+                    self.heredoc_recovery_tag = Some(tag);
+                }
+            }
+            let semi_token = self.consume_token()?;
+            // Track cursor after semicolon for heredoc content collection
+            if self.pending_heredocs.is_empty() {
+                self.byte_cursor = semi_token.end;
+            }
+            return Ok(());
+        }
+
+        if Self::is_brace_terminated_statement(stmt) {
+            return Ok(());
+        }
+
+        // `None` is end of token stream; `RightBrace` closes the enclosing
+        // block; `DataMarker` is `__END__`/`__DATA__`, which ends the program
+        // text exactly like EOF — `1\n__END__\n\n=head1 …` is the idiomatic
+        // module ending and real `perl -c` accepts it. `UnknownRest` means the
+        // lexer hit its budget and stopped, so the statement's terminator is
+        // unknowable rather than absent; blaming the user for it would be
+        // wrong for the same reason.
+        if matches!(
+            self.peek_kind(),
+            None | Some(
+                TokenKind::Eof
+                    | TokenKind::RightBrace
+                    | TokenKind::DataMarker
+                    | TokenKind::UnknownRest
+            )
+        ) {
+            return Ok(());
+        }
+
+        // A token that cannot begin a statement means the parser stopped in the
+        // middle of one, not that the user omitted a terminator.
+        //
+        // `File/Copy.pm:175` is the measured case: `copy($from, $to)` and its
+        // continuation `or goto fail_inner;` are one statement wrapped across a
+        // newline, and no Perl statement begins with `or`. Crossing a line
+        // boundary is necessary but not sufficient — this is what makes it
+        // sufficient (found in review, #5503).
+        if Self::cannot_begin_a_statement(self.peek_kind()) {
+            return Ok(());
+        }
+
+        // `use`/`no` import lists are not fully modelled — `no warnings qw(…)`,
+        // multi-line `use overload …` (`autodie/exception.pm:17`) and
+        // `use constant NAME => …` all stop early today. The seam cannot tell
+        // those from a real missing `;`, so it does not police pragmas.
+        if matches!(stmt.kind, NodeKind::Use { .. } | NodeKind::No { .. }) {
+            return Ok(());
+        }
+
+        // Heredoc bodies are collected out of band, so the parser's position is
+        // not trustworthy for a statement that declared one. The AST check alone
+        // is not enough: when the introducer follows an unknown bareword
+        // (`_sprintf562 <<'CODE'`, `ExtUtils/MM_Any.pm:1779`) the lexer emits a
+        // left shift, so no `Heredoc` node exists even though the body lines are
+        // still in the token stream. Scanning the statement's own source span
+        // catches that case too.
+        if self.pending_heredocs.is_empty()
+            && !Self::contains_heredoc(stmt)
+            && Self::can_arm_heredoc_recovery(stmt)
+        {
+            if let Some(tag) = self.statement_span_heredoc_tag(stmt) {
+                self.heredoc_recovery_tag = Some(tag);
+                return Ok(());
+            }
+        }
+
+        // An unrecognised heredoc may leak its body and terminator into the
+        // token stream. Exempt only the exact delimiter line, not every lone
+        // identifier: `foo` followed by `print` is a real missing terminator.
+        if Self::is_bare_identifier_statement(stmt) {
+            let matches_recovery_tag = self.heredoc_recovery_tag.as_deref().is_some_and(|tag| {
+                let start = stmt.location.start.min(self.src_bytes.len());
+                let end = stmt.location.end.min(self.src_bytes.len());
+                std::str::from_utf8(&self.src_bytes[start..end])
+                    .map(|text| text.trim() == tag)
+                    .unwrap_or(false)
+            });
+            if matches_recovery_tag {
+                self.heredoc_recovery_tag = None;
+                return Ok(());
+            }
+        }
+
+        // Only report when the leftover token begins a later line.
+        //
+        // Reaching here mid-line means the statement stopped short of its own
+        // end — the parser did not consume a construct it should have. Three
+        // such gaps exist in this repository's own corpus today (`no warnings
+        // qw(...)`, the `x=` repetition-assignment operator, and `method NAME
+        // {...}` in a class body), and reporting a missing `;` for them would
+        // reject valid Perl to describe a defect that is not the user's.
+        //
+        // A statement terminator the *user* omitted separates two statements
+        // written on different lines, which is also the only shape `perl`
+        // itself reports this way. Staying inside that shape trades some
+        // false negatives — `my $x = 1 print "hi";` on one line is missed —
+        // for no false positives, which is the correct direction for a check
+        // that gates a release.
+        if !self.line_break_precedes_current_token() {
+            return Ok(());
+        }
+
+        let location = self.current_position();
+        self.errors.push(ParseError::Recovered {
+            site: RecoverySite::Statement,
+            kind: RecoveryKind::InferredSemicolon,
+            location,
+        });
+        Ok(())
+    }
+
+    /// Whether only whitespace containing at least one newline separates the
+    /// previous token from the one the parser is positioned on.
+    ///
+    /// Scans the raw source backwards rather than trusting
+    /// `previous_position()`. `last_end_position` is only updated by
+    /// `consume_token()`/`expect()`, and several expression paths take tokens
+    /// straight off the stream, so it lags behind the real end of the statement
+    /// — on `my $x = 1` it sits at the end of `$x`, not of `1`. A window keyed
+    /// on it is wider than the actual gap and can contain a newline that is not
+    /// between the statement and the leftover token (found in review, #5503).
+    fn line_break_precedes_current_token(&mut self) -> bool {
+        let start = self.current_position().min(self.src_bytes.len());
+        self.src_bytes[..start]
+            .iter()
+            .rev()
+            .take_while(|byte| byte.is_ascii_whitespace())
+            .any(|&byte| byte == b'\n')
+    }
+
+    /// Whether this token can never be the first token of a Perl statement.
+    ///
+    /// Infix, postfix and separator tokens all mean the same thing at the
+    /// terminator seam: the parser stopped inside an expression. Reporting a
+    /// missing `;` there blames the user for our gap.
+    fn cannot_begin_a_statement(kind: Option<TokenKind>) -> bool {
+        matches!(
+            kind,
+            Some(
+                TokenKind::WordAnd
+                    | TokenKind::WordOr
+                    | TokenKind::WordXor
+                    | TokenKind::And
+                    | TokenKind::Or
+                    | TokenKind::DefinedOr
+                    | TokenKind::Assign
+                    | TokenKind::Plus
+                    // `Minus` is here for the same reason as `Plus`, and with
+                    // the same trade: `1\n-$y;` is one subtraction to `perl`,
+                    // not two statements, so a leading `-` is a continuation
+                    // even though unary minus could in principle start a
+                    // statement. Expression parsing already consumes both
+                    // today, so neither costs measured coverage.
+                    | TokenKind::Minus
+                    | TokenKind::Star
+                    | TokenKind::Slash
+                    | TokenKind::Percent
+                    | TokenKind::Power
+                    | TokenKind::LeftShift
+                    | TokenKind::RightShift
+                    | TokenKind::BitwiseAnd
+                    | TokenKind::BitwiseOr
+                    | TokenKind::BitwiseXor
+                    | TokenKind::PlusAssign
+                    | TokenKind::MinusAssign
+                    | TokenKind::StarAssign
+                    | TokenKind::SlashAssign
+                    | TokenKind::PercentAssign
+                    | TokenKind::DotAssign
+                    | TokenKind::AndAssign
+                    | TokenKind::OrAssign
+                    | TokenKind::XorAssign
+                    | TokenKind::PowerAssign
+                    | TokenKind::LeftShiftAssign
+                    | TokenKind::RightShiftAssign
+                    | TokenKind::LogicalAndAssign
+                    | TokenKind::LogicalOrAssign
+                    | TokenKind::DefinedOrAssign
+                    | TokenKind::Equal
+                    | TokenKind::NotEqual
+                    | TokenKind::Match
+                    | TokenKind::NotMatch
+                    | TokenKind::SmartMatch
+                    | TokenKind::Less
+                    | TokenKind::Greater
+                    | TokenKind::LessEqual
+                    | TokenKind::GreaterEqual
+                    | TokenKind::Spaceship
+                    | TokenKind::StringCompare
+                    | TokenKind::Arrow
+                    | TokenKind::FatArrow
+                    | TokenKind::Dot
+                    | TokenKind::Range
+                    | TokenKind::DoubleColon
+                    | TokenKind::Question
+                    | TokenKind::Colon
+                    | TokenKind::Comma
+                    | TokenKind::Semicolon
+                    | TokenKind::RightParen
+                    | TokenKind::RightBracket
+            )
+        )
+    }
+
+    /// Whether the statement is a single bare identifier.
+    fn is_bare_identifier_statement(node: &Node) -> bool {
+        match &node.kind {
+            NodeKind::Identifier { .. } => true,
+            NodeKind::ExpressionStatement { expression } => {
+                matches!(expression.kind, NodeKind::Identifier { .. })
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the subtree declares a heredoc.
+    fn contains_heredoc(node: &Node) -> bool {
+        matches!(node.kind, NodeKind::Heredoc { .. })
+            || node.children().into_iter().any(Self::contains_heredoc)
+    }
+
+    /// Ordinary shift expressions can contain a quoted word immediately after
+    /// `<<`, but that word is not a heredoc delimiter. Keep them out of the
+    /// narrow leaked-heredoc recovery path.
+    fn contains_left_shift(node: &Node) -> bool {
+        matches!(&node.kind, NodeKind::Binary { op, .. } if op == "<<" || op == "<<=")
+            || node.children().into_iter().any(Self::contains_left_shift)
+    }
+
+    fn contains_identifier_left_shift(node: &Node) -> bool {
+        matches!(
+            &node.kind,
+            NodeKind::Binary { op, left, .. }
+                if op == "<<" && matches!(left.kind, NodeKind::Identifier { .. })
+        ) || node.children().into_iter().any(Self::contains_identifier_left_shift)
+    }
+
+    fn can_arm_heredoc_recovery(node: &Node) -> bool {
+        !Self::contains_left_shift(node) || Self::contains_identifier_left_shift(node)
+    }
+
+    /// Whether the slash at `index` starts a `qr//` quote-like body.
+    ///
+    /// A bare slash is also Perl's division operator, so treating every slash
+    /// as a quote delimiter would hide real heredoc introducers. Restrict this
+    /// guard to the unambiguous `qr` operator form used by the parser's regex
+    /// syntax and by the false-negative regression below.
+    fn starts_qr_slash_body(span: &[u8], index: usize) -> bool {
+        if span.get(index) != Some(&b'/') {
+            return false;
+        }
+        let mut operator_end = index;
+        while operator_end > 0
+            && matches!(span[operator_end - 1], b' ' | b'\t' | b'\r' | b'\n')
+        {
+            operator_end -= 1;
+        }
+        operator_end >= 2 && span.get(operator_end - 2..operator_end) == Some(&b"qr"[..])
+    }
+
+    /// Find an unrecognised heredoc introducer in the source the statement spans
+    /// (`<<"X"`, `<<'X'`, `<<X`, `<<~X`) **in code position**.
+    ///
+    /// Two things are deliberately not matched, because matching them would
+    /// suppress a real diagnostic:
+    ///
+    /// - a bare `<<` used as left shift (`1 << 2`), which is followed by
+    ///   whitespace or a digit;
+    /// - `<<` inside a string literal, a comment, or a regex/quote-like body —
+    ///   `my $s = "<<EOF"` is a string containing two angle brackets, not a
+    ///   heredoc, and treating it as one made `--check` answer `ok` for the
+    ///   statement after it (found in review, #5503).
+    ///
+    /// The quote tracking is intentionally shallow: it follows ordinary
+    /// literals, comments, and Perl's quote-like operators. It is a heuristic
+    /// guarding a heuristic, and it errs toward *reporting* — an unmatched
+    /// quote resolves at end of span, so a real introducer is never hidden
+    /// behind one.
+    fn statement_span_heredoc_tag(&mut self, stmt: &Node) -> Option<String> {
+        let end = self.current_position().min(self.src_bytes.len());
+        let start = stmt.location.start.min(end);
+        let span = &self.src_bytes[start..end];
+
+        let mut quote: Option<u8> = None;
+        let mut index = 0;
+        while index < span.len() {
+            let byte = span[index];
+
+            if let Some(delimiter) = quote {
+                // `\x` inside a literal escapes whatever follows, including the
+                // closing delimiter.
+                if byte == b'\\' && delimiter != b'#' {
+                    index += 2;
+                    continue;
+                }
+                if byte == delimiter || (delimiter == b'#' && byte == b'\n') {
+                    quote = None;
+                }
+                index += 1;
+                continue;
+            }
+
+            match byte {
+                b'\'' | b'"' | b'`' | b'#' => {
+                    quote = Some(byte);
+                    index += 1;
+                    continue;
+                }
+                b'<' if span.get(index + 1) == Some(&b'<') => {
+                    let mut rest = span[index + 2..].iter();
+                    let next = match rest.next() {
+                        Some(b'~') => rest.next(),
+                        other => other,
+                    };
+                    if matches!(next, Some(b'"' | b'\'' | b'`' | b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+                    {
+                        let mut tag = &span[index + 2..];
+                        if tag.first() == Some(&b'~') {
+                            tag = &tag[1..];
+                        }
+                        let tag = match tag.first() {
+                            Some(b'\'' | b'"' | b'`') => {
+                                let delimiter = tag[0];
+                                let end = tag[1..]
+                                    .iter()
+                                    .position(|&candidate| candidate == delimiter)?
+                                    + 1;
+                                &tag[1..end]
+                            }
+                            Some(b'A'..=b'Z' | b'a'..=b'z' | b'_') => {
+                                let end = tag
+                                    .iter()
+                                    .position(|candidate| {
+                                        !matches!(
+                                            candidate,
+                                            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_'
+                                        )
+                                    })
+                                    .unwrap_or(tag.len());
+                                &tag[..end]
+                            }
+                            _ => {
+                                index += 2;
+                                continue;
+                            }
+                        };
+                        return std::str::from_utf8(tag).ok().map(str::to_owned);
+                    }
+                    index += 2;
+                    continue;
+                }
+                _ => {
+                    if let Some(end) = Self::quote_like_body_end(span, index) {
+                        index = end;
+                        continue;
+                    }
+                    index += 1;
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Return the byte after a quote-like expression beginning at `index`.
+    ///
+    /// This is deliberately a source scanner rather than a parser-level
+    /// expression check: its only job is to keep `<<TAG` inside quote-like
+    /// bodies from being mistaken for a heredoc introducer. Paired delimiters
+    /// are balanced, escapes are skipped, and substitution-like operators
+    /// consume both bodies.
+    #[expect(
+        clippy::question_mark,
+        reason = "policy:ripr-quote-like-body: intentional let-else return None so RIPR None-oracles observe the miss path (#5838)"
+    )]
+    fn quote_like_body_end(span: &[u8], index: usize) -> Option<usize> {
+        const OPERATORS: &[&[u8]] = &[b"tr", b"qq", b"qx", b"qr", b"qw", b"m", b"s", b"y", b"q"];
+
+        if index > 0 && matches!(span[index - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'$') {
+            return None;
+        }
+
+        // Prefer an explicit miss-return over `find(...)?`. RIPR classifies the
+        // Option-`?` form as an error_path sink that existing `None` oracles do
+        // not observe; `return None` is the same control flow and is already
+        // covered by the non-operator prefix discriminators below.
+        let Some(operator) = OPERATORS.iter().find(|operator| {
+            span.get(index..index + operator.len()) == Some(**operator)
+        }) else {
+            return None;
+        };
+        let mut delimiter_index = index + operator.len();
+        while matches!(span.get(delimiter_index), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            delimiter_index += 1;
+        }
+        let delimiter = *span.get(delimiter_index)?;
+        if delimiter.is_ascii_alphanumeric() || delimiter == b'_' || delimiter == b'$' {
+            return None;
+        }
+        if *operator == b"qr"
+            && delimiter == b'/'
+            && !Self::starts_qr_slash_body(span, delimiter_index)
+        {
+            return None;
+        }
+
+        let parts = if matches!(*operator, b"s" | b"tr" | b"y") { 2 } else { 1 };
+        let first_delimiter = span[delimiter_index];
+        let paired = matches!(first_delimiter, b'(' | b'[' | b'{' | b'<');
+        let mut cursor = delimiter_index;
+        for part in 0..parts {
+            cursor = if part == 0 || paired {
+                Self::quote_like_part_end(span, cursor)?
+            } else {
+                Self::quote_like_unpaired_end(span, cursor, first_delimiter)?
+            };
+            if part + 1 < parts {
+                while matches!(span.get(cursor), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+                    cursor += 1;
+                }
+            }
+        }
+        Some(cursor)
+    }
+
+    fn quote_like_unpaired_end(span: &[u8], start: usize, delimiter: u8) -> Option<usize> {
+        let mut index = start;
+        while index < span.len() {
+            match span[index] {
+                b'\\' => index = index.saturating_add(2),
+                byte if byte == delimiter => return Some(index + 1),
+                _ => index += 1,
+            }
+        }
+        None
+    }
+
+    fn quote_like_part_end(span: &[u8], delimiter_index: usize) -> Option<usize> {
+        let opener = *span.get(delimiter_index)?;
+        let closer = match opener {
+            b'(' => b')',
+            b'[' => b']',
+            b'{' => b'}',
+            b'<' => b'>',
+            delimiter => delimiter,
+        };
+        let paired = opener != closer;
+        let mut depth = 0usize;
+        let mut index = delimiter_index + 1;
+        while index < span.len() {
+            match span[index] {
+                b'\\' => index = index.saturating_add(2),
+                byte if paired && byte == opener => {
+                    depth = depth.saturating_add(1);
+                    index += 1;
+                }
+                byte if byte == closer => {
+                    if depth == 0 {
+                        return Some(index + 1);
+                    }
+                    depth -= 1;
+                    index += 1;
+                }
+                _ => index += 1,
+            }
+        }
+        None
     }
 
     /// Mark that we're no longer at statement start (called after consuming statement head)
@@ -576,15 +1029,48 @@ impl<'a> Parser<'a> {
         matches!(self.peek_kind(), Some(k) if Self::is_stmt_modifier_kind(k))
     }
 
+    /// Whether this statement ends with its own closing brace, and so needs no
+    /// `;`.
+    ///
+    /// Narrower than [`Self::is_compound_statement`] in exactly one place:
+    /// `package NAME;` and `package NAME VERSION;` are ordinary statements that
+    /// require a terminator, and only `package NAME { … }` is brace-terminated.
+    /// The two predicates are not the same question — a `package` statement
+    /// cannot take a postfix modifier in either form, which is what the
+    /// compound-statement check is for, but only the block form ends itself.
+    /// Sharing one predicate left `package Foo` followed by another statement
+    /// reported as `ok` while `perl -c` rejects it (found in review, #5503).
+    fn is_brace_terminated_statement(node: &Node) -> bool {
+        match &node.kind {
+            NodeKind::Package { block, .. } => block.is_some(),
+            // Forward `sub foo;` declarations are represented with a synthetic
+            // zero-width empty block at the semicolon. A real `{}` body spans
+            // the braces even when it has no statements.
+            NodeKind::Subroutine { body, .. }
+            | NodeKind::Class { body, .. }
+            | NodeKind::Method { body, .. } => body.location.start != body.location.end,
+            _ => Self::is_compound_statement(node),
+        }
+    }
+
     /// Returns true if the node is a compound statement that cannot take a postfix modifier.
-    /// In Perl, compound statements (if/while/for/foreach/given/default/try/sub/package)
-    /// are terminated by their own closing brace — a modifier keyword that follows is a
-    /// new top-level statement, not a modifier on the compound statement.
+    /// In Perl a compound statement is terminated by its own closing brace, so a modifier
+    /// keyword that follows one begins a new top-level statement rather than modifying it.
+    ///
+    /// The full set this accepts: `if`, `while`, `for`, `foreach`, `given`, `default`,
+    /// `try`, `defer`, `sub`, `package`, `class`, `method`, `format`, a bare block, and a
+    /// phase block (`BEGIN`/`END`/`CHECK`/`INIT`/`UNITCHECK`). Keep this list and the
+    /// `matches!` arm below in step — a summary that lags the arm is how a reader ends up
+    /// reasoning about a predicate that does something else (#5503).
     ///
     /// A bare `Block` is also compound: `{ ... } for @arr` is a syntax error in Perl
     /// (verified: `perl -c` rejects it). Without this, `{ ... }\nfor my $x (...) { }`
     /// would be misread as `{ ... } for my` (postfix-for with `my` as the iterator
     /// expression), causing the `for my $x (LIST) { BLOCK }` form to fail.
+    ///
+    /// Not the same question as [`Self::is_brace_terminated_statement`]: this one
+    /// answers "can a postfix modifier follow", which is false for `package` in
+    /// both its statement and block forms.
     fn is_compound_statement(node: &Node) -> bool {
         matches!(
             node.kind,
@@ -597,6 +1083,11 @@ impl<'a> Parser<'a> {
                 | NodeKind::Try { .. }
                 | NodeKind::Defer { .. }
                 | NodeKind::Subroutine { .. }
+                // `class NAME { … }` and `method NAME { … }` (Perl 5.38) are
+                // brace-terminated declarations exactly like `sub`. Their
+                // absence here was invisible while the terminator was optional.
+                | NodeKind::Class { .. }
+                | NodeKind::Method { .. }
                 | NodeKind::Package { .. }
                 | NodeKind::Format { .. }
                 | NodeKind::Block { .. }
@@ -654,7 +1145,9 @@ impl<'a> Parser<'a> {
 
         // Statement modifiers are handled at the statement level in parse_statement()
 
-        let end = self.previous_position();
+        // Prefer the later of expression end and the last consumed token so
+        // wrappers such as `(42)` keep their closing delimiter in the span.
+        let end = expr.location.end.max(self.previous_position());
 
         // Wrap the expression in an ExpressionStatement node
         Ok(Node::new(
@@ -1117,7 +1610,12 @@ impl<'a> Parser<'a> {
                                 }
                             }
 
-                            let end = self.previous_position();
+                            // Keep closing `)` when args were parenthesized; bare
+                            // calls still end at the last argument.
+                            let end = args
+                                .last()
+                                .map(|arg| arg.location.end.max(self.previous_position()))
+                                .unwrap_or_else(|| self.previous_position());
                             let call = Node::new(
                                 NodeKind::FunctionCall { name: func_name.to_string(), args },
                                 SourceLocation { start, end },
@@ -1423,4 +1921,40 @@ impl<'a> Parser<'a> {
         Ok(Box::new(self.parse_statement()?))
     }
 
+}
+
+#[cfg(test)]
+mod statement_terminator_seam_tests {
+    use super::Parser;
+
+    #[test]
+    fn starts_qr_slash_body_boundary_discriminator() {
+        assert!(Parser::starts_qr_slash_body(b"qr/", 2), "direct qr delimiter");
+        assert!(Parser::starts_qr_slash_body(b"qr /", 3), "spaced qr delimiter");
+        assert!(!Parser::starts_qr_slash_body(b"/", 0), "bare slash is division");
+        assert!(!Parser::starts_qr_slash_body(b"ar/", 2), "suffix ar is not qr");
+    }
+
+    /// Colocated observer for the OPERATORS-miss early return in
+    /// `quote_like_body_end`. Bare `/` and `+` are not operators and are not
+    /// alphanumeric, so they hit the miss-return specifically (not the later
+    /// alphanumeric delimiter guard). A recognized operator must still succeed.
+    #[test]
+    fn quote_like_body_end_operators_miss_returns_none() {
+        assert_eq!(
+            Parser::quote_like_body_end(b"/foo/", 0),
+            None,
+            "bare '/' must miss OPERATORS and return None"
+        );
+        assert_eq!(
+            Parser::quote_like_body_end(b"+ 1", 0),
+            None,
+            "bare '+' must miss OPERATORS and return None"
+        );
+        assert_eq!(
+            Parser::quote_like_body_end(b"q(foo)", 0),
+            Some(6),
+            "recognized operator must still return Some(end)"
+        );
+    }
 }

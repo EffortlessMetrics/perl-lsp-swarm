@@ -191,10 +191,9 @@ impl LspServer {
 
             if let Some(component_path) =
                 resolve_mason_component_file(&source_path, &component_name)
+                && let Ok(component_uri) = Url::from_file_path(component_path)
             {
-                if let Ok(component_uri) = Url::from_file_path(component_path) {
-                    return Some(Location { uri: component_uri.to_string(), range: zero_range() });
-                }
+                return Some(Location { uri: component_uri.to_string(), range: zero_range() });
             }
         }
 

@@ -190,7 +190,7 @@ cargo doc --no-deps --package perl-parser 2>&1 | grep "missing documentation" | 
 - **Implementation Details**: [MISSING_DOCUMENTATION_GUIDE.md](../reference/MISSING_DOCUMENTATION_GUIDE.md)
 - **Quality Standards**: [API_DOCUMENTATION_STANDARDS.md](../reference/API_DOCUMENTATION_STANDARDS.md)
 - **Project Integration**: [CLAUDE.md](../../CLAUDE.md) - Essential Commands section
-- **Upgrade Guide**: [UPGRADING.md](../../how-to/UPGRADING.md) - current release upgrade guidance
+- **Upgrade Guide**: [UPGRADING.md](../how-to/UPGRADING.md) - current release upgrade guidance
 
 ## Review and Updates
 

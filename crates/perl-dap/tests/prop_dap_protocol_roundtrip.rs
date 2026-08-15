@@ -543,6 +543,7 @@ proptest! {
             variables_reference,
             named_variables,
             indexed_variables,
+            evaluate_name: None,
         };
 
         let json_str = serde_json::to_string(&var)

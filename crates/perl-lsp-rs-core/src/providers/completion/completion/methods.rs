@@ -6,6 +6,7 @@ use super::{
     auto_import, context::CompletionContext, items::CompletionItem, items::InsertTextFormat,
 };
 use perl_semantic_analyzer::symbol::{SymbolKind, SymbolTable};
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 /// Extract the receiver module name from the completion prefix for static calls.
@@ -416,13 +417,13 @@ pub fn add_method_completions(
 
         if seen.insert(name.as_str()) {
             completions.push(CompletionItem {
-                label: name.clone(),
+                label: Cow::Owned(name.clone()),
                 kind: super::items::CompletionItemKind::Function,
-                detail: Some(detail),
-                documentation,
-                insert_text: Some(format!("{}()", name)),
-                sort_text: Some(format!("1_{}", name)),
-                filter_text: Some(name.clone()),
+                detail: Some(Cow::Owned(detail)),
+                documentation: documentation.map(Cow::Owned),
+                insert_text: Some(Cow::Owned(format!("{}()", name))),
+                sort_text: Some(Cow::Owned(format!("1_{}", name))),
+                filter_text: Some(Cow::Owned(name.clone())),
                 additional_edits: vec![],
                 text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
@@ -477,13 +478,13 @@ pub fn add_method_completions(
             let additional_edits =
                 auto_import_edit.as_ref().map(|e| vec![e.clone()]).unwrap_or_default();
             completions.push(CompletionItem {
-                label: method.to_string(),
+                label: Cow::Owned(method.to_string()),
                 kind: super::items::CompletionItemKind::Function,
-                detail: Some("method".to_string()),
-                documentation: Some(desc.to_string()),
-                insert_text: Some(format!("{}()", method)),
-                sort_text: Some(format!("2_{}", method)),
-                filter_text: Some(method.to_string()),
+                detail: Some(Cow::Borrowed("method")),
+                documentation: Some(Cow::Owned(desc.to_string())),
+                insert_text: Some(Cow::Owned(format!("{}()", method))),
+                sort_text: Some(Cow::Owned(format!("2_{}", method))),
+                filter_text: Some(Cow::Owned(method.to_string())),
                 additional_edits,
                 text_edit_range: Some((context.method_text_edit_start(source), context.position)),
                 commit_characters: None,
@@ -503,13 +504,13 @@ pub fn add_method_completions(
                 let additional_edits =
                     auto_import_edit.as_ref().map(|e| vec![e.clone()]).unwrap_or_default();
                 completions.push(CompletionItem {
-                    label: method.to_string(),
+                    label: Cow::Owned(method.to_string()),
                     kind: super::items::CompletionItemKind::Function,
-                    detail: Some("method".to_string()),
-                    documentation: Some(desc.to_string()),
-                    insert_text: Some(format!("{}()", method)),
-                    sort_text: Some(format!("9_{}", method)), // Lower priority
-                    filter_text: Some(method.to_string()),
+                    detail: Some(Cow::Borrowed("method")),
+                    documentation: Some(Cow::Owned(desc.to_string())),
+                    insert_text: Some(Cow::Owned(format!("{}()", method))),
+                    sort_text: Some(Cow::Owned(format!("9_{}", method))), // Lower priority
+                    filter_text: Some(Cow::Owned(method.to_string())),
                     additional_edits,
                     text_edit_range: Some((
                         context.method_text_edit_start(source),

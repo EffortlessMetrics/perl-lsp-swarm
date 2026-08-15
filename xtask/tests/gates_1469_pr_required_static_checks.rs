@@ -346,3 +346,34 @@ fn pr_fast_tier_has_minimum_gate_count() -> Result<(), Box<dyn std::error::Error
 
     Ok(())
 }
+
+/// TEST: GitHub Actions workflow matrix includes unit_parser_stack_full in merge-gate-shards (#5934)
+///
+/// The gate is declared `required: true` in `.ci/gate-policy.yaml` but was wired into
+/// zero workflows, making the parser/lexer/parser-core lib surface unenforced in CI.
+/// This test guards against that regression recurring: it fails if the shard is removed.
+#[test]
+fn ci_workflow_includes_unit_parser_stack_full_in_matrix() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = project_root();
+    let workflow = must(fs::read_to_string(root.join(".github/workflows/ci.yml")));
+
+    // Search only the merge-gate-shards section to avoid matching advisory lanes.
+    let merge_gate_shards_start = must_some(workflow.find("merge-gate-shards:"));
+    let rest = &workflow[merge_gate_shards_start..];
+    let next_job = rest.find("\nmerge-gate:").unwrap_or(rest.len());
+    let shards_section = &rest[..next_job];
+
+    assert!(
+        shards_section.contains("unit_parser_stack_full"),
+        "merge-gate-shards matrix must include unit_parser_stack_full: the gate covers \
+         perl-parser/perl-lexer/perl-parser-core lib tests and was declared required in \
+         gate-policy.yaml but wired into zero workflows (#5934)"
+    );
+    assert!(
+        shards_section.contains("parser_integration"),
+        "merge-gate-shards matrix must include parser_integration: #6107's required bounded proof must be wired into CI"
+    );
+
+    Ok(())
+}

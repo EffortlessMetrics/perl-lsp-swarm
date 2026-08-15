@@ -2,6 +2,33 @@
 
 use super::super::{JsonRpcError, JsonRpcId, JsonRpcResponse, Value};
 use super::request_cancellation::finalize_cancellation_state;
+use perl_parser_core::ErrorCategory;
+
+/// Provisionally classify a JsonRpcError by its error code (#4980 PR-1).
+///
+/// Once JsonRpcError implements ErrorClass directly, this function should
+/// delegate to `error.error_class()`. Until then, we classify by the
+/// well-known JSON-RPC / LSP error codes so the tracing layer captures
+/// structured error category data without string sniffing.
+fn classify_jsonrpc_error(error: &JsonRpcError) -> ErrorCategory {
+    match error.code {
+        // -32700 Parse error: malformed JSON — protocol violation.
+        // -32600 Invalid Request: not a valid request — protocol violation.
+        -32700 | -32600 => ErrorCategory::Protocol,
+        // -32601 Method not found: unsupported method — protocol.
+        -32601 => ErrorCategory::Protocol,
+        // -32602 Invalid params: bad arguments — user error.
+        -32602 => ErrorCategory::UserError,
+        // -32603 Internal error: our bug.
+        -32603 => ErrorCategory::Bug,
+        // -32000 ServerNotInitialized: lifecycle protocol.
+        -32000 | -32002 => ErrorCategory::Protocol,
+        // -32800/-32801 RequestCancelled/ContentModified: transient.
+        -32800 | -32801 => ErrorCategory::Transient,
+        // Any other code: unknown, classify as Bug for visibility.
+        _ => ErrorCategory::Bug,
+    }
+}
 
 pub(super) fn finalize_response(
     request_id: Option<&Value>,
@@ -43,7 +70,7 @@ fn build_response(
         Ok(Some(result)) if should_respond => {
             tracing::trace!(method = %method, "Sending successful response");
             Some(JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: "2.0",
                 id: id.clone(),
                 result: Some(result),
                 error: None,
@@ -58,16 +85,23 @@ fn build_response(
             None
         }
         Err(error) if should_respond => {
-            tracing::debug!(method = %method, error = ?error, "Sending error response");
-            Some(JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                id,
-                result: None,
-                error: Some(error),
-            })
+            let category = classify_jsonrpc_error(&error);
+            tracing::debug!(
+                method = %method,
+                error = ?error,
+                error_category = category.as_str(),
+                "Sending error response"
+            );
+            Some(JsonRpcResponse { jsonrpc: "2.0", id, result: None, error: Some(error) })
         }
         Err(error) => {
-            tracing::debug!(method = %method, error = ?error, "Suppressed error response for notification request");
+            let category = classify_jsonrpc_error(&error);
+            tracing::debug!(
+                method = %method,
+                error = ?error,
+                error_category = category.as_str(),
+                "Suppressed error response for notification request"
+            );
             None
         }
     }

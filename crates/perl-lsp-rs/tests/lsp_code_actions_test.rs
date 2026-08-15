@@ -16,7 +16,7 @@ fn test_undefined_variable_quick_fix() -> Result<(), Box<dyn std::error::Error>>
 
     // Get diagnostics
     let ast = Arc::new(ast);
-    let diag_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diag_provider = DiagnosticsProvider::new();
     let diagnostics = diag_provider.get_diagnostics(&ast, &[], source, None);
 
     // Find undeclared variable diagnostic
@@ -54,7 +54,7 @@ fn test_unused_variable_quick_fix() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get diagnostics
     let ast = Arc::new(ast);
-    let diag_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diag_provider = DiagnosticsProvider::new();
     let diagnostics = diag_provider.get_diagnostics(&ast, &[], source, None);
 
     // Find unused variable diagnostic
@@ -92,7 +92,7 @@ fn test_variable_shadowing_quick_fix() -> Result<(), Box<dyn std::error::Error>>
 
     // Get diagnostics
     let ast = Arc::new(ast);
-    let diag_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diag_provider = DiagnosticsProvider::new();
     let diagnostics = diag_provider.get_diagnostics(&ast, &[], source, None);
 
     // Find shadowing diagnostic
@@ -133,10 +133,10 @@ fn test_parse_error_semicolon_fix() -> Result<(), Box<dyn std::error::Error>> {
     let mut parser = Parser::new(source);
     let _ast = parser.parse().unwrap_or_else(|_| {
         // Create error node for test
-        perl_parser::Node {
-            kind: perl_parser::NodeKind::Program { statements: vec![] },
-            location: perl_parser::SourceLocation { start: 0, end: source.len() },
-        }
+        perl_parser::Node::new(
+            perl_parser::NodeKind::Program { statements: vec![] },
+            perl_parser::SourceLocation { start: 0, end: source.len() },
+        )
     });
 
     // Create diagnostic manually for missing semicolon
@@ -172,7 +172,7 @@ fn test_multiple_diagnostics_multiple_actions() -> Result<(), Box<dyn std::error
 
     // Get diagnostics
     let ast = Arc::new(ast);
-    let diag_provider = DiagnosticsProvider::new(&ast, source.to_string());
+    let diag_provider = DiagnosticsProvider::new();
     let diagnostics = diag_provider.get_diagnostics(&ast, &[], source, None);
 
     // Should have undeclared variable diagnostic

@@ -1,24 +1,11 @@
 #!/usr/bin/env bash
-# Test suite for scripts/ci/check-pr-review-convergence
-#
-# Regression coverage for issue #3679: the script previously treated
-# unresolved-but-OUTDATED review threads as ADVISORY (non-blocking), but
-# this repo's live 'main' branch-protection ruleset enforces
-# required_conversation_resolution, which blocks on EVERY unresolved
-# thread regardless of isOutdated. PR #3621 proved this directly (sat
-# BLOCKED with 0 active threads but 9 outdated-unresolved threads; merge
-# fired immediately once those 9 were resolved).
-#
-# This suite exercises the script fully offline via the
-# CONVERGENCE_TEST_FIXTURE_DIR test seam (see the script's own header
-# comment for the fixture file contract: pr_view.json, latestReviews.json,
-# reviewThreads.json). No `gh` network call is made.
-
+# Offline regression suite for semantic review convergence and retired writers.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SCRIPT_DIR/../ci/check-pr-review-convergence"
 STATE_SCRIPT="$SCRIPT_DIR/../reviews/state"
+WRITER_SCRIPT="$SCRIPT_DIR/../reviews/run"
 FIXTURES_ROOT="$SCRIPT_DIR/../ci/fixtures/convergence"
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -26,590 +13,189 @@ FAIL_COUNT=0
 pass() { printf 'PASS %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
-if [[ ! -f "$SCRIPT" ]]; then
-    echo "ERROR: check-pr-review-convergence not found at $SCRIPT"
-    exit 1
-fi
+for required in "$SCRIPT" "$STATE_SCRIPT" "$WRITER_SCRIPT"; do
+    [[ -f "$required" ]] || { echo "ERROR: missing $required"; exit 1; }
+done
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 
-if ! command -v jq >/dev/null 2>&1; then
-    echo "ERROR: jq not found on PATH — required to run this test suite"
-    exit 1
-fi
-
-# ── Helper: run the script against a named fixture case ────────────────────
-# Prints "<exit_code>\n<stdout>" via globals so callers can inspect both.
 RUN_EXIT=0
 RUN_STDOUT=""
 STATE_EXIT=0
 STATE_STDOUT=""
+
 run_case() {
     local case_name="$1"
     local fixture_dir="$FIXTURES_ROOT/$case_name"
-
-    if [[ ! -d "$fixture_dir" ]]; then
-        echo "ERROR: fixture dir missing: $fixture_dir" >&2
-        exit 1
-    fi
-
+    [[ -d "$fixture_dir" ]] || { echo "ERROR: missing fixture $fixture_dir" >&2; exit 1; }
     RUN_EXIT=0
-    RUN_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" bash "$SCRIPT" 9999 "test-owner/test-repo" 2>/dev/null)" || RUN_EXIT=$?
+    RUN_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" bash "$SCRIPT" 9999 test-owner/test-repo 2>/dev/null)" || RUN_EXIT=$?
 }
 
-# Same as run_case but with REVIEW_PROTOCOL_ENFORCE=1 — promotes the R1
-# protocol axes (#3693) from advisory to hard BLOCK. The advisory-vs-enforce
-# split is itself under test: run_case (advisory default) proves the new axes
-# do NOT block; run_case_enforce proves they DO block once the flag flips.
 run_case_enforce() {
     local case_name="$1"
     local fixture_dir="$FIXTURES_ROOT/$case_name"
-
-    if [[ ! -d "$fixture_dir" ]]; then
-        echo "ERROR: fixture dir missing: $fixture_dir" >&2
-        exit 1
-    fi
-
+    [[ -d "$fixture_dir" ]] || { echo "ERROR: missing fixture $fixture_dir" >&2; exit 1; }
     RUN_EXIT=0
-    RUN_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" REVIEW_PROTOCOL_ENFORCE=1 bash "$SCRIPT" 9999 "test-owner/test-repo" 2>/dev/null)" || RUN_EXIT=$?
+    RUN_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" REVIEW_PROTOCOL_ENFORCE=1 bash "$SCRIPT" 9999 test-owner/test-repo 2>/dev/null)" || RUN_EXIT=$?
 }
 
 run_state_case() {
     local case_name="$1"
     local fixture_dir="$FIXTURES_ROOT/$case_name"
-
-    if [[ ! -d "$fixture_dir" ]]; then
-        echo "ERROR: fixture dir missing: $fixture_dir" >&2
-        exit 1
-    fi
-
     STATE_EXIT=0
-    STATE_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" bash "$STATE_SCRIPT" 9999 "test-owner/test-repo" 2>/dev/null)" || STATE_EXIT=$?
+    STATE_STDOUT="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" bash "$STATE_SCRIPT" 9999 test-owner/test-repo 2>/dev/null)" || STATE_EXIT=$?
 }
 
-json_field() {
-    # $1 = stdout blob, $2 = jq filter. The script emits `jq -n` output
-    # (pretty-printed, multi-line) as the tail of stdout — extract
-    # everything from the first line starting with '{' onward so this
-    # works regardless of jq's default formatting.
-    printf '%s' "$1" | sed -n '/^{/,$p' | jq -r "$2"
+json_blob() {
+    printf '%s' "$1" | sed -n '/^{/,$p'
 }
 
-# ── Test 1: outdated-unresolved thread BLOCKS (THE regression) ─────────────
-# 1 unresolved+OUTDATED thread, 0 active, no pending reviewers, no stale
-# human reviews. Before the fix this incorrectly reported ADVISORY/exit 0.
-
-test_outdated_unresolved_blocks() {
-    run_case "outdated-unresolved-blocks"
-
-    local converged unresolved_total unresolved_outdated unresolved_active
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    unresolved_total="$(json_field "$RUN_STDOUT" '.unresolved_total')"
-    unresolved_outdated="$(json_field "$RUN_STDOUT" '.unresolved_outdated')"
-    unresolved_active="$(json_field "$RUN_STDOUT" '.unresolved_active')"
-
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
-          "$unresolved_total" -eq 1 && "$unresolved_outdated" -eq 1 && \
-          "$unresolved_active" -eq 0 ]]; then
-        pass "outdated-unresolved thread blocks convergence (exit 1, converged:false, unresolved_total=1, unresolved_outdated=1)"
+expect_case() {
+    local fixture="$1" expected_exit="$2" jq_expr="$3" description="$4"
+    run_case "$fixture"
+    local json
+    json="$(json_blob "$RUN_STDOUT")"
+    if [[ "$RUN_EXIT" -eq "$expected_exit" ]] && jq -e "$jq_expr" >/dev/null <<<"$json"; then
+        pass "$description"
     else
-        fail "outdated-unresolved thread should block — got exit=$RUN_EXIT converged=$converged unresolved_total=$unresolved_total unresolved_outdated=$unresolved_outdated unresolved_active=$unresolved_active"
+        fail "$description — exit=$RUN_EXIT output=$RUN_STDOUT"
     fi
 }
 
-# ── Test 2: active-unresolved thread BLOCKS (guard the other direction) ────
-# 1 active thread, 0 outdated. Confirms the pre-existing active-thread
-# blocking behavior was not broken by the fix.
+expect_case "outdated-unresolved-blocks" 1 \
+    '.converged == false and .unresolved_outdated == 1 and .formal_review.classification == "FINDINGS_OPEN"' \
+    "outdated unresolved thread blocks"
 
-test_active_unresolved_blocks() {
-    run_case "active-unresolved-blocks"
+expect_case "active-unresolved-blocks" 1 \
+    '.converged == false and .unresolved_active == 1 and .formal_review.classification == "FINDINGS_OPEN"' \
+    "active unresolved thread blocks"
 
-    local converged unresolved_total unresolved_active unresolved_outdated
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    unresolved_total="$(json_field "$RUN_STDOUT" '.unresolved_total')"
-    unresolved_active="$(json_field "$RUN_STDOUT" '.unresolved_active')"
-    unresolved_outdated="$(json_field "$RUN_STDOUT" '.unresolved_outdated')"
+expect_case "resolved-without-disposition-blocks" 1 \
+    '.converged == false and .resolved_without_disposition >= 1' \
+    "resolved-to-clear thread blocks"
 
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
-          "$unresolved_total" -eq 1 && "$unresolved_active" -eq 1 && \
-          "$unresolved_outdated" -eq 0 ]]; then
-        pass "active-unresolved thread blocks convergence (exit 1, converged:false, unresolved_total=1, unresolved_active=1)"
-    else
-        fail "active-unresolved thread should block — got exit=$RUN_EXIT converged=$converged unresolved_total=$unresolved_total unresolved_active=$unresolved_active unresolved_outdated=$unresolved_outdated"
-    fi
+expect_case "resolved-with-disposition-ok" 0 \
+    '.converged == true and .resolved_without_disposition == 0' \
+    "evidence-backed disposition permits convergence"
+
+expect_case "pending-independent-review-blocks" 1 \
+    '.converged == false and .formal_review.classification == "PENDING"' \
+    "native review request is durable pending state"
+
+expect_case "current-change-request-blocks" 1 \
+    '.converged == false and .formal_review.classification == "FINDINGS_OPEN"' \
+    "submitted change request blocks"
+
+expect_case "all-resolved-converges" 0 \
+    '.converged == true and .formal_review.classification == "NOT_APPLICABLE" and .exact_head_review_required == false' \
+    "no native review requirement converges without a receipt"
+
+expect_case "formal-review-current" 0 \
+    '.converged == true and .formal_review.classification == "REVIEWED" and .material_claim_receipt_required == false' \
+    "submitted useful review is classified REVIEWED"
+
+# The fixture contains a human review submitted on an earlier candidate head.
+# The earlier conclusion remains usable; changed-seam review decides whether a
+# focused refresh is needed, not the SHA mismatch by itself.
+expect_case "formal-review-stale" 0 \
+    '.converged == true and .formal_review.classification == "REVIEWED" and (.legacy_receipt_observations.stale_reviews | length) >= 1' \
+    "earlier-head human review remains usable"
+
+# Receipt-only compatibility state cannot create liveness or a blocker.
+expect_case "review-run-receipt-still-running-blocks" 0 \
+    '.converged == true and .exact_head_review_required == false' \
+    "running review receipt is ignored as lifecycle bookkeeping"
+
+expect_case "receipt-bound-to-older-head-blocks" 0 \
+    '.converged == true and .material_claim_receipt_required == false' \
+    "older-head claim receipt does not block"
+
+# An inherited legacy enforcement variable cannot reactivate the retired axes.
+run_case_enforce "formal-review-stale"
+if [[ "$RUN_EXIT" -eq 0 ]] && jq -e '.converged == true and .exact_head_review_required == false' >/dev/null <<<"$(json_blob "$RUN_STDOUT")"; then
+    pass "REVIEW_PROTOCOL_ENFORCE cannot restore exact-head review authority"
+else
+    fail "legacy enforce flag restored receipt authority — exit=$RUN_EXIT output=$RUN_STDOUT"
+fi
+
+# Provider/instrument failure remains explicit NOT_PROVEN.
+code=0
+out="$(CONVERGENCE_TEST_FIXTURE_DIR="$FIXTURES_ROOT/does-not-exist" bash "$SCRIPT" 9999 test-owner/test-repo 2>/dev/null)" || code=$?
+if [[ "$code" -eq 2 ]] && jq -e '.formal_review.classification == "NOT_PROVEN"' >/dev/null <<<"$(json_blob "$out")"; then
+    pass "missing provider facts report NOT_PROVEN"
+else
+    fail "missing provider facts should be NOT_PROVEN — exit=$code output=$out"
+fi
+
+# Malformed numeric collector facts must also reach callers as structured
+# NOT_PROVEN output. Copy the wrapper beside a fake core so this exercises the
+# production command-substitution boundary rather than source-text assertions.
+TMP_NUMERIC="$(mktemp -d)"
+cp "$SCRIPT" "$TMP_NUMERIC/check-pr-review-convergence"
+cat >"$TMP_NUMERIC/check-pr-review-convergence-core" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "is_draft": false,
+  "headRefOid": "fixture-head",
+  "pending_reviewers": [],
+  "review_decision": "",
+  "current_change_requests": [],
+  "unresolved_active": "not-a-number",
+  "unresolved_outdated": 0,
+  "unresolved_total": 0,
+  "resolved_without_disposition": 0,
+  "human_review_count": 0,
+  "dismissed_human_review_count": 0
 }
+JSON
+EOF
+numeric_exit=0
+numeric_output="$(bash "$TMP_NUMERIC/check-pr-review-convergence" 9999 test-owner/test-repo 2>/dev/null)" || numeric_exit=$?
+if [[ "$numeric_exit" -eq 2 ]] && jq -e '.formal_review.classification == "NOT_PROVEN" and .formal_review.reason == "invalid_numeric_review_fact"' >/dev/null <<<"$(json_blob "$numeric_output")"; then
+    pass "malformed numeric fact reports structured NOT_PROVEN"
+else
+    fail "malformed numeric fact should preserve structured verdict — exit=$numeric_exit output=$numeric_output"
+fi
+rm -rf "$TMP_NUMERIC"
 
-# ── Test 3: all threads resolved converges ──────────────────────────────────
-# 0 unresolved threads (mix of resolved-active-shape and
-# resolved-outdated-shape), no pending reviewers, no stale human reviews.
+# The state helper projects native facts, not FIXED_HEAD/VERIFIED_HEAD stages.
+run_state_case "current-change-request-blocks"
+if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '.state == "FINDINGS_OPEN" and .exact_head_review_required == false' >/dev/null <<<"$STATE_STDOUT"; then
+    pass "state helper reports findings without an exact-head lifecycle"
+else
+    fail "state helper findings projection — exit=$STATE_EXIT output=$STATE_STDOUT"
+fi
 
-test_all_resolved_converges() {
-    run_case "all-resolved-converges"
+run_state_case "formal-review-stale"
+if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '.state == "REVIEWED" and .review_currentness == "semantic_changed_seam"' >/dev/null <<<"$STATE_STDOUT"; then
+    pass "state helper preserves useful earlier-head review"
+else
+    fail "state helper should report REVIEWED — exit=$STATE_EXIT output=$STATE_STDOUT"
+fi
 
-    local converged unresolved_total resolved_threads
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    unresolved_total="$(json_field "$RUN_STDOUT" '.unresolved_total')"
-    resolved_threads="$(json_field "$RUN_STDOUT" '.resolved_threads')"
+# The retired writer must fail before discovering or invoking gh. This catches
+# warm sessions and stale callers, not only current skill text.
+TMP_WRITER="$(mktemp -d)"
+trap 'rm -rf "$TMP_WRITER"' EXIT
+cat >"$TMP_WRITER/gh" <<'EOF'
+#!/usr/bin/env bash
+echo invoked >>"${GH_SENTINEL:?}"
+exit 99
+EOF
+chmod +x "$TMP_WRITER/gh"
+export GH_SENTINEL="$TMP_WRITER/gh-invocations"
 
-    if [[ "$RUN_EXIT" -eq 0 && "$converged" == "true" && \
-          "$unresolved_total" -eq 0 && "$resolved_threads" -eq 2 ]]; then
-        pass "all threads resolved converges (exit 0, converged:true, unresolved_total=0, resolved_threads=2)"
+for subcommand in review-start review-done verify; do
+    writer_exit=0
+    writer_output="$(PATH="$TMP_WRITER:$PATH" bash "$WRITER_SCRIPT" "$subcommand" --pr 42 --repo owner/repo --dry-run 2>&1)" || writer_exit=$?
+    if [[ "$writer_exit" -eq 2 ]] && [[ "$writer_output" == *"RETIRED"* ]] && [[ ! -e "$GH_SENTINEL" ]]; then
+        pass "$subcommand fails closed before any GitHub call"
     else
-        fail "all resolved should converge — got exit=$RUN_EXIT converged=$converged unresolved_total=$unresolved_total resolved_threads=$resolved_threads"
+        fail "$subcommand writer boundary — exit=$writer_exit output=$writer_output gh_called=$([[ -e "$GH_SENTINEL" ]] && echo yes || echo no)"
     fi
-}
-
-# ── Test 4: stale bot review stays ADVISORY, does not block ────────────────
-# Regression guard for the #3621 bot-staleness fix — this PR's change must
-# NOT touch that exclusion. A stale bot review + fresh human review + zero
-# threads should still converge.
-
-test_stale_bot_review_advisory_only() {
-    run_case "stale-bot-advisory-only"
-
-    local converged stale_bot_count
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    stale_bot_count="$(json_field "$RUN_STDOUT" '.stale_bot_reviews | length')"
-
-    if [[ "$RUN_EXIT" -eq 0 && "$converged" == "true" && "$stale_bot_count" -eq 1 ]]; then
-        pass "stale bot review stays advisory, does not block (exit 0, converged:true, stale_bot_reviews has 1 entry)"
-    else
-        fail "stale bot review should stay advisory — got exit=$RUN_EXIT converged=$converged stale_bot_count=$stale_bot_count"
-    fi
-}
-
-# ── Test 5: BLOCK line emitted on stderr for the outdated case ─────────────
-# The verdict alone isn't enough — a human/agent reading stderr must see a
-# BLOCK (not ADVISORY) line for the outdated thread.
-
-test_outdated_case_emits_block_line() {
-    local fixture_dir="$FIXTURES_ROOT/outdated-unresolved-blocks"
-    local stderr_output
-    stderr_output="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" bash "$SCRIPT" 9999 "test-owner/test-repo" 2>&1 1>/dev/null)" || true
-
-    if echo "$stderr_output" | grep -q "^BLOCK.*outdated"; then
-        pass "outdated-unresolved thread emits a BLOCK line (not ADVISORY)"
-    else
-        fail "expected a BLOCK line mentioning 'outdated' — got: $stderr_output"
-    fi
-}
-
-# ── Test 6: missing fixture directory fails with usage/fetch error (exit 2) ─
-
-test_missing_fixture_dir_errors() {
-    local code output classification
-    code=0
-    output="$(CONVERGENCE_TEST_FIXTURE_DIR="$FIXTURES_ROOT/does-not-exist" bash "$SCRIPT" 9999 "test-owner/test-repo" 2>/dev/null)" || code=$?
-    classification="$(json_field "$output" '.formal_review.classification')"
-
-    if [[ "$code" -eq 2 && "$classification" == "NOT_PROVEN" ]]; then
-        pass "missing fixture file errors with exit 2 and structured NOT_PROVEN"
-    else
-        fail "missing fixture file — expected exit 2/NOT_PROVEN, got exit=$code classification=$classification"
-    fi
-}
-
-# ── Test 7: resolved thread with NO reply BLOCKS (#3693, resolved-to-clear) ─
-# A resolved thread whose comments connection has totalCount == 1 (only the
-# original review comment, no reply from anyone) is the mechanical
-# signature of the #3647 incident: 15 threads resolved with zero evidence.
-
-test_resolved_without_disposition_blocks() {
-    run_case "resolved-without-disposition-blocks"
-
-    local converged resolved_without_disposition
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    resolved_without_disposition="$(json_field "$RUN_STDOUT" '.resolved_without_disposition')"
-
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
-          "$resolved_without_disposition" -ge 1 ]]; then
-        pass "resolved thread with no reply blocks convergence (exit 1, converged:false, resolved_without_disposition>=1)"
-    else
-        fail "resolved-without-disposition thread should block — got exit=$RUN_EXIT converged=$converged resolved_without_disposition=$resolved_without_disposition"
-    fi
-}
-
-# ── Test 8: resolved thread WITH a disposition reply does NOT trip the block
-
-test_resolved_with_disposition_does_not_block() {
-    run_case "resolved-with-disposition-ok"
-
-    local converged resolved_without_disposition
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    resolved_without_disposition="$(json_field "$RUN_STDOUT" '.resolved_without_disposition')"
-
-    if [[ "$RUN_EXIT" -eq 0 && "$converged" == "true" && \
-          "$resolved_without_disposition" -eq 0 ]]; then
-        pass "resolved thread with a disposition reply does not block (exit 0, converged:true, resolved_without_disposition=0)"
-    else
-        fail "resolved-with-disposition thread should NOT block — got exit=$RUN_EXIT converged=$converged resolved_without_disposition=$resolved_without_disposition"
-    fi
-}
-
-# ── Test 9: native review request BLOCKS regardless of thread state ────────
-# A requested reviewer is the GitHub-native representation of review in flight.
-
-test_pending_independent_review_blocks() {
-    run_case "pending-independent-review-blocks"
-
-    local converged pending_reviewers
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    pending_reviewers="$(json_field "$RUN_STDOUT" '.pending_reviewers | length')"
-
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
-          "$pending_reviewers" -gt 0 ]]; then
-        pass "native review request blocks convergence (exit 1, converged:false, pending_reviewers>0)"
-    else
-        fail "native review request should block — got exit=$RUN_EXIT converged=$converged pending_reviewers=$pending_reviewers"
-    fi
-}
-
-# ── Test 10: a current-head CHANGES_REQUESTED review blocks even after the
-# native request is fulfilled. This is distinct from pending review requests:
-# GitHub removes the request when the reviewer submits the change request.
-
-test_current_change_request_blocks() {
-    run_case "current-change-request-blocks"
-
-    local converged change_requests
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    change_requests="$(json_field "$RUN_STDOUT" '.current_change_requests | length')"
-
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
-          "$change_requests" -eq 1 ]]; then
-        pass "current-head CHANGES_REQUESTED review blocks convergence (exit 1, current_change_requests=1)"
-    else
-        fail "current-head CHANGES_REQUESTED review should block — got exit=$RUN_EXIT converged=$converged current_change_requests=$change_requests"
-    fi
-}
-
-test_formal_review_classes() {
-    run_case "current-change-request-blocks"
-    local classification status reason
-    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
-    status="$(json_field "$RUN_STDOUT" '.formal_review.status')"
-    reason="$(json_field "$RUN_STDOUT" '.formal_review.reason')"
-    if [[ "$classification" == "FINDINGS_OPEN" && "$status" == "findings_open" && \
-          "$reason" == "current_changes_requested" ]]; then
-        pass "formal review reports current findings separately from overall convergence"
-    else
-        fail "formal review findings classification was not structured — got classification=$classification status=$status reason=$reason"
-    fi
-
-    run_case "pending-independent-review-blocks"
-    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
-    if [[ "$classification" == "PENDING" ]]; then
-        pass "formal review reports native pending review request"
-    else
-        fail "formal review pending classification expected PENDING — got $classification"
-    fi
-
-    run_case "all-resolved-converges"
-    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
-    if [[ "$classification" == "NOT_APPLICABLE" ]]; then
-        pass "formal review reports provider-native no-required-review as NOT_APPLICABLE"
-    else
-        fail "formal review lightweight classification expected NOT_APPLICABLE — got $classification"
-    fi
-
-    run_case "formal-review-current"
-    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
-    reason="$(json_field "$RUN_STDOUT" '.formal_review.reason')"
-    if [[ "$classification" == "CURRENT" && "$reason" == "submitted_human_review_and_current_material_claim_receipt" ]]; then
-        pass "formal review requires a current claim receipt alongside a submitted human review"
-    else
-        fail "formal review current classification expected CURRENT — got classification=$classification reason=$reason"
-    fi
-
-    run_case "valid-fixed-proof-verification-disposition-passes"
-    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
-    reason="$(json_field "$RUN_STDOUT" '.formal_review.reason')"
-    if [[ "$classification" == "CURRENT" && "$reason" == "current_material_claim_review_receipt" ]]; then
-        pass "formal review accepts a current claim-bound receipt when no submitted review node is available"
-    else
-        fail "formal review claim receipt expected CURRENT — got classification=$classification reason=$reason"
-    fi
-
-    run_case "formal-review-stale"
-    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
-    if [[ "$classification" == "STALE" ]]; then
-        pass "formal review distinguishes a review bound to an older candidate"
-    else
-        fail "formal review stale classification expected STALE — got $classification"
-    fi
-
-    run_case "formal-review-dismissed"
-    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
-    status="$(json_field "$RUN_STDOUT" '.formal_review.status')"
-    if [[ "$classification" == "STALE" && "$status" == "dismissed" ]]; then
-        pass "formal review preserves dismissed review evidence distinctly"
-    else
-        fail "formal review dismissed status expected STALE/dismissed — got classification=$classification status=$status"
-    fi
-
-    run_case "formal-review-not-proven"
-    classification="$(json_field "$RUN_STDOUT" '.formal_review.classification')"
-    status="$(json_field "$RUN_STDOUT" '.formal_review.status')"
-    if [[ "$classification" == "NOT_PROVEN" && "$status" == "unusable" ]]; then
-        pass "formal review preserves missing claim evidence as NOT_PROVEN"
-    else
-        fail "formal review missing claim evidence expected NOT_PROVEN/unusable — got classification=$classification status=$status"
-    fi
-}
-
-# Completed CHANGES_REQUESTED is a finding, not an in-flight review. The
-# canonical closeout still blocks convergence; the wrapper must project that
-# result to FINDINGS_CLASSIFIED rather than REVIEW_IN_FLIGHT.
-test_state_current_change_request_is_classified() {
-    run_state_case "current-change-request-blocks"
-
-    local state
-    state="$(json_field "$STATE_STDOUT" '.state')"
-    if [[ "$STATE_EXIT" -eq 0 && "$state" == "FINDINGS_CLASSIFIED" ]]; then
-        pass "state wrapper projects current-head CHANGES_REQUESTED to FINDINGS_CLASSIFIED"
-    else
-        fail "state wrapper should classify completed CHANGES_REQUESTED — got exit=$STATE_EXIT state=$state"
-    fi
-}
-
-# ══ R1 protocol-axis tests (#3693) ═════════════════════════════════════════
-# Design: each new axis is ADVISORY by default and BLOCK under
-# REVIEW_PROTOCOL_ENFORCE=1. So each axis has (at least) an enforce test
-# proving it blocks, and the advisory-first contract itself is proven by
-# tests 11 + 20 (same fixture converges under the default, WARNs not BLOCKs).
-
-# ── Test 10: prose-only reply (no marker) BLOCKS under enforce ─────────────
-test_prose_reply_blocks_under_enforce() {
-    run_case_enforce "resolved-prose-reply-only-blocks"
-    local converged missing
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    missing="$(json_field "$RUN_STDOUT" '.dispositions_missing_marker')"
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && "$missing" -ge 1 ]]; then
-        pass "prose-only reply (no disposition marker) blocks under enforce (exit 1, dispositions_missing_marker>=1)"
-    else
-        fail "prose-only reply should block under enforce — got exit=$RUN_EXIT converged=$converged dispositions_missing_marker=$missing"
-    fi
-}
-
-# ── Test 11: SAME fixture is ADVISORY (exit 0) under the default ───────────
-# Proves the advisory-first rollout: the new marker-content axis reports but
-# does NOT block until REVIEW_PROTOCOL_ENFORCE=1.
-test_prose_reply_advisory_by_default() {
-    run_case "resolved-prose-reply-only-blocks"
-    local converged missing enforce
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    missing="$(json_field "$RUN_STDOUT" '.dispositions_missing_marker')"
-    enforce="$(json_field "$RUN_STDOUT" '.review_protocol_enforce')"
-    if [[ "$RUN_EXIT" -eq 0 && "$converged" == "true" && "$missing" -ge 1 && "$enforce" == "false" ]]; then
-        pass "prose-only reply is advisory-only by default (exit 0, converged:true, dispositions_missing_marker>=1, review_protocol_enforce:false)"
-    else
-        fail "prose-only reply should be advisory by default — got exit=$RUN_EXIT converged=$converged dispositions_missing_marker=$missing enforce=$enforce"
-    fi
-}
-
-# ── Test 12: fix-commit unreachable from head BLOCKS under enforce ─────────
-test_unreachable_fix_commit_blocks_under_enforce() {
-    run_case_enforce "fixed-disposition-commit-not-reachable-from-head-blocks"
-    local converged unreach
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    unreach="$(json_field "$RUN_STDOUT" '.unreachable_fix_commits')"
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && "$unreach" -ge 1 ]]; then
-        pass "fixed disposition citing an unreachable commit blocks under enforce (exit 1, unreachable_fix_commits>=1)"
-    else
-        fail "unreachable fix commit should block under enforce — got exit=$RUN_EXIT converged=$converged unreachable_fix_commits=$unreach"
-    fi
-}
-
-# ── Test 13: fixed-without-independent-verifier BLOCKS under enforce ───────
-test_fixed_without_verifier_blocks_under_enforce() {
-    run_case_enforce "fixed-without-required-verifier-blocks"
-    local converged vmatch
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    vmatch="$(json_field "$RUN_STDOUT" '.verification_receipt_head_match')"
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && "$vmatch" == "false" ]]; then
-        pass "fixed disposition without an independent verifier at head blocks under enforce (exit 1, verification_receipt_head_match:false)"
-    else
-        fail "fixed-without-verifier should block under enforce — got exit=$RUN_EXIT converged=$converged verification_receipt_head_match=$vmatch"
-    fi
-}
-
-# ── Test 14: refuted-without-independent-adjudication BLOCKS under enforce ─
-test_refuted_without_adjudication_blocks_under_enforce() {
-    run_case_enforce "refuted-substantive-without-independent-adjudication-blocks"
-    local converged vmatch
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    vmatch="$(json_field "$RUN_STDOUT" '.verification_receipt_head_match')"
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && "$vmatch" == "false" ]]; then
-        pass "substantive refutation without independent adjudication at head blocks under enforce (exit 1, verification_receipt_head_match:false)"
-    else
-        fail "refuted-without-adjudication should block under enforce — got exit=$RUN_EXIT converged=$converged verification_receipt_head_match=$vmatch"
-    fi
-}
-
-# ── Test 15: follow-up-without-issue-number BLOCKS under enforce ───────────
-test_followup_without_issue_blocks_under_enforce() {
-    run_case_enforce "follow-up-without-issue-number-blocks"
-    local converged fu
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    fu="$(json_field "$RUN_STDOUT" '.followups_without_issue')"
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && "$fu" -ge 1 ]]; then
-        pass "follow-up disposition without an issue number blocks under enforce (exit 1, followups_without_issue>=1)"
-    else
-        fail "follow-up-without-issue should block under enforce — got exit=$RUN_EXIT converged=$converged followups_without_issue=$fu"
-    fi
-}
-
-# ── Test 16: review-run receipt still running BLOCKS under enforce ─────────
-test_review_run_running_blocks_under_enforce() {
-    run_case_enforce "review-run-receipt-still-running-blocks"
-    local converged rr
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    rr="$(json_field "$RUN_STDOUT" '.review_runs_in_flight')"
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && "$rr" -ge 1 ]]; then
-        pass "in-flight (running) review-run receipt blocks under enforce (exit 1, review_runs_in_flight>=1)"
-    else
-        fail "running review-run should block under enforce — got exit=$RUN_EXIT converged=$converged review_runs_in_flight=$rr"
-    fi
-}
-
-# ── Test 17: deep review receipt bound to an older head BLOCKS under enforce
-test_receipt_older_head_blocks_under_enforce() {
-    run_case_enforce "receipt-bound-to-older-head-blocks"
-    local converged dmatch
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    dmatch="$(json_field "$RUN_STDOUT" '.deep_review_receipt_head_match')"
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && "$dmatch" == "false" ]]; then
-        pass "deep review receipt bound to an older head blocks under enforce (exit 1, deep_review_receipt_head_match:false)"
-    else
-        fail "older-head receipt should block under enforce — got exit=$RUN_EXIT converged=$converged deep_review_receipt_head_match=$dmatch"
-    fi
-}
-
-# ── Test 18: the full valid fixed→verify→disposition chain CONVERGES ───────
-# The positive: converges even under enforce (0 new-axis violations).
-test_valid_fixed_proof_converges_under_enforce() {
-    run_case_enforce "valid-fixed-proof-verification-disposition-passes"
-    local converged missing unreach vmatch dmatch
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    missing="$(json_field "$RUN_STDOUT" '.dispositions_missing_marker')"
-    unreach="$(json_field "$RUN_STDOUT" '.unreachable_fix_commits')"
-    vmatch="$(json_field "$RUN_STDOUT" '.verification_receipt_head_match')"
-    dmatch="$(json_field "$RUN_STDOUT" '.deep_review_receipt_head_match')"
-    if [[ "$RUN_EXIT" -eq 0 && "$converged" == "true" && "$missing" -eq 0 && \
-          "$unreach" -eq 0 && "$vmatch" == "true" && "$dmatch" == "true" ]]; then
-        pass "valid fixed→verify→disposition chain converges under enforce (exit 0, all new axes clean)"
-    else
-        fail "valid chain should converge under enforce — got exit=$RUN_EXIT converged=$converged missing=$missing unreach=$unreach vmatch=$vmatch dmatch=$dmatch"
-    fi
-}
-
-# ── Test 19: resolved_to_clear_3647 — 15 threads blocked (executable memory)
-# The #3647 incident as a fixture: 15 threads resolved with no reply. Blocks
-# in BOTH modes (the no-reply subset is #3732's hard block), and the R1
-# marker axis independently counts all 15.
-test_resolved_to_clear_3647_blocks_all() {
-    run_case "resolved_to_clear_3647"
-    local converged rwd missing
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    rwd="$(json_field "$RUN_STDOUT" '.resolved_without_disposition')"
-    missing="$(json_field "$RUN_STDOUT" '.dispositions_missing_marker')"
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && "$rwd" -eq 15 && "$missing" -eq 15 ]]; then
-        pass "resolved_to_clear_3647: 15 no-reply resolved threads block (exit 1, resolved_without_disposition=15, dispositions_missing_marker=15)"
-    else
-        fail "resolved_to_clear_3647 should block all 15 — got exit=$RUN_EXIT converged=$converged resolved_without_disposition=$rwd dispositions_missing_marker=$missing"
-    fi
-}
-
-# ── Test 20: advisory mode emits WARN (not BLOCK) for a new-axis finding ───
-# Guards the advisory-first stderr contract: the finding is visible as WARN
-# and does NOT appear as a BLOCK line when REVIEW_PROTOCOL_ENFORCE is unset.
-test_advisory_emits_warn_not_block() {
-    local fixture_dir="$FIXTURES_ROOT/resolved-prose-reply-only-blocks"
-    local stderr_output
-    stderr_output="$(CONVERGENCE_TEST_FIXTURE_DIR="$fixture_dir" bash "$SCRIPT" 9999 "test-owner/test-repo" 2>&1 1>/dev/null)" || true
-    if echo "$stderr_output" | grep -q "^WARN.*disposition:v1" && \
-       ! echo "$stderr_output" | grep -q "^BLOCK.*disposition:v1"; then
-        pass "advisory mode emits a WARN line (not BLOCK) for the marker-missing finding"
-    else
-        fail "expected a WARN (not BLOCK) line for the advisory marker finding — got: $stderr_output"
-    fi
-}
-
-# ── Test 21: reviewer who posts a fix disposition joins the writer set —
-#    their own later verification at that head is REJECTED (Swarm v3 R1,
-#    #3886). Isolates the writer-set-staleness mechanic from the
-#    writer==PR-author case Test 13 already covers: here the PR author is
-#    "bob", and "alice" — a reviewer, not the author — becomes a writer
-#    solely via her `disposition:v1 {"by":"alice", ...}` marker. She then
-#    tries to verify her own fix at the same head; WRITER_SET = [bob, alice]
-#    rejects her (verifier ∈ writer set), so verification_receipt_head_match
-#    must be false. All other R1 axes are clean (0 missing markers, 0
-#    unreachable commits) so this isolates the ONE axis under test.
-test_reviewer_who_fixes_becomes_author_for_new_head_blocks_under_enforce() {
-    run_case_enforce "reviewer-who-fixes-becomes-author-for-new-head-blocks"
-    local converged vmatch missing unreach
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    vmatch="$(json_field "$RUN_STDOUT" '.verification_receipt_head_match')"
-    missing="$(json_field "$RUN_STDOUT" '.dispositions_missing_marker')"
-    unreach="$(json_field "$RUN_STDOUT" '.unreachable_fix_commits')"
-    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && "$vmatch" == "false" && \
-          "$missing" -eq 0 && "$unreach" -eq 0 ]]; then
-        pass "reviewer who posts a fix disposition cannot verify their own fix at that head (exit 1, verification_receipt_head_match:false, isolated from other axes)"
-    else
-        fail "reviewer-turned-writer self-verification should block under enforce — got exit=$RUN_EXIT converged=$converged verification_receipt_head_match=$vmatch dispositions_missing_marker=$missing unreachable_fix_commits=$unreach"
-    fi
-}
-
-# ── Test 22: counter-fixture for Test 21 — a DISTINCT third reviewer (not
-#    the PR author, not the disposer) verifies the same fix at the same
-#    head and PASSES. Discriminates Test 21: proves the block above is
-#    specifically about writer-set membership, not an unconditional
-#    rejection of every disposition-then-verification sequence.
-test_independent_verifier_after_fix_disposition_passes_under_enforce() {
-    run_case_enforce "independent-verifier-after-fix-disposition-passes"
-    local converged vmatch
-    converged="$(json_field "$RUN_STDOUT" '.converged')"
-    vmatch="$(json_field "$RUN_STDOUT" '.verification_receipt_head_match')"
-    if [[ "$RUN_EXIT" -eq 0 && "$converged" == "true" && "$vmatch" == "true" ]]; then
-        pass "a distinct third reviewer (outside the writer set) can verify a reviewer's fix disposition (exit 0, converged:true, verification_receipt_head_match:true)"
-    else
-        fail "independent third-reviewer verification should converge under enforce — got exit=$RUN_EXIT converged=$converged verification_receipt_head_match=$vmatch"
-    fi
-}
-
-# ── Run all tests ─────────────────────────────────────────────────────────────
-
-echo "=== check-pr-review-convergence test suite ==="
-echo ""
-
-test_outdated_unresolved_blocks
-test_active_unresolved_blocks
-test_all_resolved_converges
-test_stale_bot_review_advisory_only
-test_outdated_case_emits_block_line
-test_missing_fixture_dir_errors
-test_resolved_without_disposition_blocks
-test_resolved_with_disposition_does_not_block
-test_pending_independent_review_blocks
-test_current_change_request_blocks
-test_formal_review_classes
-test_state_current_change_request_is_classified
-test_prose_reply_blocks_under_enforce
-test_prose_reply_advisory_by_default
-test_unreachable_fix_commit_blocks_under_enforce
-test_fixed_without_verifier_blocks_under_enforce
-test_refuted_without_adjudication_blocks_under_enforce
-test_followup_without_issue_blocks_under_enforce
-test_review_run_running_blocks_under_enforce
-test_receipt_older_head_blocks_under_enforce
-test_valid_fixed_proof_converges_under_enforce
-test_resolved_to_clear_3647_blocks_all
-test_advisory_emits_warn_not_block
-test_reviewer_who_fixes_becomes_author_for_new_head_blocks_under_enforce
-test_independent_verifier_after_fix_disposition_passes_under_enforce
+done
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
-
-if [[ "$FAIL_COUNT" -gt 0 ]]; then
-    exit 1
-fi
-exit 0
+[[ "$FAIL_COUNT" -eq 0 ]]

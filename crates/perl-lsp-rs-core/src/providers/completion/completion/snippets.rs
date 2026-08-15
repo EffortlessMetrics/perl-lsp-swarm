@@ -1,6 +1,7 @@
 //! Built-in snippet completions for common Perl patterns.
 
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
+use std::borrow::Cow;
 
 struct Snippet {
     trigger: &'static str,
@@ -407,14 +408,14 @@ pub fn add_snippet_completions(completions: &mut Vec<CompletionItem>, context: &
     for snippet in SNIPPETS {
         if context.prefix.is_empty() || snippet.trigger.starts_with(&context.prefix) {
             completions.push(CompletionItem {
-                label: snippet.label.to_string(),
+                label: Cow::Borrowed(snippet.label),
                 kind: super::items::CompletionItemKind::Snippet,
-                detail: Some(snippet.detail.to_string()),
-                documentation: Some(snippet.doc.to_string()),
-                insert_text: Some(snippet.body.to_string()),
+                detail: Some(Cow::Borrowed(snippet.detail)),
+                documentation: Some(Cow::Borrowed(snippet.doc)),
+                insert_text: Some(Cow::Borrowed(snippet.body)),
                 insert_text_format: InsertTextFormat::for_authored_body(snippet.body),
-                sort_text: Some(format!("3_{}", snippet.trigger)),
-                filter_text: Some(snippet.trigger.to_string()),
+                sort_text: Some(Cow::Owned(format!("3_{}", snippet.trigger))),
+                filter_text: Some(Cow::Borrowed(snippet.trigger)),
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
                 commit_characters: None,

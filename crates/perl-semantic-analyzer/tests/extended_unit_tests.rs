@@ -600,69 +600,15 @@ fn scope_analysis_underscore_prefix_suppresses() -> Result<(), Box<dyn std::erro
 fn scope_suggestions_for_all_issue_kinds() -> Result<(), Box<dyn std::error::Error>> {
     let analyzer = ScopeAnalyzer::new();
     let test_issues = vec![
-        ScopeIssue {
-            kind: IssueKind::VariableShadowing,
-            variable_name: "$x".to_string(),
-            line: 1,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UnusedVariable,
-            variable_name: "$y".to_string(),
-            line: 2,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UndeclaredVariable,
-            variable_name: "$z".to_string(),
-            line: 3,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::VariableRedeclaration,
-            variable_name: "$w".to_string(),
-            line: 4,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::DuplicateParameter,
-            variable_name: "$p".to_string(),
-            line: 5,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::ParameterShadowsGlobal,
-            variable_name: "$g".to_string(),
-            line: 6,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UnusedParameter,
-            variable_name: "$u".to_string(),
-            line: 7,
-            range: (0, 2),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UnquotedBareword,
-            variable_name: "FOO".to_string(),
-            line: 8,
-            range: (0, 3),
-            description: String::new(),
-        },
-        ScopeIssue {
-            kind: IssueKind::UninitializedVariable,
-            variable_name: "$v".to_string(),
-            line: 9,
-            range: (0, 2),
-            description: String::new(),
-        },
+        ScopeIssue::new(IssueKind::VariableShadowing, "$x", 1, (0, 2), ""),
+        ScopeIssue::new(IssueKind::UnusedVariable, "$y", 2, (0, 2), ""),
+        ScopeIssue::new(IssueKind::UndeclaredVariable, "$z", 3, (0, 2), ""),
+        ScopeIssue::new(IssueKind::VariableRedeclaration, "$w", 4, (0, 2), ""),
+        ScopeIssue::new(IssueKind::DuplicateParameter, "$p", 5, (0, 2), ""),
+        ScopeIssue::new(IssueKind::ParameterShadowsGlobal, "$g", 6, (0, 2), ""),
+        ScopeIssue::new(IssueKind::UnusedParameter, "$u", 7, (0, 2), ""),
+        ScopeIssue::new(IssueKind::UnquotedBareword, "FOO", 8, (0, 3), ""),
+        ScopeIssue::new(IssueKind::UninitializedVariable, "$v", 9, (0, 2), ""),
     ];
 
     let suggestions = analyzer.get_suggestions(&test_issues);
@@ -779,15 +725,12 @@ greet();
     let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
     // Find refs including declaration
     let table = analyzer.symbol_table();
-    if let Some(syms) = table.symbols.get("greet") {
-        if let Some(sym) = syms.first() {
-            let refs_incl = analyzer.find_all_references(sym.location.start, true);
-            let refs_excl = analyzer.find_all_references(sym.location.start, false);
-            assert!(
-                refs_incl.len() >= refs_excl.len(),
-                "include_declaration should return >= refs"
-            );
-        }
+    if let Some(syms) = table.symbols.get("greet")
+        && let Some(sym) = syms.first()
+    {
+        let refs_incl = analyzer.find_all_references(sym.location.start, true);
+        let refs_excl = analyzer.find_all_references(sym.location.start, false);
+        assert!(refs_incl.len() >= refs_excl.len(), "include_declaration should return >= refs");
     }
     Ok(())
 }
@@ -835,12 +778,12 @@ sub greet {
     let ast = parser.parse()?;
     let model = SemanticModel::build(&ast, code);
     let table = model.symbol_table();
-    if let Some(syms) = table.symbols.get("greet") {
-        if let Some(sym) = syms.first() {
-            let hover = model.hover_info_at(sym.location);
-            // May or may not have hover depending on analysis
-            let _ = hover;
-        }
+    if let Some(syms) = table.symbols.get("greet")
+        && let Some(sym) = syms.first()
+    {
+        let hover = model.hover_info_at(sym.location);
+        // May or may not have hover depending on analysis
+        let _ = hover;
     }
     Ok(())
 }
@@ -995,12 +938,12 @@ greet();
 greet();
 "#;
     let table = parse_and_extract(code);
-    if let Some(syms) = table.symbols.get("greet") {
-        if let Some(sym) = syms.first() {
-            let refs = table.find_references(sym);
-            // Should have at least the call references
-            let _ = refs;
-        }
+    if let Some(syms) = table.symbols.get("greet")
+        && let Some(sym) = syms.first()
+    {
+        let refs = table.find_references(sym);
+        // Should have at least the call references
+        let _ = refs;
     }
     Ok(())
 }

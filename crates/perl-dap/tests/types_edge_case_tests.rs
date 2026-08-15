@@ -174,6 +174,7 @@ fn variable_with_all_optional_fields() -> Result<(), serde_json::Error> {
         variables_reference: 5,
         named_variables: Some(0),
         indexed_variables: Some(10),
+        evaluate_name: None,
     };
 
     let json = serde_json::to_string(&var)?;
@@ -238,6 +239,7 @@ fn variable_empty_name_and_value() -> Result<(), serde_json::Error> {
         variables_reference: 0,
         named_variables: None,
         indexed_variables: None,
+        evaluate_name: None,
     };
     let json = serde_json::to_string(&var)?;
     let back: Variable = serde_json::from_str(&json)?;
@@ -255,6 +257,7 @@ fn variable_large_variables_reference() -> Result<(), serde_json::Error> {
         variables_reference: i32::MAX,
         named_variables: Some(i32::MAX),
         indexed_variables: None,
+        evaluate_name: None,
     };
     let json = serde_json::to_string(&var)?;
     let back: Variable = serde_json::from_str(&json)?;
