@@ -25,12 +25,21 @@ fn host_receipt_loader(receipt_dir: &Path, relative: &str) -> Result<Vec<u8>, St
     let relative_path = Path::new(relative);
     if relative.trim().is_empty()
         || relative_path.is_absolute()
-        || relative_path.components().any(|component| matches!(component, Component::ParentDir))
+        || relative_path.components().any(|component| {
+            matches!(component, Component::ParentDir | Component::Prefix | Component::RootDir)
+        })
     {
         return Err("host receipt paths must stay inside the run directory".to_string());
     }
-    fs::read(receipt_dir.join(relative_path))
-        .map_err(|error| format!("failed to read host receipt `{relative}`: {error}"))
+    let joined = receipt_dir.join(relative_path);
+    let canonical_run_dir = fs::canonicalize(receipt_dir)
+        .map_err(|error| format!("failed to resolve run directory: {error}"))?;
+    let canonical_receipt = fs::canonicalize(&joined)
+        .map_err(|error| format!("failed to resolve host receipt `{relative}`: {error}"))?;
+    if !canonical_receipt.starts_with(&canonical_run_dir) {
+        return Err("host receipt paths must stay inside the run directory".to_string());
+    }
+    fs::read(&joined).map_err(|error| format!("failed to read host receipt `{relative}`: {error}"))
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

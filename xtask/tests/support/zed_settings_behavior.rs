@@ -33,7 +33,7 @@ fn value_matches_schema(value: &Value, node: &Value) -> bool {
                     .is_none_or(|bound| number as f64 <= bound)
         }),
         Some("array") => value.as_array().is_some_and(|items| {
-            node.get("items").map_or(true, |item_node| {
+            node.get("items").is_none_or(|item_node| {
                 items.iter().all(|item| value_matches_schema(item, item_node))
             })
         }),

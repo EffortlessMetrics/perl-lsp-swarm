@@ -112,7 +112,8 @@ fn validator_cli_rejects_drifted_contract_digest() -> Result<(), Box<dyn Error>>
     receipt["contract"]["sha256"] = Value::String(format!("sha256:{}", "0".repeat(64)));
     receipt["claim_boundary"]["settings_behavior"] =
         Value::String("proven_for_exact_subject".to_string());
-    let receipt_path = std::env::temp_dir().join("zed-settings-behavior-drifted-receipt.json");
+    let receipt_path = std::env::temp_dir()
+        .join(format!("zed-settings-behavior-drifted-receipt-{}.json", std::process::id()));
     fs::write(&receipt_path, serde_json::to_vec(&receipt)?)?;
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_validate-zed-settings-behavior"))
@@ -121,6 +122,8 @@ fn validator_cli_rejects_drifted_contract_digest() -> Result<(), Box<dyn Error>>
         .arg(&receipt_path)
         .output()
         .map_err(|error| io::Error::other(format!("failed to run validator CLI: {error}")))?;
+    let status = output.status;
+    let _ = fs::remove_file(&receipt_path);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),
