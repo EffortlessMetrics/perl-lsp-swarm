@@ -300,8 +300,12 @@ fn validate_semantic_boundary_identities(
     side: &str,
 ) -> Result<(), EvidenceValidationError> {
     let known_paths: BTreeSet<&str> = file_results.iter().map(|r| r.path.as_str()).collect();
-    // Track (path, id) pairs to catch duplicate boundary identities within a run.
-    let mut seen_boundary_keys: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    // Boundary identity is `(path, id, source_span)`, matching the canonical
+    // `SemanticBoundaryKey` used by the baseline comparison in `crate::lib`. One file
+    // may legitimately emit the same stable id at several distinct source spans (for
+    // example, two `runtime_symbolic_reference` sites), so only an exact repeat of the
+    // full key is a genuine duplicate.
+    let mut seen_boundary_keys: BTreeMap<&str, BTreeSet<(&str, usize, usize)>> = BTreeMap::new();
     for boundary in boundaries {
         if boundary.id.trim().is_empty() {
             return Err(EvidenceValidationError::new(format!(
@@ -321,11 +325,15 @@ fn validate_semantic_boundary_identities(
                 boundary.id, boundary.path
             )));
         }
-        let ids_for_path = seen_boundary_keys.entry(boundary.path.as_str()).or_default();
-        if !ids_for_path.insert(boundary.id.as_str()) {
+        let keys_for_path = seen_boundary_keys.entry(boundary.path.as_str()).or_default();
+        if !keys_for_path.insert((
+            boundary.id.as_str(),
+            boundary.source_span.start,
+            boundary.source_span.end,
+        )) {
             return Err(EvidenceValidationError::new(format!(
-                "{side} semantic boundary path {} repeats boundary id {}",
-                boundary.path, boundary.id
+                "{side} semantic boundary path {} repeats boundary id {} at source span {}..{}",
+                boundary.path, boundary.id, boundary.source_span.start, boundary.source_span.end
             )));
         }
     }
@@ -529,6 +537,24 @@ mod ripr_inventory_call_observers {
                 err.reason
             );
         }
+    }
+
+    /// Boundary identity is `(path, id, source_span)` — the same canonical key the
+    /// baseline comparison uses. One file emitting the same dynamic-boundary category
+    /// at two distinct source sites is legitimate evidence, not a duplicate.
+    #[test]
+    fn validate_run_report_allows_same_id_at_distinct_spans_on_one_path() {
+        let mut report = clean_report();
+        let mut first = boundary();
+        first.source_span = SemanticBoundarySourceSpan { start: 0, end: 1 };
+        let mut second = boundary();
+        second.source_span = SemanticBoundarySourceSpan { start: 8, end: 12 };
+        report.semantic_boundaries.push(first);
+        report.semantic_boundaries.push(second);
+        assert!(
+            validate_run_report(&report).is_ok(),
+            "same boundary id at distinct source spans on one path must be accepted"
+        );
     }
 
     #[test]
