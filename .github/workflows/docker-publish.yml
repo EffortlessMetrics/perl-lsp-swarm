@@ -36,29 +36,23 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       major_minor: ${{ steps.version.outputs.major_minor }}
       major: ${{ steps.version.outputs.major }}
+      is_stable: ${{ steps.version.outputs.is_stable }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # Validation and tag derivation live in scripts/ci/docker_publish_metadata.py
+      # so they can be tested directly. See scripts/ci/test_docker_publish_metadata.py
+      # for the negative cases (workflow-command injection, shell metacharacters,
+      # control characters, and prerelease stable-channel promotion).
+      # This job holds no registry credentials.
       - name: Parse version
         id: version
         env:
           VERSION_INPUT: ${{ github.event.inputs.version }}
-        run: |
-          set -euo pipefail
-          VERSION="$VERSION_INPUT"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            printf '::error::Invalid Docker publish version: %s\n' "$VERSION"
-            exit 1
-          fi
-
-          BASE_VERSION="${VERSION%%-*}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
-          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
-            printf '::error::Could not derive image tags from version: %s\n' "$VERSION"
-            exit 1
-          fi
-
-          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
-          printf 'major_minor=%s.%s\n' "$MAJOR" "$MINOR" >> "$GITHUB_OUTPUT"
-          printf 'major=%s\n' "$MAJOR" >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci/docker_publish_metadata.py
 
   build:
     name: Build builder image (multi-arch)
@@ -94,9 +88,12 @@ jobs:
           # `version` input is provided by release orchestration.
           tags: |
             type=raw,value=${{ needs.init.outputs.version }}
-            type=raw,value=${{ needs.init.outputs.major_minor }}
-            type=raw,value=${{ needs.init.outputs.major }}
-            type=raw,value=latest
+            # Alias tags are stable channels. A prerelease publishes only its
+            # own exact tag so that dispatching e.g. 1.2.3-rc.1 cannot silently
+            # replace latest / 1 / 1.2 for every consumer.
+            type=raw,value=${{ needs.init.outputs.major_minor }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=${{ needs.init.outputs.major }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=latest,enable=${{ needs.init.outputs.is_stable == 'true' }}
 
       - name: Build and push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -162,9 +159,12 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-perl
           tags: |
             type=raw,value=${{ needs.init.outputs.version }}
-            type=raw,value=${{ needs.init.outputs.major_minor }}
-            type=raw,value=${{ needs.init.outputs.major }}
-            type=raw,value=latest
+            # Alias tags are stable channels. A prerelease publishes only its
+            # own exact tag so that dispatching e.g. 1.2.3-rc.1 cannot silently
+            # replace latest / 1 / 1.2 for every consumer.
+            type=raw,value=${{ needs.init.outputs.major_minor }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=${{ needs.init.outputs.major }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=latest,enable=${{ needs.init.outputs.is_stable == 'true' }}
 
       - name: Build and push perl-lsp runtime image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -230,9 +230,12 @@ jobs:
           images: effortlessmetrics/perl-lsp
           tags: |
             type=raw,value=${{ needs.init.outputs.version }}
-            type=raw,value=${{ needs.init.outputs.major_minor }}
-            type=raw,value=${{ needs.init.outputs.major }}
-            type=raw,value=latest
+            # Alias tags are stable channels. A prerelease publishes only its
+            # own exact tag so that dispatching e.g. 1.2.3-rc.1 cannot silently
+            # replace latest / 1 / 1.2 for every consumer.
+            type=raw,value=${{ needs.init.outputs.major_minor }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=${{ needs.init.outputs.major }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=latest,enable=${{ needs.init.outputs.is_stable == 'true' }}
 
       - name: Build and push multi-arch (builder image)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -280,8 +283,9 @@ jobs:
           images: effortlessmetrics/perl-lsp
           tags: |
             type=raw,value=${{ needs.init.outputs.version }}-perl
-            type=raw,value=${{ needs.init.outputs.major_minor }}-perl
-            type=raw,value=latest-perl
+            # See the builder job: prereleases claim no stable alias.
+            type=raw,value=${{ needs.init.outputs.major_minor }}-perl,enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=latest-perl,enable=${{ needs.init.outputs.is_stable == 'true' }}
 
       - name: Build and push multi-arch (perl-lsp runtime image)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -308,11 +312,32 @@ jobs:
         env:
           VERSION: ${{ needs.init.outputs.version }}
           REPOSITORY: ${{ github.repository }}
+          IS_STABLE: ${{ needs.init.outputs.is_stable }}
         run: |
+          set -euo pipefail
+
+          # This job runs under always(), so it also runs when init rejected the
+          # version. In that case needs.init.outputs.version is empty and the
+          # image-reference block below would advertise tags that were never
+          # published. Report the failure instead.
+          if [ -z "$VERSION" ]; then
+            {
+              echo "## Docker Image Publish"
+              echo ""
+              echo "Version validation failed; no images were published."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           {
             echo "## Docker Images Published"
             echo ""
             printf -- '- **Version**: %s\n' "$VERSION"
+            if [ "$IS_STABLE" = "true" ]; then
+              echo "- **Channel**: stable (latest, major, and major.minor aliases updated)"
+            else
+              echo "- **Channel**: prerelease (exact tag only; stable aliases unchanged)"
+            fi
             echo "- **Platforms**: linux/amd64, linux/arm64"
             echo ""
             echo "### Builder image (Rust CI)"
