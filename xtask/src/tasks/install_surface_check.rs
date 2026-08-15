@@ -690,6 +690,30 @@ mod tests {
         Ok(())
     }
 
+    /// The canonical guide must not attribute an executable to policy that policy does
+    /// not declare.
+    ///
+    /// A previous revision stated that the `perl-lsp-rs` crate "still builds a
+    /// `perl-lsp` binary" recorded as `server.compatibility_executable`. Both claims
+    /// were false once the library-only server landed: the policy key does not exist
+    /// and no workspace crate declares a `perl-lsp` binary target. A guide that
+    /// contradicts the policy file it cites is the exact failure this guide exists to
+    /// prevent, so the two are pinned against each other.
+    #[test]
+    fn identity_guide_does_not_claim_executables_policy_does_not_declare() -> Result<()> {
+        let root = project_root()?;
+        let policy = fs::read_to_string(root.join("policy/product-identity.toml"))?;
+        let guide = fs::read_to_string(root.join("docs/reference/product-identity.md"))?;
+
+        assert_eq!(
+            guide.contains("compatibility_executable"),
+            policy.contains("compatibility_executable"),
+            "the guide may name `compatibility_executable` only while \
+             policy/product-identity.toml declares it"
+        );
+        Ok(())
+    }
+
     #[test]
     fn forbidden_and_required_pattern_tables_are_non_empty() {
         assert!(!FORBIDDEN_PATTERNS.is_empty(), "FORBIDDEN_PATTERNS must stay populated");
