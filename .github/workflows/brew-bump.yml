@@ -43,6 +43,11 @@ jobs:
       should_bump: ${{ steps.release.outputs.should_bump }}
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
+      # Content-binds the formula across the job boundary. This travels by the
+      # job-output channel, not the artifact store that carries the formula, so
+      # the token-bearing job can confirm it received the exact bytes this job
+      # validated rather than trusting the transport.
+      formula_sha256: ${{ steps.formula.outputs.formula_sha256 }}
 
     steps:
       - name: Checkout trusted source
@@ -255,6 +260,7 @@ jobs:
           shared-key: homebrew-formula-${{ hashFiles('Cargo.lock') }}
 
       - name: Generate formula without tap credentials
+        id: formula
         if: steps.release.outputs.should_bump == 'true'
         env:
           TAG: ${{ steps.release.outputs.tag }}
@@ -290,6 +296,13 @@ jobs:
               exit 1
             fi
           done < "$verified_checksums"
+
+          # Published on the job-output channel so `publish` can content-bind the
+          # artifact it downloads. Computed after every envelope and digest check
+          # above, so the value names bytes that already passed validation.
+          formula_sha256="$(sha256sum "$output" | cut -d' ' -f1)"
+          printf 'formula_sha256=%s\n' "$formula_sha256" >> "$GITHUB_OUTPUT"
+          printf 'generated formula sha256: %s\n' "$formula_sha256"
 
           cat "$output"
 
@@ -338,6 +351,8 @@ jobs:
           path: homebrew-tap/Formula
 
       - name: Verify tap payload
+        env:
+          EXPECTED_SHA256: ${{ needs.prepare.outputs.formula_sha256 }}
         run: |
           set -euo pipefail
           formula=homebrew-tap/Formula/perllsp.rb
@@ -364,6 +379,20 @@ jobs:
 
           if grep -q '__RELEASE_VERSION__\|__SHA256_' "$formula"; then
             echo "::error::Downloaded formula still contains unreplaced placeholders"
+            exit 1
+          fi
+
+          # Content-bind to the producer. The digest arrives by the job-output
+          # channel while the formula arrives through the artifact store, so a
+          # substitution confined to the artifact does not also move the digest.
+          if [ -z "$EXPECTED_SHA256" ]; then
+            echo "::error::prepare published no formula digest; refusing to open a tap PR"
+            exit 1
+          fi
+          actual_sha256="$(sha256sum "$formula" | cut -d' ' -f1)"
+          if [ "$actual_sha256" != "$EXPECTED_SHA256" ]; then
+            printf '::error::Formula digest mismatch: expected %s, got %s\n' \
+              "$EXPECTED_SHA256" "$actual_sha256"
             exit 1
           fi
 
