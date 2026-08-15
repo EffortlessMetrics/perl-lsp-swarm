@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use crate::{
     analyzer::{CaptureMode, EffectiveModifiers, ExtendedMode, FeatureState, RegexLanguageProfile},
     syntax::event::{
-        RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexExtendedMode,
-        RegexGroupKind, RegexModeState, parse_regex_events,
+        RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexExtendedMode, RegexGroupKind,
+        RegexModeState, parse_regex_events,
     },
     validator::{RegexAnalysisBudget, RegexRange},
 };
@@ -194,10 +194,7 @@ impl CaptureAnalysisStatus {
     /// Whether capture declarations and numbering are complete for the modeled subset.
     #[must_use]
     pub const fn is_complete(self) -> bool {
-        !self.dynamic
-            && !self.numbering_unknown
-            && !self.malformed
-            && self.exhausted.is_none()
+        !self.dynamic && !self.numbering_unknown && !self.malformed && self.exhausted.is_none()
     }
 }
 
@@ -226,10 +223,7 @@ pub struct CaptureGroup {
 #[derive(Debug, Clone, Copy)]
 enum OpenFrame {
     Capture { declaration_index: usize },
-    BranchReset {
-        base: Option<u32>,
-        max_next: Option<u32>,
-    },
+    BranchReset { base: Option<u32>, max_next: Option<u32> },
     Other,
 }
 
@@ -273,14 +267,11 @@ pub(crate) fn analyze_captures(
                     stack.push(OpenFrame::Capture { declaration_index });
                 }
                 RegexGroupKind::NamedCapture { name_range } => {
-                    let raw_name = pattern.get(name_range.start..name_range.end).unwrap_or_default();
+                    let raw_name =
+                        pattern.get(name_range.start..name_range.end).unwrap_or_default();
                     let syntax = named_syntax(pattern, name_range);
-                    let profile_confidence = named_capture_profile(
-                        raw_name,
-                        name_range,
-                        profile,
-                        &mut diagnostics,
-                    );
+                    let profile_confidence =
+                        named_capture_profile(raw_name, name_range, profile, &mut diagnostics);
                     if raw_name.is_empty() || !structural_name_shape(raw_name) {
                         diagnostics.push(CaptureDiagnostic {
                             code: CaptureDiagnosticCode::InvalidName,
@@ -308,19 +299,13 @@ pub(crate) fn analyze_captures(
                     }
                 }
                 RegexGroupKind::BranchReset => {
-                    let profile_confidence = form_version_confidence(
-                        event.range,
-                        profile,
-                        &mut diagnostics,
-                    );
+                    let profile_confidence =
+                        form_version_confidence(event.range, profile, &mut diagnostics);
                     if profile_confidence == CaptureProfileConfidence::Incompatible {
                         next_number = None;
                         numbering_uncertainty = NumberingUncertainty::Structural;
                     }
-                    stack.push(OpenFrame::BranchReset {
-                        base: next_number,
-                        max_next: next_number,
-                    });
+                    stack.push(OpenFrame::BranchReset { base: next_number, max_next: next_number });
                 }
                 _ => stack.push(OpenFrame::Other),
             },
@@ -348,10 +333,7 @@ pub(crate) fn analyze_captures(
                 }
             }
             RegexEventKind::Interpolation
-            | RegexEventKind::EmbeddedCode {
-                kind: RegexEmbeddedCodeKind::Deferred,
-                ..
-            } => {
+            | RegexEventKind::EmbeddedCode { kind: RegexEmbeddedCodeKind::Deferred, .. } => {
                 dynamic = true;
                 next_number = None;
                 numbering_uncertainty = NumberingUncertainty::Dynamic;
@@ -375,12 +357,9 @@ pub(crate) fn analyze_captures(
         }
     }
 
-    diagnostics.sort_by_key(|diagnostic| {
-        (diagnostic.range.start, diagnostic.range.end, diagnostic.code)
-    });
-    diagnostics.dedup_by(|left, right| {
-        left.code == right.code && left.range == right.range
-    });
+    diagnostics
+        .sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end, diagnostic.code));
+    diagnostics.dedup_by(|left, right| left.code == right.code && left.range == right.range);
 
     CaptureAnalysis {
         named_families: named_families(&declarations),
@@ -396,28 +375,23 @@ pub(crate) fn analyze_captures(
 }
 
 pub(crate) fn extract_named_captures(pattern: &str) -> Vec<CaptureGroup> {
-    analyze_captures(
-        pattern,
-        EffectiveModifiers::default(),
-        CaptureLanguageProfile::unknown(),
-    )
-    .declarations
-    .into_iter()
-    .filter_map(|declaration| {
-        let name = declaration.name?;
-        let number = declaration.number?;
-        if declaration.confidence.source != CaptureSourceConfidence::Exact
-            || declaration.confidence.profile == CaptureProfileConfidence::Incompatible
-        {
-            return None;
-        }
-        let index = usize::try_from(number).ok()?;
-        let subpattern = pattern
-            .get(declaration.body_range.start..declaration.body_range.end)?
-            .to_string();
-        Some(CaptureGroup { name, index, pattern: subpattern })
-    })
-    .collect()
+    analyze_captures(pattern, EffectiveModifiers::default(), CaptureLanguageProfile::unknown())
+        .declarations
+        .into_iter()
+        .filter_map(|declaration| {
+            let name = declaration.name?;
+            let number = declaration.number?;
+            if declaration.confidence.source != CaptureSourceConfidence::Exact
+                || declaration.confidence.profile == CaptureProfileConfidence::Incompatible
+            {
+                return None;
+            }
+            let index = usize::try_from(number).ok()?;
+            let subpattern =
+                pattern.get(declaration.body_range.start..declaration.body_range.end)?.to_string();
+            Some(CaptureGroup { name, index, pattern: subpattern })
+        })
+        .collect()
 }
 
 fn new_declaration(
@@ -476,10 +450,7 @@ fn named_families(declarations: &[CaptureDeclaration]) -> Vec<NamedCaptureFamily
             None => {
                 let index = families.len();
                 family_indexes.insert(name.clone(), index);
-                families.push(NamedCaptureFamily {
-                    name: name.clone(),
-                    declarations: Vec::new(),
-                });
+                families.push(NamedCaptureFamily { name: name.clone(), declarations: Vec::new() });
                 index
             }
         };
@@ -496,9 +467,7 @@ fn named_syntax(pattern: &str, name_range: RegexRange) -> CaptureSyntax {
     {
         CaptureSyntax::PythonNamed
     } else if name_range.start >= 3
-        && pattern
-            .get(name_range.start - 3..name_range.start)
-            .is_some_and(|prefix| prefix == "(?'")
+        && pattern.get(name_range.start - 3..name_range.start).is_some_and(|prefix| prefix == "(?'")
     {
         CaptureSyntax::NamedQuote
     } else {
@@ -567,9 +536,7 @@ fn structural_name_shape(name: &str) -> bool {
         return false;
     }
     chars.all(|ch| {
-        ch == '_'
-            || ch.is_alphanumeric()
-            || (!ch.is_ascii() && !ch.is_whitespace() && ch != '-')
+        ch == '_' || ch.is_alphanumeric() || (!ch.is_ascii() && !ch.is_whitespace() && ch != '-')
     })
 }
 
@@ -578,8 +545,7 @@ fn conservative_unicode_name(name: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    (first == '_' || first.is_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+    (first == '_' || first.is_alphabetic()) && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
 }
 
 fn number_confidence(uncertainty: NumberingUncertainty) -> CaptureNumberConfidence {

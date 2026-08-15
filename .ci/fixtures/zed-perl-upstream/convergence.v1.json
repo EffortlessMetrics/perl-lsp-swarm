@@ -1,0 +1,74 @@
+{
+  "schema_version": "zed_perllsp_convergence.v1",
+  "status": "static_substrate_complete_execution_not_proven",
+  "issue": 7975,
+  "programme": 7759,
+  "integration_base": {
+    "commit": "79c03faeb3c2d60832f249d9572d9ca37bc1355a",
+    "branch": "main"
+  },
+  "mainline": {
+    "candidate": {
+      "issues": [7898, 7901],
+      "source_pr": 7847,
+      "result": "present_on_main"
+    },
+    "settings": {
+      "issue": 7902,
+      "source_pr": 7928,
+      "result": "imported_static_contract"
+    },
+    "managed_assets": {
+      "issue": 7903,
+      "source_pr": 7927,
+      "result": "imported_static_contract"
+    },
+    "dormant_defaults": {
+      "issue": 7908,
+      "source_pr": 7934,
+      "result": "present_on_main_independent_packet"
+    },
+    "submission": {
+      "issue": 7909,
+      "source_pr": 7950,
+      "result": "imported_blocked_fan_in"
+    },
+    "registry_packet": {
+      "issue": 7910,
+      "source_pr": 7952,
+      "result": "present_on_main_blocked"
+    },
+    "receipt_substrate": {
+      "issues": [7907, 7912],
+      "source_pr": 7958,
+      "result": "present_on_main_not_run"
+    }
+  },
+  "required_files": [
+    ".ci/fixtures/zed-perl-upstream/manifest.toml",
+    ".ci/fixtures/zed-perl-upstream/zed-perl/src/perl.rs",
+    ".ci/fixtures/zed-perl-upstream/settings-contract.v1.json",
+    ".ci/fixtures/zed-perl-upstream/managed-downloads.v1.json",
+    ".ci/fixtures/zed-perl-upstream/zed-core/manifest.toml",
+    ".ci/fixtures/zed-perl-upstream/submission/manifest.toml",
+    ".ci/fixtures/zed-perl-upstream/registry/manifest.toml",
+    ".ci/fixtures/zed-perl-upstream/receipts/exact-source-template.json",
+    ".ci/fixtures/zed-perl-upstream/receipts/public-registry-template.json"
+  ],
+  "execution_gates": {
+    "public_assets": 7980,
+    "exact_source_zed": 7984,
+    "settings_behavior": 7990,
+    "defaults_compatibility": 7992,
+    "managed_zed_route": 7994,
+    "public_registry": 7912,
+    "support_projection": 8000
+  },
+  "claim_boundary": {
+    "static_candidate": "present",
+    "public_asset_execution": "not_proven",
+    "actual_zed": "not_proven",
+    "public_registry": "not_proven",
+    "support_promotion": "not_proven"
+  }
+}

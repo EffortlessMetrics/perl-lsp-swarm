@@ -12,6 +12,7 @@ pub use crate::{
     validator::{
         EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisBudget,
         RegexAnalysisCompleteness, RegexDiagnostic, RegexDiagnosticClass, RegexDiagnosticCode,
-        RegexFacts, RegexRange, RegexValidationConfig,
+        RegexDynamicRegionFact, RegexDynamicRegionKind, RegexFacts, RegexRange,
+        RegexValidationConfig,
     },
 };

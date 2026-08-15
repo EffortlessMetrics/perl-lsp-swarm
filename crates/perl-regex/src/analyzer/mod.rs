@@ -13,8 +13,8 @@ pub use capture::{
 };
 pub use modifier_analysis::{
     CaptureMode, CharacterSetMode, EffectiveModifiers, ExtendedMode, FeatureState,
-    ModifierAnalysis, ModifierRequirement, ModifierRequirementKind, ModifierSequence, ModifierToken,
-    PerlVersion, RegexLanguageProfile, RegexOperator, RequirementDisposition,
+    ModifierAnalysis, ModifierRequirement, ModifierRequirementKind, ModifierSequence,
+    ModifierToken, PerlVersion, RegexLanguageProfile, RegexOperator, RequirementDisposition,
     TransliterationModifiers,
 };
 

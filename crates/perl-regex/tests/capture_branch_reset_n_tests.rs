@@ -9,20 +9,14 @@ fn modifiers_n() -> Result<EffectiveModifiers, Box<dyn std::error::Error>> {
     Ok(RegexAnalyzer::analyze_modifiers(
         RegexOperator::Match,
         sequence,
-        RegexLanguageProfile::new(
-            Some(PerlVersion::new(5, 44)),
-            FeatureState::Disabled,
-        ),
+        RegexLanguageProfile::new(Some(PerlVersion::new(5, 44)), FeatureState::Disabled),
     )
     .effective)
 }
 
 fn profile() -> CaptureLanguageProfile {
     CaptureLanguageProfile::new(
-        RegexLanguageProfile::new(
-            Some(PerlVersion::new(5, 44)),
-            FeatureState::Disabled,
-        ),
+        RegexLanguageProfile::new(Some(PerlVersion::new(5, 44)), FeatureState::Disabled),
         FeatureState::Enabled,
     )
 }
@@ -44,10 +38,12 @@ fn branch_reset_respects_n_and_local_minus_n_per_alternative()
     );
 
     let suppressed_body = pattern.find("(b)").ok_or("missing suppressed group")?;
-    assert!(analysis
-        .declarations
-        .iter()
-        .all(|declaration| declaration.group_range.start != suppressed_body));
+    assert!(
+        analysis
+            .declarations
+            .iter()
+            .all(|declaration| declaration.group_range.start != suppressed_body)
+    );
     assert!(analysis.status.is_complete());
     assert!(analysis.diagnostics.is_empty());
     Ok(())

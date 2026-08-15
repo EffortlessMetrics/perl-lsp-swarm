@@ -4,8 +4,8 @@
 //! key invariants hold: determinism, source-ordered capture declarations, and
 //! conservative code-execution detection.
 
-use perl_regex::{RegexAnalyzer, RegexValidator};
 use perl_regex::analyzer::{CaptureLanguageProfile, EffectiveModifiers};
+use perl_regex::{RegexAnalyzer, RegexValidator};
 use proptest::prelude::*;
 
 // ---------------------------------------------------------------------------

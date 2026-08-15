@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub use capabilities::{DebugBackendCapabilities, intersect_dap_capabilities};
+pub use external_peer::PeerSessionToken;
 pub use peer_bridge::{DapPeerBridge, run_external_peer_session, run_external_peer_session_stdio};
 pub use peer_launch::{
     ExternalPeerLaunchConfig, MirrorPeerBridge, PeerListenEndpoint, PeerRendezvousMode,

@@ -123,11 +123,7 @@ pub(crate) enum RegexEventKind {
     Alternation,
     Quantifier(RegexQuantifier),
     UnicodeProperty { negated: bool, closed: bool },
-    EmbeddedCode {
-        kind: RegexEmbeddedCodeKind,
-        opener_range: RegexRange,
-        closed: bool,
-    },
+    EmbeddedCode { kind: RegexEmbeddedCodeKind, opener_range: RegexRange, closed: bool },
     Interpolation,
     Malformed(RegexMalformedKind),
 }
@@ -194,10 +190,7 @@ struct EventParser<'a> {
     malformed: bool,
 }
 
-pub(crate) fn parse_regex_events(
-    pattern: &str,
-    initial_mode: RegexModeState,
-) -> RegexEventStream {
+pub(crate) fn parse_regex_events(pattern: &str, initial_mode: RegexModeState) -> RegexEventStream {
     parse_regex_events_with_limits(
         pattern,
         initial_mode,
@@ -271,9 +264,7 @@ impl<'a> EventParser<'a> {
     }
 
     fn parse_quoted_literal(&mut self) -> bool {
-        if self.bytes.get(self.pos) != Some(&b'\\')
-            || self.bytes.get(self.pos + 1) != Some(&b'Q')
-        {
+        if self.bytes.get(self.pos) != Some(&b'\\') || self.bytes.get(self.pos + 1) != Some(&b'Q') {
             return false;
         }
 
@@ -442,9 +433,7 @@ impl<'a> EventParser<'a> {
         if self.bytes.get(self.pos) == Some(&b'#') {
             let start = self.pos;
             let mut cursor = start;
-            while cursor < self.bytes.len()
-                && !matches!(self.bytes[cursor], b'\n' | b'\r')
-            {
+            while cursor < self.bytes.len() && !matches!(self.bytes[cursor], b'\n' | b'\r') {
                 cursor = self.next_char_end(cursor);
             }
             if !self.advance(cursor) {
@@ -463,13 +452,14 @@ impl<'a> EventParser<'a> {
         let Some(ch) = self.pattern.get(self.pos..).and_then(|rest| rest.chars().next()) else {
             return false;
         };
-        if !ch.is_whitespace() {
+        if !is_pattern_whitespace(ch) {
             return false;
         }
         let start = self.pos;
         let mut cursor = start;
-        while let Some(candidate) = self.pattern.get(cursor..).and_then(|rest| rest.chars().next()) {
-            if !candidate.is_whitespace() {
+        while let Some(candidate) = self.pattern.get(cursor..).and_then(|rest| rest.chars().next())
+        {
+            if !is_pattern_whitespace(candidate) {
                 break;
             }
             cursor = cursor.saturating_add(candidate.len_utf8());
@@ -494,12 +484,7 @@ impl<'a> EventParser<'a> {
         let start = self.pos;
 
         if self.bytes.get(start + 1) == Some(&b'*') {
-            return self.open_group(
-                start,
-                start + 2,
-                RegexGroupKind::NonCapturing,
-                self.mode,
-            );
+            return self.open_group(start, start + 2, RegexGroupKind::NonCapturing, self.mode);
         }
 
         if self.bytes.get(start + 1) != Some(&b'?') {
@@ -517,28 +502,16 @@ impl<'a> EventParser<'a> {
         if self.bytes.get(start + 2) == Some(&b'{') {
             return self.parse_embedded_code(start, start + 2, RegexEmbeddedCodeKind::Immediate, 3);
         }
-        if self.bytes.get(start + 2) == Some(&b'?')
-            && self.bytes.get(start + 3) == Some(&b'{')
-        {
+        if self.bytes.get(start + 2) == Some(&b'?') && self.bytes.get(start + 3) == Some(&b'{') {
             return self.parse_embedded_code(start, start + 3, RegexEmbeddedCodeKind::Deferred, 4);
         }
 
         match self.bytes.get(start + 2).copied() {
             Some(b':') => {
-                return self.open_group(
-                    start,
-                    start + 3,
-                    RegexGroupKind::NonCapturing,
-                    self.mode,
-                );
+                return self.open_group(start, start + 3, RegexGroupKind::NonCapturing, self.mode);
             }
             Some(b'=') => {
-                return self.open_group(
-                    start,
-                    start + 3,
-                    RegexGroupKind::Lookahead,
-                    self.mode,
-                );
+                return self.open_group(start, start + 3, RegexGroupKind::Lookahead, self.mode);
             }
             Some(b'!') => {
                 return self.open_group(
@@ -549,20 +522,10 @@ impl<'a> EventParser<'a> {
                 );
             }
             Some(b'>') => {
-                return self.open_group(
-                    start,
-                    start + 3,
-                    RegexGroupKind::Atomic,
-                    self.mode,
-                );
+                return self.open_group(start, start + 3, RegexGroupKind::Atomic, self.mode);
             }
             Some(b'|') => {
-                return self.open_group(
-                    start,
-                    start + 3,
-                    RegexGroupKind::BranchReset,
-                    self.mode,
-                );
+                return self.open_group(start, start + 3, RegexGroupKind::BranchReset, self.mode);
             }
             Some(b'<') => return self.parse_angle_group(start),
             Some(b'\'') => return self.parse_quoted_name_group(start),
@@ -575,12 +538,7 @@ impl<'a> EventParser<'a> {
         if let Some(inline) = self.parse_inline_modifier_prefix(start) {
             return match inline.terminator {
                 InlineModifierTerminator::Scope => {
-                    self.open_group(
-                        start,
-                        inline.end,
-                        RegexGroupKind::ModifierScope,
-                        inline.mode,
-                    )
+                    self.open_group(start, inline.end, RegexGroupKind::ModifierScope, inline.mode)
                 }
                 InlineModifierTerminator::Change => {
                     if !self.advance(inline.end) {
@@ -652,10 +610,8 @@ impl<'a> EventParser<'a> {
         if !self.advance(end) {
             return true;
         }
-        let opener_range = RegexRange {
-            start,
-            end: start.saturating_add(opener_width).min(self.bytes.len()),
-        };
+        let opener_range =
+            RegexRange { start, end: start.saturating_add(opener_width).min(self.bytes.len()) };
         let _ = self.emit(
             start,
             end,
@@ -677,18 +633,10 @@ impl<'a> EventParser<'a> {
 
     fn parse_angle_group(&mut self, start: usize) -> bool {
         match self.bytes.get(start + 3).copied() {
-            Some(b'=') => self.open_group(
-                start,
-                start + 4,
-                RegexGroupKind::Lookbehind,
-                self.mode,
-            ),
-            Some(b'!') => self.open_group(
-                start,
-                start + 4,
-                RegexGroupKind::NegativeLookbehind,
-                self.mode,
-            ),
+            Some(b'=') => self.open_group(start, start + 4, RegexGroupKind::Lookbehind, self.mode),
+            Some(b'!') => {
+                self.open_group(start, start + 4, RegexGroupKind::NegativeLookbehind, self.mode)
+            }
             _ => self.open_named_group(start, start + 3, b'>'),
         }
     }
@@ -721,12 +669,7 @@ impl<'a> EventParser<'a> {
             return true;
         }
         let name_range = RegexRange { start: name_start, end: cursor };
-        self.open_group(
-            start,
-            cursor + 1,
-            RegexGroupKind::NamedCapture { name_range },
-            self.mode,
-        )
+        self.open_group(start, cursor + 1, RegexGroupKind::NamedCapture { name_range }, self.mode)
     }
 
     fn open_group(
@@ -746,13 +689,7 @@ impl<'a> EventParser<'a> {
         }
         self.mode = inner_mode;
         self.stack.push(GroupFrame { kind, restore_mode });
-        let _ = self.emit(
-            start,
-            end,
-            RegexEventKind::GroupOpen(kind),
-            self.mode,
-            self.stack.len(),
-        );
+        let _ = self.emit(start, end, RegexEventKind::GroupOpen(kind), self.mode, self.stack.len());
         true
     }
 
@@ -797,13 +734,7 @@ impl<'a> EventParser<'a> {
         if !self.advance(end) {
             return true;
         }
-        let _ = self.emit(
-            start,
-            end,
-            RegexEventKind::Alternation,
-            self.mode,
-            self.stack.len(),
-        );
+        let _ = self.emit(start, end, RegexEventKind::Alternation, self.mode, self.stack.len());
         true
     }
 
@@ -833,13 +764,7 @@ impl<'a> EventParser<'a> {
         if !self.advance(end) {
             return true;
         }
-        let _ = self.emit(
-            start,
-            end,
-            RegexEventKind::Interpolation,
-            self.mode,
-            self.stack.len(),
-        );
+        let _ = self.emit(start, end, RegexEventKind::Interpolation, self.mode, self.stack.len());
         true
     }
 
@@ -851,18 +776,12 @@ impl<'a> EventParser<'a> {
         let next = self.bytes.get(start + 1).copied()?;
         let end = if next == b'{' {
             self.braced_interpolation_end(start + 1)
-        } else if sigil == b'$'
-            && next == b'^'
-            && self.bytes.get(start + 2) == Some(&b'R')
-        {
+        } else if sigil == b'$' && next == b'^' && self.bytes.get(start + 2) == Some(&b'R') {
             start.saturating_add(3).min(self.bytes.len())
         } else if sigil == b'$'
             && next == b':'
             && self.bytes.get(start + 2) == Some(&b':')
-            && self
-                .bytes
-                .get(start + 3)
-                .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == b'_')
+            && self.bytes.get(start + 3).is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == b'_')
         {
             self.identifier_interpolation_end(start + 1)
         } else if sigil == b'$' {
@@ -910,13 +829,22 @@ impl<'a> EventParser<'a> {
 
     fn brace_quantifier(&self, start: usize) -> Option<(usize, Option<usize>, usize)> {
         let mut cursor = start + 1;
-        let (lower, next) = parse_decimal(self.bytes, cursor)?;
-        cursor = next;
+        let omitted_lower = self.bytes.get(cursor) == Some(&b',');
+        let lower = if omitted_lower {
+            0
+        } else {
+            let (lower, next) = parse_decimal(self.bytes, cursor)?;
+            cursor = next;
+            lower
+        };
         match self.bytes.get(cursor).copied()? {
             b'}' => Some((lower, Some(lower), cursor + 1)),
             b',' => {
                 cursor += 1;
                 if self.bytes.get(cursor) == Some(&b'}') {
+                    if omitted_lower {
+                        return None;
+                    }
                     return Some((lower, None, cursor + 1));
                 }
                 let (upper, next) = parse_decimal(self.bytes, cursor)?;
@@ -932,6 +860,7 @@ impl<'a> EventParser<'a> {
 
     fn parse_inline_modifier_prefix(&self, start: usize) -> Option<InlineModifierPrefix> {
         let mut cursor = start + 2;
+        let mut reset = false;
         let mut saw_modifier = false;
         let mut disabling = false;
         let mut enable_x = 0usize;
@@ -939,6 +868,14 @@ impl<'a> EventParser<'a> {
         let mut enable_n = false;
         let mut disable_n = false;
 
+        if self.bytes.get(cursor) == Some(&b'^') {
+            reset = true;
+            saw_modifier = true;
+            cursor += 1;
+        }
+        if reset && self.bytes.get(cursor) == Some(&b'-') {
+            return None;
+        }
         if self.bytes.get(cursor) == Some(&b'-') {
             disabling = true;
             cursor += 1;
@@ -972,7 +909,7 @@ impl<'a> EventParser<'a> {
             b')' => InlineModifierTerminator::Change,
             _ => return None,
         };
-        let mut mode = self.mode;
+        let mut mode = if reset { RegexModeState::default() } else { self.mode };
         if disable_x {
             mode.extended = RegexExtendedMode::Off;
         } else if enable_x >= 2 {
@@ -1100,12 +1037,7 @@ impl<'a> EventParser<'a> {
             self.exhausted = Some(RegexEventBudget::Events);
             return false;
         }
-        self.events.push(RegexEvent {
-            kind,
-            range: RegexRange { start, end },
-            mode,
-            depth,
-        });
+        self.events.push(RegexEvent { kind, range: RegexRange { start, end }, mode, depth });
         true
     }
 }
@@ -1142,12 +1074,28 @@ fn is_inline_modifier(ch: u8) -> bool {
     matches!(ch, b'i' | b'm' | b's' | b'x' | b'a' | b'd' | b'l' | b'u' | b'p' | b'n')
 }
 
+fn is_pattern_whitespace(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0009}'
+            | '\u{000A}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{000D}'
+            | '\u{0020}'
+            | '\u{0085}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{2028}'
+            | '\u{2029}'
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        RegexEventBudget, RegexEventKind, RegexEventLimits, RegexExtendedMode,
-        RegexModeState, RegexQuantifier, RegexQuantifierMode, parse_regex_events,
-        parse_regex_events_with_limits,
+        RegexEventBudget, RegexEventKind, RegexEventLimits, RegexExtendedMode, RegexModeState,
+        RegexQuantifier, RegexQuantifierMode, parse_regex_events, parse_regex_events_with_limits,
     };
 
     #[test]
@@ -1184,10 +1132,8 @@ mod tests {
     #[test]
     fn extended_comments_and_local_mode_changes_are_source_backed()
     -> Result<(), Box<dyn std::error::Error>> {
-        let initial = RegexModeState {
-            extended: RegexExtendedMode::Extended,
-            captures_by_default: true,
-        };
+        let initial =
+            RegexModeState { extended: RegexExtendedMode::Extended, captures_by_default: true };
         let stream = parse_regex_events("# hidden (?{ x })\n(?-x:#(?{ y }))", initial);
         let embedded = stream
             .events
