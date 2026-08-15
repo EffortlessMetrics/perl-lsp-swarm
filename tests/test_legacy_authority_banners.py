@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import tomllib
 import unittest
 from pathlib import Path
@@ -42,6 +43,26 @@ def registry_rows() -> dict[str, dict[str, object]]:
     return {row["path"]: row for row in registry["documents"]}
 
 
+def banner_link_targets(document: str, head: str) -> dict[str, Path]:
+    """Resolve every Markdown link in a banner to a real filesystem path.
+
+    A banner is a redirection: its whole job is to send a reader somewhere that
+    still has authority. Asserting the successor's *name* appears in the header
+    cannot tell a working link from a broken one -- the name matches just as well
+    inside a typo'd path, a link to a moved file, or bare prose with no link at
+    all. Resolving the target relative to the document catches all three.
+    """
+    targets: dict[str, Path] = {}
+    for text, href in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", head):
+        if href.startswith(("http://", "https://", "#")):
+            continue
+        target = href.split("#", 1)[0]
+        if not target:
+            continue
+        targets[text] = ((ROOT / document).parent / target).resolve()
+    return targets
+
+
 class LegacyAuthorityBannerTests(unittest.TestCase):
     def test_local_banners_match_registry(self) -> None:
         by_path = registry_rows()
@@ -56,6 +77,36 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
                 self.assertIn("AUTHORITY_STATUS.md", head)
                 self.assertIn(successor, head)
                 self.assertEqual(by_path[path]["status"], status)
+
+    def test_banner_links_resolve_to_real_files(self) -> None:
+        """Every banner link must point at a file that exists.
+
+        This is the half `assertIn(successor, head)` cannot prove: a substring
+        match is satisfied by a link whose href is wrong, so a banner could send
+        every reader of a superseded document to a 404 and still pass.
+        """
+        for path, (_status, successor) in EXPECTED.items():
+            with self.subTest(path=path):
+                head = "\n".join(
+                    (ROOT / path).read_text(encoding="utf-8").splitlines()[:24]
+                )
+                targets = banner_link_targets(path, head)
+                self.assertTrue(
+                    targets, f"{path}: banner has no resolvable Markdown link"
+                )
+                for text, target in targets.items():
+                    self.assertTrue(
+                        target.is_file(),
+                        f"{path}: banner link [{text}] points at missing {target}",
+                    )
+
+                # The authority index and the named successor must each be a
+                # real link target, not merely words somewhere in the header.
+                linked = {target.name for target in targets.values()}
+                self.assertIn("AUTHORITY_STATUS.md", linked, f"{path}: index not linked")
+                self.assertIn(
+                    Path(successor).name, linked, f"{path}: successor not linked"
+                )
 
     def test_explicit_old_statuses_are_not_still_current(self) -> None:
         pipeline = "\n".join(
@@ -74,15 +125,49 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
         self.assertNotIn("**Status**: Accepted", adr)
         self.assertIn("**Status**: Superseded", adr)
 
-    def test_banner_set_matches_every_legacy_registry_row(self) -> None:
-        legacy_paths = {
+    def test_banner_set_matches_every_legacy_markdown_row(self) -> None:
+        """Every legacy *document* must carry a banner.
+
+        Scoped to Markdown because a banner is an HTML comment plus Markdown
+        prose. Executable files cannot carry one -- `<!-- ... -->` is not a
+        Python comment -- so a retired script declares its status in its own
+        docstring instead, which `test_retired_legacy_scripts_say_so` checks.
+        Without this split, reclassifying a retired script in the registry would
+        demand a Markdown banner in a Python file.
+        """
+        legacy_markdown = {
+            path
+            for path, row in registry_rows().items()
+            if row["status"] in {"historical", "superseded"} and path.endswith(".md")
+        }
+
+        self.assertEqual(set(EXPECTED), legacy_markdown)
+        self.assertEqual(len(EXPECTED), 9)
+
+    def test_retired_legacy_scripts_say_so(self) -> None:
+        """The non-Markdown half of the same inventory.
+
+        These rows are legacy too, so they still need a machine-checked local
+        disposition -- just one their file format can carry.
+        """
+        legacy_scripts = {
             path
             for path, row in registry_rows().items()
             if row["status"] in {"historical", "superseded"}
+            and not path.endswith(".md")
         }
+        self.assertTrue(legacy_scripts, "expected retired commands in the registry")
 
-        self.assertEqual(set(EXPECTED), legacy_paths)
-        self.assertEqual(len(EXPECTED), 9)
+        for path in sorted(legacy_scripts):
+            with self.subTest(path=path):
+                head = "\n".join(
+                    (ROOT / path).read_text(encoding="utf-8").splitlines()[:40]
+                )
+                self.assertRegex(
+                    head,
+                    r"RETIRED|[Rr]etired|no longer has",
+                    f"{path}: retired command does not declare its own status",
+                )
 
     def test_one_shot_migrator_is_inert(self) -> None:
         source = MIGRATOR.read_text(encoding="utf-8")

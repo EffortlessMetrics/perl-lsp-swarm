@@ -17,7 +17,7 @@ on:
       - 'tests/test_legacy_authority_banners.py'
       - '.github/workflows/legacy-authority-banners.yml'
   push:
-    branches: [main, codex/4555-local-authority-banners]
+    branches: [main]
     paths:
       - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
       - 'docs/reference/PIPELINE_GATES.md'
