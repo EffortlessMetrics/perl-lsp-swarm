@@ -67,6 +67,10 @@ fn validate_contract(contract: &Value, release_targets: &BTreeSet<String>) -> Re
         .pointer("/source/version")
         .and_then(Value::as_str)
         .ok_or_else(|| "missing public release version".to_string())?;
+    let version_directory_template = contract
+        .pointer("/cache_contract/version_directory")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing managed version directory".to_string())?;
     let targets = contract
         .pointer("/targets")
         .and_then(Value::as_array)
@@ -136,6 +140,12 @@ fn validate_contract(contract: &Value, release_targets: &BTreeSet<String>) -> Re
             .ok_or_else(|| format!("target `{target}` lacks installed path"))?;
         if !safe_relative_path(member) || !safe_relative_path(installed) {
             return Err(format!("target `{target}` contains an unsafe path"));
+        }
+        let version_directory =
+            version_directory_template.replace("{version}", version).replace("{target}", target);
+        let expected_installed = format!("{version_directory}/{member}");
+        if installed != expected_installed {
+            return Err(format!("target `{target}` must install at `{expected_installed}`"));
         }
         if member.contains("perl-lsp") || installed.contains("perl-lsp") {
             return Err(format!("target `{target}` references another or retired executable"));
@@ -233,6 +243,11 @@ fn mutation_controls_reject_false_managed_claims() -> Result<(), Box<dyn Error>>
     let mut traversal = contract.clone();
     traversal["targets"][0]["archive_member"] = Value::String("../perllsp".to_string());
     assert!(validate_contract(&traversal, &release_targets).is_err());
+
+    let mut wrong_installed_path = contract.clone();
+    wrong_installed_path["targets"][0]["installed_path"] =
+        Value::String("perllsp-0.17.0-x86_64-unknown-linux-musl/perllsp".to_string());
+    assert!(validate_contract(&wrong_installed_path, &release_targets).is_err());
 
     let mut cross_arch = contract.clone();
     cross_arch["targets"][5]["disposition"] = Value::String("managed".to_string());
