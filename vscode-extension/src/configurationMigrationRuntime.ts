@@ -48,12 +48,34 @@ export interface SafeMigrationRuntimeSnapshot {
 
 const MISSING_VALUE = Symbol('configuration-migration-missing');
 
+/**
+ * Why a legacy key could not be interpreted. All three are `invalid`, but they are not
+ * the same event and must not reach the user as the same notice: only the first is
+ * caused by the user's own configuration.
+ */
+export const INVALID_REASON_CODES = {
+  /** The key appears nowhere in the registry — a typo, or a setting we never shipped. */
+  unregistered: 'legacy_key_not_registered',
+  /**
+   * The key is registered, but not at the scope it was found in. Security-relevant: this
+   * is how a `machine`-scoped, process-executing setting looks when it turns up in
+   * repository-controlled workspace configuration.
+   */
+  scope_not_permitted: 'legacy_key_scope_not_permitted',
+  /**
+   * Several registry rows claim this key at this scope, so no single interpretation
+   * exists. This is a defect in the registry, not in the user's settings.
+   */
+  ambiguous: 'legacy_registry_ambiguous',
+} as const;
+
 function result(
   input: MigrationRuntimeInput,
   row: ConfigurationMigrationRow | null,
   status: MigrationRuntimeStatus,
   canonicalValue: unknown = MISSING_VALUE,
   noticeRequired = false,
+  reasonCode: string | null = row?.warning_reason_code ?? null,
 ): MigrationRuntimeResult {
   return {
     migration_id: row?.migration_id ?? null,
@@ -63,23 +85,41 @@ function result(
     canonical_key_or_authority: row?.new_key_or_authority ?? null,
     canonical_value_present: canonicalValue !== MISSING_VALUE,
     canonical_value: canonicalValue === MISSING_VALUE ? null : canonicalValue,
-    reason_code: row?.warning_reason_code ?? null,
+    reason_code: reasonCode,
     notice_required: noticeRequired,
     disk_write_allowed: row?.explicit_write_allowed ?? false,
   };
 }
 
+type RowSelection =
+  | { kind: 'selected'; row: ConfigurationMigrationRow }
+  | { kind: keyof typeof INVALID_REASON_CODES };
+
+/**
+ * The registry deliberately allows several rows per `old_key` — its uniqueness key spans
+ * the version window and value shape, so one setting can carry a row per historical era.
+ * This interpreter has no version input and therefore cannot choose between eras, so an
+ * ambiguous match is reported as such rather than silently resolved to whichever row
+ * happens to sort first.
+ */
 function selectMigrationRow(
   registry: ConfigurationMigrationRegistry,
   input: MigrationRuntimeInput,
-): ConfigurationMigrationRow | null {
-  const rows = findMigrationRows(registry, input.old_key).filter(
-    (row) => row.old_scope === input.source_scope,
-  );
-  if (rows.length !== 1) {
-    return null;
+): RowSelection {
+  const keyRows = findMigrationRows(registry, input.old_key);
+  if (keyRows.length === 0) {
+    return { kind: 'unregistered' };
   }
-  return rows[0] ?? null;
+
+  const scopedRows = keyRows.filter((row) => row.old_scope === input.source_scope);
+  const row = scopedRows[0];
+  if (row === undefined) {
+    return { kind: 'scope_not_permitted' };
+  }
+  if (scopedRows.length > 1) {
+    return { kind: 'ambiguous' };
+  }
+  return { kind: 'selected', row };
 }
 
 export function interpretLegacyConfiguration(
@@ -90,11 +130,19 @@ export function interpretLegacyConfiguration(
     return result(input, null, 'not_applicable');
   }
 
-  const row = selectMigrationRow(registry, input);
-  if (!row) {
-    return result(input, null, 'invalid', MISSING_VALUE, true);
+  const selection = selectMigrationRow(registry, input);
+  if (selection.kind !== 'selected') {
+    return result(
+      input,
+      null,
+      'invalid',
+      MISSING_VALUE,
+      true,
+      INVALID_REASON_CODES[selection.kind],
+    );
   }
 
+  const row = selection.row;
   switch (row.migration_disposition) {
     case 'unchanged':
     case 'renamed_compatible':

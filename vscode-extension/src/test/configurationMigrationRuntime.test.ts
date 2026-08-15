@@ -2,6 +2,7 @@ import {
   type ConfigurationMigrationRegistry,
   type ConfigurationMigrationRow,
   V018_CONFIGURATION_MIGRATIONS,
+  validateMigrationRegistry,
 } from '../configurationMigrationRegistry';
 import {
   MigrationNoticeDedupe,
@@ -113,6 +114,65 @@ describe('configuration migration runtime', () => {
     });
   });
 
+  test('a registry the validator certifies is never blamed on the user as an unknown key', () => {
+    // The registry's uniqueness key spans the version window and value shape, so one
+    // setting may legitimately carry a row per historical era. Such a registry is valid,
+    // but this interpreter takes no version input and cannot choose between the eras.
+    const multiEra: ConfigurationMigrationRegistry = (() => {
+      const base = compatibleRegistry();
+      const row = base.rows[0];
+      if (row === undefined) {
+        throw new Error('compatibleRegistry must define one row');
+      }
+      return {
+        ...base,
+        rows: [
+          { ...row, migration_id: 'era_a', introduced_version: '0.15.0' },
+          {
+            ...row,
+            migration_id: 'era_b',
+            introduced_version: '0.16.0',
+            old_value_shape: 'string',
+          },
+        ],
+      };
+    })();
+
+    // Load-bearing: the two modules must not disagree about what a valid registry is.
+    expect(validateMigrationRegistry(multiEra)).toEqual([]);
+
+    const result = interpretLegacyConfiguration(multiEra, {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource',
+      legacy_value_present: true,
+      legacy_value: true,
+      current_value_present: false,
+      current_value: null,
+    });
+
+    expect(result).toMatchObject({
+      status: 'invalid',
+      canonical_value_present: false,
+      notice_required: true,
+      // Not `legacy_key_not_registered`: the key is registered. Reporting a registry
+      // defect as an unknown user setting sends the user to fix the wrong thing.
+      reason_code: 'legacy_registry_ambiguous',
+    });
+  });
+
+  test('an unregistered legacy key names itself as unregistered', () => {
+    expect(
+      interpretLegacyConfiguration(compatibleRegistry(), {
+        old_key: 'perl-lsp.neverShipped',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: true,
+        current_value_present: false,
+        current_value: null,
+      }),
+    ).toMatchObject({ status: 'invalid', reason_code: 'legacy_key_not_registered' });
+  });
+
   test('wrong legacy scope is invalid rather than widening authority', () => {
     const result = interpretLegacyConfiguration(V018_CONFIGURATION_MIGRATIONS, {
       old_key: 'perl-lsp.mcp.servers',
@@ -128,6 +188,10 @@ describe('configuration migration runtime', () => {
       status: 'invalid',
       canonical_value_present: false,
       notice_required: true,
+      // This is a process-executing machine-scoped setting found in repository-controlled
+      // workspace configuration. The notice has to be able to say that, so the cause must
+      // survive as more than a bare `invalid`.
+      reason_code: 'legacy_key_scope_not_permitted',
     });
   });
 
