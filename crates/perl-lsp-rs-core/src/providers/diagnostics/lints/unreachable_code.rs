@@ -89,9 +89,8 @@ fn visit_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
 
         // Loop bodies: each body is an independent scope.
         // For `While`, also check the `continue { }` block independently.
-        // In a continue block, `next`/`redo` are NOT unconditional exits — they
-        // re-enter the loop iteration; only `last`, `die`, `return`, `exit`,
-        // `croak`, and `confess` terminate the continue block's execution.
+        // Loop-control statements in a continue block still terminate
+        // fallthrough to later siblings in that continue statement list.
         NodeKind::While { body, continue_block, .. } => {
             visit_node(body, diagnostics);
             if let Some(cb) = continue_block {
@@ -310,14 +309,11 @@ fn is_exit_function(name: &str) -> bool {
     matches!(bare, "die" | "exit" | "exec" | "croak" | "Carp::croak" | "confess" | "Carp::confess")
 }
 
-/// Visit a `continue { }` block, applying continue-block-specific exit semantics.
+/// Visit a `continue { }` block with statement-list-local fallthrough semantics.
 ///
-/// Inside a `continue` block, `next` and `redo` are **not** unconditional exits:
-/// - `next` re-enters the next loop iteration (the continue block may still execute).
-/// - `redo` re-runs the loop body without re-evaluating the condition.
-///
-/// Only `last`, `die`, `return`, `exit`, `croak`, and `confess` terminate
-/// the continue block's execution unconditionally.
+/// `next`, `last`, and `redo` transfer control away from the following sibling
+/// in the continue block. Their eventual destinations differ, but none falls
+/// through to the next statement in this list.
 fn visit_continue_block(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     match &node.kind {
         NodeKind::Block { statements } => {
@@ -332,8 +328,8 @@ fn visit_continue_block(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
 
 /// Walk a continue-block statement slice with continue-block exit semantics.
 ///
-/// Differs from `check_statement_list` in that `next` and `redo` are not
-/// treated as unconditional exits inside a continue block.
+/// Loop-control destinations remain distinct, but all unconditional
+/// `next`/`last`/`redo` forms terminate fallthrough to later siblings.
 fn check_continue_block_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) {
     let mut found_exit = false;
     let mut pending_goto_label = None;
@@ -384,11 +380,10 @@ fn labeled_statement_name(node: &Node) -> Option<&str> {
     Some(label.as_str())
 }
 
-/// Returns true if this node is an unconditional exit **within a continue block**.
+/// Returns true if this node terminates fallthrough within a continue block.
 ///
-/// `next` and `redo` are excluded here because inside a `continue { }` block
-/// they do not terminate the block — they jump to the next loop iteration or
-/// re-run the loop body respectively.
+/// Loop-control destinations differ, but unconditional `next`, `last`, and
+/// `redo` all prevent execution of the following sibling statement.
 fn is_unconditional_exit_in_continue(node: &Node) -> bool {
     match &node.kind {
         NodeKind::Return { .. } => true,
@@ -396,9 +391,7 @@ fn is_unconditional_exit_in_continue(node: &Node) -> bool {
         NodeKind::ExpressionStatement { expression } => {
             is_unconditional_exit_in_continue(expression)
         }
-        // Only `last` exits the loop from a continue block; `next` and `redo`
-        // do NOT terminate continue-block execution.
-        NodeKind::LoopControl { op, .. } => op.as_str() == "last",
+        NodeKind::LoopControl { op, .. } => matches!(op.as_str(), "last" | "next" | "redo"),
         NodeKind::Goto { .. } => true,
         NodeKind::StatementModifier { .. } => false,
         _ => false,
@@ -519,6 +512,98 @@ mod tests {
     fn next_in_loop_body_flags_subsequent() {
         let diags = unreachable_diags("for my $i (1..5) { next; print $i; }");
         assert!(has_pl406(&diags), "code after 'next' should be flagged: {diags:?}");
+    }
+
+    #[test]
+    fn redo_in_loop_body_flags_subsequent() {
+        let diags = unreachable_diags("while ($ready) { redo; print $ready; }");
+        assert!(has_pl406(&diags), "code after 'redo' should be flagged: {diags:?}");
+    }
+
+    #[test]
+    fn next_in_continue_block_flags_subsequent() {
+        let diags = unreachable_diags(
+            "while ($ready) { work(); } continue { next; print $ready; }",
+        );
+        assert!(
+            has_pl406(&diags),
+            "code after 'next' in continue should be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn last_in_continue_block_flags_subsequent() {
+        let diags = unreachable_diags(
+            "while ($ready) { work(); } continue { last; print $ready; }",
+        );
+        assert!(
+            has_pl406(&diags),
+            "code after 'last' in continue should be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn redo_in_continue_block_flags_subsequent() {
+        let diags = unreachable_diags(
+            "while ($ready) { work(); } continue { redo; print $ready; }",
+        );
+        assert!(
+            has_pl406(&diags),
+            "code after 'redo' in continue should be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn labelled_next_in_continue_block_flags_subsequent() {
+        let diags = unreachable_diags(
+            "OUTER: while ($ready) { work(); } continue { next OUTER; print $ready; }",
+        );
+        assert!(
+            has_pl406(&diags),
+            "code after labelled next in continue should be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn two_statements_after_next_in_continue_are_flagged() {
+        let diags = unreachable_diags(
+            "while ($ready) { work(); } continue { next; print 1; print 2; }",
+        );
+        assert_eq!(
+            count_pl406(&diags),
+            2,
+            "all later continue-block siblings should be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn postfix_loop_control_in_continue_keeps_fallthrough() {
+        for source in [
+            "while ($ready) { work(); } continue { next if $skip; print $ready; }",
+            "while ($ready) { work(); } continue { last unless $ready; print $ready; }",
+            "while ($ready) { work(); } continue { redo while $retry; print $ready; }",
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                !has_pl406(&diags),
+                "conditional loop control should preserve continue-block fallthrough: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn loop_control_does_not_poison_code_after_loop() {
+        for source in [
+            "while ($ready) { next; } print 'after';",
+            "while ($ready) { redo; } print 'after';",
+            "while ($ready) { last; } print 'after';",
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                !has_pl406(&diags),
+                "loop control should not make code after the loop unreachable: {diags:?}"
+            );
+        }
     }
 
     // --- eval block: die is caught, outer code is reachable ---
