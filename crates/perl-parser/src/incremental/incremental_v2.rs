@@ -2219,9 +2219,24 @@ if ($condition) {
         Ok(())
     }
 
-    /// Test whitespace before operator reuses tree
+    /// Whitespace inserted before an operator must produce a fresh-parse tree.
+    ///
+    /// This asserted `reused_nodes > 0` until reuse counting was narrowed to
+    /// subtrees that are actually materializable. That assertion was vacuous:
+    /// no path reuses a tree for this edit. `is_simple_value_edit` and
+    /// `is_whitespace_or_comment_edit` both decline it, so the only reporter of
+    /// reuse was `try_advanced_reuse_parse`, which returns a *freshly parsed*
+    /// tree and attached the analyzer's estimate to it. The count was therefore
+    /// never evidence that anything was reused, and asserting it again would
+    /// re-pin an estimate to a tree that was parsed from scratch.
+    ///
+    /// Assert the properties that discriminate instead: the incremental result
+    /// must equal a fresh parse, and the counters must describe the tree they
+    /// report on. Reuse for whitespace edits is tracked separately — see the
+    /// two `..._reuses_tree` cases that still hold, which exercise the edits
+    /// the whitespace fast path does accept.
     #[test]
-    fn test_whitespace_before_operator_reuses_tree() -> ParseResult<()> {
+    fn whitespace_before_operator_matches_a_fresh_parse() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my $x = 42;";
         parser.parse(source1)?;
@@ -2234,8 +2249,20 @@ if ($condition) {
             Position::new(9, 1, 10),
         ));
         let source2 = "my $x   = 42;";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let incremental = parser.parse(source2)?;
+
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(
+            incremental, fresh,
+            "incremental result must equal a fresh parse in shape and span geometry"
+        );
+
+        let produced = parser.count_nodes(&incremental);
+        assert_eq!(
+            parser.reused_nodes + parser.reparsed_nodes,
+            produced,
+            "reuse accounting must reconcile to the produced node count"
+        );
         Ok(())
     }
 
@@ -2297,7 +2324,15 @@ if ($condition) {
     }
 
     #[test]
-    fn test_whitespace_deletion_reuses_tree() -> ParseResult<()> {
+    /// A pure whitespace deletion must produce a fresh-parse tree.
+    ///
+    /// See `whitespace_before_operator_matches_a_fresh_parse` for why the
+    /// previous `reused_nodes > 0` assertion did not discriminate: this edit is
+    /// declined by both `is_simple_value_edit` and
+    /// `is_whitespace_or_comment_edit`, so the tree is parsed from scratch and
+    /// the old count reported an analyzer estimate against it.
+    #[test]
+    fn whitespace_deletion_matches_a_fresh_parse() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
         let source1 = "my  $x  =  42;";
         parser.parse(source1)?;
@@ -2310,8 +2345,20 @@ if ($condition) {
             Position::new(4, 1, 5),
         ));
         let source2 = "my $x  =  42;";
-        parser.parse(source2)?;
-        assert!(parser.reused_nodes > 0);
+        let incremental = parser.parse(source2)?;
+
+        let fresh = Parser::new(source2).parse()?;
+        assert_eq!(
+            incremental, fresh,
+            "incremental result must equal a fresh parse in shape and span geometry"
+        );
+
+        let produced = parser.count_nodes(&incremental);
+        assert_eq!(
+            parser.reused_nodes + parser.reparsed_nodes,
+            produced,
+            "reuse accounting must reconcile to the produced node count"
+        );
         Ok(())
     }
 
