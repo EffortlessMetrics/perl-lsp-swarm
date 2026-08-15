@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn text(value: &Value, pointer: &str) -> Option<&str> {
+fn text<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(Value::as_str).filter(|text| !text.trim().is_empty())
 }
 
