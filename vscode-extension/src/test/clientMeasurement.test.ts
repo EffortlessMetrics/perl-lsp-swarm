@@ -107,9 +107,15 @@ describe('VS Code client measurement recorder', () => {
   test('snapshot clones resource records so callers cannot mutate recorder state', () => {
     const recorder = new VscodeClientMeasurementRecorder(subject(), 0);
     recorder.observeResource('extension_owned_timers', 2);
-    const first = recorder.snapshot();
-    first.resources[0].value = 99;
-    expect(recorder.snapshot().resources[0].value).toBe(2);
+    const mutated = recorder.snapshot().resources[0];
+    // Narrow explicitly: an empty `resources` would otherwise make the mutation
+    // below a no-op and let the clone assertion pass without observing anything.
+    expect(mutated).toBeDefined();
+    if (mutated === undefined) {
+      return;
+    }
+    mutated.value = 99;
+    expect(recorder.snapshot().resources[0]?.value).toBe(2);
   });
 
   test('compares restart/reload resource baselines only when both observations exist', () => {
