@@ -128,9 +128,11 @@ fn slash_transition_distinguishes_division_regex_and_defined_or() -> R {
     );
     assert_eq!((defined_or_token.start, defined_or_token.end), (6, 8));
     assert!(!defined_or_token.token_type.is_recovery_token());
-    assert!(!defined_or
-        .iter()
-        .any(|token| { matches!(&token.token_type, TokenType::Division | TokenType::RegexMatch) }));
+    assert!(
+        !defined_or.iter().any(|token| {
+            matches!(&token.token_type, TokenType::Division | TokenType::RegexMatch)
+        })
+    );
     Ok(())
 }
 
@@ -255,9 +257,11 @@ fn data_section_is_terminal_code_state_with_one_body_and_one_eof() -> R {
     assert_eq!(tokens[body_index].start, tokens[marker_index].end);
     assert_eq!(tokens.len(), body_index + 2);
     assert!(matches!(&tokens[body_index + 1].token_type, TokenType::EOF));
-    assert!(!tokens[body_index + 1..]
-        .iter()
-        .any(|token| token.text.as_ref() == "sub" || token.text.as_ref() == "not_code"));
+    assert!(
+        !tokens[body_index + 1..]
+            .iter()
+            .any(|token| token.text.as_ref() == "sub" || token.text.as_ref() == "not_code")
+    );
     Ok(())
 }
 
@@ -302,8 +306,8 @@ fn checkpoint_after_arrow_replays_the_exact_method_suffix() -> R {
     assert_eq!(first_suffix, restored_suffix);
     let method = token_with_text(&restored_suffix, "m")?;
     assert!(matches!(&method.token_type, TokenType::Keyword(name) if name.as_ref() == "m"));
-    assert!(!restored_suffix
-        .iter()
-        .any(|token| matches!(&token.token_type, TokenType::RegexMatch)));
+    assert!(
+        !restored_suffix.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch))
+    );
     Ok(())
 }
