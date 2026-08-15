@@ -9,6 +9,7 @@ import { promisify } from 'util';
 import * as child_process from 'child_process';
 import * as tar from 'tar';
 import AdmZip from 'adm-zip';
+import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
 
 const execFile = promisify(child_process.execFile);
 
@@ -23,6 +24,27 @@ interface Release {
   /** Synthetic metadata produced for an internal download mirror. */
   internal?: boolean;
   assets: ReleaseAsset[];
+}
+
+/**
+ * Validate release metadata before any asset selection reads it. Remote JSON is
+ * untrusted input, so shape is checked rather than asserted with a cast.
+ */
+function isReleaseShape(value: unknown): value is Release {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Partial<Release>;
+  return (
+    typeof candidate.tag_name === 'string' &&
+    Array.isArray(candidate.assets) &&
+    candidate.assets.every(
+      (asset) =>
+        Boolean(asset) &&
+        typeof asset.name === 'string' &&
+        typeof asset.browser_download_url === 'string',
+    )
+  );
 }
 
 // Retry budget for transient managed-install file locks. Total wait grows to
@@ -320,6 +342,8 @@ export class BinaryDownloader {
   private static readonly REPO_OWNER = 'EffortlessMetrics';
   private static readonly REPO_NAME = 'perl-lsp';
   private static readonly BINARY_NAME = 'perllsp';
+  /** Release metadata envelope. Real GitHub release JSON is far below this. */
+  private static readonly MAX_RELEASE_METADATA_BYTES = 1024 * 1024;
   private lastErrorMessage: string | undefined;
 
   constructor(
@@ -512,7 +536,9 @@ export class BinaryDownloader {
       async (progress, token) => {
         // Get latest release info
         progress.report({ increment: 0, message: 'Fetching release information...' });
-        const release = await this.getLatestRelease();
+        // Pass the progress token so a cancel during the metadata request is
+        // observed while it is in flight, not only after it returns.
+        const release = await this.getLatestRelease(30000, token);
 
         if (token.isCancellationRequested) {
           throw new Error('Download cancelled');
@@ -726,7 +752,10 @@ export class BinaryDownloader {
     );
   }
 
-  private async getLatestRelease(timeoutMs = 30000): Promise<Release> {
+  private async getLatestRelease(
+    timeoutMs = 30000,
+    cancellationToken?: vscode.CancellationToken,
+  ): Promise<Release> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const channel = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
@@ -739,8 +768,9 @@ export class BinaryDownloader {
 
     let url: string;
     if (channel === 'tag' && versionTag) {
-      // Get specific release by tag
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/tags/${versionTag}`;
+      // Get specific release by tag. The tag is user configuration, so it is
+      // encoded before it reaches the API path.
+      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/tags/${encodeURIComponent(versionTag)}`;
     } else if (channel === 'stable') {
       // Get latest non-prerelease
       url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
@@ -749,100 +779,55 @@ export class BinaryDownloader {
       url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/latest`;
     }
 
-    return new Promise((resolve, reject) => {
-      const isHttps = url.startsWith('https:');
-      let timedOut = false;
-      let timeout: NodeJS.Timeout | undefined;
-      let request: http.ClientRequest | undefined;
+    const isHttps = url.startsWith('https:');
+    const httpConfig = vscode.workspace.getConfiguration('http');
+    const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+    const options = {
+      headers: githubApiHeaders(url, proxyStrictSSL),
+      rejectUnauthorized: proxyStrictSSL,
+    };
 
-      const httpConfig = vscode.workspace.getConfiguration('http');
-      const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
-      const options = {
-        headers: githubApiHeaders(url, proxyStrictSSL),
-        rejectUnauthorized: proxyStrictSSL,
-      };
-
-      timeout = setTimeout(() => {
-        timedOut = true;
-        if (request) {
-          request.destroy();
-        }
-        reject(new Error(`Release fetch timeout after ${timeoutMs / 1000} seconds`));
-      }, timeoutMs);
-
-      try {
-        request = this.httpGet(isHttps, url, options, (res) => {
-          let data = '';
-          res.on('data', (chunk) => (data += chunk));
-          res.on('end', () => {
-            if (timedOut) {
-              return;
-            }
-            if (timeout) {
-              clearTimeout(timeout);
-            }
-            try {
-              const parsed: unknown = JSON.parse(data);
-              if (
-                parsed &&
-                typeof parsed === 'object' &&
-                !Array.isArray(parsed) &&
-                'message' in parsed
-              ) {
-                const msg = parsed as { message: string };
-                if (msg.message.includes('Not Found')) {
-                  reject(new Error('No releases found'));
-                  return;
-                }
-                reject(new Error(`GitHub API error: ${msg.message}`));
-                return;
-              }
-              if (Array.isArray(parsed)) {
-                // For stable channel, find first non-prerelease
-                const releases = parsed as Release[];
-                const stableRelease = releases.find((r) => !r.prerelease);
-                if (stableRelease) {
-                  resolve(stableRelease);
-                } else {
-                  const fallbackRelease = releases[0];
-                  if (fallbackRelease) {
-                    resolve(fallbackRelease); // Fall back to latest
-                  } else {
-                    reject(new Error('No releases found'));
-                  }
-                }
-              } else {
-                resolve(parsed as Release);
-              }
-            } catch (e) {
-              reject(e);
-            }
-          });
-          res.on('error', (err) => {
-            if (timeout) {
-              clearTimeout(timeout);
-            }
-            if (!timedOut) {
-              reject(err);
-            }
-          });
-        });
-
-        request.on('error', (err) => {
-          if (timeout) {
-            clearTimeout(timeout);
-          }
-          if (!timedOut) {
-            reject(err);
-          }
-        });
-      } catch (err) {
-        if (timeout) {
-          clearTimeout(timeout);
-        }
-        reject(err);
+    let parsed: unknown;
+    try {
+      parsed = await fetchBoundedJson<unknown>({
+        requestFactory: (listener) => this.httpGet(isHttps, url, options, listener),
+        timeoutMs,
+        maxBytes: BinaryDownloader.MAX_RELEASE_METADATA_BYTES,
+        cancellationToken,
+        operationName: 'Release fetch',
+      });
+    } catch (error) {
+      // Preserve the established message for a missing release.
+      if (error instanceof BoundedJsonStatusError && error.statusCode === 404) {
+        throw new Error('No releases found');
       }
-    });
+      throw error;
+    }
+
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'message' in parsed) {
+      const message = (parsed as { message?: unknown }).message;
+      if (typeof message === 'string') {
+        if (message.includes('Not Found')) {
+          throw new Error('No releases found');
+        }
+        throw new Error(`GitHub API error: ${message}`);
+      }
+    }
+
+    if (Array.isArray(parsed)) {
+      // For stable channel, find first non-prerelease, else fall back to latest.
+      const releases = parsed.filter(isReleaseShape);
+      const selected = releases.find((release) => !release.prerelease) ?? releases[0];
+      if (!selected) {
+        throw new Error('No releases found');
+      }
+      return selected;
+    }
+
+    if (!isReleaseShape(parsed)) {
+      throw new Error('Release metadata response has an invalid schema');
+    }
+    return parsed;
   }
 
   private async getInternalRelease(baseUrl: string, version: string): Promise<Release> {

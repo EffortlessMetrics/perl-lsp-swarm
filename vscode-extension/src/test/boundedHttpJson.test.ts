@@ -1,10 +1,7 @@
 import * as http from 'http';
-import { AddressInfo } from 'net';
-import {
-  CancellationTokenLike,
-  DisposableLike,
-  fetchBoundedJson,
-} from '../boundedHttpJson';
+import type { AddressInfo } from 'net';
+import { fetchBoundedJson } from '../boundedHttpJson';
+import type { CancellationTokenLike, DisposableLike } from '../boundedHttpJson';
 
 class TestCancellationToken implements CancellationTokenLike {
   isCancellationRequested = false;

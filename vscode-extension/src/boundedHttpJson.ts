@@ -9,12 +9,27 @@ export interface CancellationTokenLike {
   onCancellationRequested(listener: () => void): DisposableLike;
 }
 
+/**
+ * Raised when the response carries a non-success status. Callers that must
+ * preserve their own status-specific messages read `statusCode` instead of
+ * matching on the message text.
+ */
+export class BoundedJsonStatusError extends Error {
+  public readonly statusCode: number;
+
+  constructor(operationName: string, statusCode: number) {
+    super(`${operationName} failed: HTTP ${statusCode}`);
+    this.name = 'BoundedJsonStatusError';
+    this.statusCode = statusCode;
+  }
+}
+
 export interface BoundedJsonRequestOptions {
   requestFactory: (listener: (response: http.IncomingMessage) => void) => http.ClientRequest;
   timeoutMs: number;
   maxBytes: number;
-  cancellationToken?: CancellationTokenLike;
-  operationName?: string;
+  cancellationToken?: CancellationTokenLike | undefined;
+  operationName?: string | undefined;
 }
 
 /**
@@ -75,10 +90,14 @@ export function fetchBoundedJson<T>(options: BoundedJsonRequestOptions): Promise
       reject(error);
     };
 
+    // Settle before tearing down the socket. Destroying first lets the
+    // transport's own 'aborted'/'error' events settle the promise with a
+    // generic transport message, losing the real reason (deadline, byte
+    // envelope, cancellation, or non-success status).
     const abort = (error: Error): void => {
-      response?.destroy(error);
-      request?.destroy(error);
       fail(error);
+      response?.destroy();
+      request?.destroy();
     };
 
     try {
@@ -86,16 +105,14 @@ export function fetchBoundedJson<T>(options: BoundedJsonRequestOptions): Promise
         response = incoming;
         const statusCode = incoming.statusCode ?? 0;
         if (statusCode < 200 || statusCode >= 300) {
-          abort(new Error(`${operationName} failed: HTTP ${statusCode}`));
+          abort(new BoundedJsonStatusError(operationName, statusCode));
           return;
         }
 
         const declaredLength = Number(incoming.headers['content-length']);
         if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
           abort(
-            new Error(
-              `${operationName} exceeded ${maxBytes} bytes (declared ${declaredLength})`,
-            ),
+            new Error(`${operationName} exceeded ${maxBytes} bytes (declared ${declaredLength})`),
           );
           return;
         }
