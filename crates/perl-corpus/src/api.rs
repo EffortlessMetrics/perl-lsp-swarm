@@ -26,7 +26,11 @@ pub use crate::glob_expressions::{
 };
 pub use crate::gold::*;
 pub use crate::inventory::*;
-pub use crate::loading::{parse_dir, parse_file};
+pub use crate::loading::{
+    CorpusLoadError, NewlineStyle, PlainPerlSource, SectionCaseId, SectionedCase,
+    SectionedCorpusDocument, load_plain_perl_source, load_sectioned_corpus_document, parse_dir,
+    parse_file,
+};
 pub use crate::metadata::{Section, find_by_flag, find_by_tag};
 pub use crate::sidecar::*;
 pub use crate::tie_interface::{
