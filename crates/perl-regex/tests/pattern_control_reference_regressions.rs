@@ -7,21 +7,13 @@ use perl_regex::analyzer::{
 
 fn profile() -> CaptureLanguageProfile {
     CaptureLanguageProfile::new(
-        RegexLanguageProfile::new(
-            Some(PerlVersion::new(5, 44)),
-            FeatureState::Disabled,
-        ),
+        RegexLanguageProfile::new(Some(PerlVersion::new(5, 44)), FeatureState::Disabled),
         FeatureState::Enabled,
     )
 }
 
 fn analyze(pattern: &str) -> PatternControlAnalysis {
-    RegexAnalyzer::analyze_pattern_controls(
-        pattern,
-        0,
-        EffectiveModifiers::default(),
-        profile(),
-    )
+    RegexAnalyzer::analyze_pattern_controls(pattern, 0, EffectiveModifiers::default(), profile())
 }
 
 #[test]
@@ -44,9 +36,11 @@ fn g_angle_name_is_rejected_instead_of_becoming_a_perl_backreference() {
 
     assert_eq!(analysis.facts.len(), 1);
     assert_eq!(analysis.facts[0].kind.as_str(), "unsupported");
-    assert!(analysis.diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == PatternControlDiagnosticCode::InvalidReference
-    }));
+    assert!(
+        analysis.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == PatternControlDiagnosticCode::InvalidReference
+        })
+    );
 }
 
 #[test]
@@ -55,9 +49,11 @@ fn positive_relative_g_reference_is_rejected() {
 
     assert_eq!(analysis.facts.len(), 1);
     assert_eq!(analysis.facts[0].kind.as_str(), "unsupported");
-    assert!(analysis.diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == PatternControlDiagnosticCode::InvalidReference
-    }));
+    assert!(
+        analysis.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == PatternControlDiagnosticCode::InvalidReference
+        })
+    );
 }
 
 #[test]

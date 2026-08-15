@@ -1,18 +1,14 @@
 use perl_regex::RegexAnalyzer;
 use perl_regex::analyzer::{
     CaptureLanguageProfile, EffectiveModifiers, FeatureState, PatternBoundaryKind,
-    PatternControlAnalysis, PatternControlDiagnosticCode, PatternControlKind,
-    PatternControlResolution, PatternControlUnresolvedReason, PatternExtendedMode, PerlVersion,
-    RegexLanguageProfile,
+    PatternControlAnalysis, PatternControlDiagnosticCode, PatternControlResolution,
+    PatternControlUnresolvedReason, PatternExtendedMode, PerlVersion, RegexLanguageProfile,
 };
 use perl_regex::validator::RegexDiagnosticClass;
 
 fn profile(minor: u16) -> CaptureLanguageProfile {
     CaptureLanguageProfile::new(
-        RegexLanguageProfile::new(
-            Some(PerlVersion::new(5, minor)),
-            FeatureState::Disabled,
-        ),
+        RegexLanguageProfile::new(Some(PerlVersion::new(5, minor)), FeatureState::Disabled),
         FeatureState::Enabled,
     )
 }
@@ -36,8 +32,8 @@ fn resolved_target_indexes(resolution: &PatternControlResolution) -> Vec<usize> 
 }
 
 #[test]
-fn keep_anchor_has_exact_body_and_original_source_ranges()
--> Result<(), Box<dyn std::error::Error>> {
+fn keep_anchor_has_exact_body_and_original_source_ranges() -> Result<(), Box<dyn std::error::Error>>
+{
     let analysis = analyze(r"(?<x>foo)\Kbar", 40);
 
     assert_eq!(analysis.facts.len(), 1);
@@ -128,25 +124,22 @@ fn recursion_subpattern_calls_and_conditionals_are_distinct_facts()
 #[test]
 fn interpolation_preserves_earlier_exact_facts_and_qualifies_later_resolution()
 -> Result<(), Box<dyn std::error::Error>> {
-    let analysis = analyze(
-        r"(?<before>a)\k<before>$runtime(?<after>b)\k<after>",
-        0,
-    );
+    let analysis = analyze(r"(?<before>a)\k<before>$runtime(?<after>b)\k<after>", 0);
 
     assert_eq!(analysis.facts.len(), 3);
-    assert!(matches!(
-        analysis.facts[0].resolution,
-        PatternControlResolution::Resolved { .. }
-    ));
+    assert!(matches!(analysis.facts[0].resolution, PatternControlResolution::Resolved { .. }));
     assert_eq!(analysis.facts[1].kind.as_str(), "source_interpolation");
     assert!(matches!(
         analysis.facts[2].resolution,
         PatternControlResolution::DynamicUnknown { .. }
     ));
     assert!(analysis.status.dynamic_pattern);
-    assert!(analysis.boundaries.iter().any(|boundary| {
-        boundary.kind == PatternBoundaryKind::SourceInterpolation
-    }));
+    assert!(
+        analysis
+            .boundaries
+            .iter()
+            .any(|boundary| { boundary.kind == PatternBoundaryKind::SourceInterpolation })
+    );
     assert!(analysis.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == PatternControlDiagnosticCode::DynamicPatternBoundary
             && diagnostic.class == RegexDiagnosticClass::DynamicBoundary
@@ -165,16 +158,19 @@ fn deferred_runtime_regex_text_is_a_typed_completeness_boundary()
         PatternControlResolution::DynamicUnknown { .. }
     ));
     assert!(analysis.status.dynamic_pattern);
-    assert!(analysis.boundaries.iter().any(|boundary| {
-        boundary.kind == PatternBoundaryKind::RuntimePattern
-    }));
+    assert!(
+        analysis
+            .boundaries
+            .iter()
+            .any(|boundary| { boundary.kind == PatternBoundaryKind::RuntimePattern })
+    );
     Ok(())
 }
 
 #[test]
 fn quoted_classes_and_comments_do_not_create_reference_facts()
 -> Result<(), Box<dyn std::error::Error>> {
-    let analysis = analyze(r"\Q\k<x>(?R)\E[\1](?#(?&x))(?<x>a)\k<x>", 0);
+    let analysis = analyze(r"\Q\k<x>(?R)\E[\1](?#(?&x)(?<x>a)\k<x>", 0);
 
     assert_eq!(analysis.facts.len(), 1);
     assert_eq!(analysis.facts[0].kind.as_str(), "named_backreference");
@@ -183,21 +179,15 @@ fn quoted_classes_and_comments_do_not_create_reference_facts()
 }
 
 #[test]
-fn complete_missing_reference_is_a_syntax_diagnostic()
--> Result<(), Box<dyn std::error::Error>> {
+fn complete_missing_reference_is_a_syntax_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
     let analysis = analyze(r"(?<x>a)\k<missing>", 0);
 
     assert!(matches!(
         analysis.facts[0].resolution,
-        PatternControlResolution::Unresolved(
-            PatternControlUnresolvedReason::MissingCaptureName
-        )
+        PatternControlResolution::Unresolved(PatternControlUnresolvedReason::MissingCaptureName)
     ));
     assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(
-        analysis.diagnostics[0].code,
-        PatternControlDiagnosticCode::UnresolvedReference
-    );
+    assert_eq!(analysis.diagnostics[0].code, PatternControlDiagnosticCode::UnresolvedReference);
     assert_eq!(analysis.diagnostics[0].class, RegexDiagnosticClass::Syntax);
     Ok(())
 }
@@ -214,9 +204,7 @@ fn incompatible_capture_profile_is_not_reported_as_a_missing_name()
 
     assert!(matches!(
         analysis.facts[0].resolution,
-        PatternControlResolution::Unresolved(
-            PatternControlUnresolvedReason::ProfileIncompatible
-        )
+        PatternControlResolution::Unresolved(PatternControlUnresolvedReason::ProfileIncompatible)
     ));
     assert!(analysis.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == PatternControlDiagnosticCode::ProfileIncompatibleReference
@@ -236,9 +224,12 @@ fn unsupported_star_controls_fail_closed_without_renumbering_guesses()
     ));
     assert!(analysis.status.unsupported);
     assert!(analysis.status.structural_uncertainty);
-    assert!(analysis.boundaries.iter().any(|boundary| {
-        boundary.kind == PatternBoundaryKind::UnsupportedControl
-    }));
+    assert!(
+        analysis
+            .boundaries
+            .iter()
+            .any(|boundary| { boundary.kind == PatternBoundaryKind::UnsupportedControl })
+    );
     Ok(())
 }
 
@@ -251,9 +242,12 @@ fn optimistic_embedded_code_is_execution_not_runtime_pattern_text()
     assert!(analysis.status.dynamic_execution);
     assert!(!analysis.status.dynamic_pattern);
     assert!(analysis.status.structural_uncertainty);
-    assert!(analysis.boundaries.iter().any(|boundary| {
-        boundary.kind == PatternBoundaryKind::EmbeddedCodeExecution
-    }));
+    assert!(
+        analysis
+            .boundaries
+            .iter()
+            .any(|boundary| { boundary.kind == PatternBoundaryKind::EmbeddedCodeExecution })
+    );
     assert!(analysis.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == PatternControlDiagnosticCode::EmbeddedCodeBoundary
     }));
@@ -261,8 +255,7 @@ fn optimistic_embedded_code_is_execution_not_runtime_pattern_text()
 }
 
 #[test]
-fn local_modifier_scope_is_retained_on_each_fact()
--> Result<(), Box<dyn std::error::Error>> {
+fn local_modifier_scope_is_retained_on_each_fact() -> Result<(), Box<dyn std::error::Error>> {
     let analysis = analyze(r"(?x:\K)(?-x:\K)", 0);
 
     assert_eq!(analysis.facts.len(), 2);
@@ -272,16 +265,13 @@ fn local_modifier_scope_is_retained_on_each_fact()
 }
 
 #[test]
-fn malformed_reference_spelling_is_retained_and_diagnosed()
--> Result<(), Box<dyn std::error::Error>> {
+fn malformed_reference_spelling_is_retained_and_diagnosed() -> Result<(), Box<dyn std::error::Error>>
+{
     let analysis = analyze(r"\k<unclosed", 0);
 
     assert_eq!(analysis.facts.len(), 1);
     assert_eq!(analysis.facts[0].kind.as_str(), "unsupported");
-    assert_eq!(
-        analysis.diagnostics[0].code,
-        PatternControlDiagnosticCode::InvalidReference
-    );
+    assert_eq!(analysis.diagnostics[0].code, PatternControlDiagnosticCode::InvalidReference);
     assert!(analysis.status.unsupported);
     Ok(())
 }
@@ -295,5 +285,22 @@ fn source_offset_overflow_fails_mapping_without_fabricating_coordinates()
     assert!(analysis.facts[0].source_range.is_none());
     assert!(!analysis.status.source_mapping_complete);
     assert!(!analysis.status.is_complete());
+    Ok(())
+}
+
+#[test]
+fn unmatched_paren_after_a_comment_keeps_numbering_structurally_unknown()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A `(?#...)` comment ends at the first `)`, so the trailing `)` here is unmatched
+    // and the pattern is not valid Perl. The reference is still recognized, but
+    // numbering must fail closed rather than report an exact target.
+    let analysis = analyze(r"\Q\k<x>(?R)\E[\1](?#(?&x))(?<x>a)\k<x>", 0);
+
+    assert_eq!(analysis.facts.len(), 1);
+    assert_eq!(analysis.facts[0].kind.as_str(), "named_backreference");
+    assert!(matches!(
+        analysis.facts[0].resolution,
+        PatternControlResolution::StructuralUnknown { .. }
+    ));
     Ok(())
 }
