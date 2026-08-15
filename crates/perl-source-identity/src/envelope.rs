@@ -23,7 +23,7 @@
 //! Consumers should reject envelopes whose `schema_version` they do not
 //! recognize.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     ContentRevision, LogicalSourceId, PhysicalSourceRole, ProjectId, SourceGeneration,
@@ -35,11 +35,39 @@ pub const SCHEMA_VERSION_V1: u32 = 1;
 
 /// A versioned schema marker for the `source_identity.v1` envelope format.
 ///
-/// Consumers should verify the schema version before interpreting the envelope.
-/// An unknown version must be treated as an error, not silently promoted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// # Fail-closed deserialization
+///
+/// Deserialization **rejects** any version this build does not support. An
+/// unrecognized version is an error at the serde boundary rather than a value
+/// that flows onward and is only caught if a consumer remembers to call
+/// [`is_supported`](Self::is_supported). This is deliberate: the failure mode
+/// worth preventing is a future-schema envelope being read as though it were
+/// v1, which is exactly what a permissive parse would allow.
+///
+/// Constructing an unsupported version *in code* remains possible (the field is
+/// public), so tests and version-negotiation logic can still reason about
+/// versions this build does not accept on the wire. A consumer that needs to
+/// inspect an unknown-version payload should decode it into a
+/// format-native value (e.g. `serde_json::Value`) and read the
+/// `schema_version` field directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct SourceIdentitySchemaVersion(pub u32);
+
+impl<'de> Deserialize<'de> for SourceIdentitySchemaVersion {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = u32::deserialize(deserializer)?;
+        let version = Self(raw);
+        if version.is_supported() {
+            Ok(version)
+        } else {
+            Err(serde::de::Error::invalid_value(
+                serde::de::Unexpected::Unsigned(u64::from(raw)),
+                &"a supported source_identity schema version (currently 1)",
+            ))
+        }
+    }
+}
 
 impl SourceIdentitySchemaVersion {
     /// The current `source_identity.v1` schema version.
@@ -392,5 +420,91 @@ mod tests {
             "same bytes → same content revision"
         );
         assert_ne!(env1.generation, env2.generation, "generation advances");
+    }
+
+    // ── Fail-closed deserialization ───────────────────────────────────────────
+
+    fn sample_envelope() -> SourceIdentityEnvelope {
+        let (project, root, src) = make_envelope();
+        let digest = ContentDigest::of_bytes(b"package Widget;\n1;\n");
+        SourceIdentityEnvelope::for_workspace_file(
+            project,
+            root,
+            src.clone(),
+            Some(ContentRevision::new(src, digest)),
+            SourceGeneration::known("3"),
+        )
+    }
+
+    /// An envelope claiming a schema version this build does not implement must
+    /// not deserialize into a value that looks like a valid v1 envelope.
+    #[test]
+    fn envelope_rejects_unsupported_schema_version() {
+        let json = serde_json::to_string(&sample_envelope()).expect("serialize");
+        assert!(json.contains("\"schema_version\":1"), "baseline shape changed: {json}");
+
+        for bad_version in ["0", "2", "99", "4294967295"] {
+            let mutated =
+                json.replace("\"schema_version\":1", &format!("\"schema_version\":{bad_version}"));
+            assert_ne!(mutated, json, "mutation must actually apply");
+            let parsed = serde_json::from_str::<SourceIdentityEnvelope>(&mutated);
+            assert!(
+                parsed.is_err(),
+                "schema version {bad_version} must be rejected, got {parsed:?}"
+            );
+        }
+    }
+
+    /// `is_supported()` must still describe versions this build rejects, so
+    /// version-negotiation logic can reason about them without a wire decode.
+    #[test]
+    fn unsupported_schema_version_is_constructible_in_code() {
+        let future = SourceIdentitySchemaVersion(2);
+        assert!(!future.is_supported());
+        assert_eq!(future.as_u32(), 2);
+    }
+
+    /// A malformed ID anywhere in the envelope must fail the whole decode,
+    /// rather than yielding an envelope carrying an unchecked identity string.
+    #[test]
+    fn envelope_rejects_malformed_ids() {
+        let json = serde_json::to_string(&sample_envelope()).expect("serialize");
+        let original = ProjectId::from_canonical_name("acme/widget");
+
+        let corrupted = json.replace(original.as_wire(), "project:sha256:not-a-real-digest");
+        assert_ne!(corrupted, json, "mutation must actually apply");
+        assert!(
+            serde_json::from_str::<SourceIdentityEnvelope>(&corrupted).is_err(),
+            "malformed project ID must fail the envelope decode"
+        );
+    }
+
+    #[test]
+    fn envelope_rejects_malformed_content_digest() {
+        let json = serde_json::to_string(&sample_envelope()).expect("serialize");
+        let digest = ContentDigest::of_bytes(b"package Widget;\n1;\n");
+
+        // Uppercase hex is a valid SHA-256 rendering but not a valid wire form.
+        let upper = format!("sha256:{}", digest.as_wire()["sha256:".len()..].to_ascii_uppercase());
+        let corrupted = json.replace(digest.as_wire(), &upper);
+        assert_ne!(corrupted, json, "mutation must actually apply");
+        assert!(
+            serde_json::from_str::<SourceIdentityEnvelope>(&corrupted).is_err(),
+            "non-canonical content digest must fail the envelope decode"
+        );
+    }
+
+    #[test]
+    fn envelope_rejects_missing_required_fields() {
+        for missing in ["project_id", "workspace_root_id", "logical_source_id", "generation"] {
+            let value = serde_json::to_value(sample_envelope()).expect("to_value");
+            let mut map = value.as_object().expect("envelope is a JSON object").clone();
+            assert!(map.remove(missing).is_some(), "field {missing} must exist to be removed");
+            let json = serde_json::to_string(&map).expect("serialize");
+            assert!(
+                serde_json::from_str::<SourceIdentityEnvelope>(&json).is_err(),
+                "envelope missing `{missing}` must not deserialize"
+            );
+        }
     }
 }

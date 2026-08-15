@@ -16,7 +16,7 @@
 //! silently promoted. A future digest algorithm would use a different prefix
 //! (e.g. `blake3:`) and carry a distinct [`ContentDigest`] schema version.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 
 /// Current content-digest schema version.
@@ -24,6 +24,30 @@ pub const CONTENT_DIGEST_SCHEMA_VERSION: u32 = 1;
 
 /// Prefix string for SHA-256 content digests on the wire.
 const SHA256_PREFIX: &str = "sha256:";
+
+/// Number of hex digits in a SHA-256 wire body.
+pub(crate) const SHA256_HEX_LEN: usize = 64;
+
+/// Returns `true` only for exactly 64 **lowercase** ASCII hex digits.
+///
+/// Case matters: these types compare and hash by their wire string, so
+/// accepting `SHA256:AB…` alongside `sha256:ab…` would produce two unequal
+/// values for one identity. Uppercase input is rejected rather than
+/// normalized, so a producer emitting the wrong case fails loudly instead of
+/// having its output silently rewritten.
+pub(crate) fn is_sha256_hex_body(s: &str) -> bool {
+    s.len() == SHA256_HEX_LEN && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Reject a wire string that is not `<prefix><64 lowercase hex digits>`.
+pub(crate) fn validate_prefixed_wire(s: &str, prefix: &str) -> bool {
+    s.strip_prefix(prefix).is_some_and(is_sha256_hex_body)
+}
+
+/// Build a `serde` error describing a rejected wire string.
+pub(crate) fn wire_error<E: serde::de::Error>(got: &str, expected: &'static str) -> E {
+    E::invalid_value(serde::de::Unexpected::Str(got), &expected)
+}
 
 /// A fixed 32-byte SHA-256 output.
 type Sha256Bytes = [u8; 32];
@@ -78,10 +102,24 @@ fn length_prefixed(data: &[u8]) -> Vec<u8> {
 /// # Wire format
 ///
 /// `sha256:<64 lowercase hex digits>` — the `sha256:` prefix is mandatory and
-/// verified on deserialization.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// the body must be lowercase. Both are verified on deserialization, so a
+/// `ContentDigest` obtained from untrusted input is always well-formed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct ContentDigest(String);
+
+/// Human-readable description of the accepted [`ContentDigest`] wire form.
+const CONTENT_DIGEST_EXPECTED: &str =
+    "a content digest of the form `sha256:<64 lowercase hex digits>`";
+
+impl<'de> Deserialize<'de> for ContentDigest {
+    /// Validating deserialization: an ill-formed digest is rejected rather than
+    /// carried into the type system as an unchecked string.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::from_wire(&raw).ok_or_else(|| wire_error(&raw, CONTENT_DIGEST_EXPECTED))
+    }
+}
 
 /// Domain separator for content digests.
 const CONTENT_DIGEST_DOMAIN: &[u8] = b"perl-lsp:content-digest:v1\0";
@@ -101,15 +139,12 @@ impl ContentDigest {
     /// Parse a content digest from its wire representation.
     ///
     /// Returns `None` if the string does not start with `sha256:` or if the hex
-    /// body is not exactly 64 lowercase hex digits.
+    /// body is not exactly 64 **lowercase** hex digits. Uppercase hex is
+    /// rejected, not normalized: equality and hashing are defined over the wire
+    /// string, so admitting both cases would give one digest two identities.
     #[must_use]
     pub fn from_wire(s: &str) -> Option<Self> {
-        let hex = s.strip_prefix(SHA256_PREFIX)?;
-        if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            Some(Self(s.to_owned()))
-        } else {
-            None
-        }
+        validate_prefixed_wire(s, SHA256_PREFIX).then(|| Self(s.to_owned()))
     }
 
     /// The wire representation, e.g. `sha256:abc123...`.
@@ -202,6 +237,60 @@ mod tests {
         assert!(ContentDigest::from_wire("md5:abc").is_none(), "wrong prefix");
         assert!(ContentDigest::from_wire("sha256:tooshort").is_none(), "too few hex digits");
         assert!(ContentDigest::from_wire("sha256:").is_none(), "empty hex");
+        assert!(ContentDigest::from_wire("").is_none(), "empty string");
+        assert!(ContentDigest::from_wire(&"a".repeat(64)).is_none(), "missing prefix");
+    }
+
+    /// One digest must have exactly one wire spelling. Accepting uppercase hex
+    /// would make `sha256:AB…` and `sha256:ab…` unequal values for one identity.
+    #[test]
+    fn content_digest_rejects_uppercase_hex() {
+        let lower = ContentDigest::of_bytes(b"case sensitivity matters");
+        let upper_body = lower.as_wire()[SHA256_PREFIX.len()..].to_ascii_uppercase();
+        let upper = format!("{SHA256_PREFIX}{upper_body}");
+        assert_ne!(upper, lower.as_wire(), "test vector must actually contain hex letters");
+        assert!(
+            ContentDigest::from_wire(&upper).is_none(),
+            "uppercase hex must be rejected, not normalized: {upper}"
+        );
+        assert!(
+            ContentDigest::from_wire(
+                "SHA256:0000000000000000000000000000000000000000000000000000000000000000"
+            )
+            .is_none(),
+            "uppercase prefix must be rejected"
+        );
+    }
+
+    #[test]
+    fn content_digest_rejects_non_hex_body() {
+        // 64 characters, but 'g' is not a hex digit.
+        let body = "g".repeat(64);
+        assert!(ContentDigest::from_wire(&format!("sha256:{body}")).is_none());
+    }
+
+    #[test]
+    fn content_digest_deserialization_is_validating() {
+        // Well-formed input survives the round trip.
+        let good = ContentDigest::of_bytes(b"ok");
+        let json = serde_json::to_string(&good).expect("serialize");
+        let back: ContentDigest = serde_json::from_str(&json).expect("valid digest must parse");
+        assert_eq!(good, back);
+
+        // Ill-formed input is rejected at the serde boundary, so an invalid
+        // digest can never exist as a `ContentDigest` value.
+        for bad in [
+            "\"not-a-digest\"",
+            "\"sha256:short\"",
+            "\"md5:0000000000000000000000000000000000000000000000000000000000000000\"",
+            "\"sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+            "\"\"",
+        ] {
+            assert!(
+                serde_json::from_str::<ContentDigest>(bad).is_err(),
+                "deserialization must reject {bad}"
+            );
+        }
     }
 
     #[test]

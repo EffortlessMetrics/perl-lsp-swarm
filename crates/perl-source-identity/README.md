@@ -62,6 +62,33 @@ This is asserted by `tests/dependency_contract.rs`.
 | `WorkspaceRootId` | `root:sha256:<64 lowercase hex>` |
 | `LogicalSourceId` | `src:sha256:<64 lowercase hex>` |
 
+Every wire form is **validated on deserialization**. Each type accepts exactly
+one spelling of its value: the type prefix is mandatory, the digest body must be
+exactly 64 hex digits, and uppercase hex is rejected rather than normalized —
+equality and hashing are defined over the wire string, so admitting two
+spellings would give one identity two values. A wire string minted for one ID
+kind does not parse as another. `SourceIdentityEnvelope` likewise rejects a
+`schema_version` this build does not support, instead of decoding it as though
+it were v1.
+
+Together this means a value of any of these types, however it was obtained, is
+well-formed. `from_wire` returns `Option`; `serde` returns an error.
+
+## Ownership and the FNV-1a boundary
+
+This crate owns `source_identity.v1` — durable source/project/content identity
+that must survive across machines, checkouts, and time. That is a different
+concern from `perl-workspace-core`'s workspace-local `FileId`/`PackageId`/
+`SymbolId`, which PLSP-ADR-0006 mints with FNV-1a within a single extraction
+run. FNV-1a offers no collision resistance and so cannot carry durable
+cross-repository identity; the two coexist unambiguously because both wire forms
+are explicitly prefixed (`fnv64:` vs `sha256:`).
+
+See the "Scope boundary: `source_identity.v1`" section of
+[PLSP-ADR-0006](../../docs/adr/PLSP-ADR-0006-perl-workspace-core-facts-substrate.md)
+for the recorded decision. `LogicalSourceId` is **not** an alias for
+`perl-workspace-core`'s `FileId`.
+
 ## Quick start
 
 ```rust

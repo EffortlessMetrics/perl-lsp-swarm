@@ -20,9 +20,9 @@
 //! regardless of what bytes it currently contains. Content revision is tracked
 //! separately by [`crate::ContentRevision`].
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::digest::DomainHasher;
+use crate::digest::{DomainHasher, validate_prefixed_wire, wire_error};
 
 // ── Domain tags ──────────────────────────────────────────────────────────────
 
@@ -34,6 +34,55 @@ const LOGICAL_SOURCE_DOMAIN: &[u8] = b"perl-lsp:logical-source-id:v1\0";
 
 fn bytes_to_wire_hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Give one ID newtype its validating wire contract.
+///
+/// Every durable ID in this crate shares the same wire shape
+/// (`<type>:sha256:<64 lowercase hex digits>`) and the same fail-closed
+/// deserialization rule. Generating the three implementations from one macro
+/// keeps that contract identical by construction rather than by review: a
+/// change to the accepted form cannot land for one ID type and be forgotten
+/// for the others.
+macro_rules! wire_id {
+    ($ty:ident, $prefix:literal, $expected:literal) => {
+        impl $ty {
+            /// Parse this ID from its wire representation.
+            ///
+            /// Returns `None` unless the string is exactly
+            #[doc = concat!("`", $prefix, "<64 lowercase hex digits>`.")]
+            /// Uppercase hex is rejected rather than normalized, because
+            /// equality and hashing are defined over the wire string — one ID
+            /// must have exactly one spelling.
+            #[must_use]
+            pub fn from_wire(s: &str) -> Option<Self> {
+                validate_prefixed_wire(s, $prefix).then(|| Self(s.to_owned()))
+            }
+
+            /// The wire representation, e.g.
+            #[doc = concat!("`", $prefix, "…`.")]
+            #[must_use]
+            pub fn as_wire(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            /// Validating deserialization: an ID that does not match the wire
+            /// contract is rejected at the serde boundary, so an ill-formed ID
+            /// can never exist as a value of this type.
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let raw = String::deserialize(deserializer)?;
+                Self::from_wire(&raw).ok_or_else(|| wire_error(&raw, $expected))
+            }
+        }
+
+        impl std::fmt::Display for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+    };
 }
 
 // ── ProjectId ─────────────────────────────────────────────────────────────────
@@ -51,7 +100,7 @@ fn bytes_to_wire_hex(bytes: &[u8; 32]) -> String {
 /// ```
 ///
 /// Where `length_prefixed(x)` = `u32_be(len(x)) || x`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct ProjectId(String);
 
@@ -69,19 +118,13 @@ impl ProjectId {
         let raw = h.finish();
         Self(format!("project:sha256:{}", bytes_to_wire_hex(&raw)))
     }
-
-    /// The wire representation, e.g. `project:sha256:…`.
-    #[must_use]
-    pub fn as_wire(&self) -> &str {
-        &self.0
-    }
 }
 
-impl std::fmt::Display for ProjectId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+wire_id!(
+    ProjectId,
+    "project:sha256:",
+    "a project ID of the form `project:sha256:<64 lowercase hex digits>`"
+);
 
 // ── WorkspaceRootId ───────────────────────────────────────────────────────────
 
@@ -100,7 +143,7 @@ impl std::fmt::Display for ProjectId {
 ///   || length_prefixed(project_id.as_wire())
 ///   || length_prefixed(root_key)
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct WorkspaceRootId(String);
 
@@ -123,19 +166,13 @@ impl WorkspaceRootId {
         let raw = h.finish();
         Self(format!("root:sha256:{}", bytes_to_wire_hex(&raw)))
     }
-
-    /// The wire representation, e.g. `root:sha256:…`.
-    #[must_use]
-    pub fn as_wire(&self) -> &str {
-        &self.0
-    }
 }
 
-impl std::fmt::Display for WorkspaceRootId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+wire_id!(
+    WorkspaceRootId,
+    "root:sha256:",
+    "a workspace root ID of the form `root:sha256:<64 lowercase hex digits>`"
+);
 
 // ── LogicalSourceId ───────────────────────────────────────────────────────────
 
@@ -164,7 +201,7 @@ impl std::fmt::Display for WorkspaceRootId {
 ///   || length_prefixed(workspace_root_id.as_wire())
 ///   || length_prefixed(root_relative_path)
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct LogicalSourceId(String);
 
@@ -185,19 +222,13 @@ impl LogicalSourceId {
         let raw = h.finish();
         Self(format!("src:sha256:{}", bytes_to_wire_hex(&raw)))
     }
-
-    /// The wire representation, e.g. `src:sha256:…`.
-    #[must_use]
-    pub fn as_wire(&self) -> &str {
-        &self.0
-    }
 }
 
-impl std::fmt::Display for LogicalSourceId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+wire_id!(
+    LogicalSourceId,
+    "src:sha256:",
+    "a logical source ID of the form `src:sha256:<64 lowercase hex digits>`"
+);
 
 #[cfg(test)]
 mod tests {
@@ -331,6 +362,79 @@ mod tests {
             project.as_wire(),
             root.as_wire(),
             "type prefixes must prevent cross-type collisions"
+        );
+    }
+
+    // ── Wire parsing and validating deserialization ───────────────────────────
+
+    #[test]
+    fn id_wire_round_trips_through_from_wire() {
+        let project = ProjectId::from_canonical_name("acme/widget");
+        let root = WorkspaceRootId::from_project_and_root_key(&project, "main");
+        let src = LogicalSourceId::from_root_and_path(&root, "lib/App.pm");
+
+        assert_eq!(ProjectId::from_wire(project.as_wire()).as_ref(), Some(&project));
+        assert_eq!(WorkspaceRootId::from_wire(root.as_wire()).as_ref(), Some(&root));
+        assert_eq!(LogicalSourceId::from_wire(src.as_wire()).as_ref(), Some(&src));
+    }
+
+    /// The type prefix is load-bearing: a wire string minted for one ID kind
+    /// must not parse as another, even though the digest body is well-formed.
+    #[test]
+    fn id_wire_rejects_cross_type_substitution() {
+        let project = ProjectId::from_canonical_name("acme/widget");
+        let root = WorkspaceRootId::from_project_and_root_key(&project, "main");
+        let src = LogicalSourceId::from_root_and_path(&root, "lib/App.pm");
+
+        assert!(ProjectId::from_wire(root.as_wire()).is_none(), "root wire is not a project ID");
+        assert!(ProjectId::from_wire(src.as_wire()).is_none(), "src wire is not a project ID");
+        assert!(
+            WorkspaceRootId::from_wire(project.as_wire()).is_none(),
+            "project wire is not a root ID"
+        );
+        assert!(
+            LogicalSourceId::from_wire(root.as_wire()).is_none(),
+            "root wire is not a logical source ID"
+        );
+    }
+
+    #[test]
+    fn id_wire_rejects_malformed_bodies() {
+        let hex64 = "0".repeat(64);
+        assert!(ProjectId::from_wire("project:sha256:short").is_none(), "short body");
+        assert!(ProjectId::from_wire(&format!("project:sha256:{hex64}x")).is_none(), "long body");
+        assert!(ProjectId::from_wire(&hex64).is_none(), "no prefix");
+        assert!(ProjectId::from_wire("").is_none(), "empty");
+        assert!(
+            ProjectId::from_wire(&format!("project:sha256:{}", "A".repeat(64))).is_none(),
+            "uppercase hex must be rejected, not normalized"
+        );
+    }
+
+    #[test]
+    fn id_deserialization_is_validating() {
+        let project = ProjectId::from_canonical_name("acme/widget");
+        let json = serde_json::to_string(&project).expect("serialize");
+        let back: ProjectId = serde_json::from_str(&json).expect("valid wire must parse");
+        assert_eq!(project, back);
+
+        for bad in [
+            "\"\"",
+            "\"not-an-id\"",
+            "\"project:sha256:short\"",
+            "\"root:sha256:0000000000000000000000000000000000000000000000000000000000000000\"",
+            "\"project:sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        ] {
+            assert!(
+                serde_json::from_str::<ProjectId>(bad).is_err(),
+                "ProjectId deserialization must reject {bad}"
+            );
+        }
+
+        // A well-formed *project* ID must not deserialize into a root ID.
+        assert!(
+            serde_json::from_str::<WorkspaceRootId>(&json).is_err(),
+            "cross-type wire strings must not deserialize"
         );
     }
 }

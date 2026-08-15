@@ -109,6 +109,8 @@ allow = [
     "perl-position-tracking",
     "perl-token",
     "perl-test-facts",
+    # Canonical source_identity.v1 owner (PLSP-ADR-0006 "Scope boundary").
+    "perl-source-identity",
     # (perl-content-length-framing absorbed into perl-lsp-rs-core::transport::framing — Wave Final PR B)
     # (perl-percentile absorbed into perl-parser — Wave D)
     "perl-subprocess-runtime",
