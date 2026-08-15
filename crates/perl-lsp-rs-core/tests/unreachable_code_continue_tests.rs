@@ -1,691 +1,187 @@
-//! Tests for unreachable code detection in continue blocks (PL406)
+//! Parser-backed integration controls for PL406 loop and `continue` semantics.
 //!
-//! Verifies that the unreachable_code lint correctly identifies statements
-//! that cannot execute due to unconditional control-flow exits inside
-//! `continue { }` blocks, including `next` and `redo`: their eventual loop
-//! destinations differ, but neither falls through to the following sibling.
-//!
-//! Extracted from PR #4488 (feat: unreachable code detection in continue blocks,
-//! issue #3374). The original test file targeted `perl-lsp-diagnostics` which
-//! has since been absorbed into `perl-lsp-rs-core`.
+//! These tests exercise the public diagnostic entry point with source text.
+//! They deliberately distinguish exact language transfers from call spellings
+//! such as `croak`, `confess`, or `throw`, which require semantic authority
+//! before they may be treated as non-returning.
 
 use perl_lsp_rs_core::providers::diagnostics::Diagnostic;
 use perl_lsp_rs_core::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_parser::Parser;
-use perl_parser_core::{Node, NodeKind, SourceLocation};
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn loc(start: usize, end: usize) -> SourceLocation {
-    SourceLocation { start, end }
-}
-
-fn program(stmts: Vec<Node>) -> Node {
-    Node::new(NodeKind::Program { statements: stmts }, loc(0, 200))
-}
-
-fn block(stmts: Vec<Node>) -> Node {
-    Node::new(NodeKind::Block { statements: stmts }, loc(0, 100))
-}
-
-fn sub_node(name: &str, body: Node) -> Node {
-    Node::new(
-        NodeKind::Subroutine {
-            name: Some(name.to_string()),
-            name_span: None,
-            declarator: None,
-            prototype: None,
-            signature: None,
-            attributes: vec![],
-            body: Box::new(body),
-        },
-        loc(0, 100),
-    )
-}
-
-fn return_node() -> Node {
-    Node::new(NodeKind::Return { value: None }, loc(10, 20))
-}
-
-fn print_stmt(start: usize, end: usize) -> Node {
-    Node::new(
-        NodeKind::ExpressionStatement {
-            expression: Box::new(Node::new(
-                NodeKind::FunctionCall {
-                    name: "print".to_string(),
-                    args: vec![Node::new(
-                        NodeKind::String { value: "dead".to_string(), interpolated: false },
-                        loc(start + 6, end - 1),
-                    )],
-                },
-                loc(start, end),
-            )),
-        },
-        loc(start, end),
-    )
-}
-
-fn die_call(start: usize, end: usize) -> Node {
-    Node::new(
-        NodeKind::ExpressionStatement {
-            expression: Box::new(Node::new(
-                NodeKind::FunctionCall {
-                    name: "die".to_string(),
-                    args: vec![Node::new(
-                        NodeKind::String { value: "err".to_string(), interpolated: false },
-                        loc(start + 4, end - 1),
-                    )],
-                },
-                loc(start, end),
-            )),
-        },
-        loc(start, end),
-    )
-}
-
-fn exit_call(start: usize, end: usize) -> Node {
-    Node::new(
-        NodeKind::ExpressionStatement {
-            expression: Box::new(Node::new(
-                NodeKind::FunctionCall {
-                    name: "exit".to_string(),
-                    args: vec![Node::new(
-                        NodeKind::Number { value: "0".to_string() },
-                        loc(start + 5, end - 1),
-                    )],
-                },
-                loc(start, end),
-            )),
-        },
-        loc(start, end),
-    )
-}
-
-fn croak_unqualified_call(start: usize, end: usize) -> Node {
-    Node::new(
-        NodeKind::ExpressionStatement {
-            expression: Box::new(Node::new(
-                NodeKind::FunctionCall {
-                    name: "croak".to_string(),
-                    args: vec![Node::new(
-                        NodeKind::String { value: "err".to_string(), interpolated: false },
-                        loc(start + 6, end - 1),
-                    )],
-                },
-                loc(start, end),
-            )),
-        },
-        loc(start, end),
-    )
-}
-
-fn my_var_decl(start: usize, end: usize, name: &str) -> Node {
-    Node::new(
-        NodeKind::VariableDeclaration {
-            declarator: "my".to_string(),
-            variable: Box::new(Node::new(
-                NodeKind::Variable { sigil: "$".to_string(), name: name.to_string() },
-                loc(start + 3, end),
-            )),
-            attributes: vec![],
-            initializer: Some(Box::new(Node::new(
-                NodeKind::Number { value: "1".to_string() },
-                loc(end - 1, end),
-            ))),
-        },
-        loc(start, end),
-    )
-}
-
-fn last_stmt(start: usize, end: usize) -> Node {
-    Node::new(NodeKind::LoopControl { op: "last".to_string(), label: None }, loc(start, end))
-}
-
-fn next_stmt(start: usize, end: usize) -> Node {
-    Node::new(NodeKind::LoopControl { op: "next".to_string(), label: None }, loc(start, end))
-}
-
-fn redo_stmt(start: usize, end: usize) -> Node {
-    Node::new(NodeKind::LoopControl { op: "redo".to_string(), label: None }, loc(start, end))
-}
-
-fn while_loop(body: Node) -> Node {
-    Node::new(
-        NodeKind::While {
-            keyword: None,
-            condition: Box::new(Node::new(NodeKind::Number { value: "1".to_string() }, loc(7, 8))),
-            body: Box::new(body),
-            continue_block: None,
-        },
-        loc(0, 60),
-    )
-}
-
-fn while_loop_with_continue(body: Node, continue_body: Node) -> Node {
-    Node::new(
-        NodeKind::While {
-            keyword: None,
-            condition: Box::new(Node::new(NodeKind::Number { value: "1".to_string() }, loc(7, 8))),
-            body: Box::new(body),
-            continue_block: Some(Box::new(continue_body)),
-        },
-        loc(0, 120),
-    )
-}
-
-fn for_loop_with_continue(body: Node, continue_body: Node) -> Node {
-    Node::new(
-        NodeKind::For {
-            init: Some(Box::new(Node::new(
-                NodeKind::VariableDeclaration {
-                    declarator: "my".to_string(),
-                    variable: Box::new(Node::new(
-                        NodeKind::Variable { sigil: "$".to_string(), name: "i".to_string() },
-                        loc(5, 7),
-                    )),
-                    attributes: vec![],
-                    initializer: Some(Box::new(Node::new(
-                        NodeKind::Number { value: "0".to_string() },
-                        loc(8, 9),
-                    ))),
-                },
-                loc(0, 9),
-            ))),
-            condition: Some(Box::new(Node::new(
-                NodeKind::Number { value: "1".to_string() },
-                loc(10, 11),
-            ))),
-            update: Some(Box::new(Node::new(
-                NodeKind::Unary {
-                    op: "++".to_string(),
-                    operand: Box::new(Node::new(
-                        NodeKind::Variable { sigil: "$".to_string(), name: "i".to_string() },
-                        loc(12, 14),
-                    )),
-                },
-                loc(12, 14),
-            ))),
-            body: Box::new(body),
-            continue_block: Some(Box::new(continue_body)),
-        },
-        loc(0, 140),
-    )
-}
-
-fn foreach_loop_with_continue(body: Node, continue_body: Node) -> Node {
-    Node::new(
-        NodeKind::Foreach {
-            variable: Box::new(Node::new(
-                NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
-                loc(8, 10),
-            )),
-            list: Box::new(Node::new(
-                NodeKind::ArrayLiteral {
-                    elements: vec![
-                        Node::new(NodeKind::Number { value: "1".to_string() }, loc(15, 16)),
-                        Node::new(NodeKind::Number { value: "2".to_string() }, loc(18, 19)),
-                    ],
-                },
-                loc(14, 20),
-            )),
-            body: Box::new(body),
-            continue_block: Some(Box::new(continue_body)),
-        },
-        loc(0, 140),
-    )
-}
-
-fn has_pl406(diagnostics: &[Diagnostic]) -> bool {
-    diagnostics.iter().any(|d| d.code.as_deref() == Some("PL406"))
+fn diagnostics(source: &str) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
+    let ast = Parser::new(source).parse()?;
+    let mut diagnostics = Vec::new();
+    check_unreachable_code(&ast, &mut diagnostics);
+    Ok(diagnostics)
 }
 
 fn count_pl406(diagnostics: &[Diagnostic]) -> usize {
-    diagnostics.iter().filter(|d| d.code.as_deref() == Some("PL406")).count()
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.as_deref() == Some("PL406"))
+        .count()
 }
 
-// ===========================================================================
-// Continue block tests (T-continue-1 through T-continue-12)
-// ===========================================================================
-
-// --------------------------------------------------------------------------
-// T-continue-1: die in continue block followed by statement
-// "while (1) { } continue { die 'err'; print 'dead'; }"
-// expect: 1 PL406 diagnostic on the print statement
-// --------------------------------------------------------------------------
-
-#[test]
-fn t_continue_1_die_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    // continue block: die "err"; print "dead";
-    let continue_body = block(vec![die_call(20, 35), print_stmt(37, 57)]);
-    let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert!(
-        has_pl406(&diagnostics),
-        "T-continue-1: Expected PL406 for statement after die in continue block, got: {:?}",
-        diagnostics
-    );
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-1: Expected exactly 1 PL406 diagnostic, got: {:?}",
-        diagnostics
-    );
+fn assert_pl406_count(
+    source: &str,
+    expected: usize,
+    context: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let diagnostics = diagnostics(source)?;
+    assert_eq!(count_pl406(&diagnostics), expected, "{context}: {diagnostics:?}");
     Ok(())
 }
 
-// --------------------------------------------------------------------------
-// T-continue-2: exit in continue block followed by statement
-// "while (1) { } continue { exit(0); print 'dead'; }"
-// expect: 1 PL406 diagnostic on the print statement
-// --------------------------------------------------------------------------
-
 #[test]
-fn t_continue_2_exit_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    // continue block: exit(0); print "dead";
-    let continue_body = block(vec![exit_call(20, 30), print_stmt(32, 52)]);
-    let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert!(
-        has_pl406(&diagnostics),
-        "T-continue-2: Expected PL406 for statement after exit in continue block, got: {:?}",
-        diagnostics
-    );
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-2: Expected exactly 1 PL406 diagnostic, got: {:?}",
-        diagnostics
-    );
+fn exact_transfers_in_continue_blocks_close_sibling_fallthrough()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (source, context) in [
+        (
+            r#"while (1) { work(); } continue { die "err"; print "dead"; }"#,
+            "die in continue",
+        ),
+        (
+            r#"while (1) { work(); } continue { exit 0; print "dead"; }"#,
+            "exit in continue",
+        ),
+        (
+            r#"sub f { while (1) { work(); } continue { return; print "dead"; } }"#,
+            "return in continue",
+        ),
+        (
+            r#"while (1) { work(); } continue { last; print "dead"; }"#,
+            "last in continue",
+        ),
+        (
+            r#"while (1) { work(); } continue { next; print "dead"; }"#,
+            "next in continue",
+        ),
+        (
+            r#"while (1) { work(); } continue { redo; print "dead"; }"#,
+            "redo in continue",
+        ),
+    ] {
+        assert_pl406_count(source, 1, context)?;
+    }
     Ok(())
 }
 
-// --------------------------------------------------------------------------
-// T-continue-3: croak in continue block followed by statement
-// "while (1) { } continue { croak 'err'; print 'dead'; }"
-// expect: 1 PL406 diagnostic on the print statement
-// --------------------------------------------------------------------------
-
 #[test]
-fn t_continue_3_croak_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    // continue block: croak "err"; print "dead";
-    let continue_body = block(vec![croak_unqualified_call(20, 35), print_stmt(37, 57)]);
-    let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert!(
-        has_pl406(&diagnostics),
-        "T-continue-3: Expected PL406 for statement after croak in continue block, got: {:?}",
-        diagnostics
-    );
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-3: Expected exactly 1 PL406 diagnostic, got: {:?}",
-        diagnostics
-    );
+fn for_and_foreach_continue_blocks_use_the_same_local_flow_contract()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (source, context) in [
+        (
+            r#"for (my $i = 0; $i < 3; $i++) { work(); } continue { die "err"; print "dead"; }"#,
+            "for continue",
+        ),
+        (
+            r#"foreach my $x (1, 2) { work(); } continue { die "err"; print "dead"; }"#,
+            "foreach continue",
+        ),
+    ] {
+        assert_pl406_count(source, 1, context)?;
+    }
     Ok(())
 }
 
-// --------------------------------------------------------------------------
-// T-continue-4: last in continue block followed by statement
-// "while (1) { } continue { last; print 'dead'; }"
-// expect: 1 PL406 diagnostic on the print statement (last exits the entire loop)
-// --------------------------------------------------------------------------
-
 #[test]
-fn t_continue_4_last_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    // continue block: last; print "dead";
-    let continue_body = block(vec![last_stmt(20, 25), print_stmt(27, 47)]);
-    let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert!(
-        has_pl406(&diagnostics),
-        "T-continue-4: Expected PL406 for statement after last in continue block, got: {:?}",
-        diagnostics
-    );
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-4: Expected exactly 1 PL406 diagnostic, got: {:?}",
-        diagnostics
-    );
+fn call_spelling_alone_does_not_close_continue_fallthrough()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (source, context) in [
+        (
+            r#"while (1) { work(); } continue { croak "err"; print "reachable"; }"#,
+            "croak spelling",
+        ),
+        (
+            r#"while (1) { work(); } continue { Carp::confess "err"; print "reachable"; }"#,
+            "qualified confess spelling",
+        ),
+        (
+            r#"while (1) { work(); } continue { $object->throw(); print "reachable"; }"#,
+            "method spelling",
+        ),
+    ] {
+        assert_pl406_count(source, 0, context)?;
+    }
     Ok(())
 }
 
-// --------------------------------------------------------------------------
-// T-continue-5: return in continue block followed by statement (in sub context)
-// "sub f { while (1) { } continue { return; print 'dead'; } }"
-// expect: 1 PL406 diagnostic on the print statement
-// Note: return in continue block exits the containing sub
-// --------------------------------------------------------------------------
-
 #[test]
-fn t_continue_5_return_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    // continue block: return; print "dead";
-    let continue_body = block(vec![return_node(), print_stmt(30, 50)]);
-    let loop_with_continue = while_loop_with_continue(block(vec![]), continue_body);
-    let ast = program(vec![sub_node("f", block(vec![loop_with_continue]))]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert!(
-        has_pl406(&diagnostics),
-        "T-continue-5: Expected PL406 for statement after return in continue block, got: {:?}",
-        diagnostics
-    );
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-5: Expected exactly 1 PL406 diagnostic, got: {:?}",
-        diagnostics
-    );
-    Ok(())
-}
-
-// --------------------------------------------------------------------------
-// T-continue-6: next in continue block followed by statement
-// "while (1) { } continue { next; print 'dead'; }"
-// expect: 1 PL406 diagnostic (next transfers before the following sibling)
-// --------------------------------------------------------------------------
-
-#[test]
-fn t_continue_6_next_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    let continue_body = block(vec![next_stmt(20, 25), print_stmt(27, 47)]);
-    let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-6: Expected one PL406 after next in continue block, got: {:?}",
-        diagnostics
-    );
-    Ok(())
-}
-
-// --------------------------------------------------------------------------
-// T-continue-7: redo in continue block followed by statement
-// "while (1) { } continue { redo; print 'dead'; }"
-// expect: 1 PL406 diagnostic (redo transfers before the following sibling)
-// --------------------------------------------------------------------------
-
-#[test]
-fn t_continue_7_redo_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    let continue_body = block(vec![redo_stmt(20, 25), print_stmt(27, 47)]);
-    let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-7: Expected one PL406 after redo in continue block, got: {:?}",
-        diagnostics
-    );
-    Ok(())
-}
-
-// --------------------------------------------------------------------------
-// T-continue-8: multiple unreachable statements in continue block
-// "while (1) { } continue { die 'err'; my $x = 1; my $y = 2; print 'dead'; }"
-// expect: 3 PL406 diagnostics (one each for $x, $y, and print)
-// --------------------------------------------------------------------------
-
-#[test]
-fn t_continue_8_multiple_unreachable_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    // continue block: die "err"; my $x = 1; my $y = 2; print "dead";
-    let continue_body = block(vec![
-        die_call(20, 35),
-        my_var_decl(37, 47, "x"),
-        my_var_decl(49, 59, "y"),
-        print_stmt(61, 81),
-    ]);
-    let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert_eq!(
-        count_pl406(&diagnostics),
+fn all_later_continue_siblings_are_reported() -> Result<(), Box<dyn std::error::Error>> {
+    assert_pl406_count(
+        r#"while (1) { work(); } continue { die "err"; my $x = 1; my $y = 2; print "dead"; }"#,
         3,
-        "T-continue-8: Expected exactly 3 PL406 diagnostics for multiple unreachable statements, got: {:?}",
-        diagnostics
-    );
-    Ok(())
+        "multiple unreachable continue siblings",
+    )
 }
 
-// --------------------------------------------------------------------------
-// T-continue-9: loop body unreachable detection unchanged
-// "while (1) { die 'err'; print 'dead'; }"
-// expect: 1 PL406 diagnostic on print in the loop body (not in continue block)
-// --------------------------------------------------------------------------
-
 #[test]
-fn t_continue_9_loop_body_detection_unchanged() -> Result<(), Box<dyn std::error::Error>> {
-    // Loop body: die "err"; print "dead";
-    // The die and print are in the loop body, not the continue block
-    let loop_body = block(vec![die_call(20, 35), print_stmt(37, 57)]);
-    let ast = program(vec![while_loop(loop_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert!(
-        has_pl406(&diagnostics),
-        "T-continue-9: Expected PL406 for statement after die in loop body, got: {:?}",
-        diagnostics
-    );
-    assert_eq!(
-        count_pl406(&diagnostics),
+fn ordinary_loop_body_detection_remains_local() -> Result<(), Box<dyn std::error::Error>> {
+    assert_pl406_count(
+        r#"while (1) { die "err"; print "dead"; } print "after loop";"#,
         1,
-        "T-continue-9: Expected exactly 1 PL406 diagnostic, got: {:?}",
-        diagnostics
-    );
-    Ok(())
-}
-
-// --------------------------------------------------------------------------
-// T-continue-10: confess (Carp::confess) in continue block followed by statement
-// "while (1) { } continue { Carp::confess 'err'; print 'dead'; }"
-// expect: 1 PL406 diagnostic on the print statement
-// --------------------------------------------------------------------------
-
-#[test]
-fn t_continue_10_confess_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    // continue block: Carp::confess "err"; print "dead";
-    let confess_call = Node::new(
-        NodeKind::ExpressionStatement {
-            expression: Box::new(Node::new(
-                NodeKind::FunctionCall {
-                    name: "Carp::confess".to_string(),
-                    args: vec![Node::new(
-                        NodeKind::String { value: "err".to_string(), interpolated: false },
-                        loc(25, 30),
-                    )],
-                },
-                loc(20, 40),
-            )),
-        },
-        loc(20, 41),
-    );
-    let continue_body = block(vec![confess_call, print_stmt(43, 63)]);
-    let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert!(
-        has_pl406(&diagnostics),
-        "T-continue-10: Expected PL406 for statement after confess in continue block, got: {:?}",
-        diagnostics
-    );
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-10: Expected exactly 1 PL406 diagnostic, got: {:?}",
-        diagnostics
-    );
-    Ok(())
-}
-
-// --------------------------------------------------------------------------
-// T-continue-11: die in for-loop continue block followed by statement
-// "for (...) { } continue { die 'err'; print 'dead'; }"
-// expect: 1 PL406 diagnostic on the print statement
-// --------------------------------------------------------------------------
-
-#[test]
-fn t_continue_11_die_in_for_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    let continue_body = block(vec![die_call(20, 35), print_stmt(37, 57)]);
-    let ast = program(vec![for_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert!(
-        has_pl406(&diagnostics),
-        "T-continue-11: Expected PL406 for statement after die in for-loop continue block, got: {:?}",
-        diagnostics
-    );
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-11: Expected exactly 1 PL406 diagnostic, got: {:?}",
-        diagnostics
-    );
-    Ok(())
-}
-
-// --------------------------------------------------------------------------
-// T-continue-12: die in foreach-loop continue block followed by statement
-// "foreach (...) { } continue { die 'err'; print 'dead'; }"
-// expect: 1 PL406 diagnostic on the print statement
-// --------------------------------------------------------------------------
-
-#[test]
-fn t_continue_12_die_in_foreach_continue_block() -> Result<(), Box<dyn std::error::Error>> {
-    let continue_body = block(vec![die_call(20, 35), print_stmt(37, 57)]);
-    let ast = program(vec![foreach_loop_with_continue(block(vec![]), continue_body)]);
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert!(
-        has_pl406(&diagnostics),
-        "T-continue-12: Expected PL406 for statement after die in foreach-loop continue block, got: {:?}",
-        diagnostics
-    );
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-continue-12: Expected exactly 1 PL406 diagnostic, got: {:?}",
-        diagnostics
-    );
-    Ok(())
-}
-
-// --------------------------------------------------------------------------
-// T-goto: every goto form transfers control without returning to the next
-// statement, so the following sibling is unreachable.
-// --------------------------------------------------------------------------
-
-#[test]
-fn t_goto_label_then_statement_is_unreachable() -> Result<(), Box<dyn std::error::Error>> {
-    let ast = Parser::new("goto DONE; print 'dead';").parse()?;
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-goto-label: expected one PL406 after goto LABEL, got: {:?}",
-        diagnostics
-    );
-    Ok(())
+        "ordinary loop body",
+    )
 }
 
 #[test]
-fn t_goto_forward_label_preserves_target_reachability() -> Result<(), Box<dyn std::error::Error>> {
-    let ast = Parser::new("goto DONE; print 'dead'; DONE: print 'alive';").parse()?;
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-goto-forward-label: expected only the statement before DONE to be PL406, got: {:?}",
-        diagnostics
-    );
-    Ok(())
-}
-
-#[test]
-fn t_goto_sub_then_statement_is_unreachable() -> Result<(), Box<dyn std::error::Error>> {
-    let ast = Parser::new("goto &handler; print 'dead';").parse()?;
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-goto-sub: expected one PL406 after goto &sub, got: {:?}",
-        diagnostics
-    );
-    Ok(())
-}
-
-#[test]
-fn t_goto_sub_in_continue_block_then_statement_is_unreachable()
+fn conditional_loop_controls_keep_a_fallthrough_path()
 -> Result<(), Box<dyn std::error::Error>> {
-    let ast = Parser::new("while (1) { } continue { goto &handler; print 'dead'; }").parse()?;
-
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-goto-continue: expected one PL406 after goto &handler, got: {:?}",
-        diagnostics
-    );
+    for (source, context) in [
+        (
+            r#"while (1) { work(); } continue { next if $skip; print "reachable"; }"#,
+            "conditional next",
+        ),
+        (
+            r#"while (1) { work(); } continue { last unless $ready; print "reachable"; }"#,
+            "conditional last",
+        ),
+        (
+            r#"while (1) { work(); } continue { redo while $retry; print "reachable"; }"#,
+            "conditional redo",
+        ),
+    ] {
+        assert_pl406_count(source, 0, context)?;
+    }
     Ok(())
 }
 
 #[test]
-fn t_goto_forward_label_in_continue_block_preserves_target_reachability()
+fn loop_transfer_does_not_poison_code_after_the_loop()
 -> Result<(), Box<dyn std::error::Error>> {
-    let ast =
-        Parser::new("while (1) { } continue { goto DONE; print 'dead'; DONE: print 'alive'; }")
-            .parse()?;
+    for (source, context) in [
+        (r#"while ($ready) { next; } print "after";"#, "next loop exit"),
+        (r#"while ($ready) { redo; } print "after";"#, "redo loop exit"),
+        (r#"while ($ready) { last; } print "after";"#, "last loop exit"),
+    ] {
+        assert_pl406_count(source, 0, context)?;
+    }
+    Ok(())
+}
 
-    let mut diagnostics = vec![];
-    check_unreachable_code(&ast, &mut diagnostics);
-
-    assert_eq!(
-        count_pl406(&diagnostics),
-        1,
-        "T-goto-continue-forward-label: expected only the statement before DONE to be PL406, got: {:?}",
-        diagnostics
-    );
+#[test]
+fn goto_forms_transfer_without_falling_through() -> Result<(), Box<dyn std::error::Error>> {
+    for (source, expected, context) in [
+        (r#"goto DONE; print "dead";"#, 1, "unresolved forward label"),
+        (
+            r#"goto DONE; print "dead"; DONE: print "alive";"#,
+            1,
+            "resolved forward label",
+        ),
+        (r#"goto &handler; print "dead";"#, 1, "goto sub"),
+        (
+            r#"while (1) { } continue { goto &handler; print "dead"; }"#,
+            1,
+            "goto sub in continue",
+        ),
+        (
+            r#"while (1) { } continue { goto DONE; print "dead"; DONE: print "alive"; }"#,
+            1,
+            "forward label in continue",
+        ),
+    ] {
+        assert_pl406_count(source, expected, context)?;
+    }
     Ok(())
 }
