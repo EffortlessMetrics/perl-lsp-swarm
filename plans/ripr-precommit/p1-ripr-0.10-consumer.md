@@ -38,8 +38,8 @@ docs/ci/ripr.md
 xtask/tests/badge_ripr_version_contract.rs
 xtask/tests/ripr_new_gap_gate_workflow.rs        # only if version assertions live here
 xtask/src/tasks/ripr_evidence.rs                 # only if real 0.10 schema requires it
-focused fixtures/goldens for real producer output
-this plan file / Changie fragment if repository policy requires one
+xtask/tests/fixtures/**/*.json                   # focused fixtures/goldens for real producer output
+.changes/unreleased/*.yaml                       # Changie fragment if repository policy requires one
 ```
 
 ## Guardrails
