@@ -4,6 +4,6 @@ kind: Added
 body: "Added a Zed settings behavior contract and fail-closed validator that bind canonical perl.* keys to exact host receipts, reversible project-versus-Zed precedence effects, process-setting isolation, and directly observed live-or-restart behavior."
 time: 2026-08-13T23:30:00Z
 custom:
-  PR: "TBD"
+  PR: 8373
   Slug: zed-settings-behavior
   Breaking: "no"

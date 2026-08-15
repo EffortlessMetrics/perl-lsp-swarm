@@ -12,7 +12,7 @@ fn digest(value: &Value, pointer: &str) -> bool {
     text(value, pointer).is_some_and(|value| {
         value.starts_with("sha256:")
             && value.len() == 71
-            && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+            && value[7..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     })
 }
 
@@ -196,8 +196,10 @@ pub fn validate_receipt(
             .then_some(())
             .ok_or_else(|| "not-run receipt promoted behavior".to_string());
     }
-    if result != "pass"
-        || text(receipt, "/observed_at").is_none()
+    if result != "pass" {
+        return Err(format!("unsupported settings receipt result `{result}`"));
+    }
+    if text(receipt, "/observed_at").is_none()
         || !digest(receipt, "/contract/sha256")
         || text(receipt, "/claim_boundary/settings_behavior") != Some("proven_for_exact_subject")
     {
@@ -212,9 +214,12 @@ pub fn validate_receipt(
     let mut identity: Option<String> = None;
     let mut seen_paths = BTreeSet::new();
     let mut seen_digests = BTreeSet::new();
+    let mut settings_by_role: BTreeMap<String, String> = BTreeMap::new();
     for row in host_rows {
         let role = row.get("role").and_then(Value::as_str).unwrap_or_default();
-        roles.insert(role);
+        if !roles.insert(role) {
+            return Err(format!("duplicate host role `{role}`"));
+        }
         let current = text(row, "/host_identity_sha256");
         let relative_path = text(row, "/relative_path")
             .ok_or_else(|| format!("host role `{role}` lacks a referenced host receipt path"))?;
@@ -264,6 +269,9 @@ pub fn validate_receipt(
                 "host role `{role}` settings_sha256 is not the loaded receipt's settings digest"
             ));
         }
+        if let Some(settings) = loaded_settings {
+            settings_by_role.insert(role.to_string(), settings.to_string());
+        }
         let derived = derived_host_identity(&host);
         if derived.as_deref() != current {
             return Err(format!(
@@ -279,6 +287,16 @@ pub fn validate_receipt(
         BTreeSet::from(["project_only", "zed_override", "zed_override_removed", "live_edit"]);
     if roles != expected_roles {
         return Err("wrong host receipt role population".to_string());
+    }
+    if host_rows.len() != 4 {
+        return Err("expected exactly four host receipt rows".to_string());
+    }
+    if settings_by_role.get("project_only").is_some_and(|project| {
+        settings_by_role.get("zed_override").is_some_and(|override_| override_ == project)
+    }) {
+        return Err(
+            "project_only and zed_override roles replay identical settings bytes".to_string()
+        );
     }
 
     let expected = probes(contract)?;

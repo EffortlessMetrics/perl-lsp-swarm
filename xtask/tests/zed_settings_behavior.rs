@@ -1,6 +1,7 @@
 #[path = "support/zed_settings_behavior.rs"]
 mod zed_settings_behavior;
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::io;
@@ -64,16 +65,25 @@ fn contract_mutations_reject_process_fields_and_schema_drift() -> Result<(), Box
     let schema = read_json(&root, SCHEMA)?;
     let mut process_leak = read_json(&root, CONTRACT)?;
     process_leak["probes"][0]["key"] = Value::String("perl.binary.path".to_string());
-    assert!(zed_settings_behavior::validate_contract(&process_leak, &schema).is_err());
+    assert!(
+        zed_settings_behavior::validate_contract(&process_leak, &schema).is_err(),
+        "process-owned `perl.binary.*` keys must not count as server settings"
+    );
 
     let mut missing_key = read_json(&root, CONTRACT)?;
     missing_key["probes"][0]["schema_pointer"] =
         Value::String("/properties/perl/properties/notARealSetting".to_string());
-    assert!(zed_settings_behavior::validate_contract(&missing_key, &schema).is_err());
+    assert!(
+        zed_settings_behavior::validate_contract(&missing_key, &schema).is_err(),
+        "probes pointing outside the canonical schema must be rejected"
+    );
 
     let mut wrong_type = read_json(&root, CONTRACT)?;
     wrong_type["probes"][0]["expected_type"] = Value::String("integer".to_string());
-    assert!(zed_settings_behavior::validate_contract(&wrong_type, &schema).is_err());
+    assert!(
+        zed_settings_behavior::validate_contract(&wrong_type, &schema).is_err(),
+        "probes whose expected type drifts from the schema node must be rejected"
+    );
     Ok(())
 }
 
@@ -87,21 +97,40 @@ fn pass_candidate_requires_reversible_effects_and_exact_host_roles() -> Result<(
     receipt["contract"]["sha256"] = Value::String(format!("sha256:{}", "0".repeat(64)));
     receipt["claim_boundary"]["settings_behavior"] =
         Value::String("proven_for_exact_subject".to_string());
-    assert!(
-        zed_settings_behavior::validate_receipt(&receipt, &contract, &unavailable_loader).is_err()
-    );
+    let error = zed_settings_behavior::validate_receipt(&receipt, &contract, &unavailable_loader)
+        .expect_err("a pass-shaped receipt without host rows must not validate");
+    assert_eq!(error, "wrong host receipt role population", "unexpected rejection cause: {error}");
     Ok(())
 }
 
 #[test]
-fn validator_cli_reuses_the_support_authority() -> Result<(), Box<dyn Error>> {
+fn validator_cli_rejects_drifted_contract_digest() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
-    let source = fs::read_to_string(root.join("xtask/src/bin/validate-zed-settings-behavior.rs"))?;
-    assert!(source.contains("support/zed_settings_behavior.rs"));
-    assert!(source.contains("validate_contract"));
-    assert!(source.contains("validate_receipt"));
-    assert!(source.contains("contract digest does not match"));
-    assert!(source.contains("host_receipt_loader"));
+    let mut receipt = read_json(&root, TEMPLATE)?;
+    receipt["result"] = Value::String("pass".to_string());
+    receipt["observed_at"] = Value::String("2026-08-13T23:30:00Z".to_string());
+    receipt["contract"]["sha256"] = Value::String(format!("sha256:{}", "0".repeat(64)));
+    receipt["claim_boundary"]["settings_behavior"] =
+        Value::String("proven_for_exact_subject".to_string());
+    let receipt_path = std::env::temp_dir().join("zed-settings-behavior-drifted-receipt.json");
+    fs::write(&receipt_path, serde_json::to_vec(&receipt)?)?;
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_validate-zed-settings-behavior"))
+        .arg(root.join(CONTRACT))
+        .arg(root.join(SCHEMA))
+        .arg(&receipt_path)
+        .output()
+        .map_err(|error| io::Error::other(format!("failed to run validator CLI: {error}")))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "validator CLI must reject a receipt whose contract digest does not bind the contract bytes"
+    );
+    assert!(
+        stderr.contains("receipt contract digest does not match contract bytes"),
+        "validator CLI reported an unexpected failure: {stderr}"
+    );
+    let _ = fs::remove_file(&receipt_path);
     Ok(())
 }
 
@@ -355,20 +384,154 @@ fn non_enum_probe_values_are_validated_against_the_schema() -> Result<(), Box<dy
 
     let mut integer_as_bool = read_json(&root, CONTRACT)?;
     integer_as_bool["probes"][2]["zed_value"] = Value::Bool(true);
-    assert!(zed_settings_behavior::validate_contract(&integer_as_bool, &schema).is_err());
+    assert!(
+        zed_settings_behavior::validate_contract(&integer_as_bool, &schema).is_err(),
+        "integer probes must reject boolean values"
+    );
 
     let mut integer_below_minimum = read_json(&root, CONTRACT)?;
     integer_below_minimum["probes"][2]["zed_value"] = serde_json::json!(-1);
-    assert!(zed_settings_behavior::validate_contract(&integer_below_minimum, &schema).is_err());
+    assert!(
+        zed_settings_behavior::validate_contract(&integer_below_minimum, &schema).is_err(),
+        "integer probes must enforce the schema minimum (0)"
+    );
 
     let mut integer_fractional = read_json(&root, CONTRACT)?;
     integer_fractional["probes"][2]["project_value"] = serde_json::json!(40.5);
-    assert!(zed_settings_behavior::validate_contract(&integer_fractional, &schema).is_err());
+    assert!(
+        zed_settings_behavior::validate_contract(&integer_fractional, &schema).is_err(),
+        "integer probes must reject fractional values"
+    );
 
     let mut array_with_wrong_items = read_json(&root, CONTRACT)?;
     array_with_wrong_items["probes"][3]["zed_value"] = serde_json::json!([42]);
     let error = zed_settings_behavior::validate_contract(&array_with_wrong_items, &schema)
         .expect_err("array probes must validate item types");
     assert_eq!(error, "probe `path_list_include_paths` uses a value the canonical schema rejects");
+    Ok(())
+}
+
+fn synthetic_pass_receipt(
+    root: &Path,
+) -> Result<(Value, Value, BTreeMap<String, Vec<u8>>), Box<dyn Error>> {
+    let contract = read_json(root, CONTRACT)?;
+    let mut receipt = pass_shaped_settings_receipt(root)?;
+
+    let role_settings = [
+        ("project_only", 'd'),
+        ("zed_override", 'e'),
+        ("zed_override_removed", 'd'),
+        ("live_edit", 'e'),
+    ];
+    let mut host_bytes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut rows = Vec::new();
+    for (role, settings_nibble) in role_settings {
+        let mut child = exact_source_pass_child(root)?;
+        child["observed_at"] = Value::String(format!("2026-08-15T00:0{}:00Z", host_bytes.len()));
+        child["configuration"]["settings_sha256"] = Value::String(sha256_fill(settings_nibble));
+        let bytes = serde_json::to_vec(&child)?;
+        let identity = zed_settings_behavior::derived_host_identity(&child)
+            .ok_or_else(|| io::Error::other("synthetic child receipt lacks identity fields"))?;
+        let relative_path = format!("host/{role}.json");
+        let mut row = host_row_with_identity(role, &relative_path, &sha256_of(&bytes), &identity);
+        row["settings_sha256"] = Value::String(sha256_fill(settings_nibble));
+        rows.push(row);
+        host_bytes.insert(relative_path, bytes);
+    }
+    receipt["host_receipts"] = Value::Array(rows);
+
+    let observed = contract
+        .get("probes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::other("contract lacks probes"))?;
+    let mut probe_rows = Vec::new();
+    for probe in observed {
+        let row = serde_json::json!({
+            "id": probe.get("id"),
+            "key": probe.get("key"),
+            "result": "pass",
+            "project_observed": probe.get("project_value"),
+            "zed_override_observed": probe.get("zed_value"),
+            "restored_observed": probe.get("project_value"),
+            "effect_before": "before",
+            "effect_override": "override",
+            "effect_restored": "before",
+            "evidence": "observed reversible effect"
+        });
+        probe_rows.push(row);
+    }
+    receipt["probes"] = Value::Array(probe_rows);
+    receipt["precedence"] = serde_json::json!({
+        "result": "pass",
+        "sequence": contract.get("precedence_sequence"),
+        "project_only_effect": "project effect",
+        "zed_override_effect": "override effect",
+        "restored_project_effect": "project effect",
+        "evidence": "observed precedence sequence"
+    });
+    receipt["restart"] = serde_json::json!({
+        "result": "pass",
+        "setting": "perl.inlayHints.enabled",
+        "from": true,
+        "to": false,
+        "disposition": "live_configuration",
+        "configuration_notification_observed": true,
+        "server_pid_before": 4242,
+        "server_pid_after": 4242,
+        "effect_before": "enabled",
+        "effect_after": "disabled",
+        "evidence": "observed live configuration change"
+    });
+    Ok((contract, receipt, host_bytes))
+}
+
+#[test]
+fn synthetic_pass_receipt_validates_and_single_field_drift_is_named() -> Result<(), Box<dyn Error>>
+{
+    let root = repo_root()?;
+    let (contract, receipt, host_bytes) = synthetic_pass_receipt(&root)?;
+    let loader = |relative: &str| -> Result<Vec<u8>, String> {
+        host_bytes
+            .get(relative)
+            .cloned()
+            .ok_or_else(|| format!("unknown host receipt `{relative}`"))
+    };
+    zed_settings_behavior::validate_receipt(&receipt, &contract, &loader).map_err(|error| {
+        io::Error::other(format!("synthetic pass receipt was rejected: {error}"))
+    })?;
+
+    let mut probe_drift = receipt.clone();
+    probe_drift["probes"][0]["zed_override_observed"] = serde_json::json!("drifted");
+    let error = zed_settings_behavior::validate_receipt(&probe_drift, &contract, &loader)
+        .expect_err("probe observation drift must be named");
+    assert_eq!(
+        error, "probe `boolean_inlay_hints` lacks reversible behavior proof",
+        "unexpected rejection cause: {error}"
+    );
+
+    let mut precedence_drift = receipt.clone();
+    precedence_drift["precedence"]["zed_override_effect"] =
+        Value::String("project effect".to_string());
+    let error = zed_settings_behavior::validate_receipt(&precedence_drift, &contract, &loader)
+        .expect_err("precedence drift must be named");
+    assert_eq!(error, "precedence is not reversibly proven", "unexpected rejection cause: {error}");
+
+    let mut restart_drift = receipt.clone();
+    restart_drift["restart"]["disposition"] = Value::String("manual_restart".to_string());
+    let error = zed_settings_behavior::validate_receipt(&restart_drift, &contract, &loader)
+        .expect_err("restart disposition drift must be named");
+    assert_eq!(
+        error, "passing receipt has no valid live/restart disposition",
+        "unexpected rejection cause: {error}"
+    );
+
+    let mut duplicate_role = receipt.clone();
+    duplicate_role["host_receipts"][3]["role"] = Value::String("zed_override_removed".to_string());
+    let error = zed_settings_behavior::validate_receipt(&duplicate_role, &contract, &loader)
+        .expect_err("duplicate roles must be named");
+    assert_eq!(
+        error, "duplicate host role `zed_override_removed`",
+        "unexpected rejection cause: {error}"
+    );
     Ok(())
 }
