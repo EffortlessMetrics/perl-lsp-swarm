@@ -39,16 +39,6 @@ pub mod incremental_integration;
 pub mod incremental_simple;
 pub mod incremental_v2;
 
-impl incremental_v2::IncrementalParserV2 {
-    /// Return whether the last parse accepted an incrementally produced tree.
-    ///
-    /// The legacy `incremental_path_attempted` name is retained for compatibility,
-    /// but its value is now recorded only after incremental parsing succeeds.
-    pub fn used_incremental_path(&self) -> bool {
-        self.incremental_path_attempted()
-    }
-}
-
 /// Apply edits incrementally
 pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<ReparseResult> {
     let mut sorted_edits = edits.to_vec();

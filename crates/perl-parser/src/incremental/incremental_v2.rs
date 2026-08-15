@@ -231,7 +231,7 @@ pub struct IncrementalParserV2 {
     reuse_config: ReuseConfig,
     /// Performance tracking for reuse analysis
     pub last_reuse_analysis: Option<ReuseAnalysisResult>,
-    incremental_path_attempted: bool,
+    used_incremental_path: bool,
     advanced_reuse_selected: bool,
     materialized_reuse_nodes: usize,
 }
@@ -248,7 +248,7 @@ impl IncrementalParserV2 {
             reuse_analyzer: AdvancedReuseAnalyzer::new(),
             reuse_config: ReuseConfig::default(),
             last_reuse_analysis: None,
-            incremental_path_attempted: false,
+            used_incremental_path: false,
             advanced_reuse_selected: false,
             materialized_reuse_nodes: 0,
         }
@@ -265,7 +265,7 @@ impl IncrementalParserV2 {
             reuse_analyzer: AdvancedReuseAnalyzer::with_config(config.clone()),
             reuse_config: config,
             last_reuse_analysis: None,
-            incremental_path_attempted: false,
+            used_incremental_path: false,
             advanced_reuse_selected: false,
             materialized_reuse_nodes: 0,
         }
@@ -284,7 +284,7 @@ impl IncrementalParserV2 {
         self.reused_nodes = 0;
         self.reparsed_nodes = 0;
         self.last_reuse_analysis = None;
-        self.incremental_path_attempted = false;
+        self.used_incremental_path = false;
         self.advanced_reuse_selected = false;
         self.materialized_reuse_nodes = 0;
 
@@ -294,7 +294,7 @@ impl IncrementalParserV2 {
                 let last_tree_clone = last_tree.clone();
                 // Check if we can do incremental parsing
                 if let Some(new_tree) = self.try_incremental_parse(source, &last_tree_clone) {
-                    self.incremental_path_attempted = true;
+                    self.used_incremental_path = true;
                     self.last_tree =
                         Some(IncrementalTree::new(new_tree.clone(), source.to_string()));
                     self.pending_edits = EditSet::new();
@@ -1074,9 +1074,12 @@ impl IncrementalParserV2 {
         self.materialized_reuse_nodes
     }
 
-    /// Check if the last parse entered the incremental edit path.
-    pub fn incremental_path_attempted(&self) -> bool {
-        self.incremental_path_attempted
+    /// Return whether the last parse accepted an incrementally produced tree.
+    ///
+    /// This reports acceptance, not attempt: a parse that tried the incremental
+    /// path and fell back to a full parse returns `false`.
+    pub fn used_incremental_path(&self) -> bool {
+        self.used_incremental_path
     }
 
     /// Get detailed reuse efficiency report
