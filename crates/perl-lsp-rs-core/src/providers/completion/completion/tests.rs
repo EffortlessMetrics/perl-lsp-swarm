@@ -72,14 +72,18 @@ fn object_receiver_fact(
     fact
 }
 
+fn completion_provider(source: &str) -> Result<CompletionProvider, Box<dyn std::error::Error>> {
+    let mut parser = Parser::new(source);
+    let ast = parser.parse()?;
+    let index = union_receiver_workspace_index()?;
+    Ok(CompletionProvider::new_with_index_and_source(&ast, source, Some(index)))
+}
+
 fn completion_provider_with_receiver_fact(
     source: &str,
     receiver_fact: Option<perl_semantic_analyzer::analysis::type_facts::TypeFact>,
 ) -> Result<CompletionProvider, Box<dyn std::error::Error>> {
-    let mut parser = Parser::new(source);
-    let ast = parser.parse()?;
-    let index = union_receiver_workspace_index()?;
-    let mut provider = CompletionProvider::new_with_index_and_source(&ast, source, Some(index));
+    let mut provider = completion_provider(source)?;
 
     if let Some(fact) = receiver_fact {
         let engine =
@@ -104,7 +108,7 @@ fn production_completion_routes_inferred_union_receiver_to_workspace_methods()
     // The provider's normal AST inference derives this union from the two
     // source-backed constructor branches; no test-only fact injection is used.
     let source = "my $obj = 1 ? Foo->new() : Bar->new();\n$obj->";
-    let provider = completion_provider_with_receiver_fact(source, None)?;
+    let provider = completion_provider(source)?;
     let completions = provider.get_completions(source, source.len());
 
     let shared: Vec<_> = completions.iter().filter(|item| item.label == "shared_method").collect();
