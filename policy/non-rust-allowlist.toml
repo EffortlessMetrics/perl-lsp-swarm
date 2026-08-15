@@ -301,6 +301,22 @@ created = "2026-08-14"
 review_after = "2026-09-14"
 
 [[allow]]
+id = "non-rust-product-7782-changelog-fragment"
+path = ".changes/unreleased/product-7782-Fixed-095500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment recording Sublime Text LSP 2.13 file-operation and inline-completion capability negotiation (#7782)."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
 id = "non-rust-license-files"
 glob = "**/LICENSE-*"
 kind = "license"
