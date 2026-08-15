@@ -1,7 +1,10 @@
 //! Dispatch cutover for the shared formatting outcome policy.
 //!
-//! Slice 2 wires `textDocument/formatting` only. Range / multi-range / on-type
-//! keep the legacy routing table until a follow-up slice reuses this path.
+//! The legacy routing table retains its formatting arms as a bounded rollback
+//! seam, but live document / range / on-type requests are intercepted here after
+//! preflight and before that table so those surfaces share one request identity.
+//! Multi-range (`textDocument/rangesFormatting`) stays on the legacy table until
+//! the atomic planner successor lands.
 
 use super::super::{JsonRpcRequest, LspServer, Value};
 use super::response::RoutedResponse;
@@ -18,14 +21,20 @@ pub(super) fn route(
         return None;
     }
 
-    if request.method != "textDocument/formatting" {
-        return None;
-    }
-
     let method = request.method.clone();
     let params = request.params.clone();
     let started = std::time::Instant::now();
-    let result = server.handle_formatting_policy(params, id.as_ref());
+    let result = match method.as_str() {
+        "textDocument/formatting" => server.handle_formatting_policy(params, id.as_ref()),
+        "textDocument/rangeFormatting" => {
+            server.handle_range_formatting_policy(params, id.as_ref())
+        }
+        "textDocument/onTypeFormatting" => {
+            server.handle_on_type_formatting_policy(params, id.as_ref())
+        }
+        _ => return None,
+    };
+
     server.record_lsp_request_latency(&method, started);
     Some(RoutedResponse::Handler { id, method, should_respond, result })
 }
@@ -66,36 +75,51 @@ mod tests {
     }
 
     #[test]
-    fn document_formatting_is_intercepted_after_initialize() {
-        let server = LspServer::new();
-        server.initialize_requested.store(true, std::sync::atomic::Ordering::Release);
-        let (request, id) = formatting_request();
-        assert!(
-            route(&server, &request, Some(id), true).is_some(),
-            "document formatting must route through the shared formatting policy"
-        );
-    }
-
-    #[test]
-    fn range_and_on_type_remain_on_legacy_dispatch_in_this_slice() {
-        let server = LspServer::new();
-        server.initialize_requested.store(true, std::sync::atomic::Ordering::Release);
-        for method in [
+    fn document_range_and_on_type_are_intercepted_after_initialize()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (offset, method) in [
+            "textDocument/formatting",
             "textDocument/rangeFormatting",
-            "textDocument/rangesFormatting",
             "textDocument/onTypeFormatting",
-        ] {
-            let id = JsonRpcId::Integer(1).to_value();
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let server = LspServer::new();
+            server.initialize_requested.store(true, std::sync::atomic::Ordering::Release);
+            let id = JsonRpcId::Integer(70820 + offset as i64).to_value();
             let request = JsonRpcRequest {
                 _jsonrpc: "2.0".to_string(),
                 id: JsonRpcId::from_value(&id),
                 method: method.to_string(),
                 params: None,
             };
-            assert!(
-                route(&server, &request, Some(id), true).is_none(),
-                "{method} must stay on the legacy table in the document-only slice"
-            );
+
+            if route(&server, &request, Some(id), true).is_none() {
+                return Err(std::io::Error::other(format!(
+                    "{method} must route through the shared formatting policy"
+                ))
+                .into());
+            }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn ranges_formatting_remains_on_legacy_dispatch_in_this_slice() {
+        let server = LspServer::new();
+        server.initialize_requested.store(true, std::sync::atomic::Ordering::Release);
+        let id = JsonRpcId::Integer(70829).to_value();
+        let request = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: JsonRpcId::from_value(&id),
+            method: "textDocument/rangesFormatting".to_string(),
+            params: None,
+        };
+        assert!(
+            route(&server, &request, Some(id), true).is_none(),
+            "rangesFormatting must stay on the legacy table until the atomic planner successor"
+        );
     }
 }
