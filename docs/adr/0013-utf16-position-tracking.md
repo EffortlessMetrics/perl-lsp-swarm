@@ -1,148 +1,124 @@
-# ADR-0013: UTF-16 Position Tracking with Symmetric Conversion
+# ADR-0013: Source-text newline, BOM, and position domains
 
-**Status**: Accepted
-**Date**: 2025-01-20
-**Decision Makers**: Perl LSP Architecture Team
-**Related**: [POSITION_TRACKING_GUIDE.md](../reference/POSITION_TRACKING_GUIDE.md), [ROPE_INTEGRATION_GUIDE.md](../reference/ROPE_INTEGRATION_GUIDE.md)
-
-## Context
-
-The Language Server Protocol (LSP) specification requires all position values to be expressed in UTF-16 code units, not UTF-8 bytes or Unicode code points. This creates a fundamental mismatch with Rust's native string representation, which is UTF-8 based.
-
-### Problem Statement
-
-1. **Protocol Requirement**: LSP clients (VSCode, Neovim, etc.) send and expect positions in UTF-16 code units
-2. **Rust Native Encoding**: Rust strings are UTF-8, creating a conversion requirement
-3. **Multi-byte Characters**: Emoji and CJK characters may require multiple UTF-16 code units (surrogate pairs)
-4. **Security Concerns**: Improper conversion can lead to boundary violations and position spoofing
-5. **Round-trip Accuracy**: Conversions must be symmetric to maintain position integrity
-
-### Encoding Complexity Examples
-
-| Character | UTF-8 Bytes | UTF-16 Code Units | LSP Position Delta |
-|-----------|-------------|-------------------|-------------------|
-| `A` | 1 | 1 | 1 |
-| `é` | 2 | 1 | 1 |
-| `世` | 3 | 1 | 1 |
-| `🦀` | 4 | 2 (surrogate pair) | 2 |
+**Status**: Accepted, amended 2026-08-15  
+**Original date**: 2025-01-20  
+**Decision issue**: #4973  
+**Fixture authority**: #8172  
+**Position programme**: #1814
 
 ## Decision
 
-**We implement symmetric UTF-16 position conversion with boundary validation through a dedicated `PositionTracker` system integrated with the Rope data structure.**
+Live UTF-8 text documents use one newline and BOM contract:
 
-### Core Architecture
+1. `LF` is the canonical line boundary.
+2. `CRLF` is one line ending because its `LF` byte terminates the line; the preceding `CR` is part of the separator, not line content.
+3. A bare `CR` is ordinary source content. It does not create a new line.
+4. Mixed `LF` and `CRLF` input is supported under the same LF-delimited model.
+5. A leading UTF-8 BOM is decoded and preserved as `U+FEFF` in the source snapshot. It contributes three UTF-8 bytes, one Unicode scalar, and one UTF-16 code unit unless a future ingress contract strips it and supplies an explicit offset map.
+6. No constructor may silently normalize source bytes.
 
-```rust
-/// Position tracking with UTF-16 support and security validation
-pub struct PositionTracker {
-    source: String,
-    line_starts: LineStartsCache,
-}
+This is **Option A** from #4973: support LF and CRLF while declining bare-CR-as-newline semantics. Bare CR is neither rejected nor normalized by the position layer; it remains addressable content.
 
-impl PositionTracker {
-    /// SECURE: Convert UTF-8 offset to UTF-16 position with boundary validation
-    pub fn convert_utf8_to_utf16_position(&self, text: &str, utf8_offset: usize) -> u32;
-    
-    /// SECURE: Convert UTF-16 position to UTF-8 offset with boundary validation
-    pub fn convert_utf16_to_utf8_position(&self, text: &str, utf16_pos: u32) -> usize;
-}
+## Coordinate domains
+
+The repository keeps these propositions distinct:
+
+| Domain | Column unit | Primary consumers |
+|---|---|---|
+| Source byte offset | UTF-8 bytes from snapshot start | parser, ranges, edits |
+| Parser byte point | zero-based UTF-8 bytes from LF-delimited line start | parser and Tree-sitter-shaped surfaces |
+| LSP UTF-8 position | zero-based UTF-8 bytes from line-content start | negotiated LSP sessions |
+| LSP UTF-16 position | zero-based UTF-16 code units from line-content start | default LSP sessions |
+| Unicode-scalar column | Unicode scalar values | only explicitly named internal consumers |
+
+A type or method name must make the unit and source ownership recoverable. Parser byte points do not become LSP UTF-16 positions, and an LSP mapper does not become parser source identity.
+
+## Line records
+
+For each LF-delimited line, implementations distinguish:
+
+```text
+line_start
+line_content_end
+line_separator_end
 ```
 
-### Security Features
+For `"abc\r\ndef"`:
 
-1. **Boundary Validation**: All conversions check input bounds before processing
-2. **Symmetric Operations**: UTF-8 ↔ UTF-16 conversions use identical validation logic
-3. **Overflow Prevention**: Arithmetic operations include safe bounds checking
-4. **Fractional Handling**: Proper handling of positions within multi-byte sequences
-
-### Implementation Components
-
-| Component | Purpose | Location |
-|-----------|---------|----------|
-| `PositionTracker` | Core position conversion | `perl-parser/src/position_tracker.rs` |
-| `LineStartsCache` | O(log n) line lookups | `perl-parser/src/line_starts_cache.rs` |
-| `textdoc.rs` | Rope integration | `perl-parser/src/textdoc.rs` |
-| `position_mapper.rs` | Centralized mapping | `perl-parser/src/position_mapper.rs` |
-
-### Rope Integration
-
-The system integrates with the `ropey` crate for efficient document manipulation:
-
-```rust
-use ropey::Rope;
-use crate::textdoc::{Doc, PosEnc, lsp_pos_to_byte, byte_to_lsp_pos};
-
-// Convert LSP positions (UTF-16) to byte offsets
-let byte_offset = lsp_pos_to_byte(&doc.rope, pos, PosEnc::Utf16);
-
-// Convert byte offsets to LSP positions
-let lsp_pos = byte_to_lsp_pos(&doc.rope, byte_offset, PosEnc::Utf16);
+```text
+line 0 start          = 0
+line 0 content end    = 3
+line 0 separator end  = 5
+line 1 start          = 5
 ```
+
+For `"abc\rdef"`, there is one line. The bare CR is content between `c` and `d`.
+
+A final LF creates a terminal empty line. Empty input has one line starting at byte zero. These facts are recorded explicitly by #8172 rather than inferred differently by each consumer.
+
+## Constructor authority
+
+String-, Rope-, and retained byte-index constructors representing the same text-document domain must derive line starts from the same LF-delimited rule.
+
+At the current implementation boundary:
+
+- `LineStartsCache::new(&str)` and `LineStartsCache::new_rope(&Rope)` must agree;
+- `perl_position_tracking::LineIndex` follows the same text-document rule;
+- parser-only indexes may retain a different byte-coordinate domain only when their names, callers, and #8245 disposition make that distinction explicit;
+- tolerant converters remain compatibility helpers and cannot authorize edits, exact outgoing ranges, or compatibility proof.
+
+## Strictness and invalid boundaries
+
+Strict mappings reject or return a typed non-exact disposition for:
+
+- a byte offset inside a UTF-8 code point;
+- a UTF-16 column inside a surrogate pair;
+- an invalid line;
+- a reversed range;
+- a point past line content where the owning API does not permit separator addressing;
+- a stale or wrong source generation.
+
+Legacy tolerant helpers may clamp only when their API names and result types disclose that behavior. #8245 owns their terminal disposition.
+
+## BOM policy
+
+Editor-supplied text, filesystem text, parser input, and indexed text preserve the decoded leading `U+FEFF` unless one documented ingress authority strips it.
+
+Random providers, line indexes, and renderers must not add or subtract three bytes to “handle BOM.” A stripping ingress must instead publish an explicit source relation and offset map consumed by every downstream coordinate authority.
+
+## Required proof
+
+#8172 provides raw-byte fixtures for:
+
+- empty input and terminal empty lines;
+- ASCII, BMP, astral, and combining text;
+- LF, CRLF, bare CR, and mixed endings;
+- BOM and no-BOM controls;
+- invalid UTF-8 and UTF-16 interior positions;
+- line start, content end, separator end, and EOF.
+
+The independent strict reference, indexed mapper, legacy constructors, text transactions, provider projections, and client journeys consume the same fixture identities.
 
 ## Consequences
 
 ### Positive
 
-1. **Protocol Compliance**: Full LSP specification compliance for position handling
-2. **Unicode Safety**: Correct handling of all Unicode characters including emoji and CJK
-3. **Security**: Prevents position spoofing and boundary violation attacks
-4. **Performance**: O(log n) position lookups via Rope's B-tree structure
-5. **Round-trip Accuracy**: Symmetric conversion ensures position integrity
+- String and Rope constructors cannot assign different line numbers to the same supported source.
+- CRLF remains fully supported without inventing a separate line model.
+- Bare CR behavior is explicit instead of constructor-dependent.
+- BOM handling is source-owned rather than provider arithmetic.
+- Tree-sitter UTF-8 byte points and LSP UTF-16 positions can share source facts without sharing a coordinate type.
 
-### Negative
+### Cost
 
-1. **Complexity**: Additional conversion layer between Rust and LSP positions
-2. **Performance Overhead**: Conversion operations add ~10-50μs per position lookup
-3. **Testing Burden**: Requires extensive edge case testing for Unicode scenarios
+- Callers that relied on bare CR creating lines must migrate or classify that behavior as a distinct internal domain.
+- Some tolerant APIs require renaming or retirement under #8245.
+- Exact separator-interior behavior remains API-specific and must be stated rather than hidden by broad “position conversion” names.
 
-### Mitigations
+## Non-goals
 
-- LineStartsCache provides O(log n) lookups to minimize conversion overhead
-- Comprehensive test suite covers edge cases including surrogate pairs
-- Mutation testing validates security properties
-
-## Testing
-
-### Test Commands
-
-```bash
-# Run position tracking tests
-cargo test -p perl-parser --test parser_context -- test_utf16_position_mapping
-
-# Test UTF-16 security enhancements
-cargo test -p perl-parser --test mutation_hardening_tests -- utf16_security
-
-# Test symmetric conversion
-cargo test -p perl-parser parser_context_tests::test_symmetric_position_conversion
-```
-
-### Security Test Coverage
-
-```rust
-#[test]
-fn test_utf16_security_validation() {
-    let text = "Test with 🦀 emoji and 🌍 symbols";
-    let tracker = PositionTracker::new(text.to_string());
-
-    // Test boundary conditions
-    assert_eq!(tracker.convert_utf8_to_utf16_position(text, 0), 0);
-    
-    // Test overflow protection
-    let overflow_result = tracker.convert_utf8_to_utf16_position(text, usize::MAX);
-    assert!(overflow_result <= text.chars().count() as u32);
-
-    // Test symmetric conversion
-    for i in 0..=text.len() {
-        let utf16_pos = tracker.convert_utf8_to_utf16_position(text, i);
-        let back_to_utf8 = tracker.convert_utf16_to_utf8_position(text, utf16_pos);
-        assert_eq!(back_to_utf8, i);
-    }
-}
-```
-
-## References
-
-- [Position Tracking Guide](../reference/POSITION_TRACKING_GUIDE.md)
-- [Rope Integration Guide](../reference/ROPE_INTEGRATION_GUIDE.md)
-- [LSP Specification - Text Documents](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocuments)
-- [PR #153: Security Enhancements](https://github.com/EffortlessMetrics/perl-lsp/pull/153)
+- No automatic newline normalization.
+- No non-UTF-8 source decoding policy.
+- No requirement that every parser byte index implement LSP semantics.
+- No provider-specific repair without a failing exact range round trip.
+- No claim that constructor parity alone completes the strict indexed mapper in #7881.
