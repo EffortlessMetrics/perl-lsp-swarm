@@ -1382,3 +1382,19 @@ covered_by = [
 ]
 created = "2026-08-14"
 review_after = "2026-11-14"
+
+[[allow]]
+id = "non-rust-zed-settings-behavior-fixtures"
+glob = ".ci/fixtures/zed-perl-upstream/**"
+kind = "test_fixture"
+language = "json"
+surface = "zed-integration"
+classification = "test"
+owner = "zed-integration"
+reason = "Zed integration contract and receipt fixtures for the exact-source host and settings-behavior programmes."
+covered_by = [
+  "cargo test -p xtask --test zed_settings_behavior",
+]
+broad_glob_reason = "The zed-perl-upstream fixture tree holds versioned contract/receipt JSON pairs consumed by name from the xtask zed contract tests; a missing or malformed fixture fails those tests by name."
+created = "2026-08-15"
+review_after = "2026-11-15"
