@@ -15,13 +15,13 @@ use crate::{
         RegexEmbeddedCodeKind, RegexEventBudget, RegexEventKind, RegexExtendedMode, RegexGroupKind,
         RegexModeState, parse_regex_events,
     },
-    validator::RegexAnalysisBudget,
+    validator::{RegexAnalysisBudget, RegexRange},
 };
 
 use model::map_source_range;
 use parse::{
     RawControl, ResolutionRequest, parse_escape_control, parse_special_group_control,
-    parse_star_control, unsupported_control,
+    parse_star_control, starts_star_control, unsupported_control,
 };
 use resolve::{diagnostic_for_resolution, resolve_request};
 
@@ -64,7 +64,7 @@ pub(crate) fn analyze_pattern_controls(
                 }
             }
             RegexEventKind::GroupOpen(RegexGroupKind::Capturing | RegexGroupKind::NonCapturing)
-                if pattern.get(event.range.start..).is_some_and(|rest| rest.starts_with("(*")) =>
+                if starts_star_control(pattern, event.range.start) =>
             {
                 let parsed = parse_star_control(pattern, event.range.start);
                 covered_until = parsed.range.end;
@@ -116,18 +116,18 @@ pub(crate) fn analyze_pattern_controls(
             }
             RegexEventKind::Interpolation => {
                 dynamic_positions.push(event.range.start);
-                raw.push((
-                    RawControl {
-                        kind: PatternControlKind::SourceInterpolation,
-                        range: event.range,
-                        operand_range: None,
-                        request: ResolutionRequest::None,
-                        effect: PatternControlEffect::DynamicPattern,
-                        boundary: Some(PatternBoundaryKind::SourceInterpolation),
-                        diagnostic: Some(PatternControlDiagnosticCode::DynamicPatternBoundary),
-                    },
-                    public_mode(event.mode),
-                ));
+                raw.push((interpolation_control(event.range), public_mode(event.mode)));
+            }
+            RegexEventKind::QuotedLiteral { .. } => {
+                // `\Q...\E` removes metacharacter meaning, not interpolation: Perl still
+                // expands `$x` and `@x` inside the quoted run. The shared event stream
+                // reports the whole run as one literal and emits no `Interpolation` event
+                // for its body, so without this arm a runtime-supplied pattern would leave
+                // `dynamic_positions` empty and the analysis would claim to be complete.
+                for range in quoted_interpolation_ranges(pattern, event.range, event.mode) {
+                    dynamic_positions.push(range.start);
+                    raw.push((interpolation_control(range), public_mode(event.mode)));
+                }
             }
             RegexEventKind::Malformed(_) => {
                 structural_positions.push(event.range.start);
@@ -228,6 +228,53 @@ pub(crate) fn analyze_pattern_controls(
             source_mapping_complete,
         },
     }
+}
+
+fn interpolation_control(range: RegexRange) -> RawControl {
+    RawControl {
+        kind: PatternControlKind::SourceInterpolation,
+        range,
+        operand_range: None,
+        request: ResolutionRequest::None,
+        effect: PatternControlEffect::DynamicPattern,
+        boundary: Some(PatternBoundaryKind::SourceInterpolation),
+        diagnostic: Some(PatternControlDiagnosticCode::DynamicPatternBoundary),
+    }
+}
+
+/// Body-relative interpolation islands inside one `\Q...\E` run.
+///
+/// The body is rescanned with the shared event scanner instead of restating Perl's
+/// interpolation spelling rules here, so both paths keep one authority for what counts
+/// as an interpolation. Extended mode is forced off for the rescan because `\Q` also
+/// removes the `#` comment and ignored-whitespace meanings, and honouring them would
+/// hide an interpolation that Perl still expands.
+fn quoted_interpolation_ranges(
+    pattern: &str,
+    range: RegexRange,
+    mode: RegexModeState,
+) -> Vec<RegexRange> {
+    let body_start = range.start.saturating_add(2).min(range.end);
+    let closed = pattern.get(body_start..range.end).is_some_and(|body| body.ends_with(r"\E"));
+    let body_end = if closed { range.end.saturating_sub(2) } else { range.end }.max(body_start);
+    let Some(body) = pattern.get(body_start..body_end) else {
+        return Vec::new();
+    };
+    let body_mode = RegexModeState {
+        extended: RegexExtendedMode::Off,
+        captures_by_default: mode.captures_by_default,
+    };
+    parse_regex_events(body, body_mode)
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, RegexEventKind::Interpolation))
+        .filter_map(|event| {
+            Some(RegexRange {
+                start: body_start.checked_add(event.range.start)?,
+                end: body_start.checked_add(event.range.end)?,
+            })
+        })
+        .collect()
 }
 
 fn public_mode(mode: RegexModeState) -> PatternModeState {

@@ -35,6 +35,14 @@ enum ParsedOperand {
 mod escape;
 mod group;
 
+/// Whether the group opening at `start` is a `(*...)` star control rather than a capture.
+///
+/// Parser dispatch and reference resolution both depend on this one rule, so they share
+/// this predicate instead of repeating the prefix test and drifting apart.
+pub(super) fn starts_star_control(pattern: &str, start: usize) -> bool {
+    pattern.get(start..).is_some_and(|rest| rest.starts_with("(*"))
+}
+
 pub(super) fn parse_escape_control(pattern: &str, start: usize) -> Option<RawControl> {
     escape::parse_escape_control(pattern, start)
 }

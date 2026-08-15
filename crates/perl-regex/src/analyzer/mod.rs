@@ -44,6 +44,17 @@ impl RegexAnalyzer {
 
     /// Analyze pattern control, capture references, recursion, conditionals,
     /// embedded code, and local completeness boundaries.
+    ///
+    /// `pattern` is the regex body alone, and `source_start` is that body's byte offset
+    /// in the original source. Every fact carries both its body-relative range and, where
+    /// the mapping succeeds, the corresponding original-source range.
+    ///
+    /// Source mapping is checked rather than fallible: if `source_start` plus a range
+    /// would overflow, the affected `source_range` is left `None` and
+    /// `status.source_mapping_complete` becomes `false`, instead of returning an error or
+    /// reporting a wrapped offset. Body-relative ranges stay exact in that case, so a
+    /// caller that needs original-source positions must consult
+    /// `status.source_mapping_complete` before trusting them.
     #[must_use]
     pub fn analyze_pattern_controls(
         pattern: &str,

@@ -106,27 +106,34 @@ fn raw_reference(
     named_only: bool,
 ) -> Option<RawControl> {
     let operand = parse_operand(pattern.get(operand_range.start..operand_range.end)?);
-    let (kind, request, diagnostic) = match operand {
+    let (kind, request, effect, diagnostic) = match operand {
         ParsedOperand::Number(number) if !named_only => (
             PatternControlKind::NumericBackreference { number, syntax },
             ResolutionRequest::Number { number, ambiguous_plain_escape: false },
+            PatternControlEffect::CaptureRead,
             None,
         ),
         ParsedOperand::Relative(offset) if !named_only && offset < 0 => (
             PatternControlKind::RelativeBackreference { offset, syntax },
             ResolutionRequest::Relative(offset),
+            PatternControlEffect::CaptureRead,
             None,
         ),
         ParsedOperand::Name(name) => (
             PatternControlKind::NamedBackreference { name: name.clone(), syntax },
             ResolutionRequest::Name(name),
+            PatternControlEffect::CaptureRead,
             None,
         ),
+        // An operand this reference spelling cannot carry is not a capture read, so the
+        // effect has to agree with the unsupported kind rather than claim a read that
+        // never resolves.
         _ => (
             PatternControlKind::Unsupported {
                 spelling: bounded_spelling(pattern, RegexRange { start, end }),
             },
             ResolutionRequest::None,
+            PatternControlEffect::Unsupported,
             Some(PatternControlDiagnosticCode::InvalidReference),
         ),
     };
@@ -135,7 +142,7 @@ fn raw_reference(
         range: RegexRange { start, end },
         operand_range: Some(operand_range),
         request,
-        effect: PatternControlEffect::CaptureRead,
+        effect,
         boundary: diagnostic.map(|_| PatternBoundaryKind::UnsupportedControl),
         diagnostic,
     })

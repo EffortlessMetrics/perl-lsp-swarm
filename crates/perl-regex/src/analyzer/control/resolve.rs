@@ -7,7 +7,7 @@ use crate::validator::RegexRange;
 use super::model::{
     PatternControlDiagnosticCode, PatternControlResolution, PatternControlUnresolvedReason,
 };
-use super::parse::ResolutionRequest;
+use super::parse::{ResolutionRequest, starts_star_control};
 
 pub(super) fn resolve_request(
     pattern: &str,
@@ -98,7 +98,7 @@ fn resolve_relative(
         .iter()
         .filter(|declaration| {
             declaration.group_range.start < fact_range.start
-                && !is_star_control_capture(pattern, declaration.group_range.start)
+                && !starts_star_control(pattern, declaration.group_range.start)
         })
         .collect::<Vec<_>>();
     if preceding.iter().any(|declaration| declaration.number.is_none()) {
@@ -140,6 +140,13 @@ fn resolve_relative(
     if targets.is_empty() {
         if dynamic_positions.iter().any(|position| *position > fact_range.start) {
             return PatternControlResolution::DynamicUnknown { known_targets: targets };
+        }
+        // A later star control or malformed region leaves the forward capture numbering
+        // unknown, so a missing target there is not evidence of a missing capture. Fail
+        // closed the same way the dynamic branch above does instead of reporting a hard
+        // unresolved-reference diagnostic against numbering this analysis cannot claim.
+        if structural_positions.iter().any(|position| *position > fact_range.start) {
+            return PatternControlResolution::StructuralUnknown { known_targets: targets };
         }
         return PatternControlResolution::Unresolved(
             PatternControlUnresolvedReason::MissingCaptureNumber,
@@ -204,7 +211,7 @@ fn capture_targets_by_number(
         .iter()
         .filter(|declaration| {
             declaration.number == Some(number)
-                && !is_star_control_capture(pattern, declaration.group_range.start)
+                && !starts_star_control(pattern, declaration.group_range.start)
         })
         .map(|declaration| declaration.id)
         .collect()
@@ -220,14 +227,10 @@ fn capture_targets_by_name(
         .iter()
         .filter(|declaration| {
             declaration.name.as_deref() == Some(name)
-                && !is_star_control_capture(pattern, declaration.group_range.start)
+                && !starts_star_control(pattern, declaration.group_range.start)
         })
         .map(|declaration| declaration.id)
         .collect()
-}
-
-fn is_star_control_capture(pattern: &str, start: usize) -> bool {
-    pattern.get(start..).is_some_and(|rest| rest.starts_with("(*"))
 }
 
 pub(super) fn diagnostic_for_resolution(

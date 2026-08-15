@@ -181,6 +181,17 @@ fn parse_conditional(pattern: &str, start: usize) -> Option<RawControl> {
                 Some(PatternBoundaryKind::UnsupportedControl),
                 Some(PatternControlDiagnosticCode::UnsupportedControl),
             ),
+            // Perl accepts an assertion as a conditional predicate, for example
+            // `(?(?=x)yes|no)`. It is well-formed input this analysis does not model, so
+            // it takes the unsupported code and stays distinct from malformed spelling.
+            ParsedOperand::Invalid if is_assertion_predicate(predicate) => (
+                PatternControlKind::Unsupported {
+                    spelling: bounded_spelling(pattern, RegexRange { start, end }),
+                },
+                ResolutionRequest::None,
+                Some(PatternBoundaryKind::UnsupportedControl),
+                Some(PatternControlDiagnosticCode::UnsupportedControl),
+            ),
             ParsedOperand::Invalid => (
                 PatternControlKind::Unsupported {
                     spelling: bounded_spelling(pattern, RegexRange { start, end }),
@@ -200,6 +211,20 @@ fn parse_conditional(pattern: &str, start: usize) -> Option<RawControl> {
         boundary,
         diagnostic,
     })
+}
+
+/// Whether a conditional predicate is a lookahead or lookbehind assertion.
+///
+/// Only the assertion openers are accepted here; any other `(?`-style predicate stays
+/// malformed so that unmodelled input is not confused with a spelling error.
+fn is_assertion_predicate(predicate: &str) -> bool {
+    let Some(rest) = predicate.strip_prefix('?') else {
+        return false;
+    };
+    matches!(rest.as_bytes().first(), Some(b'=' | b'!'))
+        || rest
+            .strip_prefix('<')
+            .is_some_and(|rest| matches!(rest.as_bytes().first(), Some(b'=' | b'!')))
 }
 
 fn unwrap_conditional_operand(raw: &str, start: usize) -> (RegexRange, &str) {
