@@ -250,10 +250,11 @@ impl LspServer {
             }
         }
 
-        // Pull client-scoped workspace settings (if supported) and merge them
-        // as the highest-precedence layer over TOML-derived folder config.
+        // Client-scoped `workspace/configuration` is deliberately deferred to
+        // the post-initialize lifecycle. During `initialize` only local project
+        // and initialization-option state may be applied; server→client requests
+        // are not legal until after InitializeResult has been returned (#7708).
         drop(folders);
-        self.request_workspace_configuration_for_folders();
     }
 
     /// In single-file mode, try to discover `.perl-lsp.toml` from the
@@ -1104,6 +1105,9 @@ include_paths = ["stale_lib"]
     fn request_workspace_configuration_supersedes_older_pending_requests() {
         let server = LspServer::new();
         server.client_capabilities.lock().workspace_configuration_support = true;
+        // Supersession is a post-initialize concern; server->client requests are
+        // rejected before initialization completes (#7708).
+        server.initialized.store(true, Ordering::Release);
 
         let temp = tempfile::tempdir().expect("failed to create temp dir");
         let folder = temp.path().join("folder");
