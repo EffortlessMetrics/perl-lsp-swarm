@@ -1,6 +1,4 @@
-use perl_corpus::fixture_expectations::{
-    ExpectationMode, parse_sidecar, validate_sidecars_in_dir,
-};
+use perl_corpus::fixture_expectations::{ExpectationMode, parse_sidecar, validate_sidecars_in_dir};
 use std::error::Error;
 use std::path::Path;
 
@@ -34,10 +32,7 @@ fn sidecars_validate_without_hard_failing_on_missing_registry() -> Result<(), Bo
     assert!(!validations.is_empty());
     assert!(validations.iter().all(|validation| validation.is_valid()));
     assert!(validations.iter().all(|validation| {
-        validation
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("resolution pending"))
+        validation.warnings.iter().any(|warning| warning.contains("resolution pending"))
     }));
     Ok(())
 }

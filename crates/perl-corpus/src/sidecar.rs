@@ -10,9 +10,7 @@ mod context;
 mod model;
 mod parse;
 
-pub use context::{
-    SidecarPairIdentity, SidecarValidationContext, ValidatedSidecarPair,
-};
+pub use context::{SidecarPairIdentity, SidecarValidationContext, ValidatedSidecarPair};
 pub use model::{
     ConceptRegistry, ExpectationMode, FIXTURE_EXPECTATION_SCHEMA, FixtureExpectationSidecar,
     FixtureExpectationV1, SidecarConcept, SidecarExpect, SidecarMetrics, SidecarSnapshots,

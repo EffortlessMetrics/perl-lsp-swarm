@@ -40,10 +40,7 @@ fn schema_and_compatibility_mode_identities_remain_explicit() -> Result<(), Box<
 
     let cases = [
         ("parse_clean", ExpectationMode::ParseClean),
-        (
-            "recover_without_panic",
-            ExpectationMode::RecoverWithoutPanic,
-        ),
+        ("recover_without_panic", ExpectationMode::RecoverWithoutPanic),
         ("expected_error", ExpectationMode::ExpectedError),
         ("token_only", ExpectationMode::TokenOnly),
         ("span_only", ExpectationMode::SpanOnly),
@@ -58,27 +55,19 @@ fn schema_and_compatibility_mode_identities_remain_explicit() -> Result<(), Box<
 #[test]
 fn canonical_and_compatibility_models_reject_the_same_invalid_documents() {
     let unknown_mode = minimal("parser.example", "unknown");
-    let unknown_field = format!(
-        "{}\nextra = true\n",
-        minimal("parser.example", "parse_clean")
-    );
+    let unknown_field = format!("{}\nextra = true\n", minimal("parser.example", "parse_clean"));
     let missing_concept = r#"
 [expect]
 panic = false
 timeout = false
 mode = "parse_clean"
 "#;
-    let partial_snapshots = format!(
-        "{}\n[snapshots]\nast = true\n",
-        minimal("parser.example", "parse_clean")
-    );
+    let partial_snapshots =
+        format!("{}\n[snapshots]\nast = true\n", minimal("parser.example", "parse_clean"));
 
-    for raw in [
-        unknown_mode.as_str(),
-        unknown_field.as_str(),
-        missing_concept,
-        partial_snapshots.as_str(),
-    ] {
+    for raw in
+        [unknown_mode.as_str(), unknown_field.as_str(), missing_concept, partial_snapshots.as_str()]
+    {
         assert!(toml::from_str::<FixtureExpectationSidecar>(raw).is_err());
         assert!(toml::from_str::<FixtureExpectation>(raw).is_err());
     }
@@ -87,31 +76,17 @@ mode = "parse_clean"
 #[test]
 fn registry_semantics_match_across_both_public_paths() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
-    write_pair(
-        root.path(),
-        "case",
-        &minimal("parser.example", "parse_clean"),
-    )?;
+    write_pair(root.path(), "case", &minimal("parser.example", "parse_clean"))?;
     let context = SidecarValidationContext::discover(root.path())?;
-    let parsed =
-        perl_corpus::sidecar::parse_sidecar(&context, Path::new("case.meta.toml"))?;
+    let parsed = perl_corpus::sidecar::parse_sidecar(&context, Path::new("case.meta.toml"))?;
 
     let pending = validate_sidecar(&context, Path::new("case.meta.toml"), &parsed, None);
     assert!(pending.is_ok());
-    assert!(
-        pending
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("resolution pending"))
-    );
+    assert!(pending.warnings.iter().any(|warning| warning.contains("resolution pending")));
 
     let canonical_registry = ConceptRegistry::from_ids(["parser.other".to_string()]);
-    let canonical = validate_sidecar(
-        &context,
-        Path::new("case.meta.toml"),
-        &parsed,
-        Some(&canonical_registry),
-    );
+    let canonical =
+        validate_sidecar(&context, Path::new("case.meta.toml"), &parsed, Some(&canonical_registry));
     let compatibility_registry = HashSet::from(["parser.other".to_string()]);
     let compatibility = fixture_expectations::validate_sidecar(
         &context,

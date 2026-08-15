@@ -13,6 +13,7 @@ use super::FIXTURE_EXPECTATION_SCHEMA;
 const SIDECAR_SUFFIX: &[u8] = b".meta.toml";
 const PAIR_IDENTITY_SCHEMA: &str = "fixture_expectation_pair.v1";
 const TOPOLOGY_IDENTITY_SCHEMA: &str = "fixture_expectation_topology.v1";
+const DIGEST_PREFIX: &str = "sha256:";
 
 /// Portable content-bound identity of one sidecar/fixture pair.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -101,11 +102,7 @@ impl SidecarValidationContext {
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             bail!("corpus root must be a non-symlink directory");
         }
-        Ok(Self {
-            root: canonical,
-            selected_pairs: None,
-            topology_identity: None,
-        })
+        Ok(Self { root: canonical, selected_pairs: None, topology_identity: None })
     }
 
     /// Discover and bind the exact selected sidecar population and content.
@@ -140,9 +137,7 @@ impl SidecarValidationContext {
 
     /// Deterministic selected sidecar identities, when this context came from discovery.
     pub fn sidecars(&self) -> impl Iterator<Item = &Path> {
-        self.selected_pairs
-            .iter()
-            .flat_map(|pairs| pairs.keys().map(PathBuf::as_path))
+        self.selected_pairs.iter().flat_map(|pairs| pairs.keys().map(PathBuf::as_path))
     }
 
     /// Open, read, digest, and validate one sidecar/fixture pair without later
@@ -204,11 +199,7 @@ impl SidecarValidationContext {
             fixture_path: fixture_relative,
             fixture_digest: digest_bytes(&fixture.bytes),
         };
-        Ok(ValidatedSidecarPair {
-            identity,
-            sidecar,
-            fixture,
-        })
+        Ok(ValidatedSidecarPair { identity, sidecar, fixture })
     }
 
     fn discover_paths(&self) -> Result<BTreeSet<PathBuf>> {
@@ -216,8 +207,9 @@ impl SidecarValidationContext {
         let mut stack = vec![PathBuf::new()];
         while let Some(relative_directory) = stack.pop() {
             let directory = self.root.join(&relative_directory);
-            let entries = fs::read_dir(&directory)
-                .with_context(|| format!("reading corpus directory {}", relative_directory.display()))?;
+            let entries = fs::read_dir(&directory).with_context(|| {
+                format!("reading corpus directory {}", relative_directory.display())
+            })?;
             for entry in entries {
                 let entry = entry.with_context(|| {
                     format!("reading entry in corpus directory {}", relative_directory.display())
@@ -354,10 +346,7 @@ fn expected_fixture_relative(sidecar: &Path) -> Result<PathBuf> {
     if stem.is_empty() {
         bail!("fixture stem must not be empty: {}", sidecar.display());
     }
-    Ok(sidecar
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join(format!("{stem}.pl")))
+    Ok(sidecar.parent().unwrap_or_else(|| Path::new("")).join(format!("{stem}.pl")))
 }
 
 fn normalize_relative(path: &Path) -> Result<PathBuf> {
@@ -405,8 +394,9 @@ fn inspect_absolute_root(root: &Path) -> Result<()> {
             Component::RootDir => current.push(component.as_os_str()),
             Component::Normal(name) => {
                 current.push(name);
-                let metadata = fs::symlink_metadata(&current)
-                    .with_context(|| format!("inspecting corpus root component {}", current.display()))?;
+                let metadata = fs::symlink_metadata(&current).with_context(|| {
+                    format!("inspecting corpus root component {}", current.display())
+                })?;
                 if metadata.file_type().is_symlink() {
                     bail!("corpus root crosses a symlink component");
                 }
@@ -425,9 +415,17 @@ fn topology_digest(identities: &BTreeMap<PathBuf, SidecarPairIdentity>) -> Resul
     Ok(digest_bytes(&encoded))
 }
 
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
 fn digest_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    format!("sha256:{digest:x}")
+    let mut rendered = String::with_capacity(DIGEST_PREFIX.len() + digest.len() * 2);
+    rendered.push_str(DIGEST_PREFIX);
+    for byte in digest {
+        rendered.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        rendered.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    rendered
 }
 
 fn has_sidecar_suffix(file_name: &OsStr) -> bool {

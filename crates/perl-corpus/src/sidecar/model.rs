@@ -126,9 +126,7 @@ impl ConceptRegistry {
 
     /// Build a registry from an existing ID population.
     pub fn from_ids(ids: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            concept_ids: ids.into_iter().collect(),
-        }
+        Self { concept_ids: ids.into_iter().collect() }
     }
 
     /// Whether the registry contains a concept ID.

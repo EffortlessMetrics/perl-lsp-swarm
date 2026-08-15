@@ -1,7 +1,5 @@
 use perl_corpus::fixture_expectations;
-use perl_corpus::sidecar::{
-    SidecarValidationContext, parse_validated_sidecar,
-};
+use perl_corpus::sidecar::{SidecarValidationContext, parse_validated_sidecar};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,9 +23,7 @@ fn require_error<T>(
     result: anyhow::Result<T>,
     message: &'static str,
 ) -> Result<anyhow::Error, Box<dyn Error>> {
-    result
-        .err()
-        .ok_or_else(|| std::io::Error::other(message).into())
+    result.err().ok_or_else(|| std::io::Error::other(message).into())
 }
 
 fn write_pair(root: &Path, relative: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -64,11 +60,7 @@ fn traversal_absolute_and_late_nonmember_paths_fail_closed() -> Result<(), Box<d
     write_pair(root.path(), "first")?;
     let context = SidecarValidationContext::discover(root.path())?;
 
-    assert!(
-        context
-            .resolve_pair(Path::new("../outside.meta.toml"))
-            .is_err()
-    );
+    assert!(context.resolve_pair(Path::new("../outside.meta.toml")).is_err());
     let outside = tempfile::tempdir()?;
     let outside_sidecar = write_pair(outside.path(), "outside")?;
     assert!(context.resolve_pair(&outside_sidecar).is_err());
@@ -87,10 +79,7 @@ fn same_path_content_substitution_invalidates_rebinding() -> Result<(), Box<dyn 
     let root = tempfile::tempdir()?;
     write_pair(root.path(), "case")?;
     let context = SidecarValidationContext::discover(root.path())?;
-    let identity = context
-        .resolve_pair(Path::new("case.meta.toml"))?
-        .identity()
-        .clone();
+    let identity = context.resolve_pair(Path::new("case.meta.toml"))?.identity().clone();
 
     fs::write(root.path().join("case.meta.toml"), sidecar_toml("parser.substituted"))?;
     let error = require_error(
@@ -122,11 +111,7 @@ fn retained_bytes_close_resolution_to_parse_swap() -> Result<(), Box<dyn Error>>
     let parsed = parse_validated_sidecar(&pair)?;
     assert_eq!(parsed.concept.id, "parser.example");
     assert_eq!(pair.fixture_bytes(), b"1;");
-    assert!(
-        context
-            .resolve_pair(Path::new("case.meta.toml"))
-            .is_err()
-    );
+    assert!(context.resolve_pair(Path::new("case.meta.toml")).is_err());
     Ok(())
 }
 
@@ -135,10 +120,7 @@ fn serialized_identity_is_revalidated_after_rebinding() -> Result<(), Box<dyn Er
     let root = tempfile::tempdir()?;
     write_pair(root.path(), "case")?;
     let context = SidecarValidationContext::discover(root.path())?;
-    let identity = context
-        .resolve_pair(Path::new("case.meta.toml"))?
-        .identity()
-        .clone();
+    let identity = context.resolve_pair(Path::new("case.meta.toml"))?.identity().clone();
     fs::remove_file(root.path().join("case.pl"))?;
     assert!(context.rebind_pair(&identity).is_err());
     Ok(())
@@ -152,10 +134,7 @@ fn fixture_leaf_symlinks_inside_and_outside_root_are_rejected() -> Result<(), Bo
     for target_inside in [false, true] {
         let root = tempfile::tempdir()?;
         let outside = tempfile::tempdir()?;
-        fs::write(
-            root.path().join("case.meta.toml"),
-            sidecar_toml("parser.example"),
-        )?;
+        fs::write(root.path().join("case.meta.toml"), sidecar_toml("parser.example"))?;
         let target = if target_inside {
             root.path().join("target.pl")
         } else {
@@ -170,11 +149,7 @@ fn fixture_leaf_symlinks_inside_and_outside_root_are_rejected() -> Result<(), Bo
             "fixture symlink must be rejected",
         )?;
         assert!(error.to_string().contains("crosses a symlink"));
-        assert!(
-            !error
-                .to_string()
-                .contains(outside.path().to_string_lossy().as_ref())
-        );
+        assert!(!error.to_string().contains(outside.path().to_string_lossy().as_ref()));
     }
     Ok(())
 }
@@ -190,16 +165,9 @@ fn intermediate_symlink_and_socket_fixture_are_rejected() -> Result<(), Box<dyn 
     write_pair(outside.path(), "case")?;
     symlink(outside.path(), root.path().join("linked"))?;
     let context = SidecarValidationContext::bind(root.path())?;
-    assert!(
-        context
-            .resolve_pair(Path::new("linked/case.meta.toml"))
-            .is_err()
-    );
+    assert!(context.resolve_pair(Path::new("linked/case.meta.toml")).is_err());
 
-    fs::write(
-        root.path().join("socket.meta.toml"),
-        sidecar_toml("parser.example"),
-    )?;
+    fs::write(root.path().join("socket.meta.toml"), sidecar_toml("parser.example"))?;
     let _listener = UnixListener::bind(root.path().join("socket.pl"))?;
     let error = require_error(
         context.resolve_pair(Path::new("socket.meta.toml")),
@@ -233,10 +201,7 @@ fn compatibility_adapter_reports_the_same_symlink_boundary() -> Result<(), Box<d
 
     let root = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
-    fs::write(
-        root.path().join("case.meta.toml"),
-        sidecar_toml("parser.example"),
-    )?;
+    fs::write(root.path().join("case.meta.toml"), sidecar_toml("parser.example"))?;
     let target = outside.path().join("case.pl");
     fs::write(&target, "1;")?;
     symlink(&target, root.path().join("case.pl"))?;
@@ -247,17 +212,9 @@ fn compatibility_adapter_reports_the_same_symlink_boundary() -> Result<(), Box<d
         "canonical pair must reject symlink",
     )?
     .to_string();
-    let compatibility = fixture_expectations::validate_sidecar(
-        &context,
-        Path::new("case.meta.toml"),
-        None,
-    );
-    assert!(
-        compatibility
-            .errors
-            .iter()
-            .any(|error| error == &canonical)
-    );
+    let compatibility =
+        fixture_expectations::validate_sidecar(&context, Path::new("case.meta.toml"), None);
+    assert!(compatibility.errors.iter().any(|error| error == &canonical));
     assert!(compatibility.fixture_path.is_none());
     Ok(())
 }

@@ -14,21 +14,12 @@ pub fn parse_sidecar_str(raw: &str) -> Result<FixtureExpectationSidecar> {
 ///
 /// This is the deterministic interposition seam for tests that replace the
 /// filesystem path after resolution: parsing remains bound to retained bytes.
-pub fn parse_validated_sidecar(
-    pair: &ValidatedSidecarPair,
-) -> Result<FixtureExpectationSidecar> {
+pub fn parse_validated_sidecar(pair: &ValidatedSidecarPair) -> Result<FixtureExpectationSidecar> {
     let raw = std::str::from_utf8(pair.sidecar_bytes()).with_context(|| {
-        format!(
-            "sidecar {} is not valid UTF-8",
-            pair.identity().sidecar_path.display()
-        )
+        format!("sidecar {} is not valid UTF-8", pair.identity().sidecar_path.display())
     })?;
-    parse_sidecar_str(raw).with_context(|| {
-        format!(
-            "parsing sidecar {}",
-            pair.identity().sidecar_path.display()
-        )
-    })
+    parse_sidecar_str(raw)
+        .with_context(|| format!("parsing sidecar {}", pair.identity().sidecar_path.display()))
 }
 
 /// Open, validate, retain, and parse a sidecar through one bound root.
@@ -48,9 +39,7 @@ pub fn validate_validated_sidecar(
 ) -> SidecarValidation {
     let mut validation = SidecarValidation::default();
     if sidecar.concept.id.trim().is_empty() {
-        validation
-            .errors
-            .push("concept.id must not be empty".to_string());
+        validation.errors.push("concept.id must not be empty".to_string());
     } else if let Some(registry) = concept_registry {
         if !registry.contains(&sidecar.concept.id) {
             validation.errors.push(format!(
@@ -66,14 +55,10 @@ pub fn validate_validated_sidecar(
     }
 
     if sidecar.concept.tier.trim().is_empty() {
-        validation
-            .errors
-            .push("concept.tier must not be empty".to_string());
+        validation.errors.push("concept.tier must not be empty".to_string());
     }
     if pair.fixture_bytes().is_empty() {
-        validation
-            .warnings
-            .push("paired fixture is empty".to_string());
+        validation.warnings.push("paired fixture is empty".to_string());
     }
     validation
 }
@@ -87,10 +72,7 @@ pub fn validate_sidecar(
 ) -> SidecarValidation {
     match context.resolve_pair(sidecar_path) {
         Ok(pair) => validate_validated_sidecar(&pair, sidecar, concept_registry),
-        Err(error) => SidecarValidation {
-            errors: vec![error.to_string()],
-            warnings: Vec::new(),
-        },
+        Err(error) => SidecarValidation { errors: vec![error.to_string()], warnings: Vec::new() },
     }
 }
 
@@ -102,9 +84,5 @@ pub fn load_and_validate_sidecar(
 ) -> Result<SidecarValidation> {
     let pair = context.resolve_pair(sidecar_path)?;
     let sidecar = parse_validated_sidecar(&pair)?;
-    Ok(validate_validated_sidecar(
-        &pair,
-        &sidecar,
-        concept_registry,
-    ))
+    Ok(validate_validated_sidecar(&pair, &sidecar, concept_registry))
 }

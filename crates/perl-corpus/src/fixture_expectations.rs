@@ -111,19 +111,13 @@ pub struct ConceptInfo {
 
 impl From<sidecar::SidecarConcept> for ConceptInfo {
     fn from(value: sidecar::SidecarConcept) -> Self {
-        Self {
-            id: value.id,
-            tier: value.tier,
-        }
+        Self { id: value.id, tier: value.tier }
     }
 }
 
 impl From<ConceptInfo> for sidecar::SidecarConcept {
     fn from(value: ConceptInfo) -> Self {
-        Self {
-            id: value.id,
-            tier: value.tier,
-        }
+        Self { id: value.id, tier: value.tier }
     }
 }
 
@@ -141,21 +135,13 @@ pub struct ExpectBlock {
 
 impl From<sidecar::SidecarExpect> for ExpectBlock {
     fn from(value: sidecar::SidecarExpect) -> Self {
-        Self {
-            panic: value.panic,
-            timeout: value.timeout,
-            mode: value.mode.into(),
-        }
+        Self { panic: value.panic, timeout: value.timeout, mode: value.mode.into() }
     }
 }
 
 impl From<ExpectBlock> for sidecar::SidecarExpect {
     fn from(value: ExpectBlock) -> Self {
-        Self {
-            panic: value.panic,
-            timeout: value.timeout,
-            mode: value.mode.into(),
-        }
+        Self { panic: value.panic, timeout: value.timeout, mode: value.mode.into() }
     }
 }
 
@@ -201,11 +187,7 @@ pub struct SnapshotBlock {
 
 impl From<sidecar::SidecarSnapshots> for SnapshotBlock {
     fn from(value: sidecar::SidecarSnapshots) -> Self {
-        Self {
-            tokens: Some(value.tokens),
-            ast: Some(value.ast),
-            spans: Some(value.spans),
-        }
+        Self { tokens: Some(value.tokens), ast: Some(value.ast), spans: Some(value.spans) }
     }
 }
 
@@ -292,8 +274,7 @@ pub fn validate_sidecar(
     let fixture_path = Some(pair.identity().fixture_path.clone());
     match sidecar::parse_validated_sidecar(&pair) {
         Ok(parsed) => {
-            let validation =
-                sidecar::validate_validated_sidecar(&pair, &parsed, registry.as_ref());
+            let validation = sidecar::validate_validated_sidecar(&pair, &parsed, registry.as_ref());
             SidecarValidation {
                 sidecar_path,
                 fixture_path,
@@ -316,13 +297,8 @@ pub fn validate_sidecars_in_dir(
     concept_registry: Option<&HashSet<String>>,
 ) -> Result<(sidecar::SidecarValidationContext, Vec<SidecarValidation>)> {
     let context = discover_sidecars(root)?;
-    let sidecars = context
-        .sidecars()
-        .map(Path::to_path_buf)
-        .collect::<Vec<_>>();
-    let validations = sidecars
-        .iter()
-        .map(|path| validate_sidecar(&context, path, concept_registry))
-        .collect();
+    let sidecars = context.sidecars().map(Path::to_path_buf).collect::<Vec<_>>();
+    let validations =
+        sidecars.iter().map(|path| validate_sidecar(&context, path, concept_registry)).collect();
     Ok((context, validations))
 }
