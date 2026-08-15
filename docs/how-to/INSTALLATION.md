@@ -97,19 +97,26 @@ Supported release-archive platforms are Linux x86_64 and aarch64 (gnu or
 musl), macOS x86_64, and macOS aarch64.
 
 This bootstrap boundary proves only the identity of the downloaded
-`scripts/install.sh`. It does **not** by itself prove the later release archive,
-member layout, server/DAP pair, extraction, promotion, or rollback path. The
-current canonical installer still treats missing `SHA256SUMS`, a missing asset
-row, or the absence of a checksum tool as warning-and-continue conditions. The
-PowerShell installer has a similar fail-open checksum boundary. Safe archive
-inspection and atomic pair replacement also remain open under
-[#6097](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6097).
-Use the manual archive plus an explicit checksum check for release-sensitive
-installation until those remaining boundaries land.
+`scripts/install.sh`. For POSIX release-download mode, the canonical installer
+now requires a local SHA-256 implementation, a downloadable `SHA256SUMS`,
+exactly one normalized row for the selected asset, and a matching lowercase
+SHA-256 digest before extraction begins. Missing, duplicate, malformed, or
+mismatched checksum evidence fails closed.
 
-`BUILD_FROM_SOURCE=1` installs **`perllsp` only**, not `perl-dap`. That mode
-runs `cargo install perllsp`, and the `perllsp` package declares just the one
-binary, so the debug adapter is skipped without an error. If you need the
+That is an artifact-integrity control, not independent publisher provenance:
+the archive and checksum manifest are still co-hosted by the release. The
+PowerShell installer also retains its separate fail-open checksum boundary.
+Safe archive inspection, target/member identity, complete server/DAP pair
+verification, atomic promotion, and rollback preservation remain open under
+[#6097](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/6097).
+Use the manual archive with independently reviewed checksum or attestation
+evidence for release-sensitive installation until those remaining boundaries
+land.
+
+`BUILD_FROM_SOURCE=1` installs **`perllsp` only**, not `perl-dap`. That mode runs
+`cargo install perllsp`. The crates.io package `perl-lsp` is a different project,
+not this language server. The `perllsp` package declares just the one binary, so
+the debug adapter is skipped without an error. If you need the
 debugger, use a release archive instead — the archives ship both binaries — or
 build `perl-dap` yourself from a clone with
 `cargo build -p perl-dap --release`.
@@ -249,6 +256,7 @@ Cargo's bin directory instead:
 ```bash
 cargo install perllsp
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 ## Prebuilt Releases
 
