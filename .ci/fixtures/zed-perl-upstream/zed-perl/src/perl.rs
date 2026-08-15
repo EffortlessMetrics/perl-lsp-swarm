@@ -302,7 +302,6 @@ impl PerlExtension {
             if !matches!(os, zed::Os::Windows) {
                 zed::make_file_executable(&binary_path)?;
             }
-            remove_old_downloads("perllsp-", &version_dir);
         }
 
         self.perllsp_path = Some(binary_path.clone());
@@ -395,7 +394,7 @@ fn perllsp_target(os: zed::Os, arch: zed::Architecture) -> Result<&'static str> 
         (zed::Os::Linux, zed::Architecture::Aarch64) => Ok("aarch64-unknown-linux-musl"),
         (zed::Os::Windows, zed::Architecture::X8664) => Ok("x86_64-pc-windows-msvc"),
         (zed::Os::Windows, zed::Architecture::Aarch64) => Err(
-            "managed perllsp downloads do not yet claim Windows ARM64; install a proven compatible perllsp binary on PATH"
+            "aarch64-pc-windows-msvc managed perllsp downloads are not yet published; install a proven compatible perllsp binary on PATH"
                 .to_string(),
         ),
         _ => Err(format!(
