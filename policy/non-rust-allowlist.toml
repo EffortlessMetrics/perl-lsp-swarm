@@ -1537,3 +1537,19 @@ covered_by = [
 ]
 created = "2026-08-15"
 review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-product-9677-changelog-fragment"
+path = ".changes/unreleased/product-9677-Fixed-195900.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
