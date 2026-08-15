@@ -270,8 +270,10 @@ pub(crate) fn analyze_captures(
                     let raw_name =
                         pattern.get(name_range.start..name_range.end).unwrap_or_default();
                     let syntax = named_syntax(pattern, name_range);
-                    let profile_confidence =
-                        named_capture_profile(raw_name, name_range, profile, &mut diagnostics);
+                    // The name shape decides whether a declaration exists at all, so it
+                    // is checked before the profile projection. Running the projection
+                    // first would leave version/source diagnostics behind for a name
+                    // that is then discarded as invalid.
                     if raw_name.is_empty() || !structural_name_shape(raw_name) {
                         diagnostics.push(CaptureDiagnostic {
                             code: CaptureDiagnosticCode::InvalidName,
@@ -283,6 +285,8 @@ pub(crate) fn analyze_captures(
                         stack.push(OpenFrame::Other);
                         malformed = true;
                     } else {
+                        let profile_confidence =
+                            named_capture_profile(raw_name, name_range, profile, &mut diagnostics);
                         let declaration_index = declarations.len();
                         declarations.push(new_declaration(
                             declaration_index,
@@ -349,13 +353,9 @@ pub(crate) fn analyze_captures(
         }
     }
 
-    for frame in stack {
-        if let OpenFrame::Capture { declaration_index } = frame
-            && let Some(declaration) = declarations.get_mut(declaration_index)
-        {
-            declaration.confidence.source = CaptureSourceConfidence::Recovered;
-        }
-    }
+    // A declaration still on `stack` was never closed, so it keeps the `Recovered`
+    // source confidence that `new_declaration` installs; only a matching
+    // `GroupClose` above upgrades it to `Exact`. No fixup pass is needed here.
 
     diagnostics
         .sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end, diagnostic.code));
@@ -394,6 +394,10 @@ pub(crate) fn extract_named_captures(pattern: &str) -> Vec<CaptureGroup> {
         .collect()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site builds a declaration from independent source facts"
+)]
 fn new_declaration(
     index: usize,
     name: Option<String>,
@@ -454,7 +458,9 @@ fn named_families(declarations: &[CaptureDeclaration]) -> Vec<NamedCaptureFamily
                 index
             }
         };
-        families[family_index].declarations.push(declaration.id);
+        if let Some(family) = families.get_mut(family_index) {
+            family.declarations.push(declaration.id);
+        }
     }
     families
 }

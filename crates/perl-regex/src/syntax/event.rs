@@ -105,6 +105,7 @@ pub(crate) enum RegexMalformedKind {
     UnterminatedComment,
     UnterminatedEmbeddedCode,
     UnterminatedNamedCapture,
+    UnterminatedInterpolation,
     UnmatchedGroupClose,
     UnclosedGroup,
 }
@@ -358,6 +359,7 @@ impl<'a> EventParser<'a> {
         let start = self.pos;
         let mut cursor = start + 1;
         let mut interpolations = Vec::new();
+        let mut truncated_interpolation = false;
         if self.bytes.get(cursor) == Some(&b'^') {
             cursor += 1;
         }
@@ -376,7 +378,10 @@ impl<'a> EventParser<'a> {
                     };
                 }
                 b'$' | b'@' => {
-                    if let Some(end) = self.interpolation_end_at(cursor) {
+                    if let Some((end, interpolation_closed)) = self.interpolation_end_at(cursor) {
+                        if !interpolation_closed {
+                            truncated_interpolation = true;
+                        }
                         interpolations.push(RegexRange { start: cursor, end });
                         cursor = end;
                     } else {
@@ -391,7 +396,7 @@ impl<'a> EventParser<'a> {
                 _ => cursor = self.next_char_end(cursor),
             }
         }
-        if !closed {
+        if !closed || truncated_interpolation {
             self.malformed = true;
         }
         if !self.advance(cursor) {
@@ -526,6 +531,19 @@ impl<'a> EventParser<'a> {
             }
             Some(b'|') => {
                 return self.open_group(start, start + 3, RegexGroupKind::BranchReset, self.mode);
+            }
+            Some(b'(') => {
+                // Conditional group. A simple condition such as `(1)`, `(<name>)`,
+                // `('name')`, `(R1)`, or `(DEFINE)` is a condition token rather than a
+                // capturing group, so it belongs to the opener and must never be
+                // numbered. An assertion condition such as `(?(?=...)...)` is a real
+                // group, so it stays in the stream and is classified on its own.
+                if self.bytes.get(start + 3) != Some(&b'?')
+                    && let Some(end) = self.simple_condition_end(start + 2)
+                {
+                    return self.open_group(start, end, RegexGroupKind::Special, self.mode);
+                }
+                return self.open_group(start, start + 2, RegexGroupKind::Special, self.mode);
             }
             Some(b'<') => return self.parse_angle_group(start),
             Some(b'\'') => return self.parse_quoted_name_group(start),
@@ -758,24 +776,37 @@ impl<'a> EventParser<'a> {
 
     fn parse_interpolation(&mut self) -> bool {
         let start = self.pos;
-        let Some(end) = self.interpolation_end_at(start) else {
+        let Some((end, closed)) = self.interpolation_end_at(start) else {
             return false;
         };
+        if !closed {
+            self.malformed = true;
+        }
         if !self.advance(end) {
             return true;
         }
         let _ = self.emit(start, end, RegexEventKind::Interpolation, self.mode, self.stack.len());
+        if !closed {
+            let _ = self.emit(
+                end,
+                end,
+                RegexEventKind::Malformed(RegexMalformedKind::UnterminatedInterpolation),
+                self.mode,
+                self.stack.len(),
+            );
+        }
         true
     }
 
-    fn interpolation_end_at(&self, start: usize) -> Option<usize> {
+    /// End of an interpolation starting at `start`, plus whether it is well formed.
+    fn interpolation_end_at(&self, start: usize) -> Option<(usize, bool)> {
         let sigil = match self.bytes.get(start).copied() {
             Some(b'$' | b'@') => self.bytes[start],
             _ => return None,
         };
         let next = self.bytes.get(start + 1).copied()?;
         let end = if next == b'{' {
-            self.braced_interpolation_end(start + 1)
+            return Some(self.braced_interpolation_end(start + 1));
         } else if sigil == b'$' && next == b'^' && self.bytes.get(start + 2) == Some(&b'R') {
             start.saturating_add(3).min(self.bytes.len())
         } else if sigil == b'$'
@@ -802,7 +833,7 @@ impl<'a> EventParser<'a> {
         } else {
             return None;
         };
-        Some(end)
+        Some((end, true))
     }
 
     fn quantifier_at(&self, start: usize) -> Option<(RegexQuantifier, usize)> {
@@ -964,7 +995,11 @@ impl<'a> EventParser<'a> {
         (self.bytes.len(), false)
     }
 
-    fn braced_interpolation_end(&self, open: usize) -> usize {
+    /// End of a `${...}` interpolation and whether the brace actually closed.
+    ///
+    /// A truncated form reports the input end with `closed == false` so callers can
+    /// record the malformed construct instead of silently accepting the clamp.
+    fn braced_interpolation_end(&self, open: usize) -> (usize, bool) {
         let mut cursor = open + 1;
         let mut depth = 1usize;
         let mut escaped = false;
@@ -979,12 +1014,30 @@ impl<'a> EventParser<'a> {
             } else if ch == b'}' {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return cursor + 1;
+                    return (cursor + 1, true);
                 }
             }
             cursor = self.next_char_end(cursor);
         }
-        self.bytes.len()
+        (self.bytes.len(), false)
+    }
+
+    /// End of a simple parenthesized conditional condition token, when the token
+    /// contains no nested group. Returns `None` for anything structurally richer so
+    /// the scanner keeps classifying the inner construct itself.
+    fn simple_condition_end(&self, start: usize) -> Option<usize> {
+        if self.bytes.get(start) != Some(&b'(') {
+            return None;
+        }
+        let mut cursor = start + 1;
+        while let Some(ch) = self.bytes.get(cursor).copied() {
+            match ch {
+                b')' => return Some(cursor + 1),
+                b'(' => return None,
+                _ => cursor += 1,
+            }
+        }
+        None
     }
 
     fn identifier_interpolation_end(&self, start: usize) -> usize {

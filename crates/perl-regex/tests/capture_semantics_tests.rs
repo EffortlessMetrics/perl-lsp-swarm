@@ -1,8 +1,8 @@
 use perl_regex::RegexAnalyzer;
 use perl_regex::analyzer::{
-    CaptureLanguageProfile, CaptureNumberConfidence, CaptureProfileConfidence,
-    CaptureSourceConfidence, CaptureSyntax, EffectiveModifiers, FeatureState, ModifierSequence,
-    PerlVersion, RegexLanguageProfile, RegexOperator,
+    CaptureDiagnosticCode, CaptureLanguageProfile, CaptureNumberConfidence,
+    CaptureProfileConfidence, CaptureSourceConfidence, CaptureSyntax, EffectiveModifiers,
+    FeatureState, ModifierSequence, PerlVersion, RegexLanguageProfile, RegexOperator,
 };
 
 fn profile(minor: u16, source_utf8: FeatureState) -> CaptureLanguageProfile {
@@ -450,5 +450,111 @@ fn malformed_branch_reset_is_recovered_without_complete_numbering()
     assert!(analysis.status.malformed);
     assert!(analysis.status.numbering_unknown);
     assert!(!analysis.status.is_complete());
+    Ok(())
+}
+
+#[test]
+fn conditional_condition_tokens_are_never_numbered_as_captures()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Perl numbers `(a)`, `(b)`, `(c)`, then `after`. The `(1)` and `(<n>)`
+    // condition tokens belong to the conditional opener, not to the capture space.
+    for pattern in [
+        "(a)(?(1)(b)|(c))(?<after>d)",
+        "(a)(?(<n>)(b)|(c))(?<after>d)",
+        "(a)(?('n')(b)|(c))(?<after>d)",
+    ] {
+        let analysis = RegexAnalyzer::analyze_captures(
+            pattern,
+            EffectiveModifiers::default(),
+            profile(44, FeatureState::Enabled),
+        );
+
+        assert_eq!(
+            analysis.declarations.len(),
+            4,
+            "{pattern:?} declared {:?}",
+            analysis.declarations.iter().map(|d| d.number).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            analysis.declarations.iter().map(|d| d.number).collect::<Vec<_>>(),
+            vec![Some(1), Some(2), Some(3), Some(4)],
+            "{pattern:?} renumbered captures around the conditional"
+        );
+        assert_eq!(
+            analysis.declarations[3].name.as_deref(),
+            Some("after"),
+            "{pattern:?} lost the trailing named capture"
+        );
+        assert!(analysis.status.is_complete(), "{pattern:?} status {:?}", analysis.status);
+    }
+
+    // An assertion condition is a real group, so captures inside it stay numbered.
+    let pattern = "(a)(?(?=(x))(b)|(c))(?<after>d)";
+    let analysis = RegexAnalyzer::analyze_captures(
+        pattern,
+        EffectiveModifiers::default(),
+        profile(44, FeatureState::Enabled),
+    );
+    assert_eq!(
+        analysis.declarations.iter().map(|d| d.number).collect::<Vec<_>>(),
+        vec![Some(1), Some(2), Some(3), Some(4), Some(5)],
+        "assertion condition captures must stay in the numbering space"
+    );
+    assert_eq!(analysis.declarations[4].name.as_deref(), Some("after"));
+
+    // A control verb is not a group and must not consume a number.
+    let pattern = "(a)(*SKIP)(*MARK:m)(?<after>b)";
+    let analysis = RegexAnalyzer::analyze_captures(
+        pattern,
+        EffectiveModifiers::default(),
+        profile(44, FeatureState::Enabled),
+    );
+    assert_eq!(
+        analysis.declarations.iter().map(|d| d.number).collect::<Vec<_>>(),
+        vec![Some(1), Some(2)],
+        "control verbs must not be numbered"
+    );
+    Ok(())
+}
+
+#[test]
+fn truncated_braced_interpolation_reports_malformed() -> Result<(), Box<dyn std::error::Error>> {
+    for pattern in ["(?<a>x)${unterminated", "(?<a>x)[${unterminated]"] {
+        let analysis = RegexAnalyzer::analyze_captures(
+            pattern,
+            EffectiveModifiers::default(),
+            profile(44, FeatureState::Enabled),
+        );
+
+        assert!(
+            analysis.status.malformed,
+            "{pattern:?} accepted a truncated interpolation as well formed: {:?}",
+            analysis.status
+        );
+        assert!(analysis.status.dynamic, "{pattern:?} status {:?}", analysis.status);
+        assert!(!analysis.status.is_complete(), "{pattern:?} status {:?}", analysis.status);
+    }
+    Ok(())
+}
+
+#[test]
+fn invalid_capture_name_does_not_leave_profile_diagnostics()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The name fails the structural shape check, so the declaration is discarded.
+    // No version/source diagnostic from the discarded projection may survive.
+    let pattern = "(?<1bad>a)";
+    let analysis = RegexAnalyzer::analyze_captures(
+        pattern,
+        EffectiveModifiers::default(),
+        profile(8, FeatureState::Unknown),
+    );
+
+    assert_eq!(
+        analysis.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![CaptureDiagnosticCode::InvalidName],
+        "discarded declaration leaked projection diagnostics: {:?}",
+        analysis.diagnostics
+    );
+    assert!(analysis.declarations.is_empty(), "invalid name produced a declaration");
     Ok(())
 }
