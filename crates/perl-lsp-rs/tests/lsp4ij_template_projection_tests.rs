@@ -1,3 +1,13 @@
+//! Static projection contract for the repository-owned LSP4IJ Perl template (#7875).
+//!
+//! These checks read the checked-in template material against the canonical generic
+//! `perl.*` settings schema. Host behavior is out of scope and owned by #7985.
+
+// Tests are permitted to use `.expect()` and `panic!` on Result/Option per the repo's
+// coding standards (unlike production code, where they are banned). Fixture parsing and
+// schema lookups here fail the test with a specific diagnostic rather than propagating.
+#![allow(clippy::panic, clippy::expect_used)]
+
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 
