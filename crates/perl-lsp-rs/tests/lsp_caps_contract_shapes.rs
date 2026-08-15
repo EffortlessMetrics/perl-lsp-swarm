@@ -357,8 +357,8 @@ fn test_ga_lock_is_conservative() -> Result<(), Box<dyn std::error::Error>> {
 
     // GA lock should be more conservative than production
     assert!(!ga.inline_values, "inline values not GA");
-    assert!(ga.notebook_document_sync, "notebook sync is GA");
-    assert!(ga.notebook_cell_execution, "notebook cell execution is GA");
+    assert!(!ga.notebook_document_sync, "notebook sync remains preview-only");
+    assert!(!ga.notebook_cell_execution, "notebook cell execution remains preview-only");
 
     // Graduated features should be enabled
     assert!(ga.completion, "completion is GA");

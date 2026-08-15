@@ -47,8 +47,10 @@ class RustfmtCheckTests(unittest.TestCase):
         self.config.write_text("{}\n", encoding="utf-8")
         self.cargo = self.bin / ("cargo.cmd" if os.name == "nt" else "cargo")
         self.rustfmt = self.bin / ("rustfmt.cmd" if os.name == "nt" else "rustfmt")
+        self.rustc = self.bin / ("rustc.cmd" if os.name == "nt" else "rustc")
         self._write_fake_cargo()
         self._write_fake_rustfmt()
+        self._write_fake_rustc()
         self._git("init", "--initial-branch=main")
         self._git("config", "user.name", "rustfmt fixture")
         self._git("config", "user.email", "rustfmt-fixture@example.invalid")
@@ -195,6 +197,22 @@ raise SystemExit(64)
 '''
         self._write_fake_executable(self.rustfmt, script)
 
+    def _write_fake_rustc(self) -> None:
+        script = r'''#!/usr/bin/env python3
+import sys
+if sys.argv[1:] == ["-Vv"]:
+    print("rustc 1.95.0 (fixture 2026-08-01)")
+    print("binary: rustc")
+    print("commit-hash: 0123456789abcdef0123456789abcdef01234567")
+    print("commit-date: 2026-08-01")
+    print("host: x86_64-unknown-linux-gnu")
+    print("release: 1.95.0")
+    print("LLVM version: 20.1.0")
+    raise SystemExit(0)
+raise SystemExit(64)
+'''
+        self._write_fake_executable(self.rustc, script)
+
     def _write_fake_executable(self, path: Path, script: str) -> None:
         if os.name == "nt":
             implementation = path.with_suffix(".py")
@@ -244,6 +262,8 @@ raise SystemExit(64)
                 str(self.cargo),
                 "--rustfmt",
                 str(rustfmt or self.rustfmt),
+                "--rustc",
+                str(self.rustc),
                 "--candidate-sha",
                 self.candidate_sha,
                 "--candidate-tree-sha",
