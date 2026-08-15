@@ -603,5 +603,64 @@ fn quoted_literal_interpolation_degrades_capture_numbering_confidence()
         CaptureNumberConfidence::Exact,
         "capture after \\Qliteral\\E must keep Exact number confidence"
     );
+
+    // An escaped sigil does not interpolate: `\Q\$x\E` and `\Q\@x\E` are the
+    // literal texts `$x` and `@x`, so the analysis stays fully static.  Before
+    // the escape-aware scan the quoted-literal scanner walked past the
+    // backslash and reported `$x`/`@x` as runtime interpolations.
+    for escaped in [r"\Q\$runtime\E(after)", r"\Q\@items\E(after)"] {
+        let static_literal = RegexAnalyzer::analyze_captures(
+            escaped,
+            EffectiveModifiers::default(),
+            CaptureLanguageProfile::unknown(),
+        );
+        assert!(
+            !static_literal.status.dynamic,
+            "escaped sigil in {escaped:?} must not set the dynamic flag"
+        );
+        assert!(
+            static_literal.status.is_complete(),
+            "escaped sigil in {escaped:?} must keep the analysis complete"
+        );
+        assert_eq!(
+            static_literal.declarations[0].confidence.number,
+            CaptureNumberConfidence::Exact,
+            "capture after {escaped:?} must keep Exact number confidence"
+        );
+    }
+
+    // Backslash parity is decided by escape pairs, not by mere adjacency: the
+    // `\\` in `\Q\\$x\E` is a literal backslash, so the `$x` that follows is
+    // unescaped and interpolates, while the `\\\$` in `\Q\\\$x\E` leaves the
+    // sigil escaped and fully static.
+    let odd_backslashes = RegexAnalyzer::analyze_captures(
+        r"\Q\\$runtime\E(after)",
+        EffectiveModifiers::default(),
+        CaptureLanguageProfile::unknown(),
+    );
+    assert!(
+        odd_backslashes.status.dynamic,
+        "unescaped sigil after a backslash pair in \\Q..\\E must set the dynamic flag"
+    );
+    assert_eq!(
+        odd_backslashes.declarations[0].confidence.number,
+        CaptureNumberConfidence::DynamicUnknown,
+        "capture after \\Q\\\\$x\\E must have DynamicUnknown number confidence"
+    );
+
+    let pair_then_escaped = RegexAnalyzer::analyze_captures(
+        r"\Q\\\$runtime\E(after)",
+        EffectiveModifiers::default(),
+        CaptureLanguageProfile::unknown(),
+    );
+    assert!(
+        !pair_then_escaped.status.dynamic,
+        "backslash pair followed by an escaped sigil must leave the dynamic flag clear"
+    );
+    assert_eq!(
+        pair_then_escaped.declarations[0].confidence.number,
+        CaptureNumberConfidence::Exact,
+        "capture after \\Q\\\\\\$x\\E must keep Exact number confidence"
+    );
     Ok(())
 }

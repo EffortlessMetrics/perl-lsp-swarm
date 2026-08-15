@@ -280,6 +280,15 @@ impl<'a> EventParser<'a> {
                 closed = true;
                 break;
             }
+            // A backslash escapes the byte that follows it inside `\Q...\E`, so
+            // `\Q\$x\E` is a literal `$x` rather than a runtime interpolation.
+            // Skipping the escaped byte as a unit also keeps backslash parity
+            // honest, matching the character-class scanner: in `\Q\\$x\E` the
+            // `\\` pair is a literal backslash and the `$x` still interpolates.
+            if self.bytes[cursor] == b'\\' {
+                cursor = self.next_char_end(cursor + 1);
+                continue;
+            }
             // `\Q...\E` suppresses regex metacharacter interpretation but does NOT
             // suppress Perl variable interpolation: `\Q$x\E` still expands `$x` at
             // runtime, so a `$` or `@` here introduces a dynamic boundary exactly as
