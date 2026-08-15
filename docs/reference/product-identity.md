@@ -21,8 +21,16 @@ library crate `perl-lsp-rs` is not the command to run.
 perllsp --stdio
 ```
 
-The product/repository name, implementation crate, and VS Code extension ID are
-not executable names.
+Use `perllsp`. The implementation crate `perl-lsp-rs` and the VS Code extension
+ID `EffortlessMetrics.perl-lsp-rs` are not executable names; the extension ID is
+an argument to editor tooling, never a command.
+
+The product name `perl-lsp` is a deliberate special case. The `perl-lsp-rs`
+crate still builds a `perl-lsp` binary, which `policy/product-identity.toml`
+records as `server.compatibility_executable`, so that older installations keep
+working. It is not the canonical entry point, it is not what new guidance should
+teach, and support requests should quote `perllsp`. Name it only when explaining
+compatibility with an install that already exists.
 
 ## Capture support identity
 

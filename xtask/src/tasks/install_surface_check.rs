@@ -39,9 +39,21 @@ const FORBIDDEN_PATTERNS: &[(&str, &str)] = &[
     ("perl-lsp --health", "product name used as executable"),
     ("perl-lsp-rs --stdio", "implementation crate used as executable"),
     ("perl-lsp-rs --version", "implementation crate used as executable"),
-    ("EffortlessMetrics.perl-lsp-rs --", "extension id used as executable"),
     ("install.ps1 | iex", "install.ps1 published at perl-lsp/master 404s; see #5461/#4348"),
 ];
+
+/// Identities that are never executable names but *are* legitimate arguments to other
+/// commands, such as `code --install-extension <id> --extensions-dir ...` and
+/// `npx @vscode/vsce show <id> --json`.
+///
+/// These are checked in command position only. A plain substring rule would report
+/// every valid invocation that merely passes the identity to another tool, which makes
+/// the whole check fail on documentation that is already correct.
+const FORBIDDEN_EXECUTABLES: &[(&str, &str)] =
+    &[("EffortlessMetrics.perl-lsp-rs", "extension id used as executable")];
+
+/// Shell separators after which a new command begins.
+const COMMAND_SEPARATORS: &[&str] = &["|", "&&", "||", ";"];
 
 const REQUIRED_PATTERNS: &[(&str, &str)] = &[
     (REQUIRED_HOMEBREW_COMMAND, "owned Homebrew tap install command"),
@@ -71,6 +83,7 @@ pub fn run() -> Result<()> {
     let mut violations = Vec::new();
 
     check_forbidden_patterns(&files, &mut violations);
+    check_forbidden_executables(&files, &mut violations);
     check_required_patterns(&files, &mut violations);
     check_unqualified_homebrew(&files, &mut violations);
     check_cargo_conflict_warning(&files, &mut violations);
@@ -153,6 +166,19 @@ fn is_excluded_path(rel_path: &Path) -> bool {
         || rel_path.starts_with("vscode-extension/node_modules")
         || rel_path.starts_with("vscode-extension/out")
         || rel_path.starts_with("vscode-extension/dist")
+        || is_historical_release_runbook(rel_path)
+}
+
+/// Version-pinned per-release runbooks (`RELEASE_RUNBOOK_0_12_3.md`) document a release
+/// that already shipped. They must keep naming the executables and image tags that
+/// release actually produced -- `docker run ... perl-lsp:0.12.3 perl-lsp-rs --version`
+/// was correct for 0.12.3 -- so rewriting them to current identity would make the
+/// historical record false. Un-pinned runbooks such as `GA_RUNBOOK.md` stay in scope.
+fn is_historical_release_runbook(rel_path: &Path) -> bool {
+    rel_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.starts_with("RELEASE_RUNBOOK_") && name.ends_with(".md"))
 }
 
 fn check_forbidden_patterns(files: &[SourceFile], violations: &mut Vec<Violation>) {
@@ -169,6 +195,67 @@ fn check_forbidden_patterns(files: &[SourceFile], violations: &mut Vec<Violation
             }
         }
     }
+}
+
+fn check_forbidden_executables(files: &[SourceFile], violations: &mut Vec<Violation>) {
+    for file in files {
+        for (line_no, line) in file.text.lines().enumerate() {
+            for &(identity, reason) in FORBIDDEN_EXECUTABLES {
+                if line_invokes(line, identity) {
+                    violations.push(line_violation(
+                        file,
+                        line_no + 1,
+                        format!("found {reason}: `{identity}`"),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// True when `identity` is executed in some segment of `line`.
+///
+/// Two conditions must both hold, because either alone produces false positives on
+/// documentation that is already correct:
+///
+/// 1. the identity is the command of the segment, not an argument -- otherwise
+///    `code --install-extension <id> --extensions-dir ...` reports a violation;
+/// 2. it is followed by an option -- otherwise a bare marketplace ID in a `text` block
+///    or an inline-code mention that happens to open a wrapped prose line reports a
+///    violation.
+fn line_invokes(line: &str, identity: &str) -> bool {
+    split_command_segments(line).into_iter().any(|segment| {
+        let tokens = command_tokens(segment);
+        tokens.first().is_some_and(|command| *command == identity)
+            && tokens.get(1).is_some_and(|argument| argument.starts_with('-'))
+    })
+}
+
+fn split_command_segments(line: &str) -> Vec<&str> {
+    let mut segments = vec![line];
+    for separator in COMMAND_SEPARATORS {
+        segments = segments.iter().flat_map(|part| part.split(*separator)).collect();
+    }
+    segments
+}
+
+/// Tokens of a command segment with documentation decoration removed: leading
+/// whitespace, Markdown list bullets and checkboxes, inline backticks, and shell
+/// prompts. A leading `#` is deliberately not stripped so that comments and Markdown
+/// headings do not present their first word as a command.
+fn command_tokens(segment: &str) -> Vec<&str> {
+    let mut text = segment.trim();
+    loop {
+        let stripped = text.trim_start_matches(['`', '$', '>', '*', '-', ' ', '\t']).trim_start();
+        let stripped = stripped.strip_prefix("[ ]").unwrap_or(stripped).trim_start();
+        let stripped = stripped.strip_prefix("[x]").unwrap_or(stripped).trim_start();
+        let stripped = stripped.strip_prefix("PS").unwrap_or(stripped).trim_start();
+        if stripped == text {
+            break;
+        }
+        text = stripped;
+    }
+    text.split_whitespace().map(|token| token.trim_matches('`')).filter(|t| !t.is_empty()).collect()
 }
 
 fn check_required_patterns(files: &[SourceFile], violations: &mut Vec<Violation>) {
@@ -413,9 +500,90 @@ mod tests {
             ]
             .join("\n"),
         };
+        let files = [file];
         let mut violations = Vec::new();
-        check_forbidden_patterns(&[file], &mut violations);
+        check_forbidden_patterns(&files, &mut violations);
         assert_eq!(violations.len(), 4, "got: {violations:?}");
+
+        // The extension line is independently reachable through the executable rule,
+        // and the substring rule also catches it via `perl-lsp-rs --stdio`.
+        let mut executable_violations = Vec::new();
+        check_forbidden_executables(&files, &mut executable_violations);
+        assert_eq!(executable_violations.len(), 1, "got: {executable_violations:?}");
+        assert!(executable_violations[0].location.ends_with(":4"));
+    }
+
+    #[test]
+    fn extension_id_passed_as_an_argument_is_not_an_invocation() {
+        let file = SourceFile {
+            rel_path: PathBuf::from("docs/RELEASE_PROCESS.md"),
+            text: [
+                "code --install-extension EffortlessMetrics.perl-lsp-rs --extensions-dir ~/.vscode-oss/extensions",
+                "npx @vscode/vsce show EffortlessMetrics.perl-lsp-rs --json",
+                "code --uninstall-extension EffortlessMetrics.perl-lsp-rs",
+            ]
+            .join("\n"),
+        };
+
+        let mut violations = Vec::new();
+        check_forbidden_executables(&[file], &mut violations);
+        assert!(violations.is_empty(), "argument use must not be a violation, got: {violations:?}");
+    }
+
+    #[test]
+    fn extension_id_in_command_position_is_still_rejected() {
+        for line in [
+            "EffortlessMetrics.perl-lsp-rs --stdio",
+            "  $ EffortlessMetrics.perl-lsp-rs --version",
+            "- [ ] `EffortlessMetrics.perl-lsp-rs --health`",
+            "cat log | EffortlessMetrics.perl-lsp-rs --stdio",
+        ] {
+            assert!(
+                line_invokes(line, "EffortlessMetrics.perl-lsp-rs"),
+                "must detect invocation in: {line}"
+            );
+        }
+
+        // Every line below is real active documentation on this tree.
+        for line in [
+            "code --install-extension EffortlessMetrics.perl-lsp-rs --extensions-dir /tmp",
+            "npx @vscode/vsce show EffortlessMetrics.perl-lsp-rs --json",
+            "EffortlessMetrics.perl-lsp-rs",
+            "`EffortlessMetrics.perl-lsp-rs` extension. For manual binary management, set:",
+            "`EffortlessMetrics.perl-lsp-rs` and keep auto-download enabled unless you need",
+            "# EffortlessMetrics.perl-lsp-rs",
+            "The extension ID is EffortlessMetrics.perl-lsp-rs.",
+        ] {
+            assert!(!line_invokes(line, "EffortlessMetrics.perl-lsp-rs"), "false positive: {line}");
+        }
+    }
+
+    #[test]
+    fn version_pinned_release_runbooks_are_historical_evidence() {
+        assert!(is_excluded_path(Path::new("docs/project/RELEASE_RUNBOOK_0_12_3.md")));
+        assert!(!is_excluded_path(Path::new("docs/project/GA_RUNBOOK.md")));
+    }
+
+    /// The unit tests above only prove the rules behave on synthetic input. This is the
+    /// oracle that fails when active documentation actually drifts, and the one that
+    /// would have caught both the extension-id argument matches in
+    /// `docs/RELEASE_PROCESS.md` and the version-pinned container commands in the 0.12.3
+    /// runbook.
+    #[test]
+    fn live_install_surface_has_no_forbidden_commands() -> Result<()> {
+        let root = project_root()?;
+        let files = collect_source_files(&root)?;
+        let mut violations = Vec::new();
+        check_forbidden_patterns(&files, &mut violations);
+        check_forbidden_executables(&files, &mut violations);
+
+        let reported: Vec<_> =
+            violations.iter().map(|v| format!("{}: {}", v.location, v.message)).collect();
+        assert!(
+            reported.is_empty(),
+            "active install surface has forbidden commands: {reported:#?}"
+        );
+        Ok(())
     }
 
     #[test]
