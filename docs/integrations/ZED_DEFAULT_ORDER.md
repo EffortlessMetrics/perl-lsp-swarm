@@ -34,7 +34,9 @@ Run isolated real-Zed sessions for:
 | current | candidate three-server | Does the new extension create startup noise before the default ships? |
 | candidate | candidate three-server | Is the intended final state quiet and selectable? |
 
-Every row binds exact Zed, defaults, extension, profile, and process-inventory digests. All rows must use the same Zed host subject. The final candidate/candidate row must start only `perlnavigator-server`, produce no failed alternative, and retain explicit selection of either alternative.
+Every row binds exact Zed, defaults, extension, profile, and process-inventory digests, and every passing row embeds a passing `zed_host_compat.v1` receipt validated by the canonical host validator. Digest-shaped fields or prose evidence cannot substitute for that receipt. All rows must use the same Zed host subject. The final candidate/candidate row must start only `perlnavigator-server`, produce no failed alternative, and retain explicit selection of either alternative.
+
+`clean_profile_quiet = true` is accepted only when the row reports no failed provider and no unexpectedly started provider. A non-quiet row must retain a failed or unexpectedly started provider as machine-readable evidence; otherwise the validator fails closed.
 
 ## Selection cases
 

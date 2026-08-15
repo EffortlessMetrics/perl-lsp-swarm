@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-fn text(value: &Value, pointer: &str) -> Option<&str> {
+#[path = "zed_host_compat.rs"]
+mod zed_host_compat;
+
+fn text<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(Value::as_str).filter(|text| !text.trim().is_empty())
 }
 
@@ -54,6 +57,47 @@ fn exact_set(value: &Value, field: &str, expected: &[&str]) -> Result<(), String
         .ok_or_else(|| format!("`{field}` has the wrong provider set"))
 }
 
+const EXPECTED_MATRIX: [(&str, &str, &str); 4] = [
+    ("current_defaults_public_extension", "current", "public_0_4_0"),
+    ("candidate_defaults_public_extension", "candidate", "public_0_4_0"),
+    ("current_defaults_candidate_extension", "current", "candidate_three_server"),
+    ("candidate_defaults_candidate_extension", "candidate", "candidate_three_server"),
+];
+
+fn validate_matrix_contract(matrix: &BTreeMap<String, &Value>) -> Result<(), String> {
+    if matrix.len() != EXPECTED_MATRIX.len() {
+        return Err("four-cell compatibility matrix cardinality drift".to_string());
+    }
+    for (id, defaults, extension) in EXPECTED_MATRIX {
+        let row = matrix.get(id).ok_or_else(|| format!("missing matrix row `{id}`"))?;
+        if text(row, "/defaults") != Some(defaults) || text(row, "/extension") != Some(extension) {
+            return Err(format!("matrix row `{id}` has a non-canonical defaults/extension tuple"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_quietness(id: &str, row: &Value) -> Result<bool, String> {
+    let quiet = row
+        .get("clean_profile_quiet")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("matrix row `{id}` lacks quietness evidence"))?;
+    let started = strings(row, "started_server_ids")?;
+    let failed = strings(row, "failed_server_ids")?;
+    let unexpected_started = started.iter().any(|server| server != "perlnavigator-server");
+    if quiet && (!failed.is_empty() || unexpected_started) {
+        return Err(format!(
+            "matrix row `{id}` marks contradictory quietness for failed or started providers"
+        ));
+    }
+    if !quiet && failed.is_empty() && !unexpected_started {
+        return Err(format!(
+            "matrix row `{id}` is non-quiet without a failed or unexpectedly started provider"
+        ));
+    }
+    Ok(quiet)
+}
+
 pub fn validate_contract(contract: &Value) -> Result<(), String> {
     if contract.get("schema_version").and_then(Value::as_str)
         != Some("zed_default_order_contract.v1")
@@ -75,15 +119,7 @@ pub fn validate_contract(contract: &Value) -> Result<(), String> {
         return Err("candidate default order drift".to_string());
     }
     let matrix = index(contract, "/matrix")?;
-    let expected_matrix = BTreeSet::from([
-        "current_defaults_public_extension".to_string(),
-        "candidate_defaults_public_extension".to_string(),
-        "current_defaults_candidate_extension".to_string(),
-        "candidate_defaults_candidate_extension".to_string(),
-    ]);
-    if matrix.keys().cloned().collect::<BTreeSet<_>>() != expected_matrix {
-        return Err("four-cell compatibility matrix drift".to_string());
-    }
+    validate_matrix_contract(&matrix)?;
     let expected_cases = BTreeSet::from([
         "default_only".to_string(),
         "select_perllsp".to_string(),
@@ -143,10 +179,9 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
     }
 
     let expected_matrix = index(contract, "/matrix")?;
+    validate_matrix_contract(&expected_matrix)?;
     let observed_matrix = index(receipt, "/matrix")?;
-    if expected_matrix.keys().collect::<Vec<_>>() != observed_matrix.keys().collect::<Vec<_>>() {
-        return Err("matrix row population drift".to_string());
-    }
+    validate_matrix_contract(&observed_matrix)?;
     let mut zed_identity: Option<&str> = None;
     for (id, row) in &observed_matrix {
         if !matches!(row.get("result").and_then(Value::as_str), Some("pass" | "limited"))
@@ -155,16 +190,23 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
             || !digest(row, "/extension_sha256")
             || !digest(row, "/profile_sha256")
             || !digest(row, "/process_inventory_sha256")
-            || row.get("clean_profile_quiet").and_then(Value::as_bool).is_none()
             || text(row, "/evidence").is_none()
         {
             return Err(format!("matrix row `{id}` lacks direct exact-host evidence"));
         }
-        let current = text(row, "/zed_identity_sha256").expect("checked above");
+        let host_receipt = row.get("host_receipt").ok_or_else(|| {
+            format!("matrix row `{id}` lacks canonical zed_host_compat.v1 receipt")
+        })?;
+        zed_host_compat::validate_pass(host_receipt, None).map_err(|error| {
+            format!("matrix row `{id}` has invalid zed_host_compat.v1 receipt: {error}")
+        })?;
+        let current = text(row, "/zed_identity_sha256")
+            .ok_or_else(|| format!("matrix row `{id}` lacks Zed identity digest"))?;
         if zed_identity.is_some_and(|expected| expected != current) {
             return Err("matrix rows mix different Zed host subjects".to_string());
         }
         zed_identity = Some(current);
+        validate_quietness(id, row)?;
     }
 
     let final_row = observed_matrix
@@ -224,14 +266,14 @@ pub fn validate_receipt(receipt: &Value, contract: &Value) -> Result<(), String>
         return Err("ellipsis did not preserve an independent user registration".to_string());
     }
 
-    let b_quiet = observed_matrix["candidate_defaults_public_extension"]
-        .get("clean_profile_quiet")
-        .and_then(Value::as_bool)
-        .expect("checked above");
-    let c_quiet = observed_matrix["current_defaults_candidate_extension"]
-        .get("clean_profile_quiet")
-        .and_then(Value::as_bool)
-        .expect("checked above");
+    let b_quiet = validate_quietness(
+        "candidate_defaults_public_extension",
+        observed_matrix["candidate_defaults_public_extension"],
+    )?;
+    let c_quiet = validate_quietness(
+        "current_defaults_candidate_extension",
+        observed_matrix["current_defaults_candidate_extension"],
+    )?;
     let expected_ruling = if b_quiet {
         "zed_defaults_first_safe"
     } else if c_quiet {

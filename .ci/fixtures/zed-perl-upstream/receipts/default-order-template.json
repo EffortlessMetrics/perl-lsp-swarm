@@ -9,6 +9,8 @@
   "matrix": [
     {
       "id": "current_defaults_public_extension",
+      "defaults": "current",
+      "extension": "public_0_4_0",
       "result": "not_proven",
       "zed_identity_sha256": null,
       "defaults_sha256": null,
@@ -18,10 +20,13 @@
       "clean_profile_quiet": null,
       "started_server_ids": [],
       "failed_server_ids": [],
-      "evidence": null
+      "evidence": null,
+      "host_receipt": null
     },
     {
       "id": "candidate_defaults_public_extension",
+      "defaults": "candidate",
+      "extension": "public_0_4_0",
       "result": "not_proven",
       "zed_identity_sha256": null,
       "defaults_sha256": null,
@@ -31,10 +36,13 @@
       "clean_profile_quiet": null,
       "started_server_ids": [],
       "failed_server_ids": [],
-      "evidence": null
+      "evidence": null,
+      "host_receipt": null
     },
     {
       "id": "current_defaults_candidate_extension",
+      "defaults": "current",
+      "extension": "candidate_three_server",
       "result": "not_proven",
       "zed_identity_sha256": null,
       "defaults_sha256": null,
@@ -44,10 +52,13 @@
       "clean_profile_quiet": null,
       "started_server_ids": [],
       "failed_server_ids": [],
-      "evidence": null
+      "evidence": null,
+      "host_receipt": null
     },
     {
       "id": "candidate_defaults_candidate_extension",
+      "defaults": "candidate",
+      "extension": "candidate_three_server",
       "result": "not_proven",
       "zed_identity_sha256": null,
       "defaults_sha256": null,
@@ -57,7 +68,8 @@
       "clean_profile_quiet": null,
       "started_server_ids": [],
       "failed_server_ids": [],
-      "evidence": null
+      "evidence": null,
+      "host_receipt": null
     }
   ],
   "selection_cases": [
