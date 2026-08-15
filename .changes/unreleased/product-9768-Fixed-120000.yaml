@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Fix three perl-regex event-scanner honesty defects: (1) scan \\Q...\\E bodies for Perl variable interpolation so downstream capture-numbering analysis correctly degrades confidence when runtime values are present; (2) mark embedded-code constructs without a closing ) as malformed rather than silently treating them as well-formed; (3) add discriminating proof test for s///c (without /g) confirming ModifierHasNoEffect is diagnosed and keep_match_position stays false."
+time: 2026-08-15T12:00:00Z
+custom:
+  PR: "9768"
+  Slug: perl-regex-event-scanner-honesty
+  Breaking: "no"

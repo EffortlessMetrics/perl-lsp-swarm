@@ -271,6 +271,8 @@ impl<'a> EventParser<'a> {
 
         let start = self.pos;
         let mut cursor = start + 2;
+        let mut interpolations = Vec::new();
+        let mut truncated_interpolation = false;
         let mut closed = false;
         while cursor + 1 < self.bytes.len() {
             if self.bytes[cursor] == b'\\' && self.bytes[cursor + 1] == b'E' {
@@ -278,10 +280,28 @@ impl<'a> EventParser<'a> {
                 closed = true;
                 break;
             }
+            // `\Q...\E` suppresses regex metacharacter interpretation but does NOT
+            // suppress Perl variable interpolation: `\Q$x\E` still expands `$x` at
+            // runtime, so a `$` or `@` here introduces a dynamic boundary exactly as
+            // it would outside a quoted region.  Omitting this scan would let a
+            // caller treat the result as a complete static literal when it is not.
+            if matches!(self.bytes[cursor], b'$' | b'@')
+                && let Some((end, interpolation_closed)) = self.interpolation_end_at(cursor)
+            {
+                if !interpolation_closed {
+                    truncated_interpolation = true;
+                }
+                interpolations.push(RegexRange { start: cursor, end });
+                cursor = end;
+                continue;
+            }
             cursor += 1;
         }
         if !closed {
             cursor = self.bytes.len();
+            self.malformed = true;
+        }
+        if truncated_interpolation {
             self.malformed = true;
         }
         if !self.advance(cursor) {
@@ -299,6 +319,15 @@ impl<'a> EventParser<'a> {
                 cursor,
                 cursor,
                 RegexEventKind::Malformed(RegexMalformedKind::UnterminatedQuotedLiteral),
+                self.mode,
+                self.stack.len(),
+            );
+        }
+        for range in interpolations {
+            let _ = self.emit(
+                range.start,
+                range.end,
+                RegexEventKind::Interpolation,
                 self.mode,
                 self.stack.len(),
             );
@@ -982,10 +1011,16 @@ impl<'a> EventParser<'a> {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
                         cursor += 1;
-                        if self.bytes.get(cursor) == Some(&b')') {
+                        // `(?{ code })` requires the closing `)` after the `}`.  A
+                        // bare `(?{ code }` without `)` is rejected by Perl as
+                        // unterminated.  Track whether the paren was actually found
+                        // and propagate that as the closed flag so callers can mark
+                        // the construct malformed when it is absent.
+                        let paren_closed = self.bytes.get(cursor) == Some(&b')');
+                        if paren_closed {
                             cursor += 1;
                         }
-                        return (cursor, true);
+                        return (cursor, paren_closed);
                     }
                 }
                 _ => {}

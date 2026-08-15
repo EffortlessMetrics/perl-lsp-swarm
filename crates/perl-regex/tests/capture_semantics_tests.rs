@@ -558,3 +558,50 @@ fn invalid_capture_name_does_not_leave_profile_diagnostics()
     assert!(analysis.declarations.is_empty(), "invalid name produced a declaration");
     Ok(())
 }
+
+#[test]
+fn quoted_literal_interpolation_degrades_capture_numbering_confidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `\Q...\E` quotes regex metacharacters but does NOT suppress Perl variable
+    // interpolation.  `\Q$runtime\E` still expands `$runtime` at eval time, so any
+    // capturing group that follows cannot know its own number statically — the
+    // interpolated text may itself contain capturing groups.
+    //
+    // Before the fix this defect went undetected: the quoted-literal scanner did not
+    // emit an Interpolation event for `$runtime`, so the capture analyser treated the
+    // result as completely static and assigned `Exact` number confidence to `(after)`.
+    let interpolated = RegexAnalyzer::analyze_captures(
+        r"\Q$runtime\E(after)",
+        EffectiveModifiers::default(),
+        CaptureLanguageProfile::unknown(),
+    );
+    assert!(interpolated.status.dynamic, "interpolation inside \\Q..\\E must set the dynamic flag");
+    assert!(
+        !interpolated.status.is_complete(),
+        "analysis with runtime interpolation must not be complete"
+    );
+    assert_eq!(
+        interpolated.declarations[0].confidence.number,
+        CaptureNumberConfidence::DynamicUnknown,
+        "capture after \\Q$x\\E must have DynamicUnknown number confidence"
+    );
+
+    // A purely literal `\Q...\E` body introduces no interpolation and the
+    // analysis remains fully static.
+    let literal = RegexAnalyzer::analyze_captures(
+        r"\Qliteral\E(after)",
+        EffectiveModifiers::default(),
+        CaptureLanguageProfile::unknown(),
+    );
+    assert!(
+        !literal.status.dynamic,
+        "no interpolation in \\Q..\\E must leave the dynamic flag clear"
+    );
+    assert!(literal.status.is_complete(), "analysis with purely literal \\Q..\\E must be complete");
+    assert_eq!(
+        literal.declarations[0].confidence.number,
+        CaptureNumberConfidence::Exact,
+        "capture after \\Qliteral\\E must keep Exact number confidence"
+    );
+    Ok(())
+}
