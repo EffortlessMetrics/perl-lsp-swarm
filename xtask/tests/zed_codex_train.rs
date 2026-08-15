@@ -128,6 +128,10 @@ fn merged_upstream_subject_is_accepted(
         && validation
             .and_then(|table| table.get("manifest_version_matches"))
             .and_then(toml::Value::as_bool)
+            == Some(true)
+        && validation
+            .and_then(|table| table.get("released_build_contains_commit"))
+            .and_then(toml::Value::as_bool)
             == Some(true))
 }
 
@@ -256,6 +260,7 @@ fn authority_evidence_packet_and_public_gates_remain_separate() -> Result<(), Bo
             .map(|fields| fields.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()),
         Some(BTreeSet::from([
             "validation.manifest_version_matches",
+            "validation.released_build_contains_commit",
             "validation.submodule_commit_branch_reachable",
         ]))
     );
@@ -299,6 +304,7 @@ fn p18_rejects_m01_without_merged_upstream_acceptance() -> Result<(), Box<dyn Er
         .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?;
     validation.insert("submodule_commit_branch_reachable".to_string(), toml::Value::Boolean(true));
     validation.insert("manifest_version_matches".to_string(), toml::Value::Boolean(true));
+    validation.insert("released_build_contains_commit".to_string(), toml::Value::Boolean(true));
 
     for missing_field in ["current_commit", "current_version"] {
         let mut missing_captured_subject = merged_registry.clone();
@@ -312,6 +318,22 @@ fn p18_rejects_m01_without_merged_upstream_acceptance() -> Result<(), Box<dyn Er
             "missing captured subject field `{missing_field}` was accepted"
         );
     }
+
+    let mut missing_released_build_evidence = merged_registry.clone();
+    missing_released_build_evidence
+        .get_mut("validation")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?
+        .remove("released_build_contains_commit");
+    assert!(!merged_upstream_subject_is_accepted(&train, &missing_released_build_evidence)?);
+
+    let mut false_released_build_evidence = merged_registry.clone();
+    false_released_build_evidence
+        .get_mut("validation")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| io::Error::other("registry manifest lacks validation table"))?
+        .insert("released_build_contains_commit".to_string(), toml::Value::Boolean(false));
+    assert!(!merged_upstream_subject_is_accepted(&train, &false_released_build_evidence)?);
 
     assert!(merged_upstream_subject_is_accepted(&train, &merged_registry)?);
     Ok(())

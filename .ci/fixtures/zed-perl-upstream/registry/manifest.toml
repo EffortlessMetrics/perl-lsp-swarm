@@ -35,6 +35,7 @@ registry_danger_check = "not_run"
 diff_sha256 = ""
 submodule_commit_branch_reachable = false
 manifest_version_matches = false
+released_build_contains_commit = false
 https_remote_verified = true
 
 [submission]
