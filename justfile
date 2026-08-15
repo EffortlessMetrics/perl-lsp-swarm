@@ -1213,9 +1213,9 @@ ci-lsp-smoke-e2e:
 ux-tests:
     @echo "Running UX regression test harness (base scenarios)..."
     @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 \
-        cargo build -p perl-lsp-rs --bin perl-lsp
+        cargo build -p perllsp --bin perllsp
     @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
-        PERL_LSP_BIN={{justfile_directory()}}/target/debug/perl-lsp \
+        PERL_LSP_BIN={{justfile_directory()}}/target/debug/perllsp \
         PERL_LSP_UX_REQUIRE_BINARY=1 \
         cargo test -p perl-lsp-ux-tests -- --test-threads=1
     @echo "UX tests passed"
@@ -1226,9 +1226,9 @@ ux-tests:
 ux-tests-full:
     @echo "Running UX regression test harness (full, including large-file)..."
     @env -u RUSTC_WRAPPER CARGO_BUILD_JOBS=1 \
-        cargo build -p perl-lsp-rs --bin perl-lsp
+        cargo build -p perllsp --bin perllsp
     @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
-        PERL_LSP_BIN={{justfile_directory()}}/target/debug/perl-lsp \
+        PERL_LSP_BIN={{justfile_directory()}}/target/debug/perllsp \
         PERL_LSP_UX_REQUIRE_BINARY=1 \
         cargo test -p perl-lsp-ux-tests --features integration-test -- --test-threads=1
     @echo "UX tests (full) passed"

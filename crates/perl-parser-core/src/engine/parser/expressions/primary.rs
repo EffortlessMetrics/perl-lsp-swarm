@@ -325,14 +325,14 @@ impl<'a> Parser<'a> {
                                     start,
                                 ));
                             } else {
-                                let followed_by_identifier_statement = token
-                                    .text
-                                    .trim_end_matches([' ', '\t', '\r'])
-                                    .ends_with('\n')
-                                    && self.tokens.peek().is_ok_and(|next| {
-                                        next.kind == TokenKind::Identifier
-                                            && next.text.as_ref() == "print"
-                                    });
+                                let followed_by_identifier_statement = {
+                                    let line_ending = token.text.trim_end_matches([' ', '\t']);
+                                    (line_ending.ends_with('\n') || line_ending.ends_with('\r'))
+                                        && self.tokens.peek().is_ok_and(|next| {
+                                            next.kind == TokenKind::Identifier
+                                                && next.text.as_ref() == "print"
+                                        })
+                                };
                                 if followed_by_identifier_statement {
                                     self.record_inserted_closer(TokenKind::RightParen);
                                 } else {
@@ -972,7 +972,10 @@ impl<'a> Parser<'a> {
                                         .collect(),
                                     _ => vec![args_node],
                                 };
-                                let call_end = self.previous_position();
+                                let call_end = args
+                                    .last()
+                                    .map(|arg| arg.location.end.max(self.previous_position()))
+                                    .unwrap_or_else(|| self.previous_position());
                                 let call = Node::new(
                                     NodeKind::FunctionCall { name, args },
                                     SourceLocation { start: call_start, end: call_end },

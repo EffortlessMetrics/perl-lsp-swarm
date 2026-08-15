@@ -10,20 +10,17 @@ fn loc(start: usize, end: usize) -> SourceLocation {
 }
 
 fn require_node(version: &str) -> Node {
-    Node {
-        kind: NodeKind::FunctionCall {
+    Node::new(
+        NodeKind::FunctionCall {
             name: "require".to_string(),
-            args: vec![Node {
-                kind: NodeKind::Number { value: version.to_string() },
-                location: loc(10, 16),
-            }],
+            args: vec![Node::new(NodeKind::Number { value: version.to_string() }, loc(10, 16))],
         },
-        location: loc(0, 17),
-    }
+        loc(0, 17),
+    )
 }
 
 fn program(stmts: Vec<Node>) -> Node {
-    Node { kind: NodeKind::Program { statements: stmts }, location: loc(0, 100) }
+    Node::new(NodeKind::Program { statements: stmts }, loc(0, 100))
 }
 
 fn last_feature_state(ast: &Node) -> PragmaState {

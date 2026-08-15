@@ -70,6 +70,7 @@ use crate::ast::NodeKind;
 /// dominant role of the construct in the Perl language, not its syntactic
 /// surface form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum NodeKindCategory {
     /// The root program node.
     Program,
@@ -99,6 +100,7 @@ pub enum NodeKindCategory {
 /// See the module-level documentation for the precise semantics of each flag
 /// and the invariants between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct NodeKindFlags {
     /// Code that can/will execute (methods, ops, side effects).
     ///

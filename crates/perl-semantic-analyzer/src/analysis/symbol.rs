@@ -1154,6 +1154,7 @@ impl SymbolExtractor {
                     // any sub-expressions (variable uses, method calls, etc.).
                     self.visit_node(target);
                 }
+                _ => self.visit_node(target),
             },
 
             // Regex related nodes — interpolate variables from patterns
@@ -1752,10 +1753,8 @@ impl SymbolExtractor {
 
         // Create a dummy options_expr Node to pass to existing helpers
         // (a bit hacky, but avoids rewriting the helpers that take Node)
-        let options_expr = Node {
-            kind: NodeKind::HashLiteral { pairs: option_pairs.to_vec() },
-            location: has_location,
-        };
+        let options_expr =
+            Node::new(NodeKind::HashLiteral { pairs: option_pairs.to_vec() }, has_location);
 
         let option_map = Self::extract_hash_options(&options_expr);
         let metadata = Self::attribute_metadata(&option_map);
