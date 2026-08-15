@@ -4,6 +4,7 @@
 //! programme contracts can reject the same false-green mutations without inventing
 //! a live Zed run.
 
+use chrono::DateTime;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -87,14 +88,48 @@ const TOP_LEVEL_ALLOWED: &[&str] = &[
     "claim_boundary",
 ];
 
-const CELL_RESULTS: &[&str] = &[
-    "pass",
-    "fail",
-    "not_proven",
-    "unsupported",
-    "legitimate_empty",
-    "instrument_failed",
+const ZED_FIELDS: &[&str] = &["product", "version", "channel", "build"];
+const EXTENSION_FIELDS: &[&str] = &[
+    "repository",
+    "base_commit",
+    "candidate_commit",
+    "manifest_version",
+    "wasm_sha256",
+    "install_route",
 ];
+const PERLLSP_FIELDS: &[&str] = &[
+    "server_id",
+    "command",
+    "arguments",
+    "version",
+    "build_commit",
+    "binary_sha256",
+    "resolution_route",
+];
+const PLATFORM_FIELDS: &[&str] = &["os", "version", "architecture"];
+const PROFILE_FIELDS: &[&str] = &[
+    "clean_profile",
+    "prior_extension_absent",
+    "prior_managed_cache_absent",
+    "other_perl_servers_disabled",
+];
+const WORKSPACE_FIELDS: &[&str] = &["fixture_id", "fixture_sha256", "root_identity"];
+const CONFIGURATION_FIELDS: &[&str] = &[
+    "settings_sha256",
+    "server_order",
+    "workspace_configuration_observed",
+    "precedence_observed",
+    "live_update_observed",
+];
+const ARTIFACT_FIELDS: &[&str] = &[
+    "zed_log",
+    "language_server_log",
+    "process_inventory",
+    "redacted",
+];
+const CELL_FIELDS: &[&str] = &["result", "evidence"];
+const CELL_RESULTS: &[&str] =
+    &["pass", "fail", "not_proven", "unsupported", "legitimate_empty", "instrument_failed"];
 
 pub fn nonempty_string(value: &Value, pointer: &str) -> bool {
     value.pointer(pointer).and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty())
@@ -128,6 +163,10 @@ fn object<'a>(value: &'a Value, context: &str) -> Result<&'a Map<String, Value>,
     value.as_object().ok_or_else(|| format!("{context} must be an object"))
 }
 
+fn field<'a>(object: &'a Map<String, Value>, key: &str, context: &str) -> Result<&'a Value, String> {
+    object.get(key).ok_or_else(|| format!("{context}.{key} is missing"))
+}
+
 fn require_keys(
     object: &Map<String, Value>,
     required: &[&str],
@@ -157,17 +196,16 @@ fn reject_extra_keys(
 fn required_object<'a>(
     parent: &'a Map<String, Value>,
     key: &str,
-    required: &[&str],
-    allowed: &[&str],
+    fields: &[&str],
 ) -> Result<&'a Map<String, Value>, String> {
     let value = parent.get(key).ok_or_else(|| format!("missing `{key}`"))?;
     let object = object(value, key)?;
-    require_keys(object, required, key)?;
-    reject_extra_keys(object, allowed, key)?;
+    require_keys(object, fields, key)?;
+    reject_extra_keys(object, fields, key)?;
     Ok(object)
 }
 
-fn string_or_null(value: &Value, context: &str) -> Result<(), String> {
+fn optional_string(value: &Value, context: &str) -> Result<(), String> {
     if value.is_null() || value.is_string() {
         Ok(())
     } else {
@@ -175,7 +213,7 @@ fn string_or_null(value: &Value, context: &str) -> Result<(), String> {
     }
 }
 
-fn bool_or_null(value: &Value, context: &str) -> Result<(), String> {
+fn optional_bool(value: &Value, context: &str) -> Result<(), String> {
     if value.is_null() || value.is_boolean() {
         Ok(())
     } else {
@@ -183,11 +221,15 @@ fn bool_or_null(value: &Value, context: &str) -> Result<(), String> {
     }
 }
 
-fn enum_or_null(value: &Value, allowed: &[&str], context: &str) -> Result<(), String> {
+fn optional_enum(value: &Value, allowed: &[&str], context: &str) -> Result<(), String> {
     if value.is_null() {
         return Ok(());
     }
-    let text = value.as_str().ok_or_else(|| format!("{context} must be a string or null"))?;
+    required_enum(value, allowed, context)
+}
+
+fn required_enum(value: &Value, allowed: &[&str], context: &str) -> Result<(), String> {
+    let text = value.as_str().ok_or_else(|| format!("{context} must be a string"))?;
     if allowed.contains(&text) {
         Ok(())
     } else {
@@ -195,7 +237,7 @@ fn enum_or_null(value: &Value, allowed: &[&str], context: &str) -> Result<(), St
     }
 }
 
-fn commit_or_null(value: &Value, context: &str) -> Result<(), String> {
+fn optional_commit(value: &Value, context: &str) -> Result<(), String> {
     if value.is_null() {
         return Ok(());
     }
@@ -207,16 +249,12 @@ fn commit_or_null(value: &Value, context: &str) -> Result<(), String> {
     }
 }
 
-fn sha256_or_null(value: &Value, context: &str) -> Result<(), String> {
+fn optional_sha256(value: &Value, context: &str) -> Result<(), String> {
     if value.is_null() {
         return Ok(());
     }
     let text = value.as_str().ok_or_else(|| format!("{context} must be a string or null"))?;
-    if is_sha256_digest(text) {
-        Ok(())
-    } else {
-        Err(format!("{context} must be a sha256 digest"))
-    }
+    if is_sha256_digest(text) { Ok(()) } else { Err(format!("{context} must be a sha256 digest")) }
 }
 
 fn string_array(value: &Value, context: &str) -> Result<(), String> {
@@ -228,35 +266,125 @@ fn string_array(value: &Value, context: &str) -> Result<(), String> {
     }
 }
 
-fn validate_cell(value: &Value, context: &str) -> Result<(), String> {
-    let cell = object(value, context)?;
-    require_keys(cell, &["result", "evidence"], context)?;
-    reject_extra_keys(cell, &["result", "evidence"], context)?;
-    enum_or_null(
-        cell.get("result").ok_or_else(|| format!("{context}.result is missing"))?,
-        CELL_RESULTS,
-        &format!("{context}.result"),
-    )?;
-    if cell.get("result").and_then(Value::as_str).is_none() {
-        return Err(format!("{context}.result must be a string"));
+fn validate_optional_strings(
+    object: &Map<String, Value>,
+    keys: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    for key in keys {
+        optional_string(field(object, key, context)?, &format!("{context}.{key}"))?;
     }
-    string_or_null(
-        cell.get("evidence").ok_or_else(|| format!("{context}.evidence is missing"))?,
-        &format!("{context}.evidence"),
-    )
+    Ok(())
 }
 
-fn validate_cells(
-    parent: &Map<String, Value>,
-    key: &str,
-    cells: &[&str],
+fn validate_optional_bools(
+    object: &Map<String, Value>,
+    keys: &[&str],
+    context: &str,
 ) -> Result<(), String> {
-    let group = required_object(parent, key, cells, cells)?;
+    for key in keys {
+        optional_bool(field(object, key, context)?, &format!("{context}.{key}"))?;
+    }
+    Ok(())
+}
+
+fn validate_cell(value: &Value, context: &str) -> Result<(), String> {
+    let cell = object(value, context)?;
+    require_keys(cell, CELL_FIELDS, context)?;
+    reject_extra_keys(cell, CELL_FIELDS, context)?;
+    required_enum(field(cell, "result", context)?, CELL_RESULTS, &format!("{context}.result"))?;
+    optional_string(field(cell, "evidence", context)?, &format!("{context}.evidence"))
+}
+
+fn validate_cells(parent: &Map<String, Value>, key: &str, cells: &[&str]) -> Result<(), String> {
+    let group = required_object(parent, key, cells)?;
     for cell in cells {
-        validate_cell(
-            group.get(*cell).ok_or_else(|| format!("{key}.{cell} is missing"))?,
-            &format!("{key}.{cell}"),
-        )?;
+        validate_cell(field(group, cell, key)?, &format!("{key}.{cell}"))?;
+    }
+    Ok(())
+}
+
+fn validate_public_subject(value: &Value) -> Result<(), String> {
+    let subject = object(value, "public_subject")?;
+    const FIELDS: &[&str] = &["relative_path", "sha256"];
+    require_keys(subject, FIELDS, "public_subject")?;
+    reject_extra_keys(subject, FIELDS, "public_subject")?;
+    if field(subject, "relative_path", "public_subject")?.as_str()
+        != Some(PUBLIC_SUBJECT_RELATIVE_PATH)
+    {
+        return Err("public_subject.relative_path is not canonical".to_string());
+    }
+    optional_sha256(field(subject, "sha256", "public_subject")?, "public_subject.sha256")
+}
+
+fn validate_observed_at(value: &Value) -> Result<(), String> {
+    let Some(text) = value.as_str() else {
+        return if value.is_null() {
+            Ok(())
+        } else {
+            Err("observed_at must be a string or null".to_string())
+        };
+    };
+    DateTime::parse_from_rfc3339(text)
+        .map(|_| ())
+        .map_err(|error| format!("observed_at is not RFC 3339: {error}"))
+}
+
+fn all_string_fields(object: &Map<String, Value>, fields: &[&str]) -> bool {
+    fields.iter().all(|key| object.get(*key).and_then(Value::as_str).is_some())
+}
+
+fn validate_pass_shape(
+    top: &Map<String, Value>,
+    zed: &Map<String, Value>,
+    extension: &Map<String, Value>,
+    perllsp: &Map<String, Value>,
+    profile: &Map<String, Value>,
+    artifacts: &Map<String, Value>,
+) -> Result<(), String> {
+    if top.get("observed_at").and_then(Value::as_str).is_none()
+        || !all_string_fields(zed, &["version", "channel", "build"])
+        || !all_string_fields(
+            extension,
+            &[
+                "base_commit",
+                "candidate_commit",
+                "manifest_version",
+                "wasm_sha256",
+                "install_route",
+            ],
+        )
+        || !all_string_fields(
+            perllsp,
+            &["command", "version", "build_commit", "binary_sha256", "resolution_route"],
+        )
+        || perllsp.get("arguments") != Some(&serde_json::json!(["--stdio"]))
+        || profile.get("clean_profile").and_then(Value::as_bool) != Some(true)
+        || profile.get("other_perl_servers_disabled").and_then(Value::as_bool) != Some(true)
+        || !all_string_fields(artifacts, &["zed_log", "language_server_log", "process_inventory"])
+        || artifacts.get("redacted").and_then(Value::as_bool) != Some(true)
+    {
+        return Err("pass receipt violates required non-null schema fields".to_string());
+    }
+    Ok(())
+}
+
+fn validate_public_pass_shape(
+    top: &Map<String, Value>,
+    perllsp: &Map<String, Value>,
+    profile: &Map<String, Value>,
+) -> Result<(), String> {
+    let subject = top
+        .get("public_subject")
+        .ok_or_else(|| "public pass lacks public_subject".to_string())?;
+    validate_public_subject(subject)?;
+    let subject = object(subject, "public_subject")?;
+    if !subject.get("sha256").and_then(Value::as_str).is_some_and(is_sha256_digest)
+        || perllsp.get("resolution_route").and_then(Value::as_str) != Some("managed_download")
+        || profile.get("prior_extension_absent").and_then(Value::as_bool) != Some(true)
+        || profile.get("prior_managed_cache_absent").and_then(Value::as_bool) != Some(true)
+    {
+        return Err("public pass violates public-registry schema conditions".to_string());
     }
     Ok(())
 }
@@ -268,160 +396,143 @@ pub fn validate_schema(receipt: &Value) -> Result<(), String> {
     require_keys(top, TOP_LEVEL_REQUIRED, "receipt")?;
     reject_extra_keys(top, TOP_LEVEL_ALLOWED, "receipt")?;
 
-    if top.get("schema_version").and_then(Value::as_str) != Some("zed_host_compat.v1") {
+    if field(top, "schema_version", "receipt")?.as_str() != Some("zed_host_compat.v1") {
         return Err("wrong receipt schema".to_string());
     }
-    enum_or_null(
-        top.get("evidence_stage").ok_or_else(|| "missing evidence_stage".to_string())?,
+    required_enum(
+        field(top, "evidence_stage", "receipt")?,
         &["exact_source_dev_extension", "public_registry_install"],
         "evidence_stage",
     )?;
-    if top.get("evidence_stage").and_then(Value::as_str).is_none() {
-        return Err("evidence_stage must be a string".to_string());
-    }
-    enum_or_null(
-        top.get("result").ok_or_else(|| "missing result".to_string())?,
+    required_enum(
+        field(top, "result", "receipt")?,
         &["not_run", "pass", "fail", "instrument_failed"],
         "result",
     )?;
-    if top.get("result").and_then(Value::as_str).is_none() {
-        return Err("result must be a string".to_string());
-    }
-    string_or_null(
-        top.get("observed_at").ok_or_else(|| "missing observed_at".to_string())?,
-        "observed_at",
-    )?;
-
+    validate_observed_at(field(top, "observed_at", "receipt")?)?;
     if let Some(public_subject) = top.get("public_subject") {
-        let subject = object(public_subject, "public_subject")?;
-        require_keys(subject, &["relative_path", "sha256"], "public_subject")?;
-        reject_extra_keys(subject, &["relative_path", "sha256"], "public_subject")?;
-        let path = subject
-            .get("relative_path")
-            .ok_or_else(|| "public_subject.relative_path is missing".to_string())?;
-        if !path.is_null() && path.as_str() != Some(PUBLIC_SUBJECT_RELATIVE_PATH) {
-            return Err("public_subject.relative_path is not canonical".to_string());
-        }
-        sha256_or_null(
-            subject.get("sha256").ok_or_else(|| "public_subject.sha256 is missing".to_string())?,
-            "public_subject.sha256",
-        )?;
+        validate_public_subject(public_subject)?;
     }
 
-    let zed = required_object(top, "zed", &["product", "version", "channel", "build"], &["product", "version", "channel", "build"])?;
-    if zed.get("product").and_then(Value::as_str) != Some("Zed") {
+    let zed = required_object(top, "zed", ZED_FIELDS)?;
+    if field(zed, "product", "zed")?.as_str() != Some("Zed") {
         return Err("zed.product must be `Zed`".to_string());
     }
-    for key in ["version", "channel", "build"] {
-        string_or_null(zed.get(key).ok_or_else(|| format!("zed.{key} is missing"))?, &format!("zed.{key}"))?;
-    }
+    validate_optional_strings(zed, &["version", "channel", "build"], "zed")?;
 
-    let extension = required_object(
-        top,
-        "extension",
-        &["repository", "base_commit", "candidate_commit", "manifest_version", "wasm_sha256", "install_route"],
-        &["repository", "base_commit", "candidate_commit", "manifest_version", "wasm_sha256", "install_route"],
-    )?;
-    if extension.get("repository").and_then(Value::as_str) != Some("tree-sitter-perl/zed-perl") {
+    let extension = required_object(top, "extension", EXTENSION_FIELDS)?;
+    if field(extension, "repository", "extension")?.as_str()
+        != Some("tree-sitter-perl/zed-perl")
+    {
         return Err("extension.repository is not canonical".to_string());
     }
-    commit_or_null(extension.get("base_commit").ok_or_else(|| "extension.base_commit is missing".to_string())?, "extension.base_commit")?;
-    commit_or_null(extension.get("candidate_commit").ok_or_else(|| "extension.candidate_commit is missing".to_string())?, "extension.candidate_commit")?;
-    string_or_null(extension.get("manifest_version").ok_or_else(|| "extension.manifest_version is missing".to_string())?, "extension.manifest_version")?;
-    sha256_or_null(extension.get("wasm_sha256").ok_or_else(|| "extension.wasm_sha256 is missing".to_string())?, "extension.wasm_sha256")?;
-    enum_or_null(extension.get("install_route").ok_or_else(|| "extension.install_route is missing".to_string())?, &["dev_extension", "official_registry"], "extension.install_route")?;
-
-    let perllsp = required_object(
-        top,
-        "perllsp",
-        &["server_id", "command", "arguments", "version", "build_commit", "binary_sha256", "resolution_route"],
-        &["server_id", "command", "arguments", "version", "build_commit", "binary_sha256", "resolution_route"],
+    optional_commit(field(extension, "base_commit", "extension")?, "extension.base_commit")?;
+    optional_commit(
+        field(extension, "candidate_commit", "extension")?,
+        "extension.candidate_commit",
     )?;
-    if perllsp.get("server_id").and_then(Value::as_str) != Some("perllsp") {
+    optional_string(
+        field(extension, "manifest_version", "extension")?,
+        "extension.manifest_version",
+    )?;
+    optional_sha256(
+        field(extension, "wasm_sha256", "extension")?,
+        "extension.wasm_sha256",
+    )?;
+    optional_enum(
+        field(extension, "install_route", "extension")?,
+        &["dev_extension", "official_registry"],
+        "extension.install_route",
+    )?;
+
+    let perllsp = required_object(top, "perllsp", PERLLSP_FIELDS)?;
+    if field(perllsp, "server_id", "perllsp")?.as_str() != Some("perllsp") {
         return Err("perllsp.server_id is not canonical".to_string());
     }
-    string_or_null(perllsp.get("command").ok_or_else(|| "perllsp.command is missing".to_string())?, "perllsp.command")?;
-    string_array(perllsp.get("arguments").ok_or_else(|| "perllsp.arguments is missing".to_string())?, "perllsp.arguments")?;
-    string_or_null(perllsp.get("version").ok_or_else(|| "perllsp.version is missing".to_string())?, "perllsp.version")?;
-    commit_or_null(perllsp.get("build_commit").ok_or_else(|| "perllsp.build_commit is missing".to_string())?, "perllsp.build_commit")?;
-    sha256_or_null(perllsp.get("binary_sha256").ok_or_else(|| "perllsp.binary_sha256 is missing".to_string())?, "perllsp.binary_sha256")?;
-    enum_or_null(perllsp.get("resolution_route").ok_or_else(|| "perllsp.resolution_route is missing".to_string())?, &["binary_override", "worktree_path", "managed_download"], "perllsp.resolution_route")?;
-
-    let platform = required_object(top, "platform", &["os", "version", "architecture"], &["os", "version", "architecture"])?;
-    enum_or_null(platform.get("os").ok_or_else(|| "platform.os is missing".to_string())?, &["macos", "linux", "windows"], "platform.os")?;
-    string_or_null(platform.get("version").ok_or_else(|| "platform.version is missing".to_string())?, "platform.version")?;
-    enum_or_null(platform.get("architecture").ok_or_else(|| "platform.architecture is missing".to_string())?, &["x86_64", "aarch64"], "platform.architecture")?;
-
-    let profile = required_object(
-        top,
-        "profile",
-        &["clean_profile", "prior_extension_absent", "prior_managed_cache_absent", "other_perl_servers_disabled"],
-        &["clean_profile", "prior_extension_absent", "prior_managed_cache_absent", "other_perl_servers_disabled"],
+    validate_optional_strings(perllsp, &["command", "version"], "perllsp")?;
+    string_array(field(perllsp, "arguments", "perllsp")?, "perllsp.arguments")?;
+    optional_commit(
+        field(perllsp, "build_commit", "perllsp")?,
+        "perllsp.build_commit",
     )?;
-    for key in ["clean_profile", "prior_extension_absent", "prior_managed_cache_absent", "other_perl_servers_disabled"] {
-        bool_or_null(profile.get(key).ok_or_else(|| format!("profile.{key} is missing"))?, &format!("profile.{key}"))?;
-    }
+    optional_sha256(
+        field(perllsp, "binary_sha256", "perllsp")?,
+        "perllsp.binary_sha256",
+    )?;
+    optional_enum(
+        field(perllsp, "resolution_route", "perllsp")?,
+        &["binary_override", "worktree_path", "managed_download"],
+        "perllsp.resolution_route",
+    )?;
 
-    let workspace = required_object(top, "workspace", &["fixture_id", "fixture_sha256", "root_identity"], &["fixture_id", "fixture_sha256", "root_identity"])?;
-    string_or_null(workspace.get("fixture_id").ok_or_else(|| "workspace.fixture_id is missing".to_string())?, "workspace.fixture_id")?;
-    sha256_or_null(workspace.get("fixture_sha256").ok_or_else(|| "workspace.fixture_sha256 is missing".to_string())?, "workspace.fixture_sha256")?;
-    string_or_null(workspace.get("root_identity").ok_or_else(|| "workspace.root_identity is missing".to_string())?, "workspace.root_identity")?;
+    let platform = required_object(top, "platform", PLATFORM_FIELDS)?;
+    optional_enum(
+        field(platform, "os", "platform")?,
+        &["macos", "linux", "windows"],
+        "platform.os",
+    )?;
+    optional_string(field(platform, "version", "platform")?, "platform.version")?;
+    optional_enum(
+        field(platform, "architecture", "platform")?,
+        &["x86_64", "aarch64"],
+        "platform.architecture",
+    )?;
 
-    let configuration = required_object(
-        top,
+    let profile = required_object(top, "profile", PROFILE_FIELDS)?;
+    validate_optional_bools(profile, PROFILE_FIELDS, "profile")?;
+
+    let workspace = required_object(top, "workspace", WORKSPACE_FIELDS)?;
+    validate_optional_strings(workspace, &["fixture_id", "root_identity"], "workspace")?;
+    optional_sha256(
+        field(workspace, "fixture_sha256", "workspace")?,
+        "workspace.fixture_sha256",
+    )?;
+
+    let configuration = required_object(top, "configuration", CONFIGURATION_FIELDS)?;
+    optional_sha256(
+        field(configuration, "settings_sha256", "configuration")?,
+        "configuration.settings_sha256",
+    )?;
+    string_array(
+        field(configuration, "server_order", "configuration")?,
+        "configuration.server_order",
+    )?;
+    optional_bool(
+        field(configuration, "workspace_configuration_observed", "configuration")?,
+        "configuration.workspace_configuration_observed",
+    )?;
+    validate_optional_strings(
+        configuration,
+        &["precedence_observed", "live_update_observed"],
         "configuration",
-        &["settings_sha256", "server_order", "workspace_configuration_observed", "precedence_observed", "live_update_observed"],
-        &["settings_sha256", "server_order", "workspace_configuration_observed", "precedence_observed", "live_update_observed"],
     )?;
-    sha256_or_null(configuration.get("settings_sha256").ok_or_else(|| "configuration.settings_sha256 is missing".to_string())?, "configuration.settings_sha256")?;
-    string_array(configuration.get("server_order").ok_or_else(|| "configuration.server_order is missing".to_string())?, "configuration.server_order")?;
-    bool_or_null(configuration.get("workspace_configuration_observed").ok_or_else(|| "configuration.workspace_configuration_observed is missing".to_string())?, "configuration.workspace_configuration_observed")?;
-    string_or_null(configuration.get("precedence_observed").ok_or_else(|| "configuration.precedence_observed is missing".to_string())?, "configuration.precedence_observed")?;
-    string_or_null(configuration.get("live_update_observed").ok_or_else(|| "configuration.live_update_observed is missing".to_string())?, "configuration.live_update_observed")?;
 
     validate_cells(top, "activation", PUBLIC_REQUIRED_ACTIVATION)?;
     validate_cells(top, "journey", PUBLIC_REQUIRED_JOURNEY)?;
 
-    let artifacts = required_object(top, "artifacts", &["zed_log", "language_server_log", "process_inventory", "redacted"], &["zed_log", "language_server_log", "process_inventory", "redacted"])?;
-    for key in ["zed_log", "language_server_log", "process_inventory"] {
-        string_or_null(artifacts.get(key).ok_or_else(|| format!("artifacts.{key} is missing"))?, &format!("artifacts.{key}"))?;
-    }
-    bool_or_null(artifacts.get("redacted").ok_or_else(|| "artifacts.redacted is missing".to_string())?, "artifacts.redacted")?;
-    string_array(top.get("limitations").ok_or_else(|| "limitations is missing".to_string())?, "limitations")?;
-    if !top.get("claim_boundary").and_then(Value::as_str).is_some_and(|text| !text.is_empty()) {
+    let artifacts = required_object(top, "artifacts", ARTIFACT_FIELDS)?;
+    validate_optional_strings(
+        artifacts,
+        &["zed_log", "language_server_log", "process_inventory"],
+        "artifacts",
+    )?;
+    optional_bool(field(artifacts, "redacted", "artifacts")?, "artifacts.redacted")?;
+    string_array(field(top, "limitations", "receipt")?, "limitations")?;
+    if !field(top, "claim_boundary", "receipt")?
+        .as_str()
+        .is_some_and(|text| !text.is_empty())
+    {
         return Err("claim_boundary must be a non-empty string".to_string());
     }
 
     if top.get("result").and_then(Value::as_str) == Some("pass") {
-        if top.get("observed_at").and_then(Value::as_str).is_none()
-            || !["version", "channel", "build"].iter().all(|key| zed.get(*key).and_then(Value::as_str).is_some())
-            || !["base_commit", "candidate_commit", "manifest_version", "wasm_sha256", "install_route"].iter().all(|key| extension.get(*key).and_then(Value::as_str).is_some())
-            || !["command", "version", "build_commit", "binary_sha256", "resolution_route"].iter().all(|key| perllsp.get(*key).and_then(Value::as_str).is_some())
-            || perllsp.get("arguments") != Some(&serde_json::json!(["--stdio"]))
-            || profile.get("clean_profile").and_then(Value::as_bool) != Some(true)
-            || profile.get("other_perl_servers_disabled").and_then(Value::as_bool) != Some(true)
-            || !["zed_log", "language_server_log", "process_inventory"].iter().all(|key| artifacts.get(*key).and_then(Value::as_str).is_some())
-            || artifacts.get("redacted").and_then(Value::as_bool) != Some(true)
-        {
-            return Err("pass receipt violates required non-null schema fields".to_string());
-        }
+        validate_pass_shape(top, zed, extension, perllsp, profile, artifacts)?;
     }
-
     if top.get("evidence_stage").and_then(Value::as_str) == Some("public_registry_install")
         && top.get("result").and_then(Value::as_str) == Some("pass")
     {
-        let subject = top.get("public_subject").ok_or_else(|| "public pass lacks public_subject".to_string())?;
-        let subject = object(subject, "public_subject")?;
-        if subject.get("relative_path").and_then(Value::as_str) != Some(PUBLIC_SUBJECT_RELATIVE_PATH)
-            || !subject.get("sha256").and_then(Value::as_str).is_some_and(is_sha256_digest)
-            || perllsp.get("resolution_route").and_then(Value::as_str) != Some("managed_download")
-            || profile.get("prior_extension_absent").and_then(Value::as_bool) != Some(true)
-            || profile.get("prior_managed_cache_absent").and_then(Value::as_bool) != Some(true)
-        {
-            return Err("public pass violates public-registry schema conditions".to_string());
-        }
+        validate_public_pass_shape(top, perllsp, profile)?;
     }
-
     Ok(())
 }
 
