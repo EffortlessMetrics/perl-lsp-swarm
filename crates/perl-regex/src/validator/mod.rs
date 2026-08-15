@@ -1,9 +1,21 @@
+/// Typed diagnostics, facts, ranges, and completeness for batch analysis.
+pub mod analysis;
+
+mod batch;
 mod code_execution;
 mod complexity;
 mod config;
 mod group;
 mod nested_quantifier;
 
+#[cfg(test)]
+mod analysis_contract_tests;
+
+pub use analysis::{
+    EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisCompleteness, RegexDiagnostic,
+    RegexDiagnosticClass, RegexDiagnosticCode, RegexDynamicRegionFact, RegexDynamicRegionKind,
+    RegexFacts, RegexRange,
+};
 pub use config::RegexValidationConfig;
 
 use crate::error::RegexError;
@@ -37,14 +49,25 @@ impl RegexValidator {
         &self.config
     }
 
+    /// Analyze one regex body and return typed diagnostics and reusable facts.
+    ///
+    /// This slice projects the existing fail-fast scanners into the typed shell.
+    /// Ranges are byte offsets relative to `pattern`.
+    #[must_use]
+    pub fn analyze(&self, pattern: &str) -> RegexAnalysis {
+        batch::analyze(pattern, &self.config)
+    }
+
+    /// Validate through the historical fail-fast compatibility contract.
     pub fn validate(&self, pattern: &str, start_pos: usize) -> Result<(), RegexError> {
-        if let Some(finding) = self.find_code_execution(pattern, start_pos) {
-            return Err(RegexError::syntax(finding.message, finding.offset));
+        let analysis = self.analyze(pattern);
+        if let Some(diagnostic) = batch::first_compatibility_diagnostic(&analysis) {
+            return Err(RegexError::syntax(
+                diagnostic.message(),
+                start_pos.saturating_add(diagnostic.range.start),
+            ));
         }
-        if let Some(finding) = self.find_nested_quantifier(pattern, start_pos) {
-            return Err(RegexError::syntax(finding.message, finding.offset));
-        }
-        complexity::check_complexity(pattern, start_pos, &self.config)
+        Ok(())
     }
 
     pub fn detects_code_execution(&self, pattern: &str) -> bool {
