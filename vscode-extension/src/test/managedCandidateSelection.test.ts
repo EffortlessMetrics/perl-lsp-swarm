@@ -3,7 +3,6 @@ import {
   type ManagedCandidateSubject,
 } from '../managedCacheProtocol';
 import {
-  candidateBytesMayChangeAfterPublication,
   classifyManagedCandidateRetention,
   createManagedHostReference,
   mayGarbageCollectManagedCandidate,
@@ -12,6 +11,7 @@ import {
   resolveManagedCandidateForHost,
   validateManagedCurrentSelection,
   type ManagedCandidateCatalogEntry,
+  type ManagedRetentionInput,
 } from '../managedCandidateSelection';
 
 function subject(seed: string): ManagedCandidateSubject {
@@ -29,6 +29,17 @@ function entry(seed: string): ManagedCandidateCatalogEntry {
   return {
     manifest: buildManagedCandidateManifest(subject(seed)),
     immutable: true,
+  };
+}
+
+function retention(overrides: Partial<ManagedRetentionInput>): ManagedRetentionInput {
+  return {
+    current: null,
+    catalog: [],
+    host_references: [],
+    host_references_complete: true,
+    compatible_retained_ids: new Set(),
+    ...overrides,
   };
 }
 
@@ -59,6 +70,32 @@ describe('managed candidate publication and selection', () => {
     );
   });
 
+  test('refuses to publish over a prior selection with a corrupt generation', () => {
+    const candidate = entry('a');
+    const corruptPrior = {
+      schema_version: 'managed_current_selection.v1' as const,
+      selection_generation: 0,
+      candidate_id: candidate.manifest.candidate_id,
+    };
+
+    expect(() => publishManagedCurrentSelection(candidate.manifest, corruptPrior)).toThrow(
+      'cannot publish over an invalid prior selection',
+    );
+  });
+
+  test('rejects a current selection whose catalog record does not claim immutability', () => {
+    const candidate = entry('a');
+    const selection = publishManagedCurrentSelection(candidate.manifest, null);
+    const mutableEntry = {
+      ...candidate,
+      immutable: false,
+    } as unknown as ManagedCandidateCatalogEntry;
+
+    expect(validateManagedCurrentSelection(selection, [mutableEntry])).toContain(
+      'current selection candidate must be immutable',
+    );
+  });
+
   test('keeps a running host bound to its launched candidate when the shared default moves', () => {
     const oldCandidate = entry('a');
     const newCandidate = entry('f');
@@ -74,8 +111,29 @@ describe('managed candidate publication and selection', () => {
         ],
         running_candidate_id: oldCandidate.manifest.candidate_id,
       }),
-    ).toBe(oldCandidate.manifest.candidate_id);
+    ).toEqual({ kind: 'bound_running', candidate_id: oldCandidate.manifest.candidate_id });
     expect(current.candidate_id).toBe(newCandidate.manifest.candidate_id);
+  });
+
+  test('reports restart-required instead of silently rebinding a host whose candidate is gone', () => {
+    const collectedCandidate = entry('a');
+    const newCandidate = entry('f');
+    const current = publishManagedCurrentSelection(newCandidate.manifest, null);
+
+    // The launched candidate is no longer in the catalog. Returning the
+    // replacement id as an ordinary selection would misreport a live process
+    // as already running bytes it never launched.
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [newCandidate],
+        compatible_candidate_ids: [
+          collectedCandidate.manifest.candidate_id,
+          newCandidate.manifest.candidate_id,
+        ],
+        running_candidate_id: collectedCandidate.manifest.candidate_id,
+      }),
+    ).toEqual({ kind: 'restart_required', candidate_id: newCandidate.manifest.candidate_id });
   });
 
   test('lets an older client select a compatible retained candidate without downgrading global current', () => {
@@ -83,15 +141,29 @@ describe('managed candidate publication and selection', () => {
     const newCandidate = entry('f');
     const current = publishManagedCurrentSelection(newCandidate.manifest, null);
 
-    const selectedForOldClient = resolveManagedCandidateForHost({
-      current,
-      candidates: [oldCandidate, newCandidate],
-      compatible_candidate_ids: [oldCandidate.manifest.candidate_id],
-      running_candidate_id: null,
-    });
-
-    expect(selectedForOldClient).toBe(oldCandidate.manifest.candidate_id);
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [oldCandidate, newCandidate],
+        compatible_candidate_ids: [oldCandidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'selected_compatible', candidate_id: oldCandidate.manifest.candidate_id });
     expect(current.candidate_id).toBe(newCandidate.manifest.candidate_id);
+  });
+
+  test('reports no compatible candidate rather than an incompatible fallback', () => {
+    const newCandidate = entry('f');
+    const current = publishManagedCurrentSelection(newCandidate.manifest, null);
+
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [newCandidate],
+        compatible_candidate_ids: [],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'no_compatible_candidate' });
   });
 
   test('protects current, live, unknown, and compatibility-retained candidates from GC', () => {
@@ -107,48 +179,34 @@ describe('managed candidate publication and selection', () => {
       ...createManagedHostReference('session-unknown', unknownCandidate.manifest.candidate_id),
       state: 'unknown' as const,
     };
-    const retained = new Set([retainedCandidate.manifest.candidate_id]);
+    const input = retention({
+      current,
+      catalog: [
+        currentCandidate,
+        liveCandidate,
+        unknownCandidate,
+        retainedCandidate,
+        staleCandidate,
+      ],
+      host_references: [live, unknown],
+      compatible_retained_ids: new Set([retainedCandidate.manifest.candidate_id]),
+    });
 
-    expect(
-      classifyManagedCandidateRetention(
-        currentCandidate.manifest.candidate_id,
-        current,
-        [live, unknown],
-        retained,
-      ),
-    ).toBe('current_default');
-    expect(
-      classifyManagedCandidateRetention(
-        liveCandidate.manifest.candidate_id,
-        current,
-        [live, unknown],
-        retained,
-      ),
-    ).toBe('live_referenced');
-    expect(
-      classifyManagedCandidateRetention(
-        unknownCandidate.manifest.candidate_id,
-        current,
-        [live, unknown],
-        retained,
-      ),
-    ).toBe('unknown_reference');
-    expect(
-      classifyManagedCandidateRetention(
-        retainedCandidate.manifest.candidate_id,
-        current,
-        [live, unknown],
-        retained,
-      ),
-    ).toBe('compatible_retained');
-    expect(
-      mayGarbageCollectManagedCandidate(
-        staleCandidate.manifest.candidate_id,
-        current,
-        [live, unknown],
-        retained,
-      ),
-    ).toBe(true);
+    expect(classifyManagedCandidateRetention(currentCandidate.manifest.candidate_id, input)).toBe(
+      'current_default',
+    );
+    expect(classifyManagedCandidateRetention(liveCandidate.manifest.candidate_id, input)).toBe(
+      'live_referenced',
+    );
+    expect(classifyManagedCandidateRetention(unknownCandidate.manifest.candidate_id, input)).toBe(
+      'unknown_reference',
+    );
+    expect(classifyManagedCandidateRetention(retainedCandidate.manifest.candidate_id, input)).toBe(
+      'compatible_retained',
+    );
+    expect(mayGarbageCollectManagedCandidate(staleCandidate.manifest.candidate_id, input)).toBe(
+      true,
+    );
   });
 
   test('released host references stop protecting a stale candidate', () => {
@@ -162,14 +220,68 @@ describe('managed candidate publication and selection', () => {
     expect(
       mayGarbageCollectManagedCandidate(
         oldCandidate.manifest.candidate_id,
-        current,
-        [released],
-        new Set(),
+        retention({
+          current,
+          catalog: [currentCandidate, oldCandidate],
+          host_references: [released],
+        }),
       ),
     ).toBe(true);
   });
 
-  test('published candidate entries are immutable by contract', () => {
-    expect(candidateBytesMayChangeAfterPublication(entry('a'))).toBe(false);
+  test('refuses GC when host-reference enumeration was not proven exhaustive', () => {
+    const currentCandidate = entry('a');
+    const staleLookingCandidate = entry('f');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    const input = retention({
+      current,
+      catalog: [currentCandidate, staleLookingCandidate],
+      host_references: [],
+      host_references_complete: false,
+    });
+
+    // An empty reference list from a failed enumeration must not read as
+    // "nothing references this candidate".
+    expect(
+      classifyManagedCandidateRetention(staleLookingCandidate.manifest.candidate_id, input),
+    ).toBe('unknown_not_safe_to_delete');
+    expect(
+      mayGarbageCollectManagedCandidate(staleLookingCandidate.manifest.candidate_id, input),
+    ).toBe(false);
+  });
+
+  test('refuses GC entirely when the current-selection record cannot be read', () => {
+    const candidate = entry('a');
+    const input = retention({ current: null, catalog: [candidate] });
+
+    expect(classifyManagedCandidateRetention(candidate.manifest.candidate_id, input)).toBe(
+      'unknown_not_safe_to_delete',
+    );
+    expect(mayGarbageCollectManagedCandidate(candidate.manifest.candidate_id, input)).toBe(false);
+  });
+
+  test('refuses GC for half-published or identity-mismatched candidate bytes', () => {
+    const currentCandidate = entry('a');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    const absent = entry('f');
+    const corrupt = entry('1');
+    corrupt.manifest.candidate_id = `candidate-${'0'.repeat(64)}`;
+
+    const input = retention({
+      current,
+      catalog: [currentCandidate, corrupt],
+    });
+
+    // Present on disk but absent from the validated catalog.
+    expect(classifyManagedCandidateRetention(absent.manifest.candidate_id, input)).toBe(
+      'partial_or_invalid',
+    );
+    expect(mayGarbageCollectManagedCandidate(absent.manifest.candidate_id, input)).toBe(false);
+
+    // Catalogued but the manifest no longer matches its own subject.
+    expect(classifyManagedCandidateRetention(corrupt.manifest.candidate_id, input)).toBe(
+      'partial_or_invalid',
+    );
+    expect(mayGarbageCollectManagedCandidate(corrupt.manifest.candidate_id, input)).toBe(false);
   });
 });

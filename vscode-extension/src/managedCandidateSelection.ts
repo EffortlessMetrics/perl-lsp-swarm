@@ -21,8 +21,17 @@ export type ManagedCandidateRetentionClass =
   | 'live_referenced'
   | 'unknown_reference'
   | 'compatible_retained'
+  | 'unknown_not_safe_to_delete'
+  | 'partial_or_invalid'
   | 'stale_unreferenced';
 
+/**
+ * A published candidate directory is immutable by contract: a later artifact
+ * produces a different candidate subject, and therefore a different
+ * `candidate_id`, rather than replacing bytes under an existing identity.
+ * `immutable` is a literal `true` so a record deserialized from disk that
+ * claims otherwise is rejected by {@link validateManagedCurrentSelection}.
+ */
 export interface ManagedCandidateCatalogEntry {
   manifest: ManagedCandidateManifest;
   immutable: true;
@@ -30,15 +39,54 @@ export interface ManagedCandidateCatalogEntry {
 
 export interface ManagedHostSelectionInput {
   current: ManagedCurrentSelection;
+  /**
+   * Immutable candidate catalog in the caller's compatibility preference
+   * order. Ranking compatible candidates against a client version is owned by
+   * the compatibility policy (#4838 / #6854), not by this module; when the
+   * current selection is unusable this module takes the caller's first
+   * compatible entry rather than inventing a version ordering.
+   */
   candidates: ManagedCandidateCatalogEntry[];
   compatible_candidate_ids: string[];
   running_candidate_id: string | null;
 }
 
-function validateGeneration(generation: number): void {
+/**
+ * Why a host ended up on a candidate. `restart_required` and
+ * `no_compatible_candidate` are the action-required outcomes: a bare candidate
+ * id cannot tell a running host that its launched candidate is gone, so
+ * callers must not silently rebind a live process to a replacement.
+ */
+export type ManagedHostSelectionOutcome =
+  | { kind: 'bound_running'; candidate_id: string }
+  | { kind: 'selected_current'; candidate_id: string }
+  | { kind: 'selected_compatible'; candidate_id: string }
+  | { kind: 'restart_required'; candidate_id: string }
+  | { kind: 'no_compatible_candidate' };
+
+export interface ManagedRetentionInput {
+  /**
+   * `null` means the current-selection record could not be read or parsed. GC
+   * must then refuse every candidate: it cannot prove any given candidate is
+   * not the current default.
+   */
+  current: ManagedCurrentSelection | null;
+  catalog: ManagedCandidateCatalogEntry[];
+  host_references: ManagedHostCandidateReference[];
+  /**
+   * `false` when host-reference enumeration was not proven exhaustive (I/O
+   * error, unparseable reference record, partial directory listing). A short
+   * reference list must never be read as "nothing references this candidate".
+   */
+  host_references_complete: boolean;
+  compatible_retained_ids: ReadonlySet<string>;
+}
+
+function validateGeneration(generation: number): string[] {
   if (!Number.isInteger(generation) || generation < 1) {
-    throw new Error('selection generation must be a positive integer');
+    return ['selection generation must be a positive integer'];
   }
+  return [];
 }
 
 function validateSessionId(sessionId: string): void {
@@ -56,10 +104,16 @@ export function publishManagedCurrentSelection(
     throw new Error(`cannot publish invalid managed candidate: ${manifestErrors.join('; ')}`);
   }
 
-  const selectionGeneration = (prior?.selection_generation ?? 0) + 1;
+  if (prior !== null) {
+    const priorErrors = validateGeneration(prior.selection_generation);
+    if (priorErrors.length > 0) {
+      throw new Error(`cannot publish over an invalid prior selection: ${priorErrors.join('; ')}`);
+    }
+  }
+
   return {
     schema_version: 'managed_current_selection.v1',
-    selection_generation: selectionGeneration,
+    selection_generation: (prior?.selection_generation ?? 0) + 1,
     candidate_id: manifest.candidate_id,
   };
 }
@@ -68,12 +122,7 @@ export function validateManagedCurrentSelection(
   selection: ManagedCurrentSelection,
   candidates: ManagedCandidateCatalogEntry[],
 ): string[] {
-  const errors: string[] = [];
-  try {
-    validateGeneration(selection.selection_generation);
-  } catch (error: unknown) {
-    errors.push(error instanceof Error ? error.message : String(error));
-  }
+  const errors: string[] = [...validateGeneration(selection.selection_generation)];
 
   const selected = candidates.find(
     (entry) => entry.manifest.candidate_id === selection.candidate_id,
@@ -114,81 +163,87 @@ export function releaseManagedHostReference(
   };
 }
 
-export function resolveManagedCandidateForHost(input: ManagedHostSelectionInput): string | null {
+export function resolveManagedCandidateForHost(
+  input: ManagedHostSelectionInput,
+): ManagedHostSelectionOutcome {
   const candidateIds = new Set(input.candidates.map((entry) => entry.manifest.candidate_id));
   const compatible = new Set(input.compatible_candidate_ids);
+  const usable = (candidateId: string): boolean =>
+    candidateIds.has(candidateId) && compatible.has(candidateId);
 
   // A running host remains bound to the exact candidate it already launched.
   // Moving the shared default never hot-swaps its process identity.
-  if (
-    input.running_candidate_id !== null &&
-    candidateIds.has(input.running_candidate_id) &&
-    compatible.has(input.running_candidate_id)
-  ) {
-    return input.running_candidate_id;
-  }
-
-  if (candidateIds.has(input.current.candidate_id) && compatible.has(input.current.candidate_id)) {
-    return input.current.candidate_id;
+  if (input.running_candidate_id !== null && usable(input.running_candidate_id)) {
+    return { kind: 'bound_running', candidate_id: input.running_candidate_id };
   }
 
   // Side-by-side compatibility is host-local selection only. Do not mutate the
   // global current/default record merely because an older client needs another
   // retained candidate.
-  for (const entry of input.candidates) {
-    if (compatible.has(entry.manifest.candidate_id)) {
-      return entry.manifest.candidate_id;
-    }
+  const replacement = usable(input.current.candidate_id)
+    ? input.current.candidate_id
+    : (input.candidates.find((entry) => compatible.has(entry.manifest.candidate_id))?.manifest
+        .candidate_id ?? null);
+
+  if (replacement === null) {
+    return { kind: 'no_compatible_candidate' };
   }
 
-  return null;
+  // The host launched a candidate that is no longer in the catalog or no
+  // longer compatible. Report the replacement as action-required rather than
+  // returning it as if the live process were already running it.
+  if (input.running_candidate_id !== null) {
+    return { kind: 'restart_required', candidate_id: replacement };
+  }
+
+  return replacement === input.current.candidate_id
+    ? { kind: 'selected_current', candidate_id: replacement }
+    : { kind: 'selected_compatible', candidate_id: replacement };
 }
 
 export function classifyManagedCandidateRetention(
   candidateId: string,
-  current: ManagedCurrentSelection,
-  hostReferences: ManagedHostCandidateReference[],
-  compatibleRetainedIds: ReadonlySet<string>,
+  input: ManagedRetentionInput,
 ): ManagedCandidateRetentionClass {
-  if (candidateId === current.candidate_id) {
+  // An unreadable current-selection record cannot prove this candidate is not
+  // the current default, so nothing is collectible.
+  if (input.current === null) {
+    return 'unknown_not_safe_to_delete';
+  }
+  if (candidateId === input.current.candidate_id) {
     return 'current_default';
   }
 
-  const references = hostReferences.filter((reference) => reference.candidate_id === candidateId);
+  const references = input.host_references.filter(
+    (reference) => reference.candidate_id === candidateId,
+  );
   if (references.some((reference) => reference.state === 'live')) {
     return 'live_referenced';
   }
   if (references.some((reference) => reference.state === 'unknown')) {
     return 'unknown_reference';
   }
-  if (compatibleRetainedIds.has(candidateId)) {
+  // Absence of a reference is only evidence when enumeration was exhaustive.
+  if (!input.host_references_complete) {
+    return 'unknown_not_safe_to_delete';
+  }
+  if (input.compatible_retained_ids.has(candidateId)) {
     return 'compatible_retained';
   }
+
+  const entry = input.catalog.find((known) => known.manifest.candidate_id === candidateId);
+  if (!entry || validateManagedCandidateManifest(entry.manifest).length > 0) {
+    // Half-published or invalid bytes are not proven-stale product state.
+    // Leave them for an explicit repair path rather than deleting blind.
+    return 'partial_or_invalid';
+  }
+
   return 'stale_unreferenced';
 }
 
 export function mayGarbageCollectManagedCandidate(
   candidateId: string,
-  current: ManagedCurrentSelection,
-  hostReferences: ManagedHostCandidateReference[],
-  compatibleRetainedIds: ReadonlySet<string>,
+  input: ManagedRetentionInput,
 ): boolean {
-  return (
-    classifyManagedCandidateRetention(
-      candidateId,
-      current,
-      hostReferences,
-      compatibleRetainedIds,
-    ) === 'stale_unreferenced'
-  );
-}
-
-export function candidateBytesMayChangeAfterPublication(
-  entry: ManagedCandidateCatalogEntry,
-): false {
-  // The type intentionally requires immutable=true. This function exists as a
-  // load-bearing review/test seam: published candidate bytes are never updated
-  // in place; a new artifact creates a new candidate identity instead.
-  void entry;
-  return false;
+  return classifyManagedCandidateRetention(candidateId, input) === 'stale_unreferenced';
 }
