@@ -50,7 +50,7 @@ fn true_eof_position(content: &str) -> FormatPosition {
         match ch {
             '\r' => {
                 if chars.peek() == Some(&'\n') {
-                    chars.next();
+                    let _ = chars.next();
                 }
                 line = line.saturating_add(1);
                 character = 0;
