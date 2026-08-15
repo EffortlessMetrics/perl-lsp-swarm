@@ -2,25 +2,32 @@
 
 //! Build and compare target-driven upstream runner discovery plans.
 
-#[path = "../target_contracts/model.rs"]
-mod model;
-#[path = "../target_contracts/contract.rs"]
-mod contract;
-#[path = "../target_contracts/matrix.rs"]
-mod matrix;
-#[path = "../target_contracts/io.rs"]
-mod io;
-#[path = "../runner_plan/model.rs"]
-mod runner_model;
-#[path = "../runner_plan/normalize.rs"]
-mod normalize;
 #[path = "../runner_plan/build.rs"]
 mod build;
 #[path = "../runner_plan/compare.rs"]
 mod compare;
+// The target-contract modules are shared verbatim with `perl-core-harness-targets`,
+// which owns the topology-drift surface. This binary consumes only the target matrix,
+// so the drift items are legitimately unused here.
+#[allow(dead_code)]
+#[path = "../target_contracts/contract.rs"]
+mod contract;
+#[allow(dead_code)]
+#[path = "../target_contracts/io.rs"]
+mod io;
+#[allow(dead_code)]
+#[path = "../target_contracts/matrix.rs"]
+mod matrix;
+#[allow(dead_code)]
+#[path = "../target_contracts/model.rs"]
+mod model;
+#[path = "../runner_plan/normalize.rs"]
+mod normalize;
+#[path = "../runner_plan/model.rs"]
+mod runner_model;
 
 use build::{build_runner_plan, validate_runner_plan, validate_runner_plan_against};
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use compare::{compare_runner_plans_against, validate_runner_parity_against};
 use io::read_matrix;
 use runner_model::{RunnerKind, RunnerParityReport, RunnerPlan, RunnerScheduling};
@@ -80,14 +87,8 @@ fn compare_command(args: Vec<OsString>) -> Result<()> {
     let right = read_plan(Path::new(&args[3]))?;
     let right_raw = read_bytes(Path::new(&args[4]))?;
     let output = PathBuf::from(&args[5]);
-    let report = compare_runner_plans_against(
-        &matrix,
-        &left,
-        &left_raw,
-        &right,
-        &right_raw,
-    )
-    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let report = compare_runner_plans_against(&matrix, &left, &left_raw, &right, &right_raw)
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
     write_json(&output, &report)?;
     println!(
         "runner parity valid: target={} status={:?}",
@@ -125,10 +126,7 @@ fn check_parity_command(args: Vec<OsString>) -> Result<()> {
     let report = read_parity(Path::new(&args[5]))?;
     validate_runner_parity_against(&report, &left, &right)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    println!(
-        "runner parity authority valid: {}",
-        Path::new(&args[5]).display()
-    );
+    println!("runner parity authority valid: {}", Path::new(&args[5]).display());
     Ok(())
 }
 
@@ -156,17 +154,12 @@ fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
                 index += 1;
                 let value = args.get(index).context("--property requires key=value")?;
                 let value = value.to_string_lossy();
-                let (key, property) = value
-                    .split_once('=')
-                    .context("--property requires key=value")?;
+                let (key, property) =
+                    value.split_once('=').context("--property requires key=value")?;
                 if key.trim().is_empty() || property.trim().is_empty() {
                     bail!("--property requires non-empty key=value");
                 }
-                if scheduling
-                    .properties
-                    .insert(key.to_string(), property.to_string())
-                    .is_some()
-                {
+                if scheduling.properties.insert(key.to_string(), property.to_string()).is_some() {
                     bail!("duplicate scheduling property {key}");
                 }
             }
@@ -197,8 +190,7 @@ fn read_parity(path: &Path) -> Result<RunnerParityReport> {
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let mut bytes = serde_json::to_vec_pretty(value).context("serializing runner receipt")?;
     bytes.push(b'\n');

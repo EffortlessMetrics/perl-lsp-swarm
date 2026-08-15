@@ -1,9 +1,7 @@
 //! Discovery-path normalization and target-selector matching.
 
 use crate::model::{ManifestPopulation, TargetScriptForm, TargetSelector};
-use crate::runner_model::{
-    InvocationContextClass, RunnerSourceItem, SourceForm, SourcePathClass,
-};
+use crate::runner_model::{InvocationContextClass, RunnerSourceItem, SourceForm, SourcePathClass};
 
 pub(crate) fn normalize_source_item(raw: &str) -> Result<RunnerSourceItem, String> {
     let trimmed = raw.trim();
@@ -22,7 +20,9 @@ pub(crate) fn normalize_source_item(raw: &str) -> Result<RunnerSourceItem, Strin
     }
     if path.starts_with('/')
         || path.get(1..2) == Some(":")
-        || path.split('/').any(|component| component.is_empty() || component == "." || component == "..")
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
     {
         return Err(format!("invalid discovery path {trimmed}"));
     }
@@ -75,10 +75,7 @@ pub(crate) fn normalize_source_item(raw: &str) -> Result<RunnerSourceItem, Strin
     })
 }
 
-pub(crate) fn source_form_allowed(
-    source_form: SourceForm,
-    allowed: &[TargetScriptForm],
-) -> bool {
+pub(crate) fn source_form_allowed(source_form: SourceForm, allowed: &[TargetScriptForm]) -> bool {
     allowed.iter().any(|form| {
         matches!(
             (source_form, form),
@@ -104,9 +101,9 @@ fn matches_selector(path: &str, selector: &TargetSelector) -> bool {
             path.strip_prefix("t/").is_some_and(|relative| glob_matches(pattern, relative))
         }
         TargetSelector::ExactFile { path: exact } => path == format!("t/{exact}"),
-        TargetSelector::ExternalGlob { pattern } => pattern
-            .strip_prefix("../")
-            .is_some_and(|relative| glob_matches(relative, path)),
+        TargetSelector::ExternalGlob { pattern } => {
+            pattern.strip_prefix("../").is_some_and(|relative| glob_matches(relative, path))
+        }
         TargetSelector::ManifestPopulation { component } => match component {
             ManifestPopulation::RootLib => path.starts_with("lib/"),
             ManifestPopulation::CoreRootLib => path
@@ -156,9 +153,8 @@ mod tests {
 
     #[test]
     fn core_root_lib_requires_lowercase_first_component() {
-        let selector = TargetSelector::ManifestPopulation {
-            component: ManifestPopulation::CoreRootLib,
-        };
+        let selector =
+            TargetSelector::ManifestPopulation { component: ManifestPopulation::CoreRootLib };
         assert!(matches_selector("lib/attributes.t", &selector));
         assert!(!matches_selector("lib/Config/Perl/V.t", &selector));
     }

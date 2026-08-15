@@ -71,24 +71,13 @@ pub struct RunnerSourceItem {
     pub invocation_context: InvocationContextClass,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunnerScheduling {
     pub jobs: Option<u32>,
     pub asap: bool,
     pub state_ordering: bool,
     pub properties: BTreeMap<String, String>,
-}
-
-impl Default for RunnerScheduling {
-    fn default() -> Self {
-        Self {
-            jobs: None,
-            asap: false,
-            state_ordering: false,
-            properties: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

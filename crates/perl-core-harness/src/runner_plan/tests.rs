@@ -1,8 +1,7 @@
 //! Runner-plan and parity falsifiers over the pinned target matrix.
 
 use crate::build::{
-    build_runner_plan, runner_plan_digest, validate_runner_plan,
-    validate_runner_plan_against,
+    build_runner_plan, runner_plan_digest, validate_runner_plan, validate_runner_plan_against,
 };
 use crate::compare::{
     compare_runner_plans, compare_runner_plans_against, validate_runner_parity,
@@ -17,15 +16,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn repo_file(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(relative)
 }
 
 fn matrix() -> Result<crate::model::UpstreamTargetMatrix> {
-    read_matrix(&repo_file(
-        ".ci/perl-core-harness/upstream-targets-5.42.2.v1",
-    ))
+    read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))
 }
 
 fn base_plan(
@@ -33,14 +28,8 @@ fn base_plan(
     runner: RunnerKind,
     raw: &[u8],
 ) -> Result<RunnerPlan> {
-    build_runner_plan(
-        matrix,
-        "component_base",
-        runner,
-        raw,
-        RunnerScheduling::default(),
-    )
-    .map_err(|error| color_eyre::eyre::eyre!(error))
+    build_runner_plan(matrix, "component_base", runner, raw, RunnerScheduling::default())
+        .map_err(|error| color_eyre::eyre::eyre!(error))
 }
 
 #[test]
@@ -62,35 +51,27 @@ fn test_and_harness_membership_can_match_with_different_order() -> Result<()> {
         },
     )
     .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    let parity = compare_runner_plans_against(
-        &matrix,
-        &test_plan,
-        test_raw,
-        &harness_plan,
-        harness_raw,
-    )
-    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let parity =
+        compare_runner_plans_against(&matrix, &test_plan, test_raw, &harness_plan, harness_raw)
+            .map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(parity.membership_status, MembershipParityStatus::Parity);
     assert!(!parity.order_equal);
     assert!(!parity.scheduling_equal);
     assert_ne!(parity.left_plan_digest, parity.right_plan_digest);
-    assert_eq!(
-        parity.left_raw_discovery_digest,
-        test_plan.raw_discovery_digest
-    );
-    assert_eq!(
-        parity.right_raw_discovery_digest,
-        harness_plan.raw_discovery_digest
-    );
+    assert_eq!(parity.left_raw_discovery_digest, test_plan.raw_discovery_digest);
+    assert_eq!(parity.right_raw_discovery_digest, harness_plan.raw_discovery_digest);
     assert!(
         harness_plan
             .limitations
             .iter()
             .any(|value| value == "alternate_runner_requires_membership_parity_evidence")
     );
-    assert!(test_plan.limitations.iter().any(|value| {
-        value == "scheduling_inputs_are_declared_not_observed"
-    }));
+    assert!(
+        test_plan
+            .limitations
+            .iter()
+            .any(|value| { value == "scheduling_inputs_are_declared_not_observed" })
+    );
     assert!(parity.limitations.iter().any(|value| {
         value == "scheduling_equality_compares_declared_inputs_not_observed_runner_state"
     }));
@@ -153,11 +134,7 @@ fn manifest_population_accepts_dot_t_and_test_pl() -> Result<()> {
         RunnerScheduling::default(),
     )
     .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    let forms = plan
-        .source_items
-        .iter()
-        .map(|item| item.source_form)
-        .collect::<Vec<_>>();
+    let forms = plan.source_items.iter().map(|item| item.source_form).collect::<Vec<_>>();
     assert_eq!(forms, vec![SourceForm::DotT, SourceForm::TestPl]);
     Ok(())
 }
@@ -181,19 +158,12 @@ fn serialized_source_form_is_recomputed_from_the_raw_path() -> Result<()> {
 #[test]
 fn real_membership_difference_is_not_hidden_by_order_normalization() -> Result<()> {
     let matrix = matrix()?;
-    let left = base_plan(
-        &matrix,
-        RunnerKind::Test,
-        b"t/base/cond.t\nt/base/if.t\n",
-    )?;
+    let left = base_plan(&matrix, RunnerKind::Test, b"t/base/cond.t\nt/base/if.t\n")?;
     let right = base_plan(&matrix, RunnerKind::Harness, b"t/base/if.t\n")?;
-    let parity = compare_runner_plans(&left, &right)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let parity =
+        compare_runner_plans(&left, &right).map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(parity.membership_status, MembershipParityStatus::Mismatch);
-    assert_eq!(
-        parity.missing_from_right,
-        vec!["t/base/cond.t".to_string()]
-    );
+    assert_eq!(parity.missing_from_right, vec!["t/base/cond.t".to_string()]);
     Ok(())
 }
 
@@ -201,18 +171,15 @@ fn real_membership_difference_is_not_hidden_by_order_normalization() -> Result<(
 fn direct_fallback_cannot_claim_upstream_runner_parity() -> Result<()> {
     let matrix = matrix()?;
     let upstream = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
-    let fallback = base_plan(
-        &matrix,
-        RunnerKind::DirectFallback,
-        b"t/base/if.t\n",
-    )?;
+    let fallback = base_plan(&matrix, RunnerKind::DirectFallback, b"t/base/if.t\n")?;
     let parity = compare_runner_plans(&upstream, &fallback)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(parity.membership_status, MembershipParityStatus::NotProven);
     assert!(
-        parity.limitations.iter().any(|value| {
-            value == "direct_fallback_cannot_establish_upstream_runner_parity"
-        })
+        parity
+            .limitations
+            .iter()
+            .any(|value| { value == "direct_fallback_cannot_establish_upstream_runner_parity" })
     );
 
     let mut forged = parity;
@@ -226,12 +193,14 @@ fn same_runner_comparison_is_not_cross_runner_parity() -> Result<()> {
     let matrix = matrix()?;
     let left = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
     let right = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
-    let parity = compare_runner_plans(&left, &right)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let parity =
+        compare_runner_plans(&left, &right).map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(parity.membership_status, MembershipParityStatus::NotProven);
-    assert!(parity.limitations.iter().any(|value| {
-        value == "same_runner_comparison_cannot_establish_cross_runner_parity"
-    }));
+    assert!(
+        parity.limitations.iter().any(|value| {
+            value == "same_runner_comparison_cannot_establish_cross_runner_parity"
+        })
+    );
 
     let mut forged = parity;
     forged.membership_status = MembershipParityStatus::Parity;
@@ -252,9 +221,7 @@ fn plan_check_rebuilds_from_matrix_and_raw_discovery() -> Result<()> {
     assert!(validate_runner_plan(&forged_digest).is_ok());
     assert!(validate_runner_plan_against(&matrix, raw, &forged_digest).is_err());
 
-    assert!(
-        validate_runner_plan_against(&matrix, b"t/base/cond.t\n", &plan).is_err()
-    );
+    assert!(validate_runner_plan_against(&matrix, b"t/base/cond.t\n", &plan).is_err());
     Ok(())
 }
 
@@ -271,8 +238,8 @@ fn scheduling_limitations_are_mandatory() -> Result<()> {
         .retain(|value| value != "scheduling_inputs_are_declared_not_observed");
     assert!(validate_runner_plan(&plan_without_boundary).is_err());
 
-    let mut parity_without_boundary = compare_runner_plans(&left, &right)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let mut parity_without_boundary =
+        compare_runner_plans(&left, &right).map_err(|error| color_eyre::eyre::eyre!(error))?;
     parity_without_boundary.limitations.retain(|value| {
         value != "scheduling_equality_compares_declared_inputs_not_observed_runner_state"
     });
@@ -291,10 +258,8 @@ fn plan_digest_binds_canonical_typed_content_not_json_spelling() -> Result<()> {
     let compact_plan: RunnerPlan = serde_json::from_slice(&compact)?;
     let pretty_plan: RunnerPlan = serde_json::from_slice(&pretty)?;
     assert_eq!(
-        runner_plan_digest(&compact_plan)
-            .map_err(|error| color_eyre::eyre::eyre!(error))?,
-        runner_plan_digest(&pretty_plan)
-            .map_err(|error| color_eyre::eyre::eyre!(error))?
+        runner_plan_digest(&compact_plan).map_err(|error| color_eyre::eyre::eyre!(error))?,
+        runner_plan_digest(&pretty_plan).map_err(|error| color_eyre::eyre::eyre!(error))?
     );
     Ok(())
 }
@@ -304,8 +269,8 @@ fn parity_check_is_bound_to_canonical_plan_content() -> Result<()> {
     let matrix = matrix()?;
     let left = base_plan(&matrix, RunnerKind::Test, b"t/base/if.t\n")?;
     let right = base_plan(&matrix, RunnerKind::Harness, b"t/base/if.t\n")?;
-    let report = compare_runner_plans(&left, &right)
-        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let report =
+        compare_runner_plans(&left, &right).map_err(|error| color_eyre::eyre::eyre!(error))?;
     validate_runner_parity_against(&report, &left, &right)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
 

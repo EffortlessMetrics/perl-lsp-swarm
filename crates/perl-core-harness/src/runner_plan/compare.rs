@@ -1,12 +1,10 @@
 //! Exact normalized membership comparison between two runner plans.
 
-use crate::build::{
-    runner_plan_digest, validate_runner_plan, validate_runner_plan_against,
-};
+use crate::build::{runner_plan_digest, validate_runner_plan, validate_runner_plan_against};
 use crate::model::UpstreamTargetMatrix;
 use crate::runner_model::{
-    InvocationCaptureStatus, MembershipParityStatus, RUNNER_PARITY_SCHEMA_VERSION,
-    RunnerKind, RunnerParityReport, RunnerPlan,
+    InvocationCaptureStatus, MembershipParityStatus, RUNNER_PARITY_SCHEMA_VERSION, RunnerKind,
+    RunnerParityReport, RunnerPlan,
 };
 use std::collections::BTreeSet;
 
@@ -33,27 +31,13 @@ pub(crate) fn compare_runner_plans(
         return Err("runner plans do not identify the same target contract".to_string());
     }
 
-    let left_members = left
-        .normalized_membership
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let right_members = right
-        .normalized_membership
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let missing_from_right = left_members
-        .difference(&right_members)
-        .cloned()
-        .collect::<Vec<_>>();
-    let extra_in_right = right_members
-        .difference(&left_members)
-        .cloned()
-        .collect::<Vec<_>>();
+    let left_members = left.normalized_membership.iter().cloned().collect::<BTreeSet<_>>();
+    let right_members = right.normalized_membership.iter().cloned().collect::<BTreeSet<_>>();
+    let missing_from_right = left_members.difference(&right_members).cloned().collect::<Vec<_>>();
+    let extra_in_right = right_members.difference(&left_members).cloned().collect::<Vec<_>>();
     let has_difference = !missing_from_right.is_empty() || !extra_in_right.is_empty();
-    let has_direct_fallback = left.runner == RunnerKind::DirectFallback
-        || right.runner == RunnerKind::DirectFallback;
+    let has_direct_fallback =
+        left.runner == RunnerKind::DirectFallback || right.runner == RunnerKind::DirectFallback;
     let same_runner = left.runner == right.runner;
     let membership_status = if has_direct_fallback || same_runner {
         MembershipParityStatus::NotProven
@@ -116,10 +100,7 @@ pub(crate) fn compare_runner_plans_against(
 
 pub(crate) fn validate_runner_parity(report: &RunnerParityReport) -> Result<(), String> {
     if report.schema_version != RUNNER_PARITY_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported runner parity schema {}",
-            report.schema_version
-        ));
+        return Err(format!("unsupported runner parity schema {}", report.schema_version));
     }
     validate_stable_id(&report.target_id, "target ID")?;
     if report.claim_boundary.trim().is_empty() {
@@ -130,25 +111,13 @@ pub(crate) fn validate_runner_parity(report: &RunnerParityReport) -> Result<(), 
         (&report.target_contract_digest, "target contract digest"),
         (&report.left_plan_digest, "left plan digest"),
         (&report.right_plan_digest, "right plan digest"),
-        (
-            &report.left_raw_discovery_digest,
-            "left raw discovery digest",
-        ),
-        (
-            &report.right_raw_discovery_digest,
-            "right raw discovery digest",
-        ),
+        (&report.left_raw_discovery_digest, "left raw discovery digest"),
+        (&report.right_raw_discovery_digest, "right raw discovery digest"),
     ] {
         validate_sha256(value, label)?;
     }
-    if report
-        .missing_from_right
-        .windows(2)
-        .any(|pair| pair[0] >= pair[1])
-        || report
-            .extra_in_right
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1])
+    if report.missing_from_right.windows(2).any(|pair| pair[0] >= pair[1])
+        || report.extra_in_right.windows(2).any(|pair| pair[0] >= pair[1])
         || report.limitations.windows(2).any(|pair| pair[0] >= pair[1])
     {
         return Err("runner parity list fields must be strictly sorted and unique".to_string());
@@ -157,14 +126,11 @@ pub(crate) fn validate_runner_parity(report: &RunnerParityReport) -> Result<(), 
         return Err("runner parity must retain its invocation-comparison limitation".to_string());
     }
     if !has_limitation(&report.limitations, SCHEDULING_COMPARISON_LIMITATION) {
-        return Err(
-            "runner parity must classify scheduling equality as declared-input comparison"
-                .to_string(),
-        );
+        return Err("runner parity must classify scheduling equality as declared-input comparison"
+            .to_string());
     }
 
-    let has_difference =
-        !report.missing_from_right.is_empty() || !report.extra_in_right.is_empty();
+    let has_difference = !report.missing_from_right.is_empty() || !report.extra_in_right.is_empty();
     let has_direct_fallback = report.left_runner == RunnerKind::DirectFallback
         || report.right_runner == RunnerKind::DirectFallback;
     let same_runner = report.left_runner == report.right_runner;
@@ -173,24 +139,14 @@ pub(crate) fn validate_runner_parity(report: &RunnerParityReport) -> Result<(), 
         DIRECT_FALLBACK_PARITY_LIMITATION,
         has_direct_fallback,
     )?;
-    require_exact_limitation(
-        &report.limitations,
-        SAME_RUNNER_PARITY_LIMITATION,
-        same_runner,
-    )?;
-    require_exact_limitation(
-        &report.limitations,
-        MEMBERSHIP_DIFFERS_LIMITATION,
-        has_difference,
-    )?;
+    require_exact_limitation(&report.limitations, SAME_RUNNER_PARITY_LIMITATION, same_runner)?;
+    require_exact_limitation(&report.limitations, MEMBERSHIP_DIFFERS_LIMITATION, has_difference)?;
 
     match report.membership_status {
         MembershipParityStatus::Parity => {
             if has_difference || has_direct_fallback || same_runner {
-                return Err(
-                    "parity requires distinct upstream runners with identical membership"
-                        .to_string(),
-                );
+                return Err("parity requires distinct upstream runners with identical membership"
+                    .to_string());
             }
         }
         MembershipParityStatus::Mismatch => {
@@ -222,7 +178,7 @@ pub(crate) fn validate_runner_parity_against(
     let expected = compare_runner_plans(left, right)?;
     if expected != *report {
         return Err(
-            "runner parity report does not match the exact supplied plan receipts".to_string(),
+            "runner parity report does not match the exact supplied plan receipts".to_string()
         );
     }
     Ok(())
@@ -260,9 +216,7 @@ fn validate_stable_id(value: &str, label: &str) -> Result<(), String> {
 
 fn validate_sha256(value: &str, label: &str) -> Result<(), String> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Err(format!(
-            "{label} must be a 64-character hexadecimal digest: {value}"
-        ))
+        Err(format!("{label} must be a 64-character hexadecimal digest: {value}"))
     } else {
         Ok(())
     }
