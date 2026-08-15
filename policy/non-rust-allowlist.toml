@@ -1335,6 +1335,25 @@ created = "2026-08-14"
 review_after = "2026-11-14"
 
 # =============================================================================
+# Parser incremental authority ledger
+# =============================================================================
+
+[[allow]]
+id = "non-rust-parser-incremental-authority"
+path = "crates/perl-parser/incremental_authority.json"
+kind = "authority_ledger"
+language = "json"
+surface = "parser"
+classification = "config"
+owner = "parser"
+reason = "Machine-readable single-incremental-authority ledger for perl-parser (#6701/#7292); classifies every exported incremental generation so parser incremental ownership cannot silently fork."
+covered_by = [
+  "cargo test --locked -p perl-parser --test incremental_authority_contract",
+]
+created = "2026-08-15"
+review_after = "2026-11-15"
+
+# =============================================================================
 # Editor-intelligence gap-matrix fixture tree
 # =============================================================================
 
