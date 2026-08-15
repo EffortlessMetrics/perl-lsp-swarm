@@ -59,8 +59,9 @@ fn lsp4ij_projection_is_a_checked_subset_of_the_generic_perl_schema() {
             "VS Code extension namespace must never become the generic LSP4IJ wire schema: {key}"
         );
 
-        let canonical_property = canonical_property(&canonical, key)
-            .unwrap_or_else(|| panic!("projected field is absent from canonical generic schema: {key}"));
+        let canonical_property = canonical_property(&canonical, key).unwrap_or_else(|| {
+            panic!("projected field is absent from canonical generic schema: {key}")
+        });
 
         for facet in ["type", "default", "enum", "minimum", "maximum", "exclusiveMinimum"] {
             assert_eq!(
@@ -75,10 +76,8 @@ fn lsp4ij_projection_is_a_checked_subset_of_the_generic_perl_schema() {
 #[test]
 fn lsp4ij_projection_excludes_non_server_and_unproven_controls() {
     let projection = parse(LSP4IJ_SCHEMA);
-    let properties = projection
-        .get("properties")
-        .and_then(Value::as_object)
-        .expect("projection properties");
+    let properties =
+        projection.get("properties").and_then(Value::as_object).expect("projection properties");
 
     let forbidden_suffixes = [
         "serverPath",
@@ -121,10 +120,7 @@ fn lsp4ij_default_settings_do_not_manufacture_editor_overrides() {
 
 #[test]
 fn lsp4ij_dotted_configuration_expands_to_the_server_native_perl_wire_shape() {
-    let expanded = expand_one_dotted_key(
-        "perl.workspace.includePaths",
-        json!(["vendor/lib"]),
-    );
+    let expanded = expand_one_dotted_key("perl.workspace.includePaths", json!(["vendor/lib"]));
     assert_eq!(
         expanded,
         json!({
@@ -142,13 +138,13 @@ fn lsp4ij_template_is_bounded_to_proven_perl_files_and_canonical_stdio_identity(
     let template = parse(LSP4IJ_TEMPLATE);
     assert_eq!(template.get("expandConfiguration"), Some(&json!(true)));
 
-    let program_args = template
-        .get("programArgs")
-        .and_then(Value::as_object)
-        .expect("template programArgs");
+    let program_args =
+        template.get("programArgs").and_then(Value::as_object).expect("template programArgs");
     assert!(
         program_args.values().all(|value| {
-            value.as_str().is_some_and(|command| command.contains("perllsp") && command.contains("--stdio"))
+            value
+                .as_str()
+                .is_some_and(|command| command.contains("perllsp") && command.contains("--stdio"))
         }),
         "every platform command must retain canonical perllsp --stdio identity"
     );
