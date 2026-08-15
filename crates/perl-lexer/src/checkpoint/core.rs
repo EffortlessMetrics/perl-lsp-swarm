@@ -25,13 +25,11 @@ pub struct QuoteOperatorCheckpoint {
 
 /// A checkpoint that captures all mutable lexer state needed for token replay.
 ///
-/// Input references are deliberately not persisted. The monotonic timeout
-/// origin is retained so restoring a checkpoint cannot silently grant a fresh
-/// heredoc timeout budget.
+/// Input references are deliberately not persisted. Checkpoints that already
+/// have queued heredocs are rejected by the incremental replay layer before
+/// re-entering the timeout-sensitive heredoc path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LexerCheckpoint {
-    /// Monotonic origin used by timeout-sensitive lexer paths.
-    pub start_time: std::time::Instant,
     /// Current position in the input.
     pub position: usize,
     /// Current lexer mode (`ExpectTerm`, `ExpectOperator`, etc.).
@@ -112,7 +110,6 @@ impl LexerCheckpoint {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            start_time: std::time::Instant::now(),
             position: 0,
             mode: LexerMode::ExpectTerm,
             delimiter_stack: Vec::new(),
@@ -154,9 +151,9 @@ impl LexerCheckpoint {
         self.position == 0
     }
 
-    /// Whether restoring this checkpoint would re-enter a wall-clock-bounded
-    /// lexer path. Callers must fall back to a full re-lex when this is true
-    /// unless they can prove the timeout origin is safe for the operation.
+    /// Whether restoring this checkpoint would re-enter a pending-heredoc
+    /// timeout-sensitive path. Incremental callers fail closed for this state
+    /// so heredoc recovery remains owned by a fresh full lex.
     #[must_use]
     pub fn is_timeout_sensitive(&self) -> bool {
         !self.pending_heredocs.is_empty()
@@ -359,8 +356,7 @@ pub trait Checkpointable {
 
     /// Restore mutable replay state into a lexer for the target input.
     ///
-    /// The target lexer retains its configured policy and checkpoint timeout
-    /// origin.
+    /// The target lexer retains its configured recovery policy.
     fn restore(&mut self, checkpoint: &LexerCheckpoint);
 
     /// Check whether every source-relative checkpoint offset is valid.

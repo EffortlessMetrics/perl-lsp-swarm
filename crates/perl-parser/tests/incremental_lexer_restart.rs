@@ -104,8 +104,24 @@ fn stateful_and_source_boundary_edits_match_fresh_lexing() -> TestResult {
         ("transliteration", "$x =~ tr/a-z/A-Z/; my $after = 1;", "a-z", "b-z"),
         ("prototype", "sub f($$) { return 1; } my $after = 1;", "return 1", "return 2"),
         ("unicode", "my $x = \"café\"; my $after = 1;", "é", "ø"),
-        ("crlf", "my $x = 1;\r\nmy $y = 2;\r\n", "= 2", "= 3"),
-        ("heredoc-body", "my $value = <<EOF;\nbody\nEOF\nprint $value;\n", "body", "changed"),
+        (
+            "crlf",
+            "my $x = 1;
+my $y = 2;
+",
+            "= 2",
+            "= 3",
+        ),
+        (
+            "heredoc-body",
+            "my $value = <<EOF;
+body
+EOF
+print $value;
+",
+            "body",
+            "changed",
+        ),
     ];
 
     for (name, source, needle, replacement) in fixtures {

@@ -123,10 +123,7 @@ fn push_summary(
     }
 }
 
-fn behavior_state_changed(
-    previous: &LiveLexerCheckpoint,
-    current: &LiveLexerCheckpoint,
-) -> bool {
+fn behavior_state_changed(previous: &LiveLexerCheckpoint, current: &LiveLexerCheckpoint) -> bool {
     previous.mode != current.mode
         || previous.delimiter_stack != current.delimiter_stack
         || previous.in_prototype != current.in_prototype
@@ -320,7 +317,8 @@ mod tests {
 
     #[test]
     fn stored_checkpoint_set_is_bounded_and_retains_a_late_boundary() -> Result<()> {
-        let source = (0..20_000).map(|index| format!("my $v{index} = {index};\n")).collect::<String>();
+        let source =
+            (0..20_000).map(|index| format!("my $v{index} = {index};\n")).collect::<String>();
         let line_index = LineIndex::new(&source);
         let lexed = lex_source_with_checkpoints(&source, &line_index);
 
@@ -370,9 +368,88 @@ mod tests {
         assert!(lexed.live_checkpoints.iter().any(|checkpoint| {
             !checkpoint.pending_heredocs.is_empty() && checkpoint.is_timeout_sensitive()
         }));
-        assert!(lexed.stored_checkpoints.iter().any(|checkpoint| {
-            !checkpoint.live.pending_heredocs.is_empty()
-        }));
+        assert!(
+            lexed
+                .stored_checkpoints
+                .iter()
+                .any(|checkpoint| { !checkpoint.live.pending_heredocs.is_empty() })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn queued_heredoc_boundaries_remain_summarized_and_resume_after_the_queue_drains() -> Result<()>
+    {
+        let source = "my $value = <<EOF;\nbody\nEOF\nprint $value;\n";
+        let line_index = LineIndex::new(source);
+        let lexed = lex_source_with_checkpoints(source, &line_index);
+        let start_index = lexed
+            .tokens
+            .iter()
+            .position(|token| token.token_type == TokenType::HeredocStart)
+            .ok_or_else(|| anyhow::anyhow!("heredoc start token is missing"))?;
+        let queued = lexed
+            .live_checkpoints
+            .get(start_index + 1)
+            .ok_or_else(|| anyhow::anyhow!("checkpoint after heredoc start is missing"))?;
+
+        assert_eq!(queued.pending_heredocs.len(), 1);
+        assert_eq!(queued.pending_heredocs[0].label, "EOF");
+        assert!(
+            lexed.checkpoints.iter().any(|summary| summary.byte == queued.position),
+            "queued-heredoc state must remain a replayable boundary"
+        );
+
+        let resumed = lexed
+            .live_checkpoints
+            .iter()
+            .find(|checkpoint| {
+                checkpoint.position > queued.position && checkpoint.pending_heredocs.is_empty()
+            })
+            .ok_or_else(|| anyhow::anyhow!("checkpoint after heredoc completion is missing"))?;
+        assert!(
+            lexed.checkpoints.iter().any(|summary| summary.byte == resumed.position),
+            "restart summaries must resume after the heredoc queue drains"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stored_checkpoint_replay_reaches_the_deterministic_heredoc_budget() -> Result<()> {
+        let body = "x".repeat(256 * 1024 + 1);
+        let source = format!("my $value = <<EOF;\n{body}\nEOF\n");
+        let line_index = LineIndex::new(&source);
+        let fresh = lex_source_with_checkpoints(&source, &line_index);
+        let checkpoint = fresh
+            .stored_checkpoints
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("start checkpoint should be stored"))?
+            .live
+            .clone();
+
+        assert!(!checkpoint.is_timeout_sensitive());
+        assert!(
+            fresh.tokens.iter().any(|token| token.token_type == TokenType::UnknownRest),
+            "fresh lex must take deterministic heredoc budget recovery"
+        );
+
+        let replayed = lex_from_live_checkpoint(&source, &line_index, &checkpoint)?;
+        assert_eq!(replayed.tokens.len(), fresh.tokens.len());
+        for (index, (actual, expected)) in replayed.tokens.iter().zip(&fresh.tokens).enumerate() {
+            assert_eq!(actual.token_type, expected.token_type, "token kind {index}");
+            assert_eq!(actual.text, expected.text, "token payload {index}");
+            assert_eq!(actual.start, expected.start, "token start {index}");
+            assert_eq!(actual.end, expected.end, "token end {index}");
+        }
+        assert_eq!(replayed.checkpoints.len(), fresh.checkpoints.len());
+        for (index, (actual, expected)) in
+            replayed.checkpoints.iter().zip(&fresh.checkpoints).enumerate()
+        {
+            assert_eq!(actual.byte, expected.byte, "checkpoint byte {index}");
+            assert_eq!(actual.mode, expected.mode, "checkpoint mode {index}");
+            assert_eq!(actual.line, expected.line, "checkpoint line {index}");
+            assert_eq!(actual.column, expected.column, "checkpoint column {index}");
+        }
         Ok(())
     }
 }

@@ -123,6 +123,7 @@ impl IncrementalState {
 
     /// Compatibility AST view for the current generation.
     #[deprecated(note = "Use parse_output().ast; this compatibility view will be removed.")]
+    #[expect(deprecated, reason = "the compatibility AST field mirrors the native parse output")]
     #[must_use]
     pub fn ast(&self) -> &Node {
         &self.ast

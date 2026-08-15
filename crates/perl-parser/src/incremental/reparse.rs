@@ -41,18 +41,13 @@ pub(crate) fn apply_single_edit(
         .rev()
         .filter(|stored| stored.summary.byte <= edit.start_byte)
         .find_map(|stored| {
-            stored
-                .prepare_for_edit(&old_source, edit)
-                .map(|live| (stored.summary, live))
+            stored.prepare_for_edit(&old_source, edit).map(|live| (stored.summary, live))
         })
         .ok_or_else(|| anyhow::anyhow!("No valid stored lexer checkpoint found"))?;
     let (summary, live_checkpoint) = selected;
     let restart_byte = live_checkpoint.position;
-    let reused_prefix_tokens = state
-        .tokens()
-        .iter()
-        .take_while(|token| token.start < restart_byte)
-        .count();
+    let reused_prefix_tokens =
+        state.tokens().iter().take_while(|token| token.start < restart_byte).count();
     let old_prefix_checkpoints = state
         .stored_lex_checkpoints()
         .iter()
@@ -219,7 +214,8 @@ mod tests {
     fn sequential_edits_regenerate_current_generation_checkpoints() -> Result<()> {
         let source = "my $a = 1; my $b = 2; my $c = 3;";
         let mut state = IncrementalState::new(source.to_string());
-        let first_start = source.find("= 2").ok_or_else(|| anyhow::anyhow!("first edit missing"))? + 2;
+        let first_start =
+            source.find("= 2").ok_or_else(|| anyhow::anyhow!("first edit missing"))? + 2;
         let first = Edit {
             start_byte: first_start,
             old_end_byte: first_start + 1,
@@ -228,10 +224,8 @@ mod tests {
         };
         apply_single_edit(&mut state, &first)?;
 
-        let second_start = state
-            .source()
-            .find("= 3")
-            .ok_or_else(|| anyhow::anyhow!("second edit missing"))? + 2;
+        let second_start =
+            state.source().find("= 3").ok_or_else(|| anyhow::anyhow!("second edit missing"))? + 2;
         let second = Edit {
             start_byte: second_start,
             old_end_byte: second_start + 1,
