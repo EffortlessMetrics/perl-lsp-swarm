@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Added
+body: Added a fail-closed real-Vim activation and workspace-root receipt contract for the canonical vim-lsp integration path.
+time: 2026-08-13T10:00:51Z
+custom:
+  PR: "7799"
+  Slug: vim-activation-root-receipt
+  Breaking: "no"
