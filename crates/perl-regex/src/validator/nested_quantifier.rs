@@ -13,12 +13,15 @@ enum LastAtom {
     Group { has_backtracking_quantifier: bool, is_atomic: bool },
 }
 
-pub(crate) fn find_nested_quantifiers(pattern: &str) -> Vec<usize> {
+pub(crate) fn detect_nested_quantifiers(pattern: &str) -> bool {
+    find_nested_quantifier(pattern, 0).is_some()
+}
+
+pub(crate) fn find_nested_quantifier(pattern: &str, start_pos: usize) -> Option<usize> {
     let bytes = pattern.as_bytes();
     let mut i = 0;
     let mut group_stack = Vec::new();
     let mut last_atom = LastAtom::None;
-    let mut findings = Vec::new();
 
     while i < bytes.len() {
         match bytes[i] {
@@ -65,7 +68,7 @@ pub(crate) fn find_nested_quantifiers(pattern: &str) -> Vec<usize> {
                         if let LastAtom::Group { has_backtracking_quantifier: true, .. } = last_atom
                             && quantifier.can_repeat
                         {
-                            findings.push(i);
+                            return Some(start_pos + i);
                         }
 
                         if let Some(parent) = group_stack.last_mut()
@@ -86,7 +89,7 @@ pub(crate) fn find_nested_quantifiers(pattern: &str) -> Vec<usize> {
         i += 1;
     }
 
-    findings
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

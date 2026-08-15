@@ -1,12 +1,10 @@
 //! Typed results for bounded static regex analysis.
 //!
 //! These types keep machine identity, source ranges, reusable facts, and
-//! completeness separate from presentation text. [`RegexRange`] uses the
-//! coordinate space declared by the producing API: [`super::RegexValidator::analyze`]
-//! emits regex-body-relative ranges, while modifier analysis preserves the
-//! caller-supplied source range of its [`crate::analyzer::ModifierSequence`].
+//! completeness separate from presentation text. Ranges are byte offsets
+//! relative to the regex body supplied to [`super::RegexValidator::analyze`].
 
-/// A half-open byte range in the coordinate space declared by its producing API.
+/// A half-open byte range relative to an analyzed regex body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RegexRange {
     /// Inclusive byte offset where the range starts.
@@ -22,6 +20,12 @@ impl RegexRange {
         if start <= end { Some(Self { start, end }) } else { None }
     }
 
+    /// Construct an input-contained range without clamping impossible evidence.
+    pub(crate) fn anchored(start: usize, width: usize, input_len: usize) -> Option<Self> {
+        let end = start.checked_add(width)?;
+        (start <= input_len && end <= input_len).then_some(Self { start, end })
+    }
+
     /// Return the range length in bytes.
     #[must_use]
     pub const fn len(self) -> usize {
@@ -34,8 +38,16 @@ impl RegexRange {
         self.start == self.end
     }
 
-    pub(crate) fn anchored(start: usize, width: usize, input_len: usize) -> Self {
-        Self { start: start.min(input_len), end: start.saturating_add(width).min(input_len) }
+    /// Return whether `offset` lies inside this half-open range.
+    #[must_use]
+    pub const fn contains(self, offset: usize) -> bool {
+        self.start <= offset && offset < self.end
+    }
+
+    /// Return whether this range overlaps another half-open range.
+    #[must_use]
+    pub const fn overlaps(self, other: Self) -> bool {
+        self.start < other.end && other.start < self.end
     }
 }
 
@@ -90,6 +102,8 @@ pub enum RegexDiagnosticCode {
     ModifierNotAllowedForOperator,
     /// More than one effective `/a`, `/d`, `/l`, or `/u` mode was requested.
     ConflictingCharacterSetModifiers,
+    /// A character-set modifier was repeated more often than Perl allows.
+    RepeatedCharacterSetModifier,
     /// The modifier form requires a newer Perl language version.
     ModifierRequiresPerlVersion,
     /// The requested feature-qualified behavior is unavailable for the profile.
@@ -111,6 +125,7 @@ impl RegexDiagnosticCode {
             Self::UnknownModifier => "unknown_modifier",
             Self::ModifierNotAllowedForOperator => "modifier_not_allowed_for_operator",
             Self::ConflictingCharacterSetModifiers => "conflicting_character_set_modifiers",
+            Self::RepeatedCharacterSetModifier => "repeated_character_set_modifier",
             Self::ModifierRequiresPerlVersion => "modifier_requires_perl_version",
             Self::ModifierRequiresFeature => "modifier_requires_feature",
         }
@@ -129,6 +144,7 @@ impl RegexDiagnosticCode {
             Self::UnknownModifier
             | Self::ModifierNotAllowedForOperator
             | Self::ConflictingCharacterSetModifiers
+            | Self::RepeatedCharacterSetModifier
             | Self::ModifierRequiresPerlVersion
             | Self::ModifierRequiresFeature => RegexDiagnosticClass::Syntax,
         }
@@ -143,7 +159,7 @@ pub struct RegexDiagnostic {
     pub code: RegexDiagnosticCode,
     /// Operational class derived from the diagnostic identity.
     pub class: RegexDiagnosticClass,
-    /// Byte range in the producing API's declared coordinate space.
+    /// Body-relative byte range.
     pub range: RegexRange,
     /// Configured limit relevant to a policy diagnostic, when applicable.
     pub limit: Option<usize>,
@@ -195,6 +211,9 @@ impl RegexDiagnostic {
             RegexDiagnosticCode::ConflictingCharacterSetModifiers => {
                 "Character-set regex modifiers are mutually exclusive".to_string()
             }
+            RegexDiagnosticCode::RepeatedCharacterSetModifier => {
+                "Character-set regex modifier is repeated too many times".to_string()
+            }
             RegexDiagnosticCode::ModifierRequiresPerlVersion => {
                 "Regex modifier requires a newer Perl version".to_string()
             }
@@ -205,7 +224,7 @@ impl RegexDiagnostic {
     }
 }
 
-/// Kind of executable or runtime-supplied regex region.
+/// Kind of executable code embedded in the pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum EmbeddedCodeKind {
@@ -221,7 +240,32 @@ pub enum EmbeddedCodeKind {
 pub struct EmbeddedCodeFact {
     /// Embedded-code form.
     pub kind: EmbeddedCodeKind,
-    /// Body-relative source range for the construct opener.
+    /// Full body-relative range of the executable/dynamic construct.
+    pub range: RegexRange,
+}
+
+/// Kind of source region that prevents a fully static interpretation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegexDynamicRegionKind {
+    /// Immediate embedded code.
+    EmbeddedCodeImmediate,
+    /// Deferred runtime-supplied regex text.
+    EmbeddedCodeDeferred,
+    /// Source interpolation such as `$name`, `${expr}`, or `@values`.
+    ///
+    /// Reserved for a follow-up scanner slice; this PR only populates embedded-code
+    /// dynamic regions so hosted ripr stays within the new-gap budget.
+    Interpolation,
+}
+
+/// One source-backed dynamic region.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RegexDynamicRegionFact {
+    /// Dynamic-region category.
+    pub kind: RegexDynamicRegionKind,
+    /// Full body-relative range of the dynamic region.
     pub range: RegexRange,
 }
 
@@ -231,6 +275,8 @@ pub struct EmbeddedCodeFact {
 pub struct RegexFacts {
     /// Embedded executable or runtime-supplied regions in source order.
     pub embedded_code: Vec<EmbeddedCodeFact>,
+    /// Dynamic regions in source order (embedded code in this slice).
+    pub dynamic_regions: Vec<RegexDynamicRegionFact>,
     /// Nested-quantifier advisory ranges in source order.
     pub nested_quantifiers: Vec<RegexRange>,
 }

@@ -1,21 +1,23 @@
 use crate::syntax::cursor::RegexCursor;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EmbeddedCodeKind {
     Immediate,
     Deferred,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EmbeddedCodeFinding {
     pub(crate) offset: usize,
     pub(crate) kind: EmbeddedCodeKind,
 }
 
-pub(crate) fn find_code_executions(pattern: &str) -> Vec<EmbeddedCodeFinding> {
-    let mut cursor = RegexCursor::new(pattern);
-    let mut findings = Vec::new();
+pub(crate) fn detects_code_execution(pattern: &str) -> bool {
+    find_code_execution(pattern, 0).is_some()
+}
 
+pub(crate) fn find_code_execution(pattern: &str, start_pos: usize) -> Option<EmbeddedCodeFinding> {
+    let mut cursor = RegexCursor::new(pattern);
     while let Some(ch) = cursor.current() {
         if cursor.skip_quoted_literal()
             || cursor.skip_escape()
@@ -26,19 +28,19 @@ pub(crate) fn find_code_executions(pattern: &str) -> Vec<EmbeddedCodeFinding> {
         }
         if ch == b'(' && cursor.peek(1) == Some(b'?') {
             if cursor.peek(2) == Some(b'{') {
-                findings.push(EmbeddedCodeFinding {
-                    offset: cursor.position(),
+                return Some(EmbeddedCodeFinding {
+                    offset: start_pos + cursor.position(),
                     kind: EmbeddedCodeKind::Immediate,
                 });
-            } else if cursor.peek(2) == Some(b'?') && cursor.peek(3) == Some(b'{') {
-                findings.push(EmbeddedCodeFinding {
-                    offset: cursor.position(),
+            }
+            if cursor.peek(2) == Some(b'?') && cursor.peek(3) == Some(b'{') {
+                return Some(EmbeddedCodeFinding {
+                    offset: start_pos + cursor.position(),
                     kind: EmbeddedCodeKind::Deferred,
                 });
             }
         }
         cursor.bump();
     }
-
-    findings
+    None
 }
