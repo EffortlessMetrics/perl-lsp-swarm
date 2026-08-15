@@ -254,11 +254,7 @@ fn test_workspace_symbol_capability_advertised() -> TestResult {
         && wsp.is_object()
         && let Some(resolve) = wsp.get("resolveProvider")
     {
-        assert!(
-            resolve.is_boolean(),
-            "resolveProvider should be a boolean, got: {:?}",
-            resolve
-        );
+        assert!(resolve.is_boolean(), "resolveProvider should be a boolean, got: {:?}", resolve);
     }
 
     Ok(())
