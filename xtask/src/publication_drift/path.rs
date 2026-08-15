@@ -62,15 +62,15 @@ pub(super) fn normalize_release_version(raw: &str) -> Option<String> {
         return None;
     }
 
-    if let Some(prerelease) = prerelease {
-        if !valid_identifier_list(prerelease, true) {
-            return None;
-        }
+    if let Some(prerelease) = prerelease
+        && !valid_identifier_list(prerelease, true)
+    {
+        return None;
     }
-    if let Some(build) = build {
-        if !valid_identifier_list(build, false) {
-            return None;
-        }
+    if let Some(build) = build
+        && !valid_identifier_list(build, false)
+    {
+        return None;
     }
 
     let mut normalized = format!("{major}.{minor}.{patch}");

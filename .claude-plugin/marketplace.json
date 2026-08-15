@@ -8,8 +8,8 @@
   },
   "plugins": [
     {
-      "name": "perl-lsp",
-      "source": "./integrations/claude-code/plugins/perl-lsp",
+      "name": "perl-lsp-rs",
+      "source": "./integrations/claude-code/plugins/perl-lsp-rs",
       "description": "Native Perl code intelligence for Claude Code via perllsp",
       "category": "development",
       "tags": ["perl", "lsp", "code-intelligence"]

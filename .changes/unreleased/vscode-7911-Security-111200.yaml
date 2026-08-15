@@ -1,0 +1,9 @@
+project: vscode
+component: Compatibility
+kind: Security
+body: Disabled the generic configured-command MCP passthrough so stale public-beta settings cannot register arbitrary local MCP processes.
+time: 2026-08-13T11:12:00Z
+custom:
+  PR: 7911
+  Slug: vscode-generic-mcp-runtime-inert
+  Breaking: "no"

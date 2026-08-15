@@ -48,6 +48,13 @@ export interface ConfigurationMigrationRegistry {
   rows: ConfigurationMigrationRow[];
 }
 
+/// Dispositions under which a setting keeps no configuration authority at all,
+/// and a null `new_scope` is therefore the truthful value rather than an omission.
+const AUTHORITY_RETIRING_DISPOSITIONS: ReadonlySet<MigrationDisposition> = new Set([
+  'removed_inert',
+  'unsupported_legacy_value',
+]);
+
 const SCOPE_RANK: Record<MigrationScope, number> = {
   resource: 0,
   'workspace-folder': 1,
@@ -88,8 +95,12 @@ export function normalizedMigrationRegistry(
 ): ConfigurationMigrationRegistry {
   return {
     ...registry,
+    // Code-point ordering, not localeCompare: host collation differs between
+    // environments (Swedish orders 'ä' after 'z', English does not), so a
+    // locale-sensitive sort would serialize the same registry into different row
+    // orders on CI and on a developer machine.
     rows: [...registry.rows].sort((left, right) =>
-      left.migration_id.localeCompare(right.migration_id),
+      left.migration_id < right.migration_id ? -1 : left.migration_id > right.migration_id ? 1 : 0,
     ),
   };
 }
@@ -138,12 +149,24 @@ export function validateMigrationRegistry(registry: ConfigurationMigrationRegist
       }
     }
 
-    if (
-      row.security_trust_class !== 'ordinary' &&
-      row.new_scope !== null &&
-      SCOPE_RANK[row.new_scope] < SCOPE_RANK[row.old_scope]
-    ) {
-      errors.push(`sensitive migration cannot widen configuration authority: ${row.migration_id}`);
+    if (row.security_trust_class !== 'ordinary') {
+      if (row.new_scope === null) {
+        // A null new_scope skips the scope-widening comparison entirely. That is
+        // only honest when the setting genuinely retains no authority. Otherwise a
+        // sensitive row could name a repository-controlled authority via
+        // `replaced_by_server_or_project_config`, leave new_scope null, and be
+        // certified valid while moving execution-sensitive configuration from
+        // machine scope to project authority.
+        if (!AUTHORITY_RETIRING_DISPOSITIONS.has(row.migration_disposition)) {
+          errors.push(
+            `sensitive migration must declare new_scope unless authority is retired: ${row.migration_id}`,
+          );
+        }
+      } else if (SCOPE_RANK[row.new_scope] < SCOPE_RANK[row.old_scope]) {
+        errors.push(
+          `sensitive migration cannot widen configuration authority: ${row.migration_id}`,
+        );
+      }
     }
 
     if (row.warning_reason_code.length === 0) {
