@@ -1,0 +1,9 @@
+project: product
+component: VS Code extension
+kind: Fixed
+body: "Binary source selection now has a strict typed authority that treats configured paths as hard choices, keeps packaged, managed, and external PATH roles distinct, and refuses unsupported, mismatched, stale, or unproven candidates instead of silently switching sources."
+time: 2026-08-15T23:26:00Z
+custom:
+  PR: "9992"
+  Slug: vscode-binary-source-selector
+  Breaking: "no"
