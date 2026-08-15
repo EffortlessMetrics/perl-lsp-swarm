@@ -984,10 +984,7 @@ mod tests {
             "multi-object mixed union must fail closed, got {:?}",
             fact.candidate_packages
         );
-        assert!(
-            !fact.is_union_receiver(),
-            "mixed union must never present as a union receiver"
-        );
+        assert!(!fact.is_union_receiver(), "mixed union must never present as a union receiver");
         Ok(())
     }
 
@@ -1132,5 +1129,4 @@ mod tests {
         assert_eq!(fact.fallback_state, ReceiverFallbackState::Fallback);
         Ok(())
     }
-
 }
