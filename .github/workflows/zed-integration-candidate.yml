@@ -65,6 +65,13 @@ jobs:
       # The operator-assisted host driver is Python, so its fail-closed controls
       # are invisible to the Rust contract tests above. Run them here; otherwise
       # the only code that ever touches a real Zed host has no executed proof.
+      # The driver imports tomllib (Python >= 3.11) and uses 3.10+ syntax, so
+      # pin a supported interpreter instead of relying on the runner default.
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
       - name: Run exact-source host driver unit tests
         shell: bash
         run: |

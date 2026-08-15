@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from argparse import Namespace
 from pathlib import Path
 from typing import Any
@@ -174,7 +175,37 @@ def _empty_run_dir(path: Path) -> Path:
     return resolved
 
 
-def _settings(perl_settings: dict[str, Any], perllsp: Path) -> dict[str, Any]:
+def _require_worktree_resolution(
+    resolution_route: str, perllsp: Path
+) -> dict[str, str] | None:
+    """Bind `worktree_path` to the PATH lookup Zed's `worktree.which` performs.
+
+    The staged extension resolves the server through the worktree shell
+    environment only when `lsp.perllsp.binary.path` is absent, so the claimed
+    route is honest only when this session's PATH resolves `perllsp` to the
+    exact prepared binary.
+    """
+    if resolution_route != "worktree_path":
+        return None
+    resolved = shutil.which("perllsp")
+    if resolved is None:
+        raise HostReceiptError(
+            "--resolution-route worktree_path requires `perllsp` on this session's PATH"
+        )
+    if Path(resolved).expanduser().resolve() != perllsp:
+        raise HostReceiptError(
+            "--resolution-route worktree_path requires PATH `perllsp` to be the"
+            " prepared binary"
+        )
+    return {"lookup": "perllsp", "resolved_path": resolved}
+
+
+def _settings(
+    perl_settings: dict[str, Any], perllsp: Path, resolution_route: str
+) -> dict[str, Any]:
+    perllsp_settings: dict[str, Any] = {"settings": {"perl": perl_settings}}
+    if resolution_route == "binary_override":
+        perllsp_settings["binary"] = {"path": str(perllsp), "arguments": []}
     return {
         "languages": {
             "Perl": {
@@ -186,12 +217,7 @@ def _settings(perl_settings: dict[str, Any], perllsp: Path) -> dict[str, Any]:
                 ]
             }
         },
-        "lsp": {
-            "perllsp": {
-                "binary": {"path": str(perllsp), "arguments": []},
-                "settings": {"perl": perl_settings},
-            }
-        },
+        "lsp": {"perllsp": perllsp_settings},
     }
 
 
@@ -216,11 +242,13 @@ def prepare(args: Namespace, repo_root: Path) -> int:
         raise HostReceiptError(
             "--resolution-route must be binary_override or worktree_path"
         )
+    perllsp = canonical_file(args.perllsp, "perllsp candidate")
+    # Reject an unsupported worktree claim before any run state is created.
+    worktree_resolution = _require_worktree_resolution(args.resolution_route, perllsp)
     run_dir = _empty_run_dir(args.run_dir)
     zed_cli = canonical_file(args.zed_cli, "Zed CLI")
     zed_app = canonical_file(args.zed_app, "Zed application binary")
     extension_dir = canonical_dir(args.extension_dir, "extension checkout")
-    perllsp = canonical_file(args.perllsp, "perllsp candidate")
     wasm = canonical_file(args.wasm, "extension WebAssembly")
     workspace = canonical_dir(args.workspace, "workspace fixture")
     require_clean_git_checkout(
@@ -270,7 +298,9 @@ def prepare(args: Namespace, repo_root: Path) -> int:
     config.mkdir(parents=True)
     artifacts.mkdir()
     settings_path = config / "settings.json"
-    write_json(settings_path, _settings(perl_settings, perllsp))
+    write_json(
+        settings_path, _settings(perl_settings, perllsp, args.resolution_route)
+    )
 
     subject = {
         "schema_version": "zed_exact_source_run.v1",
@@ -310,6 +340,7 @@ def prepare(args: Namespace, repo_root: Path) -> int:
             "embedded_revision": perllsp_revision,
             "binary_sha256": sha256_file(perllsp),
             "resolution_route": args.resolution_route,
+            "worktree_resolution": worktree_resolution,
             "version_output": perllsp_version_output,
         },
         "platform": platform_identity(),

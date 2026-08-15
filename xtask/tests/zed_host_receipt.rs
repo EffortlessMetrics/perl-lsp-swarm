@@ -138,19 +138,38 @@ fn schema_rejects_invalid_emitter_values() -> Result<(), Box<dyn Error>> {
 
     let mut wrong_route = template.clone();
     wrong_route["perllsp"]["resolution_route"] = Value::String("explicit_binary_path".to_string());
-    assert!(validate_schema(&wrong_route).is_err());
+    assert_eq!(
+        validate_schema(&wrong_route).expect_err("invalid resolution route"),
+        "perllsp.resolution_route has invalid value `explicit_binary_path`"
+    );
 
     let mut darwin = template.clone();
     darwin["platform"]["os"] = Value::String("darwin".to_string());
-    assert!(validate_schema(&darwin).is_err());
+    assert_eq!(
+        validate_schema(&darwin).expect_err("non-schema platform os"),
+        "platform.os has invalid value `darwin`"
+    );
 
     let mut limited = template.clone();
     limited["journey"]["hover"]["result"] = Value::String("limited".to_string());
-    assert!(validate_schema(&limited).is_err());
+    assert_eq!(
+        validate_schema(&limited).expect_err("invalid journey cell result"),
+        "journey.hover.result has invalid value `limited`"
+    );
 
-    let mut extra = template;
+    let mut extra = template.clone();
     extra["unbound_evidence"] = Value::Bool(true);
-    assert!(validate_schema(&extra).is_err());
+    assert_eq!(
+        validate_schema(&extra).expect_err("unbound top-level key"),
+        "receipt contains unexpected key `unbound_evidence`"
+    );
+
+    let mut uppercase = template;
+    uppercase["extension"]["base_commit"] = Value::String("A".repeat(40));
+    assert_eq!(
+        validate_schema(&uppercase).expect_err("uppercase commit identity"),
+        "extension.base_commit must be a full 40-hex commit"
+    );
     Ok(())
 }
 
@@ -165,11 +184,17 @@ fn false_green_mutations_are_rejected() -> Result<(), Box<dyn Error>> {
 
     let mut wrong_provider = valid.clone();
     wrong_provider["perllsp"]["server_id"] = Value::String("perl-lsp".to_string());
-    assert!(validate_pass(&wrong_provider, None).is_err());
+    assert_eq!(
+        validate_pass(&wrong_provider, None).expect_err("wrong provider"),
+        "perllsp.server_id is not canonical"
+    );
 
     let mut wrong_transport = valid.clone();
     wrong_transport["perllsp"]["arguments"] = serde_json::json!(["mcp", "--stdio"]);
-    assert!(validate_pass(&wrong_transport, None).is_err());
+    assert_eq!(
+        validate_pass(&wrong_transport, None).expect_err("wrong transport"),
+        "pass receipt violates required non-null schema fields"
+    );
 
     let mut cross_stage = valid;
     cross_stage["evidence_stage"] = Value::String("public_registry_install".to_string());
