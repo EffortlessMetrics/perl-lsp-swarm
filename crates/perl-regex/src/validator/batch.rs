@@ -7,7 +7,7 @@ use super::{
     analysis::{
         EmbeddedCodeFact, EmbeddedCodeKind, RegexAnalysis, RegexAnalysisBudget,
         RegexAnalysisCompleteness, RegexDiagnostic, RegexDiagnosticClass, RegexDiagnosticCode,
-        RegexFacts, RegexRange,
+        RegexDynamicRegionFact, RegexDynamicRegionKind, RegexFacts, RegexRange,
     },
     code_execution, complexity,
     config::RegexValidationConfig,
@@ -32,24 +32,33 @@ pub(crate) fn analyze(
                 (EmbeddedCodeKind::Deferred, RegexDiagnosticCode::EmbeddedCodeDeferred, 4)
             }
         };
-        let range = RegexRange::anchored(finding.offset, width, pattern.len());
-        facts.embedded_code.push(EmbeddedCodeFact { kind, range });
-        diagnostics.push(RegexDiagnostic::new(code, range, None));
+        if let Some(range) = RegexRange::anchored(finding.offset, width, pattern.len()) {
+            facts.embedded_code.push(EmbeddedCodeFact { kind, range });
+            facts.dynamic_regions.push(RegexDynamicRegionFact {
+                kind: match kind {
+                    EmbeddedCodeKind::Immediate => RegexDynamicRegionKind::EmbeddedCodeImmediate,
+                    EmbeddedCodeKind::Deferred => RegexDynamicRegionKind::EmbeddedCodeDeferred,
+                },
+                range,
+            });
+            diagnostics.push(RegexDiagnostic::new(code, range, None));
+        }
     }
 
     for offset in nested_quantifier::find_nested_quantifiers(&stream) {
-        let range = RegexRange::anchored(offset, 1, pattern.len());
-        facts.nested_quantifiers.push(range);
-        diagnostics.push(RegexDiagnostic::new(
-            RegexDiagnosticCode::NestedQuantifierRisk,
-            range,
-            None,
-        ));
+        if let Some(range) = RegexRange::anchored(offset, 1, pattern.len()) {
+            facts.nested_quantifiers.push(range);
+            diagnostics.push(RegexDiagnostic::new(
+                RegexDiagnosticCode::NestedQuantifierRisk,
+                range,
+                None,
+            ));
+        }
     }
 
     let policy_diagnostics = complexity::find_complexity_diagnostics(&stream, config);
     let exhausted = stream.exhausted.map(map_budget);
-    let dynamic = !facts.embedded_code.is_empty();
+    let dynamic = !facts.dynamic_regions.is_empty();
     let policy_limited = !policy_diagnostics.is_empty() || exhausted.is_some();
     diagnostics.extend(policy_diagnostics);
     diagnostics
