@@ -93,11 +93,12 @@ impl Default for TestServerBuilder {
 
 impl TestServerBuilder {
     pub fn new() -> Self {
-        Self {
-            initialization_params: None,
-            timeout: super::adaptive_timeout().max(Duration::from_secs(8)),
-            workspace_folders: Vec::new(),
-        }
+        // Use the CI-aware timeout from timeout_scaler so that single-threaded CI
+        // (RUST_TEST_THREADS=1) gets the full 22.5s budget rather than the
+        // reduced 8s returned by common::adaptive_timeout().  The scaler already
+        // applies the 1.5x CI multiplier and thread-count-based base selection.
+        let base = super::timeout_scaler::get_adaptive_timeout();
+        Self { initialization_params: None, timeout: base, workspace_folders: Vec::new() }
     }
 
     pub fn with_workspace(mut self, path: &str) -> Self {
@@ -174,12 +175,11 @@ impl TestServerBuilder {
                 if has_workspace_folders {
                     super::await_index_ready(&server);
                 } else {
-                    // For non-workspace tests, just do a brief quiet drain
-                    super::drain_until_quiet(
-                        &server,
-                        std::time::Duration::from_millis(50),
-                        std::time::Duration::from_millis(200),
-                    );
+                    // For non-workspace tests, drain until the server is quiet.
+                    // Use adaptive windows from timeout_scaler so this works
+                    // correctly under RUST_TEST_THREADS=1 in CI.
+                    let drain = super::timeout_scaler::get_drain_timeout();
+                    super::drain_until_quiet(&server, drain, drain * 4);
                 }
 
                 return Ok(TestServer { server, timeout });
@@ -239,8 +239,15 @@ impl TestServer {
                 }
             }),
         );
-        // Brief delay to let server process the document
-        std::thread::sleep(Duration::from_millis(20));
+        // Wait for the mutation worker to finish ingesting the document before
+        // returning. Under RUST_TEST_THREADS=1 in CI a fixed 20 ms sleep was
+        // too short for cold-cache runners; use the same thread-aware drain as
+        // the post-initialization settle to keep this deterministic.
+        super::drain_until_quiet(
+            &self.server,
+            super::timeout_scaler::get_drain_timeout(),
+            super::timeout_scaler::get_drain_timeout() * 4,
+        );
     }
 
     /// Send a text document did change notification
