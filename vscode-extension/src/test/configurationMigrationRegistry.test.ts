@@ -95,4 +95,53 @@ describe('public-beta configuration migration registry', () => {
       'sensitive migration cannot widen configuration authority: v017_mcp_servers_removed',
     );
   });
+
+  test('rejects a sensitive relocation that hides its authority behind a null scope', () => {
+    // Without an explicit new_scope the widening comparison is skipped entirely, so a
+    // sensitive row could name a repository-controlled authority and still validate —
+    // certifying a move of execution-sensitive configuration from machine scope to
+    // project authority.
+    const registry = cloneRegistry();
+    registry.rows[0] = {
+      ...registry.rows[0]!,
+      migration_disposition: 'replaced_by_server_or_project_config',
+      new_key_or_authority: '.perl-lsp.toml',
+      new_scope: null,
+      automatic_read_compatibility: false,
+      explicit_write_allowed: false,
+      old_plus_new_conflict_policy: 'action_required',
+    };
+
+    expect(validateMigrationRegistry(registry)).toContain(
+      'sensitive migration must declare new_scope unless authority is retired: v017_mcp_servers_removed',
+    );
+  });
+
+  test('still allows a null scope when the disposition retires the authority', () => {
+    const registry = cloneRegistry();
+    expect(registry.rows[0]!.security_trust_class).not.toBe('ordinary');
+    expect(registry.rows[0]!.new_scope).toBeNull();
+    expect(registry.rows[0]!.migration_disposition).toBe('removed_inert');
+
+    expect(validateMigrationRegistry(registry)).toEqual([]);
+  });
+
+  test('orders rows by code point rather than host collation', () => {
+    // localeCompare is host-dependent: Swedish collation orders 'ä' after 'z',
+    // English does not. A locale-sensitive sort would serialize the same registry
+    // differently on CI and on a developer machine.
+    const registry = cloneRegistry();
+    const base = registry.rows[0]!;
+    registry.rows = [
+      { ...base, migration_id: 'zz_row' },
+      { ...base, migration_id: 'ää_row' },
+      { ...base, migration_id: 'aa_row' },
+    ];
+
+    const order = (
+      JSON.parse(serializeMigrationRegistry(registry)) as ConfigurationMigrationRegistry
+    ).rows.map((row) => row.migration_id);
+
+    expect(order).toEqual(['aa_row', 'zz_row', 'ää_row']);
+  });
 });
