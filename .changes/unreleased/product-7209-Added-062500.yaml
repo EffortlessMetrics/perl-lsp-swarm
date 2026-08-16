@@ -1,9 +1,9 @@
 project: product
 component: Compatibility
 kind: Added
-body: Add one typed registry for external Perl tool roles, native replacements, selection policy, trust class, and package-exclusion identities.
+body: Add one typed registry for external Perl tool roles, exact native replacement identities, selection policy, execution class, conformance evidence requirements, and trust class, covering Perl::LanguageServer, Perl::Tidy, Perl::Critic, App::perlimports, and Devel::ptkdb.
 time: 2026-08-12T06:25:00Z
 custom:
-  PR: ""
+  PR: "7343"
   Slug: external-tool-role-registry
   Breaking: "no"
