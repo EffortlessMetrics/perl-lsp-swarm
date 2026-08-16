@@ -131,9 +131,15 @@ jobs:
 
   corpus-ratchet-full:
     name: CPAN corpus ratchet (full — 1000 distributions)
+    # A manual full run must come from the default branch. `workflow_dispatch`
+    # accepts any ref, and this lane executes repository-owned Rust and shares a
+    # `target/cpan-corpus` cache key with the scheduled default-branch run, so a
+    # branch dispatch could otherwise seed that cache and feed the writer.
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full')
+      (github.event_name == 'workflow_dispatch' &&
+       github.event.inputs.mode == 'full' &&
+       github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -299,31 +305,115 @@ jobs:
       - name: Checkout trusted default branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          # Pin the ref explicitly. `workflow_dispatch` can be launched against
+          # any branch; without this the step's name would be a false claim and
+          # the writer would commit against the dispatched ref.
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      # Staged outside the worktree on purpose. `upload-artifact` roots a
+      # multi-path artifact at the least common ancestor of its inputs, so an
+      # artifact built from two `.ci/*` files carries bare basenames with no
+      # `.ci/` prefix. Downloading that to `.` would drop the generated files at
+      # the repository root and leave the real `.ci/` copies untouched — every
+      # check below would then pass against unmodified checkout content and the
+      # writer would silently open nothing.
       - name: Download generated corpus receipts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: cpan-corpus-full-receipt-${{ github.run_id }}
-          path: .
+          path: ${{ runner.temp }}/corpus-receipts
 
-      - name: Verify PR payload
+      - name: Verify and stage PR payload
         shell: bash
+        env:
+          STAGED: ${{ runner.temp }}/corpus-receipts
+          MAX_BYTES: '4194304'
         run: |
           set -euo pipefail
-          for path in \
-            .ci/cpan-corpus-baseline.json \
-            .ci/cpan-corpus-manifest.txt
-          do
+
+          baseline_name='cpan-corpus-baseline.json'
+          manifest_name='cpan-corpus-manifest.txt'
+
+          # The artifact must contain exactly the two expected members. A
+          # differing layout means the producer or the upload root changed, and
+          # this job must fail loudly rather than infer a location.
+          mapfile -t staged_entries < <(cd "$STAGED" && find . -mindepth 1 -printf '%P\n' | sort)
+          expected_entries=$(printf '%s\n%s\n' "$baseline_name" "$manifest_name")
+          if [ "$(printf '%s\n' "${staged_entries[@]}")" != "$expected_entries" ]; then
+            printf '::error::Unexpected corpus artifact layout. Expected exactly:\n%s\nGot:\n%s\n' \
+              "$expected_entries" "$(printf '%s\n' "${staged_entries[@]}")"
+            exit 1
+          fi
+
+          for name in "$baseline_name" "$manifest_name"; do
+            path="$STAGED/$name"
             if [ -L "$path" ] || [ ! -f "$path" ]; then
-              printf '::error::Downloaded corpus output is not a regular file: %s\n' "$path"
+              printf '::error::Corpus output is not a regular file: %s\n' "$name"
+              exit 1
+            fi
+            size=$(stat -c '%s' "$path")
+            if [ "$size" -eq 0 ]; then
+              printf '::error::Corpus output is empty: %s\n' "$name"
+              exit 1
+            fi
+            if [ "$size" -gt "$MAX_BYTES" ]; then
+              printf '::error::Corpus output exceeds the %s-byte cap: %s is %s bytes\n' \
+                "$MAX_BYTES" "$name" "$size"
               exit 1
             fi
           done
-          python3 -m json.tool .ci/cpan-corpus-baseline.json >/dev/null
-          git diff --name-only -- \
-            .ci/cpan-corpus-baseline.json \
-            .ci/cpan-corpus-manifest.txt
+
+          # Semantic bounds, not just "parses". The baseline must be a JSON
+          # object carrying its schema version; the manifest must be LF-normalized
+          # UTF-8 text with no NUL bytes.
+          python3 - "$STAGED/$baseline_name" "$STAGED/$manifest_name" <<'PY'
+          import json
+          import sys
+
+          baseline_path, manifest_path = sys.argv[1], sys.argv[2]
+
+          with open(baseline_path, "rb") as handle:
+              raw = handle.read()
+          try:
+              baseline = json.loads(raw.decode("utf-8"))
+          except (UnicodeDecodeError, json.JSONDecodeError) as error:
+              sys.exit(f"::error::baseline is not valid UTF-8 JSON: {error}")
+          if not isinstance(baseline, dict):
+              sys.exit("::error::baseline must be a JSON object")
+          if "schema_version" not in baseline:
+              sys.exit("::error::baseline is missing schema_version")
+
+          with open(manifest_path, "rb") as handle:
+              manifest = handle.read()
+          if b"\x00" in manifest:
+              sys.exit("::error::manifest contains NUL bytes")
+          if b"\r" in manifest:
+              sys.exit("::error::manifest is not LF-normalized")
+          try:
+              text = manifest.decode("utf-8")
+          except UnicodeDecodeError as error:
+              sys.exit(f"::error::manifest is not valid UTF-8: {error}")
+          if not text.strip():
+              sys.exit("::error::manifest has no content")
+          PY
+
+          cp "$STAGED/$baseline_name" ".ci/$baseline_name"
+          cp "$STAGED/$manifest_name" ".ci/$manifest_name"
+
+          # The producer reported a change, so the staged payload must actually
+          # differ from the trusted checkout — and nothing else may have moved.
+          changed=$(git diff --name-only)
+          if [ -z "$changed" ]; then
+            printf '::error::Producer reported changed=true but the staged payload matches the default branch\n'
+            exit 1
+          fi
+          unexpected=$(printf '%s\n' "$changed" | grep -vE "^\.ci/($baseline_name|$manifest_name)$" || true)
+          if [ -n "$unexpected" ]; then
+            printf '::error::Unexpected tracked changes outside the governed payload:\n%s\n' "$unexpected"
+            exit 1
+          fi
+          printf 'Governed payload change:\n%s\n' "$changed"
 
       - name: Create refreshed corpus PR
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
