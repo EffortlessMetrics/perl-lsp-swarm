@@ -1,0 +1,310 @@
+{
+  "claim_boundary": "Inventory and duplicate-authority classification only; no member is independently executed or activated by this artifact.",
+  "members": [
+    {
+      "claim": "Repository ExitStatus::from_raw usage satisfies the maintained policy.",
+      "command": "cargo xtask check-from-raw",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "The staged from_raw check is a narrower commit-time subject; this full-tree obligation has no independent candidate-bound result.",
+        "targets": []
+      },
+      "owner": "xtask command check-from-raw",
+      "policy_role": "advisory",
+      "position": 1,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "check_from_raw",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "Memory-lifecycle policy declarations and governed implementation surfaces remain coherent.",
+      "command": "cargo xtask check-memory-lifecycle-policy",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "xtask command check-memory-lifecycle-policy",
+      "policy_role": "advisory",
+      "position": 2,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "memory_lifecycle_policy",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "Semantic-token class declarations and generated/implemented classes remain aligned.",
+      "command": "cargo xtask check-semantic-token-classes",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "xtask command check-semantic-token-classes",
+      "policy_role": "advisory",
+      "position": 3,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "semantic_token_classes",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "Workspace-symbol class declarations and implementation coverage remain aligned.",
+      "command": "cargo xtask check-workspace-symbol-classes",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "xtask command check-workspace-symbol-classes",
+      "policy_role": "advisory",
+      "position": 4,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "workspace_symbol_classes",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "Provider-promotion ledger entries remain structurally valid and internally coherent.",
+      "command": "cargo xtask check-provider-promotion-ledger",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "xtask command check-provider-promotion-ledger",
+      "policy_role": "advisory",
+      "position": 5,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "provider_promotion_ledger",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "Provider-confidence matrix rows remain complete and consistent with their governed vocabulary.",
+      "command": "cargo xtask check-provider-confidence-matrix",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "xtask command check-provider-confidence-matrix",
+      "policy_role": "advisory",
+      "position": 6,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "provider_confidence_matrix",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "The native product-surface inventory is complete under strict validation.",
+      "command": "cargo xtask check-native-product-surface --strict",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "xtask command check-native-product-surface",
+      "policy_role": "advisory",
+      "position": 7,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "native_product_surface_strict",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "Version declarations and generated release-version surfaces remain synchronized.",
+      "command": "bash scripts/check-version-sync.sh",
+      "overlap": {
+        "disposition": "authoritative_elsewhere",
+        "reason": "The current gate policy already has a separately named version_sync obligation; #9436 must reconcile rather than execute both.",
+        "targets": [
+          "gate:version_sync"
+        ]
+      },
+      "owner": "scripts/check-version-sync.sh",
+      "policy_role": "advisory",
+      "position": 8,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "version_sync",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "Release-history sources and rendered/current release-history surfaces remain coherent.",
+      "command": "bash scripts/check_release_history.sh",
+      "overlap": {
+        "disposition": "authoritative_elsewhere",
+        "reason": "Current pr_fast rows already own release-history commands; #9436 must select one authority and disposition compatibility aliases.",
+        "targets": [
+          "gate:release_history",
+          "gate:release_history_check"
+        ]
+      },
+      "owner": "scripts/check_release_history.sh",
+      "policy_role": "advisory",
+      "position": 9,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "release_history",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "The maintained missing-docs policy reports no unowned documentation findings.",
+      "command": "bash ci/check_missing_docs.sh",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "ci/check_missing_docs.sh",
+      "policy_role": "advisory",
+      "position": 10,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "missing_docs",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "The maintained parse-error policy reports no unowned source findings.",
+      "command": "bash ci/check_parse_errors.sh",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "ci/check_parse_errors.sh",
+      "policy_role": "advisory",
+      "position": 11,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "parse_errors",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    },
+    {
+      "claim": "Workspace feature declarations satisfy the maintained feature-invariant rules.",
+      "command": "python3 scripts/check_features_invariants.py",
+      "overlap": {
+        "disposition": "migrate_here",
+        "reason": "No independent policy row/result identity is established by the current composite.",
+        "targets": []
+      },
+      "owner": "scripts/check_features_invariants.py",
+      "policy_role": "advisory",
+      "position": 12,
+      "profile": "merge_gate",
+      "receipt": {
+        "schema": null,
+        "status": "composite_only"
+      },
+      "selector": "composite_only_no_independent_selector",
+      "stable_id": "feature_invariants",
+      "timeout": {
+        "kind": "shared_composite",
+        "seconds": 240
+      },
+      "working_directory": "repository_root"
+    }
+  ],
+  "schema_version": 1,
+  "source": {
+    "budget_ms": 220000,
+    "command_fingerprint_sha256": "a6bd1e56fe7407417d954df99ebb63450ec13de30b84af5287840518fe8f987a",
+    "execution_semantics": "ordered_aborting_shell_chain",
+    "gate_id": "policy_checks",
+    "path": ".ci/gate-policy.yaml",
+    "required": false,
+    "tier": "merge_gate",
+    "timeout_seconds": 240,
+    "working_directory": "repository_root"
+  }
+}
