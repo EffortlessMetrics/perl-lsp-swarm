@@ -1,3 +1,10 @@
+//! Seam proofs for the binary identity protocol contract.
+//!
+//! The repo's ripr exposure policy designates tests/ripr_seam_proof_*.rs
+//! as the home for focused seam proofs: this file holds the schema/projection
+//! contract assertions together with the exact-message observation tests for
+//! every error variant its helpers can produce, so the seams stay revealed by
+//! assertions rather than flagged as reachable-but-unobserved drift.
 use perl_lsp_rs_core::protocol::binary_identity::{
     BINARY_COMPATIBILITY_METHOD, BINARY_IDENTITY_FEATURE_VERSION, BINARY_IDENTITY_METHOD,
     BinaryCompatibilityReason, BinaryCompatibilityState, CANONICAL_DAP_POSTURE,
