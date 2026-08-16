@@ -260,6 +260,19 @@ function syncLifecycleProjection(): void {
 }
 
 /**
+ * Render a demand-start failure for a user-facing message.
+ *
+ * `ServerDemandCoordinator` reports failure through its state rather than by
+ * rejecting, so callers read the captured error instead of catching one.
+ */
+function describeDemandError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return error === undefined ? 'unknown error' : String(error);
+}
+
+/**
  * Test helper — inject a cached diagnosis without going through the full
  * startup path.  Only exported for use in unit tests.
  * @internal
@@ -580,17 +593,22 @@ export async function activate(context: vscode.ExtensionContext) {
         return currentServerPath;
       }
 
-      try {
-        // An explicit health check is a server-dependent entry point: it may
-        // start a dormant server, and it retries a previously failed start
-        // because the user asked for it directly (#8180). Routing through the
-        // demand owner also coalesces with activation's in-flight startup, so a
-        // first-run health check never observes the transient null projection
-        // while the managed binary is being resolved.
-        await serverDemand?.ensureStarted('command:runHealthCheck', { retry: true });
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        outputChannel.warn(`[health-check] Server startup did not complete: ${message}`);
+      // An explicit health check is a server-dependent entry point: it may
+      // start a dormant server, and it retries a previously failed start
+      // because the user asked for it directly (#8180). Routing through the
+      // demand owner also coalesces with activation's in-flight startup, so a
+      // first-run health check never observes the transient null projection
+      // while the managed binary is being resolved.
+      //
+      // ensureStarted reports failure through its state rather than rejecting,
+      // so the outcome is read from the snapshot; a try/catch here would never
+      // run and would silently drop this warning.
+      await serverDemand?.ensureStarted('command:runHealthCheck', { retry: true });
+      const demand = serverDemand?.snapshot;
+      if (demand?.state === 'failed') {
+        outputChannel.warn(
+          `[health-check] Server startup did not complete: ${describeDemandError(demand.error)}`,
+        );
       }
       syncLifecycleProjection();
       return lifecycle.serverPath;
@@ -2041,6 +2059,29 @@ async function restartServer(_context: vscode.ExtensionContext) {
     }
     await serverDemand.ensureStarted('command:restartServer', { retry: true });
     syncLifecycleProjection();
+    const demand = serverDemand.snapshot;
+    if (demand.state === 'failed') {
+      // ensureStarted reports failure through its state rather than rejecting.
+      // Staying silent here would be worse than the old "not initialized"
+      // warning: the user asked for a server and would get no answer at all.
+      const message = describeDemandError(demand.error);
+      outputChannel.error(`Failed to start perl-lsp: ${message}`);
+      vscode.window
+        .showErrorMessage(`Failed to start Perl Language Server: ${message}`, 'Show Output')
+        .then((selection) => {
+          if (selection === 'Show Output') {
+            outputChannel.show();
+          }
+        });
+      return;
+    }
+    vscode.window
+      .showInformationMessage('Perl Language Server started', 'Show Output')
+      .then((selection) => {
+        if (selection === 'Show Output') {
+          outputChannel.show();
+        }
+      });
     return;
   }
 

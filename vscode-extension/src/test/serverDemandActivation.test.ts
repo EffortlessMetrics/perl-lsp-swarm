@@ -240,6 +240,26 @@ describe('deferred language-server startup (#8180)', () => {
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(2);
   });
 
+  test('a failed demand start is surfaced, not swallowed', async () => {
+    // ensureStarted reports failure through its state instead of rejecting, so
+    // a try/catch around it never runs. The restart command must still tell the
+    // user their explicit request failed.
+    mockLanguageClientStart.mockImplementationOnce(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await activate(makeContext(makeExtensionRoot()));
+    await settle();
+
+    await vscode.commands.executeCommand('perl-lsp.restart');
+    await settle();
+
+    const errorMessages = jest
+      .mocked(vscode.window.showErrorMessage)
+      .mock.calls.map((call) => String(call[0]));
+    expect(errorMessages.some((message) => message.includes('Failed to start'))).toBe(true);
+  });
+
   test('the status widget reports dormant rather than starting', async () => {
     await activate(makeContext(makeExtensionRoot()));
     await settle();
