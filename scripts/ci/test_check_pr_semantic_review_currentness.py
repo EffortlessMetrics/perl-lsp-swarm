@@ -213,6 +213,66 @@ class SemanticReviewCurrentnessTests(unittest.TestCase):
             result["reason"],
         )
 
+    def test_fenced_command_respacing_in_prose_is_not_neutral(self) -> None:
+        """A prose extension must not make an executable fence whitespace-insensitive.
+
+        `.claude/skills/**/SKILL.md` publishes commands agents run. Respacing one is a
+        pure whitespace edit in a `.md` file, so the extension and `--ignore-all-space`
+        rules both accept it while the command it names changes target.
+        """
+        tmp, root, base, _reviewed = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        (root / "docs/runbook.md").write_text(
+            "# Runbook\n\nCleanup:\n\n```bash\nrm -rf ./build/tmp\n```\n",
+            encoding="utf-8",
+        )
+        reviewed = commit(root, "add runbook")
+        review_row = review(42, root, base, reviewed)
+        (root / "docs/runbook.md").write_text(
+            "# Runbook\n\nCleanup:\n\n```bash\nrm -rf . /build/tmp\n```\n",
+            encoding="utf-8",
+        )
+        current = commit(root, "respace the fenced command")
+        result = module.evaluate(
+            root,
+            pr=42,
+            current_head=current,
+            reviews=[review_row],
+        )
+        self.assertEqual("NOT_PROVEN", result["classification"])
+        self.assertEqual(
+            "post-review_change_alters_fenced_code_content",
+            result["reason"],
+        )
+
+    def test_prose_reflow_outside_a_fence_still_carries_forward(self) -> None:
+        """The fence rule must not collapse the neutral class it is narrowing."""
+        tmp, root, base, _reviewed = setup_repo()
+        self.addCleanup(tmp.cleanup)
+        (root / "docs/runbook.md").write_text(
+            "# Runbook\n\nCleanup:\n\n```bash\nrm -rf ./build/tmp\n```\n",
+            encoding="utf-8",
+        )
+        reviewed = commit(root, "add runbook")
+        review_row = review(42, root, base, reviewed)
+        (root / "docs/runbook.md").write_text(
+            "# Runbook\n\nCleanup:\n\n```bash\nrm -rf ./build/tmp\n```\n",
+            encoding="utf-8",
+        )
+        (root / "docs/route.md").write_text(
+            "route    =    candidate\n\n",
+            encoding="utf-8",
+        )
+        current = commit(root, "reflow prose beside an untouched fence")
+        result = module.evaluate(
+            root,
+            pr=42,
+            current_head=current,
+            reviews=[review_row],
+        )
+        self.assertEqual("REVIEW_CURRENT", result["classification"])
+        self.assertTrue(result["carried_forward"])
+
     def test_wrong_subject_digest_is_not_proven(self) -> None:
         tmp, root, base, head = setup_repo()
         self.addCleanup(tmp.cleanup)

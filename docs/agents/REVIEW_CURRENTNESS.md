@@ -153,8 +153,12 @@ judgment from an empty comment.
 Automation carries the marker forward only through an intentionally narrow neutral
 class: no candidate change, or whitespace-only edits in already-reviewed `.md`/`.txt`
 files. It never treats whitespace changes in code or configuration as neutral because
-indentation and spacing can be semantic. Any other later change yields `NOT_PROVEN`
-until focused review publishes a new marker. Human review can determine that a broader
+indentation and spacing can be semantic. A prose extension does not buy the whole file
+that exemption. Skill trees, runbooks, and this contract all publish executable
+commands inside fenced blocks, where inserting one space changes what runs, so fenced
+content is compared byte-for-byte and any change inside a fence yields `NOT_PROVEN`.
+Any other later change yields `NOT_PROVEN` until focused review publishes a new
+marker. Human review can determine that a broader
 change preserves the conclusion; the mechanical checker does not invent that judgment.
 
 ## GitHub-native merge blockers

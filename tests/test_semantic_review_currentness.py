@@ -169,6 +169,7 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
         assert "git diff --binary --full-index" in text
         assert "whitespace-only edits in already-reviewed `.md`/`.txt` files" in text
         assert "indentation and spacing can be semantic" in text
+        assert "fenced content is compared byte-for-byte" in text
 
     def test_subject_bound_checker_requires_durable_review_record(self) -> None:
         text = (
@@ -191,6 +192,11 @@ class SemanticReviewCurrentnessPolicySurfaces(unittest.TestCase):
         assert "whitespace-insensitive prose file" in text
         assert "--ignore-all-space" in text
         assert "--ignore-blank-lines" in text
+        # The prose exemption stops at a fence. Without this the same file class that
+        # publishes agent-executable commands would carry a review forward across a
+        # respaced command, which `--ignore-all-space` alone cannot see.
+        assert "def fenced_blocks(" in text
+        assert "post-review change alters fenced code content" in text
 
     def test_convergence_sanitizes_numeric_collector_facts(self) -> None:
         text = (ROOT / "scripts/ci/check-pr-review-convergence").read_text(

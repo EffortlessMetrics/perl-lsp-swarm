@@ -22,6 +22,7 @@ from typing import Any, Iterable, Mapping, NamedTuple, Optional
 
 MARKER_RE = re.compile(r"<!--\s*semantic-review:v1\s+(\{.*?\})\s*-->", re.DOTALL)
 OID_RE = re.compile(r"^[0-9a-f]{40}$")
+FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 REQUIRED_SECTIONS = (
     "## Review scope",
     "## Evidence and falsifiers",
@@ -186,6 +187,43 @@ def latest_valid_review(
     return max(candidates, key=lambda pair: pair[0].submitted_at)
 
 
+def fenced_blocks(text: str) -> list[str]:
+    """Return the exact content of every fenced block, in document order.
+
+    Prose files in this repository carry executable procedure inside fences — skill
+    trees, shared contracts, and runbooks all publish commands that way. Whitespace is
+    load-bearing there even though the surrounding file is prose, so the neutral class
+    has to see fence content byte-for-byte rather than through a whitespace-insensitive
+    comparison.
+    """
+    blocks: list[str] = []
+    body: list[str] | None = None
+    opener = ""
+    for line in text.splitlines():
+        match = FENCE_RE.match(line)
+        if body is None:
+            if match:
+                body = []
+                opener = match.group(1)
+            continue
+        if match:
+            closer = match.group(1)
+            # A closing fence uses the opener's character and is at least as long.
+            if closer[0] == opener[0] and len(closer) >= len(opener):
+                blocks.append("\n".join(body))
+                body = None
+                continue
+        body.append(line)
+    if body is not None:
+        blocks.append("\n".join(body))
+    return blocks
+
+
+def blob_text(root: Path, rev: str, path: str) -> str:
+    raw = _run(["git", "show", f"{rev}:{path}"], cwd=root, text=False).stdout
+    return raw.decode("utf-8", errors="replace")
+
+
 def neutral_followup(root: Path, reviewed_head: str, current_head: str) -> tuple[bool, str]:
     ensure_commit(root, reviewed_head)
     ensure_commit(root, current_head)
@@ -206,6 +244,15 @@ def neutral_followup(root: Path, reviewed_head: str, current_head: str) -> tuple
     paths = [parts[1] for parts in rows]
     if any(Path(path).suffix.lower() not in {".md", ".txt"} for path in paths):
         return False, "post-review change is not in a whitespace-insensitive prose file"
+
+    # A prose extension does not make the whole file whitespace-insensitive. Fenced
+    # blocks in these files carry commands and configuration, where inserting or
+    # removing a space changes what runs, so they are compared byte-for-byte.
+    for path in paths:
+        if fenced_blocks(blob_text(root, reviewed_head, path)) != fenced_blocks(
+            blob_text(root, current_head, path)
+        ):
+            return False, "post-review change alters fenced code content"
 
     diff = _run(
         [
