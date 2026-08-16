@@ -206,9 +206,13 @@ fn contributing_md_documents_public_api_workflow() -> Result<(), Box<dyn std::er
     let root = project_root();
     let contributing = fs::read_to_string(root.join("CONTRIBUTING.md"))?;
 
+    // Heading renamed by #4555: the section now covers `just semver-check`
+    // alongside the baseline ratchet, which "Surface Ratchet" alone did not
+    // describe. The workflow this test guards is unchanged — see the
+    // `just public-api-update` and `.ci/public-api-baselines` assertions below.
     assert!(
-        contributing.contains("### Public API Surface Ratchet"),
-        "CONTRIBUTING.md must have '### Public API Surface Ratchet' subsection"
+        contributing.contains("### Public API and SemVer"),
+        "CONTRIBUTING.md must have '### Public API and SemVer' subsection"
     );
 
     assert!(
