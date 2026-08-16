@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.github.io/perl-lsp/schemas/ci-route-plan.v1.schema.json",
+  "title": "ci_route_plan.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "producer",
+    "subject",
+    "profile",
+    "policy_digest",
+    "workflow_digest",
+    "selection",
+    "rows",
+    "summary",
+    "semantic_fingerprint"
+  ],
+  "properties": {
+    "schema": { "const": "ci_route_plan.v1" },
+    "producer": { "const": "xtask::ci_route_plan" },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "head_sha", "subject_digest"],
+      "properties": {
+        "kind": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+        "head_sha": { "$ref": "#/$defs/sha" },
+        "base_sha": { "$ref": "#/$defs/sha" },
+        "subject_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "profile": { "type": "string", "minLength": 1 },
+    "policy_digest": { "$ref": "#/$defs/digest" },
+    "workflow_digest": { "$ref": "#/$defs/digest" },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "scope_ok", "fallback_used", "package_args", "selector_digest"],
+      "properties": {
+        "base": { "type": "string", "minLength": 1 },
+        "scope_ok": { "type": "boolean" },
+        "fallback_used": { "type": "boolean" },
+        "fallback_reason": { "type": "string", "minLength": 1 },
+        "package_args": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "head_sha",
+            "diff_class",
+            "direct_crates",
+            "reverse_dependencies",
+            "architecture_wideners",
+            "risk_tags"
+          ],
+          "properties": {
+            "head_sha": { "$ref": "#/$defs/sha" },
+            "diff_class": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+            "direct_crates": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/scoped_identity" }
+            },
+            "reverse_dependencies": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/scoped_identity" }
+            },
+            "architecture_wideners": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/scoped_identity" }
+            },
+            "risk_tags": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "selector_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/row" }
+    },
+    "summary": { "type": "object" },
+    "semantic_fingerprint": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9A-Fa-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+    "scoped_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "reason"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id", "policy_role", "selector_role", "applicability", "outcome"],
+      "properties": {
+        "gate_id": { "type": "string", "pattern": "^[a-z0-9_.-]+$" },
+        "policy_role": {
+          "enum": ["required", "advisory", "informational", "local_only", "release_only"]
+        },
+        "selector_role": {
+          "enum": [
+            "always_on",
+            "rust_scoped",
+            "rust_fallback",
+            "rust_package_scoped",
+            "static",
+            "unspecified"
+          ]
+        },
+        "applicability": { "enum": ["applicable", "not_applicable", "unknown"] },
+        "outcome": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "command", "timeout_seconds", "reason"],
+              "properties": {
+                "kind": { "const": "run" },
+                "command": { "type": "string", "minLength": 1 },
+                "timeout_seconds": { "type": "integer", "minimum": 1 },
+                "reason": { "type": "string", "minLength": 1 }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "reason", "selector_digest"],
+              "properties": {
+                "kind": { "const": "scoped_noop" },
+                "reason": { "type": "string", "minLength": 1 },
+                "selector_digest": { "$ref": "#/$defs/digest" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "reason", "owner_issue"],
+              "properties": {
+                "kind": { "const": "quarantined" },
+                "reason": { "type": "string", "minLength": 1 },
+                "owner_issue": { "type": "integer", "minimum": 1 },
+                "review_after": { "type": "string", "minLength": 1 }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "code", "message"],
+              "properties": {
+                "kind": { "const": "error" },
+                "code": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+                "message": { "type": "string", "minLength": 1 }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
