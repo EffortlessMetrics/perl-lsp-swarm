@@ -1,20 +1,27 @@
-//! Parser harness - runs each of the three Perl parsers on a source string
-//! and produces a structured [`ParseResult`].
+//! Parser harness for legacy verdicts and generic subject execution evidence.
 //!
-//! Each parser is called through a thin wrapper that:
-//! 1. Catches panics with `std::panic::catch_unwind` so one crash never kills
-//!    the entire suite.
-//! 2. Extracts the S-expression / AST sexp for structural inspection.
-//! 3. Records a [`Verdict`] describing the outcome category.
-//!
-//! The caller is responsible for asserting the *expected* verdict.  The
-//! harness only measures; it never asserts.
+//! New comparison work must use [`SubjectExecution`] and an independent
+//! [`ScoredComparison`](crate::evidence::ScoredComparison). The legacy
+//! [`ParseResult`] path remains temporarily for existing corpus and report
+//! consumers and is deliberately documented as lossy.
 
+use std::collections::BTreeMap;
 use std::panic;
 
+use crate::evidence::{
+    DiagnosticSummary, ExecutionDisposition, InstrumentState, ObservationAvailability,
+    ObservationPlane, SubjectExecution, SubjectRole,
+};
 use crate::outcomes::Verdict;
 
-/// The output of running one parser on one input.
+const MAX_DEBUG_PROJECTION_BYTES: usize = 4_096;
+
+/// Legacy output of running one parser on one input.
+///
+/// `verdict` is a lossy compatibility projection. In particular,
+/// `Verdict::Correct` may mean only that the subject executed without its
+/// designated error signal. New comparison code must use [`execute_v1`] or
+/// [`execute_v3`] and score an explicit observer expectation separately.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ParseResult {
@@ -22,31 +29,30 @@ pub struct ParseResult {
     pub parser: ParserLabel,
     /// The source string that was parsed.
     pub source: String,
-    /// The verdict - outcome category.
+    /// Legacy outcome category.
     pub verdict: Verdict,
-    /// S-expression or description of the parse output (for diagnostics).
-    /// Empty string if the parser crashed or returned no tree.
+    /// S-expression or description of the parse output for diagnostics.
     pub sexp: String,
-    /// Error message if the parser rejected the input (`Verdict::Errors`).
+    /// Error message when execution or parser setup did not return a usable result.
     pub error: Option<String>,
 }
 
 impl ParseResult {
-    /// Returns `true` if the sexp contains the given substring.
+    /// Returns `true` if the legacy debug projection contains the substring.
     pub fn sexp_contains(&self, needle: &str) -> bool {
         self.sexp.contains(needle)
     }
 }
 
-/// Identifies which parser produced a result.
+/// Identifies which parser produced a legacy result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParserLabel {
-    /// v1: C tree-sitter grammar via FFI (`tree-sitter-perl-c`).
+    /// v1: historical C Tree-sitter grammar via FFI.
     V1TreeSitterC,
-    /// v2: Pest/PEG legacy parser (`perl-parser-pest`).
+    /// v2: Pest/PEG legacy parser.
     V2Pest,
-    /// v3: Recursive-descent production parser (`perl-parser-core`).
+    /// v3: recursive-descent native parser.
     V3RecursiveDescent,
 }
 
@@ -60,69 +66,61 @@ impl std::fmt::Display for ParserLabel {
     }
 }
 
-// -- v1: C tree-sitter ---------------------------------------------------------
+#[derive(Debug)]
+struct RawExecution {
+    disposition: ExecutionDisposition,
+    projection: String,
+    error: Option<String>,
+    diagnostics: DiagnosticSummary,
+}
 
-/// Parse with the v1 C tree-sitter grammar.
+/// Execute the currently embedded historical C Tree-sitter subject.
 ///
-/// The tree-sitter API always returns a tree - it never returns an error.
-/// Instead, `tree.root_node().has_error()` indicates whether the tree
-/// contains ERROR nodes.  We classify:
+/// A tree without an `ERROR` node is [`ExecutionDisposition::AcceptedClean`],
+/// not a correctness verdict. Structural correctness must be scored by an
+/// independent observer.
+pub fn execute_v1(source: &str) -> SubjectExecution {
+    let raw = run_v1(source);
+    subject_execution(
+        SubjectRole::HistoricalTreeSitterC,
+        raw,
+        historical_tree_sitter_observations(),
+    )
+}
+
+/// Execute the native recursive-descent subject.
 ///
-/// - `has_error() == false` -> verdict determined by the caller's structural check
-/// - `has_error() == true`  -> [`Verdict::Errors`]
-/// - panic                   -> [`Verdict::Crashes`]
+/// Diagnostic-bearing output is [`ExecutionDisposition::AcceptedRecovered`]
+/// rather than rejection or correctness. Structural correctness must be scored
+/// by an independent observer.
+pub fn execute_v3(source: &str) -> SubjectExecution {
+    let raw = run_v3(source);
+    subject_execution(
+        SubjectRole::NativeRecursiveDescent,
+        raw,
+        native_recursive_descent_observations(),
+    )
+}
+
+/// Parse with the historical C Tree-sitter subject through the legacy verdict bridge.
 ///
-/// The caller receives the raw S-expression regardless of error status.
+/// This function preserves current corpus/report behavior until the consumer
+/// migration train lands. New comparison code must use [`execute_v1`].
 pub fn parse_v1(source: &str) -> ParseResult {
-    let source_owned = source.to_owned();
-    let result = panic::catch_unwind(move || {
-        use tree_sitter_perl_c::try_parse_perl_code;
-        match try_parse_perl_code(&source_owned) {
-            Ok(tree) => {
-                let sexp = tree.root_node().to_sexp();
-                let has_error = tree.root_node().has_error();
-                (sexp, has_error, None::<String>)
-            }
-            Err(e) => {
-                // try_parse_perl_code only fails on language-setup or None-return
-                let msg = format!("{e}");
-                (String::new(), true, Some(msg))
-            }
-        }
-    });
-
-    match result {
-        Err(_panic) => ParseResult {
-            parser: ParserLabel::V1TreeSitterC,
-            source: source.to_owned(),
-            verdict: Verdict::Crashes,
-            sexp: String::new(),
-            error: Some("v1 panicked".to_owned()),
-        },
-        Ok((sexp, has_error, err_msg)) => {
-            let verdict = if err_msg.is_some() || has_error {
-                Verdict::Errors
-            } else {
-                // Caller inspects structural properties and refines verdict
-                Verdict::Correct
-            };
-            ParseResult {
-                parser: ParserLabel::V1TreeSitterC,
-                source: source.to_owned(),
-                verdict,
-                sexp,
-                error: err_msg,
-            }
-        }
+    let raw = run_v1(source);
+    ParseResult {
+        parser: ParserLabel::V1TreeSitterC,
+        source: source.to_owned(),
+        verdict: lossy_legacy_verdict(raw.disposition),
+        sexp: raw.projection,
+        error: raw.error,
     }
 }
 
-// -- v2: Pest parser -----------------------------------------------------------
-
-/// Parse with the v2 Pest legacy parser.
+/// Parse with the v2 Pest legacy parser through the unchanged legacy path.
 ///
-/// Returns an `Ok(AstNode)` or `Err(ParseError)`.  We capture the S-expression
-/// and return the raw result; the caller classifies the verdict.
+/// Pest execution-to-observation migration is owned by the dedicated Pest
+/// subject train. This PR intentionally preserves `Ok => Verdict::Correct`.
 pub fn parse_v2(source: &str) -> ParseResult {
     let source_owned = source.to_owned();
     let result = panic::catch_unwind(move || {
@@ -151,7 +149,6 @@ pub fn parse_v2(source: &str) -> ParseResult {
         Ok((Some(sexp), None, _ast)) => ParseResult {
             parser: ParserLabel::V2Pest,
             source: source.to_owned(),
-            // Caller refines: may be Correct, WrongButPlausible, or SilentlyEmpty
             verdict: Verdict::Correct,
             sexp,
             error: None,
@@ -173,45 +170,182 @@ pub fn parse_v2(source: &str) -> ParseResult {
     }
 }
 
-// -- v3: Recursive-descent parser ---------------------------------------------
-
-/// Parse with the v3 recursive-descent production parser.
+/// Parse with the native recursive-descent subject through the legacy verdict bridge.
 ///
-/// v3 is highly error-tolerant: it almost always returns an AST.  Structural
-/// errors are reported via `parser.errors()`, but the AST is still produced.
-/// We use `parse_with_recovery()` to get both the tree and diagnostics.
+/// This function preserves current corpus/report behavior until the consumer
+/// migration train lands. New comparison code must use [`execute_v3`].
 pub fn parse_v3(source: &str) -> ParseResult {
+    let raw = run_v3(source);
+    ParseResult {
+        parser: ParserLabel::V3RecursiveDescent,
+        source: source.to_owned(),
+        verdict: lossy_legacy_verdict(raw.disposition),
+        sexp: raw.projection,
+        error: raw.error,
+    }
+}
+
+fn run_v1(source: &str) -> RawExecution {
+    let source_owned = source.to_owned();
+    let result = panic::catch_unwind(move || {
+        use tree_sitter_perl_c::try_parse_perl_code;
+        match try_parse_perl_code(&source_owned) {
+            Ok(tree) => {
+                let root = tree.root_node();
+                let has_error = root.has_error();
+                Ok((root.to_sexp(), has_error))
+            }
+            Err(error) => Err(format!("{error}")),
+        }
+    });
+
+    match result {
+        Err(_panic) => RawExecution {
+            disposition: ExecutionDisposition::Crashed,
+            projection: String::new(),
+            error: Some("v1 panicked".to_owned()),
+            diagnostics: DiagnosticSummary::default(),
+        },
+        Ok(Err(error)) => RawExecution {
+            disposition: ExecutionDisposition::SetupFailed,
+            projection: String::new(),
+            error: Some(error),
+            diagnostics: DiagnosticSummary::default(),
+        },
+        Ok(Ok((projection, has_error))) => RawExecution {
+            disposition: if has_error {
+                ExecutionDisposition::AcceptedRecovered
+            } else {
+                ExecutionDisposition::AcceptedClean
+            },
+            projection,
+            error: None,
+            diagnostics: DiagnosticSummary::new(
+                usize::from(has_error),
+                has_error,
+                has_error,
+            ),
+        },
+    }
+}
+
+fn run_v3(source: &str) -> RawExecution {
     let source_owned = source.to_owned();
     let result = panic::catch_unwind(move || {
         use perl_parser_core::Parser;
         let mut parser = Parser::new(&source_owned);
         let output = parser.parse_with_recovery();
-        let sexp = output.ast.to_sexp();
-        let has_errors = !output.diagnostics.is_empty();
-        (sexp, has_errors)
+        let diagnostic_count = output.diagnostics.len();
+        (output.ast.to_sexp(), diagnostic_count)
     });
 
     match result {
-        Err(_panic) => ParseResult {
-            parser: ParserLabel::V3RecursiveDescent,
-            source: source.to_owned(),
-            verdict: Verdict::Crashes,
-            sexp: String::new(),
+        Err(_panic) => RawExecution {
+            disposition: ExecutionDisposition::Crashed,
+            projection: String::new(),
             error: Some("v3 panicked".to_owned()),
+            diagnostics: DiagnosticSummary::default(),
         },
-        Ok((sexp, has_errors)) => ParseResult {
-            parser: ParserLabel::V3RecursiveDescent,
-            source: source.to_owned(),
-            // Caller refines based on structural inspection.
-            // has_errors indicates diagnostic messages but AST is always present.
-            verdict: if has_errors {
-                // Non-fatal errors: tree was produced but with error nodes
-                Verdict::Errors
+        Ok((projection, diagnostic_count)) => RawExecution {
+            disposition: if diagnostic_count == 0 {
+                ExecutionDisposition::AcceptedClean
             } else {
-                Verdict::Correct
+                ExecutionDisposition::AcceptedRecovered
             },
-            sexp,
+            projection,
             error: None,
+            diagnostics: DiagnosticSummary::new(
+                diagnostic_count,
+                diagnostic_count > 0,
+                false,
+            ),
         },
+    }
+}
+
+fn subject_execution(
+    subject: SubjectRole,
+    raw: RawExecution,
+    observations: BTreeMap<ObservationPlane, ObservationAvailability>,
+) -> SubjectExecution {
+    let instrument_state = match raw.disposition {
+        ExecutionDisposition::InstrumentUnavailable => InstrumentState::Unavailable,
+        ExecutionDisposition::InstrumentFailed => InstrumentState::Failed,
+        _ => InstrumentState::Available,
+    };
+    SubjectExecution::new(
+        subject,
+        raw.disposition,
+        raw.diagnostics,
+        observations,
+        bounded_debug_projection(raw.projection),
+        instrument_state,
+        raw.error,
+    )
+}
+
+fn historical_tree_sitter_observations() -> BTreeMap<ObservationPlane, ObservationAvailability> {
+    BTreeMap::from([
+        (ObservationPlane::Structure, ObservationAvailability::Observable),
+        (ObservationPlane::Recovery, ObservationAvailability::Observable),
+        (ObservationPlane::SourceGeometry, ObservationAvailability::NotProven),
+        (ObservationPlane::BodyOwnership, ObservationAvailability::NotProven),
+        (
+            ObservationPlane::IncrementalFinalState,
+            ObservationAvailability::NotProven,
+        ),
+        (
+            ObservationPlane::QueryOrHighlight,
+            ObservationAvailability::NotProven,
+        ),
+    ])
+}
+
+fn native_recursive_descent_observations() -> BTreeMap<ObservationPlane, ObservationAvailability> {
+    BTreeMap::from([
+        (ObservationPlane::Structure, ObservationAvailability::Observable),
+        (ObservationPlane::Recovery, ObservationAvailability::Observable),
+        (ObservationPlane::SourceGeometry, ObservationAvailability::NotProven),
+        (ObservationPlane::BodyOwnership, ObservationAvailability::NotProven),
+        (
+            ObservationPlane::IncrementalFinalState,
+            ObservationAvailability::NotProven,
+        ),
+        (
+            ObservationPlane::QueryOrHighlight,
+            ObservationAvailability::Unsupported,
+        ),
+    ])
+}
+
+fn bounded_debug_projection(projection: String) -> Option<String> {
+    if projection.is_empty() {
+        return None;
+    }
+    if projection.len() <= MAX_DEBUG_PROJECTION_BYTES {
+        return Some(projection);
+    }
+
+    let mut end = MAX_DEBUG_PROJECTION_BYTES;
+    while !projection.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut bounded = projection[..end].to_owned();
+    bounded.push('…');
+    Some(bounded)
+}
+
+fn lossy_legacy_verdict(disposition: ExecutionDisposition) -> Verdict {
+    match disposition {
+        ExecutionDisposition::AcceptedClean => Verdict::Correct,
+        ExecutionDisposition::Crashed => Verdict::Crashes,
+        ExecutionDisposition::AcceptedRecovered
+        | ExecutionDisposition::Rejected
+        | ExecutionDisposition::Unsupported
+        | ExecutionDisposition::TimedOut
+        | ExecutionDisposition::SetupFailed
+        | ExecutionDisposition::InstrumentUnavailable
+        | ExecutionDisposition::InstrumentFailed
+        | ExecutionDisposition::NotRun => Verdict::Errors,
     }
 }
