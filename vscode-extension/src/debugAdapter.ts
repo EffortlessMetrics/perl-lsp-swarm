@@ -492,9 +492,7 @@ export function externalDebuggerConfigurationError(
   const mode = typeof external.mode === 'string' ? external.mode : 'connect';
   const control = typeof external.control === 'string' ? external.control : 'mirror';
   const host =
-    typeof external.host === 'string' && external.host.trim()
-      ? external.host.trim()
-      : '127.0.0.1';
+    typeof external.host === 'string' && external.host.trim() ? external.host.trim() : '127.0.0.1';
 
   if (host.includes(':') || /\s/.test(host)) {
     return 'externalDebugger.host must be a hostname or IPv4 address without whitespace';
@@ -511,11 +509,7 @@ export function externalDebuggerConfigurationError(
   }
 
   if (mode === 'listen') {
-    if (
-      external.port !== undefined &&
-      external.port !== 0 &&
-      !isConnectablePort(external.port)
-    ) {
+    if (external.port !== undefined && external.port !== 0 && !isConnectablePort(external.port)) {
       return 'externalDebugger listen mode requires port 0 or a port in 1..=65535';
     }
     return undefined;
@@ -591,9 +585,7 @@ function resolveExternalPeerListenBind(
     return undefined;
   }
   const host =
-    typeof external.host === 'string' && external.host.trim()
-      ? external.host.trim()
-      : '127.0.0.1';
+    typeof external.host === 'string' && external.host.trim() ? external.host.trim() : '127.0.0.1';
   if (host.includes(':') || /\s/.test(host)) {
     return undefined;
   }

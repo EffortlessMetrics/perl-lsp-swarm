@@ -1,18 +1,12 @@
 import type * as vscode from 'vscode';
-import {
-  buildLaunchJsonContent,
-  externalDebuggerConfigurationError,
-} from '../debugAdapter';
+import { buildLaunchJsonContent, externalDebuggerConfigurationError } from '../debugAdapter';
 
 function asDebugConfiguration(value: Record<string, unknown>): vscode.DebugConfiguration {
   return value as unknown as vscode.DebugConfiguration;
 }
 
 const invalidExternalConfigurations: Array<[Record<string, unknown>, string]> = [
-  [
-    { externalPeer: 'host --flag:9000' },
-    'externalPeer must use a hostname or IPv4 address',
-  ],
+  [{ externalPeer: 'host --flag:9000' }, 'externalPeer must use a hostname or IPv4 address'],
   [
     {
       debuggerBackend: 'external',
@@ -46,9 +40,7 @@ describe('external debugger claim boundary', () => {
     ).toBeUndefined();
 
     expect(
-      externalDebuggerConfigurationError(
-        asDebugConfiguration({ externalPeer: '127.0.0.1:13604' }),
-      ),
+      externalDebuggerConfigurationError(asDebugConfiguration({ externalPeer: '127.0.0.1:13604' })),
     ).toBeUndefined();
 
     expect(
@@ -78,9 +70,9 @@ describe('external debugger claim boundary', () => {
   test.each(invalidExternalConfigurations)(
     'rejects unsupported explicit selection %#',
     (configuration, expected) => {
-      expect(
-        externalDebuggerConfigurationError(asDebugConfiguration(configuration)),
-      ).toContain(expected);
+      expect(externalDebuggerConfigurationError(asDebugConfiguration(configuration))).toContain(
+        expected,
+      );
     },
   );
 

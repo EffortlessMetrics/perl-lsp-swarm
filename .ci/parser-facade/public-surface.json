@@ -1,0 +1,394 @@
+{
+  "schema_version": 1,
+  "public_modules": [
+    {
+      "name": "engine",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser-core",
+      "exit_condition": "Keep as the parser-facing kernel bridge while implementation ownership remains below the facade."
+    },
+    {
+      "name": "analysis",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move semantic composition behind an explicit product boundary."
+    },
+    {
+      "name": "builtins",
+      "classification": "product_composition",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Retain only parser-owned builtin syntax data; move semantic/provider metadata above the parser."
+    },
+    {
+      "name": "core",
+      "classification": "parser_output_contract",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser-core",
+      "exit_condition": "Remain the minimal parser attachment point for kernel/output contracts."
+    },
+    {
+      "name": "incremental",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Expose only the canonical implementation and bounded compatibility surface."
+    },
+    {
+      "name": "prelude",
+      "classification": "parser_output_contract",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Restrict to canonical parser contracts and remove product composition."
+    },
+    {
+      "name": "refactor",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move refactoring composition behind explicit product features/owners."
+    },
+    {
+      "name": "tdd",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move TDD product composition out of the minimal parser surface."
+    },
+    {
+      "name": "tokens",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Retain only parser-owned token/trivia compatibility and canonical ownership."
+    },
+    {
+      "name": "workspace",
+      "classification": "workspace_or_lsp_adapter",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move workspace composition above the parser facade."
+    },
+    {
+      "name": "compat",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Keep only named downstream compatibility paths with removal boundaries."
+    },
+    {
+      "name": "ast_utils",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move LSP/refactor-oriented AST utilities to their product owner."
+    },
+    {
+      "name": "heredoc_anti_patterns",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move product policy analysis above parser syntax ownership."
+    },
+    {
+      "name": "dead_code",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move workspace/semantic dead-code analysis above parser output."
+    }
+  ],
+  "public_reexport_groups": [
+    {
+      "name": "compatibility_reexport.1",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Replace legacy aliases with parser-owned typed contracts or exact compatibility exits.",
+      "members": [
+        "error::classifier as error_classifier",
+        "error::recovery as error_recovery"
+      ]
+    },
+    {
+      "name": "compatibility_reexport.2",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Retain only types/functions that belong to the minimal parser contract; move product helpers to their owners.",
+      "members": [
+        "perl_parser_core::line_index",
+        "perl_parser_core::path_normalize",
+        "perl_parser_core::path_security",
+        "perl_parser_core::percentile",
+        "perl_parser_core::qualified_name",
+        "perl_parser_core::source_file",
+        "perl_parser_core::text_line",
+        "perl_parser_core::util"
+      ]
+    },
+    {
+      "name": "compatibility_reexport.3",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Converge on canonical parser-core token/trivia ownership and exact compatibility paths.",
+      "members": [
+        "pragma_tracker::PragmaState",
+        "pragma_tracker::PragmaTracker",
+        "token_stream::Token",
+        "token_stream::TokenKind",
+        "token_stream::TokenStream",
+        "tokens::token_stream",
+        "tokens::token_wrapper",
+        "tokens::trivia",
+        "tokens::trivia_parser",
+        "trivia::NodeWithTrivia",
+        "trivia::Trivia",
+        "trivia::TriviaToken",
+        "trivia_parser::TriviaPreservingParser",
+        "trivia_parser::format_with_trivia"
+      ]
+    },
+    {
+      "name": "experimental.4",
+      "classification": "experimental",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Privatize, gate, adapt, or remove after unique evidence migrates to the canonical engine.",
+      "members": [
+        "incremental::incremental_advanced_reuse",
+        "incremental::incremental_checkpoint",
+        "incremental::incremental_document",
+        "incremental::incremental_edit",
+        "incremental::incremental_handler_v2",
+        "incremental::incremental_integration",
+        "incremental::incremental_simple",
+        "incremental::incremental_v2",
+        "incremental_checkpoint::CheckpointedIncrementalParser",
+        "incremental_checkpoint::SimpleEdit"
+      ]
+    },
+    {
+      "name": "incremental_parser.5",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Remain the only production-eligible incremental facade after convergence.",
+      "members": [
+        "incremental::Edit",
+        "incremental::IncrementalState",
+        "incremental::apply_edits"
+      ]
+    },
+    {
+      "name": "parser_output_contract.6",
+      "classification": "parser_output_contract",
+      "disposition": "retain",
+      "owner": "#2477",
+      "target_owner": "perl-parser-core",
+      "exit_condition": "Retain only as the canonical parser-facing output/kernel compatibility surface.",
+      "members": [
+        "core::ErrorCategory",
+        "core::ErrorClass",
+        "core::Node",
+        "core::NodeKind",
+        "core::ParseError",
+        "core::ParseOutput",
+        "core::ParseResult",
+        "core::Parser",
+        "core::SourceLocation",
+        "engine::ast",
+        "engine::ast_v2",
+        "engine::edit",
+        "engine::error",
+        "engine::heredoc_collector",
+        "engine::parser",
+        "engine::parser_context",
+        "engine::position",
+        "engine::pragma_tracker",
+        "engine::quote_parser",
+        "error::RecoverySalvageClass",
+        "error::RecoverySalvageProfile",
+        "position::LineEnding",
+        "position::PositionMapper"
+      ]
+    },
+    {
+      "name": "product_composition.7",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move above the minimal parser facade or retain through an explicit bounded product feature.",
+      "members": [
+        "analysis::declaration",
+        "analysis::index",
+        "analysis::scope_analyzer",
+        "analysis::semantic",
+        "analysis::symbol",
+        "analysis::type_inference",
+        "builtins::builtin_signatures",
+        "builtins::builtin_signatures_phf",
+        "dead_code as dead_code_detector",
+        "import_optimizer::DuplicateImport",
+        "import_optimizer::ImportAnalysis",
+        "import_optimizer::ImportEntry",
+        "import_optimizer::ImportOptimizer",
+        "import_optimizer::MissingImport",
+        "import_optimizer::OrganizationSuggestion",
+        "import_optimizer::SuggestionPriority",
+        "import_optimizer::UnusedImport",
+        "refactor::import_optimizer",
+        "refactor::modernize",
+        "refactor::modernize_refactored",
+        "refactor::refactoring",
+        "refactoring::ModernizationPattern",
+        "refactoring::RefactoringConfig",
+        "refactoring::RefactoringEngine",
+        "refactoring::RefactoringOperation",
+        "refactoring::RefactoringResult",
+        "refactoring::RefactoringScope",
+        "refactoring::RefactoringType",
+        "scope_analyzer::IssueKind",
+        "scope_analyzer::ScopeAnalyzer",
+        "scope_analyzer::ScopeIssue",
+        "semantic::HoverInfo",
+        "semantic::SemanticAnalyzer",
+        "semantic::SemanticModel",
+        "semantic::SemanticToken",
+        "semantic::SemanticTokenModifier",
+        "semantic::SemanticTokenType",
+        "symbol::Symbol",
+        "symbol::SymbolExtractor",
+        "symbol::SymbolKind",
+        "symbol::SymbolReference",
+        "symbol::SymbolTable",
+        "tdd::tdd_basic",
+        "tdd::tdd_workflow",
+        "tdd::test_generator",
+        "tdd::test_runner",
+        "tdd_workflow::AnnotationSeverity",
+        "tdd_workflow::CoverageAnnotation",
+        "tdd_workflow::TddAction",
+        "tdd_workflow::TddConfig",
+        "tdd_workflow::TddCycleResult",
+        "tdd_workflow::TddWorkflow",
+        "tdd_workflow::TestType",
+        "tdd_workflow::WorkflowState",
+        "tdd_workflow::WorkflowStatus",
+        "test_generator::CoverageReport",
+        "test_generator::Priority",
+        "test_generator::RefactoringCategory",
+        "test_generator::RefactoringSuggester",
+        "test_generator::RefactoringSuggestion",
+        "test_generator::TestCase",
+        "test_generator::TestFramework",
+        "test_generator::TestGenerator",
+        "test_generator::TestGeneratorOptions",
+        "test_generator::TestResults",
+        "test_generator::TestRunner",
+        "type_inference::PerlType",
+        "type_inference::ScalarType",
+        "type_inference::TypeBasedCompletion",
+        "type_inference::TypeConstraint",
+        "type_inference::TypeEnvironment",
+        "type_inference::TypeInferenceEngine",
+        "type_inference::TypeLocation",
+        "workspace::document_store",
+        "workspace::workspace_index",
+        "workspace::workspace_refactor",
+        "workspace::workspace_rename"
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "kind": "bin",
+      "required_features": [
+        "cli"
+      ],
+      "name": "perl-parse",
+      "classification": "product_composition",
+      "disposition": "review",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Keep only if parser CLI ownership remains an intentional facade responsibility."
+    },
+    {
+      "kind": "bench",
+      "required_features": [],
+      "name": "parser_benchmark",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#6698",
+      "target_owner": "perl-parser",
+      "exit_condition": "Name the exact fresh parser regime and evidence subject."
+    },
+    {
+      "kind": "bench",
+      "required_features": [
+        "incremental"
+      ],
+      "name": "incremental_benchmark",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6707",
+      "target_owner": "#7099",
+      "exit_condition": "Retain only with truthful strategy/work receipt taxonomy."
+    },
+    {
+      "kind": "bench",
+      "required_features": [],
+      "name": "scope_benchmark",
+      "classification": "product_composition",
+      "disposition": "move",
+      "owner": "#2477",
+      "target_owner": "#7063",
+      "exit_condition": "Move semantic/scope performance ownership above the parser facade."
+    },
+    {
+      "kind": "bench",
+      "required_features": [],
+      "name": "cpan_patterns_benchmark",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6696",
+      "target_owner": "#7099",
+      "exit_condition": "Bind to governed corpus identities and an exact parser regime or retire."
+    },
+    {
+      "kind": "example",
+      "required_features": [
+        "incremental"
+      ],
+      "name": "test_incremental_v2",
+      "classification": "experimental",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Replace with the canonical incremental API example or remove."
+    }
+  ]
+}
