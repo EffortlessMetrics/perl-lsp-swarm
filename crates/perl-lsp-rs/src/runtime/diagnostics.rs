@@ -3416,10 +3416,20 @@ mod tests {
             }
         })))?;
 
-        assert_eq!(
-            0,
-            buf.lock().len(),
-            "didOpen must not emit push diagnostics for pull-diagnostic clients"
+        // `didOpen` enqueues active-document readiness asynchronously and an
+        // outbound writer thread flushes it, so the buffer is not reliably
+        // empty here — it legitimately carries a
+        // `perl-lsp/active-document-ready` notification, which is not a
+        // diagnostic. Drain and let the writer flush, exactly as the fast-path
+        // guard above does, then assert the invariant this test actually names
+        // rather than byte-emptiness.
+        drain_pending_index_tasks(&server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let after_did_open = String::from_utf8(buf.lock().clone())?;
+        assert!(
+            !after_did_open.contains("publishDiagnostics"),
+            "didOpen must not emit push diagnostics for pull-diagnostic clients; got: {after_did_open:?}"
         );
 
         server.publish_diagnostics(uri);
