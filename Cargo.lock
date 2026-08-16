@@ -1924,6 +1924,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-source-identity"
+version = "0.17.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "perl-subprocess-runtime"
 version = "0.17.0"
 dependencies = [
