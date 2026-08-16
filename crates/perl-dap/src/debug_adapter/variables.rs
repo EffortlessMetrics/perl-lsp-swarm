@@ -410,9 +410,18 @@ impl DebugAdapter {
     /// same sub each invocation has its own pad slot; for non-recursive frames from
     /// different subs, frame_id=0 is the only meaningful choice.
     ///
-    /// Arrays (`@foo`) and hashes (`%foo`) are emitted as `ARRAY(0x0)` / `HASH(0x0)`
-    /// so that `VariableParser::parse_assignment` recognises them as expandable
-    /// collections — the same format used by the `V` command for package variables.
+    /// Arrays (`@foo`) and hashes (`%foo`) are emitted as opaque `ARRAY(0x0)` /
+    /// `HASH(0x0)` markers — the same format the `V` command uses for package
+    /// variables. They are deliberately *not* expanded here.
+    ///
+    /// Recovering the live aggregate (e.g. through `B::SV::object_2svref` and a
+    /// serializer) would enumerate the value during a nominally read-only
+    /// `variables` request. For tied, magical, blessed, or overloaded aggregates
+    /// that runs debuggee code (`FETCHSIZE`, `FETCH`, `FIRSTKEY`, `NEXTKEY`,
+    /// overloaded stringification), and root-width/serializer-depth caps do not
+    /// bound cumulative nodes, bytes, or query duration. Safe bounded lexical
+    /// collection snapshots are owned by #7358; until that contract exists this
+    /// path stays honest about not having observed the contents.
     pub(super) fn build_locals_b_eval_cmd(frame_id: i32) -> String {
         format!(
             concat!(
@@ -1030,6 +1039,49 @@ mod hazard_invariant_tests {
         );
         // Hashes must produce a HASH(0x0) value parseable by VariableParser.
         assert!(cmd.contains("HASH(0x0)"), "Perl code must format hash vars as HASH(0x0): {cmd}");
+    }
+
+    /// A read-only `variables` request must not enumerate or serialize live
+    /// aggregates. Bounded lexical collection snapshots are owned by #7358; until
+    /// that contract lands, re-introducing an unbudgeted traversal here is a
+    /// regression, so the command template must stay free of it.
+    #[test]
+    fn build_locals_b_eval_cmd_does_not_enumerate_live_collections() {
+        let cmd = DebugAdapter::build_locals_b_eval_cmd(0);
+        for forbidden in ["object_2svref", "Data::Dumper", "Dumper(", "keys %$", "@$r"] {
+            assert!(
+                !cmd.contains(forbidden),
+                "lexical introspection must not use {forbidden} \
+                 (unbudgeted traversal / debuggee side effects, see #7358): {cmd}"
+            );
+        }
+    }
+
+    /// The child-reference codec and child cache serve pages beyond the first 256
+    /// entries whenever a *parseable* one-line aggregate literal reaches the
+    /// parser. This proves the codec repair independently of how such a line is
+    /// produced — the lexical `B` path deliberately does not produce one (#7358).
+    #[test]
+    fn parsed_array_literal_preserves_a_deep_page() {
+        let values = (1..=500).map(|value| value.to_string()).collect::<Vec<_>>().join(",");
+        let lines = vec![format!("@big = [{values}]")];
+        let (roots, child_cache) =
+            DebugAdapter::parse_scope_variables_from_lines(&lines, 11, 0, 1024);
+        let root = roots
+            .iter()
+            .find(|variable| variable.name == "@big")
+            .expect("@big root must be rendered");
+        assert_eq!(root.indexed_variables, Some(500));
+        assert!(root.variables_reference > 0);
+
+        let children = child_cache
+            .get(&root.variables_reference)
+            .expect("@big children must be cached for paging");
+        assert_eq!(children.len(), 500);
+        assert_eq!(children[250].name, "[250]");
+        assert_eq!(children[250].value, "251");
+        assert_eq!(children[274].name, "[274]");
+        assert_eq!(children[274].value, "275");
     }
 
     #[test]
