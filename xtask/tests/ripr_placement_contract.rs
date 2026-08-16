@@ -72,8 +72,8 @@ fn prose(text: &str) -> String {
 }
 
 #[test]
-fn contract_surfaces_do_not_restate_retired_ripr_placement() -> Result<(), Box<dyn std::error::Error>>
-{
+fn contract_surfaces_do_not_restate_retired_ripr_placement()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root()?;
     let mut violations = Vec::new();
 
@@ -116,8 +116,8 @@ fn proof_ladder_surfaces_name_the_current_placement_authority()
 }
 
 #[test]
-fn pre_push_surfaces_do_not_claim_rival_new_gap_authority()
--> Result<(), Box<dyn std::error::Error>> {
+fn pre_push_surfaces_do_not_claim_rival_new_gap_authority() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = project_root()?;
     let mut violations = Vec::new();
 
@@ -127,8 +127,9 @@ fn pre_push_surfaces_do_not_claim_rival_new_gap_authority()
         [".claude/skills/prove-before-push/SKILL.md", ".agents/skills/prove-before-push/SKILL.md"]
     {
         let text = prose(&read(&root, surface)?);
-        if text.contains("7365 owns completion of one executable local path that includes diff-scoped ripr")
-        {
+        if text.contains(
+            "7365 owns completion of one executable local path that includes diff-scoped ripr",
+        ) {
             violations.push(format!(
                 "{surface}: re-scopes #7365 to own diff-scoped RIPR placement beside #9112"
             ));
