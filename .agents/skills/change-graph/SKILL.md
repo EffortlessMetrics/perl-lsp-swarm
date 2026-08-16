@@ -141,21 +141,33 @@ The commit tier owns cheap deterministic structure: staged Changie fragment vali
 staged-blob rustfmt, whitespace/conflict markers, executable mode, structured syntax,
 forbidden machine paths, oversized/binary policy, and other in-budget checks.
 
-Do not move Cargo compilation or RIPR into the commit tier. RIPR has no exact
-staged-index input and the commit gate has a sub-30-second contract.
+#9112 is the accepted authority for RIPR placement: diff-scoped new-gap enforcement moves
+to this exact staged-tree boundary, over the one `git write-tree` candidate OID that #3786
+established. The commit tier keeps its warm-median/p95/30s budget; promotion to blocking
+requires measured exact-tree results, which is a budget to prove against rather than a
+reason RIPR cannot belong here.
+
+Until #9112's promotion and cutover conditions are met, the staged gate is non-blocking
+and the remote `ripr+ New Gap Gate` stays required. Treat that as current migration state,
+not a repository invariant. Do not reintroduce the retired categorical ruling that the
+commit tier lacks an exact staged subject for this analysis, or that new-gap detection
+structurally belongs after push. Cargo compilation stays out of the commit tier.
 
 ### Before push and publication
 
 `$prove-before-push` owns the candidate-facing skill boundary. The committed-diff policy
 from #3985 owns the resolved base/head, affected Cargo closure, focused behavioral proof,
-Changie dry rendering, and diff-scoped RIPR routing. Use the repository planner, hook,
-change-set resolver, and current supported RIPR surfaces; do not recreate base selection
-or package classification inside the skill.
+and Changie dry rendering. Use the repository planner, hook, and change-set resolver; do
+not recreate base selection or package classification inside the skill.
 
-The current `pre-push-plan` is planning-only and the ordinary hook does not yet execute
-the complete diff-scoped RIPR result. #7365 owns that implementation gap. Until it lands,
-run and validate the current local receipts where available and preserve an exact local
-RIPR `NOT_PROVEN` or remote-only boundary otherwise.
+New-gap RIPR placement belongs to #9112 at the staged-tree boundary. This boundary may
+consume or disclose staged RIPR evidence where the accepted implementation supports it,
+but must not re-establish a competing "RIPR belongs before push" authority. #7365 is
+scoped to the pre-push affected-proof and Changie execution path on that basis.
+
+The current `pre-push-plan` is planning-only. Until the accepted implementation lands, run
+and validate the local receipts available at this boundary and preserve an exact
+`NOT_PROVEN` or named remote-only boundary otherwise.
 
 A local result is candidate evidence, not merge authorization. `NOT_PROVEN` remains
 visible when the instrument, base/head identity, or required environment is unavailable.

@@ -212,8 +212,17 @@ owns cheap structure, including staged Changie fragment validation, staged-blob 
 whitespace/conflict markers, executable mode, structured syntax, machine paths, and
 size/binary policy.
 
-Do not put Cargo compilation or RIPR in the commit tier. RIPR has no exact staged-index
-input and the commit gate has a sub-30-second contract.
+#9112 is the accepted authority for RIPR placement: diff-scoped new-gap enforcement moves
+to this exact staged-tree boundary, over the one `git write-tree` candidate OID that #3786
+established. The commit tier keeps its warm-median/p95/30s budget, and promotion to
+blocking requires measured exact-tree results — a budget to prove against, not a reason
+RIPR cannot belong here.
+
+Until #9112's promotion and cutover conditions are met, the staged gate is non-blocking
+and the remote `ripr+ New Gap Gate` stays required. That is a current migration state, not
+a repository invariant. Do not reintroduce the retired categorical ruling that the commit
+tier lacks an exact staged subject for this analysis, or that new-gap detection
+structurally belongs after push. Cargo compilation stays out of the commit tier.
 
 ### Before push and publication
 

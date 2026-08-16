@@ -32,6 +32,7 @@ REQUIRED_PATHS = {
     "xtask/src/tasks/mod.rs",
     "xtask/tests/agent_merge_review_backstop.rs",
     "xtask/tests/pr_convergence_contract.rs",
+    "xtask/tests/ripr_placement_contract.rs",
     "scripts/tests/test-agent-flow-control-plane-trigger.sh",
     ".github/workflows/agent-flow-control-plane.yml",
 }

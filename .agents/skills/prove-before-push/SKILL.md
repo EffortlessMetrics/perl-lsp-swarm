@@ -17,9 +17,12 @@ materially changes the evidence.
 
 ## Authority and current limitation
 
-- #3786 owns exact staged-tree structural proof through `cargo xtask precommit`.
+- #3786 owns exact staged-tree structural proof through `cargo xtask precommit`, including
+  the one `git write-tree` candidate OID.
+- #9112 owns RIPR new-gap placement and moves that enforcement to the exact staged-tree
+  boundary. This skill does not hold a competing RIPR placement authority.
 - #3985 owns affected committed-diff planning and proof routing.
-- #7365 owns completion of one executable local path that includes diff-scoped RIPR and
+- #7365 owns completion of one executable local path for pre-push affected proof and
   Changie in the candidate result.
 - #3987/#3988 own current-head CI and protected integration.
 
@@ -142,7 +145,8 @@ reinterpret missing evidence as success.
 
 ## Non-goals
 
-- No RIPR in the pre-commit staged-tree tier.
+- No competing RIPR placement authority beside #9112; staged-tier new-gap enforcement is
+  that epic's decision, not this skill's to restate or resist.
 - No full-workspace or repo-wide burn-down proof on every local candidate.
 - No automatic retirement of current required GitHub checks.
 - No second change classifier, package graph, suppression policy, or receipt authority.
