@@ -756,6 +756,10 @@ fn scan_backticked_tokens(
     observations: &mut BTreeSet<RouteObservation>,
 ) {
     let mut cursor = 0;
+    // Text since the previous token's closing backtick. Arrow detection reads
+    // only this segment: a `->` belongs to the token it points at, not to every
+    // later token on the same line.
+    let mut segment_start = 0;
     while let Some(relative_start) = line[cursor..].find('`') {
         let opening = cursor + relative_start;
         let content_start = opening + 1;
@@ -780,14 +784,16 @@ fn scan_backticked_tokens(
                 });
             }
             cursor = closing + 1;
+            segment_start = cursor;
             continue;
         }
 
         if is_route_name(token) {
             let code_span = &line[opening..=closing];
+            let segment = &line[segment_start..opening];
             let syntax = if METASYNTACTIC_PLACEHOLDERS.contains(&token) {
                 RouteSyntax::Placeholder
-            } else if line[..opening].contains("->") || line[..opening].contains('→') {
+            } else if segment.contains("->") || segment.contains('→') {
                 RouteSyntax::ArrowTarget
             } else {
                 classify_arrowless_code_span(line, code_span)
@@ -801,6 +807,7 @@ fn scan_backticked_tokens(
             });
         }
         cursor = closing + 1;
+        segment_start = cursor;
     }
 }
 
@@ -816,7 +823,11 @@ fn classify_arrowless_code_span(line: &str, code_span: &str) -> RouteSyntax {
             return RouteSyntax::ListTarget;
         }
     }
-    if is_markdown_list_item(trimmed) && has_route_label_prefix(candidate, code_span) {
+    // A labeled route is defined by its label, not by its bullet: the bare and
+    // list forms above carry no list requirement either, and
+    // `has_route_label_prefix` already restricts the match to
+    // `ROUTE_BEARING_LABELS`.
+    if has_route_label_prefix(candidate, code_span) {
         return RouteSyntax::LabeledTarget;
     }
     if is_markdown_list_item(trimmed) && has_imperative_route_prefix(candidate, code_span) {
@@ -990,41 +1001,120 @@ mod tests {
     fn preserves_labeled_route_fields_as_edges() {
         let text = "## Routes\n- Entry flow: `deliver-pr`\n- **Next route:** `finish-pr`\n";
         let observations = route_observations(text);
+        assert_eq!(observations.len(), 2, "both labeled route fields are observed");
         assert_eq!(edge_targets(&observations), vec!["deliver-pr", "finish-pr"]);
         assert!(
-            observations.iter().all(|observation| observation.syntax == RouteSyntax::LabeledTarget)
+            observations.iter().all(|observation| observation.syntax == RouteSyntax::LabeledTarget),
+            "both labeled route fields classify as LabeledTarget"
         );
     }
 
     #[test]
     fn labeled_route_typos_remain_load_bearing() {
         let observations = route_line_observations("- Entry flow: `delver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "labeled route yields exactly one observation");
         assert_eq!(edge_targets(&observations), vec!["delver-pr"]);
         assert_eq!(
             resolve_route_syntax(&observations[0], &BTreeSet::new()),
-            RouteSyntax::LabeledTarget
+            RouteSyntax::LabeledTarget,
+            "a misspelled labeled route stays an edge so it fails closed"
+        );
+    }
+
+    #[test]
+    fn trailing_inline_code_after_an_arrow_route_is_not_an_edge() {
+        let observations = route_line_observations(
+            "- ready -> `deliver-pr` (compare `candidate-sha` first)",
+            1,
+            true,
+        );
+        assert_eq!(observations.len(), 2, "both backticked tokens are observed");
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["deliver-pr"],
+            "only the arrow target is an edge; a later token must not inherit the arrow"
+        );
+
+        let trailing =
+            observations.iter().find(|observation| observation.target == "candidate-sha");
+        assert!(trailing.is_some(), "the trailing token is observed");
+        let Some(trailing) = trailing else { return };
+        assert_eq!(
+            trailing.syntax,
+            RouteSyntax::InlineCode,
+            "a token after the arrow target stays inline code"
+        );
+    }
+
+    #[test]
+    fn every_target_in_an_arrow_chain_remains_an_edge() {
+        // Scoping the arrow prefix must not break a chain: each *target* still
+        // has an arrow in its own segment. The leading token is the chain's
+        // source rather than a target, and carries no arrow before it, so it
+        // stays inline code — unchanged by the scoping fix.
+        let observations =
+            route_line_observations("- `deliver-pr` -> `build-candidate` -> `finish-pr`", 1, true);
+        assert_eq!(observations.len(), 3, "every chained token is observed");
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["build-candidate", "finish-pr"],
+            "both arrow targets stay edges after the first link"
+        );
+
+        let head = observations.iter().find(|observation| observation.target == "deliver-pr");
+        assert!(head.is_some(), "the chain source is observed");
+        let Some(head) = head else { return };
+        assert_eq!(
+            head.syntax,
+            RouteSyntax::InlineCode,
+            "the chain source is not itself an arrow target"
+        );
+    }
+
+    #[test]
+    fn labeled_route_outside_a_list_is_still_an_edge() {
+        let observations = route_line_observations("Entry flow: `deliver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "the labeled route yields one observation");
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["deliver-pr"],
+            "a labeled route written as a paragraph is still executable"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::LabeledTarget,
+            "the list marker is presentation, not route semantics"
         );
     }
 
     #[test]
     fn unrelated_labeled_code_remains_non_executable() {
         let observations = route_line_observations("- Cache key: `deliver-pr`", 1, true);
-        assert!(edge_targets(&observations).is_empty());
-        assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
+        assert_eq!(observations.len(), 1, "the labeled code yields one observation");
+        assert!(
+            edge_targets(&observations).is_empty(),
+            "a label outside ROUTE_BEARING_LABELS creates no edge"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::InlineCode,
+            "an unrelated label leaves the token as inline code"
+        );
     }
 
     #[test]
     fn existing_skill_name_in_prose_is_a_prose_mention() {
         let text =
             "## Procedure\nTake issue #123 through `deliver-pr` after the candidate is coherent.\n";
-        assert!(route_targets(text).is_empty());
+        assert!(route_targets(text).is_empty(), "prose creates no route target");
         let observations = route_observations(text);
-        assert_eq!(observations.len(), 1);
+        assert_eq!(observations.len(), 1, "the prose token is observed once");
         assert_eq!(observations[0].target, "deliver-pr");
         assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
         assert_eq!(
             resolve_route_syntax(&observations[0], &BTreeSet::from(["deliver-pr".to_string()])),
-            RouteSyntax::ProseMention
+            RouteSyntax::ProseMention,
+            "a real skill named in prose resolves to a prose mention"
         );
     }
 
@@ -1032,22 +1122,30 @@ mod tests {
     fn unknown_inline_code_is_a_code_identifier() {
         let text = "## Procedure\nCompare `candidate_sha` before selecting a route.\n";
         let observations = route_observations(text);
-        assert_eq!(observations.len(), 1);
+        assert_eq!(observations.len(), 1, "the inline code token is observed once");
         assert_eq!(observations[0].target, "candidate_sha");
         assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
         assert_eq!(
             resolve_route_syntax(&observations[0], &BTreeSet::from(["deliver-pr".to_string()])),
-            RouteSyntax::CodeIdentifier
+            RouteSyntax::CodeIdentifier,
+            "a token naming no provider-local skill resolves to a code identifier"
         );
-        assert!(!resolve_route_syntax(&observations[0], &BTreeSet::new()).is_edge());
+        assert!(
+            !resolve_route_syntax(&observations[0], &BTreeSet::new()).is_edge(),
+            "a code identifier is never an executable edge"
+        );
     }
 
     #[test]
     fn backtick_formatting_cannot_mutate_prose_into_a_route() {
         let plain = "## Procedure\nTake issue #123 through deliver-pr after review.\n";
         let formatted = "## Procedure\nTake issue #123 through `deliver-pr` after review.\n";
-        assert_eq!(route_targets(plain), route_targets(formatted));
-        assert!(route_targets(formatted).is_empty());
+        assert_eq!(
+            route_targets(plain),
+            route_targets(formatted),
+            "backticks alone must not change the route set"
+        );
+        assert!(route_targets(formatted).is_empty(), "neither form creates a route");
     }
 
     #[test]
