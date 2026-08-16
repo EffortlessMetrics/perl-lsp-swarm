@@ -815,11 +815,16 @@ export class BinaryDownloader {
     }
 
     if (Array.isArray(parsed)) {
-      // For stable channel, find first non-prerelease, else fall back to latest.
-      const releases = parsed.filter(isReleaseShape);
-      const selected = releases.find((release) => !release.prerelease) ?? releases[0];
+      // The array response is only requested for the `stable` channel, so
+      // selection is fail-closed: a release qualifies only when it explicitly
+      // declares `prerelease: false`. A missing or non-boolean field is not
+      // evidence of a stable release, and falling back to the newest entry
+      // would silently install a prerelease for a user who asked for stable.
+      const selected = parsed
+        .filter(isReleaseShape)
+        .find((release) => release.prerelease === false);
       if (!selected) {
-        throw new Error('No releases found');
+        throw new Error('No stable release found');
       }
       return selected;
     }

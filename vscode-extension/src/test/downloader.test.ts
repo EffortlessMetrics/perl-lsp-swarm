@@ -1382,6 +1382,70 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     expect(request.destroy).not.toHaveBeenCalled();
   });
 
+  // The array response is only requested for `channel === 'stable'`. These
+  // three controls pin the fail-closed selection: an explicit `prerelease:
+  // false` is required, and neither a prerelease nor a release that omits the
+  // field may be installed for a user who selected stable.
+  function stableChannelConfig(): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'stable';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+  }
+
+  function respondWithReleaseList(seams: DownloaderSeams, releases: unknown[]): void {
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify(releases));
+        response.emit('end');
+      });
+      return request;
+    });
+  }
+
+  test('selects the release that explicitly declares prerelease false', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [
+      { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
+      { tag_name: 'v1.9.0', prerelease: false, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+  });
+
+  test('refuses to install a prerelease when the stable channel has no stable release', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [
+      { tag_name: 'v2.0.0-rc.2', prerelease: true, assets: [] },
+      { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No stable release found');
+  });
+
+  test('does not treat a release that omits prerelease as stable', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [{ tag_name: 'v1.9.0', assets: [] }]);
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No stable release found');
+  });
+
   test('reports a missing release when GitHub answers 404', async () => {
     const seams = downloader as unknown as DownloaderSeams;
     const response = makeResponse(404);
