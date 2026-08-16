@@ -1494,7 +1494,21 @@ created = "2026-08-15"
 review_after = "2026-09-15"
 
 [[allow]]
+id = "non-rust-dependency-hygiene-machete-fixtures"
+glob = "xtask/tests/fixtures/dependency-hygiene/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "devex/dependency-hygiene"
+reason = "Documented cargo-machete `--json` result shapes — one finding case and three malformed/incomplete cases — that pin the fail-closed parser boundary so unrecognized exit-0 output cannot become SUCCESS with zero findings (#9364)."
+covered_by = [
+  "cargo test -p xtask --locked --bins dependency_hygiene",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
 
+[[allow]]
 id = "non-rust-product-7810-changelog-fragment"
 path = ".changes/unreleased/product-7810-Added-100438.yaml"
 kind = "release_metadata"
@@ -1503,9 +1517,6 @@ surface = "release"
 classification = "documentation"
 owner = "release/ci"
 reason = "Changie product release-note fragment announcing the fail-closed real Vim + vim-lsp interoperability journey for the canonical perllsp client path (#7810)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
 created = "2026-08-15"
 review_after = "2026-09-15"
