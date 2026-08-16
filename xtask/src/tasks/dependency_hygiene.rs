@@ -22,13 +22,13 @@
 //! The active command uses cargo-machete's structured `--json` output. The
 //! parser accepts the documented `{}` clean result and the documented
 //! `crates` result shape only; all other successful output is `NOT_PROVEN`.
-
 //!
-//! Unit tests cover probe classification, structured/legacy parser behavior,
-//! and finding metadata. They do not claim to exercise filesystem write
-//! failures, target/feature-specific Cargo retention, stale exception
-//! matching, legacy udeps arbitration, or check/report installation side
-//! effects; those require integration or hosted proof.
+//! ## Proof scope
+//! Unit tests cover probe classification, the shipped JSON parser, and finding
+//! metadata. They do not claim to exercise filesystem write failures,
+//! target/feature-specific Cargo retention, stale exception matching, legacy
+//! udeps arbitration, or check/report installation side effects; those require
+//! integration or hosted proof.
 
 use std::fs;
 use std::path::Path;
@@ -118,6 +118,20 @@ pub struct DependencyFinding {
     pub limitations: Vec<String>,
 }
 
+/// Remove any native output left by a previous run.
+///
+/// A run that never produced native output must not leave an earlier run's
+/// file behind: a consumer reading a current timestamp would otherwise follow
+/// `native_output_ref`-shaped paths to evidence from a different run.
+fn clear_stale_native_output(root: &Path) {
+    let stale = root.join(OUTPUT_SUBDIR).join(NATIVE_OUTPUT_FILENAME);
+    if let Err(error) = fs::remove_file(&stale)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("[WARN] could not remove stale native output {}: {error}", stale.display());
+    }
+}
+
 /// Configuration for the dependency-hygiene task.
 pub struct DependencyHygieneConfig {
     pub mode: DependencyHygieneMode,
@@ -133,7 +147,9 @@ pub struct DependencyHygieneResult {
     pub outcome_detail: Option<String>,
     pub findings: Vec<DependencyFinding>,
     pub instrument_version: Option<String>,
-    pub native_output_ref: String,
+    /// Path to this run's saved native output. `None` when the instrument
+    /// produced no native output, so the field never points at an earlier run.
+    pub native_output_ref: Option<String>,
     pub command_identity: String,
 }
 
@@ -239,7 +255,7 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
                 )),
                 findings: vec![],
                 instrument_version: Some(version),
-                native_output_ref: native_ref,
+                native_output_ref: Some(native_ref),
                 command_identity,
             };
         }
@@ -267,29 +283,14 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
                 )),
                 findings: vec![],
                 instrument_version: Some(version),
-                native_output_ref: native_ref,
+                native_output_ref: Some(native_ref),
                 command_identity,
             };
         }
     };
 
-    // 8. Classify only after the parser has established a recognized result.
-    if exit_code == Some(1) && findings.is_empty() {
-        return DependencyHygieneResult {
-            schema_version: SCHEMA_VERSION,
-            timestamp: Utc::now().to_rfc3339(),
-            outcome: DependencyHygieneOutcome::NotProven,
-            outcome_detail: Some(format!(
-                "cargo-machete exited 1 but no findings were parsed; \
-                 native output saved to {native_ref}"
-            )),
-            findings: vec![],
-            instrument_version: Some(version),
-            native_output_ref: native_ref,
-            command_identity,
-        };
-    }
-
+    // 8. `classify_machete_output` owns the exit-1/no-findings invariant and
+    //    has already rejected that case as a parse error above.
     let outcome = if findings.is_empty() {
         DependencyHygieneOutcome::Success
     } else {
@@ -303,16 +304,18 @@ fn gather_findings(root: &Path) -> DependencyHygieneResult {
         outcome_detail: None,
         findings,
         instrument_version: Some(version),
-        native_output_ref: native_ref,
+        native_output_ref: Some(native_ref),
         command_identity,
     }
 }
 
-/// Construct a NOT_PROVEN result with a reason detail string.
+/// Construct a NOT_PROVEN result for a run that produced no native output.
 ///
-/// `native_output_ref` points to the canonical path even if the file may not
-/// have been written (e.g., tool was never invoked).
+/// Any native output left by an earlier run is removed first, and
+/// `native_output_ref` is `None`, so the result cannot attribute a previous
+/// run's evidence to this one.
 fn not_proven(root: &Path, reason: String, version: Option<String>) -> DependencyHygieneResult {
+    clear_stale_native_output(root);
     DependencyHygieneResult {
         schema_version: SCHEMA_VERSION,
         timestamp: Utc::now().to_rfc3339(),
@@ -320,11 +323,7 @@ fn not_proven(root: &Path, reason: String, version: Option<String>) -> Dependenc
         outcome_detail: Some(reason),
         findings: vec![],
         instrument_version: version,
-        native_output_ref: root
-            .join(OUTPUT_SUBDIR)
-            .join(NATIVE_OUTPUT_FILENAME)
-            .to_string_lossy()
-            .into_owned(),
+        native_output_ref: None,
         command_identity: COMMAND_IDENTITY.to_string(),
     }
 }
@@ -522,83 +521,6 @@ pub fn classify_machete_output(
     Ok(findings)
 }
 
-// ─── Legacy text parser ───────────────────────────────────────────────────────
-
-/// Parse cargo-machete human-readable text output into item-level findings.
-///
-/// ## Expected format
-///
-/// When unused dependencies are found:
-/// ```text
-/// Found the following unused dependencies in /abs/path/to/Cargo.toml:
-/// dep_name_1
-/// dep_name_2
-///
-/// Found the following unused dependencies in /abs/path/to/other/Cargo.toml:
-/// dep_name_3
-/// ```
-///
-/// When no unused dependencies:
-/// ```text
-/// No unused dependencies found! Nothing to fix.
-/// ```
-///
-/// Returns `Err` only when the output is structurally unrecognizable in a way
-/// that indicates tool malfunction rather than simply "no findings found".
-///
-/// Public for unit testing.
-pub fn parse_machete_text(
-    text: &str,
-    native_ref: &str,
-    instrument_version: &str,
-    command_identity: &str,
-) -> Result<Vec<DependencyFinding>, String> {
-    let mut findings: Vec<DependencyFinding> = Vec::new();
-    let mut current_manifest: Option<String> = None;
-
-    for raw_line in text.lines() {
-        let line = strip_ansi_and_emoji(raw_line).trim().to_string();
-
-        if line.is_empty() {
-            // Blank line ends the current manifest block.
-            current_manifest = None;
-            continue;
-        }
-
-        // Detect "Found the following unused dependencies in <path>:" header.
-        if let Some(path) = extract_manifest_path_from_line(&line) {
-            current_manifest = Some(path);
-            continue;
-        }
-
-        // Skip known non-dep metadata lines.
-        if is_non_finding_line(&line) {
-            current_manifest = None;
-            continue;
-        }
-
-        // If we are inside a manifest block, this line is a dependency name.
-        if let Some(ref manifest) = current_manifest
-            && is_valid_dep_name(&line)
-        {
-            findings.push(DependencyFinding {
-                crate_name: extract_crate_name(manifest),
-                manifest_path: manifest.clone(),
-                dep_name: line.clone(),
-                dep_section: None,
-                instrument: INSTRUMENT_NAME.to_string(),
-                instrument_version: Some(instrument_version.to_string()),
-                command_identity: command_identity.to_string(),
-                finding_code: FINDING_CODE_UNUSED_DEP.to_string(),
-                native_output_ref: native_ref.to_string(),
-                limitations: standard_limitations(),
-            });
-        }
-    }
-
-    Ok(findings)
-}
-
 /// Standard limitation strings for cargo-machete findings.
 fn standard_limitations() -> Vec<String> {
     vec![
@@ -606,74 +528,6 @@ fn standard_limitations() -> Vec<String> {
         "cargo-machete JSON does not expose dependency section or target/feature context"
             .to_string(),
     ]
-}
-
-/// Strip ANSI escape sequences and high-Unicode codepoints from a string.
-///
-/// Uses a simple byte-level state machine handling the `ESC[…m` CSI family
-/// (sufficient for terminal color codes). Multi-byte UTF-8 sequences
-/// (emoji, etc.) are dropped to avoid polluting parsed dependency names.
-///
-/// Public for unit testing.
-pub fn strip_ansi_and_emoji(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    let mut in_esc = false;
-
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_esc {
-            // Escape sequence ends on an ASCII letter.
-            if b.is_ascii_alphabetic() {
-                in_esc = false;
-            }
-        } else if b == b'\x1b' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            // Start of CSI escape sequence.
-            in_esc = true;
-            i += 1; // skip '[' on next iteration
-        } else if b.is_ascii() {
-            out.push(b as char);
-        }
-        // Non-ASCII bytes (multi-byte UTF-8 / emoji) are silently dropped.
-        i += 1;
-    }
-
-    out
-}
-
-/// Extract the manifest path from a "Found the following…" header line.
-///
-/// Returns the path string without the trailing colon, or `None` if the
-/// line does not match the expected header format.
-///
-/// Public for unit testing.
-pub fn extract_manifest_path_from_line(line: &str) -> Option<String> {
-    const PREFIX: &str = "Found the following unused dependencies in ";
-    if let Some(rest) = line.strip_prefix(PREFIX) {
-        let path = rest.trim_end_matches(':').trim();
-        if !path.is_empty() {
-            return Some(path.to_string());
-        }
-    }
-    None
-}
-
-/// Return `true` for lines that are known cargo-machete metadata output
-/// and not dependency names.
-///
-/// Public for unit testing.
-pub fn is_non_finding_line(line: &str) -> bool {
-    line.starts_with("Found the following")
-        || line.starts_with("Searching")
-        || line.starts_with("cargo machete")
-        || line.contains("No unused dependencies")
-        || line.contains("Nothing to fix")
-        || line.starts_with("Skipping")
-        || line.starts_with("Warning:")
-        || line.starts_with("warning:")
-        || line.starts_with("error:")
-        || line.starts_with("note:")
 }
 
 /// Return `true` if the string looks like a valid Cargo dependency name.
@@ -686,26 +540,13 @@ pub fn is_valid_dep_name(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Extract a best-effort crate name from a Cargo.toml manifest path.
-///
-/// Returns the name of the directory containing the Cargo.toml, or
-/// `"unknown"` if the path structure is not navigable.
-///
-/// Public for unit testing.
-pub fn extract_crate_name(manifest_path: &str) -> String {
-    Path::new(manifest_path)
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string()
-}
-
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    #![expect(clippy::unwrap_used, reason = "test assertions on fixture parsing")]
+    #![expect(clippy::expect_used, reason = "test assertions on fixture parsing")]
+
     use super::*;
 
     const REAL_MACHETE_OUTPUT: &str =
@@ -827,6 +668,96 @@ mod tests {
     }
 
     #[test]
+    fn test_json_finding_has_required_metadata() {
+        let findings = classify_machete_output(
+            Some(1),
+            REAL_MACHETE_OUTPUT,
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        )
+        .expect("documented cargo-machete JSON should parse");
+
+        assert_eq!(findings.len(), 1, "fixture declares exactly one unused dependency");
+        let finding = &findings[0];
+        assert!(!finding.crate_name.is_empty(), "crate_name must not be empty");
+        assert!(!finding.manifest_path.is_empty(), "manifest_path must not be empty");
+        assert!(!finding.dep_name.is_empty(), "dep_name must not be empty");
+        assert!(!finding.instrument.is_empty(), "instrument must not be empty");
+        assert_eq!(
+            finding.instrument_version.as_deref(),
+            Some("cargo-machete 0.9.2"),
+            "finding must carry the probed instrument version"
+        );
+        assert!(!finding.command_identity.is_empty(), "command_identity must not be empty");
+        assert_eq!(
+            finding.finding_code, FINDING_CODE_UNUSED_DEP,
+            "JSON unused entries must carry the unused-dependency finding code"
+        );
+        assert!(!finding.native_output_ref.is_empty(), "native_output_ref must not be empty");
+        assert!(!finding.limitations.is_empty(), "limitations must be documented");
+    }
+
+    #[test]
+    fn test_json_findings_document_false_positive_limitation() {
+        let findings = classify_machete_output(
+            Some(1),
+            REAL_MACHETE_OUTPUT,
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        )
+        .expect("documented cargo-machete JSON should parse");
+
+        assert_eq!(findings.len(), 1, "fixture declares exactly one unused dependency");
+        assert!(
+            findings[0].limitations.iter().any(|limitation| limitation.contains("proc-macro")
+                || limitation.contains("build script")),
+            "limitations must document false-positive risk from macros/build scripts"
+        );
+    }
+
+    #[test]
+    fn test_json_findings_attribute_to_primary_instrument() {
+        let findings = classify_machete_output(
+            Some(1),
+            REAL_MACHETE_OUTPUT,
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        )
+        .expect("documented cargo-machete JSON should parse");
+
+        assert!(!findings.is_empty(), "fixture must produce at least one finding to attribute");
+        for finding in &findings {
+            assert_eq!(
+                finding.instrument, INSTRUMENT_NAME,
+                "all parsed findings must attribute to cargo-machete"
+            );
+        }
+    }
+
+    #[test]
+    fn test_json_ignored_used_does_not_create_findings() {
+        let stdout = r#"{"crates":[{"package_name":"fixture-crate",
+            "manifest_path":"crates/fixture-crate/Cargo.toml",
+            "unused":[],"ignored_used":["suppressed-dependency"]}]}"#;
+        let findings = classify_machete_output(
+            Some(0),
+            stdout,
+            "target/machete-output.txt",
+            "cargo-machete 0.9.2",
+            COMMAND_IDENTITY,
+        )
+        .expect("documented cargo-machete JSON should parse");
+
+        assert!(
+            findings.is_empty(),
+            "ignored_used is tool-native suppression metadata, not an unused dependency"
+        );
+    }
+
+    #[test]
     fn test_classify_current_json_clean_result() {
         let findings = classify_machete_output(
             Some(0),
@@ -837,7 +768,7 @@ mod tests {
         )
         .expect("documented clean JSON should parse");
 
-        assert!(findings.is_empty());
+        assert!(findings.is_empty(), "documented clean `{{}}` result must yield no findings");
     }
 
     #[test]
@@ -917,163 +848,9 @@ mod tests {
         assert!(matches!(outcome, ProbeOutcome::ProbeFailed(_)));
     }
 
-    // ── Text parser — negative control #3: malformed / unrecognized output ────
-
-    #[test]
-    fn test_parse_empty_input_yields_no_findings() {
-        let findings = parse_machete_text("", "/tmp/out.txt", "0.7.0", "cargo machete").unwrap();
-        assert!(findings.is_empty());
-    }
-
-    #[test]
-    fn test_parse_garbage_yields_no_findings() {
-        // Output with no recognized header lines → empty findings (not NOT_PROVEN).
-        // NOT_PROVEN is only returned at the call site if exit code is inconsistent.
-        let text = "!!xyzzy!!\n@@@malformed@@@\n123\n";
-        let findings = parse_machete_text(text, "/tmp/out.txt", "0.7.0", "cargo machete").unwrap();
-        assert!(findings.is_empty());
-    }
-
-    // ── Text parser — negative control #7: clean run ─────────────────────────
-
-    #[test]
-    fn test_parse_clean_no_findings_message() {
-        let text = "No unused dependencies found! Nothing to fix.\n";
-        let findings = parse_machete_text(text, "/tmp/out.txt", "0.7.0", "cargo machete").unwrap();
-        assert!(findings.is_empty());
-    }
-
-    #[test]
-    fn test_parse_clean_variant_no_exclamation() {
-        let text = "No unused dependencies found\n";
-        let findings = parse_machete_text(text, "/tmp/out.txt", "0.7.0", "cargo machete").unwrap();
-        assert!(findings.is_empty());
-    }
-
-    // ── Text parser — negative control #5: real finding ──────────────────────
-
-    #[test]
-    fn test_parse_single_finding() {
-        let text = "Found the following unused dependencies in /workspace/crates/my-crate/Cargo.toml:\nunused_dep\n\n";
-        let findings =
-            parse_machete_text(text, "/tmp/machete.txt", "0.7.0", "cargo machete").unwrap();
-        assert_eq!(findings.len(), 1);
-        let f = &findings[0];
-        assert_eq!(f.dep_name, "unused_dep");
-        assert_eq!(f.manifest_path, "/workspace/crates/my-crate/Cargo.toml");
-        assert_eq!(f.crate_name, "my-crate");
-        assert_eq!(f.finding_code, "UNUSED_DEP");
-        assert_eq!(f.instrument, "cargo-machete");
-        assert_eq!(f.instrument_version, Some("0.7.0".to_string()));
-        assert_eq!(f.command_identity, "cargo machete");
-        assert!(!f.native_output_ref.is_empty());
-    }
-
-    #[test]
-    fn test_parse_multiple_findings_one_crate() {
-        let text = concat!(
-            "Found the following unused dependencies in /ws/crates/foo/Cargo.toml:\n",
-            "bar\n",
-            "baz\n",
-            "\n",
-        );
-        let findings =
-            parse_machete_text(text, "/tmp/out.txt", "0.8.0", "cargo machete --skip-target-dir")
-                .unwrap();
-        assert_eq!(findings.len(), 2);
-        assert_eq!(findings[0].dep_name, "bar");
-        assert_eq!(findings[1].dep_name, "baz");
-        // All findings from the same crate
-        assert_eq!(findings[0].crate_name, "foo");
-        assert_eq!(findings[1].crate_name, "foo");
-    }
-
-    #[test]
-    fn test_parse_multiple_crates() {
-        let text = concat!(
-            "Found the following unused dependencies in /ws/crates/alpha/Cargo.toml:\n",
-            "dep_a\n",
-            "\n",
-            "Found the following unused dependencies in /ws/crates/beta/Cargo.toml:\n",
-            "dep_b\n",
-            "dep_c\n",
-            "\n",
-        );
-        let findings = parse_machete_text(text, "/tmp/out.txt", "0.8.0", "cargo machete").unwrap();
-        assert_eq!(findings.len(), 3);
-        assert_eq!(findings[0].crate_name, "alpha");
-        assert_eq!(findings[0].dep_name, "dep_a");
-        assert_eq!(findings[1].crate_name, "beta");
-        assert_eq!(findings[1].dep_name, "dep_b");
-        assert_eq!(findings[2].crate_name, "beta");
-        assert_eq!(findings[2].dep_name, "dep_c");
-    }
-
-    // ── Text parser — ANSI stripping ──────────────────────────────────────────
-
-    #[test]
-    fn test_ansi_stripped_before_parse() {
-        let text = "\x1b[32mFound the following unused dependencies in /ws/crates/foo/Cargo.toml:\x1b[0m\nbaz\n\n";
-        let findings = parse_machete_text(text, "/tmp/out.txt", "0.7.0", "cargo machete").unwrap();
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].dep_name, "baz");
-    }
-
-    #[test]
-    fn test_strip_ansi_basic() {
-        assert_eq!(strip_ansi_and_emoji("hello"), "hello");
-        assert_eq!(strip_ansi_and_emoji("\x1b[32mgreen\x1b[0m"), "green");
-        assert_eq!(strip_ansi_and_emoji("abc\x1b[1mbold\x1b[m end"), "abcbold end");
-    }
-
-    #[test]
-    fn test_strip_ansi_empty() {
-        assert_eq!(strip_ansi_and_emoji(""), "");
-    }
-
     // ── Non-finding line classification ───────────────────────────────────────
 
-    #[test]
-    fn test_is_non_finding_line_cargo_machete_summary() {
-        assert!(is_non_finding_line("cargo machete found unused dependencies in 2 crates."));
-    }
-
-    #[test]
-    fn test_is_non_finding_line_no_unused() {
-        assert!(is_non_finding_line("No unused dependencies found! Nothing to fix."));
-    }
-
-    #[test]
-    fn test_is_non_finding_line_searching() {
-        assert!(is_non_finding_line("Searching /path/to/workspace..."));
-    }
-
-    #[test]
-    fn test_is_non_finding_line_warning() {
-        assert!(is_non_finding_line("warning: some warning text"));
-    }
-
-    #[test]
-    fn test_is_not_non_finding_line_valid_dep() {
-        assert!(!is_non_finding_line("serde"));
-        assert!(!is_non_finding_line("tokio-util"));
-        assert!(!is_non_finding_line("serde_json"));
-    }
-
     // ── Summary line after findings must not create a ghost dep ───────────────
-
-    #[test]
-    fn test_summary_line_not_parsed_as_dep() {
-        let text = concat!(
-            "Found the following unused dependencies in /ws/Cargo.toml:\n",
-            "real_dep\n",
-            "\n",
-            "cargo machete found unused dependencies in 1 crate.\n",
-        );
-        let findings = parse_machete_text(text, "/out", "0.7.0", "cargo machete").unwrap();
-        assert_eq!(findings.len(), 1, "only real_dep should be a finding");
-        assert_eq!(findings[0].dep_name, "real_dep");
-    }
 
     // ── Dependency name validation ─────────────────────────────────────────────
 
@@ -1097,65 +874,9 @@ mod tests {
 
     // ── Manifest path extraction ───────────────────────────────────────────────
 
-    #[test]
-    fn test_extract_manifest_path_valid() {
-        let line = "Found the following unused dependencies in /workspace/crates/foo/Cargo.toml:";
-        assert_eq!(
-            extract_manifest_path_from_line(line),
-            Some("/workspace/crates/foo/Cargo.toml".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_manifest_path_no_match() {
-        assert_eq!(extract_manifest_path_from_line("some random line"), None);
-        assert_eq!(extract_manifest_path_from_line(""), None);
-        assert_eq!(extract_manifest_path_from_line("warning: something"), None);
-    }
-
-    #[test]
-    fn test_extract_manifest_path_no_trailing_colon() {
-        // Path without colon should still parse (format flexibility).
-        let line = "Found the following unused dependencies in /path/Cargo.toml";
-        assert_eq!(extract_manifest_path_from_line(line), Some("/path/Cargo.toml".to_string()));
-    }
-
     // ── Crate name extraction ─────────────────────────────────────────────────
 
-    #[test]
-    fn test_extract_crate_name_normal() {
-        assert_eq!(extract_crate_name("/workspace/crates/my-crate/Cargo.toml"), "my-crate");
-    }
-
-    #[test]
-    fn test_extract_crate_name_root_toml() {
-        assert_eq!(extract_crate_name("Cargo.toml"), "unknown");
-    }
-
-    #[test]
-    fn test_extract_crate_name_workspace_root() {
-        assert_eq!(extract_crate_name("/workspace/Cargo.toml"), "workspace");
-    }
-
     // ── Finding metadata completeness ──────────────────────────────────────────
-
-    #[test]
-    fn test_finding_has_required_metadata() {
-        let text =
-            "Found the following unused dependencies in /ws/crates/foo/Cargo.toml:\nunused_dep\n\n";
-        let findings = parse_machete_text(text, "/tmp/out.txt", "0.7.0", "cargo machete").unwrap();
-        assert_eq!(findings.len(), 1);
-        let f = &findings[0];
-
-        assert!(!f.crate_name.is_empty(), "crate_name must not be empty");
-        assert!(!f.manifest_path.is_empty(), "manifest_path must not be empty");
-        assert!(!f.dep_name.is_empty(), "dep_name must not be empty");
-        assert!(!f.instrument.is_empty(), "instrument must not be empty");
-        assert!(!f.command_identity.is_empty(), "command_identity must not be empty");
-        assert!(!f.finding_code.is_empty(), "finding_code must not be empty");
-        assert!(!f.native_output_ref.is_empty(), "native_output_ref must not be empty");
-        assert!(!f.limitations.is_empty(), "limitations must be documented");
-    }
 
     // ── Negative control #6: intentional retention via tool-native ignores ─────
 
@@ -1165,34 +886,10 @@ mod tests {
     /// as its official exception mechanism. Suppression does not occur in
     /// this module — it occurs upstream in the tool configuration.
     /// The limitation text in each finding documents the false-positive risk.
-    #[test]
-    fn test_findings_document_false_positive_limitation() {
-        let text = "Found the following unused dependencies in /ws/Cargo.toml:\nmy_dep\n\n";
-        let findings = parse_machete_text(text, "/out", "0.7.0", "cargo machete").unwrap();
-        assert_eq!(findings.len(), 1);
-        let lims = &findings[0].limitations;
-        assert!(
-            lims.iter().any(|l| l.contains("proc-macro") || l.contains("build script")),
-            "limitations must document false-positive risk from macros/build scripts"
-        );
-    }
-
     // ── Primary instrument attribution ─────────────────────────────────────────
 
     /// Every parsed finding identifies the primary cargo-machete instrument.
     /// This does not exercise a cargo-udeps subprocess or override path.
-    #[test]
-    fn test_findings_attribute_to_primary_instrument() {
-        let text = "Found the following unused dependencies in /ws/Cargo.toml:\nfoo\n\n";
-        let findings = parse_machete_text(text, "/out", "0.7.0", "cargo machete").unwrap();
-        for f in &findings {
-            assert_eq!(
-                f.instrument, "cargo-machete",
-                "all parsed findings must attribute to cargo-machete"
-            );
-        }
-    }
-
     // ── Missing-tool probe classification ─────────────────────────────────────
 
     /// A missing probe binary is never treated as an available instrument.
