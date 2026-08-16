@@ -21,7 +21,9 @@ SCHEMA_VERSION = "dap_scorecard_packet.v2"
 REQUIRED_BINARY_STATUSES = {
     "variables": "PASS",
     "evaluate": "PASS",
-    "deep_pagination": "PASS",
+    # Bounded lexical collection snapshots are unproven (#7358); the runtime
+    # scorecard asserts the honest non-expanded rendering rather than a page.
+    "deep_pagination": "NOT_PROVEN",
     "memory": "MEASURED",
 }
 REQUIRED_LAUNCH_FIXTURE_NAMES = LAUNCH_FIXTURES
@@ -271,7 +273,7 @@ def expected_generated_status_blocks(scorecard: Mapping[str, Any]) -> Mapping[st
             ),
             (
                 "| Deep truncation/pagination correctness | "
-                f"{deep_detail} | page [250..274] over @big "
+                f"{deep_detail} | no fabricated @big contents or counts (#7358) "
                 f"| {deep_pagination.get('status')} |"
             ),
             (

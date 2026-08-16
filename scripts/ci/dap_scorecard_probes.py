@@ -177,36 +177,43 @@ def _require_lexical_big(
             f"expected exactly one Locals @big row, got {len(matches)}; "
             f"locals={names!r}"
         )
-    row = matches[0]
-    variables_ref = _positive_int(row.get("variablesReference"))
+    return matches[0]
+
+
+def _validate_unexpanded_lexical_big(row: Mapping[str, Any]) -> str:
+    """Assert the adapter stays honest about not having observed `@big`.
+
+    The lexical `B` query deliberately does not enumerate live aggregates, so the
+    only truthful rendering is an opaque, non-expandable marker. Two things must
+    therefore be absent: a fabricated element total, and a reference that would
+    invite the client to page contents the adapter never read. Bounded lexical
+    snapshots are owned by #7358; this cell fails the moment either appears.
+    """
+    value = str(row.get("value", ""))
+    variables_ref = row.get("variablesReference")
     indexed = row.get("indexedVariables")
-    if variables_ref is None:
-        raise ScorecardError("Locals @big omitted a positive variablesReference")
-    if isinstance(indexed, bool) or not isinstance(indexed, int) or indexed != 500:
-        raise ScorecardError(
-            f"Locals @big must report indexedVariables=500, got {indexed!r}"
-        )
-    return row
+    named = row.get("namedVariables")
 
-
-def _validate_lexical_big_page(page: list[Any], phase: str) -> None:
-    if len(page) != 25:
+    if _positive_int(variables_ref) is not None:
         raise ScorecardError(
-            f"{phase}: expected 25 @big variables, got {len(page)}"
+            "Locals @big advertised an expandable variablesReference "
+            f"({variables_ref!r}) without a proven bounded snapshot (#7358)"
         )
-    for offset, raw_row in enumerate(page):
-        row = _require_object(raw_row, f"{phase} @big variable[{offset}]")
-        index = 250 + offset
-        name = str(row.get("name", ""))
-        value = str(row.get("value", ""))
-        expected_name = f"[{index}]"
-        expected_value = str(index + 1)
-        if name != expected_name or value != expected_value:
+    for label, count in (("indexedVariables", indexed), ("namedVariables", named)):
+        if count is not None:
             raise ScorecardError(
-                f"{phase}: @big[{index}] expected "
-                f"name={expected_name!r}, value={expected_value!r}; "
-                f"got name={name!r}, value={value!r}"
+                f"Locals @big fabricated {label}={count!r}; the lexical query "
+                "never observed the aggregate contents (#7358)"
             )
+    # The scalar renderer quotes string values, so the observed marker is
+    # `"ARRAY(0x0)"` rather than a bare `ARRAY(0x0)`.
+    if not value.strip('"').startswith("ARRAY("):
+        raise ScorecardError(
+            f"Locals @big must render as an opaque ARRAY marker, got value={value!r}"
+        )
+    return value
+
+
 
 
 def probe_session_metrics(
@@ -291,27 +298,11 @@ print \"marker=$marker\\n\";
                 }
 
             deep_setup_error: str | None = None
-            indexed_ref = 0
-            indexed_count = 0
+            value_before = ""
             try:
-                lexical_big = _require_lexical_big(scope_variables)
-                indexed_ref = int(lexical_big["variablesReference"])
-                indexed_count = int(lexical_big["indexedVariables"])
-                before_page = _require_array(
-                    _require_object(
-                        dap.request(
-                            "variables",
-                            {
-                                "variablesReference": indexed_ref,
-                                "start": 250,
-                                "count": 25,
-                            },
-                        ),
-                        "before-evaluate @big variables body",
-                    ).get("variables"),
-                    "before-evaluate @big variables",
+                value_before = _validate_unexpanded_lexical_big(
+                    _require_lexical_big(scope_variables)
                 )
-                _validate_lexical_big_page(before_page, "before evaluate")
             except ScorecardError as exc:
                 deep_setup_error = str(exc)
 
@@ -344,28 +335,23 @@ print \"marker=$marker\\n\";
                 deep_metric = metric_failure(deep_setup_error)
             else:
                 try:
-                    after_page = _require_array(
-                        _require_object(
-                            dap.request(
-                                "variables",
-                                {
-                                    "variablesReference": indexed_ref,
-                                    "start": 250,
-                                    "count": 25,
-                                },
-                            ),
-                            "after-evaluate @big variables body",
-                        ).get("variables"),
-                        "after-evaluate @big variables",
+                    after_scopes, _after_errors = _query_scope_variables(dap, scopes)
+                    value_after = _validate_unexpanded_lexical_big(
+                        _require_lexical_big(after_scopes)
                     )
-                    _validate_lexical_big_page(after_page, "after evaluate")
+                    if value_after != value_before:
+                        raise ScorecardError(
+                            "Locals @big rendering drifted across evaluate: "
+                            f"{value_before!r} then {value_after!r}"
+                        )
                     deep_metric = {
-                        "status": "PASS",
+                        "status": "NOT_PROVEN",
                         "detail": (
-                            "stdio Locals @big pagination returned exact values "
-                            "[250]=251 through [274]=275 before and after evaluate; "
-                            f"variablesReference={indexed_ref}; "
-                            f"indexedVariables={indexed_count}"
+                            "stdio Locals @big stays a non-expandable marker "
+                            f"({value_after}) with no variablesReference and no "
+                            "element counts before and after evaluate; bounded "
+                            "lexical collection snapshots and their deep-pagination "
+                            "proof are owned by issue 7358"
                         ),
                     }
                 except ScorecardError as exc:

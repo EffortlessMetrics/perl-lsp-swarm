@@ -148,7 +148,7 @@ fn session_table_from_receipt(receipt: Option<&ScorecardReceipt>) -> String {
                 | Attach success rate (TCP loopback) | receipt missing (`cargo test -p perl-dap --test dap_scorecard_harness -- --nocapture`) | ≥ 80 % | SKIP |\n\
                 | Variables pane correctness (real session) | receipt missing | expected named variables in scope | SKIP |\n\
                 | Evaluate correctness (real session) | receipt missing | evaluate($x + 1) => 42 | SKIP |\n\
-                | Deep truncation/pagination correctness | receipt missing | page [250..274] over @big | SKIP |\n\
+                | Deep truncation/pagination correctness | receipt missing | no fabricated @big contents or counts (#7358) | SKIP |\n\
                 | Memory footprint baseline (portable proxy) | receipt missing | best-effort baseline | SKIP |"
             .to_string();
     };
@@ -161,7 +161,7 @@ fn session_table_from_receipt(receipt: Option<&ScorecardReceipt>) -> String {
          | Attach success rate (TCP loopback) | {}{} | ≥ {} % | {} |\n\
          | Variables pane correctness (real session) | {} | expected named variables in scope | {} |\n\
          | Evaluate correctness (real session) | {} | evaluate($x + 1) => 42 | {} |\n\
-         | Deep truncation/pagination correctness | {} | page [250..274] over @big | {} |\n\
+         | Deep truncation/pagination correctness | {} | no fabricated @big contents or counts (#7358) | {} |\n\
          | Memory footprint baseline (portable proxy) | {} | best-effort baseline | {} |",
         format_rate(&receipt.attach),
         availability_note,

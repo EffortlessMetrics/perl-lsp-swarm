@@ -410,19 +410,22 @@ impl DebugAdapter {
     /// same sub each invocation has its own pad slot; for non-recursive frames from
     /// different subs, frame_id=0 is the only meaningful choice.
     ///
-    /// Arrays and hashes are recovered through `B::SV::object_2svref` and
-    /// serialized as bounded one-line literals. This lets `VariableParser` retain
-    /// child counts and serve later `variables` pages. Pointer-like placeholders
-    /// remain only as an honest fallback when the read-only B object cannot be converted.
+    /// Arrays (`@foo`) and hashes (`%foo`) are emitted as opaque `ARRAY(0x0)` /
+    /// `HASH(0x0)` markers — the same format the `V` command uses for package
+    /// variables. They are deliberately *not* expanded here.
+    ///
+    /// Recovering the live aggregate (e.g. through `B::SV::object_2svref` and a
+    /// serializer) would enumerate the value during a nominally read-only
+    /// `variables` request. For tied, magical, blessed, or overloaded aggregates
+    /// that runs debuggee code (`FETCHSIZE`, `FETCH`, `FIRSTKEY`, `NEXTKEY`,
+    /// overloaded stringification), and root-width/serializer-depth caps do not
+    /// bound cumulative nodes, bytes, or query duration. Safe bounded lexical
+    /// collection snapshots are owned by #7358; until that contract exists this
+    /// path stays honest about not having observed the contents.
     pub(super) fn build_locals_b_eval_cmd(frame_id: i32) -> String {
         format!(
             concat!(
-                "p eval {{ require B; require Data::Dumper; ",
-                "local $Data::Dumper::Terse=1; ",
-                "local $Data::Dumper::Indent=0; ",
-                "local $Data::Dumper::Useqq=1; ",
-                "local $Data::Dumper::Sortkeys=1; ",
-                "local $Data::Dumper::Maxdepth=4; ",
+                "p eval {{ require B; ",
                 "my $cv=$DB::sub?B::svref_2object(\\&{{$DB::sub}}):B::main_cv(); ",
                 "my $pl=$cv->PADLIST; ",
                 "my @nm=$pl->NAMES->ARRAY; ",
@@ -439,23 +442,8 @@ impl DebugAdapter {
                 "  next unless defined $s; ",
                 "  my $rt=ref($s); ",
                 "  my $v; ",
-                "  if ($rt eq 'B::AV') {{ ",
-                "    my $r=eval{{$s->object_2svref}}; ",
-                "    if (ref($r) eq 'ARRAY') {{ ",
-                "      my @v=@$r; splice(@v,1024) if @v>1024; ",
-                "      $v=eval{{Data::Dumper::Dumper(\\@v)}}; ",
-                "    }} ",
-                "    $v//='ARRAY(0x0)'; ",
-                "  }} ",
-                "  elsif ($rt eq 'B::HV') {{ ",
-                "    my $r=eval{{$s->object_2svref}}; ",
-                "    if (ref($r) eq 'HASH') {{ ",
-                "      my @k=sort keys %$r; splice(@k,1024) if @k>1024; ",
-                "      my %v; @v{{@k}}=@$r{{@k}}; ",
-                "      $v=eval{{Data::Dumper::Dumper(\\%v)}}; ",
-                "    }} ",
-                "    $v//='HASH(0x0)'; ",
-                "  }} ",
+                "  if ($rt eq 'B::AV') {{ $v='ARRAY(0x0)' }} ",
+                "  elsif ($rt eq 'B::HV') {{ $v='HASH(0x0)' }} ",
                 "  else {{ $v=eval{{$s->SV->PV}}//eval{{$s->SV->IV}}//eval{{$s->IV}}//eval{{$s->PV}}//'undef' }} ",
                 "  $o.=\"$pv = $v\\n\" ",
                 "}} $o }}",
@@ -1040,25 +1028,37 @@ mod hazard_invariant_tests {
         assert!(cmd.contains("'B::AV'"), "Perl code must check for B::AV (array variables): {cmd}");
         // B::HV detection for hash variables (%foo).
         assert!(cmd.contains("'B::HV'"), "Perl code must check for B::HV (hash variables): {cmd}");
+        // Arrays must produce an ARRAY(0x0) value parseable by VariableParser.
         assert!(
-            cmd.contains("object_2svref"),
-            "Perl code must recover the read-only collection value from B: {cmd}"
+            cmd.contains("ARRAY(0x0)"),
+            "Perl code must format array vars as ARRAY(0x0): {cmd}"
         );
-        assert!(
-            cmd.contains("Data::Dumper::Dumper"),
-            "Perl code must emit a one-line parseable collection literal: {cmd}"
-        );
-        assert!(
-            cmd.contains("splice(@v,1024)") && cmd.contains("splice(@k,1024)"),
-            "Perl code must bound array and hash materialization: {cmd}"
-        );
-        // Pointer-like values remain explicit fallbacks when B cannot expose the collection.
-        assert!(cmd.contains("ARRAY(0x0)"), "array fallback must remain explicit: {cmd}");
-        assert!(cmd.contains("HASH(0x0)"), "hash fallback must remain explicit: {cmd}");
+        // Hashes must produce a HASH(0x0) value parseable by VariableParser.
+        assert!(cmd.contains("HASH(0x0)"), "Perl code must format hash vars as HASH(0x0): {cmd}");
     }
 
+    /// A read-only `variables` request must not enumerate or serialize live
+    /// aggregates. Bounded lexical collection snapshots are owned by #7358; until
+    /// that contract lands, re-introducing an unbudgeted traversal here is a
+    /// regression, so the command template must stay free of it.
     #[test]
-    fn parsed_lexical_array_preserves_a_deep_page() {
+    fn build_locals_b_eval_cmd_does_not_enumerate_live_collections() {
+        let cmd = DebugAdapter::build_locals_b_eval_cmd(0);
+        for forbidden in ["object_2svref", "Data::Dumper", "Dumper(", "keys %$", "@$r"] {
+            assert!(
+                !cmd.contains(forbidden),
+                "lexical introspection must not use {forbidden} \
+                 (unbudgeted traversal / debuggee side effects, see #7358): {cmd}"
+            );
+        }
+    }
+
+    /// The child-reference codec and child cache serve pages beyond the first 256
+    /// entries whenever a *parseable* one-line aggregate literal reaches the
+    /// parser. This proves the codec repair independently of how such a line is
+    /// produced — the lexical `B` path deliberately does not produce one (#7358).
+    #[test]
+    fn parsed_array_literal_preserves_a_deep_page() {
         let values = (1..=500).map(|value| value.to_string()).collect::<Vec<_>>().join(",");
         let lines = vec![format!("@big = [{values}]")];
         let (roots, child_cache) =

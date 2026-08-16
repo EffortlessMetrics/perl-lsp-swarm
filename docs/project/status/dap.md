@@ -23,7 +23,7 @@
 | Attach success rate (TCP loopback) | receipt missing (`cargo test -p perl-dap --test dap_scorecard_harness -- --nocapture`) | ≥ 80 % | SKIP |
 | Variables pane correctness (real session) | receipt missing | expected named variables in scope | SKIP |
 | Evaluate correctness (real session) | receipt missing | evaluate($x + 1) => 42 | SKIP |
-| Deep truncation/pagination correctness | receipt missing | page [250..274] over @big | SKIP |
+| Deep truncation/pagination correctness | receipt missing | no fabricated @big contents or counts (#7358) | SKIP |
 | Memory footprint baseline (portable proxy) | receipt missing | best-effort baseline | SKIP |
 <!-- END: DAP_SESSION_SCORECARD -->
 

@@ -168,7 +168,7 @@ def scorecard_failures(scorecard: Mapping[str, Any]) -> list[str]:
     for name, expected in (
         ("variables", "PASS"),
         ("evaluate", "PASS"),
-        ("deep_pagination", "PASS"),
+        ("deep_pagination", "NOT_PROVEN"),
         ("memory", "MEASURED"),
     ):
         metric = scorecard.get(name)

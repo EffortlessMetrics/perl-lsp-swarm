@@ -108,7 +108,10 @@ class DapScorecardPacketTests(unittest.TestCase):
             "attach": rate(MODULE.REQUIRED_ATTACH_NAMES, [6, 7, 8, 9, 10]),
             "variables": {"status": "PASS", "detail": "variables proven"},
             "evaluate": {"status": "PASS", "detail": "evaluate proven"},
-            "deep_pagination": {"status": "PASS", "detail": "pagination proven"},
+            "deep_pagination": {
+                "status": "NOT_PROVEN",
+                "detail": "no fabricated @big contents or counts",
+            },
             "memory": {"status": "MEASURED", "detail": "memory measured"},
         }
 
@@ -275,7 +278,7 @@ class DapScorecardPacketTests(unittest.TestCase):
 
     def test_required_statuses_and_generated_status_fail_closed(self) -> None:
         scorecard = self._scorecard()
-        scorecard["deep_pagination"] = {"status": "SKIP", "detail": "not measured"}
+        scorecard["deep_pagination"] = {"status": "PASS", "detail": "claimed a page"}
         self._write_scorecard(scorecard)
         self.assertPacketError(lambda: MODULE.build_packet(self._build_args()))
         self._write_scorecard()

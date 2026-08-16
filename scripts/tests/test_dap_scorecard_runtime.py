@@ -64,7 +64,7 @@ class DapScorecardRuntimeTests(unittest.TestCase):
             "attach": {"passed": 5, "total": 5},
             "variables": {"status": "PASS", "detail": "ok"},
             "evaluate": {"status": "PASS", "detail": "ok"},
-            "deep_pagination": {"status": "PASS", "detail": "ok"},
+            "deep_pagination": {"status": "NOT_PROVEN", "detail": "honest marker"},
             "memory": {"status": "MEASURED", "detail": "ok"},
         }
 
@@ -212,7 +212,7 @@ class DapScorecardRuntimeTests(unittest.TestCase):
     def test_scorecard_failures_reject_skip_low_rates_and_bad_timing(self) -> None:
         scorecard = self._valid_scorecard()
         scorecard["launch"]["passed"] = 3
-        scorecard["deep_pagination"] = {"status": "SKIP", "detail": "not exercised"}
+        scorecard["deep_pagination"] = {"status": "PASS", "detail": "claimed a page"}
         scorecard["timing"]["duration_ms"] = MODULE.MAX_SCORECARD_DURATION_MS + 1
         scorecard["subject"]["process_invocations"] = 1
         failures = MODULE.scorecard_failures(scorecard)
@@ -225,11 +225,7 @@ class DapScorecardRuntimeTests(unittest.TestCase):
         self.assertEqual(MODULE.scorecard_failures(self._valid_scorecard()), [])
 
     def test_deep_pagination_selects_unique_locals_big(self) -> None:
-        expected = {
-            "name": "@big",
-            "variablesReference": 2_000_720_896,
-            "indexedVariables": 500,
-        }
+        expected = {"name": "@big", "value": "ARRAY(0x0)"}
         scopes = {
             "Package": [
                 {
@@ -242,28 +238,43 @@ class DapScorecardRuntimeTests(unittest.TestCase):
         }
         self.assertEqual(PROBES._require_lexical_big(scopes), expected)
 
-    def test_deep_pagination_rejects_duplicate_or_short_big(self) -> None:
-        row = {
-            "name": "@big",
-            "variablesReference": 2_000_720_896,
-            "indexedVariables": 500,
-        }
+    def test_deep_pagination_rejects_duplicate_big(self) -> None:
+        row = {"name": "@big", "value": "ARRAY(0x0)"}
         with self.assertRaisesRegex(MODULE.ScorecardError, "exactly one"):
             PROBES._require_lexical_big({"Locals": [row, dict(row)]})
-        short = dict(row)
-        short["indexedVariables"] = 499
-        with self.assertRaisesRegex(MODULE.ScorecardError, "indexedVariables=500"):
-            PROBES._require_lexical_big({"Locals": [short]})
 
-    def test_deep_pagination_requires_exact_names_and_values(self) -> None:
-        page = [
-            {"name": f"[{index}]", "value": str(index + 1)}
-            for index in range(250, 275)
-        ]
-        PROBES._validate_lexical_big_page(page, "after evaluate")
-        page[12] = {"name": "[262]", "value": "999"}
-        with self.assertRaisesRegex(MODULE.ScorecardError, "value='263'"):
-            PROBES._validate_lexical_big_page(page, "after evaluate")
+    def test_unexpanded_big_accepts_the_honest_marker(self) -> None:
+        # The exact binary renders the marker quoted; both forms are honest.
+        row = {"name": "@big", "value": '"ARRAY(0x0)"'}
+        self.assertEqual(PROBES._validate_unexpanded_lexical_big(row), '"ARRAY(0x0)"')
+        self.assertEqual(
+            PROBES._validate_unexpanded_lexical_big(
+                {"name": "@big", "value": "ARRAY(0x0)"}
+            ),
+            "ARRAY(0x0)",
+        )
+        # A zero reference is the DAP encoding for "not expandable" and is fine.
+        self.assertEqual(
+            PROBES._validate_unexpanded_lexical_big(dict(row, variablesReference=0)),
+            '"ARRAY(0x0)"',
+        )
+
+    def test_unexpanded_big_rejects_unproven_expansion_claims(self) -> None:
+        row = {"name": "@big", "value": "ARRAY(0x0)"}
+        with self.assertRaisesRegex(MODULE.ScorecardError, "expandable variablesReference"):
+            PROBES._validate_unexpanded_lexical_big(
+                dict(row, variablesReference=2_000_720_896)
+            )
+        with self.assertRaisesRegex(MODULE.ScorecardError, "fabricated indexedVariables"):
+            PROBES._validate_unexpanded_lexical_big(dict(row, indexedVariables=500))
+        with self.assertRaisesRegex(MODULE.ScorecardError, "fabricated namedVariables"):
+            PROBES._validate_unexpanded_lexical_big(dict(row, namedVariables=1))
+
+    def test_unexpanded_big_rejects_a_substituted_value(self) -> None:
+        with self.assertRaisesRegex(MODULE.ScorecardError, "opaque ARRAY marker"):
+            PROBES._validate_unexpanded_lexical_big(
+                {"name": "@big", "value": "[1,2,3]"}
+            )
 
 
 if __name__ == "__main__":
