@@ -2151,6 +2151,21 @@ enum Commands {
         crate_dir: String,
     },
 
+    /// Verify that every `crates/<dir>/` directory has a Cargo package name
+    /// that exactly equals `<dir>` (issue #2933 AC#3).
+    ///
+    /// Directories without a `Cargo.toml` (e.g. `crates/tree-sitter-perl`,
+    /// which is a JavaScript project) are skipped with a notice.
+    ///
+    /// Exit 0 if all checked directories pass; non-zero if any mismatch is found.
+    #[command(name = "check-naming-consistency")]
+    CheckNamingConsistency {
+        /// Workspace root to check. Defaults to the auto-detected workspace root.
+        /// Override for testing against a fixture workspace.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
     /// Report (and, with `--force`, remove) stale `.claude/worktrees` entries.
     ///
     /// Defaults to a dry-run report: every agent worktree is classified
@@ -5188,6 +5203,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             let name = tasks::targeted_checks::resolve_single_package_name(&root, &crate_dir)?;
             println!("{name}");
             Ok(())
+        }
+        Commands::CheckNamingConsistency { root } => {
+            tasks::check_naming_consistency::run_default(root)
         }
         Commands::WorktreeCleanup { root, force } => worktrees::cleanup(root, force),
         Commands::ValidateSwarmAgentRoster { root } => swarm_agent_roster::run(root),
