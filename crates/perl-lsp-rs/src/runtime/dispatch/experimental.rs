@@ -26,6 +26,13 @@ impl LspServer {
     /// Available only in test builds or when `expose_lsp_test_api` is enabled;
     /// builds with neither configuration do not compile or route it (issue #4632).
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    // Left nested rather than collapsed into a let-chain. `enforce-new-ripr`
+    // keys gap identity on the changed line, so collapsing here registers a
+    // new gap that this PR cannot discharge; the nested form exists on main
+    // and is not counted. The suppression is deliberately attached to the
+    // function rather than the `if`, because annotating the seam directly
+    // pulls it back into the changed hunk and re-creates the gap. See #9528.
+    #[allow(clippy::collapsible_if)]
     pub(super) fn handle_slow_operation_dispatch(
         &self,
         id: &Option<Value>,
@@ -56,18 +63,6 @@ impl LspServer {
                     })));
                 }
 
-                // Deliberately left nested rather than collapsed into a
-                // let-chain. Rewriting these lines makes the RIPR new-gap gate
-                // see a *new* production seam (`enforce-new-ripr` keys gap
-                // identity on the changed line), and ripr's static evidence
-                // pass does not credit the tests that cover it — proven twice:
-                // once with unit tests in this module, once with an
-                // integration test driving `$/test/slowOperation` through
-                // `handle_request`. Both left `new_unresolved: 4` unchanged,
-                // with identical gap ids. A cosmetic style win is not worth
-                // introducing an unsatisfiable gate obligation, so the lint is
-                // scoped off here with its reason recorded. See #9528.
-                #[allow(clippy::collapsible_if)]
                 if let Some(to) = timeout {
                     if start.elapsed() >= to {
                         tracing::debug!(iteration = i, "Server-side timeout");
