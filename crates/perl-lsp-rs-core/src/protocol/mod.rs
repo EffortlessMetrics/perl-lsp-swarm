@@ -3,6 +3,7 @@
 //! This module isolates protocol types from the LSP runtime so they can be
 //! shared across binaries and provider layers. Key submodules:
 //!
+//! - [`binary_identity`] — Canonical server, DAP, and VSIX identity transport
 //! - `jsonrpc` — Core JSON-RPC 2.0 request, response, and error message types
 //! - `errors` — Standard and LSP-specific JSON-RPC error codes and builders
 //! - [`methods`] — LSP 3.18 method name constants for request/notification routing
@@ -12,6 +13,8 @@
 //! Previously the standalone `perl-lsp-protocol` crate; absorbed into
 //! `perl-lsp-rs-core::protocol` in Wave G3 (#4535).
 
+/// Canonical server, DAP, and VSIX identity protocol family.
+pub mod binary_identity;
 pub mod capabilities;
 pub mod error_disposition;
 pub mod error_inventory;

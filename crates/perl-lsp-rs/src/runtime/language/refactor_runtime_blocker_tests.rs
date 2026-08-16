@@ -3319,6 +3319,10 @@ fn refactor_runtime_blocker_ux_safe_delete_preview_command_returns_scoped_no_edi
 fn refactor_runtime_blocker_ux_safe_delete_live_pilot_returns_source_backed_edit_only()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();
+    // Safe delete only runs from a code action on an initialized session, and
+    // server->client requests are rejected before initialization completes
+    // (#7708). Mark the fixture initialized so `workspace/applyEdit` is legal.
+    server.initialized.store(true, std::sync::atomic::Ordering::Release);
     {
         let mut caps = server.client_capabilities.lock();
         caps.workspace_apply_edit_support = true;

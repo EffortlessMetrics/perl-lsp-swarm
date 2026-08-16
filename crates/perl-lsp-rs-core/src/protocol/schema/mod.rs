@@ -39,7 +39,7 @@ impl Direction {
         }
     }
 
-    const fn opposite(self) -> Self {
+    pub(super) const fn opposite(self) -> Self {
         match self {
             Self::ClientToServer => Self::ServerToClient,
             Self::ServerToClient => Self::ClientToServer,
@@ -89,10 +89,6 @@ impl MessageKind {
             Self::SuccessResponse => "success_response",
             Self::ErrorResponse => "error_response",
         }
-    }
-
-    const fn is_response(self) -> bool {
-        matches!(self, Self::SuccessResponse | Self::ErrorResponse)
     }
 }
 
@@ -247,12 +243,12 @@ impl ProtocolSchemaValidator {
         validate_envelope_members(method, kind, object)?;
 
         // Method schemas are registered in the originating request/notification
-        // direction. A response frame travels in the opposite direction, so
-        // lookup must invert only for responses while preserving the actual
-        // captured direction in the validated result.
-        let schema_direction =
-            if kind.is_response() { context.direction.opposite() } else { context.direction };
-        let Some(schema) = methods::schema_for(method, schema_direction, kind) else {
+        // direction, and a response frame travels the opposite way. That
+        // inversion belongs to `schema_for`, which takes the wire direction and
+        // derives the originating request direction itself — so pass the
+        // captured direction through unchanged. Inverting here as well would
+        // cancel out and look every response up in the wrong direction.
+        let Some(schema) = methods::schema_for(method, context.direction, kind) else {
             if is_project_extension(method) {
                 validate_extension_payload(method, kind, object)?;
                 return Ok(ValidatedMessage {

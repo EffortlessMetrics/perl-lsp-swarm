@@ -1425,16 +1425,16 @@ fn clone_binary_is_independent() -> Result<(), Box<dyn std::error::Error>> {
         loc(0, 5),
     );
     let mut cloned = original.clone();
-    if let NodeKind::Binary { left, .. } = &mut cloned.kind {
-        if let NodeKind::Number { value } = &mut left.kind {
-            *value = "999".to_string();
-        }
+    if let NodeKind::Binary { left, .. } = &mut cloned.kind
+        && let NodeKind::Number { value } = &mut left.kind
+    {
+        *value = "999".to_string();
     }
     // Original should be unchanged
-    if let NodeKind::Binary { left, .. } = &original.kind {
-        if let NodeKind::Number { value } = &left.kind {
-            assert_eq!(value, "1", "original should be unmodified after clone mutation");
-        }
+    if let NodeKind::Binary { left, .. } = &original.kind
+        && let NodeKind::Number { value } = &left.kind
+    {
+        assert_eq!(value, "1", "original should be unmodified after clone mutation");
     }
     Ok(())
 }
@@ -1478,13 +1478,19 @@ fn all_kind_names_contains_every_variant() -> Result<(), Box<dyn std::error::Err
         assert!(all_names.contains(name), "kind_name {:?} not found in ALL_KIND_NAMES", name);
     }
 
-    // Verify completeness: variant count matches ALL_KIND_NAMES count
+    // Verify completeness by name, not by count: a count check alone lets a
+    // missing variant cancel out against a duplicated one. Comparing sorted
+    // name vectors rejects both omissions and duplicates.
+    let mut fixture_names: Vec<&str> =
+        all_variants.iter().map(|variant| variant.kind.kind_name()).collect();
+    fixture_names.sort_unstable();
+
+    let mut canonical_names: Vec<&str> = NodeKind::ALL_KIND_NAMES.to_vec();
+    canonical_names.sort_unstable();
+
     assert_eq!(
-        all_variants.len(),
-        NodeKind::ALL_KIND_NAMES.len(),
-        "variant count ({}) should match ALL_KIND_NAMES count ({})",
-        all_variants.len(),
-        NodeKind::ALL_KIND_NAMES.len(),
+        fixture_names, canonical_names,
+        "all_nodekind_instances() is out of sync with the NodeKind enum",
     );
     Ok(())
 }

@@ -1,0 +1,17 @@
+{
+  "perl": {
+    "command": "perllsp",
+    "args": ["--stdio"],
+    "transport": "stdio",
+    "workspaceFolder": "${CLAUDE_PROJECT_DIR}",
+    "extensionToLanguage": {
+      ".pl": "perl",
+      ".PL": "perl",
+      ".pm": "perl",
+      ".t": "perl",
+      ".psgi": "perl",
+      ".cgi": "perl",
+      ".fcgi": "perl"
+    }
+  }
+}

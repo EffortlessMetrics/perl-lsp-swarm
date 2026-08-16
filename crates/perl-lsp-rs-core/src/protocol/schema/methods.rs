@@ -192,11 +192,10 @@ pub(super) fn schema_for(
 ) -> Option<&'static MethodSchema> {
     let (declared_direction, declared_kind) = match kind {
         MessageKind::SuccessResponse | MessageKind::ErrorResponse => {
-            let originating_request_direction = match wire_direction {
-                Direction::ClientToServer => Direction::ServerToClient,
-                Direction::ServerToClient => Direction::ClientToServer,
-            };
-            (originating_request_direction, MessageKind::Request)
+            // A response travels opposite its originating request, and schemas
+            // are registered in the request direction. This is the only place
+            // that inversion happens; callers pass the wire direction as-is.
+            (wire_direction.opposite(), MessageKind::Request)
         }
         other => (wire_direction, other),
     };
