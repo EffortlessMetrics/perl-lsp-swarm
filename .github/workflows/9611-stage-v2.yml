@@ -27,8 +27,72 @@ jobs:
       - name: Patch exact bounded surfaces
         run: python3 scripts/ci/stage_issue_9611_v2.py patch
 
-      - name: Verify candidate on current-main base
-        run: python3 scripts/ci/stage_issue_9611_v2.py verify
+      - name: Normalize the replacement Rust contract
+        run: cargo fmt --all
+
+      - name: Recheck the candidate boundary after formatting
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import subprocess
+
+          expected = {
+              ".ci/gate-policy.yaml",
+              ".github/workflows/ci.yml",
+              "docs/ci/gate-policy-economics.md",
+              "docs/reference/CI_ARCHITECTURE.md",
+              "scripts/ci/validate_gate_lane_mapping.py",
+              "xtask/tests/published_crate_count_gate_integration.rs",
+          }
+          changed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--name-only"], text=True
+              ).splitlines()
+          )
+          if changed != expected:
+              raise SystemExit(
+                  "candidate path set drifted after rustfmt: "
+                  f"missing={sorted(expected - changed)} extra={sorted(changed - expected)}"
+              )
+
+          rows = {}
+          for line in subprocess.check_output(
+              ["git", "diff", "--numstat"], text=True
+          ).splitlines():
+              added, deleted, path = line.split("\t", 2)
+              rows[path] = (int(added), int(deleted))
+          gate_add, gate_delete = rows[".ci/gate-policy.yaml"]
+          if gate_add != 0 or not 12 <= gate_delete <= 20:
+              raise SystemExit(
+                  "gate-policy edit exceeded bounded row retirement: "
+                  f"additions={gate_add} deletions={gate_delete}"
+              )
+          print(f"bounded candidate: six paths; gate-policy -{gate_delete}")
+          PY
+
+      - name: Verify diff hygiene
+        run: git diff --check
+
+      - name: Verify Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Verify gate and lane mapping
+        run: python3 scripts/ci/validate_gate_lane_mapping.py --strict
+
+      - name: Verify gate-policy contract
+        run: cargo xtask gate-policy check
+
+      - name: Verify generated documentation
+        run: cargo xtask docs-check
+
+      - name: Verify policy_checks inventory remains synchronized
+        run: python3 scripts/ci/validate_policy_checks_inventory.py --check
+
+      - name: Verify active crate-count integration contract
+        run: cargo test -p xtask --test published_crate_count_gate_integration --locked
+
+      - name: Verify current crate-count ratchet
+        run: cargo run -p xtask --locked -- published-crate-count
 
       - name: Publish clean six-file branch
         env:
