@@ -1,26 +1,79 @@
 name: Agent Authority Status
 
+# The path filters below are not hand-maintained: they must equal every
+# `documents[].path` in `docs/agents/authority_status.toml` plus this workflow
+# and its test. The registry asserts that each registered path exists, so a PR
+# that deletes or renames a registered authority has to run this check --
+# otherwise `path exists` goes false on `main` with no gate having run.
+# `test_workflow_triggers_on_every_registered_path` enforces the equality.
+
 on:
   pull_request:
     branches: [main]
     paths:
+      - '.github/copilot-instructions.md'
+      - '.github/workflows/agent-authority-status.yml'
+      - '.spec/3988-merge-readiness/spec.md'
       - 'AGENTS.md'
       - 'CLAUDE.md'
+      - 'CONTRIBUTING.md'
+      - 'docs/adr/0044-octopus-cluster-orchestration.md'
       - 'docs/agents/AUTHORITY_STATUS.md'
-      - 'docs/agents/authority_status.toml'
+      - 'docs/agents/DEVELOPMENT_METHOD.md'
+      - 'docs/agents/GITHUB_SURFACES.md'
       - 'docs/agents/README.md'
+      - 'docs/agents/REVIEW_CURRENTNESS.md'
+      - 'docs/agents/SKILL_CONTRACT.md'
+      - 'docs/agents/authority_status.toml'
+      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+      - 'docs/handoff/SWARM_DESIGN.md'
+      - 'docs/how-to/AGENT_CONTRIBUTING.md'
+      - 'docs/how-to/SESSION_OPERATIONS.md'
+      - 'docs/reference/GLOSSARY.md'
+      - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
+      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+      - 'docs/reference/OCTOPUS_CLUSTER.md'
+      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+      - 'docs/reference/PIPELINE_GATES.md'
+      - 'docs/reference/WORKTREE_PROTOCOL.md'
+      - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+      - 'scripts/ci/check-pr-claim-currentness'
+      - 'scripts/ci/check-pr-review-convergence-core'
+      - 'scripts/reviews/claim-digest'
       - 'tests/test_agent_authority_status.py'
-      - '.github/workflows/agent-authority-status.yml'
   push:
     branches: [main]
     paths:
+      - '.github/copilot-instructions.md'
+      - '.github/workflows/agent-authority-status.yml'
+      - '.spec/3988-merge-readiness/spec.md'
       - 'AGENTS.md'
       - 'CLAUDE.md'
+      - 'CONTRIBUTING.md'
+      - 'docs/adr/0044-octopus-cluster-orchestration.md'
       - 'docs/agents/AUTHORITY_STATUS.md'
-      - 'docs/agents/authority_status.toml'
+      - 'docs/agents/DEVELOPMENT_METHOD.md'
+      - 'docs/agents/GITHUB_SURFACES.md'
       - 'docs/agents/README.md'
+      - 'docs/agents/REVIEW_CURRENTNESS.md'
+      - 'docs/agents/SKILL_CONTRACT.md'
+      - 'docs/agents/authority_status.toml'
+      - 'docs/articles/PIPELINE_STATE_MACHINE.md'
+      - 'docs/handoff/SWARM_DESIGN.md'
+      - 'docs/how-to/AGENT_CONTRIBUTING.md'
+      - 'docs/how-to/SESSION_OPERATIONS.md'
+      - 'docs/reference/GLOSSARY.md'
+      - 'docs/reference/LIVE_SIGNALS_VS_LABELS.md'
+      - 'docs/reference/MAINTAINER_AGENT_DOCTRINE.md'
+      - 'docs/reference/OCTOPUS_CLUSTER.md'
+      - 'docs/reference/ORCHESTRATION_DOCTRINE.md'
+      - 'docs/reference/PIPELINE_GATES.md'
+      - 'docs/reference/WORKTREE_PROTOCOL.md'
+      - 'docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md'
+      - 'scripts/ci/check-pr-claim-currentness'
+      - 'scripts/ci/check-pr-review-convergence-core'
+      - 'scripts/reviews/claim-digest'
       - 'tests/test_agent_authority_status.py'
-      - '.github/workflows/agent-authority-status.yml'
 
 permissions:
   contents: read

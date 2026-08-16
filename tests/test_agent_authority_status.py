@@ -84,15 +84,16 @@ RETIRED_SELF_CLAIMS = (
 # legitimately discusses the retirement of *other* things -- WORKTREE_PROTOCOL.md
 # says "is retired" about a branch -- which is not a self-declaration.
 SELF_CLAIM_HEADER_LINES = 40
-WORKFLOW_PATHS = {
-    "AGENTS.md",
-    "CLAUDE.md",
-    "docs/agents/AUTHORITY_STATUS.md",
-    "docs/agents/authority_status.toml",
-    "docs/agents/README.md",
+# The workflow's own files. Every other trigger path is derived from the
+# registry rather than restated here -- a hand-maintained list is exactly the
+# blind spot this coverage check exists to close.
+WORKFLOW_OWN_FILES = {
     "tests/test_agent_authority_status.py",
     ".github/workflows/agent-authority-status.yml",
 }
+# A successor is either a repository path or a bounded issue/PR reference.
+SUCCESSOR_REFERENCE = re.compile(r"\b(?:issue|PR) #\d+\b")
+SUCCESSOR_PATH_TOKEN = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$")
 
 
 def load_registry() -> dict[str, Any]:
@@ -194,6 +195,75 @@ def workflow_event_paths(event: str) -> set[str]:
     return paths
 
 
+def required_workflow_paths() -> set[str]:
+    """Every registered path, plus the workflow's own files.
+
+    `validate_registry` asserts that each `documents[].path` exists. That
+    assertion is only load-bearing if a change to one of those paths actually
+    runs this workflow: deleting or renaming a registered authority under a
+    filter that does not name it leaves the registry pointing at a missing file
+    on `main` with no gate having run. Deriving the requirement from the
+    registry means adding a row cannot silently widen the blind spot.
+    """
+    return {row["path"] for row in load_registry()["documents"]} | WORKFLOW_OWN_FILES
+
+
+def workflow_coverage_errors(
+    actual: dict[str, set[str]], required: set[str]
+) -> list[str]:
+    """Compare each event's filter against the required set.
+
+    Split out from the test so the mutation controls can feed it a filter that
+    is wrong in one specific way, rather than asserting a set differs from
+    itself.
+    """
+    errors: list[str] = []
+    for event in sorted(actual):
+        missing = required - actual[event]
+        extra = actual[event] - required
+        if missing:
+            errors.append(
+                f"on.{event}.paths omits registered authority paths: {sorted(missing)!r}"
+            )
+        if extra:
+            errors.append(
+                f"on.{event}.paths names unregistered paths: {sorted(extra)!r}"
+            )
+    return errors
+
+
+def successor_errors(rows: list[dict[str, Any]]) -> list[str]:
+    """A non-empty successor string is not yet a usable successor.
+
+    The human index tells agents to follow these. A typo'd path or a bare
+    sentence passes a non-empty check while routing every reader nowhere, so
+    resolve path-shaped tokens against the tree and require anything else to
+    carry a bounded issue/PR reference.
+    """
+    errors: list[str] = []
+    for row in rows:
+        path = row.get("path")
+        successor = row.get("successor")
+        if not isinstance(successor, str) or not successor:
+            continue
+        tokens = [
+            token.strip(".,;")
+            for token in successor.split()
+            if SUCCESSOR_PATH_TOKEN.match(token.strip(".,;"))
+        ]
+        for token in tokens:
+            if not (ROOT / token).exists():
+                errors.append(
+                    f"{path}: successor names {token!r}, which does not exist"
+                )
+        if not tokens and not SUCCESSOR_REFERENCE.search(successor):
+            errors.append(
+                f"{path}: successor {successor!r} resolves to neither a repository "
+                f"path nor an 'issue #N' / 'PR #N' reference"
+            )
+    return errors
+
+
 def validate_registry(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if document.get("schema_version") != 1:
@@ -284,6 +354,8 @@ def validate_registry(document: dict[str, Any]) -> list[str]:
         if by_path.get(path, {}).get("status") != "transitional":
             errors.append(f"{path}: current-main replacement must remain transitional")
 
+    errors.extend(successor_errors([row for row in rows if isinstance(row, dict)]))
+
     return errors
 
 
@@ -314,14 +386,87 @@ class AgentAuthorityStatusTests(unittest.TestCase):
             self.assertIn("active doctrine", contract)
             self.assertIn("north star", contract)
 
-    def test_workflow_covers_root_delegation_for_both_events(self) -> None:
-        for event in ("pull_request", "push"):
-            paths = workflow_event_paths(event)
-            self.assertEqual(
-                paths,
-                WORKFLOW_PATHS,
-                f"on.{event}.paths must exactly cover the authority contract",
-            )
+    def test_workflow_triggers_on_every_registered_path(self) -> None:
+        """Both event filters must equal the registry, not a hand-kept subset.
+
+        Previously the filters named only the registry and front-door files.
+        Deleting or renaming `DEVELOPMENT_METHOD.md`, `CONTRIBUTING.md`, or any
+        other registered authority therefore skipped this workflow entirely,
+        leaving the registry's `path exists` assertion false on `main` with no
+        check having run.
+        """
+        actual = {event: workflow_event_paths(event) for event in ("pull_request", "push")}
+        self.assertEqual(workflow_coverage_errors(actual, required_workflow_paths()), [])
+
+    def test_dropping_a_registered_path_from_one_filter_is_caught(self) -> None:
+        """The control the exact-set assertion could not provide.
+
+        Removal is checked one event at a time: a one-sided filter is the
+        realistic mistake, and it is invisible to any check that looks at the
+        union of both events.
+        """
+        required = required_workflow_paths()
+        for path in (
+            "docs/agents/DEVELOPMENT_METHOD.md",  # a registered current authority
+            "CONTRIBUTING.md",  # reclassified current by #6868
+            "scripts/ci/check-pr-review-convergence-core",  # still transitional
+        ):
+            for event in ("pull_request", "push"):
+                with self.subTest(path=path, event=event):
+                    actual = {
+                        name: workflow_event_paths(name)
+                        for name in ("pull_request", "push")
+                    }
+                    actual[event] = actual[event] - {path}
+                    errors = workflow_coverage_errors(actual, required)
+                    self.assertTrue(
+                        any(
+                            f"on.{event}.paths omits" in error and path in error
+                            for error in errors
+                        ),
+                        errors,
+                    )
+
+    def test_registering_a_document_without_covering_it_is_caught(self) -> None:
+        """Adding a row must widen the trigger, not the blind spot."""
+        required = required_workflow_paths() | {"docs/agents/NEW_AUTHORITY.md"}
+        actual = {
+            event: workflow_event_paths(event) for event in ("pull_request", "push")
+        }
+
+        errors = workflow_coverage_errors(actual, required)
+        self.assertTrue(
+            any("NEW_AUTHORITY.md" in error for error in errors), errors
+        )
+
+    def test_successor_must_resolve_to_a_path_or_a_bounded_reference(self) -> None:
+        self.assertEqual(successor_errors(load_registry()["documents"]), [])
+
+    def test_unresolvable_successor_targets_are_rejected(self) -> None:
+        """Non-empty is not the same as usable.
+
+        Each mutation is a way a successor can be wrong while still being a
+        non-empty string: a path that does not exist, and prose that names no
+        route at all.
+        """
+        for successor, expected in (
+            ("docs/agents/DOES_NOT_EXIST.md", "does not exist"),
+            ("scripts/ci/typo-convergence and issue #5778", "does not exist"),
+            ("see the maintainers", "resolves to neither"),
+        ):
+            with self.subTest(successor=successor):
+                document = copy.deepcopy(load_registry())
+                row = next(
+                    item
+                    for item in document["documents"]
+                    if item["path"] == "docs/reference/ORCHESTRATION_DOCTRINE.md"
+                )
+                row["successor"] = successor
+
+                errors = successor_errors(document["documents"])
+                self.assertTrue(
+                    any(expected in error for error in errors), errors
+                )
 
     def test_registry_cannot_remove_its_own_current_status(self) -> None:
         document = copy.deepcopy(load_registry())
