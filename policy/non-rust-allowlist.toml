@@ -1335,6 +1335,40 @@ created = "2026-08-14"
 review_after = "2026-11-14"
 
 # =============================================================================
+# Compiler proof policy (perl_compiler_proof_policy.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-compiler-proof-policy-contract"
+path = "contracts/compiler/perl_compiler_proof_policy.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Closed proof-class, composition-dimension, and campaign vocabulary for the compiler concept programme (#6689); validated by cargo run -p xtask --bin compiler-proof-policy -- --check."
+covered_by = [
+  "cargo run -p xtask --bin compiler-proof-policy -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-compiler-proof-policy-schema"
+path = "schemas/perl_compiler_proof_policy.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the perl_compiler_proof_policy.v1 contract; proof-class authority and circularity semantics are pinned two-sided in the binary's contract tests."
+covered_by = [
+  "cargo run -p xtask --bin compiler-proof-policy -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+# =============================================================================
 # Editor-intelligence gap-matrix fixture tree
 # =============================================================================
 
