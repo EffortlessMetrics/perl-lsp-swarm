@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -43,9 +42,6 @@ UT_OUTPUT_DIR_PATH = os.path.realpath(
     os.path.join(PACKAGES_DIR_PATH, "User", "UnitTesting")
 )
 SCHEDULE_FILE_PATH = os.path.join(UT_OUTPUT_DIR_PATH, "schedule.json")
-SCHEDULE_RUNNER_SOURCE = os.path.join(
-    PACKAGES_DIR_PATH, "UnitTesting", "actions", "run-tests", "run_scheduler.py"
-)
 SCHEDULE_RUNNER_TARGET = os.path.join(
     PACKAGES_DIR_PATH, "UnitTesting", "zzz_run_scheduler.py"
 )
@@ -111,7 +107,7 @@ def _diagnose(package: str) -> None:
                 break
     shim = os.path.join(PACKAGES_DIR_PATH, "UnitTesting", "zzz_run_scheduler.py")
     print(f"===== shim present: {os.path.isfile(shim)} ({shim}) =====")
-    _dump("canary", os.path.expanduser("~/perllsp_sublime_canary.log"))
+    _dump("launcher log", os.path.expanduser("~/perllsp_sublime_host_ci.log"))
     home = os.path.expanduser("~")
     for crash_dir in (
         os.path.join(home, "Library", "Caches", "Sublime Text", "Crash Reports"),
@@ -224,14 +220,10 @@ def main() -> int:
 
     os.makedirs(output_dir, exist_ok=True)
     _remove(output_file)
+    # The upstream shim-copy dance is replaced by the package's own
+    # host_ci_launcher plugin, which imports UnitTesting's scheduler directly
+    # at plugin_loaded; nothing is installed into the UnitTesting package.
     _remove(SCHEDULE_RUNNER_TARGET)
-    if not os.path.isfile(SCHEDULE_RUNNER_SOURCE):
-        print(
-            f"UnitTesting scheduler shim missing: {SCHEDULE_RUNNER_SOURCE}",
-            file=sys.stderr,
-        )
-        return 1
-    shutil.copyfile(SCHEDULE_RUNNER_SOURCE, SCHEDULE_RUNNER_TARGET)
 
     schedule: list[dict] = []
     try:
