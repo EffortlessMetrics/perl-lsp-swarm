@@ -754,7 +754,12 @@ def sync_state(state: dict[str, Any], managed_root: Path, repo_root: Path) -> No
 
     for slot in state.get("slots", []):
         slot_path = slot.get("path")
-        if not slot_path:
+        # `sync_state` runs on *every* command, ahead of the per-command
+        # handlers, so an unusable recorded path has to be tolerated here or
+        # the tool dies with a raw traceback before `release`/`cleanup` can
+        # report it. A non-string is skipped for the same reason a falsy value
+        # is: this reconciliation pass cannot say anything useful about it.
+        if not slot_path or not isinstance(slot_path, str):
             continue
         abs_path = repo_root / slot_path  # was REPO_ROOT (defect 4)
         if abs_path not in known_paths and not abs_path.exists() and slot.get("status") not in {"retired", "missing"}:

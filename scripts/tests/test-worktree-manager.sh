@@ -259,6 +259,21 @@ LINKED_WT="${TMPDIR_BASE}/linked-worktree"
 LINKED_BRANCH="test/case4-linked-wt"
 CASE4_EXIT=0
 
+# The root probe is shared by Case 4 and Case 4b, so it is written
+# unconditionally. Defining it inside Case 4's `else` branch would leave it
+# unbound under `set -u` whenever Case 4's setup failed, aborting the whole
+# suite at Case 4b and masking every later result.
+CASE4_SCRIPT="${TMPDIR_BASE}/case4_root_probe.py"
+cat > "${CASE4_SCRIPT}" << PYEOF
+import sys, importlib.util, pathlib
+
+script_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('worktree_manager', script_path)
+wm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(wm)
+print(str(wm._resolve_primary_repo_root()))
+PYEOF
+
 # Create a linked worktree from agent-one, copy the script into it, then
 # compare the roots each invocation resolves.
 git_q -C "${AGENT_ONE}" worktree add -b "${LINKED_BRANCH}" "${LINKED_WT}" || CASE4_EXIT=$?
@@ -268,17 +283,6 @@ if [[ "${CASE4_EXIT}" -ne 0 ]]; then
 else
   mkdir -p "${LINKED_WT}/scripts"
   cp "${AGENT_ONE}/scripts/worktree-manager.py" "${LINKED_WT}/scripts/worktree-manager.py"
-
-  CASE4_SCRIPT="${TMPDIR_BASE}/case4_root_probe.py"
-  cat > "${CASE4_SCRIPT}" << PYEOF
-import sys, importlib.util, pathlib
-
-script_path = sys.argv[1]
-spec = importlib.util.spec_from_file_location('worktree_manager', script_path)
-wm = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(wm)
-print(str(wm._resolve_primary_repo_root()))
-PYEOF
 
   # Root resolved from primary checkout
   PRIMARY_ROOT="$(cd "${AGENT_ONE}" && python3 "${CASE4_SCRIPT}" "${AGENT_ONE}/scripts/worktree-manager.py" 2>&1)"
@@ -387,6 +391,63 @@ if [[ "${CASE4C_EXIT}" -eq 0 && "${CASE4C_OUT}" == *"PASS"* ]]; then
   pass "malformed recorded slot paths are rejected instead of resolving to the repository root"
 else
   fail "slot path validation: ${CASE4C_OUT}"
+fi
+
+# ── Case 4d: the same malformed state must be survivable through the actual
+#    CLI, not merely through the helper.  `sync_state` runs on every command
+#    ahead of the per-command handlers, so a unit-level check of
+#    `slot_abs_path` passes while `query`/`release` still die with a raw
+#    TypeError traceback.  This case exercises the reachable path. ──────────
+CASE4D_STATE="${TMPDIR_BASE}/case4d-state.json"
+CASE4D_MANAGED="${TMPDIR_BASE}/case4d-worktrees"
+
+cat > "${CASE4D_STATE}" << 'JSONEOF'
+{
+  "version": 1,
+  "managed_root": ".",
+  "updated_at": null,
+  "slots": [
+    {"slot_id": "bad-null", "path": null, "branch": "x", "status": "active"},
+    {"slot_id": "bad-empty", "path": "", "branch": "y", "status": "active"},
+    {"slot_id": "bad-int", "path": 123, "branch": "z", "status": "active"}
+  ]
+}
+JSONEOF
+
+run_manager4d() {
+  local subcommand="$1"
+  shift
+  (
+    cd "$AGENT_ONE"
+    python3 scripts/worktree-manager.py "$subcommand" \
+      --state-file "${CASE4D_STATE}" \
+      --managed-root "${CASE4D_MANAGED}" "$@"
+  )
+}
+
+# `query` must survive the malformed records rather than traceback.
+CASE4D_QUERY_EXIT=0
+CASE4D_QUERY_OUT="$(run_manager4d query 2>&1)" || CASE4D_QUERY_EXIT=$?
+
+if [[ "${CASE4D_QUERY_EXIT}" -ne 0 || "${CASE4D_QUERY_OUT}" == *"Traceback"* ]]; then
+  fail "malformed state: query crashed instead of tolerating unusable slot records: ${CASE4D_QUERY_OUT}"
+else
+  pass "malformed state: query tolerates null/empty/non-string recorded paths"
+fi
+
+# `release` on such a slot must fail with an actionable error naming the slot,
+# not a TypeError traceback.
+CASE4D_REL_EXIT=0
+CASE4D_REL_OUT="$(run_manager4d release --slot bad-int 2>&1)" || CASE4D_REL_EXIT=$?
+
+if [[ "${CASE4D_REL_EXIT}" -eq 0 ]]; then
+  fail "malformed state: release of a slot with a non-string path unexpectedly succeeded"
+elif [[ "${CASE4D_REL_OUT}" == *"Traceback"* ]]; then
+  fail "malformed state: release raised a raw traceback instead of an actionable error: ${CASE4D_REL_OUT}"
+elif [[ "${CASE4D_REL_OUT}" == *"bad-int"* ]]; then
+  pass "malformed state: release fails with an actionable error naming the slot"
+else
+  fail "malformed state: release error does not name the slot: ${CASE4D_REL_OUT}"
 fi
 
 # ── Case 5: owner guard — ownerless and wrong-owner release both fail;
