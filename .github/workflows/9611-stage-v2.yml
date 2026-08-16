@@ -1,0 +1,44 @@
+name: 9611 v2 clean-candidate builder
+
+on:
+  push:
+    branches: [codex/9611-stage-v2]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout construction branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Patch exact bounded surfaces
+        run: python3 scripts/ci/stage_issue_9611_v2.py patch
+
+      - name: Verify candidate on current-main base
+        run: python3 scripts/ci/stage_issue_9611_v2.py verify
+
+      - name: Publish clean six-file branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/ci/stage_issue_9611_v2.py publish
+
+      - name: Upload construction receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: issue-9611-v2-clean-branch
+          path: target/9611-v2/result.json
+          if-no-files-found: error
+          retention-days: 1
