@@ -806,49 +806,9 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "c724726b6db1402e8b54a4779e8868e3162e30123b11cb3e4f5b93343be239ac",
-      "line": 104,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "e24093f74c8e07e025b899b44f4730eb5aeb953d705c5b6933ef00a8e88654e6",
-      "line": 222,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
-      "fingerprint": "a31b216d80b44d987ff38de481b3f6653a95300fbe930c175e8b4a8cdb39c67d",
-      "line": 106,
-      "message": "PR-triggered workflow references a secret",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "pr_secret_reference"
-    },
-    {
-      "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
-      "fingerprint": "4836fda7fe722dfdfe801363adcd80ae8d540527dffe8b8bba92ec36b1755dc7",
-      "line": 224,
-      "message": "PR-triggered workflow references a secret",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "pr_secret_reference"
-    },
-    {
-      "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
-      "fingerprint": "44111a484b30b6ada0f99cfe405ac5a517b7280d3d1becccf4d92b45e1529a7d",
-      "line": 344,
-      "message": "PR-triggered workflow references a secret",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "pr_secret_reference"
-    },
-    {
       "evidence": "contents: write",
       "fingerprint": "dd0de7f961cec33288911a5fef396993d070e013d78a0f59f46104cf185b0e78",
-      "line": 211,
+      "line": 289,
       "message": "PR-triggered workflow grants write authority",
       "path": ".github/workflows/post-merge-corpus-ratchet.yml",
       "rule": "pr_write_permission"
@@ -856,7 +816,7 @@
     {
       "evidence": "pull-requests: write",
       "fingerprint": "2f47d57f61f1094322be03c35da25bd8c18ec08cfd6ad1075e7568a1e4570c8e",
-      "line": 212,
+      "line": 290,
       "message": "PR-triggered workflow grants write authority",
       "path": ".github/workflows/post-merge-corpus-ratchet.yml",
       "rule": "pr_write_permission"
