@@ -41,7 +41,10 @@ jobs:
 "#,
     )?;
     let findings = scan_workflow("writer.yml", &workflow);
-    assert!(findings.iter().any(|finding| finding.kind == FindingKind::CandidateDefinedWriter));
+    assert!(
+        findings.iter().any(|finding| finding.kind == FindingKind::CandidateDefinedWriter),
+        "expected a candidate-defined writer finding, got {findings:#?}"
+    );
     Ok(())
 }
 
@@ -60,7 +63,10 @@ jobs:
 "#,
     )?;
     let findings = scan_workflow("merge-group.yml", &workflow);
-    assert!(findings.iter().any(|finding| finding.kind == FindingKind::CandidateDefinedWriter));
+    assert!(
+        findings.iter().any(|finding| finding.kind == FindingKind::CandidateDefinedWriter),
+        "expected a candidate-defined writer finding, got {findings:#?}"
+    );
     Ok(())
 }
 
@@ -96,7 +102,8 @@ jobs:
       - run: git diff --binary > candidate.patch
 "#,
     )?;
-    assert!(scan_workflow("producer.yml", &workflow).is_empty());
+    let findings = scan_workflow("producer.yml", &workflow);
+    assert!(findings.is_empty(), "read-only candidate producer must not be flagged: {findings:#?}");
     Ok(())
 }
 
@@ -132,7 +139,8 @@ jobs:
     uses: EffortlessMetrics/repository-controls/.github/workflows/publish.yml@0123456789abcdef0123456789abcdef01234567
 "#,
     )?;
-    assert!(scan_workflow_with_policy("writer.yml", &workflow, &approved_policy()).is_empty());
+    let findings = scan_workflow_with_policy("writer.yml", &workflow, &approved_policy());
+    assert!(findings.is_empty(), "approved immutable remote writer must be allowed: {findings:#?}");
     Ok(())
 }
 
@@ -151,6 +159,48 @@ jobs:
     )?;
     let findings = scan_workflow_with_policy("writer.yml", &workflow, &approved_policy());
     assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].kind, FindingKind::UntrustedReusableWriter);
+    Ok(())
+}
+
+#[test]
+fn approved_remote_with_a_different_workflow_path_is_untrusted() -> Result<(), String> {
+    // `contains` compares (repository, workflow_path, commit_sha). Without this, relaxing
+    // the comparison to repository-only would still pass the suite.
+    let workflow = parse(
+        r#"
+on: pull_request
+permissions: read-all
+jobs:
+  publish:
+    permissions:
+      contents: write
+    uses: EffortlessMetrics/repository-controls/.github/workflows/other.yml@0123456789abcdef0123456789abcdef01234567
+"#,
+    )?;
+    let findings = scan_workflow_with_policy("writer.yml", &workflow, &approved_policy());
+    assert_eq!(findings.len(), 1, "expected one finding, got {findings:#?}");
+    assert_eq!(findings[0].kind, FindingKind::UntrustedReusableWriter);
+    Ok(())
+}
+
+#[test]
+fn approved_remote_at_a_different_commit_is_untrusted() -> Result<(), String> {
+    // Same repository and path, different pinned SHA: approval is per-commit, so a
+    // comparison that ignored the SHA would accept an unreviewed control-plane revision.
+    let workflow = parse(
+        r#"
+on: pull_request
+permissions: read-all
+jobs:
+  publish:
+    permissions:
+      contents: write
+    uses: EffortlessMetrics/repository-controls/.github/workflows/publish.yml@89abcdef0123456789abcdef0123456789abcdef
+"#,
+    )?;
+    let findings = scan_workflow_with_policy("writer.yml", &workflow, &approved_policy());
+    assert_eq!(findings.len(), 1, "expected one finding, got {findings:#?}");
     assert_eq!(findings[0].kind, FindingKind::UntrustedReusableWriter);
     Ok(())
 }
@@ -188,7 +238,8 @@ jobs:
       - run: git commit -am update && git push
 "#,
     )?;
-    assert!(scan_workflow("scheduled.yml", &workflow).is_empty());
+    let findings = scan_workflow("scheduled.yml", &workflow);
+    assert!(findings.is_empty(), "schedule-only writer is outside candidate policy: {findings:#?}");
     Ok(())
 }
 
@@ -213,7 +264,11 @@ jobs:
           script: core.info(context.payload.pull_request.title)
 "#,
     )?;
-    assert!(scan_workflow("pr-title-check.yml", &workflow).is_empty());
+    let findings = scan_workflow("pr-title-check.yml", &workflow);
+    assert!(
+        findings.is_empty(),
+        "base-defined pull_request_target job must not be flagged: {findings:#?}"
+    );
     Ok(())
 }
 

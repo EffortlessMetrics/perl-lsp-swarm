@@ -54,6 +54,16 @@ pub(crate) fn project_root() -> Result<PathBuf, String> {
         .ok_or_else(|| "xtask manifest directory has no repository parent".to_string())
 }
 
+/// Scans with an **empty** trusted-writer policy, which is intentional for this slice.
+///
+/// No protected writer exists yet — introducing one is #6873 — so there is nothing
+/// legitimate to approve, and an empty policy is the fail-closed choice: every immutable
+/// remote reusable writer is reported as [`FindingKind::UntrustedReusableWriter`] rather
+/// than accepted on immutability alone. Approval is therefore proven by
+/// [`scan_workflow_with_policy`] and its tests, not exercised by the shipped command.
+///
+/// When the protected authority file lands, load it here; the approval path and its
+/// discrimination falsifiers (repository, workflow path, and commit SHA) already exist.
 pub(crate) fn scan_repository(root: &Path) -> Result<Vec<Finding>, String> {
     scan_repository_with_policy(root, &TrustedWriterPolicy::empty())
 }
@@ -93,6 +103,8 @@ fn scan_repository_with_policy(
     Ok(findings)
 }
 
+/// Test-only convenience wrapper: production always scans with an explicit policy.
+#[cfg(test)]
 pub(crate) fn scan_workflow(workflow_name: &str, workflow: &Value) -> Vec<Finding> {
     scan_workflow_with_policy(workflow_name, workflow, &TrustedWriterPolicy::empty())
 }
@@ -521,5 +533,5 @@ fn normalize_shell(run: &str) -> String {
 }
 
 fn mapping_get<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
-    mapping.get(&Value::String(key.to_string()))
+    mapping.get(Value::String(key.to_string()))
 }

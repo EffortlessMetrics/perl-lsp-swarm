@@ -5,6 +5,10 @@
 //! delegate only to an immutable remote reusable workflow; local steps and
 //! local reusable workflows remain candidate-controlled.
 
+// This is a user-facing CLI gate: its findings are its output. Matches the
+// `compiler-concepts` bin convention for the workspace print lints.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 #[path = "candidate_writer_policy/model.rs"]
 mod model;
 #[path = "candidate_writer_policy/scan.rs"]
