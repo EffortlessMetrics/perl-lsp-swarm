@@ -96,6 +96,27 @@ function mockConfig(serverPath: string): void {
 // ---------------------------------------------------------------------------
 // Manifest contract
 // ---------------------------------------------------------------------------
+/**
+ * Language-server startup is demand-driven (#8180). A trust test that wants to
+ * observe a real start has to supply the demand an `onLanguage:perl`
+ * activation would carry.
+ */
+function openPerlDocument(): () => void {
+  const workspaceMock = vscode.workspace as unknown as { textDocuments: unknown[] };
+  const original = workspaceMock.textDocuments;
+  workspaceMock.textDocuments = [
+    {
+      languageId: 'perl',
+      uri: { scheme: 'file', toString: () => 'file:///workspace/demo.pl' },
+      version: 1,
+      getText: () => '',
+    },
+  ];
+  return () => {
+    workspaceMock.textDocuments = original;
+  };
+}
+
 describe('workspace trust manifest contract (#4631)', () => {
   const EXT_ROOT = path.resolve(__dirname, '..', '..');
   const pkg = JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'));
@@ -229,6 +250,7 @@ describe('workspace trust activation gate (#4631)', () => {
   test('starts the language server when workspace is trusted (regression guard)', async () => {
     process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '0';
     (vscode.workspace as { isTrusted: boolean }).isTrusted = true;
+    const restoreDocuments = openPerlDocument();
 
     const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
     const serverPath = path.join(
@@ -248,5 +270,6 @@ describe('workspace trust activation gate (#4631)', () => {
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
     // onDidGrantWorkspaceTrust should NOT be registered when already trusted.
     expect(vscode.workspace.onDidGrantWorkspaceTrust).not.toHaveBeenCalled();
+    restoreDocuments();
   });
 });
