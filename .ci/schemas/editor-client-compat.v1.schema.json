@@ -56,6 +56,7 @@
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/journeyCell" }
     },
+    "protocol_evidence": { "$ref": "#/$defs/protocolEvidence" },
     "process_cleanup": {
       "enum": ["pass", "fail", "not_proven"]
     },
@@ -329,9 +330,14 @@
     "journeyCell": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "result", "evidence"],
+      "required": ["id", "capability_basis", "observed", "result", "evidence"],
       "properties": {
         "id": { "$ref": "#/$defs/reasonToken" },
+        "capability_basis": {
+          "description": "Whether the host advertised the capability this cell exercises. `not_applicable` is for host-native cells resting on no advertised LSP capability, and exempts the cell from the advertisement rule only.",
+          "enum": ["advertised", "not_advertised", "not_applicable"]
+        },
+        "observed": { "type": "boolean" },
         "result": {
           "enum": ["pass", "fail", "partial", "not_proven", "unsupported"]
         },
@@ -352,8 +358,50 @@
             "required": ["result"]
           },
           "then": { "required": ["limitation"] }
+        },
+        {
+          "if": {
+            "properties": { "observed": { "const": true } },
+            "required": ["observed"]
+          },
+          "then": {
+            "properties": {
+              "capability_basis": { "not": { "const": "not_advertised" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "result": { "const": "pass" } },
+            "required": ["result"]
+          },
+          "then": { "properties": { "observed": { "const": true } } }
+        },
+        {
+          "if": {
+            "properties": { "result": { "const": "unsupported" } },
+            "required": ["result"]
+          },
+          "then": { "properties": { "observed": { "const": false } } }
         }
       ]
+    },
+    "protocolEvidence": {
+      "description": "The actual_host_receipt.v1 payload produced by the same host run. That contract owns the LSP state-machine facts; this one owns the subject, journey, and evidence integrity of the run. When present the payload is validated by xtask::actual_host_receipt, and every fact both contracts name must agree.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "receipt_sha256", "receipt"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/reasonToken" },
+        "receipt_sha256": { "$ref": "#/$defs/sha256" },
+        "receipt": {
+          "type": "object",
+          "required": ["schema_version"],
+          "properties": {
+            "schema_version": { "const": "actual_host_receipt.v1" }
+          }
+        }
+      }
     },
     "artifact": {
       "type": "object",

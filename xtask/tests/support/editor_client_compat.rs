@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeSet;
 
 #[path = "client_compat_fixture.rs"]
@@ -11,6 +12,23 @@ pub use client_compat_fixture::{
 };
 
 pub const SCHEMA_VERSION: &str = "editor_client_compat.v1";
+
+/// Schema version of the protocol state-machine contract this one composes with.
+///
+/// `actual_host_receipt.v1` (`contracts/actual_host_receipt.v1.schema.json`,
+/// validator `xtask::actual_host_receipt`) owns the LSP state-machine facts of a
+/// host run: `initialize`/`initialized`, negotiated encoding, diagnostics form,
+/// `register_capability`, watcher and refresh behavior, `shutdown`/`exit`, and the
+/// orphan result. This contract owns the *subject* of a host run — evidence stage,
+/// client/candidate/platform identity, fixture and expectation binding, journey
+/// outcomes, artifact integrity, cleanup, and claim boundary.
+///
+/// The two are composed rather than duplicated: a receipt may embed the
+/// `actual_host_receipt.v1` payload produced by the same run under
+/// [`EditorClientCompatReceipt::protocol_evidence`]. When it does, the embedded
+/// payload is validated by the production validator and every fact both contracts
+/// name must agree, so the dialects cannot drift into contradicting each other.
+pub const PROTOCOL_EVIDENCE_SCHEMA_VERSION: &str = "actual_host_receipt.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +95,25 @@ pub enum ObservationResult {
     Partial,
     NotProven,
     Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Whether the capability a journey cell exercises was advertised by the host.
+///
+/// `actual_host_receipt.v1` enforces `observed ⇒ advertised` and
+/// `passed ⇒ observed` on its feature map. This contract adopts the same chain so
+/// a cell cannot claim a pass for a capability the host never offered.
+///
+/// `NotApplicable` exists for host-native cells that rest on no advertised LSP
+/// capability at all — UI observation, buffer or cursor state, client selection,
+/// process generation. It exempts a cell from the advertisement rule only; the
+/// `pass ⇒ observed` rule still applies, so it cannot be used to manufacture a
+/// pass out of nothing.
+pub enum CapabilityBasis {
+    Advertised,
+    NotAdvertised,
+    NotApplicable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,11 +211,25 @@ pub struct DiagnosticsIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JourneyCell {
     pub id: String,
+    pub capability_basis: CapabilityBasis,
+    pub observed: bool,
     pub result: ObservationResult,
     #[serde(default)]
     pub evidence: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limitation: Option<String>,
+}
+
+/// The `actual_host_receipt.v1` payload produced by the same host run.
+///
+/// This is a reference to the other contract, not a re-declaration of it: the
+/// payload stays in its own dialect and is checked by its own production
+/// validator. See [`PROTOCOL_EVIDENCE_SCHEMA_VERSION`] for the ownership split.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolEvidence {
+    pub run_id: String,
+    pub receipt_sha256: String,
+    pub receipt: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +254,8 @@ pub struct EditorClientCompatReceipt {
     pub capabilities: CapabilityIdentity,
     pub diagnostics: DiagnosticsIdentity,
     pub journey: Vec<JourneyCell>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_evidence: Option<ProtocolEvidence>,
     pub process_cleanup: CleanupResult,
     pub result: ObservationResult,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -347,6 +400,21 @@ impl EditorClientCompatReceipt {
             for evidence in &cell.evidence {
                 validate_safe_identity(evidence, "journey evidence")?;
             }
+            ensure!(
+                !(cell.observed && cell.capability_basis == CapabilityBasis::NotAdvertised),
+                "cell {} claims an observation of a capability the host never advertised",
+                cell.id
+            );
+            ensure!(
+                !(cell.result == ObservationResult::Pass && !cell.observed),
+                "cell {} claims a pass without observing anything",
+                cell.id
+            );
+            ensure!(
+                !(cell.result == ObservationResult::Unsupported && cell.observed),
+                "cell {} reports unsupported while also reporting an observation",
+                cell.id
+            );
             if matches!(
                 cell.result,
                 ObservationResult::Partial
@@ -372,6 +440,10 @@ impl EditorClientCompatReceipt {
                 artifact.id
             );
             artifact_kinds.insert(artifact.kind);
+        }
+
+        if let Some(protocol) = &self.protocol_evidence {
+            self.validate_protocol_evidence(protocol)?;
         }
 
         if self.result == ObservationResult::Pass {
@@ -449,6 +521,89 @@ impl EditorClientCompatReceipt {
         Ok(())
     }
 
+    /// Check an embedded `actual_host_receipt.v1` payload and the facts both
+    /// contracts name.
+    ///
+    /// The payload is validated by the production validator in `xtask::src`, not
+    /// by a second copy of its rules here — this contract consumes that authority
+    /// rather than restating it. What is checked here is only the *seam*: every
+    /// fact the two dialects both carry must agree, so an embedded receipt can
+    /// never quietly describe a different run than the one wrapping it.
+    fn validate_protocol_evidence(&self, protocol: &ProtocolEvidence) -> Result<()> {
+        ensure!(
+            is_reason_token(&protocol.run_id),
+            "protocol_evidence.run_id must be a stable reason token"
+        );
+        validate_sha256(&protocol.receipt_sha256, "protocol_evidence.receipt_sha256")?;
+
+        let receipt = protocol
+            .receipt
+            .as_object()
+            .context("protocol_evidence.receipt must be an actual_host_receipt.v1 object")?;
+        ensure!(
+            receipt.get("schema_version").and_then(Value::as_str)
+                == Some(PROTOCOL_EVIDENCE_SCHEMA_VERSION),
+            "protocol_evidence.receipt must declare {PROTOCOL_EVIDENCE_SCHEMA_VERSION}"
+        );
+        xtask::actual_host_receipt::validate_receipt(&protocol.receipt)
+            .map_err(|error| anyhow::anyhow!("embedded protocol receipt is invalid: {error}"))?;
+
+        let field = |path: &[&str]| -> Option<&str> {
+            let mut cursor = &protocol.receipt;
+            for key in path {
+                cursor = cursor.get(key)?;
+            }
+            cursor.as_str()
+        };
+        let mut require_agreement = |path: &[&str], expected: &str| -> Result<()> {
+            let observed = field(path)
+                .with_context(|| format!("embedded protocol receipt omitted {}", path.join(".")))?;
+            ensure!(
+                observed == expected,
+                "embedded protocol receipt disagrees on {}: `{observed}` vs `{expected}`",
+                path.join(".")
+            );
+            Ok(())
+        };
+
+        require_agreement(&["run_id"], &protocol.run_id)?;
+        require_agreement(&["registration_state"], &wire(&self.integration.registration_state)?)?;
+        require_agreement(&["platform", "os"], &self.platform.os)?;
+        require_agreement(&["platform", "arch"], &self.platform.arch)?;
+        require_agreement(&["editor", "family"], &self.host.product)?;
+        require_agreement(&["editor", "version"], &self.host.version)?;
+        require_agreement(
+            &["state_machine", "diagnostics_mode"],
+            &wire(&self.diagnostics.advertised_mode)?,
+        )?;
+        if let Some(selected) = &self.capabilities.position_encoding_selected {
+            require_agreement(&["state_machine", "position_encoding"], selected)?;
+        }
+
+        // `actual_host_receipt.v1` records the server hash bare; this contract
+        // records it as a prefixed identity. Compare the hashes themselves.
+        let embedded_server = field(&["server", "sha256"])
+            .context("embedded protocol receipt omitted server.sha256")?;
+        let candidate_server = self
+            .server
+            .artifact_sha256
+            .strip_prefix("sha256:")
+            .unwrap_or(&self.server.artifact_sha256);
+        ensure!(
+            embedded_server.strip_prefix("sha256:").unwrap_or(embedded_server) == candidate_server,
+            "embedded protocol receipt bound a different server artifact"
+        );
+
+        // An orphaned process is a cleanup failure whichever contract observed it.
+        if field(&["state_machine", "orphan_result"]) == Some("orphan_detected") {
+            ensure!(
+                self.process_cleanup != CleanupResult::Pass,
+                "embedded protocol receipt detected an orphan but cleanup was reported as passing"
+            );
+        }
+        Ok(())
+    }
+
     pub fn subject_invalidations_against(&self, current: &Self) -> BTreeSet<&'static str> {
         let mut changed = BTreeSet::new();
         if self.stage != current.stage {
@@ -503,10 +658,22 @@ impl EditorClientCompatReceipt {
         if self.artifacts != current.artifacts {
             changed.insert("artifacts");
         }
+        if self.protocol_evidence != current.protocol_evidence {
+            changed.insert("protocol_evidence");
+        }
         if self.claim_boundary != current.claim_boundary {
             changed.insert("claim_boundary");
         }
         changed
+    }
+}
+
+/// The wire spelling of an enum, taken from its own serialization so a cross-
+/// contract comparison can never drift from what this contract actually writes.
+fn wire(value: &impl Serialize) -> Result<String> {
+    match serde_json::to_value(value)? {
+        Value::String(text) => Ok(text),
+        other => bail!("expected a string wire spelling, found {other}"),
     }
 }
 

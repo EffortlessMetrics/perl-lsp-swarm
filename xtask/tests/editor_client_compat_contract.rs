@@ -3,12 +3,13 @@ mod editor_client_compat;
 
 use anyhow::{Context, Result, ensure};
 use editor_client_compat::{
-    ArtifactKind, CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity,
-    CleanupResult, ClientSourceState, DiagnosticMode, DiagnosticsIdentity,
+    ArtifactKind, CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID, CapabilityBasis,
+    CapabilityIdentity, CleanupResult, ClientSourceState, DiagnosticMode, DiagnosticsIdentity,
     EditorClientCompatReceipt, EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity,
-    IntegrationIdentity, IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity,
-    PositionEncodingBasis, RegistrationState, SCHEMA_VERSION, ServerIdentity,
-    WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
+    IntegrationIdentity, IntegrationMode, JourneyCell, ObservationResult,
+    PROTOCOL_EVIDENCE_SCHEMA_VERSION, PlatformIdentity, PositionEncodingBasis, ProtocolEvidence,
+    RegistrationState, SCHEMA_VERSION, ServerIdentity, WorkspaceFixtureIdentity,
+    canonical_expectation_set_digest, fixture_digest,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -116,17 +117,22 @@ fn valid_receipt() -> Result<EditorClientCompatReceipt> {
         journey: vec![
             JourneyCell {
                 id: "definition.cross_file".to_string(),
+                capability_basis: CapabilityBasis::Advertised,
+                observed: true,
                 result: ObservationResult::Pass,
                 evidence: vec!["host-event.definition".to_string()],
                 limitation: None,
             },
             JourneyCell {
                 id: "lifecycle.shutdown".to_string(),
+                capability_basis: CapabilityBasis::NotApplicable,
+                observed: true,
                 result: ObservationResult::Pass,
                 evidence: vec!["process-cleanup".to_string()],
                 limitation: None,
             },
         ],
+        protocol_evidence: None,
         process_cleanup: CleanupResult::Pass,
         result: ObservationResult::Pass,
         failure_class: None,
@@ -134,6 +140,64 @@ fn valid_receipt() -> Result<EditorClientCompatReceipt> {
         artifacts: required_artifacts(),
         claim_boundary: "Exact-source Eglot generic-LSP fixture cells only.".to_string(),
     })
+}
+
+/// Attach an `actual_host_receipt.v1` payload describing the same run as
+/// [`valid_receipt`], after letting the caller mutate it.
+///
+/// The payload is deliberately built to agree with the wrapping receipt on every
+/// shared fact, so each mutation below isolates exactly one disagreement.
+fn with_protocol_evidence(
+    mut receipt: EditorClientCompatReceipt,
+    mutate: impl FnOnce(&mut Value),
+) -> Result<EditorClientCompatReceipt> {
+    let run_id = "emacs-eglot-exact-source-001";
+    let mut payload = serde_json::json!({
+        "schema_version": PROTOCOL_EVIDENCE_SCHEMA_VERSION,
+        "receipt_version": 1,
+        "run_id": run_id,
+        "timestamp": receipt.observed_at.clone(),
+        "editor": { "family": "emacs", "version": "31.1", "source": "gnu-release" },
+        "client": { "family": "eglot", "version": "1.23", "source": "bundled" },
+        "server": {
+            "path": "artifacts/perllsp",
+            "sha256": "4".repeat(64),
+            "version": "0.18.0-dev"
+        },
+        "platform": { "os": "linux", "arch": "x86_64" },
+        "workspace": { "root": "fixture/perl-agent-client-v1", "identity": "fixture:git-root" },
+        "profile": { "identity": "clean-home-001", "source": "hermetic-runner" },
+        "registration_state": "manual_client_registration",
+        "artifacts": {
+            "client_log": "artifacts/emacs-events.log",
+            "server_stderr": "artifacts/perllsp.stderr"
+        },
+        "features": {
+            "diagnostics": { "advertised": true, "observed": true, "outcome": "passed" }
+        },
+        "state_machine": {
+            "initialize": { "outcome": "ok" },
+            "initialized": { "outcome": "ok" },
+            "position_encoding": "utf-16",
+            "diagnostics_mode": "pull",
+            "diagnostics_response_form": "full",
+            "workspace_configuration": { "outcome": "ok" },
+            "register_capability": { "outcome": "ok" },
+            "watcher_behavior": { "outcome": "ok" },
+            "refresh": { "outcome": "ok" },
+            "shutdown": { "outcome": "ok" },
+            "exit": { "outcome": "ok" },
+            "orphan_result": "none"
+        }
+    });
+    mutate(&mut payload);
+
+    receipt.protocol_evidence = Some(ProtocolEvidence {
+        run_id: run_id.to_string(),
+        receipt_sha256: sha256('0'),
+        receipt: payload,
+    });
+    Ok(receipt)
 }
 
 #[test]
@@ -343,6 +407,7 @@ fn validation_rejects_false_green_cells_and_unsafe_artifact_identity() -> Result
         .first_mut()
         .context("valid receipt has no journey cell")?;
     first.result = ObservationResult::Unsupported;
+    first.observed = false;
     ensure!(
         unsupported_without_limitation.validate().is_err(),
         "unsupported journey cell omitted its limitation"
@@ -350,6 +415,8 @@ fn validation_rejects_false_green_cells_and_unsafe_artifact_identity() -> Result
 
     let mut nothing_observed = valid_receipt()?;
     for cell in &mut nothing_observed.journey {
+        cell.capability_basis = CapabilityBasis::NotAdvertised;
+        cell.observed = false;
         cell.result = ObservationResult::Unsupported;
         cell.limitation = Some("host does not implement this action".to_string());
     }
@@ -376,6 +443,167 @@ fn validation_rejects_false_green_cells_and_unsafe_artifact_identity() -> Result
     let mut private_source = valid_receipt()?;
     private_source.host.source_ref = "../../private/checkout".to_string();
     ensure!(private_source.validate().is_err(), "parent-traversing client source ref was accepted");
+    Ok(())
+}
+
+#[test]
+fn a_cell_cannot_pass_a_capability_the_host_never_advertised() -> Result<()> {
+    let mut unadvertised_observation = valid_receipt()?;
+    let first = unadvertised_observation
+        .journey
+        .first_mut()
+        .context("valid receipt has no journey cell")?;
+    first.capability_basis = CapabilityBasis::NotAdvertised;
+    ensure!(
+        unadvertised_observation.validate().is_err(),
+        "cell observed a capability the host never advertised"
+    );
+
+    let mut unobserved_pass = valid_receipt()?;
+    let first = unobserved_pass.journey.first_mut().context("valid receipt has no journey cell")?;
+    first.observed = false;
+    ensure!(unobserved_pass.validate().is_err(), "cell passed without observing anything");
+
+    let mut observed_unsupported = valid_receipt()?;
+    let first =
+        observed_unsupported.journey.first_mut().context("valid receipt has no journey cell")?;
+    first.result = ObservationResult::Unsupported;
+    first.limitation = Some("host does not expose this action".to_string());
+    ensure!(
+        observed_unsupported.validate().is_err(),
+        "cell reported unsupported while also reporting an observation"
+    );
+
+    // `not_applicable` exempts host-native cells from the advertisement rule, but
+    // must not become a way to manufacture a pass out of nothing.
+    let mut host_native_without_observation = valid_receipt()?;
+    let first = host_native_without_observation
+        .journey
+        .first_mut()
+        .context("valid receipt has no journey cell")?;
+    first.capability_basis = CapabilityBasis::NotApplicable;
+    first.observed = false;
+    ensure!(
+        host_native_without_observation.validate().is_err(),
+        "host-native cell passed without an observation"
+    );
+    Ok(())
+}
+
+#[test]
+fn embedded_protocol_evidence_must_describe_the_same_run() -> Result<()> {
+    let receipt = valid_receipt()?;
+    let composed = with_protocol_evidence(receipt.clone(), |_| ())?;
+    composed.validate()?;
+
+    let wrong_registration = with_protocol_evidence(receipt.clone(), |payload| {
+        payload["registration_state"] = Value::String("upstream_builtin_released".to_string());
+    })?;
+    ensure!(
+        wrong_registration.validate().is_err(),
+        "embedded receipt claimed a different registration state"
+    );
+
+    let wrong_server = with_protocol_evidence(receipt.clone(), |payload| {
+        payload["server"]["sha256"] = Value::String("f".repeat(64));
+    })?;
+    ensure!(wrong_server.validate().is_err(), "embedded receipt bound a different server artifact");
+
+    let wrong_platform = with_protocol_evidence(receipt.clone(), |payload| {
+        payload["platform"]["arch"] = Value::String("aarch64".to_string());
+    })?;
+    ensure!(wrong_platform.validate().is_err(), "embedded receipt claimed a different platform");
+
+    let wrong_editor = with_protocol_evidence(receipt.clone(), |payload| {
+        payload["editor"]["version"] = Value::String("29.4".to_string());
+    })?;
+    ensure!(
+        wrong_editor.validate().is_err(),
+        "embedded receipt claimed a different editor version"
+    );
+
+    let wrong_encoding = with_protocol_evidence(receipt.clone(), |payload| {
+        payload["state_machine"]["position_encoding"] = Value::String("utf-8".to_string());
+    })?;
+    ensure!(
+        wrong_encoding.validate().is_err(),
+        "embedded receipt negotiated a different position encoding"
+    );
+
+    let wrong_diagnostics = with_protocol_evidence(receipt.clone(), |payload| {
+        payload["state_machine"]["diagnostics_mode"] = Value::String("push".to_string());
+    })?;
+    ensure!(
+        wrong_diagnostics.validate().is_err(),
+        "embedded receipt reported a different diagnostic mode"
+    );
+
+    // The embedded payload is checked by the production validator, not a second
+    // copy of its rules: a receipt this contract would otherwise accept must still
+    // fail when the payload violates `actual_host_receipt.v1` itself.
+    let invalid_payload = with_protocol_evidence(receipt.clone(), |payload| {
+        payload["features"]["diagnostics"]["advertised"] = Value::Bool(false);
+    })?;
+    ensure!(
+        invalid_payload.validate().is_err(),
+        "an embedded payload invalid under its own contract was accepted"
+    );
+
+    let wrong_schema = with_protocol_evidence(receipt.clone(), |payload| {
+        payload["schema_version"] = Value::String(SCHEMA_VERSION.to_string());
+    })?;
+    ensure!(wrong_schema.validate().is_err(), "embedded payload in the wrong dialect was accepted");
+
+    // An orphan is a cleanup failure in whichever dialect observed it.
+    let orphaned = with_protocol_evidence(receipt, |payload| {
+        payload["state_machine"]["orphan_result"] = Value::String("orphan_detected".to_string());
+    })?;
+    ensure!(
+        orphaned.validate().is_err(),
+        "embedded receipt detected an orphan while cleanup was reported as passing"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_two_contracts_share_one_registration_vocabulary() -> Result<()> {
+    let peer_path = repository_root()?.join("contracts/actual_host_receipt.v1.schema.json");
+    let peer: Value = serde_json::from_str(&fs::read_to_string(peer_path)?)?;
+    let schema_path = repository_root()?.join(".ci/schemas/editor-client-compat.v1.schema.json");
+    let schema: Value = serde_json::from_str(&fs::read_to_string(schema_path)?)?;
+
+    ensure!(
+        peer["properties"]["schema_version"]["const"] == PROTOCOL_EVIDENCE_SCHEMA_VERSION,
+        "protocol evidence contract is not the one this contract composes with"
+    );
+    ensure!(
+        schema["$defs"]["protocolEvidence"]["properties"]["receipt"]["properties"]["schema_version"]
+            ["const"]
+            == PROTOCOL_EVIDENCE_SCHEMA_VERSION,
+        "schema does not bind embedded evidence to the peer contract"
+    );
+
+    // Both contracts name the registration state of the same run. Binding the
+    // enums to each other means the vocabularies cannot drift apart silently:
+    // editing either schema alone fails here.
+    ensure!(
+        schema["$defs"]["integration"]["properties"]["registration_state"]["enum"]
+            == peer["properties"]["registration_state"]["enum"],
+        "registration vocabularies diverged between the two contracts"
+    );
+
+    // The state-machine facts stay owned by the peer contract. Re-declaring them
+    // here is what duplicate authority would look like.
+    let owned_by_peer = peer["$defs"]["stateMachine"]["required"]
+        .as_array()
+        .context("peer state machine required list missing")?;
+    for fact in owned_by_peer {
+        let name = fact.as_str().context("peer required property name is not a string")?;
+        ensure!(
+            schema["properties"].get(name).is_none(),
+            "this contract re-declared {name}, a fact {PROTOCOL_EVIDENCE_SCHEMA_VERSION} owns"
+        );
+    }
     Ok(())
 }
 
