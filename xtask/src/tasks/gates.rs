@@ -5662,6 +5662,58 @@ error: aborting due to previous error
         Ok(())
     }
 
+    /// (issue #6845) Union coverage across the family is not the property that
+    /// matters — the former composite was selected when a diff touched *either*
+    /// package, and ran all four commands. Assert the actual selected set for
+    /// each package independently, so a future narrowing of any child's scope
+    /// (which union coverage would still accept) fails here.
+    #[test]
+    fn each_former_composite_package_selects_the_whole_inline_completion_family()
+    -> color_eyre::eyre::Result<()> {
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        let family: Vec<GateDefinition> = INLINE_COMPLETION_GATE_NAMES
+            .iter()
+            .map(|&gate_name| {
+                policy
+                    .gates
+                    .iter()
+                    .find(|gate| gate.name == gate_name)
+                    .cloned()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))
+            })
+            .collect::<color_eyre::eyre::Result<_>>()?;
+
+        for package in ["perl-lsp-rs", "perl-lsp-rs-core"] {
+            let plan = build_pr_fast_plan_from_scope_with_targets(
+                GateTier::PrFast,
+                "origin/main".to_string(),
+                family.clone(),
+                Some(scope_output("code", &[package], &[], &[])),
+                true,
+                false,
+                None,
+                None,
+            )?;
+
+            let selected: HashSet<&str> =
+                plan.selected.iter().map(|planned| planned.gate.name.as_str()).collect();
+
+            for &gate_name in INLINE_COMPLETION_GATE_NAMES {
+                assert!(
+                    selected.contains(gate_name),
+                    "a change touching only '{package}' must still select '{gate_name}': \
+                     the former composite ran all four contracts on either package, so a \
+                     child scoped away from one of them silently narrows coverage. \
+                     Selected: {selected:?}"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     #[test]
     fn gate_runner_reports_independent_results_when_a_peer_fails() -> color_eyre::eyre::Result<()> {
         let failing_gate = tier_gate("gate_a_fails", "pr_fast", "exit 1");
