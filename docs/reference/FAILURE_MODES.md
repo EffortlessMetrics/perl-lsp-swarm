@@ -236,21 +236,21 @@ Memory references point to `C:\Users\<user>\.claude\projects\H--Code-Rust-perl-l
 
 ---
 
-### rtk gh pr checks Masks Aggregator Failure
+### Filtered Check Summaries Mask Aggregator Failure
 
-**Symptom**: `rtk gh pr checks <PR>` reports "Passed: N, Failed: 0" but the PR is actually blocked. The CI Gate (Merge-Blocking) aggregator is FAILURE on the latest SHA.
+**Symptom**: A filtered check summary reports "Passed: N, Failed: 0" but the PR is actually blocked. The CI Gate (Merge-Blocking) aggregator is FAILURE on the latest SHA.
 
-**Root cause**: `rtk`'s filter counts individual job conclusions and may drop or suppress the aggregator result. The aggregator is a single job that rolls up many sub-checks; if only the aggregator is red and all sub-checks are individually SUCCESS/SKIPPED, `rtk` may count 0 failures while the real gate is blocked.
+**Root cause**: The filtered view counts individual job conclusions and may drop or suppress the aggregator result. The aggregator is a single job that rolls up many sub-checks; if only the aggregator is red and all sub-checks are individually SUCCESS/SKIPPED, the summary may count 0 failures while the real gate is blocked.
 
 **Detection**: PR has `mergeStateStatus: UNSTABLE` in `gh pr view --json mergeStateStatus`. Direct rollup check: `gh pr view <PR> --json statusCheckRollup -q '.statusCheckRollup | group_by(.name) | map(sort_by(.completedAt) | last) | map(select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .status == "IN_PROGRESS"))'`.
 
-**Mitigation**: Never trust `rtk gh pr checks` for promote/merge decisions. Use raw rollup query above. A PR with full sign-off chain + `UNSTABLE` mergeStateStatus + rtk reporting "0 failed" should always trigger a raw rollup re-check.
+**Mitigation**: Never trust a filtered check summary for promote/merge decisions. Use the direct rollup query above. A PR with full sign-off chain + `UNSTABLE` mergeStateStatus + a summary reporting "0 failed" should always trigger a raw rollup re-check.
 
-**Prevention**: Ops agents must use direct rollup queries, not rtk summaries, for merge-readiness decisions. Document this in the ops prompt: rtk is for human-readable summaries, not merge gates.
+**Prevention**: Ops agents must use direct rollup queries, not filtered summaries, for merge-readiness decisions. Document this in the ops prompt: summaries are for navigation, not merge gates.
 
 **Memory**: `feedback_rtk_pr_checks_masks_failures.md`
 
-**Example PRs**: #7016 (rtk reported "Passed: 14, Failed: 0"; raw rollup showed `CI Gate FAILURE` on latest SHA)
+**Example PRs**: #7016 (a filtered summary reported "Passed: 14, Failed: 0"; the raw rollup showed `CI Gate FAILURE` on the latest SHA)
 
 ---
 
