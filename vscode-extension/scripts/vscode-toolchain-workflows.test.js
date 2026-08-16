@@ -61,12 +61,14 @@ void test('publisher workflow invokes both CLIs offline through npm exec', () =>
 void test('managed-binary smoke proves TypeScript authority before compilation on every OS', () => {
   const source = readWorkflow('vscode-managed-binary-smoke.yml');
   const setupIndex = source.indexOf('- name: Setup VS Code toolchain');
+  const shimTestIndex = source.indexOf('- name: Test TypeScript authority shim parsing');
   const authorityIndex = source.indexOf('- name: Verify TypeScript 7 compiler authority');
   const compileIndex = source.indexOf('- name: Compile extension');
   const integrationIndex = source.indexOf('- name: Run extension-host smoke');
 
   for (const [label, index] of [
     ['toolchain setup', setupIndex],
+    ['shim parser tests', shimTestIndex],
     ['TypeScript authority', authorityIndex],
     ['compile', compileIndex],
     ['integration smoke', integrationIndex],
@@ -74,6 +76,8 @@ void test('managed-binary smoke proves TypeScript authority before compilation o
     assert.notEqual(index, -1, `${label} step is missing`);
   }
 
+  assert.ok(setupIndex < shimTestIndex, 'shim tests require the installed repository toolchain');
+  assert.ok(shimTestIndex < authorityIndex, 'shim parser tests must precede the real authority probe');
   assert.ok(setupIndex < authorityIndex, 'authority must run after repository toolchain setup');
   assert.ok(authorityIndex < compileIndex, 'authority must run before compilation');
   assert.ok(authorityIndex < integrationIndex, 'authority must run before integration smoke');
@@ -81,6 +85,12 @@ void test('managed-binary smoke proves TypeScript authority before compilation o
     source,
     /os:\s*\[windows-latest,\s*ubuntu-latest,\s*macos-latest\]/,
     'the shared authority step must cover Windows, Ubuntu, and macOS',
+  );
+  assert.equal(
+    (source.match(/run: node --test scripts\/check-typescript-authority-windows-shim\.test\.js/g) ?? [])
+      .length,
+    1,
+    'the shared matrix job should run the shim parser fixtures exactly once',
   );
   assert.equal(
     (source.match(/run: npm run typecheck:authority/g) ?? []).length,
