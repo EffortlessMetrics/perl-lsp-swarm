@@ -309,55 +309,21 @@ fn is_exit_function(name: &str) -> bool {
     matches!(bare, "die" | "exit" | "exec" | "croak" | "Carp::croak" | "confess" | "Carp::confess")
 }
 
-/// Visit a `continue { }` block with statement-list-local fallthrough semantics.
+/// Visit a `continue { }` block.
 ///
-/// `next`, `last`, and `redo` transfer control away from the following sibling
-/// in the continue block. Their eventual destinations differ, but none falls
-/// through to the next statement in this list.
+/// Fallthrough inside a `continue { }` block is decided by the same
+/// statement-list-local rule as any other statement list: a statement that
+/// transfers control away is followed by unreachable siblings. `next`, `last`,
+/// and `redo` have distinct destinations, but none of them resumes at the next
+/// statement in this list, so no continue-specific exit predicate is needed.
 fn visit_continue_block(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     match &node.kind {
         NodeKind::Block { statements } => {
-            check_continue_block_statement_list(statements, diagnostics);
+            check_statement_list(statements, diagnostics);
         }
         _ => {
             // Non-block continue node: fall back to standard visit
             visit_node(node, diagnostics);
-        }
-    }
-}
-
-/// Walk a continue-block statement slice with continue-block exit semantics.
-///
-/// Loop-control destinations remain distinct, but all unconditional
-/// `next`/`last`/`redo` forms terminate fallthrough to later siblings.
-fn check_continue_block_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) {
-    let mut found_exit = false;
-    let mut pending_goto_label = None;
-
-    for stmt in stmts {
-        if found_exit {
-            if pending_goto_label.is_some_and(|label| labeled_statement_name(stmt) == Some(label)) {
-                found_exit = false;
-                pending_goto_label = None;
-            } else {
-                diagnostics.push(Diagnostic {
-                    range: (stmt.location.start, stmt.location.end),
-                    severity: DiagnosticSeverity::Hint,
-                    code: Some(DiagnosticCode::UnreachableCode.as_str().to_string()),
-                    message: "Unreachable code: this statement cannot be executed".to_string(),
-                    related_information: vec![],
-                    tags: vec![DiagnosticTag::Unnecessary],
-                    suggestion: Some("Remove unreachable code".to_string()),
-                });
-                visit_node(stmt, diagnostics);
-                continue;
-            }
-        }
-
-        visit_node(stmt, diagnostics);
-        if is_unconditional_exit_in_continue(stmt) {
-            found_exit = true;
-            pending_goto_label = goto_label_target(stmt);
         }
     }
 }
@@ -378,24 +344,6 @@ fn labeled_statement_name(node: &Node) -> Option<&str> {
         return None;
     };
     Some(label.as_str())
-}
-
-/// Returns true if this node terminates fallthrough within a continue block.
-///
-/// Loop-control destinations differ, but unconditional `next`, `last`, and
-/// `redo` all prevent execution of the following sibling statement.
-fn is_unconditional_exit_in_continue(node: &Node) -> bool {
-    match &node.kind {
-        NodeKind::Return { .. } => true,
-        NodeKind::FunctionCall { name, .. } => is_exit_function(name),
-        NodeKind::ExpressionStatement { expression } => {
-            is_unconditional_exit_in_continue(expression)
-        }
-        NodeKind::LoopControl { op, .. } => matches!(op.as_str(), "last" | "next" | "redo"),
-        NodeKind::Goto { .. } => true,
-        NodeKind::StatementModifier { .. } => false,
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -576,6 +524,25 @@ mod tests {
                 "conditional loop control should preserve continue-block fallthrough: {diags:?}"
             );
         }
+    }
+
+    #[test]
+    fn exit_method_in_continue_block_flags_subsequent() {
+        // A throwing method call terminates fallthrough in an ordinary
+        // statement list; a `continue { }` block is not a special case.
+        let diags =
+            unreachable_diags("while ($ready) { work(); } continue { $err->throw; print $ready; }");
+        assert!(
+            has_pl406(&diags),
+            "code after a throwing method call in continue should be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn exit_function_in_continue_block_flags_subsequent() {
+        let diags =
+            unreachable_diags("while ($ready) { work(); } continue { die 'stop'; print $ready; }");
+        assert!(has_pl406(&diags), "code after 'die' in continue should be flagged: {diags:?}");
     }
 
     #[test]
