@@ -1,0 +1,69 @@
+name: One-use exact-upstream rebase staging
+
+on:
+  push:
+    branches:
+      - agent/exact-upstream-ts-parser-perl-7255-rebase-staging-20260816
+
+permissions:
+  contents: write
+
+jobs:
+  resolve-and-prove:
+    if: github.actor == 'EffortlessSteven'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact staging subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Resolve exact current-upstream subject into the current lockfile
+        run: cargo check -p perl-parser-comparison --no-default-features --features current-upstream
+
+      - name: Prove the isolated subject contract
+        run: |
+          cargo test -p perl-parser-comparison --no-default-features --features current-upstream --test current_upstream_subject --locked
+          cargo clippy -p perl-parser-comparison --no-default-features --features current-upstream --all-targets --locked -- -D warnings
+          cargo fmt -p perl-parser-comparison
+
+      - name: Validate the bounded generated delta
+        id: delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          mapfile -t changed < <(git diff --name-only)
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for path in "${changed[@]}"; do
+            case "$path" in
+              Cargo.lock|crates/perl-parser-comparison/src/*.rs|crates/perl-parser-comparison/tests/*.rs)
+                ;;
+              *)
+                echo "unexpected generated mutation: $path" >&2
+                exit 1
+                ;;
+            esac
+          done
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit resolved lock and exact formatter output to staging
+        if: steps.delta.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add Cargo.lock crates/perl-parser-comparison/src crates/perl-parser-comparison/tests
+          git commit -m "build(parser-comparison): resolve and format exact upstream subject"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
