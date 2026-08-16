@@ -27,26 +27,7 @@ jest.mock('vscode-languageclient/node', () => ({
 }));
 
 import { activate, deactivate } from '../extension';
-
-interface FakeDocument {
-  readonly languageId: string;
-  readonly uri: { readonly scheme: string; toString(): string };
-  readonly version: number;
-  getText(): string;
-}
-
-function fakeDocument(languageId: string, scheme = 'file'): FakeDocument {
-  return {
-    languageId,
-    uri: { scheme, toString: () => `${scheme}:///workspace/demo` },
-    version: 1,
-    getText: () => '',
-  };
-}
-
-function setOpenDocuments(documents: FakeDocument[]): void {
-  (vscode.workspace as unknown as { textDocuments: unknown[] }).textDocuments = documents;
-}
+import { fakeDocument, setOpenDocuments, type FakeDocument } from './serverDemandDocuments';
 
 function makeContext(extensionPath: string): vscode.ExtensionContext {
   const state = {
@@ -87,10 +68,36 @@ function mockConfig(serverPath: string): void {
   }));
 }
 
+/**
+ * Wait for a condition the code under test is expected to reach.
+ *
+ * Positive assertions must not depend on a fixed number of event-loop turns:
+ * the demand path awaits several calls, and adding one more await would turn a
+ * correct implementation into an intermittent CI failure.
+ */
+async function waitUntil(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const startedAt = Date.now();
+  while (!condition()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('condition not met before timeout');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** Wait until the language client has been started `count` times. */
+function waitForStarts(count: number, timeoutMs = 1_000): Promise<void> {
+  return waitUntil(() => mockLanguageClientStart.mock.calls.length >= count, timeoutMs);
+}
+
+/**
+ * Drain pending work so an "it did NOT start" assertion is meaningful.
+ *
+ * Absence cannot be waited for, only bounded: this gives the demand path more
+ * than enough turns to start a server if it were going to.
+ */
 async function settle(): Promise<void> {
-  // Startup is scheduled off the activation promise on purpose, so the demand
-  // decision needs a turn of the microtask/timer queue to be observable.
-  for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 20; index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
@@ -112,8 +119,12 @@ function fireActiveEditorChanged(document: FakeDocument): void {
   listener?.({ document });
 }
 
+/** Temporary extension roots created by the current test, removed in afterEach. */
+const createdRoots: string[] = [];
+
 function makeExtensionRoot(): string {
   const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-demand-'));
+  createdRoots.push(extensionRoot);
   const serverPath = path.join(
     extensionRoot,
     process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
@@ -140,6 +151,11 @@ describe('deferred language-server startup (#8180)', () => {
     }
     await deactivate();
     setOpenDocuments([]);
+    // Each test mkdtemps a root with a fake server binary; without this the
+    // suite leaves one temp directory per test behind on every run.
+    while (createdRoots.length > 0) {
+      fs.rmSync(createdRoots.pop() as string, { recursive: true, force: true });
+    }
     jest.clearAllMocks();
   });
 
@@ -168,7 +184,7 @@ describe('deferred language-server startup (#8180)', () => {
     setOpenDocuments([fakeDocument('perl')]);
 
     await activate(makeContext(makeExtensionRoot()));
-    await settle();
+    await waitForStarts(1);
 
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
   });
@@ -183,7 +199,7 @@ describe('deferred language-server startup (#8180)', () => {
     // Without this the user would have to reload the window to get any Perl
     // language features at all.
     fireDocumentOpened(fakeDocument('perl'));
-    await settle();
+    await waitForStarts(1);
 
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
   });
@@ -194,7 +210,7 @@ describe('deferred language-server startup (#8180)', () => {
 
     // A document restored with the window never fires onDidOpenTextDocument.
     fireActiveEditorChanged(fakeDocument('perl'));
-    await settle();
+    await waitForStarts(1);
 
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
   });
@@ -206,6 +222,9 @@ describe('deferred language-server startup (#8180)', () => {
     fireDocumentOpened(fakeDocument('perl'));
     fireDocumentOpened(fakeDocument('perl'));
     fireActiveEditorChanged(fakeDocument('perl'));
+    await waitForStarts(1);
+    // The failure mode here is a *second* generation, so drain before asserting:
+    // stopping at the first start would pass before a duplicate could appear.
     await settle();
 
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
@@ -225,7 +244,7 @@ describe('deferred language-server startup (#8180)', () => {
     setOpenDocuments([fakeDocument('perl')]);
 
     await activate(makeContext(makeExtensionRoot()));
-    await settle();
+    await waitForStarts(1);
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
 
     // Reinstall stops the client and restarts it. If demand still believed a
@@ -235,9 +254,23 @@ describe('deferred language-server startup (#8180)', () => {
     await settle();
 
     fireDocumentOpened(fakeDocument('perl'));
-    await settle();
+    await waitForStarts(2);
 
     expect(mockLanguageClientStart).toHaveBeenCalledTimes(2);
+  });
+
+  test('an on-first-use command starts a dormant server', async () => {
+    await activate(makeContext(makeExtensionRoot()));
+    await settle();
+    expect(mockLanguageClientStart).not.toHaveBeenCalled();
+
+    // showVersion is ledgered `on-first-use`. Before this it only read the
+    // cached path, so a dormant session answered an explicit version request
+    // with "server is not running".
+    await vscode.commands.executeCommand('perl-lsp.showVersion');
+    await waitForStarts(1);
+
+    expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
   });
 
   test('a failed demand start is surfaced, not swallowed', async () => {

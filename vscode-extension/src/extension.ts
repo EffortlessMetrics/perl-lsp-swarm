@@ -650,8 +650,14 @@ export async function activate(context: vscode.ExtensionContext) {
   const navigationCommandDisposables = registerNavigationCommandGroup({
     openDemoProject,
     organizeImports: organizeImportsCommand,
-    showVersion: () =>
-      showVersionCommand({
+    showVersion: async () => {
+      // Reporting the server version needs a resolved binary, so this is a
+      // server-dependent entry point and must honour its `on-first-use` ledger
+      // row. Without this a dormant session answers an explicit version request
+      // with "server is not running".
+      await serverDemand?.ensureStarted('command:showVersion', { retry: true });
+      syncLifecycleProjection();
+      return showVersionCommand({
         currentServerPath: () => currentServerPath,
         outputChannel,
         serverNotRunningMessage,
@@ -665,7 +671,8 @@ export async function activate(context: vscode.ExtensionContext) {
               resolve(stdout.trim());
             });
           }),
-      }),
+      });
+    },
     showStatusMenu: showStatusMenuCommand,
     showWorkspaceStatus: () =>
       showWorkspaceStatusCommand({
@@ -1070,9 +1077,17 @@ function scheduleServerDemandEvaluation(
  */
 async function startLanguageServerOnDemand(context: vscode.ExtensionContext): Promise<void> {
   const initialized = await initializeLanguageClient(context);
-  if (initialized) {
-    languageClientStartupMetrics.markMilestone('workspace_ready');
+  if (!initialized) {
+    // initializeLanguageClient reports its own actionable diagnosis and returns
+    // false rather than throwing. Fail here, before the post-start work: none of
+    // it helps without a server, an update check would download a binary that
+    // just failed to launch, and a rejection from any of those calls would
+    // replace the real startup error with a misleading one.
+    throw new Error(
+      'Language server did not start; see the Perl Language Server output for details.',
+    );
   }
+  languageClientStartupMetrics.markMilestone('workspace_ready');
   await validateIncludePaths(context);
   await suggestDiscoveredIncludePaths(context);
   await warnAboutPerlExtensionConflicts(context);
@@ -1081,8 +1096,8 @@ async function startLanguageServerOnDemand(context: vscode.ExtensionContext): Pr
   // Runs at most once per updateCheckInterval hours; no-ops when serverPath
   // is user-managed, channel='tag', or updateCheckInterval=0.
   // Skipped in untrusted workspaces as a defense-in-depth measure.
-  // This now runs only once the server is actually wanted, so a Gherkin-only
-  // session no longer downloads a Perl language server it will never launch.
+  // This now runs only once the server is actually wanted and running, so a
+  // Gherkin-only session no longer downloads a server it will never launch.
   if (vscode.workspace.isTrusted) {
     const updateDownloader = new BinaryDownloader(context, outputChannel);
     updateDownloader.checkForUpdateSilent().catch((err: unknown) => {
@@ -1091,15 +1106,6 @@ async function startLanguageServerOnDemand(context: vscode.ExtensionContext): Pr
     });
   } else {
     outputChannel.info('[update-check] Skipped background update check in untrusted workspace.');
-  }
-
-  if (!initialized) {
-    // initializeLanguageClient reports its own actionable diagnosis and returns
-    // false rather than throwing. Surface that as demand-level failure so a
-    // later document open does not silently re-attempt a start that just lost.
-    throw new Error(
-      'Language server did not start; see the Perl Language Server output for details.',
-    );
   }
 }
 
@@ -1139,8 +1145,7 @@ function presentServerDemandState(snapshot: ServerDemandSnapshot): void {
         // initializeLanguageClient already published a specific root cause.
         break;
       }
-      const message =
-        snapshot.error instanceof Error ? snapshot.error.message : String(snapshot.error);
+      const message = describeDemandError(snapshot.error);
       widget.setWorkspaceLifecycleState('failed', {
         detail: `Perl Language Server failed to start: ${message}`,
         action: 'Run the Health Check or fix the server configuration.',
@@ -1159,6 +1164,21 @@ function presentServerDemandState(snapshot: ServerDemandSnapshot): void {
  * see the first-run welcome or What's New.
  */
 function finishActivationHousekeeping(
+  context: vscode.ExtensionContext,
+  whatsNewManager: WhatsNewManager,
+): void {
+  try {
+    runActivationHousekeeping(context, whatsNewManager);
+  } catch (error: unknown) {
+    // This runs both directly and inside a .finally() on a floating promise, so
+    // a synchronous throw would either escape activate() or become an unhandled
+    // rejection in the extension host. Optional welcome UI is never worth that.
+    const message = error instanceof Error ? error.message : String(error);
+    outputChannel.error(`[activation] Post-activation housekeeping failed: ${message}`);
+  }
+}
+
+function runActivationHousekeeping(
   context: vscode.ExtensionContext,
   whatsNewManager: WhatsNewManager,
 ): void {
@@ -2057,7 +2077,7 @@ async function restartServer(_context: vscode.ExtensionContext) {
       vscode.window.showWarningMessage('Perl Language Server is not initialized yet.');
       return;
     }
-    await serverDemand.ensureStarted('command:restartServer', { retry: true });
+    await serverDemand.ensureStarted('command:restart', { retry: true });
     syncLifecycleProjection();
     const demand = serverDemand.snapshot;
     if (demand.state === 'failed') {

@@ -4,6 +4,6 @@ kind: Changed
 body: The Perl language server now starts on demand instead of on every activation. Gherkin-only, walkthrough-only, and debug-configuration sessions no longer spawn or download a language server they never use, and the status bar reports a truthful "not started" state instead of an indefinite spinner. Opening a Perl file later in the session starts exactly one server without a window reload.
 time: 2026-08-16T00:00:00Z
 custom:
-  PR: 8180
+  PR: 10221
   Slug: vscode-defer-server-startup
   Breaking: "no"

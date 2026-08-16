@@ -382,6 +382,11 @@ export class ServerDemandCoordinator {
    * server that is no longer running.
    */
   noteStopped(): void {
+    if (this.disposed) {
+      // Shutdown reaches this through disposeLanguageClient and through late
+      // client-state events. Publishing then would drive already-disposed UI.
+      return;
+    }
     this.generation += 1;
     this.inFlight = undefined;
     this.error = undefined;

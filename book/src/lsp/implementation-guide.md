@@ -4832,28 +4832,39 @@ cargo test -p perl-dap -- test_setup_environment_path_separator
 - Environment variable merging and PERL5LIB construction
 - Empty argument lists and include paths
 
-### Future Roadmap (*Diataxis: Explanation* - Phase 2/3 native implementation)
+### Roadmap (*Diataxis: Explanation* - native DAP direction)
 
-**Phase 2: Native Rust Adapter** (Planned):
+**Native Rust adapter** (current default):
 
-Replace bridge with native Rust DAP implementation:
+`perl-dap` speaks DAP directly and drives the local `perl -d` runtime. No
+bundled Perl module sits between them:
 
 ```
-VS Code ↔ perl-dap (Rust) ↔ Devel::TSPerlDAP (Perl shim) ↔ perl -d
+IDE / DAP client ↔ perl-dap (Rust) ↔ local perl -d ↔ debuggee
 ```
 
-**Features**:
-- Direct DAP protocol implementation (no Perl::LanguageServer dependency)
+The 0.9-era plan routed this path through a bundled `Devel::TSPerlDAP` shim.
+That design is superseded; its historical rationale is archived in
+[`docs/archive/DAP_0_9_SHIM_DESIGN.md`](../../../docs/archive/DAP_0_9_SHIM_DESIGN.md)
+and must not be revived as current architecture. A future first-party
+structured runtime helper requires fresh evidence and a new ADR under #7295.
+
+**Delivered on the native path**:
+- Direct DAP protocol implementation (no `Perl::LanguageServer` runtime dependency)
 - AST-based breakpoint validation using `perl-parser`
-- Incremental parsing integration (<1ms breakpoint updates)
-- Enhanced workspace navigation during debugging
+- Incremental parsing integration for breakpoint updates
+- Workspace navigation during debugging
 
-**Phase 3: Production Hardening** (Planned):
+**Production hardening** (in progress):
 
 - Advanced DAP features (conditional breakpoints, logpoints, hit counts)
-- Performance optimization (<50ms all operations)
+- Performance work across debugger operations
 - Multi-editor support (Neovim, Emacs, Helix)
-- Comprehensive security audit and fuzzing
+- Security audit and fuzzing
+
+DAP remains preview until the installed-artifact and real-session contracts in
+[`docs/reference/CRATE_ARCHITECTURE_DAP.md`](../../../docs/reference/CRATE_ARCHITECTURE_DAP.md)
+earn a stronger posture.
 
 ### See Also (*Diataxis: Reference* - Related documentation)
 

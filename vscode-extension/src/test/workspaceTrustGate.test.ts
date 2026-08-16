@@ -35,6 +35,9 @@ jest.mock('vscode-languageclient/node', () => ({
 }));
 
 import { activate, deactivate } from '../extension';
+// A trust test that wants to observe a real start has to supply the demand an
+// `onLanguage:perl` activation would carry (#8180).
+import { openPerlDocument } from './serverDemandDocuments';
 
 function delay(ms: number): Promise<'timeout'> {
   return new Promise((resolve) => {
@@ -96,27 +99,6 @@ function mockConfig(serverPath: string): void {
 // ---------------------------------------------------------------------------
 // Manifest contract
 // ---------------------------------------------------------------------------
-/**
- * Language-server startup is demand-driven (#8180). A trust test that wants to
- * observe a real start has to supply the demand an `onLanguage:perl`
- * activation would carry.
- */
-function openPerlDocument(): () => void {
-  const workspaceMock = vscode.workspace as unknown as { textDocuments: unknown[] };
-  const original = workspaceMock.textDocuments;
-  workspaceMock.textDocuments = [
-    {
-      languageId: 'perl',
-      uri: { scheme: 'file', toString: () => 'file:///workspace/demo.pl' },
-      version: 1,
-      getText: () => '',
-    },
-  ];
-  return () => {
-    workspaceMock.textDocuments = original;
-  };
-}
-
 describe('workspace trust manifest contract (#4631)', () => {
   const EXT_ROOT = path.resolve(__dirname, '..', '..');
   const pkg = JSON.parse(fs.readFileSync(path.join(EXT_ROOT, 'package.json'), 'utf8'));
@@ -252,24 +234,30 @@ describe('workspace trust activation gate (#4631)', () => {
     (vscode.workspace as { isTrusted: boolean }).isTrusted = true;
     const restoreDocuments = openPerlDocument();
 
-    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-    const serverPath = path.join(
-      extensionRoot,
-      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
-    );
-    fs.writeFileSync(serverPath, '');
-    mockConfig(serverPath);
+    // Restore in `finally`: a mock document left installed by a failing
+    // assertion gives every later test in this file unintended server demand,
+    // turning one failure into a cascade of unrelated ones.
+    try {
+      const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
+      const serverPath = path.join(
+        extensionRoot,
+        process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+      );
+      fs.writeFileSync(serverPath, '');
+      mockConfig(serverPath);
 
-    const activation = activate(makeContext(extensionRoot));
+      const activation = activate(makeContext(extensionRoot));
 
-    await expect(
-      Promise.race([activation.then(() => 'activated' as const), delay(250)]),
-    ).resolves.toBe('activated');
-    await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 500);
+      await expect(
+        Promise.race([activation.then(() => 'activated' as const), delay(250)]),
+      ).resolves.toBe('activated');
+      await waitUntil(() => mockLanguageClientStart.mock.calls.length > 0, 500);
 
-    expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
-    // onDidGrantWorkspaceTrust should NOT be registered when already trusted.
-    expect(vscode.workspace.onDidGrantWorkspaceTrust).not.toHaveBeenCalled();
-    restoreDocuments();
+      expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
+      // onDidGrantWorkspaceTrust should NOT be registered when already trusted.
+      expect(vscode.workspace.onDidGrantWorkspaceTrust).not.toHaveBeenCalled();
+    } finally {
+      restoreDocuments();
+    }
   });
 });

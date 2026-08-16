@@ -123,6 +123,22 @@ describe('activation trigger ledger', () => {
     }
   });
 
+  test('every on-first-use entry point actually reaches the demand coordinator', () => {
+    // A ledger row is a claim about behaviour. Checking only that the command
+    // is contributed would let the row say `on-first-use` while its handler
+    // never calls ensureStarted, leaving a dormant session with no server.
+    // Jest runs the tsc output from out-test/, so reach back to the real source.
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'extension.ts'), 'utf8');
+    const onFirstUse = SERVER_ENTRY_POINT_LEDGER.filter((row) => row.perllsp === 'on-first-use');
+    expect(onFirstUse.length).toBeGreaterThan(0);
+
+    for (const row of onFirstUse) {
+      const command = row.command.replace(/^perl-lsp\./, '');
+      const reason = new RegExp(`ensureStarted\\(\\s*'command:${command}'`);
+      expect(source).toMatch(reason);
+    }
+  });
+
   test('every ledgered entry point is a real contributed command', () => {
     const contributed = new Set(packageJson.contributes.commands.map((entry) => entry.command));
     for (const row of SERVER_ENTRY_POINT_LEDGER) {
@@ -283,7 +299,7 @@ describe('failure and retry', () => {
     await harness.coordinator.ensureStarted('first');
 
     harness.failWith = undefined;
-    await harness.coordinator.ensureStarted('command:restartServer', { retry: true });
+    await harness.coordinator.ensureStarted('command:restart', { retry: true });
 
     expect(harness.starts).toBe(2);
     expect(harness.coordinator.snapshot.state).toBe('running');
@@ -370,6 +386,19 @@ describe('generation correctness', () => {
     harness.coordinator.noteRunning();
     expect(harness.coordinator.snapshot.state).toBe('running');
     expect(harness.coordinator.snapshot.error).toBeUndefined();
+  });
+
+  test('noteStopped after dispose publishes no state', async () => {
+    const harness = createHarness();
+    await harness.coordinator.ensureStarted('first');
+    harness.coordinator.dispose();
+    const publishedBefore = harness.states.length;
+
+    // Shutdown reaches noteStopped through disposeLanguageClient and through
+    // late client-state events; neither may drive already-disposed UI.
+    harness.coordinator.noteStopped();
+
+    expect(harness.states).toHaveLength(publishedBefore);
   });
 
   test('demand after dispose does not start a server', async () => {
