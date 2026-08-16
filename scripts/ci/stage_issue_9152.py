@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import base64, gzip, json, os, subprocess, urllib.error, urllib.request
+import argparse, base64, gzip, json, os, subprocess, urllib.error, urllib.request
 from pathlib import Path
 
 BASE_SHA = "66482bd58313cbc578254835e2703ea914dcac43"
@@ -84,8 +84,7 @@ def publish() -> None:
     Path("target/9152-result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, sort_keys=True))
 
-def main() -> None:
-    materialize()
+def verify() -> None:
     subprocess.run(
         [
             "python3",
@@ -107,7 +106,17 @@ def main() -> None:
         check=True,
     )
     subprocess.run(["git", "diff", "--check"], check=True)
-    publish()
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", choices=("materialize", "verify", "publish"))
+    args = parser.parse_args()
+    if args.mode == "materialize":
+        materialize()
+    elif args.mode == "verify":
+        verify()
+    else:
+        publish()
 
 if __name__ == "__main__":
     main()
