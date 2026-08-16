@@ -228,11 +228,7 @@ fn run_v1(source: &str) -> RawExecution {
             }),
             projection,
             error: None,
-            diagnostics: DiagnosticSummary::new(
-                usize::from(has_error),
-                has_error,
-                has_error,
-            ),
+            diagnostics: DiagnosticSummary::new(usize::from(has_error), has_error, has_error),
             instrument_state: InstrumentState::Complete,
         },
     }
@@ -264,11 +260,7 @@ fn run_v3(source: &str) -> RawExecution {
             }),
             projection,
             error: None,
-            diagnostics: DiagnosticSummary::new(
-                diagnostic_count,
-                diagnostic_count > 0,
-                false,
-            ),
+            diagnostics: DiagnosticSummary::new(diagnostic_count, diagnostic_count > 0, false),
             instrument_state: InstrumentState::Complete,
         },
     }
@@ -279,13 +271,7 @@ fn subject_execution(
     raw: RawExecution,
     successful_observations: BTreeMap<ObservationPlane, ObservationDisposition>,
 ) -> Result<SubjectExecution, ComparisonModelError> {
-    let RawExecution {
-        terminal,
-        projection,
-        error,
-        diagnostics,
-        instrument_state,
-    } = raw;
+    let RawExecution { terminal, projection, error, diagnostics, instrument_state } = raw;
 
     let debug_projection = bounded_optional_text(projection, MAX_DEBUG_PROJECTION_BYTES)?;
     let error = match error {
@@ -314,61 +300,32 @@ fn subject_execution(
     }
 }
 
-fn historical_tree_sitter_observations(
-) -> BTreeMap<ObservationPlane, ObservationDisposition> {
+fn historical_tree_sitter_observations() -> BTreeMap<ObservationPlane, ObservationDisposition> {
     BTreeMap::from([
         (ObservationPlane::Structure, ObservationDisposition::Observed),
         (ObservationPlane::Recovery, ObservationDisposition::Observed),
-        (
-            ObservationPlane::SourceGeometry,
-            ObservationDisposition::NotProven,
-        ),
-        (
-            ObservationPlane::BodyOwnership,
-            ObservationDisposition::NotProven,
-        ),
-        (
-            ObservationPlane::IncrementalFinalState,
-            ObservationDisposition::NotProven,
-        ),
-        (
-            ObservationPlane::QueryOrHighlight,
-            ObservationDisposition::NotProven,
-        ),
+        (ObservationPlane::SourceGeometry, ObservationDisposition::NotProven),
+        (ObservationPlane::BodyOwnership, ObservationDisposition::NotProven),
+        (ObservationPlane::IncrementalFinalState, ObservationDisposition::NotProven),
+        (ObservationPlane::QueryOrHighlight, ObservationDisposition::NotProven),
     ])
 }
 
-fn native_recursive_descent_observations(
-) -> BTreeMap<ObservationPlane, ObservationDisposition> {
+fn native_recursive_descent_observations() -> BTreeMap<ObservationPlane, ObservationDisposition> {
     BTreeMap::from([
         (ObservationPlane::Structure, ObservationDisposition::Observed),
         (ObservationPlane::Recovery, ObservationDisposition::Observed),
-        (
-            ObservationPlane::SourceGeometry,
-            ObservationDisposition::NotProven,
-        ),
-        (
-            ObservationPlane::BodyOwnership,
-            ObservationDisposition::NotProven,
-        ),
-        (
-            ObservationPlane::IncrementalFinalState,
-            ObservationDisposition::NotProven,
-        ),
-        (
-            ObservationPlane::QueryOrHighlight,
-            ObservationDisposition::Unsupported,
-        ),
+        (ObservationPlane::SourceGeometry, ObservationDisposition::NotProven),
+        (ObservationPlane::BodyOwnership, ObservationDisposition::NotProven),
+        (ObservationPlane::IncrementalFinalState, ObservationDisposition::NotProven),
+        (ObservationPlane::QueryOrHighlight, ObservationDisposition::Unsupported),
     ])
 }
 
 fn failed_observations(
     observations: BTreeMap<ObservationPlane, ObservationDisposition>,
 ) -> BTreeMap<ObservationPlane, ObservationDisposition> {
-    observations
-        .into_keys()
-        .map(|plane| (plane, ObservationDisposition::NotProven))
-        .collect()
+    observations.into_keys().map(|plane| (plane, ObservationDisposition::NotProven)).collect()
 }
 
 fn bounded_optional_text(
@@ -378,9 +335,7 @@ fn bounded_optional_text(
     if value.is_empty() {
         Ok(None)
     } else {
-        BoundedText::new(value, maximum)
-            .map(Some)
-            .map_err(ComparisonModelError::from)
+        BoundedText::new(value, maximum).map(Some).map_err(ComparisonModelError::from)
     }
 }
 
