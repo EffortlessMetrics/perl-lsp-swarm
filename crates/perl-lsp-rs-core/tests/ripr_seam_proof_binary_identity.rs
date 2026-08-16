@@ -110,6 +110,49 @@ fn all_reasons() -> Vec<BinaryCompatibilityReason> {
     ]
 }
 
+/// Compile-time exhaustiveness guard for `all_reasons`: a new variant that is
+/// not listed there fails THIS match, so neither the TypeScript projection
+/// ratchet nor the schema-token ratchet can silently go stale.
+fn every_reason_is_listed_by_all_reasons(specimen: BinaryCompatibilityReason) {
+    use BinaryCompatibilityReason::*;
+    match specimen {
+        ServerProductMismatch => {}
+        ProductRepositoryMismatch => {}
+        PacketSchemaUnsupported => {}
+        ProductIdentityVersionUnsupported => {}
+        DapPostureMismatch => {}
+        ExtensionPublisherMismatch => {}
+        ExtensionPackageMismatch => {}
+        ExtensionIdentityMismatch => {}
+        ExtensionAuthorityNotProven => {}
+        ExtensionPackageDigestNotProven => {}
+        VersionMismatch => {}
+        TargetMismatch => {}
+        TargetNotProven => {}
+        SourceRevisionMismatch => {}
+        SourceRevisionNotProven => {}
+        SourceTreeDigestMismatch => {}
+        SourceTreeDigestNotProven => {}
+        ProfileMismatch => {}
+        ProfileNotProven => {}
+        CandidateMismatch => {}
+        CandidateNotProven => {}
+        ArtifactRoleMismatch => {}
+        ArtifactRoleNotProven => {}
+        ArtifactDigestMismatch => {}
+        ArtifactDigestNotProven => {}
+        DapRoleMismatch => {}
+        DapIdentityAbsent => {}
+        BuildIdentityPartial => {}
+        BuildIdentityNotProven => {}
+        PayloadNotRedacted => {}
+        ServerInstanceStale => {}
+        EnvironmentSnapshotStale => {}
+        FeatureVersionUnsupported => {}
+        ExactIdentityMatch => {}
+    }
+}
+
 #[test]
 fn checked_typescript_projection_contains_every_current_literal()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -250,9 +293,10 @@ fn reason_token_grammar_drift_is_reported() -> Result<(), Box<dyn std::error::Er
     let drifted = serde_json::json!({
         "$defs": {"reasonToken": {"pattern": "^[A-Z]+$", "maxLength": 64}}
     });
-    let error = assert_reason_admitted_by_schema_token(&drifted, "server_product_mismatch")
-        .expect_err("drifted reasonToken grammar must be rejected")
-        .to_string();
+    let error = match assert_reason_admitted_by_schema_token(&drifted, "server_product_mismatch") {
+        Err(error) => error.to_string(),
+        Ok(()) => return Err("drifted reasonToken grammar must be rejected".into()),
+    };
     assert!(
         error.contains("reasonToken grammar drifted"),
         "grammar drift must be reported with the drifted pattern, got: {error}"
@@ -274,15 +318,19 @@ fn inadmissible_reason_names_are_rejected_by_the_schema_token_contract()
     let schema: Value = serde_json::from_str(&read(
         &root.join("schemas/binary_identity_protocol.v1.schema.json"),
     )?)?;
-    let max_length = schema["$defs"]["reasonToken"]["maxLength"]
-        .as_u64()
-        .ok_or("reasonToken maxLength must be an integer")? as usize;
+    let max_length = usize::try_from(
+        schema["$defs"]["reasonToken"]["maxLength"]
+            .as_u64()
+            .ok_or("reasonToken maxLength must be an integer")?,
+    )
+    .map_err(|error| error.to_string())?;
 
     let overlong = "a".repeat(max_length + 1);
     for inadmissible in ["", "Has-Uppercase", &overlong] {
-        let error = assert_reason_admitted_by_schema_token(&schema, inadmissible)
-            .expect_err("inadmissible reason name must be rejected")
-            .to_string();
+        let error = match assert_reason_admitted_by_schema_token(&schema, inadmissible) {
+            Err(error) => error.to_string(),
+            Ok(()) => return Err("inadmissible reason name must be rejected".into()),
+        };
         assert!(
             error.contains("not admissible as a schema reasonToken"),
             "inadmissible name {inadmissible:?} must be reported as such, got: {error}"
@@ -300,18 +348,20 @@ fn projection_marker_drift_is_reported() -> Result<(), Box<dyn std::error::Error
     let typescript = read(&root.join("vscode-extension/src/binaryIdentityProtocol.generated.ts"))?;
 
     let dropped_redaction = typescript.replace("redacted: boolean", "redacted: string");
-    let error = assert_projection_bounds_unknown_reasons_and_redaction(&dropped_redaction)
-        .expect_err("projection without the redaction marker must be rejected")
-        .to_string();
+    let error = match assert_projection_bounds_unknown_reasons_and_redaction(&dropped_redaction) {
+        Err(error) => error.to_string(),
+        Ok(()) => return Err("projection without the redaction marker must be rejected".into()),
+    };
     assert_eq!(
         error, "TypeScript projection still treats redaction as unconditionally true",
         "redaction drift must be reported with its exact message"
     );
 
     let dropped_unknown = typescript.replace("KnownBinaryCompatibilityReason | (string & {})", "");
-    let error = assert_projection_bounds_unknown_reasons_and_redaction(&dropped_unknown)
-        .expect_err("projection without the unknown-reason bound must be rejected")
-        .to_string();
+    let error = match assert_projection_bounds_unknown_reasons_and_redaction(&dropped_unknown) {
+        Err(error) => error.to_string(),
+        Ok(()) => return Err("projection without the unknown-reason bound must be rejected".into()),
+    };
     assert_eq!(
         error, "TypeScript client lost its bounded unknown-reason representation",
         "unknown-reason drift must be reported with its exact message"

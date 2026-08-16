@@ -38,7 +38,7 @@
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/reasonToken" }
     },
-    "redacted": { "type": "boolean" },
+    "redacted": { "type": "boolean", "description": "true when NO field was removed or replaced: the payload is copy-safe. false means at least one field was redacted and must not be trusted verbatim." },
     "limitations": {
       "type": "array",
       "maxItems": 64,
@@ -63,7 +63,12 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9.+\\-]+$"
+      "pattern": "^[A-Za-z0-9.+\\-]+$",
+      "description": "A validated version, or the literal redaction sentinel written when the incoming value failed validation.",
+      "anyOf": [
+        { "pattern": "^[A-Za-z0-9.+\\-]+$" },
+        { "const": "not_proven" }
+      ]
     },
     "target": {
       "type": "string",
@@ -83,7 +88,12 @@
       "type": "string",
       "minLength": 3,
       "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+$"
+      "pattern": "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+$",
+      "description": "A validated extension id, or the literal redaction sentinel written when the incoming value failed validation.",
+      "anyOf": [
+        { "pattern": "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)+$" },
+        { "const": "not_proven" }
+      ]
     },
     "artifactRole": {
       "enum": ["managed", "user_supplied", "package_install", "archive", "unknown"]

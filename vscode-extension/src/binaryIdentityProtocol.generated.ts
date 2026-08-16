@@ -139,6 +139,8 @@ export interface BinaryIdentityResponseV1 {
   environment_snapshot_id: string;
   compatibility: BinaryCompatibilityState;
   reasons: BinaryCompatibilityReason[];
+  /** true when NO field was removed or replaced: the payload is copy-safe.
+   * false means at least one field was redacted and must not be trusted verbatim. */
   redacted: boolean;
   limitations?: string[];
 }
