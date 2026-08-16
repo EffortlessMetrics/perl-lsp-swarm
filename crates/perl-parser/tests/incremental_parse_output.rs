@@ -2,7 +2,7 @@
 //! Differential tests for the incremental native parse-output contract.
 
 use perl_parser::incremental::MAX_EDIT_SIZE;
-use perl_parser::{apply_edits, Edit, IncrementalState, ParseOutput, Parser};
+use perl_parser::{Edit, IncrementalState, ParseOutput, Parser, apply_edits};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
