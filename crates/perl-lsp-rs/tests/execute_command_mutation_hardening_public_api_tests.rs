@@ -749,6 +749,7 @@ fn test_supported_commands_structure() -> TestResult {
     let expected_commands = vec![
         "perl.runTests",
         "perl.runFile",
+        "perl.runScript",
         "perl.runTestSub",
         "perl.runCritic",
         "perl.runTest",

@@ -2,10 +2,10 @@
 mod agent_client_compat;
 
 use agent_client_compat::{
-    AgentClientCompatReceipt, CANONICAL_EXPECTATION_IDS, EvidenceArtifact, EvidenceStage,
-    FailureClass, HostIdentity, HostProduct, IntegrationIdentity, IntegrationMode, JourneyCell,
-    ObservationResult, PlatformIdentity, Protocol, SCHEMA_VERSION, ServerIdentity,
-    WorkspaceFixtureIdentity, fixture_digest,
+    AgentClientCompatReceipt, EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity,
+    HostProduct, IntegrationIdentity, IntegrationMode, JourneyCell, ObservationResult,
+    PlatformIdentity, Protocol, SCHEMA_VERSION, ServerIdentity, WorkspaceFixtureIdentity,
+    fixture_digest,
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
@@ -14,6 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use walkdir::WalkDir;
+use xtask::client_compat_fixture::CANONICAL_EXPECTATION_IDS;
 
 fn repository_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))

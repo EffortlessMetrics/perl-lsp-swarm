@@ -20,6 +20,7 @@ mod types;
 mod utils;
 use tasks::check_test_wiring;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
+use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
 use tasks::issue_plan::IssuePlanOutputFormat;
@@ -755,6 +756,18 @@ enum Commands {
         #[arg(long)]
         check: bool,
 
+        /// Format only the staged Rust diff and re-stage it.
+        ///
+        /// The apply half of the `rustfmt_staged` commit gate: that check
+        /// blocks a commit whose staged Rust would be reformatted, and this
+        /// fixes exactly those files instead of the whole workspace. Files
+        /// that are staged *and* separately modified in the worktree are left
+        /// untouched, so formatting never sweeps unstaged work into a commit.
+        ///
+        /// Cannot be combined with --check or --package.
+        #[arg(long, conflicts_with_all = ["check", "package"])]
+        staged: bool,
+
         /// Restrict formatting to one or more package names.
         ///
         /// Accepts repeated flags (`--package xtask --package perl-parser`) or
@@ -814,6 +827,22 @@ enum Commands {
         /// Strict mode: fail on any regression above baseline
         #[arg(long)]
         strict: bool,
+    },
+
+    /// Dependency hygiene: identify unused Cargo dependencies (authority: #9364).
+    ///
+    /// Uses cargo-machete as the V1 primary instrument. Produces typed
+    /// item-level findings with outcome vocabulary:
+    /// SUCCESS | POLICY_FINDING | NOT_PROVEN | NOT_APPLICABLE.
+    ///
+    /// Never installs tools as a side effect. cargo-udeps is removed from the
+    /// active hygiene path; see issue #9364 for re-introduction criteria.
+    #[command(name = "dependency-hygiene")]
+    DependencyHygiene {
+        /// Mode: check (default) fails closed on any finding; report writes JSON
+        /// and exits 0.
+        #[arg(value_enum, default_value = "check")]
+        mode: DependencyHygieneMode,
     },
 
     /// Run a developer environment smoke check.
@@ -2137,6 +2166,21 @@ enum Commands {
     ResolvePackageName {
         /// Crate directory path, relative to workspace root (e.g., "crates/perl-lsp-rs")
         crate_dir: String,
+    },
+
+    /// Verify that every `crates/<dir>/` directory has a Cargo package name
+    /// that exactly equals `<dir>` (issue #2933 AC#3).
+    ///
+    /// Directories without a `Cargo.toml` (e.g. `crates/tree-sitter-perl`,
+    /// which is a JavaScript project) are skipped with a notice.
+    ///
+    /// Exit 0 if all checked directories pass; non-zero if any mismatch is found.
+    #[command(name = "check-naming-consistency")]
+    CheckNamingConsistency {
+        /// Workspace root to check. Defaults to the auto-detected workspace root.
+        /// Override for testing against a fixture workspace.
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Report (and, with `--force`, remove) stale `.claude/worktrees` entries.
@@ -4219,7 +4263,13 @@ fn run_cli(cli: Cli) -> Result<()> {
         ),
         Commands::Doc { open, all_features } => doc::run(open, all_features),
         Commands::Check { clippy, fmt, all } => check::run(clippy, fmt, all),
-        Commands::Fmt { check, package } => fmt::run(check, package),
+        Commands::Fmt { check, package, staged } => {
+            if staged {
+                fmt::run_staged()
+            } else {
+                fmt::run(check, package)
+            }
+        }
         #[cfg(feature = "legacy")]
         Commands::Corpus { path, scanner, diagnose, test } => {
             corpus::run(path, scanner, diagnose, test)
@@ -4228,6 +4278,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Highlight { path, scanner } => highlight::run(path, scanner),
         Commands::Clean { all } => clean::run(all),
         Commands::DeadCode { mode, strict } => dead_code::run(DeadCodeConfig { mode, strict }),
+        Commands::DependencyHygiene { mode } => {
+            dependency_hygiene::run(DependencyHygieneConfig { mode })
+        }
         #[cfg(feature = "parser-tasks")]
         Commands::Bindings { header, output } => bindings::run(header, output),
         Commands::Dev { watch, port } => dev::run(watch, port),
@@ -5170,6 +5223,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             let name = tasks::targeted_checks::resolve_single_package_name(&root, &crate_dir)?;
             println!("{name}");
             Ok(())
+        }
+        Commands::CheckNamingConsistency { root } => {
+            tasks::check_naming_consistency::run_default(root)
         }
         Commands::WorktreeCleanup { root, force } => worktrees::cleanup(root, force),
         Commands::ValidateSwarmAgentRoster { root } => swarm_agent_roster::run(root),

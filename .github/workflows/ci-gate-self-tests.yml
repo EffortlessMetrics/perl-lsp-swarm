@@ -26,6 +26,9 @@ on:
       - 'Formula/**'
       - 'scripts/render-linux-packages.py'
       - 'scripts/tests/test-installer-zero-args.sh'
+      - 'scripts/tests/test-install-path-contract.sh'
+      - 'scripts/windows_fresh_path_oracle.py'
+      - 'scripts/tests/test-windows-fresh-path-oracle.sh'
       - 'scripts/tests/test-distribution-manifest-consistency.sh'
       # The manifest-consistency gate derives its expected values from these
       # three authorities, so a change to any of them can make every
@@ -42,6 +45,16 @@ on:
       - 'scripts/ci/fixtures/convergence/**'
       - 'scripts/tests/test-check-pr-review-convergence.sh'
       - 'scripts/reviews/**'
+      # Subject-bound semantic review currentness. The policy-surface suite
+      # asserts against the skill trees, the shared contract, and pre-merge, so
+      # a change to any of them can regress the gate that reads them.
+      - 'scripts/ci/check-pr-semantic-review-currentness.py'
+      - 'scripts/ci/test_check_pr_semantic_review_currentness.py'
+      - 'tests/test_semantic_review_currentness.py'
+      - 'scripts/pre-merge-check.sh'
+      - 'docs/agents/REVIEW_CURRENTNESS.md'
+      - '.agents/skills/**'
+      - '.claude/skills/**'
       - 'scripts/tests/test-review-lease.sh'
       - 'scripts/tests/test-review-threads-inline.sh'
       - 'scripts/worktree-manager.py'
@@ -150,6 +163,60 @@ jobs:
             echo "The zero-argument installer bootstrap regressed — the documented curl-pipe command may abort before installing anything. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  installer-path-contract-self-test:
+    name: Installer PATH contract self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Run installer PATH contract self-test
+        run: bash scripts/tests/test-install-path-contract.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Installer PATH contract self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Windows install.ps1 owns User-PATH persistence with -NoModifyPath and bounded dispositions; POSIX remains explicitly manual when the user-local fallback is outside PATH (issue #7832). This is a source contract, not fresh-host proof." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Installer PATH contract self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The installer PATH source contract regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  windows-fresh-path-oracle-self-test:
+    name: Windows fresh-process PATH oracle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Run Windows fresh-process PATH oracle self-test
+        run: bash scripts/tests/test-windows-fresh-path-oracle.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## Windows fresh-process PATH oracle passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Spawned oracle rebuilds PATH from Machine+User fixtures and resolves the exact staged subject without harness PATH injection (issue #7832). Fixture-scope proof only — not live-host install proof." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Windows fresh-process PATH oracle FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The Machine+User fresh-process PATH oracle regressed. Check the step output above for the failed case." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   distribution-manifest-consistency-self-test:
     name: Distribution manifest consistency self-test
     runs-on: ubuntu-24.04
@@ -187,6 +254,16 @@ jobs:
       - name: Run review-convergence gate self-test
         run: bash scripts/tests/test-check-pr-review-convergence.sh
 
+      # The convergence wrapper reports native GitHub facts and deliberately
+      # refuses to classify them as substantive review. That split is only
+      # honest if the verifier which does own the verdict is proved alongside
+      # it, so both halves run in the same gate.
+      - name: Run subject-bound semantic-currentness verifier tests
+        run: python3 -m unittest scripts/ci/test_check_pr_semantic_review_currentness.py
+
+      - name: Run semantic-currentness policy-surface tests
+        run: python3 -m unittest tests.test_semantic_review_currentness
+
       - name: Summary
         if: always()
         run: |
@@ -194,6 +271,8 @@ jobs:
             echo "## Review-convergence gate self-test passed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "check-pr-review-convergence correctly BLOCKs on both active and outdated unresolved review threads (issue #3679), stays ADVISORY-only on stale bot reviews, converges when all threads are resolved, and (issue #3693 R1) reports the review-protocol axes advisory-by-default while BLOCKing them under REVIEW_PROTOCOL_ENFORCE=1." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The wrapper and \`scripts/reviews/state\` stay fact-only (issue #6628): neither promotes a submitted review into a currentness verdict, and subject-bound semantic review is proved separately by check-pr-semantic-review-currentness.py." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## Review-convergence gate self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
