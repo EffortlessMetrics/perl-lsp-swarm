@@ -13,8 +13,12 @@ on:
       - '.github/workflows/vscode-current-source-linux-smoke.yml'
 
 concurrency:
-  group: vscode-current-source-linux-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  # Pull-request heads share one stable queue. An active exact-subject run is
+  # preserved and GitHub coalesces superseded pending heads to the latest one.
+  # Manual diagnostics use a run-unique group, so they neither cancel nor
+  # starve the pull-request lane.
+  group: ${{ github.event_name == 'workflow_dispatch' && format('vscode-current-source-linux-smoke-manual-{0}', github.run_id) || format('vscode-current-source-linux-smoke-pr-{0}', github.event.pull_request.number) }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -37,13 +41,21 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
       PERL_LSP_VSCODE_VERSION: ${{ matrix.vscode_version }}
+      PERL_LSP_SMOKE_SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      PERL_LSP_SMOKE_CONCURRENCY_GROUP: ${{ github.event_name == 'workflow_dispatch' && format('vscode-current-source-linux-smoke-manual-{0}', github.run_id) || format('vscode-current-source-linux-smoke-pr-{0}', github.event.pull_request.number) }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
+          ref: ${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}
+
+      - name: Record runner measurement start
+        working-directory: .
+        run: |
+          echo "PERL_LSP_SMOKE_RUNNER_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          echo "PERL_LSP_SMOKE_RUNNER_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -70,24 +82,134 @@ jobs:
           --locked -- --test-threads=1
 
       - name: Build current Rust server
+        id: build
         working-directory: .
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/perl-lsp-current-source-target
         run: cargo build -p perllsp --release --locked
 
       - name: Run exact current-source smoke under Xvfb
+        id: smoke
         env:
           PERL_LSP_E2E: '1'
           PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perllsp
-          PERL_LSP_SERVER_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          PERL_LSP_SERVER_SOURCE_SHA: ${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}
           PERL_LSP_SMOKE_SOURCE_LABEL: hosted-linux-current-source
         run: xvfb-run -a npm run test:published:local
+
+      - name: Record exact-subject scheduling result
+        if: always()
+        working-directory: .
+        env:
+          PERL_LSP_SMOKE_REPOSITORY: ${{ github.repository }}
+          PERL_LSP_SMOKE_TRIGGER: ${{ github.event_name }}
+          PERL_LSP_SMOKE_REF: ${{ github.ref }}
+          PERL_LSP_SMOKE_PR_NUMBER: ${{ github.event.pull_request.number }}
+          PERL_LSP_SMOKE_RUN_ID: ${{ github.run_id }}
+          PERL_LSP_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PERL_LSP_SMOKE_JOB_STATUS: ${{ job.status }}
+          PERL_LSP_SMOKE_BUILD_OUTCOME: ${{ steps.build.outcome }}
+          PERL_LSP_SMOKE_TEST_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          receipts = Path('target/receipts/vscode-smoke')
+          receipts.mkdir(parents=True, exist_ok=True)
+
+          def as_int(name):
+              value = os.environ.get(name, '').strip()
+              return int(value) if value else None
+
+          job_status = os.environ.get('PERL_LSP_SMOKE_JOB_STATUS', 'unknown')
+          terminal_state = {
+              'success': 'completed_exact_subject',
+              'failure': 'failed',
+              'cancelled': 'cancelled_by_human_or_platform',
+          }.get(job_status, 'not_proven')
+          started_epoch = as_int('PERL_LSP_SMOKE_RUNNER_STARTED_EPOCH')
+          completed_epoch = int(time.time())
+          existing_receipts = sorted(
+              path.relative_to(receipts).as_posix()
+              for path in receipts.rglob('*.json')
+              if path.is_file()
+          )
+
+          payload = {
+              'schema_version': 'vscode_current_source_scheduling.v1',
+              'receipt_kind': 'vscode_current_source_scheduling',
+              'repository': os.environ['PERL_LSP_SMOKE_REPOSITORY'],
+              'subject': {
+                  'kind': (
+                      'pull_request_head'
+                      if os.environ['PERL_LSP_SMOKE_TRIGGER'] == 'pull_request'
+                      else 'manual_dispatch_ref'
+                  ),
+                  'pull_request': as_int('PERL_LSP_SMOKE_PR_NUMBER'),
+                  'ref': os.environ['PERL_LSP_SMOKE_REF'],
+                  'head_sha': os.environ['PERL_LSP_SMOKE_SUBJECT_SHA'],
+              },
+              'invocation': {
+                  'trigger': os.environ['PERL_LSP_SMOKE_TRIGGER'],
+                  'concurrency_group': os.environ['PERL_LSP_SMOKE_CONCURRENCY_GROUP'],
+                  'run_id': as_int('PERL_LSP_SMOKE_RUN_ID'),
+                  'run_attempt': as_int('PERL_LSP_SMOKE_RUN_ATTEMPT'),
+                  'matrix_leg': {
+                      'vscode_version': os.environ['PERL_LSP_VSCODE_VERSION'],
+                      'platform': 'linux',
+                  },
+              },
+              'execution': {
+                  'started': True,
+                  'queue_disposition': 'started',
+                  'terminal_state': terminal_state,
+                  'job_status': job_status,
+                  'build_outcome': os.environ.get('PERL_LSP_SMOKE_BUILD_OUTCOME', ''),
+                  'smoke_outcome': os.environ.get('PERL_LSP_SMOKE_TEST_OUTCOME', ''),
+                  'runner_measurement_start': 'post_checkout',
+                  'runner_started_at': os.environ.get('PERL_LSP_SMOKE_RUNNER_STARTED_AT'),
+                  'completed_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                  'elapsed_runner_seconds': (
+                      max(0, completed_epoch - started_epoch)
+                      if started_epoch is not None
+                      else None
+                  ),
+              },
+              'artifacts': {
+                  'smoke_receipts_present_before_scheduling_receipt': existing_receipts,
+                  'upload_step_follows': True,
+              },
+              'latest_head_relationship': 'not_evaluated_here',
+              'merge_verdict_authority': '#2911',
+              'limitations': [
+                  'A queued run that never starts cannot emit an in-job receipt.',
+                  'Queued-head supersession requires the observed multi-push receipt owned by #6887.',
+                  'This exact-subject result does not authorize merge after the pull-request head moves.',
+              ],
+          }
+
+          safe_version = ''.join(
+              ch if ch.isalnum() or ch in '._-' else '-'
+              for ch in os.environ['PERL_LSP_VSCODE_VERSION']
+          )
+          destination = receipts / (
+              f"scheduling-{safe_version}-{os.environ['PERL_LSP_SMOKE_SUBJECT_SHA']}-"
+              f"{os.environ['PERL_LSP_SMOKE_RUN_ID']}.json"
+          )
+          temporary = destination.with_suffix(destination.suffix + '.tmp')
+          temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+          os.replace(temporary, destination)
+          PY
 
       - name: Upload current-source smoke receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
-          name: vscode-current-source-linux-smoke-${{ matrix.vscode_version }}-${{ github.sha }}
+          name: vscode-current-source-linux-smoke-${{ matrix.vscode_version }}-${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}
           path: target/receipts/vscode-smoke/**
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
