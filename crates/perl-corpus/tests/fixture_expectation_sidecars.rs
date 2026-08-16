@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use perl_corpus::{ConceptRegistry, discover_sidecars, load_and_validate_sidecar};
-use std::path::PathBuf;
+use perl_corpus::{ConceptRegistry, SidecarValidationContext, load_and_validate_sidecar};
+use std::path::{Path, PathBuf};
 
 fn workspace_root() -> Result<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -14,7 +14,9 @@ fn workspace_root() -> Result<PathBuf> {
 fn seeded_sidecars_parse_and_validate() -> Result<()> {
     let root = workspace_root()?;
     let sidecar_root = root.join("tests/perl-corpus");
-    let sidecars = discover_sidecars(&sidecar_root)?;
+    let context = SidecarValidationContext::discover(&sidecar_root)
+        .with_context(|| format!("binding sidecar root {}", sidecar_root.display()))?;
+    let sidecars: Vec<PathBuf> = context.sidecars().map(Path::to_path_buf).collect();
     assert!(!sidecars.is_empty(), "expected seeded parser sidecars");
 
     let registry_path = sidecar_root.join("concepts.toml");
@@ -28,7 +30,7 @@ fn seeded_sidecars_parse_and_validate() -> Result<()> {
     };
 
     for sidecar in &sidecars {
-        let validation = load_and_validate_sidecar(sidecar, registry.as_ref())
+        let validation = load_and_validate_sidecar(&context, sidecar, registry.as_ref())
             .with_context(|| format!("sidecar should load and validate: {}", sidecar.display()))?;
 
         assert!(
