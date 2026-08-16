@@ -9,19 +9,20 @@ use std::collections::BTreeMap;
 use std::panic;
 
 use crate::evidence::{
-    DiagnosticSummary, ExecutionDisposition, InstrumentState, ObservationAvailability,
-    ObservationPlane, SubjectExecution, SubjectRole,
+    BoundedText, ComparisonModelError, DiagnosticSummary, HarnessFailure, InstrumentState,
+    ObservationDisposition, ObservationPlane, SubjectDisposition, SubjectExecution, SubjectRole,
 };
 use crate::outcomes::Verdict;
 
 const MAX_DEBUG_PROJECTION_BYTES: usize = 4_096;
+const MAX_ERROR_BYTES: usize = 1_024;
 
 /// Legacy output of running one parser on one input.
 ///
 /// `verdict` is a lossy compatibility projection. In particular,
 /// `Verdict::Correct` may mean only that the subject executed without its
 /// designated error signal. New comparison code must use [`execute_v1`] or
-/// [`execute_v3`] and score an explicit observer expectation separately.
+/// [`execute_v3`] and score an explicit reviewed expectation separately.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ParseResult {
@@ -57,47 +58,52 @@ pub enum ParserLabel {
 }
 
 impl std::fmt::Display for ParserLabel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::V1TreeSitterC => write!(f, "v1(tree-sitter-c)"),
-            Self::V2Pest => write!(f, "v2(pest)"),
-            Self::V3RecursiveDescent => write!(f, "v3(recursive-descent)"),
+            Self::V1TreeSitterC => write!(formatter, "v1(tree-sitter-c)"),
+            Self::V2Pest => write!(formatter, "v2(pest)"),
+            Self::V3RecursiveDescent => write!(formatter, "v3(recursive-descent)"),
         }
     }
 }
 
 #[derive(Debug)]
+enum RawTerminal {
+    Completed(SubjectDisposition),
+    Failed(HarnessFailure),
+}
+
+#[derive(Debug)]
 struct RawExecution {
-    disposition: ExecutionDisposition,
+    terminal: RawTerminal,
     projection: String,
     error: Option<String>,
     diagnostics: DiagnosticSummary,
+    instrument_state: InstrumentState,
 }
 
 /// Execute the currently embedded historical C Tree-sitter subject.
 ///
-/// A tree without an `ERROR` node is [`ExecutionDisposition::AcceptedClean`],
-/// not a correctness verdict. Structural correctness must be scored by an
-/// independent observer.
-pub fn execute_v1(source: &str) -> SubjectExecution {
-    let raw = run_v1(source);
+/// A tree without an `ERROR` node is a completed
+/// [`SubjectDisposition::AcceptedClean`] execution, not a correctness verdict.
+/// Structural correctness must be scored by an independent observer.
+pub fn execute_v1(source: &str) -> Result<SubjectExecution, ComparisonModelError> {
     subject_execution(
         SubjectRole::HistoricalTreeSitterC,
-        raw,
+        run_v1(source),
         historical_tree_sitter_observations(),
     )
 }
 
 /// Execute the native recursive-descent subject.
 ///
-/// Diagnostic-bearing output is [`ExecutionDisposition::AcceptedRecovered`]
+/// Diagnostic-bearing output is [`SubjectDisposition::AcceptedRecovered`]
 /// rather than rejection or correctness. Structural correctness must be scored
 /// by an independent observer.
-pub fn execute_v3(source: &str) -> SubjectExecution {
-    let raw = run_v3(source);
+pub fn execute_v3(source: &str) -> Result<SubjectExecution, ComparisonModelError> {
     subject_execution(
         SubjectRole::NativeRecursiveDescent,
-        raw,
+        run_v3(source),
         native_recursive_descent_observations(),
     )
 }
@@ -111,7 +117,7 @@ pub fn parse_v1(source: &str) -> ParseResult {
     ParseResult {
         parser: ParserLabel::V1TreeSitterC,
         source: source.to_owned(),
-        verdict: lossy_legacy_verdict(raw.disposition),
+        verdict: lossy_legacy_verdict(&raw.terminal),
         sexp: raw.projection,
         error: raw.error,
     }
@@ -131,9 +137,9 @@ pub fn parse_v2(source: &str) -> ParseResult {
                 let sexp = parser.to_sexp(&ast);
                 (Some(sexp), None::<String>, Some(ast))
             }
-            Err(e) => {
-                let msg = format!("{e}");
-                (None, Some(msg), None)
+            Err(error) => {
+                let message = format!("{error}");
+                (None, Some(message), None)
             }
         }
     });
@@ -153,12 +159,12 @@ pub fn parse_v2(source: &str) -> ParseResult {
             sexp,
             error: None,
         },
-        Ok((_, Some(err), _)) => ParseResult {
+        Ok((_, Some(error), _)) => ParseResult {
             parser: ParserLabel::V2Pest,
             source: source.to_owned(),
             verdict: Verdict::Errors,
             sexp: String::new(),
-            error: Some(err),
+            error: Some(error),
         },
         Ok((None, None, _)) => ParseResult {
             parser: ParserLabel::V2Pest,
@@ -179,7 +185,7 @@ pub fn parse_v3(source: &str) -> ParseResult {
     ParseResult {
         parser: ParserLabel::V3RecursiveDescent,
         source: source.to_owned(),
-        verdict: lossy_legacy_verdict(raw.disposition),
+        verdict: lossy_legacy_verdict(&raw.terminal),
         sexp: raw.projection,
         error: raw.error,
     }
@@ -201,23 +207,25 @@ fn run_v1(source: &str) -> RawExecution {
 
     match result {
         Err(_panic) => RawExecution {
-            disposition: ExecutionDisposition::Crashed,
+            terminal: RawTerminal::Failed(HarnessFailure::CrashedOrSignalled),
             projection: String::new(),
             error: Some("v1 panicked".to_owned()),
             diagnostics: DiagnosticSummary::default(),
+            instrument_state: InstrumentState::Failed,
         },
         Ok(Err(error)) => RawExecution {
-            disposition: ExecutionDisposition::SetupFailed,
+            terminal: RawTerminal::Failed(HarnessFailure::SetupFailed),
             projection: String::new(),
             error: Some(error),
             diagnostics: DiagnosticSummary::default(),
+            instrument_state: InstrumentState::Unavailable,
         },
         Ok(Ok((projection, has_error))) => RawExecution {
-            disposition: if has_error {
-                ExecutionDisposition::AcceptedRecovered
+            terminal: RawTerminal::Completed(if has_error {
+                SubjectDisposition::AcceptedRecovered
             } else {
-                ExecutionDisposition::AcceptedClean
-            },
+                SubjectDisposition::AcceptedClean
+            }),
             projection,
             error: None,
             diagnostics: DiagnosticSummary::new(
@@ -225,6 +233,7 @@ fn run_v1(source: &str) -> RawExecution {
                 has_error,
                 has_error,
             ),
+            instrument_state: InstrumentState::Complete,
         },
     }
 }
@@ -241,17 +250,18 @@ fn run_v3(source: &str) -> RawExecution {
 
     match result {
         Err(_panic) => RawExecution {
-            disposition: ExecutionDisposition::Crashed,
+            terminal: RawTerminal::Failed(HarnessFailure::CrashedOrSignalled),
             projection: String::new(),
             error: Some("v3 panicked".to_owned()),
             diagnostics: DiagnosticSummary::default(),
+            instrument_state: InstrumentState::Failed,
         },
         Ok((projection, diagnostic_count)) => RawExecution {
-            disposition: if diagnostic_count == 0 {
-                ExecutionDisposition::AcceptedClean
+            terminal: RawTerminal::Completed(if diagnostic_count == 0 {
+                SubjectDisposition::AcceptedClean
             } else {
-                ExecutionDisposition::AcceptedRecovered
-            },
+                SubjectDisposition::AcceptedRecovered
+            }),
             projection,
             error: None,
             diagnostics: DiagnosticSummary::new(
@@ -259,6 +269,7 @@ fn run_v3(source: &str) -> RawExecution {
                 diagnostic_count > 0,
                 false,
             ),
+            instrument_state: InstrumentState::Complete,
         },
     }
 }
@@ -266,86 +277,117 @@ fn run_v3(source: &str) -> RawExecution {
 fn subject_execution(
     subject: SubjectRole,
     raw: RawExecution,
-    observations: BTreeMap<ObservationPlane, ObservationAvailability>,
-) -> SubjectExecution {
-    let instrument_state = match raw.disposition {
-        ExecutionDisposition::InstrumentUnavailable => InstrumentState::Unavailable,
-        ExecutionDisposition::InstrumentFailed => InstrumentState::Failed,
-        _ => InstrumentState::Available,
-    };
-    SubjectExecution::new(
-        subject,
-        raw.disposition,
-        raw.diagnostics,
-        observations,
-        bounded_debug_projection(raw.projection),
+    successful_observations: BTreeMap<ObservationPlane, ObservationDisposition>,
+) -> Result<SubjectExecution, ComparisonModelError> {
+    let RawExecution {
+        terminal,
+        projection,
+        error,
+        diagnostics,
         instrument_state,
-        raw.error,
-    )
+    } = raw;
+
+    let debug_projection = bounded_optional_text(projection, MAX_DEBUG_PROJECTION_BYTES)?;
+    let error = match error {
+        Some(error) => Some(BoundedText::new(error, MAX_ERROR_BYTES)?),
+        None => None,
+    };
+
+    match terminal {
+        RawTerminal::Completed(disposition) => SubjectExecution::completed(
+            subject,
+            disposition,
+            diagnostics,
+            successful_observations,
+            debug_projection,
+            instrument_state,
+        ),
+        RawTerminal::Failed(failure) => SubjectExecution::failed(
+            subject,
+            failure,
+            diagnostics,
+            failed_observations(successful_observations),
+            debug_projection,
+            instrument_state,
+            error,
+        ),
+    }
 }
 
-fn historical_tree_sitter_observations() -> BTreeMap<ObservationPlane, ObservationAvailability> {
+fn historical_tree_sitter_observations(
+) -> BTreeMap<ObservationPlane, ObservationDisposition> {
     BTreeMap::from([
-        (ObservationPlane::Structure, ObservationAvailability::Observable),
-        (ObservationPlane::Recovery, ObservationAvailability::Observable),
-        (ObservationPlane::SourceGeometry, ObservationAvailability::NotProven),
-        (ObservationPlane::BodyOwnership, ObservationAvailability::NotProven),
+        (ObservationPlane::Structure, ObservationDisposition::Observed),
+        (ObservationPlane::Recovery, ObservationDisposition::Observed),
+        (
+            ObservationPlane::SourceGeometry,
+            ObservationDisposition::NotProven,
+        ),
+        (
+            ObservationPlane::BodyOwnership,
+            ObservationDisposition::NotProven,
+        ),
         (
             ObservationPlane::IncrementalFinalState,
-            ObservationAvailability::NotProven,
+            ObservationDisposition::NotProven,
         ),
         (
             ObservationPlane::QueryOrHighlight,
-            ObservationAvailability::NotProven,
+            ObservationDisposition::NotProven,
         ),
     ])
 }
 
-fn native_recursive_descent_observations() -> BTreeMap<ObservationPlane, ObservationAvailability> {
+fn native_recursive_descent_observations(
+) -> BTreeMap<ObservationPlane, ObservationDisposition> {
     BTreeMap::from([
-        (ObservationPlane::Structure, ObservationAvailability::Observable),
-        (ObservationPlane::Recovery, ObservationAvailability::Observable),
-        (ObservationPlane::SourceGeometry, ObservationAvailability::NotProven),
-        (ObservationPlane::BodyOwnership, ObservationAvailability::NotProven),
+        (ObservationPlane::Structure, ObservationDisposition::Observed),
+        (ObservationPlane::Recovery, ObservationDisposition::Observed),
+        (
+            ObservationPlane::SourceGeometry,
+            ObservationDisposition::NotProven,
+        ),
+        (
+            ObservationPlane::BodyOwnership,
+            ObservationDisposition::NotProven,
+        ),
         (
             ObservationPlane::IncrementalFinalState,
-            ObservationAvailability::NotProven,
+            ObservationDisposition::NotProven,
         ),
         (
             ObservationPlane::QueryOrHighlight,
-            ObservationAvailability::Unsupported,
+            ObservationDisposition::Unsupported,
         ),
     ])
 }
 
-fn bounded_debug_projection(projection: String) -> Option<String> {
-    if projection.is_empty() {
-        return None;
-    }
-    if projection.len() <= MAX_DEBUG_PROJECTION_BYTES {
-        return Some(projection);
-    }
-
-    let mut end = MAX_DEBUG_PROJECTION_BYTES;
-    while !projection.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut bounded = projection[..end].to_owned();
-    bounded.push('…');
-    Some(bounded)
+fn failed_observations(
+    observations: BTreeMap<ObservationPlane, ObservationDisposition>,
+) -> BTreeMap<ObservationPlane, ObservationDisposition> {
+    observations
+        .into_keys()
+        .map(|plane| (plane, ObservationDisposition::NotProven))
+        .collect()
 }
 
-fn lossy_legacy_verdict(disposition: ExecutionDisposition) -> Verdict {
-    match disposition {
-        ExecutionDisposition::AcceptedClean => Verdict::Correct,
-        ExecutionDisposition::Crashed => Verdict::Crashes,
-        ExecutionDisposition::AcceptedRecovered
-        | ExecutionDisposition::Rejected
-        | ExecutionDisposition::Unsupported
-        | ExecutionDisposition::TimedOut
-        | ExecutionDisposition::SetupFailed
-        | ExecutionDisposition::InstrumentUnavailable
-        | ExecutionDisposition::InstrumentFailed
-        | ExecutionDisposition::NotRun => Verdict::Errors,
+fn bounded_optional_text(
+    value: String,
+    maximum: usize,
+) -> Result<Option<BoundedText>, ComparisonModelError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        BoundedText::new(value, maximum)
+            .map(Some)
+            .map_err(ComparisonModelError::from)
+    }
+}
+
+fn lossy_legacy_verdict(terminal: &RawTerminal) -> Verdict {
+    match terminal {
+        RawTerminal::Completed(SubjectDisposition::AcceptedClean) => Verdict::Correct,
+        RawTerminal::Failed(HarnessFailure::CrashedOrSignalled) => Verdict::Crashes,
+        RawTerminal::Completed(_) | RawTerminal::Failed(_) => Verdict::Errors,
     }
 }

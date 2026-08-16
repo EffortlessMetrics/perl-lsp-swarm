@@ -1,10 +1,10 @@
 //! Legacy outcome categories for differential parser testing.
 //!
-//! [`Verdict`] predates the generic execution-versus-observation model. Some
-//! current adapters still project clean parser acceptance to `Correct` for
-//! compatibility, so this enum is not authoritative for new comparison,
-//! accuracy, or cleanliness claims. New code uses
-//! [`ExecutionDisposition`](crate::ExecutionDisposition) plus an independent
+//! [`Verdict`] predates the generic evidence model. Some current adapters still
+//! project clean parser acceptance to `Correct` for compatibility, so this enum
+//! is not authoritative for new comparison, accuracy, or cleanliness claims.
+//! New code uses [`HarnessOutcome`](crate::HarnessOutcome),
+//! [`SubjectDisposition`](crate::SubjectDisposition), and an independent
 //! [`ScoredComparison`](crate::ScoredComparison).
 
 use std::fmt;
@@ -14,7 +14,8 @@ use std::fmt;
 /// Existing tests record this value for compatibility. The `Correct` variant
 /// is historically overloaded and may mean only that the parser accepted the
 /// input without its designated error signal. It must not be used as a new
-/// correctness assertion without an independent observer expectation.
+/// correctness assertion without an independent observer and reviewed
+/// expectation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Verdict {
@@ -39,21 +40,22 @@ pub enum Verdict {
     /// Legacy parser-error-shaped value.
     ///
     /// This projection may combine rejection, recovery, setup, unsupported,
-    /// and instrument states. New code must use [`ExecutionDisposition`](crate::ExecutionDisposition).
+    /// process, and instrument states. New code must use the generic evidence
+    /// axes instead.
     Errors,
 
-    /// Parser panicked on this input and the legacy harness caught the unwind.
+    /// Parser or in-process harness panicked and the legacy harness caught it.
     Crashes,
 }
 
 impl fmt::Display for Verdict {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Correct => write!(f, "Correct"),
-            Self::WrongButPlausible => write!(f, "WrongButPlausible"),
-            Self::SilentlyEmpty => write!(f, "SilentlyEmpty"),
-            Self::Errors => write!(f, "Errors"),
-            Self::Crashes => write!(f, "Crashes"),
+            Self::Correct => write!(formatter, "Correct"),
+            Self::WrongButPlausible => write!(formatter, "WrongButPlausible"),
+            Self::SilentlyEmpty => write!(formatter, "SilentlyEmpty"),
+            Self::Errors => write!(formatter, "Errors"),
+            Self::Crashes => write!(formatter, "Crashes"),
         }
     }
 }
