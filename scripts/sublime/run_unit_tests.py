@@ -111,6 +111,18 @@ def _diagnose(package: str) -> None:
                 break
     shim = os.path.join(PACKAGES_DIR_PATH, "UnitTesting", "zzz_run_scheduler.py")
     print(f"===== shim present: {os.path.isfile(shim)} ({shim}) =====")
+    _dump("canary", os.path.expanduser("~/perllsp_sublime_canary.log"))
+    home = os.path.expanduser("~")
+    for crash_dir in (
+        os.path.join(home, "Library", "Caches", "Sublime Text", "Crash Reports"),
+        os.path.join(home, ".config", "sublime-text", "Crash Reports"),
+    ):
+        listing = subprocess.run(
+            ["ls", "-laR", crash_dir], capture_output=True, text=True
+        )
+        if listing.returncode == 0 and listing.stdout.strip():
+            print(f"===== {crash_dir} =====")
+            print(listing.stdout[:2000])
 
 
 def _dump(label: str, path: str) -> None:
