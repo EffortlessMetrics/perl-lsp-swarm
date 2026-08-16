@@ -1,6 +1,7 @@
 //! Focused contract tests for context-preserving assertion helpers.
 
 use std::any::Any;
+use std::fmt;
 use std::panic::catch_unwind;
 
 use perl_test_must::{must_err_with, must_some_with, must_with};
@@ -8,9 +9,12 @@ use perl_test_must::{must_err_with, must_some_with, must_with};
 #[derive(Debug)]
 struct IndexedSymbol;
 
-#[derive(Debug)]
-struct UnexpectedValue {
-    code: u8,
+struct UnexpectedValue;
+
+impl fmt::Debug for UnexpectedValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("unexpected-value-7")
+    }
 }
 
 struct ExpectedError;
@@ -55,7 +59,7 @@ fn must_some_with_renders_context_and_payload_type_once() -> Result<(), String> 
 fn must_err_with_renders_context_types_and_value_once() -> Result<(), String> {
     let payload = catch_unwind(|| {
         must_err_with::<UnexpectedValue, ExpectedError>(
-            Ok(UnexpectedValue { code: 7 }),
+            Ok(UnexpectedValue),
             "invalid fixture must be rejected",
         )
     });
@@ -70,8 +74,8 @@ fn must_err_with_renders_context_types_and_value_once() -> Result<(), String> {
     assert_eq!(occurrences(&message, "expected Err<"), 1, "message was: {message}");
     assert_eq!(occurrences(&message, "ExpectedError"), 1, "message was: {message}");
     assert_eq!(occurrences(&message, "got Ok<"), 1, "message was: {message}");
-    assert_eq!(occurrences(&message, "UnexpectedValue"), 2, "message was: {message}");
-    assert_eq!(occurrences(&message, "code: 7"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "UnexpectedValue"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "unexpected-value-7"), 1, "message was: {message}");
     Ok(())
 }
 
@@ -107,7 +111,7 @@ fn context_variants_accept_borrowed_values_and_format_arguments() -> Result<(), 
 
 #[test]
 fn must_with_accepts_unit_success_as_a_side_effect_assertion() {
-    must_with::<(), &str>(Ok(()), format_args!("side effect completed"));
+    must_with::<(), &str>(Ok(()), "side effect completed");
 }
 
 fn occurrences(message: &str, needle: &str) -> usize {
