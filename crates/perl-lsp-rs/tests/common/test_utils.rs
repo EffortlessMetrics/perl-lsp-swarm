@@ -191,7 +191,15 @@ impl TestServerBuilder {
                 );
             } else {
                 return Err(format!(
-                    "TestServerBuilder: Initialize failed after retry: {init_response:#}"
+                    "TestServerBuilder: Initialize failed after retry: {init_response:#}\n\n\
+                     A `test harness timeout` here usually means the `perllsp` server binary \
+                     was not available and had to be compiled inside the {init_timeout:?} \
+                     initialize deadline, which a cold build cannot meet. It does NOT mean \
+                     the feature under test is broken.\n\
+                     Fix: build the server first with `cargo build -p perllsp --bin perllsp`, \
+                     or point PERL_LSP_BIN at an existing binary. Note that `perllsp` lives \
+                     in a different package than these tests, so `cargo test -p perl-lsp-rs` \
+                     does not build it on its own."
                 ));
             }
         }
