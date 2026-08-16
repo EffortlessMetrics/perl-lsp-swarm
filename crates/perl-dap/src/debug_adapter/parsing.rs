@@ -574,6 +574,27 @@ mod tests {
         assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
     }
 
+    /// `setVariable` / `setExpression` send `p {name} = {value}` then `p {name}` and read
+    /// the framed output back. They must correlate against the variable they set: an empty
+    /// subject matches no assignment, and the `continue` guarding the literal branch then
+    /// discards the result entirely, failing both operations outright (#7275).
+    #[test]
+    pub(super) fn framed_read_back_accepts_assignment_for_the_named_subject()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let lines = vec!["$x = 5".to_string()];
+
+        let (value, _) = DebugAdapter::parse_evaluate_result_from_lines(&lines, "$x", true)
+            .ok_or("read-back for the named subject should be accepted")?;
+        assert_eq!(value, "5");
+
+        // The regression this guards: an empty subject yields nothing for the same output.
+        assert!(
+            DebugAdapter::parse_evaluate_result_from_lines(&lines, "", true).is_none(),
+            "an empty subject must not be how set-variable read-back is correlated"
+        );
+        Ok(())
+    }
+
     #[test]
     pub(super) fn framed_evaluate_rejects_expression_only_in_assignment_value() {
         let lines = vec![r#"$message = \"$result\""#.to_string()];
