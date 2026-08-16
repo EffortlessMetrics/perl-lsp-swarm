@@ -6,22 +6,6 @@
   },
   "findings": [
     {
-      "evidence": "taiki-e/install-action@67729d5c413db75907f0e39bb04b9c868ff60",
-      "fingerprint": "06e08638be6fd1b0c2642cd826831ef80a6a598dca766e131ddae0802acbc263",
-      "line": 83,
-      "message": "external action ref is not a full commit SHA",
-      "path": ".github/actions/setup-rust/action.yml",
-      "rule": "mutable_action_ref"
-    },
-    {
-      "evidence": "taiki-e/install-action@67729d5c413db75907f0e39bb04b9c868ff60",
-      "fingerprint": "36d3983dc6aefb46310d3c3bbf68f589773cd2eddb7f96905fbe1618065720a8",
-      "line": 89,
-      "message": "external action ref is not a full commit SHA",
-      "path": ".github/actions/setup-rust/action.yml",
-      "rule": "mutable_action_ref"
-    },
-    {
       "evidence": "GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}",
       "fingerprint": "e638e468a5d7fcd90b3bcddf0058dbee37a8f45f6796b78f68b6175616ed6905",
       "line": 64,

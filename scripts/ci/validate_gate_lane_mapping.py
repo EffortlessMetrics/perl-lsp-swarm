@@ -115,7 +115,6 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # release-adjacent gates
     "adr_link_check": {"lanes": ["docs_gate"]},
     "docs_build": {"lanes": ["docs_gate"]},
-    "published_crate_count": {"lanes": ["release_check"]},
     "release_build": {"lanes": ["release_check"]},
     "inline_completion_binary_smoke": {"lanes": ["release_check"]},
     "version_sync": {"lanes": ["release_check"]},
