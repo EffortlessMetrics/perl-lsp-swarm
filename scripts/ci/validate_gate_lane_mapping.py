@@ -60,7 +60,12 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_scoped": {"lanes": ["pr_smoke"]},
     "check_tests_scoped": {"lanes": ["pr_smoke"]},
     "unit_routed_full": {"lanes": ["pr_smoke"]},
-    "inline_completion_contract": {"lanes": ["pr_smoke"]},
+    # Former `inline_completion_contract` (&&-composite, issue #6845) split
+    # into four independent gates.  All four remain in the pr_smoke tier lane.
+    "inline_completion_registration": {"lanes": ["pr_smoke"]},
+    "lsp_registration_contract": {"lanes": ["pr_smoke"]},
+    "lsp_capability_snapshots": {"lanes": ["pr_smoke"]},
+    "inline_completion_core": {"lanes": ["pr_smoke"]},
     "inline_completion_quality_receipt": {"lanes": ["pr_smoke"]},
 
     # core / foundation gates roll up under merge_gate_shards
@@ -110,7 +115,6 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # release-adjacent gates
     "adr_link_check": {"lanes": ["docs_gate"]},
     "docs_build": {"lanes": ["docs_gate"]},
-    "published_crate_count": {"lanes": ["release_check"]},
     "release_build": {"lanes": ["release_check"]},
     "inline_completion_binary_smoke": {"lanes": ["release_check"]},
     "version_sync": {"lanes": ["release_check"]},
