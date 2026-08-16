@@ -4,21 +4,55 @@
   "title": "perl-lsp install identity verification v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "verdict", "reasons"],
+  "required": [
+    "schema_version",
+    "verdict",
+    "reasons"
+  ],
   "properties": {
-    "schema_version": { "const": "perl_lsp.install_identity_verification.v1" },
+    "schema_version": {
+      "const": "perl_lsp.install_identity_verification.v1"
+    },
     "expected": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["product", "version", "target", "candidate_identity", "dap_required"],
+      "required": [
+        "product",
+        "version",
+        "target",
+        "candidate_identity",
+        "dap_required"
+      ],
       "properties": {
-        "product": { "const": "perl-lsp" },
-        "version": { "$ref": "#/$defs/identity" },
-        "target": { "anyOf": [{ "$ref": "#/$defs/identity" }, { "type": "null" }] },
-        "candidate_identity": {
-          "anyOf": [{ "$ref": "#/$defs/identity" }, { "type": "null" }]
+        "product": {
+          "const": "perl-lsp"
         },
-        "dap_required": { "type": "boolean" }
+        "version": {
+          "$ref": "#/$defs/identity"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/identity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate_identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/identity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dap_required": {
+          "type": "boolean"
+        }
       }
     },
     "binaries": {
@@ -28,21 +62,184 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["role", "filename", "sha256", "packet"],
+        "required": [
+          "role",
+          "filename",
+          "sha256",
+          "expected_sha256",
+          "packet_projection"
+        ],
         "properties": {
-          "role": { "enum": ["server", "dap"] },
-          "filename": { "type": "string", "minLength": 1, "maxLength": 128 },
-          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-          "packet": { "type": "object" }
+          "role": {
+            "enum": [
+              "server",
+              "dap"
+            ]
+          },
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "expected_sha256": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            ],
+            "description": "Externally trusted SHA-256 from the release topology row for this role, when the installer supplied one; null means no trusted digest was provided for this run."
+          },
+          "packet_projection": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Closed projection of the staged binary identity packet: only the reviewed bounded fields are preserved. The raw packet from an untrusted staged binary is never copied into a persistent receipt.",
+            "required": [
+              "schema_version",
+              "product_name",
+              "executable",
+              "cargo_package",
+              "role",
+              "version",
+              "identity_state",
+              "target",
+              "source_revision",
+              "candidate_identity"
+            ],
+            "properties": {
+              "schema_version": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "maxLength": 64
+                  }
+                ]
+              },
+              "product_name": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/identity"
+                  }
+                ]
+              },
+              "executable": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/identity"
+                  }
+                ]
+              },
+              "cargo_package": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/identity"
+                  }
+                ]
+              },
+              "role": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/identity"
+                  }
+                ]
+              },
+              "version": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/identity"
+                  }
+                ]
+              },
+              "identity_state": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "enum": [
+                      "exact",
+                      "partial",
+                      "not_proven"
+                    ]
+                  }
+                ]
+              },
+              "target": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/identity"
+                  }
+                ]
+              },
+              "source_revision": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/identity"
+                  }
+                ]
+              },
+              "candidate_identity": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/identity"
+                  }
+                ]
+              }
+            }
+          }
         }
       }
     },
-    "verdict": { "enum": ["verified", "mismatch", "not_proven"] },
+    "verdict": {
+      "enum": [
+        "verified",
+        "mismatch",
+        "not_proven"
+      ]
+    },
     "reasons": {
       "type": "array",
       "maxItems": 64,
       "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
     }
   },
   "$defs": {

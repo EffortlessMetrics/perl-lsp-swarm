@@ -13,8 +13,10 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -23,6 +25,7 @@ SCHEMA_VERSION = "perl_lsp.install_identity_verification.v1"
 PACKET_SCHEMA = "perl_lsp.binary_identity.v1"
 PRODUCT_NAME = "perl-lsp"
 MAX_PACKET_BYTES = 128 * 1024
+MAX_STDERR_BYTES = 4 * 1024
 IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9._:@/+\-]+$")
 
 
@@ -36,6 +39,9 @@ class ExpectedBinary:
     executable: str
     cargo_package: str
     role: str
+    # Externally trusted digest from the release topology row for this role.
+    # When present, the measured staged bytes must match it exactly.
+    expected_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,35 +75,104 @@ def _load_packet(executable: Path, timeout_seconds: float) -> dict[str, Any]:
     if not os.access(executable, os.X_OK):
         raise VerificationError(f"staged executable is not executable: {executable.name}")
 
-    try:
-        completed = subprocess.run(
-            [str(executable), "--identity-json"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise VerificationError(f"identity query timed out for {executable.name}") from error
-    except OSError as error:
-        raise VerificationError(f"identity query could not start for {executable.name}: {error}") from error
+    returncode, stdout, stderr = _run_bounded(
+        [str(executable), "--identity-json"], executable.name, timeout_seconds
+    )
 
-    if completed.returncode != 0:
-        stderr = completed.stderr[:1024].decode("utf-8", errors="replace").strip()
+    if returncode != 0:
+        detail = stderr[:1024].decode("utf-8", errors="replace").strip()
         raise VerificationError(
-            f"identity query failed for {executable.name} with exit {completed.returncode}: {stderr}"
+            f"identity query failed for {executable.name} with exit {returncode}: {detail}"
         )
-    if len(completed.stdout) > MAX_PACKET_BYTES:
-        raise VerificationError(f"identity packet exceeds {MAX_PACKET_BYTES} bytes")
 
     try:
-        packet = json.loads(completed.stdout)
+        packet = json.loads(stdout)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise VerificationError(f"identity packet is not valid UTF-8 JSON for {executable.name}") from error
     if not isinstance(packet, dict):
         raise VerificationError("identity packet root must be an object")
     return packet
+
+
+def _kill_process_tree(process: subprocess.Popen[Any]) -> None:
+    """Terminate the verifier child and every descendant it spawned.
+
+    The staged executable runs in its own session/process group, so killing
+    the group reaches descendants that would otherwise outlive the timeout.
+    """
+    try:
+        if os.name == "posix":
+            import signal as _signal
+
+            os.killpg(os.getpgid(process.pid), _signal.SIGKILL)
+        else:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                capture_output=True,
+                check=False,
+            )
+    except (ProcessLookupError, PermissionError, OSError):
+        process.kill()
+    process.wait()
+
+
+def _run_bounded(
+    command: list[str], name: str, timeout_seconds: float
+) -> tuple[int, bytes, bytes]:
+    """Run the staged query with hard caps enforced while the child runs.
+
+    Both pipes are streamed through bounded buffers: a hostile staged binary
+    cannot exhaust installer memory, because the oversized read aborts and
+    kills the whole process tree immediately.
+    """
+    popen_kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    else:
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+    try:
+        process = subprocess.Popen(command, **popen_kwargs)
+    except OSError as error:
+        raise VerificationError(f"identity query could not start for {name}: {error}") from error
+
+    stdout = bytearray()
+    stderr = bytearray()
+    overflow = threading.Event()
+
+    def pump(source: Any, sink: bytearray, cap: int) -> None:
+        while True:
+            chunk = source.read(4096)
+            if not chunk:
+                return
+            if len(sink) + len(chunk) > cap:
+                overflow.set()
+                _kill_process_tree(process)
+                return
+            sink.extend(chunk)
+
+    readers = [
+        threading.Thread(target=pump, args=(process.stdout, stdout, MAX_PACKET_BYTES), daemon=True),
+        threading.Thread(target=pump, args=(process.stderr, stderr, MAX_STDERR_BYTES), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        returncode = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as error:
+        _kill_process_tree(process)
+        raise VerificationError(f"identity query timed out for {name}") from error
+    for reader in readers:
+        reader.join(timeout=5)
+    if overflow.is_set():
+        raise VerificationError(
+            f"identity output exceeded its bounded pipe for {name}"
+        )
+    return returncode, bytes(stdout), bytes(stderr)
 
 
 def _validate_packet(observed: ObservedBinary) -> list[str]:
@@ -153,6 +228,47 @@ def observe(expected: ExpectedBinary, timeout_seconds: float) -> ObservedBinary:
     return ObservedBinary(expected=expected, sha256=before, packet=packet)
 
 
+def _project_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    """Project only the reviewed, bounded identity fields into the receipt.
+
+    The raw packet is a statement by an untrusted staged binary and may carry
+    arbitrary additional sections or oversized strings; none of it belongs in
+    a persistent, publishable receipt. Every projected field passes the same
+    bounded-string grammar or a fixed enum, and anything unreviewed is
+    dropped rather than copied.
+    """
+
+    def bounded(section: dict[str, Any] | None, field: str) -> str | None:
+        if not isinstance(section, dict):
+            return None
+        try:
+            return _bounded_identity(section.get(field), field, required=False)
+        except VerificationError:
+            return None
+
+    product = packet.get("product") if isinstance(packet.get("product"), dict) else {}
+    binary = packet.get("binary") if isinstance(packet.get("binary"), dict) else {}
+    build = packet.get("build") if isinstance(packet.get("build"), dict) else {}
+    artifact = packet.get("artifact") if isinstance(packet.get("artifact"), dict) else {}
+    identity_state = build.get("identity_state")
+    return {
+        "schema_version": packet.get("schema_version")
+        if isinstance(packet.get("schema_version"), str)
+        else None,
+        "product_name": bounded(product, "name"),
+        "executable": bounded(binary, "executable"),
+        "cargo_package": bounded(binary, "cargo_package"),
+        "role": bounded(binary, "role"),
+        "version": bounded(binary, "version"),
+        "identity_state": identity_state
+        if identity_state in {"exact", "partial", "not_proven"}
+        else None,
+        "target": bounded(build, "target"),
+        "source_revision": bounded(build, "source_revision"),
+        "candidate_identity": bounded(artifact, "candidate_identity"),
+    }
+
+
 def _packet_value(packet: dict[str, Any], section: str, field: str) -> str | None:
     value = packet.get(section)
     if not isinstance(value, dict):
@@ -206,6 +322,15 @@ def verify(
         if dap_candidate != server_candidate:
             reasons.append("server_dap_candidate_mismatch")
 
+    if server.expected.expected_sha256 is not None and (
+        server.sha256 != server.expected.expected_sha256
+    ):
+        reasons.append("server_sha256_mismatch")
+    if dap is not None and dap.expected.expected_sha256 is not None and (
+        dap.sha256 != dap.expected.expected_sha256
+    ):
+        reasons.append("dap_sha256_mismatch")
+
     reasons = sorted(set(reasons))
     verdict = "verified" if not reasons else "mismatch"
     binaries = [
@@ -213,7 +338,8 @@ def verify(
             "role": server.expected.role,
             "filename": server.expected.path.name,
             "sha256": server.sha256,
-            "packet": server.packet,
+            "expected_sha256": server.expected.expected_sha256,
+            "packet_projection": _project_packet(server.packet),
         }
     ]
     if dap is not None:
@@ -222,7 +348,8 @@ def verify(
                 "role": dap.expected.role,
                 "filename": dap.expected.path.name,
                 "sha256": dap.sha256,
-                "packet": dap.packet,
+                "expected_sha256": dap.expected.expected_sha256,
+                "packet_projection": _project_packet(dap.packet),
             }
         )
 
@@ -259,6 +386,14 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--expected-target")
     parser.add_argument("--expected-candidate")
+    parser.add_argument(
+        "--expected-server-sha256",
+        help="externally trusted SHA-256 of the staged server from the topology row",
+    )
+    parser.add_argument(
+        "--expected-dap-sha256",
+        help="externally trusted SHA-256 of the staged DAP from the topology row",
+    )
     parser.add_argument("--require-dap", action="store_true")
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
     parser.add_argument("--receipt", type=Path)
@@ -268,12 +403,31 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
+        for flag in ("--expected-server-sha256", "--expected-dap-sha256"):
+            value = getattr(args, flag.lstrip("--").replace("-", "_"))
+            if value is not None and not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise VerificationError(f"{flag} must be a lowercase hex SHA-256")
         server = observe(
-            ExpectedBinary(args.server, "perllsp", "perllsp", "server"),
+            ExpectedBinary(
+                args.server,
+                "perllsp",
+                "perllsp",
+                "server",
+                args.expected_server_sha256,
+            ),
             args.timeout_seconds,
         )
         dap = (
-            observe(ExpectedBinary(args.dap, "perl-dap", "perl-dap", "dap"), args.timeout_seconds)
+            observe(
+                ExpectedBinary(
+                    args.dap,
+                    "perl-dap",
+                    "perl-dap",
+                    "dap",
+                    args.expected_dap_sha256,
+                ),
+                args.timeout_seconds,
+            )
             if args.dap is not None
             else None
         )
