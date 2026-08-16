@@ -2,10 +2,16 @@
 //! Completion item domain types and sorting utilities.
 //!
 //! This microcrate isolates completion payload representation and deterministic
-//! ordering/deduplication policy from provider logic.
+//! identity merge, ordering, and deduplication policy from provider logic.
 
+mod candidate;
 mod snippet;
+mod stable_order;
 
+pub use candidate::{
+    CompletionCandidate, CompletionCandidateConflict, CompletionCandidateEvidence,
+    CompletionCandidateIdentity, CompletionCandidateProof,
+};
 pub use snippet::{InsertTextFormat, render_snippet_plaintext, snippet_body_defects};
 
 use perl_parser_core::SourceLocation;
@@ -87,74 +93,39 @@ pub struct CompletionItem {
     pub label_details: Option<CompletionItemLabelDetails>,
 }
 
-/// Remove duplicates and sort completions with stable, deterministic ordering.
+/// Merge identity-bearing completion candidates with a deterministic total
+/// order while preserving the existing provider rank policy.
+///
+/// Candidates are deterministically ordered before merge so equal compatible
+/// evidence selects the same presentation winner regardless of provider
+/// iteration order. Retained conflicts receive a total order after merge.
 #[must_use]
-pub fn deduplicate_and_sort(mut completions: Vec<CompletionItem>) -> Vec<CompletionItem> {
-    if completions.is_empty() {
-        return completions;
-    }
+pub fn merge_and_sort_completion_candidates(
+    mut candidates: Vec<CompletionCandidate>,
+) -> Vec<CompletionCandidate> {
+    candidates.sort_by(stable_order::candidate_premerge_order);
+    let mut merged = candidate::merge_and_sort_completion_candidates(candidates);
+    merged.sort_by(stable_order::candidate_output_order);
+    merged
+}
 
-    // Remove duplicates based on label, keeping the one with better sort_text.
-    // HashMap key is String so we can look up via &str (String: Borrow<str>).
-    let mut seen = std::collections::HashMap::<String, usize>::new();
-    let mut to_remove = std::collections::HashSet::<usize>::new();
-
-    for (i, item) in completions.iter().enumerate() {
-        if item.label.is_empty() {
-            // Skip items with empty labels.
-            to_remove.insert(i);
-            continue;
-        }
-
-        if let Some(&existing_idx) = seen.get(item.label.as_ref()) {
-            let existing_sort = completions[existing_idx]
-                .sort_text
-                .as_deref()
-                .unwrap_or(completions[existing_idx].label.as_ref());
-            let current_sort = item.sort_text.as_deref().unwrap_or(item.label.as_ref());
-
-            if current_sort < existing_sort {
-                // Current item is better, remove the existing one.
-                to_remove.insert(existing_idx);
-                seen.insert(item.label.to_string(), i);
-            } else {
-                // Existing item is better, remove current one.
-                to_remove.insert(i);
-            }
-        } else {
-            seen.insert(item.label.to_string(), i);
-        }
-    }
-
-    // Remove marked duplicates in reverse order to maintain indices.
-    let mut indices: Vec<usize> = to_remove.into_iter().collect();
-    indices.sort_by(|a, b| b.cmp(a)); // Sort in descending order.
-    for idx in indices {
-        completions.remove(idx);
-    }
-
-    // Sort with stable, deterministic ordering.
-    completions.sort_by(|a, b| {
-        let a_sort = a.sort_text.as_deref().unwrap_or(a.label.as_ref());
-        let b_sort = b.sort_text.as_deref().unwrap_or(b.label.as_ref());
-
-        // Primary sort: by sort_text/label.
-        match a_sort.cmp(b_sort) {
-            std::cmp::Ordering::Equal => {
-                // Secondary sort: by completion kind for stability.
-                match a.kind.cmp(&b.kind) {
-                    std::cmp::Ordering::Equal => {
-                        // Tertiary sort: by label for full determinism.
-                        a.label.cmp(&b.label)
-                    }
-                    other => other,
-                }
-            }
-            other => other,
-        }
-    });
-
-    completions
+/// Remove duplicates and sort completions with stable, deterministic ordering.
+///
+/// Existing providers enter through [`CompletionCandidate::legacy`], preserving
+/// their current label-based behavior. Providers that migrate to explicit
+/// candidate identity use [`merge_and_sort_completion_candidates`] directly and
+/// can therefore retain same-label distinct entities.
+#[must_use]
+pub fn deduplicate_and_sort(completions: Vec<CompletionItem>) -> Vec<CompletionItem> {
+    merge_and_sort_completion_candidates(
+        completions
+            .into_iter()
+            .map(CompletionCandidate::legacy)
+            .collect(),
+    )
+    .into_iter()
+    .map(|candidate| candidate.item)
+    .collect()
 }
 
 #[cfg(test)]
@@ -218,7 +189,10 @@ mod tests {
 
     fn sort_key(item: &CompletionItem) -> (String, CompletionItemKind, String) {
         (
-            item.sort_text.as_deref().unwrap_or(item.label.as_ref()).to_string(),
+            item.sort_text
+                .as_deref()
+                .unwrap_or(item.label.as_ref())
+                .to_string(),
             item.kind,
             item.label.to_string(),
         )
@@ -233,7 +207,9 @@ mod tests {
                 (
                     item.label.to_string(),
                     item.kind,
-                    item.sort_text.as_ref().map(|s: &Cow<'static, str>| s.to_string()),
+                    item.sort_text
+                        .as_ref()
+                        .map(|s: &Cow<'static, str>| s.to_string()),
                 )
             })
             .collect()
