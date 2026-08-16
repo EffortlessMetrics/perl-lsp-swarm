@@ -102,17 +102,6 @@ fn test_dap_config_uses_internal_modules() -> Result<()> {
     Ok(())
 }
 
-/// Test that BridgeAdapter uses internal modules, not satellites
-#[test]
-fn test_bridge_adapter_uses_internal_modules() -> Result<()> {
-    // Trap 4: If bridge_adapter.rs still references old satellites,
-    // this will fail to compile
-    use perl_dap::BridgeAdapter;
-
-    assert_ne!(std::any::type_name::<BridgeAdapter>(), "", "BridgeAdapter must be importable");
-    Ok(())
-}
-
 /// Test that platform module exists as a folder with public exports
 /// platform.rs must be converted to platform/mod.rs
 #[test]

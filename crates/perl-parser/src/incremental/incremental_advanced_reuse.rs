@@ -28,7 +28,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Advanced node reuse analyzer with sophisticated matching algorithms
 #[derive(Debug)]
-pub struct AdvancedReuseAnalyzer {
+pub(super) struct AdvancedReuseAnalyzer {
     /// Cache of node structural hashes for fast comparison
     node_hashes: HashMap<usize, u64>,
     /// Mapping of positions to potentially reusable nodes
@@ -36,7 +36,7 @@ pub struct AdvancedReuseAnalyzer {
     /// Set of nodes that are known to be affected by edits
     affected_nodes: HashSet<usize>,
     /// Statistics for reuse analysis
-    pub analysis_stats: ReuseAnalysisStats,
+    pub(super) analysis_stats: ReuseAnalysisStats,
 }
 
 /// Statistics tracking reuse analysis performance and effectiveness
@@ -111,7 +111,7 @@ impl Default for AdvancedReuseAnalyzer {
 
 impl AdvancedReuseAnalyzer {
     /// Create a new reuse analyzer with default configuration
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         AdvancedReuseAnalyzer {
             node_hashes: HashMap::new(),
             position_map: HashMap::new(),
@@ -121,7 +121,7 @@ impl AdvancedReuseAnalyzer {
     }
 
     /// Create analyzer with custom configuration
-    pub fn with_config(_config: ReuseConfig) -> Self {
+    pub(super) fn with_config(_config: ReuseConfig) -> Self {
         // Store config for future use if needed
         Self::new()
     }
@@ -130,7 +130,7 @@ impl AdvancedReuseAnalyzer {
     ///
     /// Returns a mapping of old node positions to reuse strategies,
     /// enabling intelligent tree reconstruction with maximum node reuse.
-    pub fn analyze_reuse_opportunities(
+    pub(super) fn analyze_reuse_opportunities(
         &mut self,
         old_tree: &Node,
         new_tree: &Node,
@@ -348,6 +348,7 @@ impl AdvancedReuseAnalyzer {
                 }
 
                 if old_info.structural_hash == new_info.structural_hash
+                    && old_info.content_hash == new_info.content_hash
                     && old_info.children_count == new_info.children_count
                 {
                     let confidence = self.calculate_match_confidence(old_info, new_info);
@@ -445,6 +446,9 @@ impl AdvancedReuseAnalyzer {
         reuse_map: &mut HashMap<usize, ReuseStrategy>,
         config: &ReuseConfig,
     ) {
+        let mut used_target_positions: HashSet<usize> =
+            reuse_map.values().map(|strategy| strategy.target_position).collect();
+
         for (old_pos, old_info) in &old_analysis.node_info {
             if reuse_map.contains_key(old_pos) {
                 continue;
@@ -453,6 +457,10 @@ impl AdvancedReuseAnalyzer {
             // For leaf nodes, check if structure matches but content differs
             if old_info.children_count == 0 {
                 for (new_pos, new_info) in &new_analysis.node_info {
+                    if used_target_positions.contains(new_pos) {
+                        continue;
+                    }
+
                     if old_info.structural_hash == new_info.structural_hash
                         && old_info.content_hash != new_info.content_hash
                         && self.are_compatible_for_content_update(&old_info.node, &new_info.node)
@@ -468,6 +476,7 @@ impl AdvancedReuseAnalyzer {
                                     position_adjustment: (*new_pos as isize) - (*old_pos as isize),
                                 },
                             );
+                            used_target_positions.insert(*new_pos);
                             self.analysis_stats.content_matches += 1;
                             break;
                         }
@@ -485,6 +494,9 @@ impl AdvancedReuseAnalyzer {
         reuse_map: &mut HashMap<usize, ReuseStrategy>,
         config: &ReuseConfig,
     ) {
+        let mut used_target_positions: HashSet<usize> =
+            reuse_map.values().map(|strategy| strategy.target_position).collect();
+
         // This is the most sophisticated matching - look for structural patterns
         // even when exact hashes don't match
         for (old_pos, old_info) in &old_analysis.node_info {
@@ -495,6 +507,10 @@ impl AdvancedReuseAnalyzer {
             let mut best_match: Option<(usize, f64)> = None;
 
             for (new_pos, new_info) in &new_analysis.node_info {
+                if used_target_positions.contains(new_pos) {
+                    continue;
+                }
+
                 if old_info.children_count > 0
                     && self.get_children_count(&old_info.node)
                         != self.get_children_count(&new_info.node)
@@ -525,6 +541,7 @@ impl AdvancedReuseAnalyzer {
                             position_adjustment: (best_pos as isize) - (*old_pos as isize),
                         },
                     );
+                    used_target_positions.insert(best_pos);
                     self.analysis_stats.reuse_candidates_found += 1;
                 }
             }
@@ -604,22 +621,10 @@ impl AdvancedReuseAnalyzer {
         hasher.finish()
     }
 
-    /// Calculate content-based hash for value comparison
+    /// Calculate content-based hash for exact subtree comparison.
     fn calculate_content_hash(&self, node: &Node) -> u64 {
         let mut hasher = DefaultHasher::new();
-
-        match &node.kind {
-            NodeKind::Number { value } => value.hash(&mut hasher),
-            NodeKind::String { value, .. } => value.hash(&mut hasher),
-            NodeKind::VString { value } => value.hash(&mut hasher),
-            NodeKind::Variable { name, .. } => name.hash(&mut hasher),
-            NodeKind::Identifier { name } => name.hash(&mut hasher),
-            _ => {
-                // For non-leaf nodes, hash is based on structure
-                self.calculate_structural_hash(node).hash(&mut hasher);
-            }
-        }
-
+        node.to_sexp().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -878,7 +883,7 @@ impl AdvancedReuseAnalyzer {
     ///
     /// Edits in [`EditSet`] are sorted by `start_byte`, so iteration short-
     /// circuits as soon as the next edit starts past `old_pos`.
-    pub fn map_old_position_to_new(&self, old_pos: usize, edits: &EditSet) -> usize {
+    pub(super) fn map_old_position_to_new(&self, old_pos: usize, edits: &EditSet) -> usize {
         let mut shift: isize = 0;
         for edit in edits.edits() {
             if old_pos < edit.start_byte {
@@ -901,7 +906,7 @@ impl AdvancedReuseAnalyzer {
     /// Returns `true` if the registration was inserted, `false` if some other
     /// `old_pos` has already claimed the same `new_pos` (in which case the
     /// existing claim is left unchanged).
-    pub fn try_register_match(
+    pub(super) fn try_register_match(
         &self,
         reuse_map: &mut HashMap<usize, ReuseStrategy>,
         old_pos: usize,
