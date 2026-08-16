@@ -1272,6 +1272,21 @@ gates:
       - contract
       - generated
 
+  - name: compiler_concept_proof
+    tier: merge_gate
+    description: "Validate the one-to-one concept proof-obligation matrix against the ledger and proof policy, and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-concept-proof -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
   # re-promotion.

@@ -1,0 +1,233 @@
+schema_version = "perl_compiler_concept_proof.v1"
+matrix_id = "perl_compiler_concept_proof_seed_v1"
+controller_issue = "#6689"
+concept_ledger_schema = "perl_compiler_concepts.v1"
+proof_policy_schema = "perl_compiler_proof_policy.v1"
+coverage_scope = "Initial proof-obligation matrix for every concept row in the #6657 seed; not complete Perl conformance."
+claim_boundary = "A required_missing row is an explicit gap, not evidence. Deferred and not_observable are separate from satisfied."
+complete = false
+
+[defaults]
+positive_gold = "required_missing"
+negative_gold = "required_missing"
+boundary_gold = "required_missing"
+recovery_gold = "required_missing"
+hir_snapshot = "required_missing"
+pir_snapshot = "required_missing"
+verifier_mutation = "required_missing"
+effects_world_fixture = "not_applicable"
+eir_differential = "deferred"
+real_perl_oracle = "required_missing"
+composition_coverage = "required_missing"
+
+[[requirements]]
+concept_id = "calls.ampersand"
+owner_issue = "#5242"
+composition_dimensions = ["call_syntax", "prototype_contract", "argument_context", "evaluation_order", "dynamic_boundary"]
+basis = ["#5242", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "calls.normalized_semantics"
+owner_issue = "#5242"
+composition_dimensions = ["call_syntax", "dispatch_kind", "argument_context", "evaluation_order", "dynamic_boundary"]
+basis = ["#5242", "#6689"]
+evidence = []
+real_perl_oracle = "not_observable"
+
+[[requirements]]
+concept_id = "context.value_context"
+owner_issue = "#2275"
+composition_dimensions = ["value_context", "evaluation_demand", "access_mode", "operator_family", "call_syntax"]
+basis = ["#2275", "#6689"]
+evidence = []
+recovery_gold = "not_applicable"
+
+[[requirements]]
+concept_id = "control.default"
+owner_issue = "#6674"
+composition_dimensions = ["feature_state", "implicit_topic", "control_flow", "operator_family", "dynamic_boundary"]
+basis = ["#6674", "#6689"]
+evidence = []
+effects_world_fixture = "required_missing"
+
+[[requirements]]
+concept_id = "control.given"
+owner_issue = "#6674"
+composition_dimensions = ["feature_state", "implicit_topic", "control_flow", "operator_family", "dynamic_boundary"]
+basis = ["#6674", "#6689"]
+evidence = []
+effects_world_fixture = "required_missing"
+
+[[requirements]]
+concept_id = "control.postfix_modifier"
+owner_issue = "#4886"
+composition_dimensions = ["control_flow", "evaluation_order", "value_context", "dynamic_boundary"]
+basis = ["#4886", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "control.when"
+owner_issue = "#6674"
+composition_dimensions = ["feature_state", "implicit_topic", "control_flow", "operator_family", "dynamic_boundary"]
+basis = ["#6674", "#6689"]
+evidence = []
+effects_world_fixture = "required_missing"
+
+[[requirements]]
+concept_id = "declarations.nested_variable_list"
+owner_issue = "#6659"
+composition_dimensions = ["storage_class", "access_mode", "aliasing", "evaluation_order", "recovery_state"]
+basis = ["#6659", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "dynamic.tie"
+owner_issue = "#6683"
+composition_dimensions = ["storage_class", "access_mode", "lifecycle", "hidden_effect", "dynamic_boundary"]
+basis = ["#6683", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "dynamic.untie"
+owner_issue = "#6683"
+composition_dimensions = ["storage_class", "lifecycle", "hidden_effect", "cleanup", "dynamic_boundary"]
+basis = ["#6683", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "exceptions.defer"
+owner_issue = "#6661"
+composition_dimensions = ["control_flow", "exception_flow", "cleanup", "lifecycle", "evaluation_order", "dynamic_boundary"]
+basis = ["#6661", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "exceptions.try"
+owner_issue = "#6661"
+composition_dimensions = ["control_flow", "exception_flow", "cleanup", "storage_class", "dynamic_boundary"]
+basis = ["#6661", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "formats.declaration"
+owner_issue = "#6675"
+composition_dimensions = ["source_region", "package_scope", "io_capability", "recovery_state", "incremental_edit"]
+basis = ["#6675", "#6689"]
+evidence = []
+pir_snapshot = "not_applicable"
+verifier_mutation = "not_applicable"
+effects_world_fixture = "required_missing"
+
+[[requirements]]
+concept_id = "namespaces.typeglob"
+owner_issue = "#6668"
+composition_dimensions = ["package_scope", "storage_class", "aliasing", "localization", "dynamic_boundary", "hidden_effect"]
+basis = ["#6668", "#6689"]
+evidence = []
+effects_world_fixture = "required_missing"
+
+[[requirements]]
+concept_id = "objects.core_class"
+owner_issue = "#6672"
+composition_dimensions = ["feature_state", "perl_version", "inheritance", "object_dispatch", "storage_class", "module_order", "dynamic_boundary"]
+basis = ["#6672", "#6689"]
+evidence = []
+effects_world_fixture = "required_missing"
+
+[[requirements]]
+concept_id = "operators.binary"
+owner_issue = "#6658"
+composition_dimensions = ["operator_family", "value_context", "evaluation_demand", "evaluation_order", "dynamic_boundary", "value_shape"]
+basis = ["#6658", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "operators.chained_comparison"
+owner_issue = "#6658"
+composition_dimensions = ["operator_family", "evaluation_order", "evaluate_once", "value_context", "dynamic_boundary"]
+basis = ["#6658", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "phases.begin"
+owner_issue = "#6664"
+composition_dimensions = ["phase", "compile_state", "module_order", "control_flow", "exception_flow", "dynamic_boundary"]
+basis = ["#6664", "#6689"]
+evidence = []
+pir_snapshot = "not_applicable"
+verifier_mutation = "not_applicable"
+effects_world_fixture = "required_missing"
+
+[[requirements]]
+concept_id = "places.array_slice"
+owner_issue = "#5244"
+composition_dimensions = ["storage_class", "result_shape", "access_mode", "evaluation_order", "evaluate_once", "dynamic_boundary"]
+basis = ["#5244", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "places.hash_slice"
+owner_issue = "#5244"
+composition_dimensions = ["storage_class", "result_shape", "access_mode", "evaluation_order", "evaluate_once", "dynamic_boundary"]
+basis = ["#5244", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "places.key_value_slice"
+owner_issue = "#5244"
+composition_dimensions = ["storage_class", "result_shape", "access_mode", "evaluation_order", "evaluate_once", "dynamic_boundary"]
+basis = ["#5244", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "regex.literal"
+owner_issue = "#4848"
+composition_dimensions = ["value_context", "evaluation_order", "match_state", "feature_state", "dynamic_boundary"]
+basis = ["#4848", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "regex.match"
+owner_issue = "#4848"
+composition_dimensions = ["implicit_topic", "match_state", "value_context", "evaluation_demand", "evaluation_order", "dynamic_boundary"]
+basis = ["#4848", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "regex.substitution"
+owner_issue = "#4848"
+composition_dimensions = ["implicit_topic", "match_state", "access_mode", "evaluation_order", "hidden_effect", "dynamic_boundary"]
+basis = ["#4848", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "regex.transliteration"
+owner_issue = "#4848"
+composition_dimensions = ["implicit_topic", "match_state", "access_mode", "evaluation_order", "hidden_effect", "dynamic_boundary"]
+basis = ["#4848", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "source.data_section"
+owner_issue = "#6675"
+composition_dimensions = ["source_region", "package_scope", "io_capability", "incremental_edit", "recovery_state"]
+basis = ["#6675", "#6689"]
+evidence = []
+pir_snapshot = "not_applicable"
+verifier_mutation = "not_applicable"
+effects_world_fixture = "required_missing"
+
+[[requirements]]
+concept_id = "source.ellipsis"
+owner_issue = "#6675"
+composition_dimensions = ["control_flow", "exception_flow", "feature_state", "recovery_state", "perl_version"]
+basis = ["#6675", "#6689"]
+evidence = []
+
+[[requirements]]
+concept_id = "values.v_string"
+owner_issue = "#6658"
+composition_dimensions = ["perl_version", "value_context", "value_shape", "recovery_state", "feature_state"]
+basis = ["#6658", "#6689"]
+evidence = []
