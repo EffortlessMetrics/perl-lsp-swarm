@@ -100,8 +100,7 @@ def _diagnose(package: str) -> None:
     ]:
         alive = subprocess.run(probe, capture_output=True, text=True)
         if alive.returncode == 0:
-            hits = "
-".join(
+            hits = "\n".join(
                 line
                 for line in alive.stdout.splitlines()
                 if "sublime" in line.lower() or "plugin_host" in line.lower()
