@@ -31,7 +31,8 @@ fn legacy_summary_uses_canonical_kind_name_for_struct_variant(
 }
 
 #[test]
-fn legacy_summary_uses_canonical_kind_name_for_unit_variant() -> Result<(), Box<dyn std::error::Error>> {
+fn legacy_summary_uses_canonical_kind_name_for_unit_variant(
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = Node::new(NodeKind::Diamond, SourceLocation { start: 4, end: 6 });
     let summary = legacy_parse_summary(&root);
 
