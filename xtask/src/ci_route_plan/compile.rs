@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::validate::{validate_digest, validate_gate_id, validate_nonempty, validate_subject};
 use super::{
     Applicability, CI_ROUTE_PLAN_PRODUCER, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1,
-    CompileRoutePlanInput, LegacyPlanningRole, LegacyScopeInput, PlannedOutcome, PolicyRole,
-    RoutePlanRow, RoutePlanSummary, RouteScopeEvidence, RouteSelectionEvidence, SelectorRole,
+    CompileRoutePlanInput, LegacyPlannedGate, LegacyPlanningRole, LegacyScopeInput,
+    LegacySkippedGate, PlannedOutcome, PolicyRole, RoutePlanRow, RoutePlanSummary,
+    RouteScopeEvidence, RouteSelectionEvidence, SelectorRole,
 };
 
 pub(super) fn compile(input: CompileRoutePlanInput) -> Result<CiRoutePlanV1, String> {
@@ -27,21 +28,11 @@ pub(super) fn compile(input: CompileRoutePlanInput) -> Result<CiRoutePlanV1, Str
         }
     }
 
-    let selected_names: BTreeSet<_> = input
-        .plan
-        .selected
-        .iter()
-        .map(|row| row.name.as_str())
-        .collect();
+    let selected_names = selected_gate_names(&input.plan.selected);
     if selected_names.len() != input.plan.selected.len() {
         return Err("legacy plan contains duplicate selected gate identity".to_string());
     }
-    let skipped_names: BTreeSet<_> = input
-        .plan
-        .skipped
-        .iter()
-        .map(|row| row.name.as_str())
-        .collect();
+    let skipped_names = skipped_gate_names(&input.plan.skipped);
     if skipped_names.len() != input.plan.skipped.len() {
         return Err("legacy plan contains duplicate skipped gate identity".to_string());
     }
@@ -49,7 +40,8 @@ pub(super) fn compile(input: CompileRoutePlanInput) -> Result<CiRoutePlanV1, Str
         return Err(format!("gate {overlap:?} is both selected and skipped"));
     }
 
-    let mut rows = Vec::with_capacity(input.plan.selected.len() + input.plan.skipped.len());
+    let capacity = input.plan.selected.len() + input.plan.skipped.len();
+    let mut rows = Vec::with_capacity(capacity);
     for selected in input.plan.selected {
         validate_gate_id(&selected.name)?;
         validate_nonempty("selected reason", &selected.reason)?;
@@ -97,10 +89,14 @@ pub(super) fn compile(input: CompileRoutePlanInput) -> Result<CiRoutePlanV1, Str
         let policy = policy_by_name
             .remove(&skipped.name)
             .ok_or_else(|| format!("skipped gate {:?} has no policy row", skipped.name))?;
+        let selector_role = skipped
+            .role
+            .map(selector_role)
+            .unwrap_or(SelectorRole::Unspecified);
         rows.push(RoutePlanRow {
             gate_id: policy.name,
             policy_role: policy_role(policy.required, input.plan.tier.as_str()),
-            selector_role: skipped.role.map(selector_role).unwrap_or(SelectorRole::Unspecified),
+            selector_role,
             applicability: Applicability::NotApplicable,
             outcome: PlannedOutcome::ScopedNoop {
                 reason: skipped.reason,
@@ -139,6 +135,14 @@ pub(super) fn compile(input: CompileRoutePlanInput) -> Result<CiRoutePlanV1, Str
     };
     plan.normalize()?;
     Ok(plan)
+}
+
+fn selected_gate_names(rows: &[LegacyPlannedGate]) -> BTreeSet<&str> {
+    rows.iter().map(|row| row.name.as_str()).collect()
+}
+
+fn skipped_gate_names(rows: &[LegacySkippedGate]) -> BTreeSet<&str> {
+    rows.iter().map(|row| row.name.as_str()).collect()
 }
 
 fn selector_role(role: LegacyPlanningRole) -> SelectorRole {
