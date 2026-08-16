@@ -2,8 +2,12 @@
  * Provider-neutral presentation contract for the installed Perl workspace.
  *
  * This module does not decide readiness or provider semantics. It projects the
- * canonical lifecycle/readiness/result facts supplied by their existing owners
- * into a small, user-legible state vocabulary for VS Code surfaces.
+ * canonical lifecycle/readiness facts supplied by their existing owners into a
+ * small, user-legible state vocabulary for VS Code surfaces.
+ *
+ * Provider outcomes are intentionally not part of the workspace snapshot.
+ * They describe one operation, while this module renders workspace-scoped
+ * health. Recent-result identity and explanation remain separate concerns.
  */
 
 /** User-visible workspace lifecycle states owned by the v0.18 experience contract. */
@@ -42,7 +46,7 @@ export function projectWorkspaceLifecycle(state: WorkspaceLifecycleInput): Works
   }
 }
 
-/** User-visible semantic result classes. */
+/** User-visible semantic result classes retained outside workspace health. */
 export type ProviderOutcome =
   | 'exact_current'
   | 'bounded_fallback'
@@ -52,16 +56,15 @@ export type ProviderOutcome =
   | 'legitimate_empty'
   | 'product_or_instrument_error';
 
-/** One current presentation snapshot. Machine decisions remain in their source receipts. */
+/** One current workspace presentation snapshot. */
 export interface WorkspaceExperienceSnapshot {
   readonly lifecycle: WorkspaceLifecycleState;
-  readonly providerOutcome?: ProviderOutcome | undefined;
   readonly detail?: string | undefined;
   readonly action?: string | undefined;
   readonly reasonCode?: string | undefined;
 }
 
-/** Optional status-bar telemetry that is additive to the semantic state. */
+/** Optional status-bar telemetry that is additive to the workspace state. */
 export interface WorkspaceExperienceTelemetry {
   readonly version?: string | undefined;
   readonly fileCount?: number | undefined;
@@ -79,25 +82,6 @@ export interface WorkspaceExperiencePresentation {
   readonly text: string;
   readonly tooltip: string;
   readonly background: 'warning' | 'error' | undefined;
-}
-
-function effectiveLifecycle(snapshot: WorkspaceExperienceSnapshot): WorkspaceLifecycleState {
-  switch (snapshot.providerOutcome) {
-    case 'product_or_instrument_error':
-      return 'failed';
-    case 'not_ready':
-      return snapshot.lifecycle === 'ready' || snapshot.lifecycle === 'ready_limited'
-        ? 'indexing_active_context'
-        : snapshot.lifecycle;
-    case 'bounded_fallback':
-    case 'unsupported_or_dynamic':
-    case 'safe_refusal':
-      return snapshot.lifecycle === 'ready' ? 'ready_limited' : snapshot.lifecycle;
-    case 'exact_current':
-    case 'legitimate_empty':
-    case undefined:
-      return snapshot.lifecycle;
-  }
 }
 
 /**
@@ -196,19 +180,17 @@ export function presentIndexReadinessReason(reason?: string): string {
 }
 
 /**
- * Render one canonical experience snapshot for a compact status surface.
+ * Render one canonical workspace snapshot for a compact status surface.
  *
- * Normal exact/current and legitimate-empty outcomes remain quiet. Limited,
- * action-required, and failed states remain visually distinct without exposing
- * raw receipt internals in the first-line label.
+ * Operation-scoped provider outcomes are deliberately excluded. A completion,
+ * hover, rename, or formatting result cannot reclassify the entire workspace
+ * as ready, limited, or failed.
  */
 export function presentWorkspaceExperience(
   snapshot: WorkspaceExperienceSnapshot,
   telemetry: WorkspaceExperienceTelemetry = {},
 ): WorkspaceExperiencePresentation {
-  const lifecycle = effectiveLifecycle(snapshot);
-
-  switch (lifecycle) {
+  switch (snapshot.lifecycle) {
     case 'starting':
       return {
         mode: 'starting',
@@ -257,7 +239,7 @@ export function presentWorkspaceExperience(
         text: `$(warning) perl-lsp${version}: ready (limited)`,
         tooltip: detailTooltip(
           snapshot,
-          'Perl Language Server is ready with a bounded fallback or limitation',
+          'Perl Language Server is ready with bounded workspace coverage',
         ),
         background: undefined,
       };

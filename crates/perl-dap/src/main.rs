@@ -102,10 +102,10 @@ impl EditorListener {
         Self { role: "DAP socket transport", mode_args: "--socket".to_owned() }
     }
 
-    /// The editor side of the `--external-peer HOST:PORT` bridge.
+    /// The editor side of the `--external-peer HOST:PORT` session.
     fn peer_bridge(peer_addr: &str) -> Self {
         Self {
-            role: "editor-facing bridge listener",
+            role: "editor-facing peer listener",
             mode_args: format!("--external-peer {} --socket", shell_quote(peer_addr)),
         }
     }
@@ -188,9 +188,9 @@ const EXTERNAL_PEER_POLL: Duration = Duration::from_millis(50);
 
 /// Run an external-peer DAP session: the editor connects to us on `editor_port`
 /// (socket transport), we connect to the running debugger peer at `peer_addr`
-/// (e.g. Devel::ptkdb), and bridge DAP ↔ the Perl Debugger Peer Protocol.
+/// (e.g. Devel::ptkdb), and translate DAP ↔ the Perl Debugger Peer Protocol.
 fn run_external_peer_bridge(editor_port: u16, peer_addr: &str) -> anyhow::Result<()> {
-    tracing::info!(port = editor_port, peer = peer_addr, "Starting external-peer DAP bridge");
+    tracing::info!(port = editor_port, peer = peer_addr, "Starting external-peer DAP session");
     // Bind the editor-facing listener FIRST so the port is open (and the editor's
     // connect can queue in the listen backlog) while we connect to the peer, which
     // may take up to EXTERNAL_PEER_TIMEOUT. Otherwise an editor that spawns us and
@@ -227,10 +227,10 @@ fn run_external_peer_bridge(editor_port: u16, peer_addr: &str) -> anyhow::Result
 
 /// Run an external-peer DAP session over **stdio**: the editor spawns us as a
 /// child process and drives DAP over our stdin/stdout, while we connect to the
-/// running debugger peer at `peer_addr` and bridge DAP ↔ the Perl Debugger Peer
-/// Protocol. This is the default transport when no `--socket`/`--port` is given.
+/// running debugger peer at `peer_addr` and translate DAP ↔ the Perl Debugger
+/// Peer Protocol. This is the default transport when no `--socket`/`--port` is given.
 fn run_external_peer_bridge_stdio(peer_addr: &str) -> anyhow::Result<()> {
-    tracing::info!(peer = peer_addr, "Starting external-peer DAP bridge on stdio");
+    tracing::info!(peer = peer_addr, "Starting external-peer DAP session on stdio");
     let backend = ExternalDebuggerPeerBackend::connect(peer_addr, EXTERNAL_PEER_TIMEOUT)
         .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
     let bridge = DapPeerBridge::new(Box::new(backend));
@@ -293,7 +293,7 @@ fn run_external_peer_listen(spec: &str, editor_port: Option<u16>) -> anyhow::Res
     // The peer must present this token in its `peer/hello` to be accepted; the
     // acceptor rejects any handshake without a match, so the loopback bind is
     // not the sole access control.
-    let expected_token = Some(endpoint.token.clone());
+    let expected_token = Some(endpoint.session_credential());
 
     match editor_port {
         Some(port) => {
@@ -411,9 +411,8 @@ fn main() -> anyhow::Result<()> {
     init_logging(&args.log_level);
     log_server_startup("perl-dap", env!("CARGO_PKG_VERSION"), args.transport.mode(), None, None);
 
-    // External-peer bridge mode: drive an external debugger engine (ptkdb) over
-    // the peer protocol while the editor speaks DAP. Additive path — the native
-    // adapter is unchanged.
+    // External-peer session: drive an explicitly selected debugger engine over
+    // the peer protocol while the editor speaks DAP. The native default is unchanged.
     if let Some(peer_addr) = args.external_peer.as_deref() {
         return match resolve_socket_port(&args.transport) {
             Some(port) => run_external_peer_bridge(port, peer_addr),
@@ -421,16 +420,15 @@ fn main() -> anyhow::Result<()> {
         };
     }
 
-    // External-peer LISTEN mode (mirror): we bind and wait for the peer to
-    // connect back. Additive path — the native adapter is unchanged.
+    // External-peer LISTEN mode (mirror): bind and wait for the peer to connect
+    // back. The native default remains unchanged.
     if let Some(spec) = args.external_peer_listen.as_deref() {
         return run_external_peer_listen(spec, resolve_socket_port(&args.transport));
     }
 
-    // The shipped `perl-dap` binary always runs the native adapter. The legacy
-    // `BridgeAdapter` (proxy to Perl::LanguageServer) remains available as a
-    // library-only compatibility/conformance reference, but is not a shipped
-    // product path — see docs/reference legacy bridge notes.
+    // The shipped binary always runs the native adapter. External
+    // implementations may be compared in repository-only conformance tooling,
+    // but no alternate DAP server is reachable from this CLI or crate runtime.
     let config =
         DapConfig { log_level: args.log_level, mode: DapMode::Native, workspace_root: None };
 
@@ -465,9 +463,6 @@ mod tests {
     };
 
     /// A taken port must produce an actionable message, not `os error 98`.
-    ///
-    /// Binds a real listener first, so this exercises the actual `AddrInUse`
-    /// path rather than a synthesized error.
     #[test]
     fn taken_editor_port_is_explained_not_dumped() -> Result<(), Box<dyn std::error::Error>> {
         let occupied = std::net::TcpListener::bind(("127.0.0.1", 0))?;
@@ -479,54 +474,25 @@ mod tests {
         let rendered = error.to_string();
 
         assert!(rendered.contains(&port.to_string()), "must name the port: {rendered}");
-        assert!(
-            rendered.contains("DAP socket transport"),
-            "must name which listener failed: {rendered}"
-        );
-        assert!(rendered.contains("perl-dap --socket --port"), "must suggest a remedy: {rendered}");
-        assert!(
-            !rendered.contains("perllsp"),
-            "must not send a debug-adapter user to the language server binary: {rendered}"
-        );
-        assert!(
-            !rendered.contains("os error"),
-            "the raw errno must not be the whole message: {rendered}"
-        );
+        assert!(rendered.contains("DAP socket transport"));
+        assert!(rendered.contains("perl-dap --socket --port"));
+        assert!(!rendered.contains("perllsp"));
+        assert!(!rendered.contains("os error"));
         Ok(())
     }
 
-    /// The remediation must re-launch the mode that actually failed.
-    ///
-    /// A suggested `perl-dap --port N` with the mode flag dropped *succeeds*
-    /// and starts the native adapter, so a user following it would believe the
-    /// conflict was fixed while silently getting a different debugger than the
-    /// one they launched. That is the same dishonesty class as dumping the
-    /// errno, so it is pinned per peer mode.
     #[test]
     fn remediation_preserves_the_selected_peer_mode() {
-        let bridge =
-            editor_port_in_use_message(9000, &EditorListener::peer_bridge("127.0.0.1:5000"));
-        assert!(
-            bridge.contains("perl-dap --external-peer 127.0.0.1:5000 --socket --port 9001"),
-            "bridge remediation must keep --external-peer: {bridge}"
-        );
+        let peer = editor_port_in_use_message(9000, &EditorListener::peer_bridge("127.0.0.1:5000"));
+        assert!(peer.contains("perl-dap --external-peer 127.0.0.1:5000 --socket --port 9001"));
 
         let listen = editor_port_in_use_message(9000, &EditorListener::peer_listen("127.0.0.1"));
-        assert!(
-            listen.contains("perl-dap --external-peer-listen 127.0.0.1 --socket --port 9001"),
-            "listen remediation must keep --external-peer-listen: {listen}"
-        );
+        assert!(listen.contains("perl-dap --external-peer-listen 127.0.0.1 --socket --port 9001"));
 
-        // The native path must NOT acquire a peer flag it was never given.
         let native = editor_port_in_use_message(9000, &EditorListener::native_socket());
-        assert!(
-            !native.contains("--external-peer"),
-            "native remediation must not invent a peer mode: {native}"
-        );
+        assert!(!native.contains("--external-peer"));
     }
 
-    /// A spec needing shell quoting must not be pasted in raw — the displayed
-    /// command has to mean what it shows.
     #[test]
     fn remediation_quotes_a_spec_that_needs_it() {
         let message =
@@ -536,10 +502,7 @@ mod tests {
         } else {
             "--external-peer-listen 'a b; rm -rf /'"
         };
-        assert!(
-            message.contains(expected),
-            "a spec with shell metacharacters must be quoted: {message}"
-        );
+        assert!(message.contains(expected));
     }
 
     #[test]
@@ -548,20 +511,14 @@ mod tests {
         assert_eq!(windows_shell_quote("100% ready\"now"), "\"100% ready\"\"now\"");
     }
 
-    /// A non-`AddrInUse` bind failure must still name the port and the listener.
-    /// A bare `?` discarded both.
     #[test]
     fn other_bind_failures_still_name_the_port() {
         let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
         let rendered = describe_editor_bind_error(13_603, &EditorListener::native_socket(), &error)
             .to_string();
-
-        assert!(rendered.contains("13603"), "must name the port: {rendered}");
-        assert!(rendered.contains("DAP socket transport"), "must name the listener: {rendered}");
-        assert!(
-            !rendered.contains("already in use"),
-            "a permission failure must not be reported as a port conflict: {rendered}"
-        );
+        assert!(rendered.contains("13603"));
+        assert!(rendered.contains("DAP socket transport"));
+        assert!(!rendered.contains("already in use"));
     }
 
     #[test]
@@ -569,9 +526,9 @@ mod tests {
         let bind_error = anyhow::Error::new(DapSocketBindError { port: 13_603 })
             .context(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         let rendered = describe_native_socket_error(13_603, bind_error).to_string();
-        assert!(rendered.contains("13603"), "must name the port: {rendered}");
-        assert!(rendered.contains("DAP socket transport"), "must name the listener: {rendered}");
-        assert!(!rendered.contains("os error"), "must add bind context: {rendered}");
+        assert!(rendered.contains("13603"));
+        assert!(rendered.contains("DAP socket transport"));
+        assert!(!rendered.contains("os error"));
 
         let session_error = anyhow::anyhow!("accepted-session failure");
         assert_eq!(
@@ -584,7 +541,7 @@ mod tests {
     fn peer_bind_failures_name_their_distinct_roles() {
         let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
         for (listener, expected_role) in [
-            (EditorListener::peer_bridge("127.0.0.1:5000"), "editor-facing bridge listener"),
+            (EditorListener::peer_bridge("127.0.0.1:5000"), "editor-facing peer listener"),
             (EditorListener::peer_listen("127.0.0.1"), "editor-facing listen-mode listener"),
         ] {
             let rendered = describe_editor_bind_error(13_603, &listener, &error).to_string();
@@ -592,8 +549,6 @@ mod tests {
         }
     }
 
-    /// The suggested alternatives must be usable and must differ from the port
-    /// that already failed.
     #[test]
     fn suggested_ports_differ_from_the_failed_one() {
         let message =
@@ -602,8 +557,6 @@ mod tests {
         assert!(message.contains(&format!("perl-dap --socket --port {}", DEFAULT_DAP_PORT + 10)));
     }
 
-    /// Near the top of the range, `port + 10` wraps to 0 ("any port") and to
-    /// the privileged low ports. Suggesting those would be worse than useless.
     #[test]
     fn suggested_ports_stay_usable_near_the_range_top() {
         for port in [u16::MAX, u16::MAX - 1, u16::MAX - 9] {
@@ -615,32 +568,30 @@ mod tests {
         }
     }
 
-    /// The shipped `perl-dap` CLI must not advertise legacy bridge mode or
-    /// Perl::LanguageServer on its product surface. Bridge is a library-only
-    /// compatibility reference, never a shipped command path.
     #[test]
-    fn cli_help_has_no_bridge_product_surface() {
+    fn cli_help_has_no_pls_product_surface() {
         let help = Args::command().render_long_help().to_string();
-        assert!(
-            !help.contains("--bridge"),
-            "perl-dap --help must not expose the legacy --bridge flag: {help}"
-        );
-        assert!(
-            !help.to_lowercase().contains("bridge"),
-            "perl-dap --help must not mention bridge mode: {help}"
-        );
-        assert!(
-            !help.contains("Perl::LanguageServer"),
-            "perl-dap --help must not mention Perl::LanguageServer: {help}"
-        );
+        assert!(!help.contains("--bridge"));
+        assert!(!help.contains("Perl::LanguageServer"));
+        assert!(!help.contains("BridgeAdapter"));
     }
 
-    /// Parsing must reject `--bridge`: the flag is removed from the shipped
-    /// binary, so an unknown-argument error is the correct, guarded behavior.
     #[test]
     fn cli_rejects_removed_bridge_flag() {
         let result = Args::try_parse_from(["perl-dap", "--bridge"]);
-        assert!(result.is_err(), "--bridge must be rejected by the shipped CLI");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dap_identity_flags_select_the_shared_packet_without_starting_clap() {
+        let json_args = vec!["perl-dap".to_owned(), "--info".to_owned(), "--json".to_owned()];
+        let human_args = vec!["perl-dap".to_owned(), "--identity".to_owned()];
+        assert_eq!(requested_identity_output(&json_args), Some(IdentityOutputFormat::Json));
+        assert_eq!(requested_identity_output(&human_args), Some(IdentityOutputFormat::Human));
+
+        let packet = BinaryIdentityPacketV1::embedded_dap("0.18.0");
+        assert_eq!(packet.binary.role, BinaryRole::Dap);
+        assert_eq!(packet.binary.executable, "perl-dap");
     }
 
     #[test]
@@ -662,7 +613,6 @@ mod tests {
             socket: true,
             port: None,
         };
-
         assert_eq!(resolve_socket_port(&args), Some(DEFAULT_DAP_PORT));
     }
 
@@ -673,7 +623,6 @@ mod tests {
             socket: true,
             port: Some(9_999),
         };
-
         assert_eq!(resolve_socket_port(&args), Some(9_999));
     }
 
@@ -684,7 +633,6 @@ mod tests {
             socket: false,
             port: None,
         };
-
         assert_eq!(resolve_socket_port(&args), None);
     }
 }

@@ -1,0 +1,291 @@
+# Network-free reviewed projection ledger for immutable external action pins.
+# Update only after independently verifying the upstream tag or branch commit.
+
+[[pin]]
+action = 'EffortlessMetrics/droid-action-safe'
+sha = '7c1377ccbacddc95560d1570547a5baa51de01ec'
+kind = 'legacy_debt'
+value = 'based on Factory-AI/droid-action v5; raw debug artifact upload disabled'
+
+[[pin]]
+action = 'Swatinem/rust-cache'
+sha = '6323deb102c322ba6fcbdcafc7e3dddab59af2b6'
+kind = 'legacy_debt'
+value = ''
+
+[[pin]]
+action = 'Swatinem/rust-cache'
+sha = '6323deb102c322ba6fcbdcafc7e3dddab59af2b6'
+kind = 'legacy_debt'
+value = 'v2.9.2'
+
+[[pin]]
+action = 'Swatinem/rust-cache'
+sha = 'c19371144df3bb44fab255c43d04cbc2ab54d1c4'
+kind = 'release_tag'
+value = 'v2.9.1'
+
+[[pin]]
+action = 'actions/cache'
+sha = '0057852bfaa89a56745cba8c7296529d2fc39830'
+kind = 'release_tag'
+value = 'v4.3.0'
+
+[[pin]]
+action = 'actions/cache'
+sha = '55cc8345863c7cc4c66a329aec7e433d2d1c52a9'
+kind = 'legacy_debt'
+value = 'v6.1.0'
+
+[[pin]]
+action = 'actions/cache/restore'
+sha = '55cc8345863c7cc4c66a329aec7e433d2d1c52a9'
+kind = 'release_tag'
+value = 'v6.1.0'
+
+[[pin]]
+action = 'actions/cache/save'
+sha = '55cc8345863c7cc4c66a329aec7e433d2d1c52a9'
+kind = 'release_tag'
+value = 'v6.1.0'
+
+[[pin]]
+action = 'actions/checkout'
+sha = '3d3c42e5aac5ba805825da76410c181273ba90b1'
+kind = 'legacy_debt'
+value = 'v7'
+
+[[pin]]
+action = 'actions/checkout'
+sha = '3d3c42e5aac5ba805825da76410c181273ba90b1'
+kind = 'legacy_debt'
+value = 'v7.0.0'
+
+[[pin]]
+action = 'actions/checkout'
+sha = '3d3c42e5aac5ba805825da76410c181273ba90b1'
+kind = 'legacy_debt'
+value = 'v7.0.1'
+
+[[pin]]
+action = 'actions/checkout'
+sha = '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0'
+kind = 'legacy_debt'
+value = ''
+
+[[pin]]
+action = 'actions/checkout'
+sha = '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0'
+kind = 'legacy_debt'
+value = 'v6'
+
+# Verified against upstream on 2026-08-16:
+#   git ls-remote --tags https://github.com/actions/checkout v7.0.0
+#   9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  refs/tags/v7.0.0
+# The projection this entry previously carried as unreviewed debt is correct,
+# so it is promoted rather than re-recorded. The sibling '' and 'v6' entries
+# for this same SHA stay legacy debt: 'v6' is a wrong projection (this commit
+# is v7.0.0) and neither was verified here.
+[[pin]]
+action = 'actions/checkout'
+sha = '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0'
+kind = 'release_tag'
+value = 'v7.0.0'
+
+[[pin]]
+action = 'actions/dependency-review-action'
+sha = 'a1d282b36b6f3519aa1f3fc636f609c47dddb294'
+kind = 'release_tag'
+value = 'v5.0.0'
+
+[[pin]]
+action = 'actions/deploy-pages'
+sha = 'cd2ce8fcbc39b97be8ca5fce6e763baed58fa128'
+kind = 'legacy_debt'
+value = 'v5'
+
+[[pin]]
+action = 'actions/download-artifact'
+sha = '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
+kind = 'legacy_debt'
+value = 'v8'
+
+[[pin]]
+action = 'actions/download-artifact'
+sha = '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
+kind = 'release_tag'
+value = 'v8.0.1'
+
+[[pin]]
+action = 'actions/github-script'
+sha = '373c709c69115d41ff229c7e5df9f8788daa9553'
+kind = 'legacy_debt'
+value = 'v9'
+
+[[pin]]
+action = 'actions/github-script'
+sha = '3a2844b7e9c422d3c10d287c895573f7108da1b3'
+kind = 'legacy_debt'
+value = 'v9'
+
+[[pin]]
+action = 'actions/setup-node'
+sha = '249970729cb0ef3589644e2896645e5dc5ba9c38'
+kind = 'release_tag'
+value = 'v6.5.0'
+
+[[pin]]
+action = 'actions/setup-python'
+sha = '5fda3b95a4ea91299a34e894583c3862153e4b97'
+kind = 'release_tag'
+value = 'v7.0.0'
+
+[[pin]]
+action = 'actions/upload-artifact'
+sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+kind = 'legacy_debt'
+value = 'v7'
+
+[[pin]]
+action = 'actions/upload-artifact'
+sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+kind = 'legacy_debt'
+value = 'v7.0.0'
+
+[[pin]]
+action = 'actions/upload-artifact'
+sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+kind = 'release_tag'
+value = 'v7.0.1'
+
+[[pin]]
+action = 'actions/upload-pages-artifact'
+sha = 'fc324d3547104276b827a68afc52ff2a11cc49c9'
+kind = 'legacy_debt'
+value = 'v5'
+
+[[pin]]
+action = 'aquasecurity/trivy-action'
+sha = 'ed142fd0673e97e23eac54620cfb913e5ce36c25'
+kind = 'release_tag'
+value = 'v0.36.0'
+
+[[pin]]
+action = 'codecov/codecov-action'
+sha = '0fb7174895f61a3b6b78fc075e0cd60383518dac'
+kind = 'legacy_debt'
+value = 'v5.5.5'
+
+[[pin]]
+action = 'codecov/codecov-action'
+sha = 'fb8b3582c8e4def4969c97caa2f19720cb33a72f'
+kind = 'release_tag'
+value = 'v7.0.0'
+
+[[pin]]
+action = 'codecov/test-results-action'
+sha = '0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3'
+kind = 'legacy_debt'
+value = 'v1'
+
+[[pin]]
+action = 'docker/build-push-action'
+sha = '53b7df96c91f9c12dcc8a07bcb9ccacbed38856a'
+kind = 'release_tag'
+value = 'v7.3.0'
+
+[[pin]]
+action = 'docker/login-action'
+sha = 'dbcb813823bdd20940b903addbd779551569679f'
+kind = 'release_tag'
+value = 'v4.6.0'
+
+[[pin]]
+action = 'docker/metadata-action'
+sha = 'dc802804100637a589fabce1cb79ff13a1411302'
+kind = 'release_tag'
+value = 'v6.2.0'
+
+[[pin]]
+action = 'docker/setup-buildx-action'
+sha = 'bb05f3f5519dd87d3ba754cc423b652a5edd6d2c'
+kind = 'release_tag'
+value = 'v4.2.0'
+
+[[pin]]
+action = 'docker/setup-qemu-action'
+sha = '96fe6ef7f33517b61c61be40b68a1882f3264fb8'
+kind = 'release_tag'
+value = 'v4.2.0'
+
+[[pin]]
+action = 'dtolnay/rust-toolchain'
+sha = '6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772'
+kind = 'branch_commit'
+value = 'stable (master)'
+
+[[pin]]
+action = 'dtolnay/rust-toolchain'
+sha = '6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772'
+kind = 'legacy_debt'
+value = ''
+
+[[pin]]
+action = 'dtolnay/rust-toolchain'
+sha = '6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772'
+kind = 'legacy_debt'
+value = 'nightly (master)'
+
+[[pin]]
+action = 'dtolnay/rust-toolchain'
+sha = '6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772'
+kind = 'legacy_debt'
+value = 'stable'
+
+[[pin]]
+action = 'github/codeql-action/upload-sarif'
+sha = '24c7eb380a2dc368f2d129e4c65e51d172983a1e'
+kind = 'legacy_debt'
+value = 'v4'
+
+[[pin]]
+action = 'github/codeql-action/upload-sarif'
+sha = '5595ccaf912efad79be6eef63a5619ff05969be3'
+kind = 'legacy_debt'
+value = 'v4.37.6'
+
+[[pin]]
+action = 'mozilla-actions/sccache-action'
+sha = '2e7f9ec7921547d4b46598398ca573513895d0bd'
+kind = 'release_tag'
+value = 'v0.0.4'
+
+[[pin]]
+action = 'peter-evans/create-pull-request'
+sha = '5f6978faf089d4d20b00c7766989d076bb2fc7f1'
+kind = 'legacy_debt'
+value = 'v8'
+
+[[pin]]
+action = 'peter-evans/create-pull-request'
+sha = '5f6978faf089d4d20b00c7766989d076bb2fc7f1'
+kind = 'legacy_debt'
+value = 'v8.1.1'
+
+[[pin]]
+action = 'shogo82148/actions-setup-perl'
+sha = '53e33bb27be492a926eee378e8a5f7ff6618b061'
+kind = 'release_tag'
+value = 'v1.43.1'
+
+[[pin]]
+action = 'softprops/action-gh-release'
+sha = '3d0d9888cb7fd7b750713d6e236d1fcb99157228'
+kind = 'release_tag'
+value = 'v3.0.2'
+
+[[pin]]
+action = 'taiki-e/install-action'
+sha = '6c6fd71fe4fb72c3697d269963d0e15df8adedad'
+kind = 'release_tag'
+value = 'v2.85.10'
