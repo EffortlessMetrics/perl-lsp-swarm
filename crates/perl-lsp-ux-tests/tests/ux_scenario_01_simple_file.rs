@@ -82,11 +82,7 @@ fn hover_contents_text(contents: &Value) -> Result<String> {
         Value::Object(_) => marked_string_text(contents),
         Value::Array(items) => {
             anyhow::ensure!(!items.is_empty(), "hover contents array must not be empty");
-            Ok(items
-                .iter()
-                .map(marked_string_text)
-                .collect::<Result<Vec<_>>>()?
-                .join("\n"))
+            Ok(items.iter().map(marked_string_text).collect::<Result<Vec<_>>>()?.join("\n"))
         }
         other => anyhow::bail!(
             "hover contents must be MarkupContent, MarkedString, or MarkedString[]: {other:?}"
@@ -95,10 +91,9 @@ fn hover_contents_text(contents: &Value) -> Result<String> {
 }
 
 fn useful_static_variable_hover(result: &Value) -> Result<String> {
-    let contents = result
-        .as_object()
-        .and_then(|map| map.get("contents"))
-        .ok_or_else(|| anyhow::anyhow!("hover result must be an object with contents: {result:?}"))?;
+    let contents = result.as_object().and_then(|map| map.get("contents")).ok_or_else(|| {
+        anyhow::anyhow!("hover result must be an object with contents: {result:?}")
+    })?;
     let text = hover_contents_text(contents)?;
     anyhow::ensure!(!text.trim().is_empty(), "hover contents must not be empty");
     for marker in HOVER_MARKERS {
@@ -147,8 +142,7 @@ fn text_edit_is_valid(edit: &Value) -> bool {
             && !map.contains_key("replace")
             && range_is_valid(range);
     }
-    map.get("insert").is_some_and(range_is_valid)
-        && map.get("replace").is_some_and(range_is_valid)
+    map.get("insert").is_some_and(range_is_valid) && map.get("replace").is_some_and(range_is_valid)
 }
 
 fn useful_completion_candidate(item: &Value) -> Result<bool> {
@@ -161,10 +155,7 @@ fn useful_completion_candidate(item: &Value) -> Result<bool> {
     }
 
     if let Some(insert_text) = map.get("insertText") {
-        anyhow::ensure!(
-            insert_text.is_string(),
-            "`print` insertText must be a string: {item:?}"
-        );
+        anyhow::ensure!(insert_text.is_string(), "`print` insertText must be a string: {item:?}");
     }
     if let Some(format) = map.get("insertTextFormat") {
         anyhow::ensure!(
@@ -332,9 +323,7 @@ fn static_variable_hover_predicate_accepts_declared_shapes() {
 #[test]
 fn completion_predicate_rejects_empty_unrelated_and_malformed_results() {
     assert!(includes_useful_completion(&[]).is_ok_and(|found| !found));
-    assert!(
-        includes_useful_completion(&[json!({ "label": "printf" })]).is_ok_and(|found| !found)
-    );
+    assert!(includes_useful_completion(&[json!({ "label": "printf" })]).is_ok_and(|found| !found));
 
     for item in [
         json!({ "label": "print", "insertText": 7 }),
