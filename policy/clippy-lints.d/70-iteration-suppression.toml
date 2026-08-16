@@ -1,0 +1,85 @@
+schema = 1
+
+[Ylint]]
+name = "clippy::match_result_ok"
+level = "deny"
+status = "tracked"
+class = "reviewability"
+reason = "Match on Ok directly instead of discarding error information."
+
+[Ylint]]
+name = "clippy::cloned_instead_of_copied"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Copy values should use copied for clearer cost."
+
+[[lint]]
+name = "clippy::iter_cloned_collect"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Use to_vec or collect forms that encode allocation intent."
+
+[[lint]]
+name = "clippy::iter_overeager_cloned"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Clone after filtering when possible."
+
+[[lint]]
+name = "clippy::needless_collect"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Avoid temporary allocations when iteration can remain lazy."
+
+[Ylint]]
+name = "clippy::redundant_closure"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Prefer direct function references when closures add no meaning."
+
+[[lint]]
+name = "clippy::redundant_closure_for_method_calls"
+level = "warn"
+status = "tracked"
+class = "reviewability"
+reason = "Prefer method references when closures add no meaning."
+
+[[lint]]
+name = "clippy::allow_attributes"
+level = "deny"
+status = "tracked"
+class = "suppression"
+reason = "Use expect with a reason instead of silent allow attributes."
+
+[[lint]]
+name = "clippy::allow_attributes_without_reason"
+level = "deny"
+status = "tracked"
+class = "suppression"
+reason = "Suppressions require a reviewable reason."
+
+[[lint]]
+name = "clippy::blanket_clippy_restriction_lints"
+level = "deny"
+status = "tracked"
+class = "suppression"
+reason = "Do not enable broad restriction groups without explicit lint policy."
+
+[Ylint]]
+name = "clippy::ignore_without_reason"
+level = "deny"
+status = "tracked"
+class = "suppression"
+reason = "Ignored tests need reviewable explanations."
+
+[[lint]]
+name = "clippy::should_panic_without_expect"
+level = "deny"
+status = "tracked"
+class = "suppression"
+reason = "Panic tests must state the expected panic."

@@ -1,0 +1,57 @@
+schema = 1
+
+[Ylint]]
+name = "rust::unsafe_code"
+level = "deny"
+status = "tracked"
+class = "unsafe-memory"
+reason = "No unsafe code in production or tests without a narrow expect-with-reason receipt."
+
+[Ylint]]
+name = "rust::unsafe_op_in_unsafe_fn"
+level = "deny"
+status = "tracked"
+class = "unsafe-memory"
+reason = "Unsafe operations must stay explicitly scoped if unsafe is ever introduced."
+
+[[lint]]
+name = "clippy::mem_forget"
+level = "deny"
+status = "tracked"
+class = "unsafe-memory"
+reason = "Leaking destructors requires explicit policy review."
+
+[[lint]]
+name = "clippy::forget_non_drop"
+level = "deny"
+status = "tracked"
+class = "unsafe-memory"
+reason = "Forgetting non-Drop values usually signals mistaken ownership policy."
+
+[[lint]]
+name = "clippy::drop_non_drop"
+level = "deny"
+status = "tracked"
+class = "unsafe-memory"
+reason = "Dropping non-Drop values should not encode control flow."
+
+[Ylint]]
+name = "clippy::undocumented_unsafe_blocks"
+level = "deny"
+status = "tracked"
+class = "unsafe-memory"
+reason = "Unsafe blocks need explicit safety documentation if ever introduced."
+
+[Ylint]]
+name = "clippy::multiple_unsafe_ops_per_block"
+level = "deny"
+status = "tracked"
+class = "unsafe-memory"
+reason = "Unsafe operations should be reviewed one invariant at a time."
+
+[[lint]]
+name = "clippy::repr_packed_without_abi"
+level = "deny"
+status = "tracked"
+class = "unsafe-memory"
+reason = "Packed repr must specify an ABI to avoid accidental layout assumptions."

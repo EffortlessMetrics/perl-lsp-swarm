@@ -1,0 +1,113 @@
+schema = 1
+
+[Ylint]]
+name = "clippy::suspicious_open_options"
+level = "deny"
+status = "tracked"
+class = "file-policy"
+reason = "File open behavior must be explicit."
+
+[[lint]]
+name = "clippy::nonsensical_open_options"
+level = "deny"
+status = "tracked"
+class = "file-policy"
+reason = "Contradictory file open behavior is a bug."
+
+[[lint]]
+name = "clippy::ineffective_open_options"
+level = "deny"
+status = "tracked"
+class = "file-policy"
+reason = "Ineffective file open flags hide intent."
+
+[Ylint]]
+name = "clippy::path_buf_push_overwrite"
+level = "deny"
+status = "tracked"
+class = "file-policy"
+reason = "Absolute path pushes must not silently discard existing path state."
+
+[Ylint]]
+name = "clippy::join_absolute_paths"
+level = "deny"
+status = "tracked"
+class = "file-policy"
+reason = "Joining absolute paths must not silently ignore the base path."
+
+[Ylint]]
+name = "clippy::read_line_without_trim"
+level = "warn"
+status = "tracked"
+class = "file-policy"
+reason = "Interactive input parsing should make newline handling explicit."
+
+[[lint]]
+name = "clippy::exit"
+level = "deny"
+status = "tracked"
+class = "file-policy"
+reason = "Process exits belong at explicit CLI boundaries."
+
+[Ylint]]
+name = "clippy::iter_not_returning_iterator"
+level = "deny"
+status = "tracked"
+class = "api"
+reason = "Iterator-shaped APIs should preserve trait expectations."
+
+[Ylint]]
+name = "clippy::expl_impl_clone_on_copy"
+level = "deny"
+status = "tracked"
+class = "api"
+reason = "Copy types should not have surprising Clone implementations."
+
+[Ylint]]
+name = "clippy::infallible_try_from"
+level = "deny"
+status = "tracked"
+class = "api"
+reason = "Infallible conversions should use From."
+
+[[lint]]
+name = "clippy::fallible_impl_from"
+level = "deny"
+status = "tracked"
+class = "api"
+reason = "From implementations must not fail at runtime."
+
+[[lint]]
+name = "clippy::error_impl_error"
+level = "deny"
+status = "tracked"
+class = "api"
+reason = "Error facade types should implement the standard Error trait."
+
+[[lint]]
+name = "clippy::result_unit_err"
+level = "warn"
+status = "tracked"
+class = "api"
+reason = "Unit errors should be replaced with structured diagnostics."
+
+[[lint]]
+name = "clippy::result_large_err"
+level = "warn"
+status = "tracked"
+class = "api"
+reason = "Large errors should remain visible for API and allocation review."
+
+[[lint]]
+name = "clippy::missing_panics_doc"
+level = "deny"
+status = "tracked"
+class = "api"
+reason = "Public APIs should not have undocumented panic paths."
+
+[[lint]]
+name = "clippy::missing_errors_doc"
+level = "warn"
+status = "tracked"
+class = "api"
+reason = "Public fallible APIs should document error behavior."

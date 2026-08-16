@@ -1,63 +1,81 @@
 # Clippy policy
 
-`perl-lsp` treats Clippy as a governed engineering surface, not as a local taste file. The workspace policy is recorded in three places:
+`perl-lsp` treats Rust and Clippy lints as one governed product contract, not as a collection of local preferences.
 
-- `Cargo.toml` contains the active `[workspace.lints]` block inherited by member crates.
-- `policy/clippy-lints.toml` is the machine-readable ledger for active, debt, tracked, and planned Rust-version lint flips.
-- `policy/clippy-debt.toml` records temporary, expiring debt instead of weakening the global policy silently.
+## Authorities
+
+- `Cargo.toml` contains the active `[workspace.lints]` policy inherited by every member crate.
+- `policy/clippy-lints.toml` contains the ledger schema, product MSRV, policy posture, future-planned lints, and review-dated due deferrals.
+- `policy/clippy-lints.d/*.toml` contains the lint catalog. The checker loads these fragments in sorted path order and validates them as one logical ledger.
+- `policy/clippy-debt.toml` records exact current source-level debt. A lint in `debt` state must have at least one matching row, and every debt row must point back to a `debt` lint at the same level.
+- `clippy.toml`, `rust-toolchain.toml`, and `.ci/gate-policy.yaml` carry configuration and toolchain inputs that must agree with the product MSRV.
+
+`cargo xtask check-lint-policy` is the coherence authority across those files.
+
+## One current disposition
+
+Every governed lint has exactly one current state:
+
+- `active`: the exact level exists in Cargo.
+- `debt`: the exact Cargo level exists and current debt rows own the bounded exceptions.
+- `tracked`: the lint is catalogued but absent from Cargo.
+- `planned`: the lint is unavailable before a future product MSRV.
+- `deferred_due`: the lint is already available, but an owner, reason, review date, and intended next state explicitly bound the remaining work.
+
+A lint cannot appear in two states. A Cargo lint without a ledger entry fails, as does an active ledger entry missing from Cargo. Due lints cannot remain ordinary planned work indefinitely.
 
 ## Workspace posture
 
-The policy applies to production code and tests. The current active Cargo lint block remains intentionally small; broader guardrail lints are tracked in `policy/clippy-lints.toml` until the relevant cleanup PRs can activate them without bundling behavior changes into the policy gate. Tests should return `Result` or use repository test helpers such as `perl_tdd_support::must` and `perl_tdd_support::must_some`.
+The policy applies to production code and every test target. Test failures should use `Result`, `?`, or repository assertion helpers that preserve the underlying error. The old Clippy test-carveout keys are not accepted policy and cannot return through `clippy.toml`.
 
-The workspace still carries Clippy's legacy test unwrap carveout in `clippy.toml`. That carveout is recorded as expiring debt in `policy/clippy-debt.toml` so this control-plane PR can add governance without also rewriting unrelated tests.
+The tracked catalog covers five broad families:
 
-The tracked lint set covers five guardrail families:
+1. **Panic and silent-failure control:** unchecked `Result`/`Option` collapse, discarded futures, ignored `must_use` work, and hidden errors.
+2. **AST, UTF-8, and numeric correctness:** unchecked slicing/indexing, byte/character confusion, unsafe casts, and arithmetic hazards.
+3. **Async and memory review:** lock/borrow behavior across suspension, ownership, unsafe blocks, and representation assumptions.
+4. **File, process, API, and reviewability rules:** explicit filesystem/process behavior and inspectable public/API intent.
+5. **Suppression governance:** narrow `#[expect(..., reason = "...")]` evidence instead of broad or unexplained allowances.
 
-1. **Panic-free code**: no unchecked `Result`/`Option` collapse, panic macros, `todo!`, `unimplemented!`, or `unreachable!` paths.
-2. **AST and UTF-8 safety**: parser and LSP boundary code must avoid unchecked string slicing, byte/character index confusion, and unchecked indexing.
-3. **Silent-failure prevention**: ignored futures, ignored `must_use` values, discarded errors, and lossy line iteration are denied.
-4. **Async, memory, numeric, and file/process footguns**: concurrency and parser correctness hazards are denied or warned according to the ledger.
-5. **Suppression governance**: broad or unexplained suppressions are rejected. Prefer narrow `#[expect(..., reason = "...")]` receipts.
+## Suppression and debt
 
-## Suppression style
-
-Use `#[expect]` only when the lint is correct but the local exception is intentional and reviewed:
+Use `#[expect]` only where the lint is correct and the exact exception is intentional:
 
 ```rust
 #[expect(
     clippy::indexing_slicing,
-    reason = "Generated parser table access is bounded by table construction invariants."
+    reason = "Generated table construction proves this index is in bounds."
 )]
-fn generated_table_lookup(table: &[usize], index: usize) -> usize {
+fn generated_lookup(table: &[usize], index: usize) -> usize {
     table[index]
 }
 ```
 
-Do not use a silent `#[allow]`. If a lint needs repo-wide temporary treatment, add a scoped entry to `policy/clippy-debt.toml` with `lint`, `path`, `owner`, `reason`, and `expires`.
+A temporary repository debt row records `lint`, `level`, `path`, `owner`, `reason`, and `review_after`. Empty, expired, unowned, pathless, level-inconsistent, or orphaned debt fails the policy check. An unchanged count cannot hide one finding replacing another.
 
-## Planned Rust upgrades
+## Toolchain currentness
 
-The ledger tracks planned Rust 1.94 and 1.95 flips before the workspace MSRV moves. `cargo xtask check-lint-policy` verifies that planned lints are present in the ledger and not activated ahead of the MSRV bump.
+The product Rust version is normalized across:
 
-The Rust 1.95 / 0.14.0 rollout is mapped in [`docs/development/RUST_1_95_ROLLOUT.md`](development/RUST_1_95_ROLLOUT.md). The current workspace remains on the MSRV recorded in `Cargo.toml`, `clippy.toml`, and `policy/clippy-lints.toml` until the dedicated MSRV/toolchain PR lands. The compatibility spike comes first; it must not also activate lint floors, remove test carveouts, reset no-panic baselines, or bump the release version.
+```text
+Cargo.toml workspace.package.rust-version
+policy/clippy-lints.toml msrv
+clippy.toml msrv
+rust-toolchain.toml channel
+.ci/gate-policy.yaml global.toolchain.msrv
+```
 
-The legacy `allow-unwrap-in-tests = true` setting in `clippy.toml` is a known mismatch with the target panic-free test posture. It stays visible as policy debt until the dedicated no-test-carveout PR removes it and adds fallible helper paths for later test-suite burndown work.
+`1.95` and `1.95.0` describe the same product version. Any other drift fails closed. A private analysis-tool toolchain, including Cargo-Hawk's compiler, does not satisfy this product contract.
 
 ## Local check
 
-Run the policy gate before changing lint configuration:
+Run the policy check before changing Cargo lint levels, Clippy configuration, debt, or the product toolchain:
 
 ```bash
 cargo xtask check-lint-policy
 ```
 
-The gate checks lint inheritance, active Cargo lint levels, tracked lint metadata, planned upgrade ledger entries, and required debt metadata.
+The command prints deterministic active, debt, tracked, future-planned, and due-deferred populations. Unknown fields, malformed versions, duplicate identities, stale deferrals, reintroduced test carveouts, or missing policy inputs are non-success.
 
-## Protected-field planning
+## Protected fields
 
-The `clippy::disallowed_fields` rail is **activated** (#6114) with an empty
-denylist in `clippy.toml` (`disallowed-fields = []`). The design anchor lives in
-[`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md). Concrete field
-selectors and accessors will be added incrementally via the DF-2 through DF-4
-slices in the Rust 1.95 rollout.
+`clippy::disallowed_fields` is active at deny, while `clippy.toml` deliberately carries an empty `disallowed-fields` set. This proves the mechanism is live; it does not claim any parser, LSP, DAP, or workspace field is protected yet. [`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md) owns the reviewed field-selection programme.
