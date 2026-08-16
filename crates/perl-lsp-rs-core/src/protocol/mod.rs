@@ -8,6 +8,7 @@
 //! - `errors` — Standard and LSP-specific JSON-RPC error codes and builders
 //! - [`methods`] — LSP 3.18 method name constants for request/notification routing
 //! - [`capabilities`] — Server capability configuration advertised during `initialize`
+//! - [`document_version`] — Typed decoder for `textDocument/version` fields (#10240)
 //!
 //! Previously the standalone `perl-lsp-protocol` crate; absorbed into
 //! `perl-lsp-rs-core::protocol` in Wave G3 (#4535).
@@ -15,12 +16,17 @@
 /// Canonical server, DAP, and VSIX identity protocol family.
 pub mod binary_identity;
 pub mod capabilities;
+pub mod document_version;
 pub mod error_disposition;
 pub mod error_inventory;
 mod errors;
 mod jsonrpc;
 pub mod methods;
 
+pub use document_version::{
+    ClientDocumentVersion, DocumentVersionDecodeError, DocumentVersionField, IntegerRangeClass,
+    JsonValueKind, Signedness, decode_document_version, decode_version_value,
+};
 pub use error_disposition::{Disposition, disposition_for};
 pub use error_inventory::{
     ErrorInventoryEntry, classified_count, error_type_inventory, unclassified_count,
