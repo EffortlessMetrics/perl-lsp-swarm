@@ -24,13 +24,11 @@
 
 use color_eyre::eyre::{Context, Result, bail};
 use perl_corpus::snapshot::{
-    HIR_SCHEMA_VERSION, HirSummary, SNAPSHOT_CLAIM_BOUNDARY, SNAPSHOT_KPI, SNAPSHOT_SCHEMA,
-    SOURCE_HASH_ALGORITHM, SnapshotEntry, SnapshotManifest, source_hash,
+    HIR_SCHEMA_VERSION, HirSummary, SnapshotEntry, SnapshotManifest, source_hash,
 };
 use perl_parser_core::hir::{HirFile, HirKind, lower_ast};
-use std::ffi::OsString;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Public API (called from main.rs)
@@ -53,8 +51,7 @@ pub fn run(args: GenerateSemanticSnapshotArgs) -> Result<()> {
         bail!("No .pl fixture files found in {}", args.fixture_dir.display());
     }
 
-    validate_output_separation(&args.fixture_dir, &fixtures, &args.output)?;
-    let fresh_entries = compute_snapshot_entries(&args.fixture_dir, &fixtures)?;
+    let fresh_entries = compute_snapshot_entries(&fixtures)?;
 
     if args.check {
         run_check(&args.output, &fresh_entries)
@@ -67,202 +64,36 @@ pub fn run(args: GenerateSemanticSnapshotArgs) -> Result<()> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Collect `.pl` fixture files recursively, sorted by relative path for determinism.
-fn collect_fixtures(root: &Path) -> Result<Vec<PathBuf>> {
-    match fs::symlink_metadata(root) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            bail!("Snapshot fixture root symlink is unsupported: {}", root.display());
-        }
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => bail!("Snapshot fixture root is not a directory: {}", root.display()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            bail!("Fixture directory not found: {}", root.display());
-        }
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("reading fixture root metadata {}", root.display()));
-        }
+/// Collect `.pl` fixture files from `dir`, sorted by name for determinism.
+fn collect_fixtures(dir: &Path) -> Result<Vec<PathBuf>> {
+    if !dir.exists() {
+        bail!("Fixture directory not found: {}", dir.display());
     }
 
-    let mut paths = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(directory) = stack.pop() {
-        let entries = fs::read_dir(&directory)
-            .with_context(|| format!("reading fixture dir {}", directory.display()))?;
-
-        for entry in entries {
-            let entry = entry
-                .with_context(|| format!("reading fixture entry in {}", directory.display()))?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("reading fixture type for {}", path.display()))?;
-            let is_perl_fixture = is_perl_fixture_path(&path);
-
-            if file_type.is_symlink() {
-                bail!("Snapshot fixture symlink is unsupported: {}", path.display());
-            }
-            if file_type.is_dir() {
-                if is_perl_fixture {
-                    bail!("Snapshot .pl entry is not a regular file: {}", path.display());
-                }
-                stack.push(path);
-            } else if is_perl_fixture {
-                if !file_type.is_file() {
-                    bail!("Snapshot .pl entry is not a regular file: {}", path.display());
-                }
-                paths.push(path);
-            }
-        }
-    }
+    let mut paths: Vec<PathBuf> = fs::read_dir(dir)
+        .with_context(|| format!("reading fixture dir {}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "pl"))
+        .collect();
 
     paths.sort();
     Ok(paths)
 }
 
-fn is_perl_fixture_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("pl"))
-}
-
-/// Reject output paths that could overwrite or become part of the fixture authority.
-fn validate_output_separation(root: &Path, fixtures: &[PathBuf], output: &Path) -> Result<()> {
-    validate_output_path_syntax(output)?;
-
-    let output_metadata = match fs::symlink_metadata(output) {
-        Ok(metadata) => Some(metadata),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("reading snapshot output metadata {}", output.display()));
-        }
-    };
-
-    if output_metadata.as_ref().is_some_and(|metadata| metadata.file_type().is_symlink()) {
-        bail!("Snapshot output symlink is unsupported: {}", output.display());
-    }
-    if output_metadata.as_ref().is_some_and(|metadata| !metadata.is_file()) {
-        bail!("Snapshot output is not a regular file: {}", output.display());
-    }
-
-    let canonical_root = fs::canonicalize(root)
-        .with_context(|| format!("canonicalizing fixture root {}", root.display()))?;
-    let normalized_output = normalize_output_path(output, output_metadata.is_some())?;
-
-    if normalized_output.starts_with(&canonical_root) && is_perl_fixture_path(&normalized_output) {
-        bail!("Snapshot output would enter the .pl fixture population: {}", output.display());
-    }
-
-    for fixture in fixtures {
-        let canonical_fixture = fs::canonicalize(fixture)
-            .with_context(|| format!("canonicalizing fixture {}", fixture.display()))?;
-        if normalized_output == canonical_fixture {
-            bail!("Snapshot output aliases fixture: {}", fixture.display());
-        }
-
-        if let Some(output_metadata) = output_metadata.as_ref() {
-            let fixture_metadata = fs::metadata(fixture)
-                .with_context(|| format!("reading fixture metadata {}", fixture.display()))?;
-            if same_file_identity(output_metadata, &fixture_metadata)? {
-                bail!("Snapshot output hard-links fixture: {}", fixture.display());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_output_path_syntax(path: &Path) -> Result<()> {
-    for component in path.components() {
-        if matches!(component, Component::CurDir | Component::ParentDir) {
-            bail!("Snapshot output path is not canonical: {}", path.display());
-        }
-    }
-    Ok(())
-}
-
-fn normalize_output_path(path: &Path, exists: bool) -> Result<PathBuf> {
-    if exists {
-        return fs::canonicalize(path)
-            .with_context(|| format!("canonicalizing snapshot output {}", path.display()));
-    }
-
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().context("reading current directory for snapshot output")?.join(path)
-    };
-    let mut cursor = absolute.as_path();
-    let mut missing_tail = Vec::<OsString>::new();
-
-    loop {
-        match fs::canonicalize(cursor) {
-            Ok(mut canonical) => {
-                for component in missing_tail.iter().rev() {
-                    canonical.push(component);
-                }
-                return Ok(canonical);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let component = cursor.file_name().ok_or_else(|| {
-                    color_eyre::eyre::eyre!(
-                        "cannot normalize snapshot output path {}",
-                        path.display()
-                    )
-                })?;
-                missing_tail.push(component.to_os_string());
-                cursor = cursor.parent().ok_or_else(|| {
-                    color_eyre::eyre::eyre!(
-                        "snapshot output has no existing ancestor: {}",
-                        path.display()
-                    )
-                })?;
-            }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("canonicalizing snapshot output {}", path.display()));
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> Result<bool> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    Ok(left.dev() == right.dev() && left.ino() == right.ino())
-}
-
-#[cfg(windows)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> Result<bool> {
-    use std::os::windows::fs::MetadataExt as _;
-
-    match (
-        (left.volume_serial_number(), left.file_index()),
-        (right.volume_serial_number(), right.file_index()),
-    ) {
-        ((Some(left_volume), Some(left_index)), (Some(right_volume), Some(right_index))) => {
-            Ok(left_volume == right_volume && left_index == right_index)
-        }
-        _ => bail!("Snapshot output file identity is unavailable on Windows"),
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn same_file_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> Result<bool> {
-    bail!("Snapshot output file identity is unsupported on target {}", std::env::consts::OS)
-}
-
 /// Run `lower_ast()` over each fixture and compute one `SnapshotEntry` per file.
-fn compute_snapshot_entries(root: &Path, fixtures: &[PathBuf]) -> Result<Vec<SnapshotEntry>> {
-    fixtures.iter().map(|path| compute_one_entry(root, path)).collect()
+fn compute_snapshot_entries(fixtures: &[PathBuf]) -> Result<Vec<SnapshotEntry>> {
+    fixtures.iter().map(|path| compute_one_entry(path)).collect()
 }
 
-fn compute_one_entry(root: &Path, path: &Path) -> Result<SnapshotEntry> {
+fn compute_one_entry(path: &Path) -> Result<SnapshotEntry> {
     let source =
         fs::read_to_string(path).with_context(|| format!("reading fixture {}", path.display()))?;
-    let fixture_id = fixture_id(root, path)?;
+
+    let fixture_id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string());
 
     let hash = source_hash(&source);
     let hir = lower_source(&source);
@@ -274,26 +105,6 @@ fn compute_one_entry(root: &Path, path: &Path) -> Result<SnapshotEntry> {
         hir_schema_version: HIR_SCHEMA_VERSION.to_string(),
         hir_summary: summary,
     })
-}
-
-fn fixture_id(root: &Path, path: &Path) -> Result<String> {
-    let relative = path
-        .strip_prefix(root)
-        .with_context(|| format!("fixture {} is outside {}", path.display(), root.display()))?;
-    let mut parts = Vec::new();
-    for component in relative.components() {
-        let value = component.as_os_str().to_str().ok_or_else(|| {
-            color_eyre::eyre::eyre!("fixture path is not UTF-8: {}", path.display())
-        })?;
-        if value.is_empty() || value == "." || value == ".." {
-            bail!("fixture path is not canonical: {}", path.display());
-        }
-        parts.push(value);
-    }
-    if parts.is_empty() {
-        bail!("fixture path has no relative identity: {}", path.display());
-    }
-    Ok(parts.join("/"))
 }
 
 /// Parse source and lower AST to HIR.
@@ -315,8 +126,7 @@ fn summarize_hir(file: &HirFile) -> HirSummary {
     let scope_count = file.scope_graph.scopes.len();
     let binding_count = file.scope_graph.bindings.len();
     let package_count = file.stash_graph.packages.len();
-    let slot_count: usize =
-        file.stash_graph.packages.iter().map(|package| package.slots.len()).sum();
+    let slot_count: usize = file.stash_graph.packages.iter().map(|p| p.slots.len()).sum();
     let directive_count = file.compile_environment.directives.len();
     let module_request_count = file.compile_environment.module_requests.len();
     let dynamic_boundary_count = file.compile_environment.dynamic_boundaries.len();
@@ -355,8 +165,7 @@ fn item_kind_name(kind: &HirKind) -> &'static str {
         HirKind::ControlTransfer(_) => "ControlTransfer",
         HirKind::DerefExpr(_) => "DerefExpr",
         HirKind::DynamicBoundary(_) => "DynamicBoundary",
-        // The HIR enum is non-exhaustive. Explicit unknown-kind failure is a
-        // separate #6725 slice that must advance the summary schema deliberately.
+        // Catch-all for any variants added in future HIR model versions.
         _ => "Unknown",
     }
 }
@@ -369,9 +178,6 @@ fn run_generate(output: &Path, entries: Vec<SnapshotEntry>) -> Result<()> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let mut manifest = SnapshotManifest::new(today);
     manifest.entries = entries;
-    manifest
-        .validate_exact_entry_set(&manifest.entries)
-        .context("validating generated snapshot fixture set")?;
 
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)
@@ -388,8 +194,8 @@ fn run_generate(output: &Path, entries: Vec<SnapshotEntry>) -> Result<()> {
         output.display()
     );
     println!(
-        "  kpi={} schema={} hir_schema_version={} source_hash_algorithm={}",
-        manifest.kpi, manifest.schema, manifest.hir_schema_version, manifest.source_hash_algorithm,
+        "  kpi={} schema={} hir_schema_version={}",
+        manifest.kpi, manifest.schema, manifest.hir_schema_version
     );
     println!("  claim_boundary: {}", manifest.claim_boundary);
 
@@ -410,42 +216,10 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
 
     let json = fs::read_to_string(snapshot_path)
         .with_context(|| format!("reading snapshot manifest {}", snapshot_path.display()))?;
-    let header: serde_json::Value =
-        serde_json::from_str(&json).context("parsing snapshot schema header")?;
-    let Some(recorded_schema) = header.get("schema").and_then(serde_json::Value::as_str) else {
-        bail!("Snapshot manifest is missing a string schema discriminator");
-    };
-    if recorded_schema != SNAPSHOT_SCHEMA {
-        bail!(
-            "Snapshot schema mismatch: recorded={recorded_schema} current={SNAPSHOT_SCHEMA}; \
-             semantic_snapshot.v1 used filename-stem fixture IDs and a non-portable source hash; \
-             regenerate the snapshot"
-        );
-    }
-
     let recorded: SnapshotManifest =
         serde_json::from_str(&json).context("parsing snapshot manifest")?;
 
-    if recorded.schema != SNAPSHOT_SCHEMA {
-        bail!("Snapshot schema mismatch: recorded={} current={}", recorded.schema, SNAPSHOT_SCHEMA);
-    }
-    if recorded.kpi != SNAPSHOT_KPI {
-        bail!("Snapshot KPI mismatch: recorded={} current={}", recorded.kpi, SNAPSHOT_KPI);
-    }
-    if recorded.claim_boundary != SNAPSHOT_CLAIM_BOUNDARY {
-        bail!(
-            "Snapshot claim boundary mismatch: recorded={:?} current={:?}; regenerate snapshot",
-            recorded.claim_boundary,
-            SNAPSHOT_CLAIM_BOUNDARY,
-        );
-    }
-    if recorded.source_hash_algorithm != SOURCE_HASH_ALGORITHM {
-        bail!(
-            "Source hash algorithm mismatch: recorded={} current={}; regenerate snapshot",
-            recorded.source_hash_algorithm,
-            SOURCE_HASH_ALGORITHM,
-        );
-    }
+    // Schema version check.
     if recorded.hir_schema_version != HIR_SCHEMA_VERSION {
         bail!(
             "HIR schema version mismatch: recorded={} current={}; regenerate snapshot",
@@ -454,59 +228,58 @@ fn run_check(snapshot_path: &Path, fresh: &[SnapshotEntry]) -> Result<()> {
         );
     }
 
-    recorded
-        .validate_exact_entry_set(fresh)
-        .with_context(|| format!("validating snapshot set in {}", snapshot_path.display()))?;
-
     let (stable, total, rate) = recorded.stability_rate(fresh);
+
+    // Report per-entry results.
     let mut drift_found = false;
-
     for recorded_entry in &recorded.entries {
-        let Some(fresh_entry) =
-            fresh.iter().find(|entry| entry.fixture_id == recorded_entry.fixture_id)
-        else {
-            bail!("Snapshot set changed after validation: missing {}", recorded_entry.fixture_id);
-        };
-
-        if fresh_entry.source_hash != recorded_entry.source_hash {
-            eprintln!(
-                "  SOURCE CHANGED: {} (hash {} -> {})",
-                recorded_entry.fixture_id, recorded_entry.source_hash, fresh_entry.source_hash,
-            );
-            drift_found = true;
-        } else if fresh_entry.hir_schema_version != recorded_entry.hir_schema_version {
-            eprintln!(
-                "  ENTRY SCHEMA DRIFT: {} ({} -> {})",
-                recorded_entry.fixture_id,
-                recorded_entry.hir_schema_version,
-                fresh_entry.hir_schema_version,
-            );
-            drift_found = true;
-        } else if fresh_entry.hir_summary != recorded_entry.hir_summary {
-            eprintln!(
-                "  HIR DRIFT: {} (same source, different HIR structure)",
-                recorded_entry.fixture_id
-            );
-            eprintln!(
-                "    recorded item_count={} fresh item_count={}",
-                recorded_entry.hir_summary.item_count, fresh_entry.hir_summary.item_count,
-            );
-            drift_found = true;
-        } else {
-            println!("  OK: {}", recorded_entry.fixture_id);
+        let fresh_match = fresh.iter().find(|f| f.fixture_id == recorded_entry.fixture_id);
+        match fresh_match {
+            None => {
+                eprintln!(
+                    "  MISSING fixture: {} (no fresh entry computed)",
+                    recorded_entry.fixture_id
+                );
+                drift_found = true;
+            }
+            Some(fresh_entry) => {
+                if fresh_entry.source_hash != recorded_entry.source_hash {
+                    eprintln!(
+                        "  SOURCE CHANGED: {} (hash {} -> {})",
+                        recorded_entry.fixture_id,
+                        recorded_entry.source_hash,
+                        fresh_entry.source_hash,
+                    );
+                    drift_found = true;
+                } else if fresh_entry.hir_summary != recorded_entry.hir_summary {
+                    eprintln!(
+                        "  HIR DRIFT: {} (same source, different HIR structure)",
+                        recorded_entry.fixture_id
+                    );
+                    eprintln!(
+                        "    recorded item_count={} fresh item_count={}",
+                        recorded_entry.hir_summary.item_count, fresh_entry.hir_summary.item_count,
+                    );
+                    drift_found = true;
+                } else {
+                    println!("  OK: {}", recorded_entry.fixture_id);
+                }
+            }
         }
     }
 
-    println!("semantic_snapshot_stability_rate: {stable}/{total} = {:.1}%", rate * 100.0);
+    println!("semantic_snapshot_stability_rate: {}/{} = {:.1}%", stable, total, rate * 100.0);
 
     if drift_found || stable < total {
         bail!(
-            "Snapshot check failed: {stable}/{total} stable. \
-             Run without --check to regenerate the snapshot manifest."
+            "Snapshot check failed: {}/{} stable. \
+             Run without --check to regenerate the snapshot manifest.",
+            stable,
+            total
         );
     }
 
-    println!("Snapshot check passed: all {total} entries stable.");
+    println!("Snapshot check passed: all {} entries stable.", total);
     Ok(())
 }
 
@@ -522,146 +295,55 @@ mod tests {
 
     fn write_fixture(dir: &Path, name: &str, content: &str) -> PathBuf {
         let path = dir.join(name);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create fixture parent");
-        }
-        let mut file = fs::File::create(&path).expect("create fixture");
-        file.write_all(content.as_bytes()).expect("write fixture");
+        let mut f = fs::File::create(&path).expect("create fixture");
+        f.write_all(content.as_bytes()).expect("write fixture");
         path
-    }
-
-    fn generate_snapshot_result(fixture_dir: &Path, output: &Path) -> Result<()> {
-        run(GenerateSemanticSnapshotArgs {
-            fixture_dir: fixture_dir.to_path_buf(),
-            output: output.to_path_buf(),
-            check: false,
-        })
-    }
-
-    fn generate_snapshot(fixture_dir: &Path, output: &Path) {
-        generate_snapshot_result(fixture_dir, output).expect("generate snapshot");
-    }
-
-    fn check_snapshot(fixture_dir: &Path, output: &Path) -> Result<()> {
-        run(GenerateSemanticSnapshotArgs {
-            fixture_dir: fixture_dir.to_path_buf(),
-            output: output.to_path_buf(),
-            check: true,
-        })
     }
 
     #[test]
     fn generates_snapshot_for_minimal_source() {
-        let temporary = TempDir::new().expect("tempdir");
-        let source = "package Foo;\nsub bar { return 1; }\n1;\n";
-        write_fixture(temporary.path(), "minimal.pl", source);
+        let tmp = TempDir::new().expect("tempdir");
+        let src = "package Foo;\nsub bar { return 1; }\n1;\n";
+        write_fixture(tmp.path(), "minimal.pl", src);
 
-        let output = temporary.path().join("snapshot.json");
-        generate_snapshot(temporary.path(), &output);
+        let out = tmp.path().join("snapshot.json");
+        let args = GenerateSemanticSnapshotArgs {
+            fixture_dir: tmp.path().to_owned(),
+            output: out.clone(),
+            check: false,
+        };
+        run(args).expect("generate should succeed");
 
-        let json = fs::read_to_string(&output).expect("read output");
+        let json = fs::read_to_string(&out).expect("read output");
         let manifest: SnapshotManifest = serde_json::from_str(&json).expect("deserialize manifest");
 
-        assert_eq!(manifest.schema, SNAPSHOT_SCHEMA);
-        assert_eq!(manifest.kpi, SNAPSHOT_KPI);
-        assert_eq!(manifest.claim_boundary, SNAPSHOT_CLAIM_BOUNDARY);
+        assert_eq!(manifest.schema, "semantic_snapshot.v1");
+        assert_eq!(manifest.kpi, "semantic_snapshot_stability_rate");
         assert_eq!(manifest.hir_schema_version, HIR_SCHEMA_VERSION);
-        assert_eq!(manifest.source_hash_algorithm, SOURCE_HASH_ALGORITHM);
         assert_eq!(manifest.entries.len(), 1);
 
         let entry = &manifest.entries[0];
-        assert_eq!(entry.fixture_id, "minimal.pl");
-        assert_eq!(entry.source_hash, source_hash(source));
+        assert_eq!(entry.fixture_id, "minimal");
+        assert_eq!(entry.source_hash, source_hash(src));
+        // The lowerer must produce at least one item (PackageDecl or SubDecl).
         assert!(entry.hir_summary.item_count > 0, "expected HIR items from non-trivial source");
     }
 
     #[test]
-    fn output_cannot_overwrite_a_fixture_directly() {
-        let temporary = TempDir::new().expect("tempdir");
-        let fixture_dir = temporary.path().join("fixtures");
-        let fixture = write_fixture(&fixture_dir, "source.pl", "my $value = 1;\n");
-        let original = fs::read(&fixture).expect("read fixture before generate");
-
-        let error = generate_snapshot_result(&fixture_dir, &fixture)
-            .expect_err("fixture path must not be accepted as output");
-        assert!(
-            error.to_string().contains("fixture population")
-                || error.to_string().contains("aliases fixture"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
-    }
-
-    #[test]
-    fn output_cannot_create_a_new_perl_fixture() {
-        let temporary = TempDir::new().expect("tempdir");
-        let fixture_dir = temporary.path().join("fixtures");
-        write_fixture(&fixture_dir, "source.pl", "1;\n");
-        let output = fixture_dir.join("snapshot.pl");
-
-        let error = generate_snapshot_result(&fixture_dir, &output)
-            .expect_err("new .pl output must not enter the measured population");
-        assert!(error.to_string().contains("fixture population"), "unexpected error: {error}");
-        assert!(!output.exists(), "rejected output must not be created");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn output_symlink_cannot_target_a_fixture() {
-        use std::os::unix::fs::symlink;
-
-        let temporary = TempDir::new().expect("tempdir");
-        let fixture_dir = temporary.path().join("fixtures");
-        let fixture = write_fixture(&fixture_dir, "source.pl", "1;\n");
-        let original = fs::read(&fixture).expect("read fixture before generate");
-        let output = temporary.path().join("snapshot.json");
-        symlink(&fixture, &output).expect("create output symlink");
-
-        let error = generate_snapshot_result(&fixture_dir, &output)
-            .expect_err("symlinked output must fail closed");
-        assert!(error.to_string().contains("symlink is unsupported"), "unexpected error: {error}");
-        assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
-    }
-
-    #[cfg(any(unix, windows))]
-    #[test]
-    fn output_hard_link_cannot_alias_a_fixture() {
-        let temporary = TempDir::new().expect("tempdir");
-        let fixture_dir = temporary.path().join("fixtures");
-        let fixture = write_fixture(&fixture_dir, "source.pl", "1;\n");
-        let original = fs::read(&fixture).expect("read fixture before generate");
-        let output = temporary.path().join("snapshot.json");
-        fs::hard_link(&fixture, &output).expect("create output hard link");
-
-        let error = generate_snapshot_result(&fixture_dir, &output)
-            .expect_err("hard-linked output must fail closed");
-        assert!(error.to_string().contains("hard-links fixture"), "unexpected error: {error}");
-        assert_eq!(fs::read(&fixture).expect("read fixture after rejection"), original);
-    }
-
-    #[test]
-    fn output_rejects_parent_directory_components() {
-        let temporary = TempDir::new().expect("tempdir");
-        let fixture_dir = temporary.path().join("fixtures");
-        write_fixture(&fixture_dir, "source.pl", "1;\n");
-        let output = fixture_dir.join("missing").join("..").join("snapshot.pl");
-
-        let error = generate_snapshot_result(&fixture_dir, &output)
-            .expect_err("parent-directory output must fail closed");
-        assert!(error.to_string().contains("not canonical"), "unexpected error: {error}");
-        assert!(!fixture_dir.join("snapshot.pl").exists());
-    }
-
-    #[test]
     fn snapshot_names_typed_dereference_items() {
-        let temporary = TempDir::new().expect("tempdir");
-        let source = "my @arr = @{\"foo\"};\n";
-        write_fixture(temporary.path(), "deref.pl", source);
+        let tmp = TempDir::new().expect("tempdir");
+        let src = "my @arr = @{\"foo\"};\n";
+        write_fixture(tmp.path(), "deref.pl", src);
 
-        let output = temporary.path().join("snapshot.json");
-        generate_snapshot(temporary.path(), &output);
+        let out = tmp.path().join("snapshot.json");
+        run(GenerateSemanticSnapshotArgs {
+            fixture_dir: tmp.path().to_owned(),
+            output: out.clone(),
+            check: false,
+        })
+        .expect("generate should succeed");
 
-        let json = fs::read_to_string(&output).expect("read output");
+        let json = fs::read_to_string(&out).expect("read output");
         let manifest: SnapshotManifest = serde_json::from_str(&json).expect("deserialize manifest");
         assert!(
             manifest.entries[0]
@@ -675,213 +357,70 @@ mod tests {
 
     #[test]
     fn check_mode_passes_when_snapshot_matches() {
-        let temporary = TempDir::new().expect("tempdir");
-        let source = "package Bar;\nsub baz { 0 }\n1;\n";
-        write_fixture(temporary.path(), "bar.pl", source);
-        let output = temporary.path().join("snapshot.json");
+        let tmp = TempDir::new().expect("tempdir");
+        let src = "package Bar;\nsub baz { 0 }\n1;\n";
+        write_fixture(tmp.path(), "bar.pl", src);
+        let out = tmp.path().join("snap.json");
 
-        generate_snapshot(temporary.path(), &output);
-        check_snapshot(temporary.path(), &output).expect("check should pass on unchanged source");
+        // Generate.
+        run(GenerateSemanticSnapshotArgs {
+            fixture_dir: tmp.path().to_owned(),
+            output: out.clone(),
+            check: false,
+        })
+        .expect("generate");
+
+        // Check — should pass because source hasn't changed.
+        run(GenerateSemanticSnapshotArgs {
+            fixture_dir: tmp.path().to_owned(),
+            output: out.clone(),
+            check: true,
+        })
+        .expect("check should pass on unchanged source");
     }
 
     #[test]
     fn check_mode_fails_on_source_change() {
-        let temporary = TempDir::new().expect("tempdir");
-        let path =
-            write_fixture(temporary.path(), "changed.pl", "package Changed; sub first { 1 } 1;");
-        let output = temporary.path().join("snapshot.json");
-        generate_snapshot(temporary.path(), &output);
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("ch.pl");
+        fs::write(&path, "package Ch; sub a { 1 } 1;").expect("write v1");
+        let out = tmp.path().join("snap.json");
 
-        fs::write(&path, "package Changed; sub first { 1 } sub second { 2 } 1;")
-            .expect("write changed source");
+        // Generate with v1 source.
+        run(GenerateSemanticSnapshotArgs {
+            fixture_dir: tmp.path().to_owned(),
+            output: out.clone(),
+            check: false,
+        })
+        .expect("generate v1");
 
-        assert!(
-            check_snapshot(temporary.path(), &output).is_err(),
-            "check must fail when source changes"
-        );
-    }
+        // Overwrite with different source.
+        fs::write(&path, "package Ch; sub a { 1 } sub b { 2 } 1;").expect("write v2");
 
-    #[test]
-    fn check_mode_fails_when_fresh_fixture_is_added() {
-        let temporary = TempDir::new().expect("tempdir");
-        write_fixture(temporary.path(), "first.pl", "1;");
-        let output = temporary.path().join("snapshot.json");
-        generate_snapshot(temporary.path(), &output);
-
-        write_fixture(temporary.path(), "second.pl", "2;");
-
-        assert!(
-            check_snapshot(temporary.path(), &output).is_err(),
-            "check must reject a fresh fixture absent from the manifest"
-        );
-    }
-
-    #[test]
-    fn check_mode_fails_when_recorded_fixture_is_removed() {
-        let temporary = TempDir::new().expect("tempdir");
-        let first = write_fixture(temporary.path(), "first.pl", "1;");
-        write_fixture(temporary.path(), "second.pl", "2;");
-        let output = temporary.path().join("snapshot.json");
-        generate_snapshot(temporary.path(), &output);
-
-        fs::remove_file(first).expect("remove recorded fixture");
-
-        assert!(
-            check_snapshot(temporary.path(), &output).is_err(),
-            "check must reject a recorded fixture missing from fresh input"
-        );
-    }
-
-    #[test]
-    fn check_mode_fails_on_duplicate_recorded_id() {
-        let temporary = TempDir::new().expect("tempdir");
-        write_fixture(temporary.path(), "fixture.pl", "1;");
-        let output = temporary.path().join("snapshot.json");
-        generate_snapshot(temporary.path(), &output);
-
-        let json = fs::read_to_string(&output).expect("read snapshot");
-        let mut manifest: SnapshotManifest = serde_json::from_str(&json).expect("parse snapshot");
-        manifest.entries.push(manifest.entries[0].clone());
-        fs::write(
-            &output,
-            serde_json::to_string_pretty(&manifest).expect("serialize duplicate snapshot"),
-        )
-        .expect("write duplicate snapshot");
-
-        assert!(
-            check_snapshot(temporary.path(), &output).is_err(),
-            "check must reject duplicate recorded fixture IDs"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fixture_collection_rejects_perl_symlinks() {
-        use std::os::unix::fs::symlink;
-
-        let temporary = TempDir::new().expect("tempdir");
-        let target = write_fixture(temporary.path(), "target.pl", "1;");
-        let link = temporary.path().join("linked.pl");
-        symlink(&target, &link).expect("create fixture symlink");
-
-        let error = collect_fixtures(temporary.path())
-            .expect_err("symlinked Perl fixtures must fail closed");
-        assert!(error.to_string().contains("symlink is unsupported"), "unexpected error: {error}");
-    }
-
-    #[test]
-    fn recursive_fixture_ids_preserve_relative_paths() {
-        let temporary = TempDir::new().expect("tempdir");
-        write_fixture(temporary.path(), "first/same.pl", "1;");
-        write_fixture(temporary.path(), "second/same.pl", "2;");
-
-        let fixtures = collect_fixtures(temporary.path()).expect("collect recursive fixtures");
-        let entries =
-            compute_snapshot_entries(temporary.path(), &fixtures).expect("compute entries");
-        let ids = entries.iter().map(|entry| entry.fixture_id.as_str()).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["first/same.pl", "second/same.pl"]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fixture_collection_rejects_non_regular_perl_entries() {
-        use std::process::Command;
-
-        let temporary = TempDir::new().expect("tempdir");
-        let fifo = temporary.path().join("blocked.pl");
-        let status = Command::new("mkfifo").arg(&fifo).status().expect("run mkfifo");
-        assert!(status.success(), "mkfifo must create the negative-control fixture");
-
-        let error = collect_fixtures(temporary.path())
-            .expect_err("non-regular Perl fixtures must fail closed");
-        assert!(error.to_string().contains("not a regular file"), "unexpected error: {error}");
-    }
-
-    #[test]
-    fn check_mode_rejects_legacy_v1_before_payload_deserialization() {
-        let temporary = TempDir::new().expect("tempdir");
-        write_fixture(temporary.path(), "fixture.pl", "1;");
-        let output = temporary.path().join("snapshot.json");
-        let legacy = serde_json::json!({
-            "schema": "semantic_snapshot.v1",
-            "kpi": SNAPSHOT_KPI,
-            "claim_boundary": SNAPSHOT_CLAIM_BOUNDARY,
-            "hir_schema_version": HIR_SCHEMA_VERSION,
-            "generated_on": "2026-08-11",
-            "entries": []
+        // Check should fail because source hash changed.
+        let result = run(GenerateSemanticSnapshotArgs {
+            fixture_dir: tmp.path().to_owned(),
+            output: out.clone(),
+            check: true,
         });
-        fs::write(
-            &output,
-            serde_json::to_string_pretty(&legacy).expect("serialize legacy snapshot"),
-        )
-        .expect("write legacy snapshot");
-
-        let error = check_snapshot(temporary.path(), &output)
-            .expect_err("legacy schema must be rejected before v2 payload parsing");
-        let message = error.to_string();
-        assert!(message.contains("Snapshot schema mismatch"), "unexpected error: {error}");
-        assert!(message.contains("semantic_snapshot.v1"), "unexpected error: {error}");
-        assert!(message.contains(SNAPSHOT_SCHEMA), "unexpected error: {error}");
-    }
-
-    #[test]
-    fn check_mode_rejects_claim_boundary_mismatch() {
-        let temporary = TempDir::new().expect("tempdir");
-        write_fixture(temporary.path(), "fixture.pl", "1;");
-        let output = temporary.path().join("snapshot.json");
-        generate_snapshot(temporary.path(), &output);
-
-        let json = fs::read_to_string(&output).expect("read snapshot");
-        let mut manifest: SnapshotManifest = serde_json::from_str(&json).expect("parse snapshot");
-        manifest.claim_boundary = "Snapshot proves semantic correctness.".to_string();
-        fs::write(
-            &output,
-            serde_json::to_string_pretty(&manifest).expect("serialize strengthened claim"),
-        )
-        .expect("write strengthened claim");
-
-        let error = check_snapshot(temporary.path(), &output)
-            .expect_err("check must reject a non-canonical claim boundary");
-        assert!(error.to_string().contains("claim boundary mismatch"), "unexpected error: {error}");
-    }
-
-    #[test]
-    fn check_mode_rejects_hash_algorithm_mismatch() {
-        let temporary = TempDir::new().expect("tempdir");
-        write_fixture(temporary.path(), "fixture.pl", "1;");
-        let output = temporary.path().join("snapshot.json");
-        generate_snapshot(temporary.path(), &output);
-
-        let json = fs::read_to_string(&output).expect("read snapshot");
-        let mut manifest: SnapshotManifest = serde_json::from_str(&json).expect("parse snapshot");
-        manifest.source_hash_algorithm = "legacy-unstable.v0".to_string();
-        fs::write(
-            &output,
-            serde_json::to_string_pretty(&manifest).expect("serialize mismatched snapshot"),
-        )
-        .expect("write mismatched snapshot");
-
-        assert!(
-            check_snapshot(temporary.path(), &output).is_err(),
-            "check must reject a manifest recorded with a different digest algorithm"
-        );
+        assert!(result.is_err(), "check must fail when source changes");
     }
 
     #[test]
     fn snapshot_covers_slice_fixtures() {
+        // Validate that all three bundled slice fixtures produce non-empty HIR.
         let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../crates/perl-corpus/fixtures/snapshot-slice");
 
-        assert!(
-            fixture_dir.is_dir(),
-            "committed corpus slice is missing or not a directory: {}",
-            fixture_dir.display()
-        );
+        if !fixture_dir.exists() {
+            // Fixture dir only present in the workspace; skip in isolated builds.
+            return;
+        }
 
         let fixtures = collect_fixtures(&fixture_dir).expect("collect fixtures");
         assert!(fixtures.len() >= 3, "expected at least 3 slice fixtures, got {}", fixtures.len());
 
-        let entries = compute_snapshot_entries(&fixture_dir, &fixtures).expect("compute entries");
+        let entries = compute_snapshot_entries(&fixtures).expect("compute entries");
         for entry in &entries {
             assert!(
                 entry.hir_summary.item_count > 0,

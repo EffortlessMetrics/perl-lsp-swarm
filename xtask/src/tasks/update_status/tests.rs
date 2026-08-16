@@ -6,10 +6,9 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use color_eyre::eyre::{Result, bail};
-use regex::Regex;
-
+use super::test_inventory::PerCrateTestCounts;
 use super::{replace_block, run_cmd};
+use color_eyre::eyre::{Result, bail};
 
 // ---------------------------------------------------------------------------
 // Test counts struct
@@ -20,19 +19,6 @@ pub(super) struct TestCounts {
     pub ignored_total: Option<usize>,
     pub bug_count: Option<usize>,
     pub manual_count: Option<usize>,
-}
-
-pub(super) fn count_tier_a_lib_tests(root: &Path) -> Option<usize> {
-    let output = run_cmd(
-        root,
-        &["cargo", "test", "--workspace", "--lib", "--exclude", "tree-sitter-perl", "--", "--list"],
-        Duration::from_mins(3),
-    );
-    if output.is_empty() {
-        return None;
-    }
-    let re = Regex::new(r":\s*test\s*$").ok()?;
-    Some(output.lines().filter(|line| re.is_match(line)).count())
 }
 
 pub(super) fn count_ignored_tracked(root: &Path) -> (Option<usize>, Option<usize>, Option<usize>) {
@@ -47,8 +33,8 @@ pub(super) fn count_ignored_tracked(root: &Path) -> (Option<usize>, Option<usize
     (Some(ignored_total), Some(bug_count), Some(manual_count))
 }
 
-pub(super) fn count_tests(root: &Path) -> TestCounts {
-    let tier_a = count_tier_a_lib_tests(root);
+pub(super) fn count_tests(root: &Path, test_inventory: Option<&PerCrateTestCounts>) -> TestCounts {
+    let tier_a = test_inventory.map(PerCrateTestCounts::total);
     let (ignored_total, bug_count, manual_count) = count_ignored_tracked(root);
     TestCounts { tier_a_lib_tests: tier_a, ignored_total, bug_count, manual_count }
 }
@@ -165,6 +151,23 @@ mod fail_closed_tests {
 
     const STATUS_TEMPLATE: &str = "<!-- BEGIN: TESTS_TABLE_ROWS -->\nold\n<!-- END: TESTS_TABLE_ROWS -->\n\
 <!-- BEGIN: TESTS_METRICS_BULLETS -->\nold\n<!-- END: TESTS_METRICS_BULLETS -->\n";
+
+    #[test]
+    fn count_tests_reuses_the_shared_inventory_total() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::create_dir_all(dir.path().join("crates"))?;
+        let inventory = PerCrateTestCounts {
+            by_crate: std::collections::BTreeMap::from([
+                ("perl-parser".to_string(), 3),
+                ("perl-lsp-rs".to_string(), 4),
+            ]),
+            unattributed: 2,
+        };
+
+        let counts = count_tests(dir.path(), Some(&inventory));
+        assert_eq!(counts.tier_a_lib_tests, Some(9));
+        Ok(())
+    }
 
     #[test]
     fn generate_tests_status_handles_zero_discovery_gracefully() -> Result<()> {
