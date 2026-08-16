@@ -303,6 +303,8 @@ impl SemanticFactEnvelope {
             return true;
         }
 
+        // The constructor and deserializer canonicalize dependency order, so
+        // conflicting generations for one key are adjacent here.
         self.invalidation_dependencies.windows(2).any(|dependencies| {
             dependencies[0].dependency_key == dependencies[1].dependency_key
                 && dependencies[0].generation != dependencies[1].generation
@@ -793,20 +795,22 @@ mod tests {
     }
 
     #[test]
-    fn callable_result_union_is_deterministic_and_deduplicated() {
+    fn callable_result_union_is_deterministic_and_deduplicated() -> Result<(), String> {
         let relation = CallableResultRelation::finite_union(vec![
             CallableResultRelation::ReceiverSelf,
             CallableResultRelation::Concrete(ValueShape::Scalar),
             CallableResultRelation::ReceiverSelf,
         ]);
-        let CallableResultRelation::FiniteUnion(relations) = relation else {
-            panic!("expected a finite union");
+        let relations = match relation {
+            CallableResultRelation::FiniteUnion(relations) => relations,
+            other => return Err(format!("expected a finite union, got {other:?}")),
         };
         assert_eq!(relations.len(), 2);
         assert_eq!(
             CallableResultRelation::finite_union(relations.clone()),
             CallableResultRelation::FiniteUnion(relations)
         );
+        Ok(())
     }
 
     #[test]
