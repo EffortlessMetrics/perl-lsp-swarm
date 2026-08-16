@@ -113,6 +113,22 @@ jobs:
             LSP:sublimelsp/LSP@${{ env.PERLLSP_LSP_TAG }}
             sublime_aio:packagecontrol/sublime_aio@${{ env.PERLLSP_AIO_TAG }}
 
+      - name: Vendor the pinned typing_extensions dependency
+        # The pinned LSP 2.13.0 declares typing_extensions as a Package
+        # Control dependency; with Package Control disabled it never installs
+        # and LSP's plugin.core.typing fails to import. Sublime places every
+        # Packages/<dir> root on the plugin sys.path, so the official single
+        # module, pinned by tag and digest, is vendored into a directory.
+        shell: bash
+        run: >
+          mkdir -p "$SUBLIME_TEXT_PACKAGES/LSP-perllsp-pydeps"
+          && curl -fsSL
+          "https://raw.githubusercontent.com/python/typing_extensions/4.16.0/src/typing_extensions.py"
+          -o "$SUBLIME_TEXT_PACKAGES/LSP-perllsp-pydeps/typing_extensions.py"
+          && printf '%s  %s\n'
+          "4040ca1a1ecbee00d1385c12a93084d1c5bd46f0b774f07e5ae7e91c4f55e696"
+          "$SUBLIME_TEXT_PACKAGES/LSP-perllsp-pydeps/typing_extensions.py" | sha256sum -c -
+
       - name: Run the real Sublime interoperability journey
         # The upstream run-tests action waits 30 s per attempt and restarts
         # Sublime three times; this package's deferred host journey legitimately
