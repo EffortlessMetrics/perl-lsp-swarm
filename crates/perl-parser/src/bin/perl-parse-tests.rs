@@ -5,7 +5,8 @@ use super::{
 use perl_parser::{Node, NodeKind, SourceLocation};
 
 #[test]
-fn legacy_summary_uses_canonical_kind_name_for_struct_variant() -> Result<(), Box<dyn std::error::Error>> {
+fn legacy_summary_uses_canonical_kind_name_for_struct_variant(
+) -> Result<(), Box<dyn std::error::Error>> {
     let location = SourceLocation { start: 0, end: 2 };
     let child = Node::new(NodeKind::Number { value: "42".to_string() }, location);
     let root = Node::new(
@@ -147,7 +148,8 @@ fn read_source_bytes_decodes_utf16_be_bom() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn read_source_bytes_decodes_utf16_surrogate_pair() -> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_decodes_utf16_surrogate_pair(
+) -> Result<(), Box<dyn std::error::Error>> {
     // UTF-16LE BOM + U+1F600 (grinning face), encoded as surrogate pair
     // high=0xD83D, low=0xDE00 → LE bytes: 3D D8 00 DE.
     let bytes = vec![
