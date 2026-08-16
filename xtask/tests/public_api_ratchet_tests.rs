@@ -206,9 +206,14 @@ fn contributing_md_documents_public_api_workflow() -> Result<(), Box<dyn std::er
     let root = project_root();
     let contributing = fs::read_to_string(root.join("CONTRIBUTING.md"))?;
 
+    // The subsection is asserted by role rather than by exact wording: #4504 introduced it
+    // as "Public API Surface Ratchet" and #6868 renamed it to "Public API and SemVer" while
+    // keeping the workflow intact. A dedicated `### Public API…` subsection is the contract;
+    // its exact title is editorial.
     assert!(
-        contributing.contains("### Public API Surface Ratchet"),
-        "CONTRIBUTING.md must have '### Public API Surface Ratchet' subsection"
+        contributing.lines().any(|line| line.trim_end().starts_with("### Public API")),
+        "CONTRIBUTING.md must have a dedicated '### Public API…' subsection documenting the \
+         public-API surface workflow"
     );
 
     assert!(
