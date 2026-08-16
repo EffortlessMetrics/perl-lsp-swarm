@@ -7,6 +7,11 @@ const WORKFLOW_DIR: &str = ".github/workflows";
 const WRITE_SCOPES: &[&str] = &["actions", "contents", "pull-requests"];
 const CANDIDATE_EVENTS: &[&str] = &["pull_request", "pull_request_target", "merge_group"];
 
+/// `pull_request_target` runs the workflow definition from the **base** branch, so a
+/// candidate cannot change what those steps do by editing its own copy of the file.
+/// `pull_request` and `merge_group` both execute candidate-supplied workflow content.
+const BASE_DEFINED_EVENTS: &[&str] = &["pull_request_target"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionDisposition {
     ExplicitReadOnly,
@@ -37,10 +42,7 @@ fn scan_repository_with_policy(
         let path = entry
             .map_err(|error| format!("reading entry in {}: {error}", workflows.display()))?
             .path();
-        if matches!(
-            path.extension().and_then(|value| value.to_str()),
-            Some("yml" | "yaml")
-        ) {
+        if matches!(path.extension().and_then(|value| value.to_str()), Some("yml" | "yaml")) {
             paths.push(path);
         }
     }
@@ -73,12 +75,14 @@ pub(crate) fn scan_workflow_with_policy(
     policy: &TrustedWriterPolicy,
 ) -> Vec<Finding> {
     let triggers = trigger_names(workflow);
-    if !triggers
-        .iter()
-        .any(|trigger| CANDIDATE_EVENTS.contains(&trigger.as_str()))
-    {
+    if !triggers.iter().any(|trigger| CANDIDATE_EVENTS.contains(&trigger.as_str())) {
         return Vec::new();
     }
+
+    let base_defined_only = triggers
+        .iter()
+        .filter(|trigger| CANDIDATE_EVENTS.contains(&trigger.as_str()))
+        .all(|trigger| BASE_DEFINED_EVENTS.contains(&trigger.as_str()));
 
     let top_permissions = workflow.get("permissions");
     let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
@@ -97,6 +101,17 @@ pub(crate) fn scan_workflow_with_policy(
             continue;
         }
 
+        // A job reachable only through `pull_request_target` executes the base branch's
+        // definition, so its steps are not candidate-controlled. That exemption holds only
+        // while the job keeps candidate content out of the token-bearing context: once it
+        // checks out the head ref, candidate bytes run with the write token and the job is
+        // candidate-defined again — the more dangerous form, not a safer one.
+        //
+        // The exemption covers authorship only. A base-authored writer that rewrites the
+        // control plane is still reported, because that hazard does not depend on who
+        // wrote the step.
+        let candidate_controlled = !base_defined_only || job_admits_candidate_content(job);
+
         match job_permission_disposition(job, top_permissions) {
             PermissionDisposition::ExplicitReadOnly => continue,
             PermissionDisposition::Unknown => {
@@ -113,7 +128,9 @@ pub(crate) fn scan_workflow_with_policy(
         }
 
         if let Some(uses) = mapping_get(job, "uses").and_then(Value::as_str) {
-            scan_reusable_writer(workflow_name, job_name, uses, policy, &mut findings);
+            if candidate_controlled {
+                scan_reusable_writer(workflow_name, job_name, uses, policy, &mut findings);
+            }
             continue;
         }
 
@@ -127,7 +144,7 @@ pub(crate) fn scan_workflow_with_policy(
             });
             continue;
         };
-        scan_writer_steps(workflow_name, job_name, steps, &mut findings);
+        scan_writer_steps(workflow_name, job_name, steps, candidate_controlled, &mut findings);
     }
     findings
 }
@@ -179,14 +196,18 @@ fn scan_writer_steps(
     workflow_name: &str,
     job_name: &str,
     steps: &[Value],
+    candidate_controlled: bool,
     findings: &mut Vec<Finding>,
 ) {
-    findings.push(Finding {
-        workflow: workflow_name.into(),
-        job: job_name.into(),
-        kind: FindingKind::CandidateDefinedWriter,
-        detail: "write-capable candidate job is defined by candidate-controlled workflow steps".into(),
-    });
+    if candidate_controlled {
+        findings.push(Finding {
+            workflow: workflow_name.into(),
+            job: job_name.into(),
+            kind: FindingKind::CandidateDefinedWriter,
+            detail: "write-capable candidate job is defined by candidate-controlled workflow steps"
+                .into(),
+        });
+    }
 
     for (index, step) in steps.iter().enumerate() {
         let Some(step) = step.as_mapping() else {
@@ -214,16 +235,12 @@ fn trigger_names(workflow: &Value) -> Vec<String> {
     };
     match value {
         Value::String(value) => vec![value.clone()],
-        Value::Sequence(values) => values
-            .iter()
-            .filter_map(Value::as_str)
-            .map(ToOwned::to_owned)
-            .collect(),
-        Value::Mapping(values) => values
-            .keys()
-            .filter_map(Value::as_str)
-            .map(ToOwned::to_owned)
-            .collect(),
+        Value::Sequence(values) => {
+            values.iter().filter_map(Value::as_str).map(ToOwned::to_owned).collect()
+        }
+        Value::Mapping(values) => {
+            values.keys().filter_map(Value::as_str).map(ToOwned::to_owned).collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -256,10 +273,38 @@ fn permission_set_disposition(value: &Value) -> PermissionDisposition {
     }
 }
 
+/// True when a `pull_request_target` job pulls candidate-controlled bytes into its own
+/// token-bearing context. Checking out the head ref or the head repository is the usual
+/// way this happens, and it is the documented `pull_request_target` foot-gun: the workflow
+/// is trusted but the code it then runs is not. Fails closed — anything referencing the
+/// pull-request head in a step input counts, without trying to model what the step does
+/// with it.
+fn job_admits_candidate_content(job: &Mapping) -> bool {
+    let Some(steps) = mapping_get(job, "steps").and_then(Value::as_sequence) else {
+        // No inspectable step list: cannot prove the job keeps candidate content out.
+        return true;
+    };
+
+    steps.iter().any(|step| {
+        let Some(step) = step.as_mapping() else {
+            return true;
+        };
+        let Some(with) = mapping_get(step, "with").and_then(Value::as_mapping) else {
+            return false;
+        };
+        ["ref", "repository"].iter().any(|key| {
+            mapping_get(with, key).and_then(Value::as_str).is_some_and(references_candidate_head)
+        })
+    })
+}
+
+fn references_candidate_head(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    value.contains("pull_request.head") || value.contains("event.pull_request")
+}
+
 fn job_is_statically_non_candidate(job: &Mapping) -> bool {
-    mapping_get(job, "if")
-        .and_then(Value::as_str)
-        .is_some_and(condition_excludes_candidate_events)
+    mapping_get(job, "if").and_then(Value::as_str).is_some_and(condition_excludes_candidate_events)
 }
 
 fn condition_excludes_candidate_events(condition: &str) -> bool {
@@ -269,10 +314,7 @@ fn condition_excludes_candidate_events(condition: &str) -> bool {
     let Some(branches) = split_top_level(condition, "||") else {
         return false;
     };
-    !branches.is_empty()
-        && branches
-            .iter()
-            .all(|branch| branch_has_trusted_event_anchor(branch))
+    !branches.is_empty() && branches.iter().all(|branch| branch_has_trusted_event_anchor(branch))
 }
 
 fn branch_has_trusted_event_anchor(branch: &str) -> bool {
@@ -283,17 +325,12 @@ fn branch_has_trusted_event_anchor(branch: &str) -> bool {
         return false;
     };
     if or_branches.len() > 1 {
-        return or_branches
-            .iter()
-            .all(|item| branch_has_trusted_event_anchor(item));
+        return or_branches.iter().all(|item| branch_has_trusted_event_anchor(item));
     }
     let Some(terms) = split_top_level(branch, "&&") else {
         return false;
     };
-    !terms.is_empty()
-        && terms
-            .iter()
-            .any(|term| term_has_trusted_event_anchor(term))
+    !terms.is_empty() && terms.iter().any(|term| term_has_trusted_event_anchor(term))
 }
 
 fn term_has_trusted_event_anchor(term: &str) -> bool {
@@ -310,10 +347,8 @@ fn term_is_trusted_event_equality(term: &str) -> bool {
     let Some(term) = strip_outer_parentheses(term) else {
         return false;
     };
-    let normalized = term
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect::<String>();
+    let normalized =
+        term.chars().filter(|character| !character.is_whitespace()).collect::<String>();
     matches!(
         normalized.as_str(),
         "github.event_name=='schedule'"

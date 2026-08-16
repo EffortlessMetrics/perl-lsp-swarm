@@ -1,7 +1,5 @@
 use crate::model::{FindingKind, TrustedWriter, TrustedWriterPolicy};
-use crate::scan::{
-    project_root, scan_repository, scan_workflow, scan_workflow_with_policy,
-};
+use crate::scan::{project_root, scan_repository, scan_workflow, scan_workflow_with_policy};
 use serde_yaml_ng::Value;
 
 fn parse(raw: &str) -> Result<Value, String> {
@@ -40,11 +38,7 @@ jobs:
 "#,
     )?;
     let findings = scan_workflow("writer.yml", &workflow);
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.kind == FindingKind::CandidateDefinedWriter)
-    );
+    assert!(findings.iter().any(|finding| finding.kind == FindingKind::CandidateDefinedWriter));
     Ok(())
 }
 
@@ -63,11 +57,7 @@ jobs:
 "#,
     )?;
     let findings = scan_workflow("merge-group.yml", &workflow);
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.kind == FindingKind::CandidateDefinedWriter)
-    );
+    assert!(findings.iter().any(|finding| finding.kind == FindingKind::CandidateDefinedWriter));
     Ok(())
 }
 
@@ -139,9 +129,7 @@ jobs:
     uses: EffortlessMetrics/repository-controls/.github/workflows/publish.yml@0123456789abcdef0123456789abcdef01234567
 "#,
     )?;
-    assert!(
-        scan_workflow_with_policy("writer.yml", &workflow, &approved_policy()).is_empty()
-    );
+    assert!(scan_workflow_with_policy("writer.yml", &workflow, &approved_policy()).is_empty());
     Ok(())
 }
 
@@ -202,6 +190,78 @@ jobs:
 }
 
 #[test]
+fn pull_request_target_only_writer_runs_the_base_definition() -> Result<(), String> {
+    // `pull_request_target` resolves the workflow from the base branch, so editing this
+    // file in a candidate does not change what runs. Without a checkout of candidate
+    // content the token never meets untrusted bytes, so this is not a candidate writer.
+    let workflow = parse(
+        r#"
+on:
+  pull_request_target:
+    types: [opened, edited]
+permissions:
+  pull-requests: write
+jobs:
+  validate-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: core.info(context.payload.pull_request.title)
+"#,
+    )?;
+    assert!(scan_workflow("pr-title-check.yml", &workflow).is_empty());
+    Ok(())
+}
+
+#[test]
+fn pull_request_target_writer_checking_out_head_is_still_candidate_defined() -> Result<(), String> {
+    // The exemption above must not become a laundering route: once the job checks out the
+    // head ref, candidate bytes execute with the write token.
+    let workflow = parse(
+        r#"
+on: pull_request_target
+permissions:
+  contents: write
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: ./scripts/release.sh
+"#,
+    )?;
+    let findings = scan_workflow("laundering.yml", &workflow);
+    assert_eq!(findings.len(), 1, "expected one finding, got {findings:?}");
+    assert_eq!(findings[0].kind, FindingKind::CandidateDefinedWriter);
+    Ok(())
+}
+
+#[test]
+fn pull_request_target_paired_with_pull_request_stays_candidate_defined() -> Result<(), String> {
+    // A workflow that also triggers on `pull_request` executes the candidate's own copy on
+    // that path, so the base-definition exemption must not apply to the whole workflow.
+    let workflow = parse(
+        r#"
+on: [pull_request, pull_request_target]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./scripts/publish.sh
+"#,
+    )?;
+    let findings = scan_workflow("mixed.yml", &workflow);
+    assert_eq!(findings.len(), 1, "expected one finding, got {findings:?}");
+    assert_eq!(findings[0].kind, FindingKind::CandidateDefinedWriter);
+    Ok(())
+}
+
+#[test]
 fn self_deleting_writer_is_rejected_as_its_own_class() -> Result<(), String> {
     let workflow = parse(
         r#"
@@ -216,11 +276,7 @@ jobs:
 "#,
     )?;
     let findings = scan_workflow("repair.yml", &workflow);
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.kind == FindingKind::SelfModifyingWriter)
-    );
+    assert!(findings.iter().any(|finding| finding.kind == FindingKind::SelfModifyingWriter));
     Ok(())
 }
 
@@ -242,9 +298,7 @@ jobs:
     let findings = scan_workflow("writer.yml", &workflow);
     assert!(findings.iter().any(|finding| {
         finding.kind == FindingKind::CandidateDefinedWriter
-            && finding
-                .detail
-                .contains("candidate-controlled workflow steps")
+            && finding.detail.contains("candidate-controlled workflow steps")
     }));
     Ok(())
 }
@@ -294,9 +348,6 @@ jobs:
 #[test]
 fn repository_workflows_satisfy_candidate_writer_policy() -> Result<(), String> {
     let findings = scan_repository(&project_root()?)?;
-    assert!(
-        findings.is_empty(),
-        "candidate writer findings: {findings:#?}"
-    );
+    assert!(findings.is_empty(), "candidate writer findings: {findings:#?}");
     Ok(())
 }
