@@ -50,11 +50,10 @@ pub use corpus_walker::{
 };
 #[cfg(feature = "current-upstream")]
 pub use current_upstream::{
-    CurrentUpstreamAdapter, CurrentUpstreamAdapterError, CurrentUpstreamExecutionDisposition,
-    CurrentUpstreamParse, CurrentUpstreamPinError, CurrentUpstreamSubjectIdentity, PACKAGE_CHECKSUM,
-    PACKAGE_NAME, PACKAGE_REQUIREMENT, PACKAGE_VERSION, SUBJECT_IDENTITY_TOML,
-    TREE_SITTER_LANGUAGE_VERSION, TREE_SITTER_RUNTIME_VERSION, UPSTREAM_COMMIT,
-    UPSTREAM_REPOSITORY, UPSTREAM_RUST_VERSION, UPSTREAM_TAG, validate_exact_package_requirement,
+    BoundedSubjectText, CURRENT_UPSTREAM_SUBJECT, CurrentUpstreamAdapter,
+    CurrentUpstreamAdapterError, CurrentUpstreamParse, CurrentUpstreamParseMode,
+    CurrentUpstreamPinError, CurrentUpstreamQueryKind, CurrentUpstreamSubjectManifest,
+    SUBJECT_MANIFEST_TOML, validate_exact_package_requirement,
 };
 #[cfg(feature = "historical")]
 pub use harness::{ParseResult, parse_v1, parse_v2, parse_v3};

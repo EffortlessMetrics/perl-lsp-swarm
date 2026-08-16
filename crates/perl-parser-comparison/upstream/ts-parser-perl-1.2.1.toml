@@ -1,3 +1,4 @@
+# Generated projection of CURRENT_UPSTREAM_SUBJECT; do not edit independently.
 schema_version = "parser-comparison-subject.v1"
 subject_role = "current_upstream_tree_sitter"
 package_name = "ts-parser-perl"
@@ -10,6 +11,7 @@ upstream_commit = "c3e17b31179bf8f658c9f37c7a3ea6a202212d5a"
 tree_sitter_runtime_version = "0.26.11"
 tree_sitter_language_version = "0.1.7"
 upstream_rust_version = "1.77"
+semantic_digest = "sha256:79a0c1498571dbdac8fec19877937571fe660283df6e683f495942e4867c797b"
 reviewed_on = "2026-08-15"
 refresh_owner = "#7255"
 claim_boundary = "exact current-upstream comparison subject; no consumer migration or superiority claim"
