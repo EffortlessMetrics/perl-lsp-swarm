@@ -4,7 +4,7 @@ controller_issue = "#6689"
 concept_ledger_schema = "perl_compiler_concepts.v1"
 proof_policy_schema = "perl_compiler_proof_policy.v1"
 coverage_scope = "Initial proof-obligation matrix for every concept row in the #6657 seed; not complete Perl conformance."
-claim_boundary = "A required_missing row is an explicit gap, not evidence. Deferred and not_observable are separate from satisfied."
+claim_boundary = "A required_missing row is an explicit gap, not evidence. Deferred and not_observable are separate from satisfied. Each row's composition_dimensions are author-declared and validated only against the proof policy vocabulary; they are not yet derived from the campaigns covering the concept's family (#10214)."
 complete = false
 
 [defaults]

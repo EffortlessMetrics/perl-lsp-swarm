@@ -14,7 +14,7 @@ Initial proof-obligation matrix for every concept row in the #6657 seed; not com
 - Concept obligations: `28`
 - Proof cells: `308`
 
-**Claim boundary:** A required_missing row is an explicit gap, not evidence. Deferred and not_observable are separate from satisfied.
+**Claim boundary:** A required_missing row is an explicit gap, not evidence. Deferred and not_observable are separate from satisfied. Each row's composition_dimensions are author-declared and validated only against the proof policy vocabulary; they are not yet derived from the campaigns covering the concept's family (#10214).
 
 ## Status counts
 
