@@ -143,7 +143,9 @@ fn text_edit_is_valid(edit: &Value) -> bool {
         return false;
     }
     if let Some(range) = map.get("range") {
-        return !map.contains_key("insert") && !map.contains_key("replace") && range_is_valid(range);
+        return !map.contains_key("insert")
+            && !map.contains_key("replace")
+            && range_is_valid(range);
     }
     map.get("insert").is_some_and(range_is_valid)
         && map.get("replace").is_some_and(range_is_valid)
@@ -166,7 +168,7 @@ fn useful_completion_candidate(item: &Value) -> Result<bool> {
     }
     if let Some(format) = map.get("insertTextFormat") {
         anyhow::ensure!(
-            matches!(format.as_u64(), Some(1 | 2)),
+            matches!(format.as_u64(), Some(1) | Some(2)),
             "`print` insertTextFormat must be 1 or 2: {item:?}"
         );
     }
