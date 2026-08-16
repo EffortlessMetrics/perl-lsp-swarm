@@ -69,6 +69,36 @@ def _remove(path: str) -> None:
         pass
 
 
+def _diagnose(package: str) -> None:
+    """Print launch evidence: shim logs at both known locations, the installed
+    package layout, and whether a Sublime process is still alive."""
+    _dump("UnitTesting/unittesting.log",
+          os.path.join(PACKAGES_DIR_PATH, "UnitTesting", "unittesting.log"))
+    _dump(f"{package}/unittesting.log",
+          os.path.join(PACKAGES_DIR_PATH, package, "unittesting.log"))
+    _dump("schedule.json", SCHEDULE_FILE_PATH)
+    listing = subprocess.run(
+        ["ls", "-la", PACKAGES_DIR_PATH],
+        capture_output=True,
+        text=True,
+    )
+    if listing.returncode == 0:
+        print(f"===== {PACKAGES_DIR_PATH} =====")
+        print(listing.stdout)
+    probes = [
+        ["pgrep", "-af", "sublime"],
+        ["pwsh", "-command",
+         "Get-Process sublime_text,plugin_host -ErrorAction SilentlyContinue"
+         " | Format-Table -AutoSize | Out-String"],
+    ]
+    for probe in probes:
+        alive = subprocess.run(probe, capture_output=True, text=True)
+        if alive.stdout.strip():
+            print("===== sublime processes =====")
+            print(alive.stdout)
+            break
+
+
 def _dump(label: str, path: str) -> None:
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -208,7 +238,7 @@ def main() -> int:
             "The in-Sublime suite did not report within the wall clock; "
             "dumping recorded logs for diagnosis."
         )
-        _dump("unittesting.log", log_file)
+        _diagnose(package)
         _dump("result", output_file)
         _remove(SCHEDULE_RUNNER_TARGET)
         _kill_sublime_text()
@@ -220,7 +250,7 @@ def main() -> int:
         success = _read_output(output_file, OUTPUT_IDLE_TIMEOUT_SECONDS)
     except TimeoutError as error:
         print(f"Timeout: {error}")
-        _dump("unittesting.log", log_file)
+        _diagnose(package)
         _remove(SCHEDULE_RUNNER_TARGET)
         _kill_sublime_text()
         return 1
