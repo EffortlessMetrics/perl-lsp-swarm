@@ -122,6 +122,8 @@ struct CaptureDiscoveryConfig {
     host_perl: PathBuf,
     runner: HarnessRunner,
     profile: HarnessProfile,
+    commit: String,
+    perl_ref: String,
     output: PathBuf,
     derived_output: Option<PathBuf>,
     limits: CaptureLimits,
@@ -134,6 +136,8 @@ impl CaptureDiscoveryConfig {
             host_perl: PathBuf::from(options.required("--host-perl")?),
             runner: parse_runner(&options.required("--runner")?)?,
             profile: parse_profile(&options.required("--profile")?)?,
+            commit: options.required("--commit")?,
+            perl_ref: options.required("--perl-ref")?,
             output: PathBuf::from(options.required("--output")?),
             derived_output: options.optional("--derived-output")?.map(PathBuf::from),
             limits: CaptureLimits {
@@ -508,13 +512,66 @@ fn signal_name(signal: i32) -> String {
         .map_or_else(|_| format!("SIG{signal}"), |signal| signal.as_str().to_string())
 }
 
+/// The exact subject one discovery capture measured.
+///
+/// Paths are deliberately absent: an absolute prepared-tree or host-Perl path
+/// identifies the machine that ran the capture, not the thing measured, and this
+/// evidence is meant to stay useful after the runner that produced it is gone.
+/// Identity is carried by the upstream commit and ref plus content digests of
+/// the exact runner script and host Perl that were executed.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[serde(deny_unknown_fields)]
+struct DiscoverySubject {
+    commit: String,
+    perl_ref: String,
+    runner_script: String,
+    runner_script_sha256: String,
+    host_perl_file_name: String,
+    host_perl_sha256: String,
+    tool_version: String,
+}
+
+impl DiscoverySubject {
+    fn validate(&self) -> Result<()> {
+        for (label, value) in [
+            ("commit", self.commit.as_str()),
+            ("Perl ref", self.perl_ref.as_str()),
+            ("runner script", self.runner_script.as_str()),
+            ("host Perl file name", self.host_perl_file_name.as_str()),
+            ("tool version", self.tool_version.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                bail!("discovery subject has an empty {label}");
+            }
+        }
+        for (label, digest) in [
+            ("runner script", self.runner_script_sha256.as_str()),
+            ("host Perl", self.host_perl_sha256.as_str()),
+        ] {
+            if !digest.starts_with("sha256:") || digest.len() != "sha256:".len() + 64 {
+                bail!("discovery subject {label} digest is not a sha256 digest: {digest}");
+            }
+        }
+        if self.runner_script.contains('/') || self.host_perl_file_name.contains('/') {
+            bail!("discovery subject must record file names, not host paths");
+        }
+        Ok(())
+    }
+
+    fn digest(&self) -> Result<String> {
+        let canonical =
+            serde_json::to_string(self).context("serializing the discovery subject identity")?;
+        Ok(sha256_digest(canonical.as_bytes()))
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct DiscoveryRawEnvelope {
     schema_version: String,
     runner: HarnessRunner,
     profile: HarnessProfile,
-    host_perl: String,
+    subject: DiscoverySubject,
     working_directory: String,
     argv: Vec<String>,
     process: DiscoveryProcessOutcome,
@@ -526,6 +583,15 @@ impl DiscoveryRawEnvelope {
     fn validate(&self) -> Result<()> {
         if self.schema_version != DISCOVERY_RAW_SCHEMA_VERSION {
             bail!("unsupported raw discovery schema: {}", self.schema_version);
+        }
+        self.subject.validate().context("validating the discovery subject")?;
+        if self.working_directory.trim().is_empty()
+            || Path::new(&self.working_directory).is_absolute()
+        {
+            bail!(
+                "raw discovery working directory must be recorded relative to the prepared tree, found {}",
+                self.working_directory
+            );
         }
         self.stdout.validate().context("validating raw discovery stdout")?;
         self.stderr.validate().context("validating raw discovery stderr")?;
@@ -572,6 +638,7 @@ impl RawStreamIdentity {
 struct DiscoveryDerivedEnvelope {
     schema_version: String,
     raw_schema_version: String,
+    subject_sha256: String,
     decoder_version: String,
     normalizer_version: String,
     stdout: RawStreamIdentity,
@@ -594,6 +661,7 @@ impl DiscoveryDerivedEnvelope {
         Ok(Self {
             schema_version: DISCOVERY_DERIVED_SCHEMA_VERSION.to_string(),
             raw_schema_version: raw.schema_version.clone(),
+            subject_sha256: raw.subject.digest()?,
             decoder_version: DISCOVERY_DECODER_VERSION.to_string(),
             normalizer_version: DISCOVERY_NORMALIZER_VERSION.to_string(),
             stdout: RawStreamIdentity::of(&raw.stdout),
@@ -614,6 +682,11 @@ impl DiscoveryDerivedEnvelope {
                 "derived discovery was produced from raw schema {} but was replayed against {}",
                 self.raw_schema_version,
                 raw.schema_version
+            );
+        }
+        if self.subject_sha256 != raw.subject.digest()? {
+            bail!(
+                "derived discovery summarizes a different measured subject than the supplied raw evidence"
             );
         }
         if self.decoder_version != DISCOVERY_DECODER_VERSION
@@ -923,6 +996,48 @@ fn run_bounded_command(
     )
 }
 
+/// Bind one capture to the exact runner script and host Perl it executed.
+fn discovery_subject(
+    config: &CaptureDiscoveryConfig,
+    script: &Path,
+    script_name: &str,
+) -> Result<DiscoverySubject> {
+    let host_perl_file_name = config
+        .host_perl
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| color_eyre::eyre::eyre!("host Perl has no UTF-8 file name"))?;
+    let subject = DiscoverySubject {
+        commit: config.commit.clone(),
+        perl_ref: config.perl_ref.clone(),
+        runner_script: script_name.to_string(),
+        runner_script_sha256: digest_file(script)?,
+        host_perl_file_name: host_perl_file_name.to_string(),
+        host_perl_sha256: digest_file(&config.host_perl)?,
+        tool_version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    subject.validate()?;
+    Ok(subject)
+}
+
+/// Digest a file's complete contents without holding it all in memory.
+fn digest_file(path: &Path) -> Result<String> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("reading subject file {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("reading subject file {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("sha256:{}", encode_hex(&hasher.finalize())))
+}
+
 fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
     let perl_tree = fs::canonicalize(&config.perl_tree).with_context(|| {
         format!("canonicalizing prepared Perl tree {}", config.perl_tree.display())
@@ -937,7 +1052,8 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
     }
     let mut outputs = vec![config.output.clone()];
     outputs.extend(config.derived_output.iter().cloned());
-    reject_output_aliases(std::slice::from_ref(&script), &outputs)?;
+    reject_output_aliases(&[script.clone(), config.host_perl.clone()], &outputs)?;
+    reject_subject_destinations(&config.host_perl, &perl_tree, &outputs)?;
     if config.derived_output.as_ref() == Some(&config.output) {
         bail!("--derived-output must not alias the raw discovery --output");
     }
@@ -946,6 +1062,7 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| color_eyre::eyre::eyre!("runner script has no UTF-8 file name"))?;
+    let subject = discovery_subject(&config, &script, script_name)?;
     let profile_args = discovery_profile_args(&t_dir, config.runner, config.profile)?;
     let mut argv = vec![script_name.to_string(), "--dumptests".to_string()];
     argv.extend(profile_args.iter().cloned());
@@ -960,8 +1077,8 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
         schema_version: DISCOVERY_RAW_SCHEMA_VERSION.to_string(),
         runner: config.runner,
         profile: config.profile,
-        host_perl: config.host_perl.display().to_string(),
-        working_directory: t_dir.display().to_string(),
+        subject,
+        working_directory: "t".to_string(),
         argv,
         process,
         stdout,
@@ -1432,6 +1549,25 @@ fn boundary_key(boundary: &ObservedSemanticBoundary) -> (String, String, usize, 
     )
 }
 
+/// The filesystem identity of an existing path, where the host exposes one.
+///
+/// Canonicalization resolves symlinks but not hard links, so two names for one
+/// inode canonicalize differently. Comparing `(dev, ino)` is what stops an
+/// output that is an existing hard link to an input from truncating the
+/// authoritative evidence while derivation still succeeds from the copy already
+/// held in memory.
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    fs::metadata(path).ok().map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_identity(_path: &Path) -> Option<(u64, u64)> {
+    None
+}
+
 fn reject_output_aliases(inputs: &[PathBuf], outputs: &[PathBuf]) -> Result<()> {
     let input_paths = inputs
         .iter()
@@ -1440,14 +1576,58 @@ fn reject_output_aliases(inputs: &[PathBuf], outputs: &[PathBuf]) -> Result<()> 
                 .with_context(|| format!("canonicalizing input evidence {}", path.display()))
         })
         .collect::<Result<BTreeSet<_>>>()?;
+    let input_identities =
+        inputs.iter().filter_map(|path| file_identity(path)).collect::<BTreeSet<_>>();
     let mut output_paths = BTreeSet::new();
+    let mut output_identities = BTreeSet::new();
     for output in outputs {
         let resolved = resolve_destination(output)?;
         if input_paths.contains(&resolved) {
             bail!("output path {} aliases an input evidence file", output.display());
         }
+        if let Some(identity) = file_identity(output) {
+            if input_identities.contains(&identity) {
+                bail!(
+                    "output path {} aliases an input evidence file through a hard link",
+                    output.display()
+                );
+            }
+            if !output_identities.insert(identity) {
+                bail!("multiple output options resolve to the same file");
+            }
+        }
         if !output_paths.insert(resolved) {
             bail!("multiple output options resolve to the same path");
+        }
+    }
+    Ok(())
+}
+
+/// Reject destinations that would overwrite the measured subject itself.
+///
+/// The runner script is not the only input `capture-discovery` depends on: it
+/// executes `host_perl` and reads the prepared tree. Writing evidence over
+/// either mutates the subject after measurement while still reporting success.
+fn reject_subject_destinations(
+    host_perl: &Path,
+    perl_tree: &Path,
+    outputs: &[PathBuf],
+) -> Result<()> {
+    let host_identity = file_identity(host_perl);
+    let host_canonical = fs::canonicalize(host_perl).ok();
+    for output in outputs {
+        let resolved = resolve_destination(output)?;
+        if host_canonical.as_deref() == Some(resolved.as_path())
+            || (host_identity.is_some() && file_identity(output) == host_identity)
+        {
+            bail!("output path {} would overwrite the host Perl under test", output.display());
+        }
+        if resolved.starts_with(perl_tree) {
+            bail!(
+                "output path {} resolves inside the prepared Perl tree {}",
+                output.display(),
+                perl_tree.display()
+            );
         }
     }
     Ok(())
@@ -1746,7 +1926,7 @@ mod tests {
             schema_version: DISCOVERY_RAW_SCHEMA_VERSION.into(),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
-            host_perl: "perl".into(),
+            subject: sample_subject(),
             working_directory: "t".into(),
             argv: vec!["TEST".into(), "--dumptests".into()],
             process: DiscoveryProcessOutcome::Exited { code: 7 },
@@ -1871,7 +2051,7 @@ mod tests {
             schema_version: DISCOVERY_RAW_SCHEMA_VERSION.into(),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
-            host_perl: "perl".into(),
+            subject: sample_subject(),
             working_directory: "t".into(),
             argv: vec!["TEST".into(), "--dumptests".into()],
             process: DiscoveryProcessOutcome::Exited { code: 0 },
@@ -1905,12 +2085,24 @@ mod tests {
         Ok(())
     }
 
+    fn sample_subject() -> DiscoverySubject {
+        DiscoverySubject {
+            commit: "a".repeat(40),
+            perl_ref: "blead".into(),
+            runner_script: "TEST".into(),
+            runner_script_sha256: sha256_digest(b"TEST"),
+            host_perl_file_name: "perl".into(),
+            host_perl_sha256: sha256_digest(b"perl"),
+            tool_version: env!("CARGO_PKG_VERSION").into(),
+        }
+    }
+
     fn raw_envelope(stdout: &[u8], stderr: &[u8]) -> DiscoveryRawEnvelope {
         DiscoveryRawEnvelope {
             schema_version: DISCOVERY_RAW_SCHEMA_VERSION.into(),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
-            host_perl: "perl".into(),
+            subject: sample_subject(),
             working_directory: "t".into(),
             argv: vec!["TEST".into(), "--dumptests".into()],
             process: DiscoveryProcessOutcome::Exited { code: 0 },
@@ -2216,6 +2408,110 @@ mod tests {
         if !error.to_string().contains("binding derived discovery") {
             bail!("unexpected check-discovery error: {error}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn derived_discovery_rejects_replay_across_measured_subjects() -> TestResult {
+        let recorded = raw_envelope(b"base/ok.t\n", b"");
+        let derived = DiscoveryDerivedEnvelope::derive(&recorded)?;
+        // Byte-identical output from a different upstream tree: only the subject
+        // binding can tell the two captures apart.
+        let mut other_subject = raw_envelope(b"base/ok.t\n", b"");
+        other_subject.subject.commit = "b".repeat(40);
+        if other_subject.stdout != recorded.stdout {
+            bail!("fixture must hold the raw bytes identical across subjects");
+        }
+        if derived.validate_against(&other_subject).is_ok() {
+            bail!("derived discovery was accepted against a different measured subject");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_subject_rejects_host_paths_and_malformed_digests() -> TestResult {
+        let mut host_path = sample_subject();
+        host_path.host_perl_file_name = "/usr/bin/perl".into();
+        if host_path.validate().is_ok() {
+            bail!("an absolute host Perl path must not be published as subject identity");
+        }
+        let mut short_digest = sample_subject();
+        short_digest.runner_script_sha256 = "sha256:beef".into();
+        if short_digest.validate().is_ok() {
+            bail!("a malformed runner-script digest must be rejected");
+        }
+        let mut empty_commit = sample_subject();
+        empty_commit.commit = "  ".into();
+        if empty_commit.validate().is_ok() {
+            bail!("an empty upstream commit must be rejected");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn raw_envelope_rejects_absolute_working_directories() -> TestResult {
+        let mut leaked = raw_envelope(b"base/ok.t\n", b"");
+        leaked.working_directory = "/home/runner/work/perl/t".into();
+        let Err(error) = leaked.validate() else {
+            bail!("an absolute host path must not be published as evidence");
+        };
+        if !error.to_string().contains("relative to the prepared tree") {
+            bail!("unexpected working-directory error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn output_aliasing_an_input_through_a_hard_link_is_rejected() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = temp.path().join("report.json");
+        let output = temp.path().join("records.jsonl");
+        fs::write(&report, "{}\n")?;
+        fs::hard_link(&report, &output)?;
+        if fs::canonicalize(&report)? == fs::canonicalize(&output)? {
+            bail!("fixture must produce two distinct names for one inode");
+        }
+        let Err(error) = reject_output_aliases(std::slice::from_ref(&report), &[output]) else {
+            bail!("an output hard-linked to an input must be rejected before writing");
+        };
+        if !error.to_string().contains("hard link") {
+            bail!("unexpected hard-link alias error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_outputs_cannot_overwrite_the_measured_subject() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("perl");
+        fs::create_dir_all(perl_tree.join("t"))?;
+        let host_perl = temp.path().join("perl-bin");
+        fs::write(&host_perl, "#!/bin/sh\n")?;
+        let perl_tree = fs::canonicalize(&perl_tree)?;
+
+        let Err(error) =
+            reject_subject_destinations(&host_perl, &perl_tree, std::slice::from_ref(&host_perl))
+        else {
+            bail!("an output naming the host Perl must be rejected");
+        };
+        if !error.to_string().contains("overwrite the host Perl") {
+            bail!("unexpected host-Perl overwrite error: {error}");
+        }
+
+        let inside = perl_tree.join("t").join("discovery_raw.json");
+        let Err(error) = reject_subject_destinations(&host_perl, &perl_tree, &[inside]) else {
+            bail!("an output inside the prepared tree must be rejected");
+        };
+        if !error.to_string().contains("inside the prepared Perl tree") {
+            bail!("unexpected prepared-tree overwrite error: {error}");
+        }
+
+        reject_subject_destinations(
+            &host_perl,
+            &perl_tree,
+            &[temp.path().join("discovery_raw.json")],
+        )?;
         Ok(())
     }
 
