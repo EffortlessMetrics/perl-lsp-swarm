@@ -40,10 +40,13 @@ fn job_block<'a>(workflow: &'a str, job: &str) -> Option<&'a str> {
 /// than on content. Checking out the event's own ref keeps the definition and
 /// the tree one integration subject.
 #[test]
-fn compile_all_targets_checks_out_the_integration_subject(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn compile_all_targets_checks_out_the_integration_subject() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = project_root()?;
-    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
+    // Normalize to LF: `job_block` anchors on "\n  <job>:\n", which a CRLF
+    // checkout would never match, turning a real contract check into a
+    // confusing "job not found" error on Windows.
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
 
     let job = job_block(&ci, "check-all-targets")
         .ok_or("ci.yml no longer defines a `check-all-targets` job")?;
