@@ -32,7 +32,18 @@ mod dap_dependencies {
         Ok(())
     }
 
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac18-version-detection
+    /// Tests fixture provenance: the archived `Devel::TSPerlDAP` mock stays a
+    /// self-describing test double.
+    ///
+    /// The shim is superseded product architecture (#7272); this fixture is
+    /// retained only so parsing tests keep a stable stack/scope sample. The
+    /// architecture claim itself is owned by
+    /// `tests/tsperldap_architecture_guard.rs`, which asserts the current
+    /// surfaces do *not* prescribe the shim. The former
+    /// `test_bundled_shim_fallback` asserted the opposite — that
+    /// `CRATE_ARCHITECTURE_DAP.md` still documented a bundled shim fallback —
+    /// and was removed rather than weakened, because that claim is no longer
+    /// true of the product.
     #[test]
     // AC:18
     fn test_devel_tsperldap_version_detection() -> Result<()> {
@@ -47,16 +58,6 @@ mod dap_dependencies {
         assert!(json.get("set_breakpoints").is_some());
         assert!(json.get("stack_trace").is_some());
         assert!(json.get("scopes").is_some());
-        Ok(())
-    }
-
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac18-bundled-shim
-    #[test]
-    // AC:18
-    fn test_bundled_shim_fallback() -> Result<()> {
-        let architecture_doc = read(repo_root().join("docs/reference/CRATE_ARCHITECTURE_DAP.md"))?;
-        assert!(architecture_doc.contains("perl-shim"));
-        assert!(architecture_doc.contains("TSPerlDAP.pm"));
 
         let fixture_index =
             read(repo_root().join("crates/perl-dap/tests/fixtures/FIXTURE_INDEX.md"))?;
