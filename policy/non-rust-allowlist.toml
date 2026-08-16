@@ -94,6 +94,23 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
+id = "non-rust-lsp4ij-template"
+glob = "integrations/lsp4ij/perl-lsp/**"
+kind = "editor_integration_template"
+language = "json"
+surface = "editor"
+classification = "config"
+owner = "editor/lsp4ij"
+reason = "LSP4IJ consumes an importable template directory of JSON descriptors; the format is defined by the LSP4IJ host, so it cannot be expressed in Rust."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_template_projection_tests",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "One LSP4IJ template is a fixed directory of sibling descriptors (template, settings, settings schema, initialization options) plus its maintainer README; the host requires them to live together."
+created = "2026-08-15"
+review_after = "2026-11-15"
+
+[[allow]]
 id = "non-rust-license-files"
 glob = "**/LICENSE-*"
 kind = "license"
@@ -640,6 +657,23 @@ broad_glob_reason = "proptest writes regression files alongside the failing test
 created = "2026-05-07"
 review_after = "2026-08-07"
 
+[[allow]]
+id = "non-rust-lsp4ij-released-evidence"
+glob = "integrations/lsp4ij/upstream/0.20.1/**"
+kind = "upstream_evidence_snapshot"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "integrations/lsp4ij"
+reason = "Byte-exact snapshot of the released LSP4IJ 0.20.1 Perl LSP/DAP template subject, pinned as upstream evidence for compatibility and drift checks (#8565). These files are copied verbatim from redhat-developer/lsp4ij and must never be edited toward perl-lsp's desired state; each is addressed by its upstream Git blob identity in the sibling manifest.json."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_released_fixture_tests",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "One upstream release directory is one indivisible evidence subject. Its exact membership is already pinned by `evidence_namespace_holds_exactly_the_manifest_inventory`, which fails on any file absent from manifest.json, so per-file rows would duplicate that test without adding review value."
+created = "2026-08-16"
+review_after = "2026-11-16"
+
 # =============================================================================
 # CI / release scripts
 # =============================================================================
@@ -1113,6 +1147,24 @@ created = "2026-08-14"
 review_after = "2026-11-14"
 
 # =============================================================================
+# Binary identity protocol (perl_lsp.binary_identity.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-binary-identity-schema"
+path = "schemas/binary_identity_protocol.v1.schema.json"
+kind = "protocol_contract"
+language = "json"
+surface = "lsp"
+classification = "config"
+owner = "identity"
+reason = "JSON Schema for the perl_lsp.binary_identity.v1 wire contract (#6852); schema-leg parity is ratcheted by the binary identity protocol contract test."
+covered_by = [
+  "cargo test -p perl-lsp-rs-core --test ripr_seam_proof_binary_identity --locked",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
+
 # Editor-intelligence gap-matrix fixture tree
 # =============================================================================
 
@@ -1210,6 +1262,51 @@ created = "2026-08-15"
 review_after = "2026-09-15"
 
 [[allow]]
+id = "non-rust-lsp4ij-installer-policy"
+path = "integrations/lsp4ij/installer-policy.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Partitions every canonical release target into managed LSP4IJ installation or an explicit external/manual disposition, and records the checksum limitation (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-perl-lsp-installer"
+path = "integrations/lsp4ij/perl-lsp/installer.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Desired LSP4IJ managed installer for perllsp; selects the native release archive per platform and fails closed instead of falling back to a static URL (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-perl-dap-installer"
+path = "integrations/lsp4ij/perl-dap/installer.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Desired LSP4IJ managed installer for perl-dap; extracts the debugger member from the same shared release archive as the LSP installer (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
 id = "non-rust-product-9677-changelog-fragment"
 path = ".changes/unreleased/product-9677-Fixed-195900.yaml"
 kind = "release_metadata"
@@ -1284,3 +1381,19 @@ reason = "Changie product release-note fragment announcing the fail-closed real 
 covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
 created = "2026-08-15"
 review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-product-6991-changelog-fragment"
+path = ".changes/unreleased/product-6991-Changed-031000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
