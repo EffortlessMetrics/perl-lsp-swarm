@@ -57,3 +57,39 @@ void test('publisher workflow invokes both CLIs offline through npm exec', () =>
   assert.doesNotMatch(source, /^\s+run: (?:vsce|ovsx) publish/m);
   assert.doesNotMatch(source, /^\s+run: ovsx --version/m);
 });
+
+void test('managed-binary smoke proves TypeScript authority before compilation on every OS', () => {
+  const source = readWorkflow('vscode-managed-binary-smoke.yml');
+  const setupIndex = source.indexOf('- name: Setup VS Code toolchain');
+  const authorityIndex = source.indexOf('- name: Verify TypeScript 7 compiler authority');
+  const compileIndex = source.indexOf('- name: Compile extension');
+  const integrationIndex = source.indexOf('- name: Run extension-host smoke');
+
+  for (const [label, index] of [
+    ['toolchain setup', setupIndex],
+    ['TypeScript authority', authorityIndex],
+    ['compile', compileIndex],
+    ['integration smoke', integrationIndex],
+  ]) {
+    assert.notEqual(index, -1, `${label} step is missing`);
+  }
+
+  assert.ok(setupIndex < authorityIndex, 'authority must run after repository toolchain setup');
+  assert.ok(authorityIndex < compileIndex, 'authority must run before compilation');
+  assert.ok(authorityIndex < integrationIndex, 'authority must run before integration smoke');
+  assert.match(
+    source,
+    /os:\s*\[windows-latest,\s*ubuntu-latest,\s*macos-latest\]/,
+    'the shared authority step must cover Windows, Ubuntu, and macOS',
+  );
+  assert.equal(
+    (source.match(/run: npm run typecheck:authority/g) ?? []).length,
+    1,
+    'the shared matrix job should invoke authority exactly once',
+  );
+  assert.doesNotMatch(
+    source,
+    /run: npm run typecheck:all/,
+    'the hosted OS matrix should prove executable identity without tripling all-config proof',
+  );
+});
