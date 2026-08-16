@@ -38,6 +38,7 @@ perl-semantic-analyzer.workspace = true
 perl-semantic-facts.workspace = true
 perl-lexer.workspace = true
 perl-ast.workspace = true
+perl-test-facts.workspace = true
 walkdir.workspace = true
 regex.workspace = true
 url.workspace = true

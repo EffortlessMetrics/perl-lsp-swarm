@@ -657,6 +657,23 @@ broad_glob_reason = "proptest writes regression files alongside the failing test
 created = "2026-05-07"
 review_after = "2026-08-07"
 
+[[allow]]
+id = "non-rust-lsp4ij-released-evidence"
+glob = "integrations/lsp4ij/upstream/0.20.1/**"
+kind = "upstream_evidence_snapshot"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "integrations/lsp4ij"
+reason = "Byte-exact snapshot of the released LSP4IJ 0.20.1 Perl LSP/DAP template subject, pinned as upstream evidence for compatibility and drift checks (#8565). These files are copied verbatim from redhat-developer/lsp4ij and must never be edited toward perl-lsp's desired state; each is addressed by its upstream Git blob identity in the sibling manifest.json."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_released_fixture_tests",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "One upstream release directory is one indivisible evidence subject. Its exact membership is already pinned by `evidence_namespace_holds_exactly_the_manifest_inventory`, which fails on any file absent from manifest.json, so per-file rows would duplicate that test without adding review value."
+created = "2026-08-16"
+review_after = "2026-11-16"
+
 # =============================================================================
 # CI / release scripts
 # =============================================================================
@@ -1145,6 +1162,40 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 # =============================================================================
+# Compiler proof policy (perl_compiler_proof_policy.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-compiler-proof-policy-contract"
+path = "contracts/compiler/perl_compiler_proof_policy.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Closed proof-class, composition-dimension, and campaign vocabulary for the compiler concept programme (#6689); validated by cargo run -p xtask --bin compiler-proof-policy -- --check in the policy merge-gate shard."
+covered_by = [
+  "cargo run -p xtask --bin compiler-proof-policy -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-compiler-proof-policy-schema"
+path = "schemas/perl_compiler_proof_policy.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the perl_compiler_proof_policy.v1 contract; the executable closure check is the proof-policy validator itself."
+covered_by = [
+  "cargo run -p xtask --bin compiler-proof-policy -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+# =============================================================================
 # Binary identity protocol (perl_lsp.binary_identity.v1)
 # =============================================================================
 
@@ -1255,6 +1306,51 @@ owner = "lsp/capability-negotiation"
 reason = "Provenance, refresh procedure, and actual-host claim boundary for the Helix initialize profiles (#7701)."
 covered_by = [
   "cargo test -p perllsp --test helix_capability_profiles --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-installer-policy"
+path = "integrations/lsp4ij/installer-policy.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Partitions every canonical release target into managed LSP4IJ installation or an explicit external/manual disposition, and records the checksum limitation (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-perl-lsp-installer"
+path = "integrations/lsp4ij/perl-lsp/installer.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Desired LSP4IJ managed installer for perllsp; selects the native release archive per platform and fails closed instead of falling back to a static URL (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-perl-dap-installer"
+path = "integrations/lsp4ij/perl-dap/installer.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Desired LSP4IJ managed installer for perl-dap; extracts the debugger member from the same shared release archive as the LSP installer (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
 ]
 created = "2026-08-15"
 review_after = "2026-09-15"
