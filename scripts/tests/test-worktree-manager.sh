@@ -450,6 +450,58 @@ else
   fail "malformed state: release error does not name the slot: ${CASE4D_REL_OUT}"
 fi
 
+# ── Case 4e: `cleanup` must *drop* the same malformed records rather than
+#    join them.  Cases 4c/4d pin `slot_abs_path`, `query`, and `release`, but
+#    `cleanup` reaches the recorded path through its own branch — and it is the
+#    command `slot_abs_path`'s error message tells the operator to run.  A
+#    regression that joins `bad-int` before validating (TypeError), or that
+#    keeps the unusable records instead of pruning them, passes every
+#    assertion above.  The state is written fresh rather than copied from
+#    Case 4d so this case does not depend on the earlier commands' rewrites. ─
+CASE4E_STATE="${TMPDIR_BASE}/case4e-state.json"
+CASE4E_MANAGED="${TMPDIR_BASE}/case4e-worktrees"
+
+cat > "${CASE4E_STATE}" << 'JSONEOF'
+{
+  "version": 1,
+  "managed_root": ".",
+  "updated_at": null,
+  "slots": [
+    {"slot_id": "bad-null", "path": null, "branch": "x", "status": "active"},
+    {"slot_id": "bad-empty", "path": "", "branch": "y", "status": "active"},
+    {"slot_id": "bad-int", "path": 123, "branch": "z", "status": "active"}
+  ]
+}
+JSONEOF
+
+CASE4E_EXIT=0
+CASE4E_OUT="$(
+  cd "$AGENT_ONE"
+  python3 scripts/worktree-manager.py cleanup \
+    --state-file "${CASE4E_STATE}" \
+    --managed-root "${CASE4E_MANAGED}" 2>&1
+)" || CASE4E_EXIT=$?
+
+if [[ "${CASE4E_EXIT}" -ne 0 || "${CASE4E_OUT}" == *"Traceback"* ]]; then
+  fail "malformed state: cleanup crashed instead of dropping unusable slot records: ${CASE4E_OUT}"
+else
+  CASE4E_REMAINING="$(python3 -c '
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+slots = state.get("slots", [])
+print(len(slots), ",".join(sorted(str(s.get("slot_id")) for s in slots)))
+' "${CASE4E_STATE}")"
+  if [[ "${CASE4E_REMAINING%% *}" != "0" ]]; then
+    fail "malformed state: cleanup retained unusable slot records (count/ids: ${CASE4E_REMAINING})"
+  elif [[ "${CASE4E_OUT}" != *"removed_state=3"* ]]; then
+    fail "malformed state: cleanup did not account for all three dropped records: ${CASE4E_OUT}"
+  else
+    pass "malformed state: cleanup drops null/empty/non-string recorded paths and persists an empty slot list"
+  fi
+fi
+
 # ── Case 5: owner guard — ownerless and wrong-owner release both fail;
 #    correct owner succeeds (issue #5444 defect 2). ────────────────────────
 CASE5_STATE="${TMPDIR_BASE}/case5-state.json"
