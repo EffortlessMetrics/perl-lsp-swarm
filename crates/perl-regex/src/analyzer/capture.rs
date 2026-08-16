@@ -180,7 +180,10 @@ impl CaptureLanguageProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct CaptureAnalysisStatus {
-    /// Runtime-supplied/interpolated pattern text made later numbering unknown.
+    /// Runtime-supplied/interpolated pattern text is present.  Bare pattern
+    /// interpolation also makes later numbering unknown; `\Q...\E`-quoted
+    /// interpolation keeps exact numbering because the value cannot inject
+    /// structure.
     pub dynamic: bool,
     /// Structural uncertainty made capture numbering incomplete.
     pub numbering_unknown: bool,
@@ -336,7 +339,14 @@ pub(crate) fn analyze_captures(
                     }
                 }
             }
-            RegexEventKind::Interpolation
+            RegexEventKind::Interpolation { quoted: true } => {
+                // Quoted-literal interpolation still introduces runtime text
+                // (recorded via `dynamic`), but `\Q...\E` quotes the value
+                // before regex interpretation, so it cannot inject captures
+                // and later capture numbering stays exact.
+                dynamic = true;
+            }
+            RegexEventKind::Interpolation { quoted: false }
             | RegexEventKind::EmbeddedCode { kind: RegexEmbeddedCodeKind::Deferred, .. } => {
                 dynamic = true;
                 next_number = None;
