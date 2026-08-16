@@ -85,18 +85,33 @@ def _diagnose(package: str) -> None:
     if listing.returncode == 0:
         print(f"===== {PACKAGES_DIR_PATH} =====")
         print(listing.stdout)
-    probes = [
-        ["pgrep", "-af", "sublime"],
+    user_dir = os.path.join(PACKAGES_DIR_PATH, "User")
+    user_listing = subprocess.run(
+        ["ls", "-la", user_dir], capture_output=True, text=True
+    )
+    if user_listing.returncode == 0:
+        print(f"===== {user_dir} =====")
+        print(user_listing.stdout)
+    for probe in [
+        ["ps", "-ax", "-o", "pid,command"],
         ["pwsh", "-command",
-         "Get-Process sublime_text,plugin_host -ErrorAction SilentlyContinue"
-         " | Format-Table -AutoSize | Out-String"],
-    ]
-    for probe in probes:
+         "Get-Process | Where-Object {$_.Name -match 'sublime|plugin_host'}"
+         " | Format-Table Id,Name,Path -AutoSize | Out-String"],
+    ]:
         alive = subprocess.run(probe, capture_output=True, text=True)
-        if alive.stdout.strip():
-            print("===== sublime processes =====")
-            print(alive.stdout)
-            break
+        if alive.returncode == 0:
+            hits = "
+".join(
+                line
+                for line in alive.stdout.splitlines()
+                if "sublime" in line.lower() or "plugin_host" in line.lower()
+            )
+            if hits:
+                print("===== sublime processes (with command lines) =====")
+                print(hits)
+                break
+    shim = os.path.join(PACKAGES_DIR_PATH, "UnitTesting", "zzz_run_scheduler.py")
+    print(f"===== shim present: {os.path.isfile(shim)} ({shim}) =====")
 
 
 def _dump(label: str, path: str) -> None:
