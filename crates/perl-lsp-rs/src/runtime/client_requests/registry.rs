@@ -4,6 +4,32 @@
 //! result-shape decoding, and terminal cleanup. Feature-specific state changes
 //! remain with the callers that consume the completion. Incoming response
 //! routing is wired separately by #7010.
+//!
+//! # Bounded identity guarantee
+//!
+//! Identity ownership here is bounded by *count*, not by time. After a request
+//! reaches a terminal outcome its id is retained in a `MAX_RECENT_TERMINALS`
+//! ring so a late or duplicate response is classified as
+//! [`ServerRequestAnomalyKind::LateOrDuplicateResponse`] instead of
+//! [`ServerRequestAnomalyKind::UnknownResponse`], and so the id is refused for
+//! reuse. That ring evicts oldest-first: once more than `MAX_RECENT_TERMINALS`
+//! further requests complete on the same connection, an evicted id becomes
+//! reusable immediately, a late response for it degrades to `UnknownResponse`,
+//! and — if a caller re-registers that exact id through
+//! [`ServerRequestRegistry::register_with_id`] — a late response may be matched
+//! against the newer request.
+//!
+//! Callers wired by #7010 must therefore treat late-response classification as
+//! best-effort evidence over the last `MAX_RECENT_TERMINALS` completions, not
+//! as a durable per-connection guarantee. The allocator in
+//! [`ServerRequestRegistry::register`] is not exposed to the reuse hazard in
+//! practice, because it advances monotonically through the id space before
+//! wrapping.
+//!
+//! Caller-supplied string ids are bounded on admission rather than truncated:
+//! truncating would break identity matching against the client's response, so
+//! an id longer than `MAX_SERVER_REQUEST_ID_BYTES` is rejected with
+//! [`ServerRequestRegistryError::IdTooLong`].
 
 use crate::protocol::{JsonRpcError, JsonRpcId};
 use parking_lot::Mutex;
@@ -19,6 +45,13 @@ pub(crate) const DEFAULT_SERVER_REQUEST_CAPACITY: usize = 64;
 pub(crate) const MAX_SERVER_REQUEST_CAPACITY: usize = 4_096;
 const MAX_SERVER_REQUEST_ID: i64 = i32::MAX as i64;
 const MAX_RECENT_TERMINALS: usize = 256;
+/// Upper bound for a caller-supplied string request id.
+///
+/// The key is retained in `pending` and then copied into `recent_terminals` for
+/// up to `MAX_RECENT_TERMINALS` entries, so an unbounded id would hold memory
+/// well past the request lifetime. Truncating is not an option: the id must
+/// match the client's response byte-for-byte, so oversized ids are rejected.
+const MAX_SERVER_REQUEST_ID_BYTES: usize = 128;
 const MAX_ANOMALIES: usize = 64;
 const MAX_METHOD_BYTES: usize = 128;
 const MAX_DEBUG_IDENTITY_BYTES: usize = 256;
@@ -125,6 +158,7 @@ pub(crate) struct ServerRequestCompletion {
 /// The caller owns the receiver. Dropping it does not retain the pending entry;
 /// the registry still terminally removes the request and records bounded
 /// diagnostic evidence that the consumer disappeared.
+#[derive(Debug)]
 pub(crate) struct ServerRequestRegistration {
     pub(crate) id: JsonRpcId,
     pub(crate) completion: Receiver<ServerRequestCompletion>,
@@ -179,6 +213,9 @@ pub(crate) struct ServerRequestRegistryCounters {
     pub(crate) shutdown: u64,
     pub(crate) transport_lost: u64,
     pub(crate) capacity_rejected: u64,
+    pub(crate) id_too_long_rejected: u64,
+    pub(crate) unsupported_id_rejected: u64,
+    pub(crate) id_space_exhausted: u64,
     pub(crate) unknown_response: u64,
     pub(crate) late_or_duplicate_response: u64,
     pub(crate) completion_receiver_dropped: u64,
@@ -190,6 +227,8 @@ pub(crate) enum ServerRequestRegistryError {
     InvalidCapacity { requested: usize, maximum: usize },
     CapacityExhausted { capacity: usize },
     IdUnavailable { id: String },
+    IdTooLong { bytes: usize, maximum: usize },
+    UnsupportedId { id: String },
     IdSpaceExhausted,
     DeadlineOverflow,
 }
@@ -205,6 +244,15 @@ impl fmt::Display for ServerRequestRegistryError {
             }
             Self::IdUnavailable { id } => {
                 write!(f, "server-request id {id} is pending or recently terminal")
+            }
+            Self::IdTooLong { bytes, maximum } => {
+                write!(
+                    f,
+                    "server-request string id of {bytes} bytes exceeds the {maximum}-byte bound"
+                )
+            }
+            Self::UnsupportedId { id } => {
+                write!(f, "server-request id {id} is not representable by this registry")
             }
             Self::IdSpaceExhausted => write!(f, "server-request numeric id space is exhausted"),
             Self::DeadlineOverflow => write!(f, "server-request deadline overflowed Instant"),
@@ -268,10 +316,18 @@ enum ServerRequestKey {
 }
 
 impl ServerRequestKey {
-    fn from_json_rpc_id(id: &JsonRpcId) -> Self {
+    /// Map a JSON-RPC id onto a registry key.
+    ///
+    /// `JsonRpcId` is `#[non_exhaustive]` in `perl-lsp-rs-core`, so a variant
+    /// added there is not representable as a `ServerRequestKey`. Returning
+    /// `None` keeps that boundary honest: the registry refuses to own an
+    /// identity it cannot compare, rather than collapsing every unrepresentable
+    /// id onto one shared key where distinct requests would alias each other.
+    fn from_json_rpc_id(id: &JsonRpcId) -> Option<Self> {
         match id {
-            JsonRpcId::Integer(value) => Self::Integer(*value),
-            JsonRpcId::String(value) => Self::String(value.clone()),
+            JsonRpcId::Integer(value) => Some(Self::Integer(*value)),
+            JsonRpcId::String(value) => Some(Self::String(value.clone())),
+            _ => None,
         }
     }
 
@@ -350,7 +406,24 @@ impl ServerRequestRegistry {
     ) -> Result<ServerRequestRegistration, ServerRequestRegistryError> {
         let mut state = self.inner.state.lock();
         reject_if_full(&mut state)?;
-        let key = ServerRequestKey::from_json_rpc_id(&id);
+        let Some(key) = ServerRequestKey::from_json_rpc_id(&id) else {
+            state.counters.unsupported_id_rejected =
+                state.counters.unsupported_id_rejected.saturating_add(1);
+            return Err(ServerRequestRegistryError::UnsupportedId {
+                id: bounded_text(&format!("{id:?}"), MAX_DIAGNOSTIC_BYTES),
+            });
+        };
+        if let ServerRequestKey::String(value) = &key
+            && value.len() > MAX_SERVER_REQUEST_ID_BYTES
+        {
+            let bytes = value.len();
+            state.counters.id_too_long_rejected =
+                state.counters.id_too_long_rejected.saturating_add(1);
+            return Err(ServerRequestRegistryError::IdTooLong {
+                bytes,
+                maximum: MAX_SERVER_REQUEST_ID_BYTES,
+            });
+        }
         if state.pending.contains_key(&key)
             || state.recent_terminals.iter().any(|terminal| terminal.id == key)
         {
@@ -366,17 +439,16 @@ impl ServerRequestRegistry {
         id: &JsonRpcId,
         result: Value,
     ) -> ServerRequestCompletionDisposition {
-        let key = ServerRequestKey::from_json_rpc_id(id);
         let now = Instant::now();
+        let detail = || format!("success result {}", bounded_value_summary(&result));
+        let Some(key) = ServerRequestKey::from_json_rpc_id(id) else {
+            return self.record_unsupported_response(id, detail(), now);
+        };
         let delivery = {
             let mut state = self.inner.state.lock();
             let Some(pending) = state.pending.remove(&key) else {
-                return record_missing_response(
-                    &mut state,
-                    &key,
-                    format!("success result {}", bounded_value_summary(&result)),
-                    now,
-                );
+                let detail = detail();
+                return record_missing_response(&mut state, &key, detail, now);
             };
             let outcome = match pending.decoder.decode(result) {
                 Ok(outcome) => outcome,
@@ -393,16 +465,21 @@ impl ServerRequestRegistry {
         id: &JsonRpcId,
         error: JsonRpcError,
     ) -> ServerRequestCompletionDisposition {
-        let key = ServerRequestKey::from_json_rpc_id(id);
         let now = Instant::now();
+        let detail = || {
+            format!(
+                "client error code={} message={}",
+                error.code,
+                bounded_text(&error.message, MAX_DIAGNOSTIC_BYTES)
+            )
+        };
+        let Some(key) = ServerRequestKey::from_json_rpc_id(id) else {
+            return self.record_unsupported_response(id, detail(), now);
+        };
         let delivery = {
             let mut state = self.inner.state.lock();
             let Some(pending) = state.pending.remove(&key) else {
-                let detail = format!(
-                    "client error code={} message={}",
-                    error.code,
-                    bounded_text(&error.message, MAX_DIAGNOSTIC_BYTES)
-                );
+                let detail = detail();
                 return record_missing_response(&mut state, &key, detail, now);
             };
             let outcome = ServerRequestTerminalOutcome::ClientError {
@@ -492,8 +569,14 @@ impl ServerRequestRegistry {
         id: &JsonRpcId,
         outcome: ServerRequestTerminalOutcome,
     ) -> ServerRequestCompletionDisposition {
-        let key = ServerRequestKey::from_json_rpc_id(id);
         let now = Instant::now();
+        let Some(key) = ServerRequestKey::from_json_rpc_id(id) else {
+            return self.record_unsupported_response(
+                id,
+                format!("terminal outcome {:?}", outcome.kind()),
+                now,
+            );
+        };
         let delivery = {
             let mut state = self.inner.state.lock();
             let Some(pending) = state.pending.remove(&key) else {
@@ -527,20 +610,54 @@ impl ServerRequestRegistry {
         count
     }
 
+    /// Hand one terminal completion to its owning caller.
+    ///
+    /// The completion moves into the channel rather than being cloned: a
+    /// successful `SuccessValue` carries an arbitrarily large client result,
+    /// and cloning it on every delivery would pay that cost on the hot path
+    /// purely to keep a copy for the rare dropped-receiver case. `SendError`
+    /// already returns the unsent value, so the diagnostic path recovers it.
     fn deliver(&self, delivery: Delivery) {
-        if delivery.sender.send(delivery.completion.clone()).is_err() {
-            let mut state = self.inner.state.lock();
-            state.counters.completion_receiver_dropped =
-                state.counters.completion_receiver_dropped.saturating_add(1);
-            push_anomaly(
-                &mut state,
-                ServerRequestAnomalyKind::CompletionReceiverDropped,
-                Some(ServerRequestKey::from_json_rpc_id(&delivery.completion.id)),
-                Some(delivery.completion.method),
-                "completion receiver was dropped before terminal delivery".to_string(),
-                delivery.completion.completed_at,
-            );
-        }
+        let Delivery { sender, completion } = delivery;
+        let Err(mpsc::SendError(completion)) = sender.send(completion) else {
+            return;
+        };
+
+        let mut state = self.inner.state.lock();
+        state.counters.completion_receiver_dropped =
+            state.counters.completion_receiver_dropped.saturating_add(1);
+        push_anomaly(
+            &mut state,
+            ServerRequestAnomalyKind::CompletionReceiverDropped,
+            ServerRequestKey::from_json_rpc_id(&completion.id),
+            Some(completion.method),
+            "completion receiver was dropped before terminal delivery".to_string(),
+            completion.completed_at,
+        );
+    }
+
+    /// Record a response whose id `perl-lsp-rs-core` can express but this
+    /// registry cannot key on.
+    ///
+    /// Registration refuses such ids, so no pending entry can exist for one.
+    /// The response is therefore genuinely unknown rather than late.
+    fn record_unsupported_response(
+        &self,
+        id: &JsonRpcId,
+        detail: String,
+        observed_at: Instant,
+    ) -> ServerRequestCompletionDisposition {
+        let mut state = self.inner.state.lock();
+        state.counters.unknown_response = state.counters.unknown_response.saturating_add(1);
+        push_anomaly(
+            &mut state,
+            ServerRequestAnomalyKind::UnknownResponse,
+            None,
+            None,
+            format!("unsupported id {}; {detail}", bounded_text(&format!("{id:?}"), 96)),
+            observed_at,
+        );
+        ServerRequestCompletionDisposition::Unknown
     }
 
     #[cfg(test)]
@@ -562,6 +679,17 @@ fn reject_if_full(state: &mut RegistryState) -> Result<(), ServerRequestRegistry
     Err(ServerRequestRegistryError::CapacityExhausted { capacity: state.capacity })
 }
 
+/// Reserve the next free numeric id.
+///
+/// `reject_if_full` has already returned `Ok`, so at most `capacity - 1` integer
+/// ids are pending and at most `MAX_RECENT_TERMINALS` are retained — together at
+/// most `capacity + MAX_RECENT_TERMINALS - 1` occupied ids. The scan below walks
+/// `capacity + MAX_RECENT_TERMINALS + 1` *distinct* consecutive candidates, so a
+/// free id always exists and the `IdSpaceExhausted` tail is a defensive floor
+/// rather than a live path. `scan_width_exceeds_occupiable_id_count` pins that
+/// margin so a future change to either bound cannot silently make reservation
+/// fail. The tail keeps its own counter regardless, so if it ever does fire it
+/// is not misreported as an admission-capacity rejection.
 fn allocate_numeric_id(
     state: &mut RegistryState,
 ) -> Result<ServerRequestKey, ServerRequestRegistryError> {
@@ -577,7 +705,7 @@ fn allocate_numeric_id(
         }
     }
 
-    state.counters.capacity_rejected = state.counters.capacity_rejected.saturating_add(1);
+    state.counters.id_space_exhausted = state.counters.id_space_exhausted.saturating_add(1);
     push_anomaly(
         state,
         ServerRequestAnomalyKind::IdSpaceExhausted,
@@ -817,19 +945,87 @@ mod tests {
             ServerRequestResultDecoder::Any,
         )?;
 
-        assert_eq!(registry.pending_count(), 2);
+        assert_eq!(
+            registry.pending_count(),
+            2,
+            "integer 1 and string \"1\" must occupy distinct pending slots"
+        );
         assert_eq!(
             registry.complete_success(&JsonRpcId::Integer(1), json!({"kind": "number"})),
-            ServerRequestCompletionDisposition::Completed
+            ServerRequestCompletionDisposition::Completed,
+            "integer id 1 must complete the numeric registration"
         );
         assert_eq!(
             registry
                 .complete_success(&JsonRpcId::String("1".to_string()), json!({"kind": "string"})),
-            ServerRequestCompletionDisposition::Completed
+            ServerRequestCompletionDisposition::Completed,
+            "string id \"1\" must complete the string registration"
         );
-        assert_eq!(receive(numeric)?.method, "numeric");
-        assert_eq!(receive(string)?.method, "string");
-        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(
+            receive(numeric)?.method,
+            "numeric",
+            "the integer completion must carry the numeric registration's method"
+        );
+        assert_eq!(
+            receive(string)?.method,
+            "string",
+            "the string completion must carry the string registration's method"
+        );
+        assert_eq!(registry.pending_count(), 0, "both registrations must be terminally removed");
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_string_id_is_rejected_without_truncating_identity() -> TestResult {
+        let registry = ServerRequestRegistry::new(4)?;
+        let oversized = "x".repeat(MAX_SERVER_REQUEST_ID_BYTES + 1);
+        let rejected = registry.register_with_id(
+            JsonRpcId::String(oversized.clone()),
+            "window/showDocument",
+            "document:oversized",
+            Duration::from_secs(5),
+            ServerRequestResultDecoder::Object,
+        );
+        assert!(
+            matches!(
+                rejected,
+                Err(ServerRequestRegistryError::IdTooLong {
+                    bytes,
+                    maximum: MAX_SERVER_REQUEST_ID_BYTES,
+                }) if bytes == MAX_SERVER_REQUEST_ID_BYTES + 1
+            ),
+            "an id one byte over the bound must be rejected as IdTooLong, got {rejected:?}"
+        );
+
+        let counters = registry.counters();
+        assert_eq!(
+            counters.id_too_long_rejected, 1,
+            "an oversized id must be counted separately from capacity rejection"
+        );
+        assert_eq!(
+            counters.capacity_rejected, 0,
+            "an oversized id must not be charged to capacity_rejected"
+        );
+        assert_eq!(counters.pending, 0, "a rejected id must leave no pending state behind");
+
+        let accepted = registry.register_with_id(
+            JsonRpcId::String("y".repeat(MAX_SERVER_REQUEST_ID_BYTES)),
+            "window/showDocument",
+            "document:at-bound",
+            Duration::from_secs(5),
+            ServerRequestResultDecoder::Object,
+        )?;
+        assert_eq!(
+            accepted.id,
+            JsonRpcId::String("y".repeat(MAX_SERVER_REQUEST_ID_BYTES)),
+            "an id exactly at the bound must be admitted with its identity intact"
+        );
+        assert_eq!(
+            registry.cancel(&accepted.id),
+            ServerRequestCompletionDisposition::Completed,
+            "the admitted at-bound id must still match for terminal completion"
+        );
+        let _ = receive(accepted)?;
         Ok(())
     }
 
@@ -848,14 +1044,30 @@ mod tests {
             Duration::from_secs(5),
             ServerRequestResultDecoder::Null,
         );
-        assert!(matches!(
-            error,
-            Err(ServerRequestRegistryError::CapacityExhausted { capacity: 1 })
-        ));
-        assert_eq!(registry.pending_count(), 1);
-        assert_eq!(registry.counters().capacity_rejected, 1);
-        assert_eq!(registry.cancel(&first.id), ServerRequestCompletionDisposition::Completed);
-        assert!(matches!(receive(first)?.outcome, ServerRequestTerminalOutcome::Cancelled));
+        assert!(
+            matches!(error, Err(ServerRequestRegistryError::CapacityExhausted { capacity: 1 })),
+            "the second registration must be rejected at capacity 1, got {error:?}"
+        );
+        assert_eq!(
+            registry.pending_count(),
+            1,
+            "a rejected reservation must not add pending state"
+        );
+        assert_eq!(
+            registry.counters().capacity_rejected,
+            1,
+            "capacity rejection must be counted exactly once"
+        );
+        assert_eq!(
+            registry.cancel(&first.id),
+            ServerRequestCompletionDisposition::Completed,
+            "the admitted registration must still be cancellable"
+        );
+        let outcome = receive(first)?.outcome;
+        assert!(
+            matches!(outcome, ServerRequestTerminalOutcome::Cancelled),
+            "cancel must deliver a Cancelled terminal outcome, got {outcome:?}"
+        );
         Ok(())
     }
 
@@ -870,16 +1082,21 @@ mod tests {
         )?;
         assert_eq!(
             registry.complete_success(&registration.id, json!(true)),
-            ServerRequestCompletionDisposition::Completed
+            ServerRequestCompletionDisposition::Completed,
+            "a shape-invalid result must still terminally complete the request"
         );
         let completion = receive(registration)?;
         let ServerRequestTerminalOutcome::MalformedResult(malformed) = completion.outcome else {
             return Err(io::Error::other("expected malformed terminal outcome").into());
         };
-        assert_eq!(malformed.expected, "null");
-        assert_eq!(malformed.observed, "boolean");
-        assert_eq!(registry.counters().malformed_result, 1);
-        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(malformed.expected, "null", "the decoder's expected shape must be reported");
+        assert_eq!(malformed.observed, "boolean", "the observed shape must be reported");
+        assert_eq!(
+            registry.counters().malformed_result,
+            1,
+            "a malformed result must be counted as malformed, not as success"
+        );
+        assert_eq!(registry.pending_count(), 0, "a malformed result must remove the pending entry");
         Ok(())
     }
 
@@ -892,16 +1109,28 @@ mod tests {
             Duration::from_millis(1),
             ServerRequestResultDecoder::Array,
         )?;
-        assert_eq!(registry.expire_deadlines(Instant::now() + Duration::from_secs(1)), 1);
-        assert!(matches!(receive(registration)?.outcome, ServerRequestTerminalOutcome::TimedOut));
+        assert_eq!(
+            registry.expire_deadlines(Instant::now() + Duration::from_secs(1)),
+            1,
+            "the one past-deadline request must expire exactly once"
+        );
+        let outcome = receive(registration)?.outcome;
+        assert!(
+            matches!(outcome, ServerRequestTerminalOutcome::TimedOut),
+            "expiry must deliver a TimedOut terminal outcome, got {outcome:?}"
+        );
         assert_eq!(
             registry.complete_success(&JsonRpcId::Integer(1), json!([])),
-            ServerRequestCompletionDisposition::AlreadyTerminal
+            ServerRequestCompletionDisposition::AlreadyTerminal,
+            "a response arriving after expiry must be classified as already terminal"
         );
         let counters = registry.counters();
-        assert_eq!(counters.timed_out, 1);
-        assert_eq!(counters.late_or_duplicate_response, 1);
-        assert_eq!(counters.pending, 0);
+        assert_eq!(counters.timed_out, 1, "timeout must be counted exactly once");
+        assert_eq!(
+            counters.late_or_duplicate_response, 1,
+            "the late response must be counted as late, not unknown"
+        );
+        assert_eq!(counters.pending, 0, "the expired request must not remain pending");
         Ok(())
     }
 
@@ -938,14 +1167,27 @@ mod tests {
         let selected =
             usize::from(response_disposition == ServerRequestCompletionDisposition::Completed)
                 + expired;
-        assert_eq!(selected, 1);
+        assert_eq!(
+            selected, 1,
+            "exactly one of the racing response and expiry may claim the request \
+             (response disposition {response_disposition:?}, expired {expired})"
+        );
         let completion = receive(registration)?;
-        assert!(matches!(
-            completion.outcome,
-            ServerRequestTerminalOutcome::SuccessValue(_) | ServerRequestTerminalOutcome::TimedOut
-        ));
-        assert_eq!(registry.counters().completed_total, 1);
-        assert_eq!(registry.pending_count(), 0);
+        assert!(
+            matches!(
+                completion.outcome,
+                ServerRequestTerminalOutcome::SuccessValue(_)
+                    | ServerRequestTerminalOutcome::TimedOut
+            ),
+            "the single terminal outcome must be the response or the timeout, got {:?}",
+            completion.outcome
+        );
+        assert_eq!(
+            registry.counters().completed_total,
+            1,
+            "a raced request must be counted as completed exactly once"
+        );
+        assert_eq!(registry.pending_count(), 0, "the raced request must not remain pending");
         Ok(())
     }
 
@@ -964,11 +1206,19 @@ mod tests {
             Duration::from_secs(5),
             ServerRequestResultDecoder::Null,
         )?;
-        assert_eq!(registry.shutdown(), 2);
-        assert!(matches!(receive(first)?.outcome, ServerRequestTerminalOutcome::Shutdown));
-        assert!(matches!(receive(second)?.outcome, ServerRequestTerminalOutcome::Shutdown));
-        assert_eq!(registry.counters().shutdown, 2);
-        assert_eq!(registry.pending_count(), 0);
+        assert_eq!(registry.shutdown(), 2, "shutdown must drain both pending requests");
+        let first_outcome = receive(first)?.outcome;
+        assert!(
+            matches!(first_outcome, ServerRequestTerminalOutcome::Shutdown),
+            "the first request must observe Shutdown, got {first_outcome:?}"
+        );
+        let second_outcome = receive(second)?.outcome;
+        assert!(
+            matches!(second_outcome, ServerRequestTerminalOutcome::Shutdown),
+            "the second request must observe Shutdown, got {second_outcome:?}"
+        );
+        assert_eq!(registry.counters().shutdown, 2, "both drains must be counted as shutdown");
+        assert_eq!(registry.pending_count(), 0, "shutdown must leave no pending state");
         Ok(())
     }
 
@@ -995,11 +1245,31 @@ mod tests {
             Duration::from_secs(5),
             ServerRequestResultDecoder::Null,
         )?;
-        assert_eq!(maximum.id, JsonRpcId::Integer(MAX_SERVER_REQUEST_ID));
-        assert_eq!(two.id, JsonRpcId::Integer(2));
-        assert_eq!(registry.cancel(&maximum.id), ServerRequestCompletionDisposition::Completed);
-        assert_eq!(registry.cancel(&one.id), ServerRequestCompletionDisposition::Completed);
-        assert_eq!(registry.cancel(&two.id), ServerRequestCompletionDisposition::Completed);
+        assert_eq!(
+            maximum.id,
+            JsonRpcId::Integer(MAX_SERVER_REQUEST_ID),
+            "the allocator must issue the maximum id before wrapping"
+        );
+        assert_eq!(
+            two.id,
+            JsonRpcId::Integer(2),
+            "after wrapping, the allocator must skip the explicitly held id 1"
+        );
+        assert_eq!(
+            registry.cancel(&maximum.id),
+            ServerRequestCompletionDisposition::Completed,
+            "the wrapped maximum id must remain addressable"
+        );
+        assert_eq!(
+            registry.cancel(&one.id),
+            ServerRequestCompletionDisposition::Completed,
+            "the explicitly registered id must remain addressable"
+        );
+        assert_eq!(
+            registry.cancel(&two.id),
+            ServerRequestCompletionDisposition::Completed,
+            "the post-wrap allocated id must remain addressable"
+        );
         let _ = receive(maximum)?;
         let _ = receive(one)?;
         let _ = receive(two)?;
@@ -1018,7 +1288,8 @@ mod tests {
         )?;
         assert_eq!(
             registry.cancel(&registration.id),
-            ServerRequestCompletionDisposition::Completed
+            ServerRequestCompletionDisposition::Completed,
+            "the registration must reach a terminal outcome before reuse is attempted"
         );
         let _ = receive(registration)?;
         let reuse = registry.register_with_id(
@@ -1028,7 +1299,66 @@ mod tests {
             Duration::from_secs(5),
             ServerRequestResultDecoder::Object,
         );
-        assert!(matches!(reuse, Err(ServerRequestRegistryError::IdUnavailable { .. })));
+        assert!(
+            matches!(reuse, Err(ServerRequestRegistryError::IdUnavailable { .. })),
+            "a recently terminal id must be refused for reuse, got {reuse:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_id_reuse_protection_is_bounded_by_recent_terminal_count() -> TestResult {
+        let registry = ServerRequestRegistry::new(2)?;
+        let held = registry.register_with_id(
+            JsonRpcId::String("evictable".to_string()),
+            "window/showDocument",
+            "document:evictable",
+            Duration::from_secs(5),
+            ServerRequestResultDecoder::Object,
+        )?;
+        assert_eq!(
+            registry.cancel(&held.id),
+            ServerRequestCompletionDisposition::Completed,
+            "the tracked id must first become recently terminal"
+        );
+        let _ = receive(held)?;
+
+        // Push the tracked id out of the bounded recent-terminal ring.
+        for index in 0..MAX_RECENT_TERMINALS {
+            let filler = registry.register(
+                "window/showDocument",
+                "document:filler",
+                Duration::from_secs(5),
+                ServerRequestResultDecoder::Object,
+            )?;
+            assert_eq!(
+                registry.cancel(&filler.id),
+                ServerRequestCompletionDisposition::Completed,
+                "filler registration {index} must complete so it occupies a ring slot"
+            );
+            let _ = receive(filler)?;
+        }
+
+        let reuse = registry.register_with_id(
+            JsonRpcId::String("evictable".to_string()),
+            "window/showDocument",
+            "document:reused",
+            Duration::from_secs(5),
+            ServerRequestResultDecoder::Object,
+        );
+        assert!(
+            reuse.is_ok(),
+            "reuse protection is count-bounded by MAX_RECENT_TERMINALS ({MAX_RECENT_TERMINALS}); \
+             once evicted the id must be admissible again, got {:?}",
+            reuse.as_ref().err()
+        );
+        let reused = reuse?;
+        assert_eq!(
+            registry.cancel(&reused.id),
+            ServerRequestCompletionDisposition::Completed,
+            "the re-admitted id must be addressable"
+        );
+        let _ = receive(reused)?;
         Ok(())
     }
 
@@ -1045,16 +1375,22 @@ mod tests {
         drop(registration);
         assert_eq!(
             registry.complete_success(&id, Value::Null),
-            ServerRequestCompletionDisposition::Completed
+            ServerRequestCompletionDisposition::Completed,
+            "a dropped receiver must not change the request's terminal disposition"
         );
         let counters = registry.counters();
-        assert_eq!(counters.completion_receiver_dropped, 1);
-        assert_eq!(counters.pending, 0);
+        assert_eq!(
+            counters.completion_receiver_dropped, 1,
+            "the undeliverable completion must be counted exactly once"
+        );
+        assert_eq!(counters.pending, 0, "a dropped receiver must not retain pending state");
+        let anomalies = registry.anomalies();
         assert!(
-            registry
-                .anomalies()
+            anomalies
                 .iter()
-                .any(|anomaly| anomaly.kind == ServerRequestAnomalyKind::CompletionReceiverDropped)
+                .any(|anomaly| anomaly.kind == ServerRequestAnomalyKind::CompletionReceiverDropped),
+            "a CompletionReceiverDropped anomaly must be recorded, observed {:?}",
+            anomalies.iter().map(|anomaly| anomaly.kind).collect::<Vec<_>>()
         );
         Ok(())
     }
@@ -1067,10 +1403,22 @@ mod tests {
                 &JsonRpcId::Integer(i64::try_from(id)? + 10_000),
                 json!({"ignored": id}),
             );
-            assert_eq!(disposition, ServerRequestCompletionDisposition::Unknown);
+            assert_eq!(
+                disposition,
+                ServerRequestCompletionDisposition::Unknown,
+                "response {id} was never registered and must be classified as unknown"
+            );
         }
-        assert_eq!(registry.anomalies().len(), MAX_ANOMALIES);
-        assert_eq!(registry.counters().anomalies_dropped, 10);
+        assert_eq!(
+            registry.anomalies().len(),
+            MAX_ANOMALIES,
+            "the anomaly buffer must saturate at MAX_ANOMALIES rather than grow"
+        );
+        assert_eq!(
+            registry.counters().anomalies_dropped,
+            10,
+            "every anomaly evicted past the bound must be counted"
+        );
         Ok(())
     }
 
@@ -1084,17 +1432,95 @@ mod tests {
             ServerRequestResultDecoder::Object,
         )?;
         let snapshots = registry.pending_snapshots();
-        assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].id, registration.id);
-        assert_eq!(snapshots[0].method, "workspace/applyEdit");
-        assert_eq!(snapshots[0].debug_identity, "rename-operation:42");
-        assert!(snapshots[0].deadline >= snapshots[0].created_at);
-        assert_eq!(snapshots[0].decoder, ServerRequestResultDecoder::Object);
-        assert_eq!(registry.transport_lost(), 1);
-        assert!(matches!(
-            receive(registration)?.outcome,
-            ServerRequestTerminalOutcome::TransportLost
-        ));
+        assert_eq!(snapshots.len(), 1, "exactly one request is pending, got {snapshots:?}");
+        assert_eq!(snapshots[0].id, registration.id, "the snapshot must carry the reserved id");
+        assert_eq!(
+            snapshots[0].method, "workspace/applyEdit",
+            "the snapshot must carry the registered method"
+        );
+        assert_eq!(
+            snapshots[0].debug_identity, "rename-operation:42",
+            "the snapshot must carry the caller's debug identity"
+        );
+        assert!(
+            snapshots[0].deadline >= snapshots[0].created_at,
+            "the deadline must not precede creation (created_at {:?}, deadline {:?})",
+            snapshots[0].created_at,
+            snapshots[0].deadline
+        );
+        assert_eq!(
+            snapshots[0].decoder,
+            ServerRequestResultDecoder::Object,
+            "the snapshot must carry the registered result decoder"
+        );
+        assert_eq!(registry.transport_lost(), 1, "transport loss must drain the pending request");
+        let outcome = receive(registration)?.outcome;
+        assert!(
+            matches!(outcome, ServerRequestTerminalOutcome::TransportLost),
+            "transport loss must deliver a TransportLost terminal outcome, got {outcome:?}"
+        );
         Ok(())
+    }
+
+    #[test]
+    fn capacity_rejection_is_not_charged_to_id_space_exhaustion() -> TestResult {
+        let registry = ServerRequestRegistry::new(1)?;
+        let held = registry.register(
+            "held",
+            "held",
+            Duration::from_secs(5),
+            ServerRequestResultDecoder::Null,
+        )?;
+        let rejected = registry.register(
+            "rejected",
+            "rejected",
+            Duration::from_secs(5),
+            ServerRequestResultDecoder::Null,
+        );
+        assert!(
+            matches!(rejected, Err(ServerRequestRegistryError::CapacityExhausted { capacity: 1 })),
+            "a full registry must reject on admission capacity, got {rejected:?}"
+        );
+
+        let counters = registry.counters();
+        assert_eq!(counters.capacity_rejected, 1, "capacity rejection must be counted");
+        assert_eq!(
+            counters.id_space_exhausted, 0,
+            "capacity rejection is a distinct condition and must not be charged to \
+             id_space_exhausted"
+        );
+
+        assert_eq!(
+            registry.cancel(&held.id),
+            ServerRequestCompletionDisposition::Completed,
+            "the admitted request must remain addressable"
+        );
+        let _ = receive(held)?;
+        Ok(())
+    }
+
+    /// `IdSpaceExhausted` is a defensive floor, not a reachable path.
+    ///
+    /// `allocate_numeric_id` runs only after `reject_if_full` returned `Ok`, so
+    /// at most `capacity - 1` integer ids are pending and at most
+    /// `MAX_RECENT_TERMINALS` are retained. This pins the scan wide enough to
+    /// always clear that occupied set, which is why no test drives the tail: a
+    /// test that claimed to reach it would be asserting an unreachable state.
+    #[test]
+    fn scan_width_exceeds_occupiable_id_count() {
+        for capacity in [1_usize, 2, DEFAULT_SERVER_REQUEST_CAPACITY, MAX_SERVER_REQUEST_CAPACITY] {
+            let attempts = capacity + MAX_RECENT_TERMINALS + 1;
+            let occupiable = (capacity - 1) + MAX_RECENT_TERMINALS;
+            assert!(
+                attempts > occupiable,
+                "at capacity {capacity} the allocator scans {attempts} distinct ids but at most \
+                 {occupiable} can be occupied, so a free id must always exist"
+            );
+            assert!(
+                attempts <= usize::try_from(MAX_SERVER_REQUEST_ID).unwrap_or(usize::MAX),
+                "at capacity {capacity} the {attempts}-candidate scan must fit inside the \
+                 1..={MAX_SERVER_REQUEST_ID} id space for the candidates to stay distinct"
+            );
+        }
     }
 }
