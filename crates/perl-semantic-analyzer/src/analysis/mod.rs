@@ -1,5 +1,7 @@
 //! Semantic analysis, symbol extraction, and type inference.
 
+/// Pure callsite materialization for canonical callable-result relations.
+pub mod call_result_materializer;
 /// Bounded syntax-level callable exit summaries.
 pub mod callable_exit;
 /// Class model for Moose/Moo/Mouse intelligence.
