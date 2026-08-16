@@ -20,6 +20,9 @@ pub mod document_store;
 pub mod memory;
 /// Index lifecycle instrumentation and production readiness monitoring helpers.
 pub mod monitoring;
+/// Process-local root-generation and publication-eligibility authority.
+#[doc(hidden)]
+pub mod runtime_generation;
 /// Service-level objective types and trackers used by workspace operations.
 pub mod slo;
 /// State machine defining valid index lifecycle transitions and degraded states.
