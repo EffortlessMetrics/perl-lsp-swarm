@@ -1,5 +1,5 @@
 project: product
-component: DAP
+component: Packaging and distribution
 kind: Changed
 body: Remove the historical Perl::LanguageServer DAP proxy, bridge mode, and published compatibility features; perl-dap now ships only the native runtime and explicit optional peer seam.
 time: 2026-08-12T03:10:00Z
