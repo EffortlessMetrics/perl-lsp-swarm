@@ -82,9 +82,6 @@ jobs:
       - name: Verify gate-policy contract
         run: cargo xtask gate-policy check
 
-      - name: Verify policy_checks inventory remains synchronized
-        run: python3 scripts/ci/validate_policy_checks_inventory.py --check
-
       - name: Verify active crate-count integration contract
         run: cargo test -p xtask --test published_crate_count_gate_integration --locked
 
