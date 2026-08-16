@@ -7,10 +7,12 @@ use super::{
 
 pub(super) fn parse_special_group_control(pattern: &str, start: usize) -> Option<RawControl> {
     let bytes = pattern.as_bytes();
-    if !pattern.get(start..).is_some_and(|rest| rest.starts_with("(?")) {
+    let rest = pattern.get(start..)?;
+    if !rest.starts_with("(?") {
         return None;
     }
-    if pattern.get(start..).is_some_and(|rest| rest.starts_with("(?R)")) {
+    // `(?R)` and `(?0)` are the same whole-pattern recursion spelled two ways.
+    if rest.starts_with("(?R)") || rest.starts_with("(?0)") {
         return Some(simple_control(
             PatternControlKind::WholePatternRecursion,
             PatternControlEffect::SubpatternCall,
@@ -18,15 +20,7 @@ pub(super) fn parse_special_group_control(pattern: &str, start: usize) -> Option
             start + 4,
         ));
     }
-    if pattern.get(start..).is_some_and(|rest| rest.starts_with("(?0)")) {
-        return Some(simple_control(
-            PatternControlKind::WholePatternRecursion,
-            PatternControlEffect::SubpatternCall,
-            start,
-            start + 4,
-        ));
-    }
-    if pattern.get(start..).is_some_and(|rest| rest.starts_with("(?P=")) {
+    if rest.starts_with("(?P=") {
         return named_parenthesized_control(
             pattern,
             start,
@@ -35,7 +29,7 @@ pub(super) fn parse_special_group_control(pattern: &str, start: usize) -> Option
             ParenthesizedNamedKind::Backreference,
         );
     }
-    if pattern.get(start..).is_some_and(|rest| rest.starts_with("(?P>")) {
+    if rest.starts_with("(?P>") {
         return named_parenthesized_control(
             pattern,
             start,
@@ -44,7 +38,7 @@ pub(super) fn parse_special_group_control(pattern: &str, start: usize) -> Option
             ParenthesizedNamedKind::SubpatternCall,
         );
     }
-    if pattern.get(start..).is_some_and(|rest| rest.starts_with("(?&")) {
+    if rest.starts_with("(?&") {
         return named_parenthesized_control(
             pattern,
             start,
@@ -53,7 +47,7 @@ pub(super) fn parse_special_group_control(pattern: &str, start: usize) -> Option
             ParenthesizedNamedKind::SubpatternCall,
         );
     }
-    if pattern.get(start..).is_some_and(|rest| rest.starts_with("(?(")) {
+    if rest.starts_with("(?(") {
         return parse_conditional(pattern, start);
     }
 
@@ -260,6 +254,21 @@ pub(super) fn parse_star_control(pattern: &str, start: usize) -> RawControl {
     }
 }
 
+/// Extent of a `(*...)` control, including a `(*{ ... })` block body.
+///
+/// The body is Perl code, and this is a brace counter, not a Perl lexer. It deliberately
+/// tracks backslash escaping only inside a quoted run, because outside one a backslash is
+/// Perl's reference operator and does not escape the following byte: in `\{ a => 1 }` the
+/// braces are real and balanced, so skipping the `{` as "escaped" would drop depth a level
+/// early and truncate the construct.
+///
+/// The residual case this cannot get right is a brace escaped inside a nested regex literal
+/// (`s/\{/[/`), where the `{` is counted but never closed. That direction is the safe one:
+/// the scan runs to the end, returns `None`, and the caller falls back to `pattern.len()`.
+/// The construct is reported as an unsupported boundary either way, so an over-long extent
+/// stays conservative, whereas truncating early would hand the tail back to the pattern
+/// scanner as if it were regex source. Resolving this properly needs a Perl code lexer,
+/// which is out of this layer's scope — embedded code is a typed boundary here, not parsed.
 fn find_balanced_star_end(pattern: &str, start: usize) -> Option<usize> {
     let bytes = pattern.as_bytes();
     if !pattern.get(start..).is_some_and(|rest| rest.starts_with("(*")) {
