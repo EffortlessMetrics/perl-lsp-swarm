@@ -301,6 +301,94 @@ PYEOF
   git_q -C "${AGENT_ONE}" branch -D "${LINKED_BRANCH}" 2>/dev/null || true
 fi
 
+# ── Case 4b: a BARE repository has no working tree, so root resolution must
+#    fall back to the script-location heuristic instead of returning the git
+#    directory.  `git worktree list --porcelain` reports a bare repo as
+#    `worktree <gitdir>` followed by a `bare` attribute; taking that first
+#    record at face value treats the gitdir as the repository root, which is
+#    what the docstring explicitly promises not to do. ──────────────────────
+#
+# The two candidate answers must differ for this case to discriminate, so the
+# script lives in a nested `sub/scripts/` directory inside the bare repo:
+#   correct (heuristic)  = <...>/inner.git/sub
+#   wrong   (bare record)= <...>/inner.git
+CASE4B_ROOTDIR="${TMPDIR_BASE}/case4b"
+mkdir -p "${CASE4B_ROOTDIR}"
+git -c init.defaultBranch=main init -q --bare "${CASE4B_ROOTDIR}/inner.git"
+mkdir -p "${CASE4B_ROOTDIR}/inner.git/sub/scripts"
+cp "${AGENT_ONE}/scripts/worktree-manager.py" \
+  "${CASE4B_ROOTDIR}/inner.git/sub/scripts/worktree-manager.py"
+
+CASE4B_ROOT="$(cd "${CASE4B_ROOTDIR}/inner.git/sub" && python3 "${CASE4_SCRIPT}" \
+  "${CASE4B_ROOTDIR}/inner.git/sub/scripts/worktree-manager.py" 2>&1)" || true
+
+CASE4B_EXPECTED="$(cd "${CASE4B_ROOTDIR}/inner.git/sub" && pwd -P)"
+CASE4B_BUGGY="$(cd "${CASE4B_ROOTDIR}/inner.git" && pwd -P)"
+
+if [[ "${CASE4B_ROOT}" == "${CASE4B_EXPECTED}" ]]; then
+  pass "bare repository falls back to the script-location heuristic instead of using the git directory"
+elif [[ "${CASE4B_ROOT}" == "${CASE4B_BUGGY}" ]]; then
+  fail "bare repository resolved to the git directory ${CASE4B_ROOT} — the 'bare' record was not rejected"
+else
+  fail "bare repository root: expected=${CASE4B_EXPECTED} got=${CASE4B_ROOT}"
+fi
+
+# ── Case 4c: a slot record with a missing, null, or empty recorded path must
+#    be rejected with an actionable error rather than raising TypeError or
+#    silently resolving to the repository root itself. ──────────────────────
+CASE4C_SCRIPT="${TMPDIR_BASE}/case4c_slot_path.py"
+cat > "${CASE4C_SCRIPT}" << PYEOF
+import importlib.util, pathlib, sys
+
+spec = importlib.util.spec_from_file_location(
+    'worktree_manager_slotpath',
+    '${AGENT_ONE}/scripts/worktree-manager.py',
+)
+wm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(wm)
+
+repo_root = pathlib.Path('/repo')
+failures = []
+
+for label, slot in [
+    ('null path', {'path': None}),
+    ('empty path', {'path': ''}),
+    ('absent path', {}),
+    ('non-string path', {'path': 123}),
+]:
+    try:
+        resolved = wm.slot_abs_path(slot, 'probe-slot', repo_root)
+    except RuntimeError as exc:
+        if 'probe-slot' not in str(exc):
+            failures.append(f'{label}: error does not name the slot: {exc}')
+        continue
+    except Exception as exc:
+        failures.append(f'{label}: raised {type(exc).__name__} instead of RuntimeError: {exc}')
+        continue
+    failures.append(f'{label}: returned {resolved} instead of raising')
+
+# A well-formed record must still resolve normally.
+ok = wm.slot_abs_path({'path': 'slots/one'}, 'probe-slot', repo_root)
+if ok != repo_root / 'slots/one':
+    failures.append(f'valid path resolved to {ok}')
+
+if failures:
+    for f in failures:
+        print('FAIL: ' + f)
+    sys.exit(1)
+print('PASS: malformed slot paths are rejected; valid paths still resolve')
+sys.exit(0)
+PYEOF
+
+CASE4C_EXIT=0
+CASE4C_OUT="$(python3 "${CASE4C_SCRIPT}" 2>&1)" || CASE4C_EXIT=$?
+
+if [[ "${CASE4C_EXIT}" -eq 0 && "${CASE4C_OUT}" == *"PASS"* ]]; then
+  pass "malformed recorded slot paths are rejected instead of resolving to the repository root"
+else
+  fail "slot path validation: ${CASE4C_OUT}"
+fi
+
 # ── Case 5: owner guard — ownerless and wrong-owner release both fail;
 #    correct owner succeeds (issue #5444 defect 2). ────────────────────────
 CASE5_STATE="${TMPDIR_BASE}/case5-state.json"
