@@ -1465,3 +1465,16 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-install-identity-verification-schema"
+path = "schemas/install_identity_verification.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "JSON Schema for the staged binary identity verification receipt (#6853); validated by the staged-identity verifier contract tests in crates/perllsp."
+covered_by = ["cargo test -p perllsp --all-targets --locked"]
+created = "2026-08-16"
+review_after = "2026-09-16"

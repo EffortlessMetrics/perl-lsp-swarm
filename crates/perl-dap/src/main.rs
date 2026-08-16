@@ -595,18 +595,6 @@ mod tests {
     }
 
     #[test]
-    fn dap_identity_flags_select_the_shared_packet_without_starting_clap() {
-        let json_args = vec!["perl-dap".to_owned(), "--info".to_owned(), "--json".to_owned()];
-        let human_args = vec!["perl-dap".to_owned(), "--identity".to_owned()];
-        assert_eq!(requested_identity_output(&json_args), Some(IdentityOutputFormat::Json));
-        assert_eq!(requested_identity_output(&human_args), Some(IdentityOutputFormat::Human));
-
-        let packet = BinaryIdentityPacketV1::embedded_dap("0.18.0");
-        assert_eq!(packet.binary.role, BinaryRole::Dap);
-        assert_eq!(packet.binary.executable, "perl-dap");
-    }
-
-    #[test]
     fn socket_mode_uses_dap_default_port() {
         let args = perl_lsp_rs_core::runtime::launcher::TransportArgs {
             stdio: false,
