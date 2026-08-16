@@ -10,13 +10,13 @@ bounded sync handoff, see [`lane-closeout.md`](lane-closeout.md).
 
 ## Completed train
 
-| Concern                              | Historical receipt                                                             | Current authority                                                               |
-| ------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| Jest decoupled from the compiler API | [`ts7-prep-1-jest-decouple-receipts.md`](ts7-prep-1-jest-decouple-receipts.md) | [`jest-vs-vitest-decision.md`](jest-vs-vitest-decision.md) and `jest.config.js` |
-| ESLint replaced by Oxlint            | [`ts7-prep-2-oxlint-receipts.md`](ts7-prep-2-oxlint-receipts.md)               | `package.json`, `.oxlintrc.json`, and the committed warning baseline            |
-| Oxfmt adopted as formatter           | [`ts7-prep-3-oxfmt-receipts.md`](ts7-prep-3-oxfmt-receipts.md)                 | `.oxfmtrc.json` and `fmt:check`                                                 |
-| TypeScript compiler swapped to 7     | [`ts7-compiler-swap-receipts.md`](ts7-compiler-swap-receipts.md)               | `package.json`, `package-lock.json`, and the five TypeScript authority configs  |
-| Rolldown production bundle adopted   | [`ts7-rolldown-bundle-receipts.md`](ts7-rolldown-bundle-receipts.md)           | `rolldown.config.mjs`, `compile`, and the VSIX inventory gate                   |
+| Concern                              | Historical receipt                                                             | Current authority                                                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Jest decoupled from the compiler API | [`ts7-prep-1-jest-decouple-receipts.md`](ts7-prep-1-jest-decouple-receipts.md) | [`jest-vs-vitest-decision.md`](jest-vs-vitest-decision.md) and `jest.config.js`                                         |
+| ESLint replaced by Oxlint            | [`ts7-prep-2-oxlint-receipts.md`](ts7-prep-2-oxlint-receipts.md)               | `package.json`, `.oxlintrc.json`, and the committed warning baseline                                                    |
+| Oxfmt adopted as formatter           | [`ts7-prep-3-oxfmt-receipts.md`](ts7-prep-3-oxfmt-receipts.md)                 | `.oxfmtrc.json` and `fmt:check`                                                                                         |
+| TypeScript compiler swapped to 7     | [`ts7-compiler-swap-receipts.md`](ts7-compiler-swap-receipts.md)               | `package.json`, `package-lock.json`, the five TypeScript authority configs, and the standing `typecheck:authority` gate |
+| Rolldown production bundle adopted   | [`ts7-rolldown-bundle-receipts.md`](ts7-rolldown-bundle-receipts.md)           | `rolldown.config.mjs`, `compile`, and the VSIX inventory gate                                                           |
 
 ## Current follow-through
 
@@ -26,6 +26,9 @@ The active development contract is maintained in
 - Node 26.x, npm `11.18.0`, and the CI pin Node `26.5.0` as enforceable doctor
   and workflow authority;
 - source, test, integration, published-smoke, and script TypeScript checks;
+- a standing `typecheck:authority` gate proving the resolved, installed, and
+  executing compiler is really registry TypeScript 7, since TS6 and TS7 compile
+  and emit identically for this tree and a regression would otherwise be silent;
 - blocking `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and
   `noImplicitOverride` checks across every TypeScript authority configuration;
 - type-aware Oxlint canary and warning-budget inventory;
