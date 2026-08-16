@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Added
+body: Added a versioned accessibility inventory and semantic guards for extension-authored VS Code control surfaces.
+time: 2026-08-13T10:54:00Z
+custom:
+  PR: 7882
+  Slug: vscode-accessibility-inventory
+  Breaking: "no"

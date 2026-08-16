@@ -39,7 +39,9 @@
 ## Distribution readiness
 
 Receipts that downstream consumers (VS Code / Open VSX, LSP4IJ) depend on. Each
-row links to its source of truth so the claim can be re-verified.
+row links to its source of truth so the claim can be re-verified. Distribution
+and packaging state do not by themselves prove debugger behavior through a
+specific host.
 
 | Check | Status | Evidence |
 |---|---|---|
@@ -50,6 +52,7 @@ row links to its source of truth so the claim can be re-verified.
 | Native path avoids `Perl::LanguageServer` dependency | PASS | native launch/attach use the in-binary Rust runtime + local Perl only |
 | Legacy bridge references confined to reference/compatibility docs | PASS | first-mile docs (`crates/perl-dap/README.md`, tutorials, this status page) carry no bridge/PLS requirement; legacy detail lives in `docs/reference/DAP_LEGACY_BRIDGE_COMPAT.md` |
 | Downstream artifact contract documented | PASS | `docs/reference/DOWNSTREAM_DAP_INTEGRATIONS.md` |
+| IntelliJ/LSP4IJ debugger journey | NOT PROVEN | Actual launch/breakpoint/stack/scopes/variables/step/cleanup proof is owned by #7877; template presence cannot satisfy it. See `docs/EDITORS/INTELLIJ_DAP_SETUP.md`. |
 
 ## How to Update
 

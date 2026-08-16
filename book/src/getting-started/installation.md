@@ -16,6 +16,7 @@ Choose one method:
 ```bash
 cargo install perllsp
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 ### Option 2: Install Script (Linux/macOS)
 
