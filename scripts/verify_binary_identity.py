@@ -138,7 +138,10 @@ def _run_bounded(
     try:
         process = subprocess.Popen(command, **popen_kwargs)
     except OSError as error:
-        raise VerificationError(f"identity query could not start for {name}: {error}") from error
+        # str(OSError) embeds the resolved filename; the receipt keeps basenames.
+        raise VerificationError(
+            f"identity query could not start for {name}: os error {error.errno}"
+        ) from error
 
     stdout = bytearray()
     stderr = bytearray()
@@ -207,6 +210,10 @@ def _validate_packet(observed: ObservedBinary) -> list[str]:
         reasons.append("build_identity_missing")
     elif build.get("identity_state") not in {"exact", "partial", "not_proven"}:
         reasons.append("build_identity_state_invalid")
+    elif build.get("identity_state") != "exact":
+        # A pre-promotion gate must not verify a binary whose own build
+        # identity is partial or unproven, even when other fields match.
+        reasons.append("build_identity_state_not_exact")
 
     artifact = packet.get("artifact")
     if not isinstance(artifact, dict):
@@ -220,6 +227,17 @@ def _validate_packet(observed: ObservedBinary) -> list[str]:
 
 
 def observe(expected: ExpectedBinary, timeout_seconds: float) -> ObservedBinary:
+    # Anchor the path before any use: hashing and file checks otherwise
+    # inspect "./<name>" while a bare relative command lets the platform
+    # resolve a different binary from PATH.
+    resolved = expected.path.resolve()
+    expected = ExpectedBinary(
+        resolved,
+        expected.executable,
+        expected.cargo_package,
+        expected.role,
+        expected.expected_sha256,
+    )
     before = _sha256(expected.path)
     packet = _load_packet(expected.path, timeout_seconds)
     after = _sha256(expected.path)
@@ -284,7 +302,8 @@ def verify(
     expected_version: str,
     expected_target: str | None,
     expected_candidate: str | None,
-    require_dap: bool,
+    expected_source: str | None = None,
+    require_dap: bool = False,
 ) -> dict[str, Any]:
     reasons = _validate_packet(server)
     if dap is not None:
@@ -299,6 +318,14 @@ def verify(
 
     if server_version != expected_version:
         reasons.append("server_version_mismatch")
+    if expected_source is not None:
+        server_source_checked = _packet_value(server.packet, "build", "source_revision")
+        if server_source_checked != expected_source:
+            reasons.append("server_source_mismatch_or_not_proven")
+        if dap is not None:
+            dap_source_checked = _packet_value(dap.packet, "build", "source_revision")
+            if dap_source_checked != expected_source:
+                reasons.append("dap_source_mismatch_or_not_proven")
     if expected_target is not None and server_target != expected_target:
         reasons.append("server_target_mismatch_or_not_proven")
     if expected_candidate is not None and server_candidate != expected_candidate:
@@ -360,6 +387,7 @@ def verify(
             "version": expected_version,
             "target": expected_target,
             "candidate_identity": expected_candidate,
+            "source_revision": expected_source,
             "dap_required": require_dap,
         },
         "binaries": binaries,
@@ -375,8 +403,15 @@ def _write_receipt(receipt: dict[str, Any], destination: Path | None) -> None:
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.tmp")
-    temporary.write_text(payload, encoding="utf-8")
-    os.replace(temporary, destination)
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -384,8 +419,16 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--server", required=True, type=Path)
     parser.add_argument("--dap", type=Path)
     parser.add_argument("--expected-version", required=True)
-    parser.add_argument("--expected-target")
+    parser.add_argument(
+        "--expected-target",
+        required=True,
+        help="expected rust target triple; the verifier never skips this dimension",
+    )
     parser.add_argument("--expected-candidate")
+    parser.add_argument(
+        "--expected-source",
+        help="externally trusted source revision both binaries must report",
+    )
     parser.add_argument(
         "--expected-server-sha256",
         help="externally trusted SHA-256 of the staged server from the topology row",
@@ -438,6 +481,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_target=_bounded_identity(args.expected_target, "expected-target", required=False),
             expected_candidate=_bounded_identity(
                 args.expected_candidate, "expected-candidate", required=False
+            ),
+            expected_source=_bounded_identity(
+                args.expected_source, "expected-source", required=False
             ),
             require_dap=args.require_dap,
         )

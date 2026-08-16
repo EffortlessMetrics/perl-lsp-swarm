@@ -22,6 +22,7 @@ ObservedBinary = verify_binary_identity.ObservedBinary
 VerificationError = verify_binary_identity.VerificationError
 observe = verify_binary_identity.observe
 verify = verify_binary_identity.verify
+main = verify_binary_identity.main
 
 
 def packet(
@@ -252,6 +253,59 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
             with self.assertRaises(VerificationError) as caught:
                 observe(ExpectedBinary(executable, "perllsp", "perllsp", "server"), 3.0)
             self.assertIn("exceeded its bounded pipe", str(caught.exception))
+
+    def _observed(self, raw=None, digest="e" * 64):
+        return ObservedBinary(
+            expected=ExpectedBinary(Path("staged-perllsp"), "perllsp", "perllsp", "server"),
+            sha256=digest,
+            packet=raw if raw is not None else packet(),
+        )
+
+    def test_wrong_reported_source_revision_is_a_mismatch(self) -> None:
+        receipt = verify(
+            self._observed(),
+            None,
+            expected_version=packet()["binary"]["version"],
+            expected_target=packet()["build"]["target"],
+            expected_candidate=None,
+            expected_source="deadbeef",
+            require_dap=False,
+        )
+        self.assertIn("server_source_mismatch_or_not_proven", receipt["reasons"])
+        self.assertEqual(receipt["verdict"], "mismatch")
+
+    def test_matching_reported_source_revision_verifies(self) -> None:
+        receipt = verify(
+            self._observed(),
+            None,
+            expected_version=packet()["binary"]["version"],
+            expected_target=packet()["build"]["target"],
+            expected_candidate=None,
+            expected_source=packet()["build"]["source_revision"],
+            require_dap=False,
+        )
+        self.assertEqual(receipt["verdict"], "verified")
+
+    def test_partial_build_identity_state_cannot_verify(self) -> None:
+        raw = packet()
+        raw["build"]["identity_state"] = "partial"
+        receipt = verify(
+            self._observed(raw),
+            None,
+            expected_version=raw["binary"]["version"],
+            expected_target=raw["build"]["target"],
+            expected_candidate=None,
+            require_dap=False,
+        )
+        self.assertIn("build_identity_state_not_exact", receipt["reasons"])
+        self.assertEqual(receipt["verdict"], "mismatch")
+
+    def test_expected_target_is_required_by_the_cli(self) -> None:
+        with self.assertRaises(SystemExit):
+            main([
+                "--server", "perllsp",
+                "--expected-version", "0.18.0",
+            ])
 
     def test_malformed_packet_is_not_proven(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
