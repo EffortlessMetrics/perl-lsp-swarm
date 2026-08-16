@@ -1,0 +1,63 @@
+name: One-use parser-comparison rustfmt staging
+
+on:
+  push:
+    branches:
+      - agent/parser-comparison-rustfmt-staging-9964-20260816
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact staging subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned formatter toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Format the parser-comparison package
+        run: cargo fmt -p perl-parser-comparison
+
+      - name: Bound and record the formatter delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/staging
+          git diff --check
+          mapfile -t changed < <(git diff --name-only)
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "rustfmt produced no changes" >&2
+            exit 1
+          fi
+          for path in "${changed[@]}"; do
+            case "$path" in
+              crates/perl-parser-comparison/src/*.rs|crates/perl-parser-comparison/tests/*.rs)
+                ;;
+              *)
+                echo "unexpected rustfmt mutation: $path" >&2
+                exit 1
+                ;;
+            esac
+          done
+          printf '%s\n' "${changed[@]}" > target/staging/changed-files.txt
+          git diff --binary > target/staging/rustfmt.patch
+
+      - name: Upload formatted package files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: parser-comparison-rustfmt-${{ github.sha }}
+          path: |
+            crates/perl-parser-comparison/src/*.rs
+            crates/perl-parser-comparison/tests/*.rs
+            target/staging/changed-files.txt
+            target/staging/rustfmt.patch
+          if-no-files-found: error
