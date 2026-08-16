@@ -1,6 +1,5 @@
-use super::{ActiveMutation, DoctorHeading, SOURCE_PATHS, SourceDigest};
+use super::{ActiveMutation, DoctorHeading, SOURCE_PATHS, SourceDigest, sha256_hex};
 use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -26,22 +25,17 @@ pub(super) fn inspect_sources(root: &Path) -> Result<SourceFacts> {
     let mut sources = BTreeMap::new();
     for relative in SOURCE_PATHS {
         let path = root.join(relative);
-        let text = fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
+        let text =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let digest = sha256_hex(text.as_bytes());
         texts.insert(relative, text);
         sources.insert(
             relative.to_string(),
-            SourceDigest {
-                path: relative.to_string(),
-                sha256: digest,
-            },
+            SourceDigest { path: relative.to_string(), sha256: digest },
         );
     }
 
-    let justfile = texts
-        .get("justfile")
-        .context("justfile missing from source map")?;
+    let justfile = texts.get("justfile").context("justfile missing from source map")?;
     let doctor = doctor_block(justfile)?;
     let headings = doctor_headings(&doctor)?;
     require_markers(
@@ -113,9 +107,8 @@ pub(super) fn inspect_sources(root: &Path) -> Result<SourceFacts> {
         ],
         "writer-admission",
     )?;
-    let devex = texts
-        .get("xtask/src/tasks/devex_doctor.rs")
-        .context("devex doctor source missing")?;
+    let devex =
+        texts.get("xtask/src/tasks/devex_doctor.rs").context("devex doctor source missing")?;
     require_markers(
         devex,
         &[
@@ -130,32 +123,19 @@ pub(super) fn inspect_sources(root: &Path) -> Result<SourceFacts> {
         ],
         "devex-doctor",
     )?;
-    let worktrees = texts
-        .get("xtask/src/tasks/worktrees.rs")
-        .context("worktree source missing")?;
+    let worktrees = texts.get("xtask/src/tasks/worktrees.rs").context("worktree source missing")?;
     require_markers(
         worktrees,
-        &[
-            "Dry-run report",
-            "args([\"worktree\", \"prune\"])",
-            "PrStatus::Unknown",
-        ],
+        &["Dry-run report", "args([\"worktree\", \"prune\"])", "PrStatus::Unknown"],
         "worktree-cleanup",
     )?;
-    let hooks = texts
-        .get("crates/perl-ci-hygiene/src/cli.rs")
-        .context("ci-hygiene CLI source missing")?;
+    let hooks =
+        texts.get("crates/perl-ci-hygiene/src/cli.rs").context("ci-hygiene CLI source missing")?;
     require_markers(hooks, &["InstallGithooks", "CheckGithooks"], "ci-hygiene")?;
-    let storage = texts
-        .get("scripts/storage-doctor")
-        .context("storage doctor source missing")?;
+    let storage = texts.get("scripts/storage-doctor").context("storage doctor source missing")?;
     require_markers(
         storage,
-        &[
-            "repo-local target dirs",
-            "repo-local target dir exceeds 1G",
-            "sccache --show-stats",
-        ],
+        &["repo-local target dirs", "repo-local target dir exceeds 1G", "sccache --show-stats"],
         "storage-doctor",
     )?;
 
@@ -163,25 +143,16 @@ pub(super) fn inspect_sources(root: &Path) -> Result<SourceFacts> {
     if active_mutations.len() != 1 || active_mutations[0].owned_by != "core-bare" {
         bail!("doctor mutation denominator changed: {active_mutations:?}");
     }
-    Ok(SourceFacts {
-        headings,
-        active_mutations,
-        sources,
-    })
+    Ok(SourceFacts { headings, active_mutations, sources })
 }
 
 fn doctor_block(justfile: &str) -> Result<String> {
     let mut lines = justfile.lines();
-    lines
-        .find(|line| line.trim_end() == "doctor:")
-        .context("justfile has no doctor recipe")?;
+    lines.find(|line| line.trim_end() == "doctor:").context("justfile has no doctor recipe")?;
     let mut block = Vec::new();
     for line in lines {
         let trimmed = line.trim();
-        let recipe_header = line
-            .chars()
-            .next()
-            .is_some_and(|character| !character.is_whitespace())
+        let recipe_header = line.chars().next().is_some_and(|character| !character.is_whitespace())
             && !trimmed.is_empty()
             && !trimmed.starts_with('#')
             && trimmed.ends_with(':');
@@ -203,23 +174,15 @@ fn doctor_headings(doctor: &str) -> Result<Vec<DoctorHeading>> {
         let Some(rest) = trimmed.strip_prefix("# Check ") else {
             continue;
         };
-        let (number, title) = rest
-            .split_once(':')
-            .context("doctor check heading has no colon")?;
+        let (number, title) = rest.split_once(':').context("doctor check heading has no colon")?;
         headings.push(DoctorHeading {
-            number: number
-                .trim()
-                .parse()
-                .context("doctor check number is invalid")?,
+            number: number.trim().parse().context("doctor check number is invalid")?,
             title: title.trim().to_string(),
         });
     }
     let expected: Vec<DoctorHeading> = EXPECTED_HEADINGS
         .iter()
-        .map(|(number, title)| DoctorHeading {
-            number: *number,
-            title: (*title).to_string(),
-        })
+        .map(|(number, title)| DoctorHeading { number: *number, title: (*title).to_string() })
         .collect();
     if headings != expected {
         bail!("doctor check denominator changed: {headings:?}");
@@ -273,10 +236,7 @@ fn detect_mutations(doctor: &str) -> Result<Vec<ActiveMutation>> {
             });
         }
     }
-    if mutations
-        .iter()
-        .any(|mutation| mutation.owned_by == "UNCLASSIFIED")
-    {
+    if mutations.iter().any(|mutation| mutation.owned_by == "UNCLASSIFIED") {
         bail!("unclassified mutation found in doctor: {mutations:?}");
     }
     Ok(mutations)
@@ -294,9 +254,7 @@ fn require_markers(text: &str, markers: &[&str], label: &str) -> Result<()> {
 fn require_absent(text: &str, markers: &[&str], label: &str) -> Result<()> {
     for marker in markers {
         if text.contains(marker) {
-            bail!(
-                "{label} unexpectedly contains previously omitted marker {marker:?}"
-            );
+            bail!("{label} unexpectedly contains previously omitted marker {marker:?}");
         }
     }
     Ok(())

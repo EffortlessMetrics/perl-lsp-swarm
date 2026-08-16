@@ -4,8 +4,8 @@ mod support;
 use std::fs;
 use support::fixture_root;
 use support::workspace_doctor_inventory::{
-    Disposition, MutationPosture, ResultClass, build_inventory, canonical_rows,
-    validate_inventory, validate_rows,
+    Disposition, MutationPosture, ResultClass, build_inventory, canonical_rows, validate_inventory,
+    validate_rows,
 };
 
 #[test]
@@ -43,10 +43,7 @@ fn new_active_mutation_cannot_be_omitted() {
 #[test]
 fn automatic_mutation_cannot_be_classified_read_only() {
     let mut rows = canonical_rows();
-    let row = rows
-        .iter_mut()
-        .find(|row| row.check_id == "core-bare")
-        .expect("core-bare row");
+    let row = rows.iter_mut().find(|row| row.check_id == "core-bare").expect("core-bare row");
     row.current_mutation = MutationPosture::ReadOnly;
     assert!(validate_rows(&rows).is_err());
 }
@@ -54,10 +51,8 @@ fn automatic_mutation_cannot_be_classified_read_only() {
 #[test]
 fn required_block_cannot_be_downgraded() {
     let mut rows = canonical_rows();
-    let row = rows
-        .iter_mut()
-        .find(|row| row.check_id == "worktree-file-overlap")
-        .expect("overlap row");
+    let row =
+        rows.iter_mut().find(|row| row.check_id == "worktree-file-overlap").expect("overlap row");
     row.target_result = ResultClass::Advisory;
     assert!(validate_rows(&rows).is_err());
 }
@@ -85,10 +80,8 @@ fn one_fact_cannot_have_two_canonical_rows() {
 #[test]
 fn behind_only_cannot_become_blocking() {
     let mut rows = canonical_rows();
-    let row = rows
-        .iter_mut()
-        .find(|row| row.check_id == "default-base-behind")
-        .expect("behind row");
+    let row =
+        rows.iter_mut().find(|row| row.check_id == "default-base-behind").expect("behind row");
     row.disposition = Disposition::RetainBlocking;
     assert!(validate_rows(&rows).is_err());
 }
@@ -98,11 +91,8 @@ fn missing_authority_marker_is_not_clean() {
     let temp = fixture_root();
     let path = temp.path().join("xtask/src/tasks/writer_admission.rs");
     let text = fs::read_to_string(&path).expect("read writer admission");
-    fs::write(
-        path,
-        text.replace("check_writer_collision(snapshot)", ""),
-    )
-    .expect("write writer admission");
+    fs::write(path, text.replace("check_writer_collision(snapshot)", ""))
+        .expect("write writer admission");
     assert!(build_inventory(temp.path()).is_err());
 }
 

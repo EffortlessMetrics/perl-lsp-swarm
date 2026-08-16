@@ -1,13 +1,29 @@
 //! Source-backed inventory of current workspace doctor and local readiness behavior.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 mod inventory;
 mod rows;
 mod sources;
 
-pub use inventory::{build_inventory, render_human, validate_inventory, validate_rows};
+/// Lowercase hex encoding of the SHA-256 digest of `bytes`.
+///
+/// The workspace's `sha2` digest output does not implement `LowerHex`, so the
+/// bytes are encoded explicitly. This mirrors the existing helper in
+/// `xtask::publication_drift::authority`.
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub use inventory::{build_inventory, render_human, validate_inventory};
+// Re-exported for the contract and falsifier test crates, which include this
+// module through `#[path]`. The binary itself does not call them, so the
+// binary's own compilation would otherwise report them unused.
+#[allow(unused_imports)]
+pub use inventory::validate_rows;
+#[allow(unused_imports)]
 pub use rows::canonical_rows;
 
 pub(super) const SCHEMA: u32 = 1;

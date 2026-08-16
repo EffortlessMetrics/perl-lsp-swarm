@@ -2,10 +2,10 @@ use super::rows::canonical_rows;
 use super::sources::inspect_sources;
 use super::{
     CheckRow, Disposition, Finding, Inventory, MutationPosture, ResultClass, SCHEMA, SourceDigest,
+    sha256_hex,
 };
 use anyhow::{Result, bail};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -56,10 +56,7 @@ pub fn validate_inventory(root: &Path, inventory: &Inventory) -> Result<()> {
 
 pub fn validate_rows(rows: &[CheckRow]) -> Result<()> {
     if rows.len() != 22 {
-        bail!(
-            "workspace doctor inventory must contain 22 rows; found {}",
-            rows.len()
-        );
+        bail!("workspace doctor inventory must contain 22 rows; found {}", rows.len());
     }
     let mut ids = BTreeSet::new();
     let mut facts = BTreeSet::new();
@@ -73,10 +70,7 @@ pub fn validate_rows(rows: &[CheckRow]) -> Result<()> {
         if row.current_mutation == MutationPosture::AutomaticMutation
             && row.disposition != Disposition::MoveToExplicitRepair
         {
-            bail!(
-                "automatic mutation {} is not moved to explicit repair",
-                row.check_id
-            );
+            bail!("automatic mutation {} is not moved to explicit repair", row.check_id);
         }
     }
     require_row(
@@ -149,10 +143,7 @@ pub fn render_human(inventory: &Inventory) -> String {
     for finding in &inventory.findings {
         lines.push(format!(
             "{} [{}]: {} -> {}",
-            finding.finding_id,
-            finding.check_id,
-            finding.current,
-            finding.required_disposition
+            finding.finding_id, finding.check_id, finding.current, finding.required_disposition
         ));
     }
     lines.join("\n")
@@ -252,5 +243,5 @@ fn inventory_digest(
         sources,
     };
     let bytes = serde_json::to_vec(&body)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(sha256_hex(&bytes))
 }

@@ -7,9 +7,7 @@ use std::path::PathBuf;
 
 mod workspace_doctor_inventory;
 
-use workspace_doctor_inventory::{
-    Inventory, build_inventory, render_human, validate_inventory,
-};
+use workspace_doctor_inventory::{Inventory, build_inventory, render_human, validate_inventory};
 
 #[derive(Parser, Debug)]
 #[command(about = "Inventory workspace doctor checks without changing local state")]
@@ -32,10 +30,10 @@ fn main() -> Result<()> {
     let args = Args::parse();
     if args.check {
         let output = args.output.as_ref().context("--check requires --output")?;
-        let raw = fs::read_to_string(output)
-            .with_context(|| format!("reading {}", output.display()))?;
-        let inventory: Inventory = serde_json::from_str(&raw)
-            .with_context(|| format!("parsing {}", output.display()))?;
+        let raw =
+            fs::read_to_string(output).with_context(|| format!("reading {}", output.display()))?;
+        let inventory: Inventory =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", output.display()))?;
         validate_inventory(&args.root, &inventory)?;
         println!("workspace-doctor-inventory: OK");
         return Ok(());
@@ -44,8 +42,7 @@ fn main() -> Result<()> {
     let inventory = build_inventory(&args.root)?;
     if let Some(output) = &args.output {
         if let Some(parent) = output.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         fs::write(output, serde_json::to_string_pretty(&inventory)? + "\n")
             .with_context(|| format!("writing {}", output.display()))?;

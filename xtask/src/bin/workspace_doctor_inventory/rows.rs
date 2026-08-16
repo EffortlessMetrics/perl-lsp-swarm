@@ -107,11 +107,10 @@ pub fn canonical_rows() -> Vec<CheckRow> {
             fact_key: "git.orphaned_worktree_directory".to_string(),
             current_implementation: "just doctor Check 4".to_string(),
             source_path: "justfile".to_string(),
-            canonical_authority:
-                "#3957 cleanup classifier after read-only dry-run repair".to_string(),
-            authority_state: AuthorityState::CurrentTransitional,
-            subject: ".claude/worktrees directories absent from Git worktree inventory"
+            canonical_authority: "#3957 cleanup classifier after read-only dry-run repair"
                 .to_string(),
+            authority_state: AuthorityState::CurrentTransitional,
+            subject: ".claude/worktrees directories absent from Git worktree inventory".to_string(),
             current_mutation: MutationPosture::ReadOnly,
             current_exit_behavior: "increment_issue_then_exit_0".to_string(),
             target_result: ResultClass::NotProven,
@@ -179,8 +178,7 @@ pub fn canonical_rows() -> Vec<CheckRow> {
             fact_key: "git.workspace_untracked".to_string(),
             current_implementation: "explicitly excluded by just doctor".to_string(),
             source_path: "justfile".to_string(),
-            canonical_authority:
-                "#9551 typed doctor composition".to_string(),
+            canonical_authority: "#9551 typed doctor composition".to_string(),
             authority_state: AuthorityState::Planned,
             subject: "untracked worktree paths".to_string(),
             current_mutation: MutationPosture::NotObserved,
@@ -210,8 +208,7 @@ pub fn canonical_rows() -> Vec<CheckRow> {
             source_path: "justfile".to_string(),
             canonical_authority: "cargo xtask writer-admission / canonical-base".to_string(),
             authority_state: AuthorityState::Current,
-            subject:
-                "HEAD relative to cached default remote branch".to_string(),
+            subject: "HEAD relative to cached default remote branch".to_string(),
             current_mutation: MutationPosture::ReadOnly,
             current_exit_behavior: "increment_issue_then_exit_0".to_string(),
             target_result: ResultClass::Advisory,
@@ -238,11 +235,11 @@ pub fn canonical_rows() -> Vec<CheckRow> {
         CheckRow {
             check_id: "required-tools-and-toolchain".to_string(),
             fact_key: "tooling.required".to_string(),
-            current_implementation:
-                "pr-fast _check-tools-basic plus cargo xtask devex-doctor".to_string(),
+            current_implementation: "pr-fast _check-tools-basic plus cargo xtask devex-doctor"
+                .to_string(),
             source_path: "justfile".to_string(),
-            canonical_authority:
-                "cargo xtask check-toolchain / cargo xtask devex-doctor".to_string(),
+            canonical_authority: "cargo xtask check-toolchain / cargo xtask devex-doctor"
+                .to_string(),
             authority_state: AuthorityState::Current,
             subject: "cargo, rustfmt, rustup, clippy, and pinned toolchain".to_string(),
             current_mutation: MutationPosture::ReadOnly,
@@ -272,8 +269,8 @@ pub fn canonical_rows() -> Vec<CheckRow> {
         CheckRow {
             check_id: "build-storage-layout".to_string(),
             fact_key: "build.storage_layout".to_string(),
-            current_implementation:
-                "cargo xtask devex-doctor and scripts/storage-doctor".to_string(),
+            current_implementation: "cargo xtask devex-doctor and scripts/storage-doctor"
+                .to_string(),
             source_path: "scripts/storage-doctor".to_string(),
             canonical_authority: "scripts/storage-doctor pending #9548 executor".to_string(),
             authority_state: AuthorityState::CurrentTransitional,
@@ -287,21 +284,16 @@ pub fn canonical_rows() -> Vec<CheckRow> {
         CheckRow {
             check_id: "disk-capacity".to_string(),
             fact_key: "build.disk_capacity".to_string(),
-            current_implementation:
-                "not checked by just doctor; writer-admission owns the fact".to_string(),
-            source_path:
-                "xtask/src/tasks/writer_admission.rs".to_string(),
-            canonical_authority:
-                "cargo xtask writer-admission pending #9548 executor".to_string(),
+            current_implementation: "not checked by just doctor; writer-admission owns the fact"
+                .to_string(),
+            source_path: "xtask/src/tasks/writer_admission.rs".to_string(),
+            canonical_authority: "cargo xtask writer-admission pending #9548 executor".to_string(),
             authority_state: AuthorityState::CurrentTransitional,
             subject: "filesystem capacity for a selected heavy writer/build".to_string(),
             current_mutation: MutationPosture::ReadOnly,
             current_exit_behavior: "advisory_command_with_typed_block_verdict".to_string(),
             target_result: ResultClass::Blocked,
-            selected_transitions: vec![
-                "writer_admission".to_string(),
-                "focused_build".to_string(),
-            ],
+            selected_transitions: vec!["writer_admission".to_string(), "focused_build".to_string()],
             disposition: Disposition::ReuseAuthority,
         },
         CheckRow {

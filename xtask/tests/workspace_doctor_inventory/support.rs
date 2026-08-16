@@ -116,11 +116,7 @@ pre-commit hook missing or not executable
         "xtask/src/tasks/worktrees.rs",
         "Dry-run report\nargs([\"worktree\", \"prune\"])\nPrStatus::Unknown\n",
     );
-    write(
-        temp.path(),
-        "crates/perl-ci-hygiene/src/cli.rs",
-        "InstallGithooks\nCheckGithooks\n",
-    );
+    write(temp.path(), "crates/perl-ci-hygiene/src/cli.rs", "InstallGithooks\nCheckGithooks\n");
     write(
         temp.path(),
         "scripts/storage-doctor",
