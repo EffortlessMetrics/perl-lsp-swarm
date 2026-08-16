@@ -19,6 +19,11 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# Discovery capture isolates the upstream process tree and terminates it as a
+# group so descendants cannot hold the captured pipes open past the deadline.
+nix = { version = "0.31.3", features = ["signal", "process"] }
+
 [dev-dependencies]
 perl-tdd-support = { workspace = true }
 tempfile.workspace = true

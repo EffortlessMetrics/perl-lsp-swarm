@@ -1492,6 +1492,7 @@ version = "0.17.0"
 dependencies = [
  "chrono",
  "color-eyre",
+ "nix",
  "perl-core-harness-types",
  "perl-tdd-support",
  "serde",

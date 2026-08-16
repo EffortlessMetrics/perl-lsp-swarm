@@ -14,23 +14,34 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
 const DISCOVERY_RAW_SCHEMA_VERSION: &str = "perl_core_harness.discovery_raw.v2";
+const DISCOVERY_DERIVED_SCHEMA_VERSION: &str = "perl_core_harness.discovery_derived.v1";
+const DISCOVERY_DECODER_VERSION: &str = "utf8_strict.v1";
+const DISCOVERY_NORMALIZER_VERSION: &str = "discovery_test_paths.v1";
 const RAW_STREAM_ENCODING: &str = "hex";
 const RAW_STREAM_MAX_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_CAPTURE_DEADLINE_SECONDS: u64 = 30 * 60;
+const MAX_CAPTURE_DEADLINE_SECONDS: u64 = 24 * 60 * 60;
+const SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const TERMINATION_HARD_LIMIT: Duration = Duration::from_secs(10);
 
 fn main() -> Result<()> {
     color_eyre::install()?;
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(|| {
         color_eyre::eyre::eyre!(
-            "usage: perl-core-harness-artifacts <capture-discovery|derive-runner-records|check-runner-records> [options]"
+            "usage: perl-core-harness-artifacts <capture-discovery|check-discovery|derive-runner-records|check-runner-records> [options]"
         )
     })?;
     let options = Options::parse(args)?;
     match command.as_str() {
         "capture-discovery" => capture_discovery(CaptureDiscoveryConfig::from_options(options)?),
+        "check-discovery" => check_discovery(CheckDiscoveryConfig::from_options(options)?),
         "derive-runner-records" => {
             derive_runner_records(DeriveRunnerRecordsConfig::from_options(options)?)
         }
@@ -112,6 +123,8 @@ struct CaptureDiscoveryConfig {
     runner: HarnessRunner,
     profile: HarnessProfile,
     output: PathBuf,
+    derived_output: Option<PathBuf>,
+    limits: CaptureLimits,
 }
 
 impl CaptureDiscoveryConfig {
@@ -122,6 +135,64 @@ impl CaptureDiscoveryConfig {
             runner: parse_runner(&options.required("--runner")?)?,
             profile: parse_profile(&options.required("--profile")?)?,
             output: PathBuf::from(options.required("--output")?),
+            derived_output: options.optional("--derived-output")?.map(PathBuf::from),
+            limits: CaptureLimits {
+                deadline: parse_deadline(options.optional("--deadline-seconds")?.as_deref())?,
+                cancel_file: options.optional("--cancel-file")?.map(PathBuf::from),
+            },
+        };
+        options.finish()?;
+        Ok(config)
+    }
+}
+
+/// Finite bounds applied to one supervised discovery capture.
+///
+/// The deadline bounds the whole capture, including descendants that inherited
+/// the stdout/stderr pipes. The cancel file lets a supervising workflow request
+/// an early, explicitly non-authoritative stop.
+#[derive(Debug, Clone)]
+struct CaptureLimits {
+    deadline: Duration,
+    cancel_file: Option<PathBuf>,
+}
+
+impl CaptureLimits {
+    fn cancel_requested(&self) -> Option<String> {
+        let path = self.cancel_file.as_ref()?;
+        path.exists().then(|| format!("cancellation file {} is present", path.display()))
+    }
+}
+
+fn parse_deadline(value: Option<&str>) -> Result<Duration> {
+    let seconds = match value {
+        None => DEFAULT_CAPTURE_DEADLINE_SECONDS,
+        Some(raw) => {
+            raw.parse::<u64>().with_context(|| format!("parsing --deadline-seconds value {raw}"))?
+        }
+    };
+    if seconds == 0 {
+        bail!("--deadline-seconds must be a positive number of seconds");
+    }
+    if seconds > MAX_CAPTURE_DEADLINE_SECONDS {
+        bail!(
+            "--deadline-seconds must not exceed {MAX_CAPTURE_DEADLINE_SECONDS}; discovery capture must stay finite"
+        );
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
+#[derive(Debug)]
+struct CheckDiscoveryConfig {
+    raw: PathBuf,
+    derived: PathBuf,
+}
+
+impl CheckDiscoveryConfig {
+    fn from_options(mut options: Options) -> Result<Self> {
+        let config = Self {
+            raw: PathBuf::from(options.required("--raw")?),
+            derived: PathBuf::from(options.required("--derived")?),
         };
         options.finish()?;
         Ok(config)
@@ -197,10 +268,7 @@ impl CapturedStream {
     }
 
     fn failed(message: &str) -> Self {
-        Self {
-            capture_error: Some(message.to_string()),
-            ..Self::empty()
-        }
+        Self { capture_error: Some(message.to_string()), ..Self::empty() }
     }
 }
 
@@ -289,14 +357,61 @@ impl RawByteStream {
     }
 }
 
+/// Which part of the bounded capture was still outstanding when the deadline fired.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum CaptureDeadlinePhase {
+    /// The discovery process itself had not yet been reaped.
+    Process,
+    /// The process was reaped but stdout or stderr was still held open.
+    StreamDrain,
+}
+
+impl CaptureDeadlinePhase {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::StreamDrain => "stream drain",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum DiscoveryProcessOutcome {
-    Exited { code: i32 },
-    TerminatedWithoutCode,
-    SpawnFailed { error: String },
-    WaitFailed { error: String },
-    CaptureSetupFailed { stream: String },
+    /// The process reached its own exit status.
+    Exited {
+        code: i32,
+    },
+    /// The process was terminated by a signal whose identity is preserved.
+    Signaled {
+        signal: i32,
+        signal_name: String,
+        core_dumped: bool,
+    },
+    /// The process terminated without an exit code and this platform exposes no
+    /// finer termination identity.
+    TerminatedWithoutIdentity {
+        platform: String,
+    },
+    /// This tool stopped the capture because its finite deadline expired.
+    TimedOut {
+        deadline_ms: u64,
+        phase: CaptureDeadlinePhase,
+    },
+    /// This tool stopped the capture because cancellation was requested.
+    Cancelled {
+        source: String,
+    },
+    SpawnFailed {
+        error: String,
+    },
+    WaitFailed {
+        error: String,
+    },
+    CaptureSetupFailed {
+        stream: String,
+    },
 }
 
 impl DiscoveryProcessOutcome {
@@ -307,7 +422,17 @@ impl DiscoveryProcessOutcome {
     fn summary(&self) -> String {
         match self {
             Self::Exited { code } => format!("exited with status {code}"),
-            Self::TerminatedWithoutCode => "terminated without an exit code".to_string(),
+            Self::Signaled { signal, signal_name, core_dumped } => format!(
+                "terminated by {signal_name} ({signal}){}",
+                if *core_dumped { " with a core dump" } else { "" }
+            ),
+            Self::TerminatedWithoutIdentity { platform } => {
+                format!("terminated without an exit code or termination identity on {platform}")
+            }
+            Self::TimedOut { deadline_ms, phase } => {
+                format!("exceeded the {deadline_ms}ms capture deadline during {}", phase.as_str())
+            }
+            Self::Cancelled { source } => format!("cancelled: {source}"),
             Self::SpawnFailed { .. } => "spawn failed".to_string(),
             Self::WaitFailed { .. } => "wait failed".to_string(),
             Self::CaptureSetupFailed { stream } => {
@@ -315,6 +440,72 @@ impl DiscoveryProcessOutcome {
             }
         }
     }
+
+    /// Reject outcomes whose recorded identity is structurally empty.
+    fn validate(&self) -> Result<()> {
+        let detail = match self {
+            Self::SpawnFailed { error } | Self::WaitFailed { error } => Some(error.as_str()),
+            Self::CaptureSetupFailed { stream } => Some(stream.as_str()),
+            Self::Cancelled { source } => Some(source.as_str()),
+            Self::TerminatedWithoutIdentity { platform } => Some(platform.as_str()),
+            Self::Signaled { signal, signal_name, .. } => {
+                if *signal <= 0 {
+                    bail!("signalled discovery outcome recorded a non-positive signal {signal}");
+                }
+                Some(signal_name.as_str())
+            }
+            Self::TimedOut { deadline_ms, .. } => {
+                if *deadline_ms == 0 {
+                    bail!("timed-out discovery outcome recorded a zero deadline");
+                }
+                None
+            }
+            Self::Exited { .. } => None,
+        };
+        if detail.is_some_and(|detail| detail.trim().is_empty()) {
+            bail!("raw discovery process outcome contains an empty failure detail");
+        }
+        Ok(())
+    }
+}
+
+/// Project a reaped wait status onto the outcome taxonomy without collapsing
+/// distinct terminations.
+#[cfg(unix)]
+fn outcome_from_status(status: ExitStatus) -> DiscoveryProcessOutcome {
+    use std::os::unix::process::ExitStatusExt;
+
+    if let Some(code) = status.code() {
+        return DiscoveryProcessOutcome::Exited { code };
+    }
+    if let Some(signal) = status.signal() {
+        return DiscoveryProcessOutcome::Signaled {
+            signal,
+            signal_name: signal_name(signal),
+            core_dumped: status.core_dumped(),
+        };
+    }
+    DiscoveryProcessOutcome::TerminatedWithoutIdentity {
+        platform: std::env::consts::OS.to_string(),
+    }
+}
+
+/// Non-Unix hosts expose only an exit code, so termination identity is recorded
+/// as explicitly unavailable rather than silently collapsed.
+#[cfg(not(unix))]
+fn outcome_from_status(status: ExitStatus) -> DiscoveryProcessOutcome {
+    match status.code() {
+        Some(code) => DiscoveryProcessOutcome::Exited { code },
+        None => DiscoveryProcessOutcome::TerminatedWithoutIdentity {
+            platform: std::env::consts::OS.to_string(),
+        },
+    }
+}
+
+#[cfg(unix)]
+fn signal_name(signal: i32) -> String {
+    nix::sys::signal::Signal::try_from(signal)
+        .map_or_else(|_| format!("SIG{signal}"), |signal| signal.as_str().to_string())
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -338,23 +529,146 @@ impl DiscoveryRawEnvelope {
         }
         self.stdout.validate().context("validating raw discovery stdout")?;
         self.stderr.validate().context("validating raw discovery stderr")?;
-        for error in match &self.process {
-            DiscoveryProcessOutcome::SpawnFailed { error }
-            | DiscoveryProcessOutcome::WaitFailed { error } => Some(error),
-            DiscoveryProcessOutcome::CaptureSetupFailed { stream } => Some(stream),
-            DiscoveryProcessOutcome::Exited { .. }
-            | DiscoveryProcessOutcome::TerminatedWithoutCode => None,
-        } {
-            if error.trim().is_empty() {
-                bail!("raw discovery process outcome contains an empty failure detail");
-            }
-        }
+        self.process.validate()?;
         Ok(())
     }
 
     fn complete_success(&self) -> bool {
         self.process.succeeded() && self.stdout.complete() && self.stderr.complete()
     }
+}
+
+/// The exact identity of one captured raw stream.
+///
+/// Both the complete observed digest and the retained-prefix digest are bound so
+/// a derived record cannot be replayed against different upstream bytes that
+/// happen to share a retained prefix.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct RawStreamIdentity {
+    observed_byte_length: u64,
+    observed_sha256: String,
+    retained_byte_length: usize,
+    retained_sha256: String,
+    truncated: bool,
+}
+
+impl RawStreamIdentity {
+    fn of(stream: &RawByteStream) -> Self {
+        Self {
+            observed_byte_length: stream.observed_byte_length,
+            observed_sha256: stream.sha256.clone(),
+            retained_byte_length: stream.retained_byte_length,
+            retained_sha256: stream.retained_sha256.clone(),
+            truncated: stream.truncated,
+        }
+    }
+}
+
+/// Normalized discovery evidence bound to the exact raw bytes and named
+/// transforms it was produced from.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct DiscoveryDerivedEnvelope {
+    schema_version: String,
+    raw_schema_version: String,
+    decoder_version: String,
+    normalizer_version: String,
+    stdout: RawStreamIdentity,
+    stderr: RawStreamIdentity,
+    normalized_sha256: String,
+    test_paths: Vec<String>,
+}
+
+impl DiscoveryDerivedEnvelope {
+    /// Derive normalized discovery output from complete, authoritative raw evidence.
+    fn derive(raw: &DiscoveryRawEnvelope) -> Result<Self> {
+        if !raw.complete_success() {
+            bail!(
+                "refusing to derive normalized discovery from non-authoritative raw evidence ({})",
+                raw.process.summary()
+            );
+        }
+        let text = decode_discovery_stdout(&raw.stdout)?;
+        let test_paths = normalize_discovery_paths(&text);
+        Ok(Self {
+            schema_version: DISCOVERY_DERIVED_SCHEMA_VERSION.to_string(),
+            raw_schema_version: raw.schema_version.clone(),
+            decoder_version: DISCOVERY_DECODER_VERSION.to_string(),
+            normalizer_version: DISCOVERY_NORMALIZER_VERSION.to_string(),
+            stdout: RawStreamIdentity::of(&raw.stdout),
+            stderr: RawStreamIdentity::of(&raw.stderr),
+            normalized_sha256: normalized_digest(&test_paths),
+            test_paths,
+        })
+    }
+
+    /// Reject a derived record whose raw provenance, transform identity, or
+    /// normalized content does not reproduce from the supplied raw evidence.
+    fn validate_against(&self, raw: &DiscoveryRawEnvelope) -> Result<()> {
+        if self.schema_version != DISCOVERY_DERIVED_SCHEMA_VERSION {
+            bail!("unsupported derived discovery schema: {}", self.schema_version);
+        }
+        if self.raw_schema_version != raw.schema_version {
+            bail!(
+                "derived discovery was produced from raw schema {} but was replayed against {}",
+                self.raw_schema_version,
+                raw.schema_version
+            );
+        }
+        if self.decoder_version != DISCOVERY_DECODER_VERSION
+            || self.normalizer_version != DISCOVERY_NORMALIZER_VERSION
+        {
+            bail!(
+                "derived discovery transform identity drifted: recorded {}/{}, current {DISCOVERY_DECODER_VERSION}/{DISCOVERY_NORMALIZER_VERSION}",
+                self.decoder_version,
+                self.normalizer_version
+            );
+        }
+        if self.stdout != RawStreamIdentity::of(&raw.stdout) {
+            bail!("derived discovery stdout identity does not match the supplied raw stdout");
+        }
+        if self.stderr != RawStreamIdentity::of(&raw.stderr) {
+            bail!("derived discovery stderr identity does not match the supplied raw stderr");
+        }
+        let expected = Self::derive(raw)?;
+        if self.test_paths != expected.test_paths
+            || self.normalized_sha256 != expected.normalized_sha256
+        {
+            bail!("derived discovery normalized content does not reproduce from its raw bytes");
+        }
+        if self.normalized_sha256 != normalized_digest(&self.test_paths) {
+            bail!("derived discovery normalized digest does not cover its own recorded paths");
+        }
+        Ok(())
+    }
+}
+
+/// Decode complete raw stdout under the named strict-UTF-8 decoder.
+fn decode_discovery_stdout(stdout: &RawByteStream) -> Result<String> {
+    stdout.utf8_text()?.ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "discovery stdout is incomplete or is not valid UTF-8 under {DISCOVERY_DECODER_VERSION}"
+        )
+    })
+}
+
+/// Project decoded discovery stdout onto its declared `.t` paths.
+fn normalize_discovery_paths(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| line.ends_with(".t"))
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn normalized_digest(test_paths: &[String]) -> String {
+    let mut joined = String::new();
+    for path in test_paths {
+        joined.push_str(path);
+        joined.push('\n');
+    }
+    sha256_digest(joined.as_bytes())
 }
 
 fn capture_stream<R: Read>(mut reader: R, limit_bytes: usize) -> CapturedStream {
@@ -387,68 +701,221 @@ fn capture_stream<R: Read>(mut reader: R, limit_bytes: usize) -> CapturedStream 
     CapturedStream {
         retained,
         observed_byte_length,
-        full_sha256: format!("sha256:{:x}", full_hasher.finalize()),
+        full_sha256: format!("sha256:{}", encode_hex(&full_hasher.finalize())),
         truncated: observed_byte_length > retained_u64,
         capture_error,
     }
 }
 
-fn run_bounded_command(mut command: Command) -> (DiscoveryProcessOutcome, RawByteStream, RawByteStream) {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+/// Why this tool, rather than the process itself, ended the capture.
+#[derive(Debug)]
+enum CaptureTermination {
+    Deadline { phase: CaptureDeadlinePhase },
+    Cancelled { source: String },
+}
+
+/// Isolate the discovery process into its own process group so descendants that
+/// inherit the pipes can be terminated as a unit.
+#[cfg(unix)]
+fn isolate_process_tree(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    command.process_group(0);
+}
+
+/// Windows and other non-Unix hosts get direct-child termination only; a
+/// descendant that keeps the inherited pipes open is bounded by the capture
+/// hard limit rather than by process-tree cleanup.
+#[cfg(not(unix))]
+fn isolate_process_tree(_command: &mut Command) {}
+
+/// Signal the whole isolated process tree, falling back to the direct child.
+#[cfg(unix)]
+fn signal_process_tree(child: &mut Child, signal: nix::sys::signal::Signal) {
+    use nix::unistd::Pid;
+
+    let group = i32::try_from(child.id()).map(Pid::from_raw);
+    let delivered = group.is_ok_and(|group| nix::sys::signal::killpg(group, signal).is_ok());
+    if !delivered && signal == nix::sys::signal::Signal::SIGKILL {
+        let _ = child.kill();
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_gently(_child: &mut Child) {}
+
+#[cfg(unix)]
+fn terminate_gently(child: &mut Child) {
+    signal_process_tree(child, nix::sys::signal::Signal::SIGTERM);
+}
+
+#[cfg(not(unix))]
+fn terminate_forcefully(child: &mut Child) {
+    let _ = child.kill();
+}
+
+#[cfg(unix)]
+fn terminate_forcefully(child: &mut Child) {
+    signal_process_tree(child, nix::sys::signal::Signal::SIGKILL);
+}
+
+/// Drain one pipe on its own thread so a full stdout cannot deadlock stderr.
+///
+/// The receiver is polled rather than joined so a descendant holding the write
+/// end open cannot block the supervisor past the capture hard limit.
+fn spawn_capture<R: Read + Send + 'static>(
+    reader: R,
+    limit_bytes: usize,
+) -> Receiver<CapturedStream> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(capture_stream(reader, limit_bytes));
+    });
+    receiver
+}
+
+fn poll_capture(
+    slot: &mut Option<CapturedStream>,
+    receiver: &Receiver<CapturedStream>,
+    stream: &str,
+) {
+    if slot.is_some() {
+        return;
+    }
+    match receiver.try_recv() {
+        Ok(capture) => *slot = Some(capture),
+        Err(TryRecvError::Empty) => {}
+        Err(TryRecvError::Disconnected) => {
+            *slot = Some(CapturedStream::failed(&format!("{stream} capture thread panicked")));
+        }
+    }
+}
+
+/// Run one discovery command under a finite deadline with bounded, concurrent
+/// stdout and stderr capture and isolated process-tree cleanup.
+fn run_bounded_command(
+    mut command: Command,
+    limits: &CaptureLimits,
+) -> (DiscoveryProcessOutcome, RawByteStream, RawByteStream) {
+    let empty =
+        || (RawByteStream::empty(RAW_STREAM_MAX_BYTES), RawByteStream::empty(RAW_STREAM_MAX_BYTES));
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    isolate_process_tree(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
+            let (stdout, stderr) = empty();
             return (
                 DiscoveryProcessOutcome::SpawnFailed { error: error.to_string() },
-                RawByteStream::empty(RAW_STREAM_MAX_BYTES),
-                RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+                stdout,
+                stderr,
             );
         }
     };
 
     let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
+        terminate_forcefully(&mut child);
         let _ = child.wait();
+        let (stdout, stderr) = empty();
         return (
             DiscoveryProcessOutcome::CaptureSetupFailed { stream: "stdout".to_string() },
-            RawByteStream::empty(RAW_STREAM_MAX_BYTES),
-            RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+            stdout,
+            stderr,
         );
     };
     let Some(stderr) = child.stderr.take() else {
-        let _ = child.kill();
+        terminate_forcefully(&mut child);
         let _ = child.wait();
+        let (stdout, stderr) = empty();
         return (
             DiscoveryProcessOutcome::CaptureSetupFailed { stream: "stderr".to_string() },
-            RawByteStream::empty(RAW_STREAM_MAX_BYTES),
-            RawByteStream::empty(RAW_STREAM_MAX_BYTES),
+            stdout,
+            stderr,
         );
     };
 
-    let (status_result, stdout_capture, stderr_capture) = std::thread::scope(|scope| {
-        let stdout_handle = scope.spawn(|| capture_stream(stdout, RAW_STREAM_MAX_BYTES));
-        let stderr_handle = scope.spawn(|| capture_stream(stderr, RAW_STREAM_MAX_BYTES));
-        let status_result = child.wait();
-        if status_result.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        let stdout_capture = stdout_handle
-            .join()
-            .unwrap_or_else(|_| CapturedStream::failed("stdout capture thread panicked"));
-        let stderr_capture = stderr_handle
-            .join()
-            .unwrap_or_else(|_| CapturedStream::failed("stderr capture thread panicked"));
-        (status_result, stdout_capture, stderr_capture)
-    });
+    let stdout_receiver = spawn_capture(stdout, RAW_STREAM_MAX_BYTES);
+    let stderr_receiver = spawn_capture(stderr, RAW_STREAM_MAX_BYTES);
 
-    let process = match status_result {
-        Ok(status) => match status.code() {
-            Some(code) => DiscoveryProcessOutcome::Exited { code },
-            None => DiscoveryProcessOutcome::TerminatedWithoutCode,
+    let started = Instant::now();
+    let mut status: Option<std::io::Result<ExitStatus>> = None;
+    let mut stdout_capture: Option<CapturedStream> = None;
+    let mut stderr_capture: Option<CapturedStream> = None;
+    let mut termination: Option<CaptureTermination> = None;
+    let mut terminated_at: Option<Instant> = None;
+    let mut escalated = false;
+
+    loop {
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(reaped)) => status = Some(Ok(reaped)),
+                Ok(None) => {}
+                Err(error) => status = Some(Err(error)),
+            }
+        }
+        poll_capture(&mut stdout_capture, &stdout_receiver, "stdout");
+        poll_capture(&mut stderr_capture, &stderr_receiver, "stderr");
+        if status.is_some() && stdout_capture.is_some() && stderr_capture.is_some() {
+            break;
+        }
+
+        match terminated_at {
+            None => {
+                let requested = limits.cancel_requested().map_or_else(
+                    || {
+                        (started.elapsed() >= limits.deadline).then(|| {
+                            CaptureTermination::Deadline {
+                                phase: if status.is_none() {
+                                    CaptureDeadlinePhase::Process
+                                } else {
+                                    CaptureDeadlinePhase::StreamDrain
+                                },
+                            }
+                        })
+                    },
+                    |source| Some(CaptureTermination::Cancelled { source }),
+                );
+                if let Some(requested) = requested {
+                    termination = Some(requested);
+                    terminate_gently(&mut child);
+                    terminated_at = Some(Instant::now());
+                }
+            }
+            Some(at) => {
+                if !escalated && at.elapsed() >= TERMINATION_GRACE {
+                    terminate_forcefully(&mut child);
+                    escalated = true;
+                }
+                if at.elapsed() >= TERMINATION_HARD_LIMIT {
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(SUPERVISOR_POLL_INTERVAL);
+    }
+
+    let process = match termination {
+        Some(CaptureTermination::Deadline { phase }) => DiscoveryProcessOutcome::TimedOut {
+            deadline_ms: u64::try_from(limits.deadline.as_millis()).unwrap_or(u64::MAX),
+            phase,
         },
-        Err(error) => DiscoveryProcessOutcome::WaitFailed { error: error.to_string() },
+        Some(CaptureTermination::Cancelled { source }) => {
+            DiscoveryProcessOutcome::Cancelled { source }
+        }
+        None => match status {
+            Some(Ok(status)) => outcome_from_status(status),
+            Some(Err(error)) => DiscoveryProcessOutcome::WaitFailed { error: error.to_string() },
+            None => DiscoveryProcessOutcome::WaitFailed {
+                error: "the discovery process was never reaped".to_string(),
+            },
+        },
     };
+    let stdout_capture = stdout_capture.unwrap_or_else(|| {
+        CapturedStream::failed("stdout was still held open at the capture hard limit")
+    });
+    let stderr_capture = stderr_capture.unwrap_or_else(|| {
+        CapturedStream::failed("stderr was still held open at the capture hard limit")
+    });
     (
         process,
         RawByteStream::from_capture(stdout_capture, RAW_STREAM_MAX_BYTES),
@@ -468,7 +935,12 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
     if !script.is_file() {
         bail!("prepared Perl tree is missing runner script {}", script.display());
     }
-    reject_output_aliases(std::slice::from_ref(&script), std::slice::from_ref(&config.output))?;
+    let mut outputs = vec![config.output.clone()];
+    outputs.extend(config.derived_output.iter().cloned());
+    reject_output_aliases(std::slice::from_ref(&script), &outputs)?;
+    if config.derived_output.as_ref() == Some(&config.output) {
+        bail!("--derived-output must not alias the raw discovery --output");
+    }
 
     let script_name = script
         .file_name()
@@ -483,7 +955,7 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
     command.env("LC_ALL", "C");
     sanitize_perl_env(&mut command);
 
-    let (process, stdout, stderr) = run_bounded_command(command);
+    let (process, stdout, stderr) = run_bounded_command(command, &config.limits);
     let envelope = DiscoveryRawEnvelope {
         schema_version: DISCOVERY_RAW_SCHEMA_VERSION.to_string(),
         runner: config.runner,
@@ -506,19 +978,44 @@ fn capture_discovery(config: CaptureDiscoveryConfig) -> Result<()> {
             config.output.display()
         );
     }
-    let stdout = envelope.stdout.utf8_text()?.ok_or_else(|| {
-        color_eyre::eyre::eyre!(
-            "upstream discovery stdout is not valid UTF-8; byte-exact raw evidence is {}",
+    let derived = DiscoveryDerivedEnvelope::derive(&envelope).with_context(|| {
+        format!(
+            "deriving normalized discovery from byte-exact raw evidence {}",
             config.output.display()
         )
     })?;
-    if !stdout.lines().any(|line| line.trim().ends_with(".t")) {
+    if derived.test_paths.is_empty() {
         bail!(
             "upstream discovery succeeded but emitted no .t paths; raw evidence is {}",
             config.output.display()
         );
     }
+    if let Some(derived_output) = &config.derived_output {
+        write_json(derived_output, &derived)?;
+        let written: DiscoveryDerivedEnvelope = read_json(derived_output)?;
+        written.validate_against(&envelope).with_context(|| {
+            format!("revalidating derived discovery evidence {}", derived_output.display())
+        })?;
+    }
     Ok(())
+}
+
+/// Reject derived discovery evidence that does not reproduce from the raw
+/// evidence it claims to summarize.
+fn check_discovery(config: CheckDiscoveryConfig) -> Result<()> {
+    let raw: DiscoveryRawEnvelope = read_json(&config.raw)
+        .with_context(|| format!("reading raw discovery evidence {}", config.raw.display()))?;
+    raw.validate()?;
+    let derived: DiscoveryDerivedEnvelope = read_json(&config.derived).with_context(|| {
+        format!("reading derived discovery evidence {}", config.derived.display())
+    })?;
+    derived.validate_against(&raw).with_context(|| {
+        format!(
+            "binding derived discovery {} to raw discovery {}",
+            config.derived.display(),
+            config.raw.display()
+        )
+    })
 }
 
 fn discovery_profile_args(
@@ -1028,7 +1525,7 @@ fn sanitize_perl_env(command: &mut Command) {
 }
 
 fn sha256_digest(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!("sha256:{}", encode_hex(&Sha256::digest(bytes)))
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -1062,6 +1559,12 @@ fn hex_nibble(value: u8) -> Result<u8> {
         b'A'..=b'F' => Ok(value - b'A' + 10),
         _ => bail!("raw stream hex payload contains a non-hex byte"),
     }
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("reading JSON {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("decoding JSON {}", path.display()))
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -1348,14 +1851,9 @@ mod tests {
         let contradictory_failure = contradictory_success
             .replace("\"status\":7", "\"status\":0")
             .replace("\"success\":true", "\"success\":false");
-        let missing_outcome = contradictory_success
-            .replace("\"status\":7,", "")
-            .replace("\"success\":true,", "");
-        for invalid in [
-            contradictory_success.to_string(),
-            contradictory_failure,
-            missing_outcome,
-        ] {
+        let missing_outcome =
+            contradictory_success.replace("\"status\":7,", "").replace("\"success\":true,", "");
+        for invalid in [contradictory_success.to_string(), contradictory_failure, missing_outcome] {
             if serde_json::from_str::<DiscoveryRawEnvelope>(&invalid).is_ok() {
                 bail!("legacy contradictory or missing process outcome must not decode as v2");
             }
@@ -1403,6 +1901,329 @@ mod tests {
         }"#;
         if serde_json::from_str::<DiscoveryRawEnvelope>(legacy).is_ok() {
             bail!("text-only v1 evidence must not be reinterpreted as byte-exact v2");
+        }
+        Ok(())
+    }
+
+    fn raw_envelope(stdout: &[u8], stderr: &[u8]) -> DiscoveryRawEnvelope {
+        DiscoveryRawEnvelope {
+            schema_version: DISCOVERY_RAW_SCHEMA_VERSION.into(),
+            runner: HarnessRunner::Test,
+            profile: HarnessProfile::Base,
+            host_perl: "perl".into(),
+            working_directory: "t".into(),
+            argv: vec!["TEST".into(), "--dumptests".into()],
+            process: DiscoveryProcessOutcome::Exited { code: 0 },
+            stdout: RawByteStream::from_capture(
+                capture_stream(Cursor::new(stdout.to_vec()), RAW_STREAM_MAX_BYTES),
+                RAW_STREAM_MAX_BYTES,
+            ),
+            stderr: RawByteStream::from_capture(
+                capture_stream(Cursor::new(stderr.to_vec()), RAW_STREAM_MAX_BYTES),
+                RAW_STREAM_MAX_BYTES,
+            ),
+        }
+    }
+
+    #[cfg(unix)]
+    fn bounded_shell(script: &str, limits: &CaptureLimits) -> DiscoveryProcessOutcome {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script);
+        run_bounded_command(command, limits).0
+    }
+
+    #[cfg(unix)]
+    fn short_deadline(cancel_file: Option<PathBuf>) -> CaptureLimits {
+        CaptureLimits { deadline: Duration::from_secs(1), cancel_file }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn signal_identity_does_not_collapse_distinct_terminations() -> TestResult {
+        use std::os::unix::process::ExitStatusExt;
+
+        let sigterm = outcome_from_status(ExitStatus::from_raw(15));
+        let sigkill = outcome_from_status(ExitStatus::from_raw(9));
+        let DiscoveryProcessOutcome::Signaled { signal: 15, core_dumped: false, .. } = &sigterm
+        else {
+            bail!("SIGTERM termination lost its signal identity: {sigterm:?}");
+        };
+        if sigterm == sigkill {
+            bail!("SIGTERM and SIGKILL terminations collapsed into one outcome");
+        }
+        sigterm.validate()?;
+        sigkill.validate()?;
+        if sigterm.succeeded() || sigkill.succeeded() {
+            bail!("signalled termination must never be authoritative success");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn core_dump_identity_is_retained_separately_from_the_signal() -> TestResult {
+        use std::os::unix::process::ExitStatusExt;
+
+        let dumped = outcome_from_status(ExitStatus::from_raw(6 | 0x80));
+        let undumped = outcome_from_status(ExitStatus::from_raw(6));
+        let DiscoveryProcessOutcome::Signaled { signal: 6, core_dumped: true, signal_name } =
+            &dumped
+        else {
+            bail!("core-dumping termination lost its identity: {dumped:?}");
+        };
+        if signal_name.trim().is_empty() {
+            bail!("signalled termination recorded an empty signal name");
+        }
+        if dumped == undumped {
+            bail!("core-dump state collapsed into the plain signal outcome");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn complete_capture_is_not_reported_as_a_deadline() -> TestResult {
+        let limits = CaptureLimits { deadline: Duration::from_secs(30), cancel_file: None };
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("printf 'base/ok.t\\nbase/two.t\\n'; printf 'note\\n' >&2");
+        let (process, stdout, stderr) = run_bounded_command(command, &limits);
+        if process != (DiscoveryProcessOutcome::Exited { code: 0 }) {
+            bail!(
+                "a promptly exiting process must not acquire a bounded-capture outcome: {process:?}"
+            );
+        }
+        if !stdout.complete() || !stderr.complete() {
+            bail!("a promptly exiting process must produce complete stream capture");
+        }
+        let envelope = DiscoveryRawEnvelope { process, stdout, stderr, ..raw_envelope(b"", b"") };
+        envelope.validate()?;
+        let derived = DiscoveryDerivedEnvelope::derive(&envelope)?;
+        if derived.test_paths != vec!["base/ok.t".to_string(), "base/two.t".to_string()] {
+            bail!("live capture did not normalize to its declared paths: {:?}", derived.test_paths);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hung_process_is_bounded_by_the_capture_deadline() -> TestResult {
+        let started = Instant::now();
+        let outcome = bounded_shell("sleep 60", &short_deadline(None));
+        let DiscoveryProcessOutcome::TimedOut { phase: CaptureDeadlinePhase::Process, .. } =
+            outcome
+        else {
+            bail!("a hung discovery process must time out during the process phase: {outcome:?}");
+        };
+        if started.elapsed() >= TERMINATION_HARD_LIMIT {
+            bail!("bounded capture did not return before the termination hard limit");
+        }
+        outcome.validate()?;
+        if outcome.succeeded() {
+            bail!("a timed-out capture must never be authoritative success");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn forked_grandchild_cannot_hold_capture_open_past_the_deadline() -> TestResult {
+        let started = Instant::now();
+        let outcome = bounded_shell("sleep 60 & exit 0", &short_deadline(None));
+        let DiscoveryProcessOutcome::TimedOut { phase: CaptureDeadlinePhase::StreamDrain, .. } =
+            outcome
+        else {
+            bail!(
+                "a descendant retaining the inherited pipes must time out during stream drain: {outcome:?}"
+            );
+        };
+        if started.elapsed() >= TERMINATION_HARD_LIMIT {
+            bail!("process-tree cleanup did not release the captured pipes before the hard limit");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cancellation_is_distinct_from_the_deadline() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let cancel = temp.path().join("cancel");
+        fs::write(&cancel, "requested\n")?;
+        let started = Instant::now();
+        let outcome = bounded_shell("sleep 60", &short_deadline(Some(cancel)));
+        let DiscoveryProcessOutcome::Cancelled { .. } = outcome else {
+            bail!("a requested cancellation must not be reported as a deadline: {outcome:?}");
+        };
+        if started.elapsed() >= Duration::from_secs(1) {
+            bail!("cancellation was not observed before the capture deadline could fire");
+        }
+        outcome.validate()?;
+        if outcome.succeeded() {
+            bail!("a cancelled capture must never be authoritative success");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deadline_must_stay_finite_and_positive() -> TestResult {
+        if parse_deadline(None)? != Duration::from_secs(DEFAULT_CAPTURE_DEADLINE_SECONDS) {
+            bail!("the default capture deadline changed without updating its contract");
+        }
+        if parse_deadline(Some("0")).is_ok() {
+            bail!("a zero deadline must be rejected");
+        }
+        if parse_deadline(Some(&(MAX_CAPTURE_DEADLINE_SECONDS + 1).to_string())).is_ok() {
+            bail!("an unbounded deadline must be rejected");
+        }
+        if parse_deadline(Some("later")).is_ok() {
+            bail!("a non-numeric deadline must be rejected");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn non_authoritative_outcomes_cannot_produce_derived_evidence() -> TestResult {
+        for process in [
+            DiscoveryProcessOutcome::TimedOut {
+                deadline_ms: 1_000,
+                phase: CaptureDeadlinePhase::Process,
+            },
+            DiscoveryProcessOutcome::Cancelled { source: "operator".into() },
+            DiscoveryProcessOutcome::Signaled {
+                signal: 9,
+                signal_name: "SIGKILL".into(),
+                core_dumped: false,
+            },
+            DiscoveryProcessOutcome::TerminatedWithoutIdentity { platform: "windows".into() },
+        ] {
+            let envelope = DiscoveryRawEnvelope { process, ..raw_envelope(b"base/ok.t\n", b"") };
+            envelope.validate()?;
+            if envelope.complete_success() {
+                bail!("a non-authoritative outcome must not derive complete success");
+            }
+            if DiscoveryDerivedEnvelope::derive(&envelope).is_ok() {
+                bail!("normalized evidence must not be derived from non-authoritative raw bytes");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_streams_cannot_produce_derived_evidence() -> TestResult {
+        let limit = 4;
+        let mut envelope = raw_envelope(b"", b"");
+        envelope.stdout = RawByteStream::from_capture(
+            capture_stream(Cursor::new(b"base/ok.t\n".to_vec()), limit),
+            limit,
+        );
+        envelope.validate()?;
+        if DiscoveryDerivedEnvelope::derive(&envelope).is_ok() {
+            bail!("truncated stdout must not be normalized as though it were complete");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn derived_discovery_rejects_replay_against_different_raw_bytes() -> TestResult {
+        let recorded = raw_envelope(b"base/ok.t\n", b"");
+        let derived = DiscoveryDerivedEnvelope::derive(&recorded)?;
+        derived.validate_against(&recorded)?;
+
+        let different_stdout = raw_envelope(b"base/other.t\n", b"");
+        if derived.validate_against(&different_stdout).is_ok() {
+            bail!("derived discovery was accepted against different stdout bytes");
+        }
+        let different_stderr = raw_envelope(b"base/ok.t\n", b"warning\n");
+        if derived.validate_against(&different_stderr).is_ok() {
+            bail!("derived discovery was accepted against different stderr bytes");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn derived_discovery_rejects_normalization_preserving_byte_drift() -> TestResult {
+        let recorded = raw_envelope(b"base/ok.t\n", b"");
+        let derived = DiscoveryDerivedEnvelope::derive(&recorded)?;
+        // The trailing comment is discarded by the normalizer, so only the bound
+        // raw identity can detect that the upstream bytes were not the same.
+        let drifted = raw_envelope(b"base/ok.t\nskipped note\n", b"");
+        let redrived = DiscoveryDerivedEnvelope::derive(&drifted)?;
+        if redrived.test_paths != derived.test_paths {
+            bail!("fixture must produce identical normalized output from different raw bytes");
+        }
+        if derived.validate_against(&drifted).is_ok() {
+            bail!("derived discovery was accepted against raw bytes it did not summarize");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn derived_discovery_rejects_transform_identity_drift() -> TestResult {
+        let recorded = raw_envelope(b"base/ok.t\n", b"");
+        let mut decoder_drift = DiscoveryDerivedEnvelope::derive(&recorded)?;
+        decoder_drift.decoder_version = "utf8_lossy.v1".into();
+        if decoder_drift.validate_against(&recorded).is_ok() {
+            bail!("derived discovery was accepted under an unrecorded decoder");
+        }
+        let mut normalizer_drift = DiscoveryDerivedEnvelope::derive(&recorded)?;
+        normalizer_drift.normalizer_version = "discovery_test_paths.v2".into();
+        if normalizer_drift.validate_against(&recorded).is_ok() {
+            bail!("derived discovery was accepted under an unrecorded normalizer");
+        }
+        let mut schema_drift = DiscoveryDerivedEnvelope::derive(&recorded)?;
+        schema_drift.schema_version = "perl_core_harness.discovery_derived.v0".into();
+        if schema_drift.validate_against(&recorded).is_ok() {
+            bail!("derived discovery was accepted under an unsupported schema");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn derived_discovery_rejects_normalized_content_drift() -> TestResult {
+        let recorded = raw_envelope(b"base/ok.t\n", b"");
+        let mut tampered = DiscoveryDerivedEnvelope::derive(&recorded)?;
+        tampered.test_paths.push("base/invented.t".into());
+        tampered.normalized_sha256 = normalized_digest(&tampered.test_paths);
+        if tampered.validate_against(&recorded).is_ok() {
+            bail!("derived discovery accepted paths that its raw bytes never declared");
+        }
+        let mut digest_only = DiscoveryDerivedEnvelope::derive(&recorded)?;
+        digest_only.normalized_sha256 = sha256_digest(b"unrelated");
+        if digest_only.validate_against(&recorded).is_ok() {
+            bail!("derived discovery accepted a digest that does not cover its own paths");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn check_discovery_binds_derived_records_to_their_raw_evidence() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let raw_path = temp.path().join("discovery_raw.json");
+        let derived_path = temp.path().join("discovery_derived.json");
+        let recorded = raw_envelope(b"base/ok.t\n", b"");
+        write_json(&raw_path, &recorded)?;
+        write_json(&derived_path, &DiscoveryDerivedEnvelope::derive(&recorded)?)?;
+        check_discovery(CheckDiscoveryConfig {
+            raw: raw_path.clone(),
+            derived: derived_path.clone(),
+        })?;
+
+        write_json(&raw_path, &raw_envelope(b"base/replaced.t\n", b""))?;
+        let Err(error) =
+            check_discovery(CheckDiscoveryConfig { raw: raw_path, derived: derived_path })
+        else {
+            bail!("check-discovery accepted a derived record replayed against other raw bytes");
+        };
+        if !error.to_string().contains("binding derived discovery") {
+            bail!("unexpected check-discovery error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_terminated_without_code_outcome_is_not_silently_current() -> TestResult {
+        let legacy = r#"{"kind":"terminated_without_code"}"#;
+        if serde_json::from_str::<DiscoveryProcessOutcome>(legacy).is_ok() {
+            bail!("the collapsed termination outcome must not decode as current evidence");
         }
         Ok(())
     }
