@@ -1,0 +1,14 @@
+project: product
+component: Language intelligence
+kind: Added
+body: >-
+  Add the transport-neutral framework-adapter SDK vocabulary to
+  perl-semantic-facts, keeping durable input snapshots separate from live
+  execution controls and exposing checked authority predicates so adapter
+  output becomes publication authority only under validated production
+  disposition, schema, generation, sink identity, and per-fact coherence.
+time: 2026-08-12T03:57:00Z
+custom:
+  PR: "6842"
+  Slug: framework-adapter-sdk
+  Breaking: "no"

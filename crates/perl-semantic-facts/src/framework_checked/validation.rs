@@ -31,13 +31,12 @@ impl AdapterDetectionResult {
         validate_contributing_modules(self, input)?;
 
         match &self.outcome {
-            DetectionOutcome::Detected {
-                confidence,
-                framework_version,
-            } => validate_detected(self, input, *confidence, framework_version.as_deref()),
-            DetectionOutcome::Absent {
-                reason: DetectionAbsenceReason::RequiredModulesMissing,
-            } => validate_required_modules_missing(self, input),
+            DetectionOutcome::Detected { confidence, framework_version } => {
+                validate_detected(self, input, *confidence, framework_version.as_deref())
+            }
+            DetectionOutcome::Absent { reason: DetectionAbsenceReason::RequiredModulesMissing } => {
+                validate_required_modules_missing(self, input)
+            }
             DetectionOutcome::Absent {
                 reason: DetectionAbsenceReason::VersionConstraintNotSatisfied,
             } => validate_version_absence(self, input),

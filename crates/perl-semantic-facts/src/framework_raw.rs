@@ -10,11 +10,12 @@
 //! Rust source-compatibility tool, not an unknown-variant wire fallback.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use crate::{
-    AnchorId, Confidence, FileId, InvalidationDependency, LifecyclePhase, Provenance,
-    SemanticConfidence, SemanticFactEnvelope, SemanticFactStatus, SemanticFreshness,
-    SemanticProducer, SemanticProvenance, SourceGeneration,
+    AnchorId, Confidence, FileId, InvalidationDependency, Provenance, SemanticConfidence,
+    SemanticFactEnvelope, SemanticFactStatus, SemanticFreshness, SemanticProducer,
+    SemanticProvenance, SourceGeneration,
 };
 
 /// Current framework-adapter SDK wire version.
@@ -81,13 +82,6 @@ impl AdapterDescriptor {
             disposition,
         }
     }
-
-    fn is_valid_authority(&self) -> bool {
-        self.schema_version == FRAMEWORK_ADAPTER_SCHEMA_VERSION
-            && self.disposition == AdapterDisposition::Production
-            && !self.name.trim().is_empty()
-            && !self.framework_name.trim().is_empty()
-    }
 }
 
 /// Observed version evidence for one activation module.
@@ -104,14 +98,7 @@ impl ModuleVersionEvidence {
     /// Construct known module-version evidence.
     #[must_use]
     pub fn new(version: impl Into<String>, generation: SourceGeneration) -> Self {
-        Self {
-            version: version.into(),
-            generation,
-        }
-    }
-
-    fn is_known(&self) -> bool {
-        !self.version.trim().is_empty() && self.generation.is_known()
+        Self { version: version.into(), generation }
     }
 }
 
@@ -138,12 +125,7 @@ impl ModuleActivationIdentity {
         file_id: Option<FileId>,
         generation: SourceGeneration,
     ) -> Self {
-        Self {
-            module_name: module_name.into(),
-            file_id,
-            generation,
-            observed_version: None,
-        }
+        Self { module_name: module_name.into(), file_id, generation, observed_version: None }
     }
 
     /// Attach version evidence produced from the same module generation.
@@ -169,9 +151,7 @@ impl AdapterCancellation {
     /// Construct an active admission snapshot.
     #[must_use]
     pub const fn active() -> Self {
-        Self {
-            is_cancelled: false,
-        }
+        Self { is_cancelled: false }
     }
 
     /// Construct a pre-cancelled admission snapshot.
@@ -211,63 +191,7 @@ impl AdapterBudget {
     /// Construct a budget.
     #[must_use]
     pub const fn new(max_emitted_facts: u32, max_payload_bytes: u64) -> Self {
-        Self {
-            max_emitted_facts,
-            max_payload_bytes,
-        }
-    }
-}
-
-/// Input to a framework-detection pass.
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AdapterDetectionInput {
-    /// Adapter descriptor.
-    pub descriptor: AdapterDescriptor,
-    /// Modules visible in the current project model.
-    pub available_modules: Vec<ModuleActivationIdentity>,
-    /// Project-model generation.
-    pub project_generation: SourceGeneration,
-    /// Optional digest over the activation list.
-    pub content_digest: Option<String>,
-    /// Optional resource budget.
-    pub budget: Option<AdapterBudget>,
-    /// Admission-time cancellation snapshot.
-    pub cancellation: AdapterCancellation,
-}
-
-impl AdapterDetectionInput {
-    /// Construct a detection input.
-    #[must_use]
-    pub fn new(
-        descriptor: AdapterDescriptor,
-        available_modules: Vec<ModuleActivationIdentity>,
-        project_generation: SourceGeneration,
-        content_digest: Option<String>,
-        budget: Option<AdapterBudget>,
-        cancellation: AdapterCancellation,
-    ) -> Self {
-        Self {
-            descriptor,
-            available_modules,
-            project_generation,
-            content_digest,
-            budget,
-            cancellation,
-        }
-    }
-
-    /// Whether the input contains coherent version evidence for `module_name`.
-    #[must_use]
-    pub fn has_version_evidence(&self, module_name: &str) -> bool {
-        self.available_modules.iter().any(|module| {
-            module.module_name == module_name
-                && module.generation.is_known()
-                && module
-                    .observed_version
-                    .as_ref()
-                    .is_some_and(|version| version.is_known() && version.generation == module.generation)
-        })
+        Self { max_emitted_facts, max_payload_bytes }
     }
 }
 
@@ -332,82 +256,6 @@ pub enum DetectionOutcome {
         /// Bounded explanation.
         reason: String,
     },
-}
-
-/// Result of one detection pass.
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AdapterDetectionResult {
-    /// Adapter descriptor.
-    pub descriptor: AdapterDescriptor,
-    /// Project generation represented by the result.
-    pub project_generation: SourceGeneration,
-    /// Detection outcome.
-    pub outcome: DetectionOutcome,
-    /// Version evidence used for a version-qualified absence.
-    #[serde(default)]
-    pub version_evidence: Option<ModuleVersionEvidence>,
-}
-
-impl AdapterDetectionResult {
-    /// Construct a detection result without version evidence.
-    #[must_use]
-    pub fn new(
-        descriptor: AdapterDescriptor,
-        project_generation: SourceGeneration,
-        outcome: DetectionOutcome,
-    ) -> Self {
-        Self {
-            descriptor,
-            project_generation,
-            outcome,
-            version_evidence: None,
-        }
-    }
-
-    /// Attach the observed version used for a version-qualified verdict.
-    #[must_use]
-    pub fn with_version_evidence(mut self, evidence: ModuleVersionEvidence) -> Self {
-        self.version_evidence = Some(evidence);
-        self
-    }
-
-    /// Whether this result reports framework presence.
-    #[must_use]
-    pub fn is_detected(&self) -> bool {
-        matches!(self.outcome, DetectionOutcome::Detected { .. })
-    }
-
-    /// Whether this result is eligible to act as detection authority.
-    #[must_use]
-    pub fn is_authoritative(&self) -> bool {
-        if !self.descriptor.is_valid_authority() || !self.project_generation.is_known() {
-            return false;
-        }
-        match &self.outcome {
-            DetectionOutcome::Detected {
-                confidence,
-                framework_version,
-            } => {
-                *confidence == Confidence::High
-                    && self
-                        .descriptor
-                        .framework_version_constraint
-                        .as_ref()
-                        .is_none_or(|_| framework_version.as_ref().is_some_and(|value| !value.trim().is_empty()))
-            }
-            DetectionOutcome::Absent {
-                reason: DetectionAbsenceReason::VersionConstraintNotSatisfied,
-            } => {
-                self.descriptor.framework_version_constraint.is_some()
-                    && self.version_evidence.as_ref().is_some_and(|evidence| {
-                        evidence.is_known() && evidence.generation == self.project_generation
-                    })
-            }
-            DetectionOutcome::Absent { .. } => true,
-            _ => false,
-        }
-    }
 }
 
 /// Class of semantic facts an adapter may emit.
@@ -487,10 +335,11 @@ impl AdapterInput {
         descriptor: AdapterDescriptor,
         source_scope: AdapterSourceScope,
         required_fact_classes: Vec<FactClass>,
-        invalidation_inputs: Vec<InvalidationDependency>,
+        mut invalidation_inputs: Vec<InvalidationDependency>,
         budget: Option<AdapterBudget>,
         cancellation: AdapterCancellation,
     ) -> Self {
+        invalidation_inputs.sort();
         Self {
             descriptor,
             source_scope,
@@ -522,11 +371,7 @@ impl FactLimitation {
         is_blocking: bool,
         confidence_impact: Confidence,
     ) -> Self {
-        Self {
-            description: description.into(),
-            is_blocking,
-            confidence_impact,
-        }
+        Self { description: description.into(), is_blocking, confidence_impact }
     }
 }
 
@@ -588,9 +433,7 @@ impl EmittedFact {
     /// Whether this fact has a blocking limitation.
     #[must_use]
     pub fn is_blocked(&self) -> bool {
-        self.limitation
-            .as_ref()
-            .is_some_and(|limitation| limitation.is_blocking)
+        self.limitation.as_ref().is_some_and(|limitation| limitation.is_blocking)
     }
 
     /// Whether source-backed evidence validates the precedence hint.
@@ -663,12 +506,7 @@ impl FactSink {
     /// Construct an empty sink.
     #[must_use]
     pub const fn new(sink_id: FactSinkId, adapter_id: AdapterId) -> Self {
-        Self {
-            sink_id,
-            adapter_id,
-            facts: Vec::new(),
-            total_payload_bytes: 0,
-        }
+        Self { sink_id, adapter_id, facts: Vec::new(), total_payload_bytes: 0 }
     }
 
     /// Whether the sink is empty.
@@ -754,6 +592,24 @@ pub enum AdapterAuthorityError {
     SinkIdentityMismatch,
     /// One emitted fact is structurally incoherent.
     InvalidFact,
+    /// A result must be checked against the input admitted for the invocation.
+    InputRequired,
+    /// Result identity does not match the admitted input.
+    InputMismatch,
+    /// The result exceeded the admitted fact-count or payload budget.
+    BudgetExceeded,
+    /// The result emitted a class that was not requested by the input.
+    UnsupportedFactClass,
+    /// An emitted fact did not preserve the input invalidation dependencies.
+    InvalidationMismatch,
+    /// The sink payload total was not the canonical serialized fact payload size.
+    PayloadMismatch,
+    /// Two emitted facts reused one canonical fact identity.
+    DuplicateFactId,
+    /// A fact package did not match the invocation source scope.
+    PackageIdentityMismatch,
+    /// A fact confidence exceeded a declared limitation ceiling.
+    ConfidenceLimitExceeded,
 }
 
 /// Full result of one adapter invocation.
@@ -803,8 +659,12 @@ impl AdapterResult {
         }
     }
 
-    /// Validate whether this result may act as publication authority.
+    /// Fail closed because publication authority requires the admitted invocation input.
     pub fn validate_authority(&self) -> Result<(), AdapterAuthorityError> {
+        Err(AdapterAuthorityError::InputRequired)
+    }
+
+    fn validate_structure(&self) -> Result<(), AdapterAuthorityError> {
         if self.schema_version != FRAMEWORK_ADAPTER_SCHEMA_VERSION
             || self.descriptor.schema_version != FRAMEWORK_ADAPTER_SCHEMA_VERSION
         {
@@ -842,46 +702,130 @@ impl AdapterResult {
         Ok(())
     }
 
+    /// Validate this result against the exact input admitted for the invocation.
+    pub fn validate_authority_against(
+        &self,
+        input: &AdapterInput,
+    ) -> Result<(), AdapterAuthorityError> {
+        self.validate_structure()?;
+        if self.descriptor != input.descriptor
+            || self.source_scope != input.source_scope
+            || self.invocation_generation != input.source_scope.primary_generation
+        {
+            return Err(AdapterAuthorityError::InputMismatch);
+        }
+
+        let AdapterOutcome::Applied { sink, limitations } = &self.outcome else {
+            return Err(AdapterAuthorityError::IncompleteOutcome);
+        };
+        if let Some(budget) = input.budget
+            && (sink.facts.len() > budget.max_emitted_facts as usize
+                || sink.total_payload_bytes > budget.max_payload_bytes)
+        {
+            return Err(AdapterAuthorityError::BudgetExceeded);
+        }
+        if sink.serialized_payload_bytes() != Some(sink.total_payload_bytes) {
+            return Err(AdapterAuthorityError::PayloadMismatch);
+        }
+
+        let mut fact_ids = BTreeSet::new();
+        for fact in &sink.facts {
+            if !fact_ids.insert(fact.envelope.fact_id) {
+                return Err(AdapterAuthorityError::DuplicateFactId);
+            }
+            if !input.required_fact_classes.contains(&fact.fact_class) {
+                return Err(AdapterAuthorityError::UnsupportedFactClass);
+            }
+            if fact.envelope.package != input.source_scope.package_name {
+                return Err(AdapterAuthorityError::PackageIdentityMismatch);
+            }
+            if !dependencies_match(
+                fact.envelope.invalidation_dependencies(),
+                &input.invalidation_inputs,
+            ) {
+                return Err(AdapterAuthorityError::InvalidationMismatch);
+            }
+            if fact.limitation.as_ref().is_some_and(|limitation| {
+                confidence_exceeds(fact.confidence, limitation.confidence_impact)
+            }) || limitations
+                .iter()
+                .any(|limitation| confidence_exceeds(fact.confidence, limitation.confidence_impact))
+            {
+                return Err(AdapterAuthorityError::ConfidenceLimitExceeded);
+            }
+        }
+        Ok(())
+    }
+
     /// Whether this result passed the complete authority contract.
     #[must_use]
     pub fn is_authoritative(&self) -> bool {
-        self.validate_authority().is_ok()
+        false
+    }
+
+    /// Whether this result passed the complete authority contract for `input`.
+    #[must_use]
+    pub fn is_authoritative_against(&self, input: &AdapterInput) -> bool {
+        self.validate_authority_against(input).is_ok()
     }
 }
 
+impl FactSink {
+    /// Return the canonical serialized size of the emitted fact payload.
+    #[must_use]
+    pub fn serialized_payload_bytes(&self) -> Option<u64> {
+        if self.facts.is_empty() {
+            return Some(0);
+        }
+        serde_json::to_vec(&self.facts).ok().and_then(|payload| u64::try_from(payload.len()).ok())
+    }
+}
+
+fn dependencies_match(
+    actual: &[InvalidationDependency],
+    expected: &[InvalidationDependency],
+) -> bool {
+    let mut actual = actual.to_vec();
+    let mut expected = expected.to_vec();
+    actual.sort();
+    expected.sort();
+    dependencies_are_coherent(&actual) && dependencies_are_coherent(&expected) && actual == expected
+}
+
+fn confidence_exceeds(actual: Confidence, ceiling: Confidence) -> bool {
+    matches!(
+        (actual, ceiling),
+        (Confidence::High, Confidence::Medium | Confidence::Low)
+            | (Confidence::Medium, Confidence::Low)
+    )
+}
+
 fn dependencies_are_coherent(dependencies: &[InvalidationDependency]) -> bool {
-    if dependencies
-        .iter()
-        .any(|dependency| dependency.dependency_key.trim().is_empty() || !dependency.generation.is_known())
-    {
+    if dependencies.iter().any(|dependency| {
+        dependency.dependency_key.trim().is_empty() || !dependency.generation.is_known()
+    }) {
         return false;
     }
     dependencies.windows(2).all(|pair| {
-        pair[0].dependency_key != pair[1].dependency_key
-            || pair[0].generation == pair[1].generation
+        pair[0].dependency_key != pair[1].dependency_key || pair[0].generation == pair[1].generation
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `LifecyclePhase` is referenced only from these tests, so importing it at
+    // module scope makes it an unused import in a non-test build.
     use crate::{
-        EntityId, FactId, SemanticFactKind, SemanticReasonCode, SourceAnchor,
+        EntityId, FactId, LifecyclePhase, SemanticFactKind, SemanticReasonCode, SourceAnchor,
     };
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     };
 
     fn descriptor(disposition: AdapterDisposition) -> AdapterDescriptor {
-        AdapterDescriptor::new(
-            AdapterId(1),
-            "moo",
-            "Moo",
-            None,
-            1,
-            disposition,
-        )
+        AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, disposition)
     }
 
     fn scope() -> AdapterSourceScope {
@@ -927,14 +871,14 @@ mod tests {
     fn applied(disposition: AdapterDisposition, fact: EmittedFact) -> AdapterResult {
         let mut sink = FactSink::new(FactSinkId(7), AdapterId(1));
         sink.facts.push(fact);
+        if let Some(bytes) = sink.serialized_payload_bytes() {
+            sink.total_payload_bytes = bytes;
+        }
         AdapterResult::new(
             descriptor(disposition),
             scope(),
             SourceGeneration::known("generation-1"),
-            AdapterOutcome::Applied {
-                sink,
-                limitations: Vec::new(),
-            },
+            AdapterOutcome::Applied { sink, limitations: Vec::new() },
         )
     }
 
@@ -956,36 +900,8 @@ mod tests {
     }
 
     #[test]
-    fn version_qualified_absence_requires_version_evidence() {
-        let result = AdapterDetectionResult::new(
-            AdapterDescriptor::new(
-                AdapterId(1),
-                "moo",
-                "Moo",
-                Some(">=2".to_string()),
-                1,
-                AdapterDisposition::Production,
-            ),
-            SourceGeneration::known("project-1"),
-            DetectionOutcome::Absent {
-                reason: DetectionAbsenceReason::VersionConstraintNotSatisfied,
-            },
-        );
-        assert!(!result.is_authoritative());
-
-        let result = result.with_version_evidence(ModuleVersionEvidence::new(
-            "1.9",
-            SourceGeneration::known("project-1"),
-        ));
-        assert!(result.is_authoritative());
-    }
-
-    #[test]
     fn shadow_and_experimental_results_are_not_authoritative() {
-        for disposition in [
-            AdapterDisposition::Shadow,
-            AdapterDisposition::Experimental,
-        ] {
+        for disposition in [AdapterDisposition::Shadow, AdapterDisposition::Experimental] {
             let fact = EmittedFact::new(
                 FactSinkId(7),
                 AdapterId(1),
@@ -997,7 +913,10 @@ mod tests {
                 None,
                 false,
             );
-            assert!(!applied(disposition, fact).is_authoritative());
+            assert_eq!(
+                applied(disposition, fact).validate_authority_against(&input()),
+                Err(AdapterAuthorityError::NonProduction)
+            );
         }
     }
 
@@ -1017,8 +936,138 @@ mod tests {
         let mut result = applied(AdapterDisposition::Production, fact);
         result.invocation_generation = SourceGeneration::known("generation-2");
         assert_eq!(
-            result.validate_authority(),
+            result.validate_authority_against(&input()),
             Err(AdapterAuthorityError::GenerationMismatch)
+        );
+    }
+
+    fn input() -> AdapterInput {
+        AdapterInput::new(
+            descriptor(AdapterDisposition::Production),
+            scope(),
+            vec![FactClass::GeneratedMembers],
+            Vec::new(),
+            Some(AdapterBudget::new(1, 4096)),
+            AdapterCancellation::active(),
+        )
+    }
+
+    #[test]
+    fn authority_requires_the_admitted_input() {
+        let fact = EmittedFact::new(
+            FactSinkId(7),
+            AdapterId(1),
+            "Moo",
+            Provenance::FrameworkSynthesis,
+            Confidence::High,
+            envelope(Provenance::FrameworkSynthesis),
+            FactClass::GeneratedMembers,
+            None,
+            false,
+        );
+        let result = applied(AdapterDisposition::Production, fact);
+        assert_eq!(result.validate_authority(), Err(AdapterAuthorityError::InputRequired));
+        assert!(!result.is_authoritative());
+        assert!(result.is_authoritative_against(&input()));
+    }
+
+    #[test]
+    fn authority_rejects_budget_class_dependency_and_payload_forgery() {
+        let fact = EmittedFact::new(
+            FactSinkId(7),
+            AdapterId(1),
+            "Moo",
+            Provenance::FrameworkSynthesis,
+            Confidence::High,
+            envelope(Provenance::FrameworkSynthesis),
+            FactClass::GeneratedMembers,
+            None,
+            false,
+        );
+        let mut result = applied(AdapterDisposition::Production, fact);
+
+        let mut budget = input();
+        budget.budget = Some(AdapterBudget::new(0, 4096));
+        assert_eq!(
+            result.validate_authority_against(&budget),
+            Err(AdapterAuthorityError::BudgetExceeded)
+        );
+
+        let mut unsupported = input();
+        unsupported.required_fact_classes = vec![FactClass::Diagnostics];
+        assert_eq!(
+            result.validate_authority_against(&unsupported),
+            Err(AdapterAuthorityError::UnsupportedFactClass)
+        );
+
+        let mut dependency = input();
+        dependency.invalidation_inputs = vec![InvalidationDependency::new(
+            "module:Moo",
+            SourceGeneration::known("generation-1"),
+        )];
+        assert_eq!(
+            result.validate_authority_against(&dependency),
+            Err(AdapterAuthorityError::InvalidationMismatch)
+        );
+
+        if let AdapterOutcome::Applied { sink, .. } = &mut result.outcome {
+            sink.total_payload_bytes = 0;
+        }
+        assert_eq!(
+            result.validate_authority_against(&input()),
+            Err(AdapterAuthorityError::PayloadMismatch)
+        );
+    }
+
+    #[test]
+    fn authority_rejects_package_confidence_and_duplicate_identity_forgery() {
+        let mut fact = EmittedFact::new(
+            FactSinkId(7),
+            AdapterId(1),
+            "Moo",
+            Provenance::FrameworkSynthesis,
+            Confidence::High,
+            envelope(Provenance::FrameworkSynthesis),
+            FactClass::GeneratedMembers,
+            Some(FactLimitation::new("partial", false, Confidence::Low)),
+            false,
+        );
+        let mut package_result = applied(AdapterDisposition::Production, fact.clone());
+        if let AdapterOutcome::Applied { sink, .. } = &mut package_result.outcome {
+            sink.facts[0].envelope.package = Some("Other".to_string());
+            if let Some(bytes) = sink.serialized_payload_bytes() {
+                sink.total_payload_bytes = bytes;
+            }
+        }
+        assert_eq!(
+            package_result.validate_authority_against(&input()),
+            Err(AdapterAuthorityError::PackageIdentityMismatch)
+        );
+
+        let confidence_result = applied(AdapterDisposition::Production, fact.clone());
+        assert_eq!(
+            confidence_result.validate_authority_against(&input()),
+            Err(AdapterAuthorityError::ConfidenceLimitExceeded)
+        );
+
+        fact.limitation = None;
+        let mut duplicate_result = applied(AdapterDisposition::Production, fact.clone());
+        if let AdapterOutcome::Applied { sink, .. } = &mut duplicate_result.outcome {
+            sink.facts.push(fact);
+            if let Some(bytes) = sink.serialized_payload_bytes() {
+                sink.total_payload_bytes = bytes;
+            }
+        }
+        // The shared `input()` budget caps emitted facts at 1, so a second fact
+        // trips `BudgetExceeded` before the duplicate scan is ever reached. Widen
+        // the budget here so this assertion actually exercises duplicate-fact-id
+        // detection; `authority_rejects_budget_class_dependency_and_payload_forgery`
+        // already covers the budget path on its own.
+        let mut duplicate_input = input();
+        duplicate_input.budget = Some(AdapterBudget::new(2, 4096));
+        assert_eq!(
+            duplicate_result.validate_authority_against(&duplicate_input),
+            Err(AdapterAuthorityError::DuplicateFactId)
         );
     }
 
@@ -1037,7 +1086,10 @@ mod tests {
         );
         assert!(fact.is_stronger_than_generated);
         assert!(!fact.can_override_generated());
-        assert!(!applied(AdapterDisposition::Production, fact).is_authoritative());
+        assert_eq!(
+            applied(AdapterDisposition::Production, fact).validate_authority_against(&input()),
+            Err(AdapterAuthorityError::InvalidFact)
+        );
     }
 
     #[test]
@@ -1054,7 +1106,7 @@ mod tests {
             true,
         );
         assert!(fact.can_override_generated());
-        assert!(applied(AdapterDisposition::Production, fact).is_authoritative());
+        assert!(applied(AdapterDisposition::Production, fact).is_authoritative_against(&input()));
     }
 
     #[test]

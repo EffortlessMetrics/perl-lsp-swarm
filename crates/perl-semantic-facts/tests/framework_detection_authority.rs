@@ -1,10 +1,9 @@
 use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDescriptor, AdapterDetectionInput, AdapterDetectionResult,
     AdapterDisposition, AdapterId, DetectionAbsenceReason, DetectionAuthorityError,
-    DetectionConfigurationEvidence, DetectionConfigurationObservation,
-    DetectionConfigurationValue, DetectionEvidenceClass, DetectionOutcome,
-    ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
-    ModuleVersionEvidence,
+    DetectionConfigurationEvidence, DetectionConfigurationObservation, DetectionConfigurationValue,
+    DetectionEvidenceClass, DetectionOutcome, ModuleActivationIdentity, ModuleObservationReceipt,
+    ModuleSelectorEvaluation, ModuleVersionEvidence,
 };
 use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 
@@ -20,11 +19,8 @@ fn descriptor(constraint: Option<&str>) -> AdapterDescriptor {
 }
 
 fn module(name: &str, generation: &str, version: Option<&str>) -> ModuleActivationIdentity {
-    let row = ModuleActivationIdentity::new(
-        name,
-        Some(FileId(7)),
-        SourceGeneration::known(generation),
-    );
+    let row =
+        ModuleActivationIdentity::new(name, Some(FileId(7)), SourceGeneration::known(generation));
     match version {
         Some(version) => row.with_observed_version(ModuleVersionEvidence::new(
             version,
@@ -34,9 +30,7 @@ fn module(name: &str, generation: &str, version: Option<&str>) -> ModuleActivati
     }
 }
 
-fn observation(
-    evaluations: Vec<ModuleSelectorEvaluation>,
-) -> ModuleObservationReceipt {
+fn observation(evaluations: Vec<ModuleSelectorEvaluation>) -> ModuleObservationReceipt {
     ModuleObservationReceipt::new(
         "module-resolver.v1",
         "root:fixture",
@@ -61,15 +55,10 @@ fn matched_moo(
     evidence_class: DetectionEvidenceClass,
 ) -> (ModuleSelectorEvaluation, ModuleActivationIdentity) {
     let activation = module("Moo", "project-1", version);
-    (
-        ModuleSelectorEvaluation::matched("Moo", activation.clone(), evidence_class),
-        activation,
-    )
+    (ModuleSelectorEvaluation::matched("Moo", activation.clone(), evidence_class), activation)
 }
 
-fn configuration_observation(
-    value: bool,
-) -> DetectionConfigurationObservation {
+fn configuration_observation(value: bool) -> DetectionConfigurationObservation {
     DetectionConfigurationObservation::new(
         "workspace-config:perl-lsp.toml",
         "sha256:configuration",
@@ -87,10 +76,7 @@ fn raw_deserialized_shape_cannot_self_authorize_detection() {
     let result = AdapterDetectionResult::new(
         descriptor(None),
         SourceGeneration::known("project-1"),
-        DetectionOutcome::Detected {
-            confidence: Confidence::High,
-            framework_version: None,
-        },
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
     );
     let (evaluation, _) = matched_moo(None, DetectionEvidenceClass::ResolvedModule);
     let observed = input(vec![evaluation]);
@@ -106,9 +92,7 @@ fn required_module_present_invalidates_missing_module_verdict() {
     let observed = input(vec![evaluation]);
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Absent {
-            reason: DetectionAbsenceReason::RequiredModulesMissing,
-        },
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::RequiredModulesMissing },
     );
     assert_eq!(
         result.validate_authority_against(&observed),
@@ -118,15 +102,11 @@ fn required_module_present_invalidates_missing_module_verdict() {
 
 #[test]
 fn unresolved_selector_cannot_prove_absence() {
-    let observed = input(vec![ModuleSelectorEvaluation::unresolved(
-        "Moo",
-        "module resolver unavailable",
-    )]);
+    let observed =
+        input(vec![ModuleSelectorEvaluation::unresolved("Moo", "module resolver unavailable")]);
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Absent {
-            reason: DetectionAbsenceReason::RequiredModulesMissing,
-        },
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::RequiredModulesMissing },
     );
     assert_eq!(
         result.validate_authority_against(&observed),
@@ -142,10 +122,7 @@ fn copied_result_cannot_authorize_another_input() {
     let second = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
     let result = AdapterDetectionResult::for_input(
         &first,
-        DetectionOutcome::Detected {
-            confidence: Confidence::High,
-            framework_version: None,
-        },
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
     )
     .with_contributing_modules(vec![first_activation]);
     assert_eq!(
@@ -167,10 +144,7 @@ fn version_string_without_observed_module_evidence_is_not_authority() {
         },
     )
     .with_contributing_modules(vec![activation])
-    .with_version_evidence(ModuleVersionEvidence::new(
-        "2.1",
-        SourceGeneration::known("project-1"),
-    ));
+    .with_version_evidence(ModuleVersionEvidence::new("2.1", SourceGeneration::known("project-1")));
     assert_eq!(
         result.validate_authority_against(&observed),
         Err(DetectionAuthorityError::InvalidVersionEvidence)
@@ -182,9 +156,7 @@ fn configuration_exclusion_requires_matching_typed_fact() {
     let observed = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Absent {
-            reason: DetectionAbsenceReason::ExcludedByConfiguration,
-        },
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::ExcludedByConfiguration },
     );
     assert_eq!(
         result.validate_authority_against(&observed),
@@ -194,8 +166,7 @@ fn configuration_exclusion_requires_matching_typed_fact() {
 
 #[test]
 fn exact_current_detected_result_is_authoritative() {
-    let (evaluation, activation) =
-        matched_moo(Some("2.1"), DetectionEvidenceClass::ResolvedModule);
+    let (evaluation, activation) = matched_moo(Some("2.1"), DetectionEvidenceClass::ResolvedModule);
     let mut observed = input(vec![evaluation]);
     observed.descriptor = descriptor(Some(">=2"));
     let result = AdapterDetectionResult::for_input(
@@ -206,10 +177,7 @@ fn exact_current_detected_result_is_authoritative() {
         },
     )
     .with_contributing_modules(vec![activation])
-    .with_version_evidence(ModuleVersionEvidence::new(
-        "2.1",
-        SourceGeneration::known("project-1"),
-    ));
+    .with_version_evidence(ModuleVersionEvidence::new("2.1", SourceGeneration::known("project-1")));
     assert!(result.is_authoritative_against(&observed));
 }
 
@@ -218,9 +186,7 @@ fn exact_complete_missing_module_result_is_authoritative() {
     let observed = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Absent {
-            reason: DetectionAbsenceReason::RequiredModulesMissing,
-        },
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::RequiredModulesMissing },
     );
     assert!(result.is_authoritative_against(&observed));
 }
@@ -237,9 +203,7 @@ fn exact_configuration_exclusion_is_authoritative() {
     );
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Absent {
-            reason: DetectionAbsenceReason::ExcludedByConfiguration,
-        },
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::ExcludedByConfiguration },
     )
     .with_configuration_evidence(evidence);
     assert!(result.is_authoritative_against(&observed));
@@ -251,10 +215,7 @@ fn duplicate_or_cross_generation_selector_rows_fail_closed() {
     let observed = input(vec![evaluation.clone(), evaluation]);
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Detected {
-            confidence: Confidence::High,
-            framework_version: None,
-        },
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
     );
     assert_eq!(
         result.validate_authority_against(&observed),
@@ -269,10 +230,7 @@ fn duplicate_or_cross_generation_selector_rows_fail_closed() {
     )]);
     let result = AdapterDetectionResult::for_input(
         &stale,
-        DetectionOutcome::Detected {
-            confidence: Confidence::High,
-            framework_version: None,
-        },
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
     );
     assert_eq!(
         result.validate_authority_against(&stale),
@@ -287,10 +245,7 @@ fn empty_content_digest_has_its_own_failure_class() {
     observed.module_observation.content_digest.clear();
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Detected {
-            confidence: Confidence::High,
-            framework_version: None,
-        },
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
     );
     assert_eq!(
         result.validate_authority_against(&observed),
@@ -308,10 +263,7 @@ fn descriptor_owned_selector_cannot_be_substituted() {
     )]);
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Detected {
-            confidence: Confidence::High,
-            framework_version: None,
-        },
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
     );
     assert_eq!(
         result.validate_authority_against(&observed),
@@ -321,15 +273,11 @@ fn descriptor_owned_selector_cannot_be_substituted() {
 
 #[test]
 fn asserted_high_confidence_cannot_upgrade_probable_evidence() {
-    let (evaluation, activation) =
-        matched_moo(None, DetectionEvidenceClass::ProbableImport);
+    let (evaluation, activation) = matched_moo(None, DetectionEvidenceClass::ProbableImport);
     let observed = input(vec![evaluation]);
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Detected {
-            confidence: Confidence::High,
-            framework_version: None,
-        },
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
     )
     .with_contributing_modules(vec![activation]);
     assert_eq!(
@@ -350,9 +298,7 @@ fn matching_key_with_nonexcluding_value_cannot_prove_exclusion() {
     );
     let result = AdapterDetectionResult::for_input(
         &observed,
-        DetectionOutcome::Absent {
-            reason: DetectionAbsenceReason::ExcludedByConfiguration,
-        },
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::ExcludedByConfiguration },
     )
     .with_configuration_evidence(evidence);
     assert_eq!(

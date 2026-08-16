@@ -1,6 +1,5 @@
 use super::model::{
-    AdapterDetectionInput, AdapterDetectionResult, DetectionAuthorityError,
-    ModuleSelectorOutcome,
+    AdapterDetectionInput, AdapterDetectionResult, DetectionAuthorityError, ModuleSelectorOutcome,
 };
 use super::validation_input::{
     derived_confidence, descriptor_selectors, expected_contributing_modules, matched_evidence,
@@ -15,8 +14,8 @@ pub(super) fn validate_detected(
     asserted_confidence: Confidence,
     framework_version: Option<&str>,
 ) -> Result<(), DetectionAuthorityError> {
-    let derived = derived_confidence(input)
-        .ok_or(DetectionAuthorityError::MissingContributingEvidence)?;
+    let derived =
+        derived_confidence(input).ok_or(DetectionAuthorityError::MissingContributingEvidence)?;
     if asserted_confidence != derived || derived != Confidence::High {
         return Err(DetectionAuthorityError::InsufficientConfidence);
     }
@@ -77,17 +76,15 @@ pub(super) fn validate_version_absence(
         return Err(DetectionAuthorityError::InsufficientConfidence);
     }
     validate_exact_contributors(result, input)?;
-    let evidence = result
-        .version_evidence
-        .as_ref()
-        .ok_or(DetectionAuthorityError::InvalidVersionEvidence)?;
+    let evidence =
+        result.version_evidence.as_ref().ok_or(DetectionAuthorityError::InvalidVersionEvidence)?;
     let activation_has_evidence = descriptor_selectors(input).into_iter().all(|selector| {
-        selector_evaluation(input, selector)
-            .and_then(matched_evidence)
-            .is_some_and(|(activation, _)| {
+        selector_evaluation(input, selector).and_then(matched_evidence).is_some_and(
+            |(activation, _)| {
                 activation.observed_version.as_ref() == Some(evidence)
                     && evidence.generation == input.module_observation.generation
-            })
+            },
+        )
     });
     if !activation_has_evidence {
         return Err(DetectionAuthorityError::InvalidVersionEvidence);
@@ -108,9 +105,7 @@ pub(super) fn validate_configuration_absence(
         .as_ref()
         .ok_or(DetectionAuthorityError::MissingConfigurationEvidence)?;
     if evidence.rule_identity.trim().is_empty()
-        || !input
-            .configuration_observations
-            .contains(&evidence.observation)
+        || !input.configuration_observations.contains(&evidence.observation)
         || evidence.observation.generation != input.module_observation.generation
     {
         return Err(DetectionAuthorityError::InvalidConfigurationEvidence);
@@ -140,10 +135,8 @@ fn validate_result_version(
     input: &AdapterDetectionInput,
     framework_version: &str,
 ) -> Result<(), DetectionAuthorityError> {
-    let evidence = result
-        .version_evidence
-        .as_ref()
-        .ok_or(DetectionAuthorityError::InvalidVersionEvidence)?;
+    let evidence =
+        result.version_evidence.as_ref().ok_or(DetectionAuthorityError::InvalidVersionEvidence)?;
     if evidence.version != framework_version
         || evidence.generation != input.module_observation.generation
     {

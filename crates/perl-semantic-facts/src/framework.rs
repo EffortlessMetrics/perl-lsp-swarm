@@ -5,10 +5,10 @@
 //! presence or absence from its own assertions. Authoritative detection always
 //! validates against the exact observed input and reason-specific evidence.
 
-#[path = "framework_raw.rs"]
-mod raw;
 #[path = "framework_checked/model.rs"]
 mod model;
+#[path = "framework_raw.rs"]
+mod raw;
 #[path = "framework_checked/validation.rs"]
 mod validation;
 #[path = "framework_checked/validation_input.rs"]
@@ -22,8 +22,8 @@ pub use model::*;
 pub use raw::{
     AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterCancellationControl,
     AdapterDescriptor, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome, AdapterResult,
-    AdapterSourceScope, DetectionAbsenceReason, DetectionOutcome, EmittedFact, FactClass,
-    FactLimitation, FactSink, FactSinkId, ModuleActivationIdentity, ModuleVersionEvidence,
-    NoopAdapterCancellationControl, UnavailableReason, FRAMEWORK_ADAPTER_SCHEMA_VERSION,
-    FRAMEWORK_ADAPTER_SDK_VERSION,
+    AdapterSourceScope, DetectionAbsenceReason, DetectionOutcome, EmittedFact,
+    FRAMEWORK_ADAPTER_SCHEMA_VERSION, FRAMEWORK_ADAPTER_SDK_VERSION, FactClass, FactLimitation,
+    FactSink, FactSinkId, ModuleActivationIdentity, ModuleVersionEvidence,
+    NoopAdapterCancellationControl, UnavailableReason,
 };

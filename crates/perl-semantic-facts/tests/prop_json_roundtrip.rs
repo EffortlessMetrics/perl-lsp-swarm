@@ -984,8 +984,10 @@ fn arb_value_shape() -> impl Strategy<Value = ValueShape> {
 use perl_semantic_facts::framework::{
     AdapterBudget, AdapterCancellation, AdapterDescriptor, AdapterDetectionInput,
     AdapterDetectionResult, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome,
-    AdapterResult, AdapterSourceScope, DetectionAbsenceReason, DetectionOutcome, EmittedFact,
-    FactClass, FactLimitation, FactSink, FactSinkId, ModuleActivationIdentity, UnavailableReason,
+    AdapterResult, AdapterSourceScope, DetectionAbsenceReason, DetectionEvidenceClass,
+    DetectionOutcome, EmittedFact, FactClass, FactLimitation, FactSink, FactSinkId,
+    ModuleActivationIdentity, ModuleObservationReceipt, ModuleSelectorEvaluation,
+    UnavailableReason,
 };
 
 fn arb_adapter_id() -> impl Strategy<Value = AdapterId> {
@@ -1040,17 +1042,43 @@ fn arb_adapter_budget() -> impl Strategy<Value = AdapterBudget> {
         .prop_map(|(facts, bytes)| AdapterBudget::new(facts, bytes))
 }
 
+fn arb_module_selector_evaluation() -> impl Strategy<Value = ModuleSelectorEvaluation> {
+    arb_module_activation_identity().prop_map(|activation| {
+        ModuleSelectorEvaluation::matched(
+            activation.module_name.clone(),
+            activation,
+            DetectionEvidenceClass::ResolvedModule,
+        )
+    })
+}
+
+fn arb_module_observation_receipt() -> impl Strategy<Value = ModuleObservationReceipt> {
+    (
+        arb_source_generation(),
+        "[a-f0-9]{8}".prop_map(|s| format!("digest:{s}")),
+        proptest::collection::vec(arb_module_selector_evaluation(), 0..5),
+    )
+        .prop_map(|(generation, content_digest, evaluations)| {
+            ModuleObservationReceipt::new(
+                "module-resolver.v1",
+                "root:prop-fixture",
+                "project-environment.v1",
+                generation,
+                content_digest,
+                evaluations,
+            )
+        })
+}
+
 fn arb_adapter_detection_input() -> impl Strategy<Value = AdapterDetectionInput> {
     (
         arb_adapter_descriptor(),
-        proptest::collection::vec(arb_module_activation_identity(), 0..5),
-        arb_source_generation(),
-        proptest::option::of("[a-f0-9]{8}".prop_map(|s| format!("digest:{s}"))),
+        arb_module_observation_receipt(),
         proptest::option::of(arb_adapter_budget()),
         arb_adapter_cancellation(),
     )
-        .prop_map(|(descriptor, modules, project_gen, digest, budget, cancel)| {
-            AdapterDetectionInput::new(descriptor, modules, project_gen, digest, budget, cancel)
+        .prop_map(|(descriptor, observation, budget, cancel)| {
+            AdapterDetectionInput::new(descriptor, observation, budget, cancel)
         })
 }
 

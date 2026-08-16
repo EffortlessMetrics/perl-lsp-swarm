@@ -20,11 +20,11 @@ doctest = false
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 perl-test-must = { workspace = true }
 proptest = { workspace = true }
-serde_json = { workspace = true }
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

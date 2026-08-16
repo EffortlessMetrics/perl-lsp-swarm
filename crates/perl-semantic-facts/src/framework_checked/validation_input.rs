@@ -1,7 +1,7 @@
 use super::model::{
-    AdapterDetectionInput, AdapterDetectionResult, DetectionAuthorityError,
-    DetectionConfigurationObservation, DetectionEvidenceClass, ModuleSelectorEvaluation,
-    ModuleSelectorOutcome, DETECTION_AUTHORITY_SCHEMA_VERSION,
+    AdapterDetectionInput, AdapterDetectionResult, DETECTION_AUTHORITY_SCHEMA_VERSION,
+    DetectionAuthorityError, DetectionConfigurationObservation, DetectionEvidenceClass,
+    ModuleSelectorEvaluation, ModuleSelectorOutcome,
 };
 use super::{AdapterDisposition, FRAMEWORK_ADAPTER_SCHEMA_VERSION, ModuleActivationIdentity};
 use crate::Confidence;
@@ -15,21 +15,16 @@ pub(super) fn selector_evaluation<'a>(
     input: &'a AdapterDetectionInput,
     selector: &str,
 ) -> Option<&'a ModuleSelectorEvaluation> {
-    input
-        .module_observation
-        .evaluations
-        .iter()
-        .find(|evaluation| evaluation.selector == selector)
+    input.module_observation.evaluations.iter().find(|evaluation| evaluation.selector == selector)
 }
 
 pub(super) fn matched_evidence(
     evaluation: &ModuleSelectorEvaluation,
 ) -> Option<(&ModuleActivationIdentity, DetectionEvidenceClass)> {
     match &evaluation.outcome {
-        ModuleSelectorOutcome::Matched {
-            activation,
-            evidence_class,
-        } => Some((activation, *evidence_class)),
+        ModuleSelectorOutcome::Matched { activation, evidence_class } => {
+            Some((activation, *evidence_class))
+        }
         _ => None,
     }
 }
@@ -89,9 +84,7 @@ pub(super) fn validate_input(input: &AdapterDetectionInput) -> Result<(), Detect
     let mut evaluations = BTreeMap::new();
     for evaluation in &input.module_observation.evaluations {
         if evaluation.selector.trim().is_empty()
-            || evaluations
-                .insert(evaluation.selector.as_str(), evaluation)
-                .is_some()
+            || evaluations.insert(evaluation.selector.as_str(), evaluation).is_some()
         {
             return Err(DetectionAuthorityError::InvalidSelectorEvidence);
         }

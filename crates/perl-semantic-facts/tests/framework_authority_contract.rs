@@ -1,16 +1,16 @@
 use perl_semantic_facts::framework::{
-    AdapterCancellation, AdapterCancellationControl, AdapterDescriptor, AdapterDisposition,
-    AdapterId, AdapterOutcome, AdapterResult, AdapterSourceScope, EmittedFact, FactClass, FactSink,
-    FactSinkId,
+    AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterCancellationControl,
+    AdapterDescriptor, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome, AdapterResult,
+    AdapterSourceScope, EmittedFact, FactClass, FactSink, FactSinkId,
 };
 use perl_semantic_facts::{
-    AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance,
-    SemanticConfidence, SemanticFactEnvelope, SemanticFactKind, SemanticFreshness,
-    SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
+    AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance, SemanticConfidence,
+    SemanticFactEnvelope, SemanticFactKind, SemanticFreshness, SemanticProducer,
+    SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
 };
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 struct AtomicCancellation(Arc<AtomicBool>);
@@ -62,14 +62,25 @@ fn envelope(provenance: Provenance) -> SemanticFactEnvelope {
 fn result(disposition: AdapterDisposition, fact: EmittedFact) -> AdapterResult {
     let mut sink = FactSink::new(FactSinkId(9), AdapterId(7));
     sink.facts.push(fact);
+    if let Some(bytes) = sink.serialized_payload_bytes() {
+        sink.total_payload_bytes = bytes;
+    }
     AdapterResult::new(
         descriptor(disposition),
         scope(),
         SourceGeneration::known("source-1"),
-        AdapterOutcome::Applied {
-            sink,
-            limitations: Vec::new(),
-        },
+        AdapterOutcome::Applied { sink, limitations: Vec::new() },
+    )
+}
+
+fn input() -> AdapterInput {
+    AdapterInput::new(
+        descriptor(AdapterDisposition::Production),
+        scope(),
+        vec![FactClass::GeneratedMembers],
+        Vec::new(),
+        Some(AdapterBudget::new(2, 4096)),
+        AdapterCancellation::active(),
     )
 }
 
@@ -100,7 +111,10 @@ fn nonproduction_output_cannot_become_authority() {
             None,
             false,
         );
-        assert!(!result(disposition, fact).is_authoritative());
+        assert_eq!(
+            result(disposition, fact).validate_authority_against(&input()),
+            Err(AdapterAuthorityError::NonProduction)
+        );
     }
 }
 
@@ -119,7 +133,10 @@ fn generated_precedence_claim_is_not_publication_authority() {
     );
     assert!(fact.is_stronger_than_generated, "compatibility input is retained");
     assert!(!fact.can_override_generated(), "generated provenance cannot validate the hint");
-    assert!(!result(AdapterDisposition::Production, fact).is_authoritative());
+    assert_eq!(
+        result(AdapterDisposition::Production, fact).validate_authority_against(&input()),
+        Err(AdapterAuthorityError::InvalidFact)
+    );
 }
 
 #[test]
@@ -136,7 +153,10 @@ fn exact_source_precedence_is_generation_bound() {
         true,
     );
     let mut candidate = result(AdapterDisposition::Production, fact);
-    assert!(candidate.is_authoritative());
+    assert!(candidate.is_authoritative_against(&input()));
     candidate.invocation_generation = SourceGeneration::known("source-2");
-    assert!(!candidate.is_authoritative());
+    assert_eq!(
+        candidate.validate_authority_against(&input()),
+        Err(AdapterAuthorityError::GenerationMismatch)
+    );
 }

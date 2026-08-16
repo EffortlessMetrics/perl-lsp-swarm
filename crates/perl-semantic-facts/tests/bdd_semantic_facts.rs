@@ -1055,46 +1055,54 @@ fn given_mixed_provenance_facts_when_compared_then_exact_ast_most_reliable() {
 fn given_moo_module_in_activation_list_when_detection_runs_then_detected_with_confidence() {
     use perl_semantic_facts::framework::{
         AdapterBudget, AdapterCancellation, AdapterDescriptor, AdapterDetectionInput,
-        AdapterDetectionResult, AdapterDisposition, AdapterId, DetectionOutcome,
-        ModuleActivationIdentity,
+        AdapterDetectionResult, AdapterDisposition, AdapterId, DetectionEvidenceClass,
+        DetectionOutcome, ModuleActivationIdentity, ModuleObservationReceipt,
+        ModuleSelectorEvaluation, ModuleSelectorOutcome,
     };
     use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
 
     let descriptor =
         AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, AdapterDisposition::Production);
-    let available_modules = vec![
-        ModuleActivationIdentity::new(
-            "Moo",
-            Some(FileId(10)),
-            SourceGeneration::known("sha256:moo-ver"),
-        ),
-        ModuleActivationIdentity::new(
-            "Moo::Role",
-            Some(FileId(11)),
-            SourceGeneration::known("sha256:moo-role-ver"),
-        ),
-    ];
-    let input = AdapterDetectionInput::new(
-        descriptor.clone(),
-        available_modules,
+    let moo = ModuleActivationIdentity::new(
+        "Moo",
+        Some(FileId(10)),
         SourceGeneration::known("sha256:project"),
-        None,
+    );
+    let observation = ModuleObservationReceipt::new(
+        "module-resolver.v1",
+        "root:bdd-fixture",
+        "project-environment.v1",
+        SourceGeneration::known("sha256:project"),
+        "sha256:input",
+        vec![ModuleSelectorEvaluation::matched(
+            "Moo",
+            moo.clone(),
+            DetectionEvidenceClass::ResolvedModule,
+        )],
+    );
+    let input = AdapterDetectionInput::new(
+        descriptor,
+        observation,
         Some(AdapterBudget::new(10, 65_536)),
         AdapterCancellation::active(),
     );
 
-    // Simulate a test adapter decision: Moo is in the list → Detected.
-    let outcome = if input.available_modules.iter().any(|m| m.module_name == "Moo") {
+    // Simulate a test adapter decision: Moo resolved in the observed universe → Detected.
+    let outcome = if input.module_observation.evaluations.iter().any(|evaluation| {
+        evaluation.selector == "Moo"
+            && matches!(evaluation.outcome, ModuleSelectorOutcome::Matched { .. })
+    }) {
         DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None }
     } else {
         DetectionOutcome::Absent {
             reason: perl_semantic_facts::framework::DetectionAbsenceReason::RequiredModulesMissing,
         }
     };
-    let result = AdapterDetectionResult::new(descriptor, input.project_generation.clone(), outcome);
+    let result =
+        AdapterDetectionResult::for_input(&input, outcome).with_contributing_modules(vec![moo]);
 
     assert!(result.is_detected());
-    assert!(result.is_authoritative());
+    assert!(result.is_authoritative_against(&input));
 }
 
 // ── Scenario 20: Framework Adapter — Cancelled Detection ──────────────────
@@ -1104,28 +1112,58 @@ fn given_moo_module_in_activation_list_when_detection_runs_then_detected_with_co
 /// then the outcome is `Cancelled` and no partial state is produced.
 #[test]
 fn given_cancelled_token_when_detection_checked_then_outcome_is_cancelled() {
-    use perl_semantic_facts::SourceGeneration;
     use perl_semantic_facts::framework::{
-        AdapterCancellation, AdapterDescriptor, AdapterDetectionResult, AdapterDisposition,
-        AdapterId, DetectionOutcome,
+        AdapterCancellation, AdapterDescriptor, AdapterDetectionInput, AdapterDetectionResult,
+        AdapterDisposition, AdapterId, DetectionAuthorityError, DetectionEvidenceClass,
+        DetectionOutcome, ModuleActivationIdentity, ModuleObservationReceipt,
+        ModuleSelectorEvaluation,
     };
+    use perl_semantic_facts::{FileId, SourceGeneration};
 
-    let descriptor =
-        AdapterDescriptor::new(AdapterId(2), "moose", "Moose", None, 1, AdapterDisposition::Shadow);
+    let descriptor = AdapterDescriptor::new(
+        AdapterId(2),
+        "moose",
+        "Moose",
+        None,
+        1,
+        AdapterDisposition::Production,
+    );
     let cancellation = AdapterCancellation::cancelled();
     assert!(cancellation.is_cancelled, "token must reflect cancellation request");
 
+    let observation = ModuleObservationReceipt::new(
+        "module-resolver.v1",
+        "root:bdd-fixture",
+        "project-environment.v1",
+        SourceGeneration::known("sha256:project"),
+        "sha256:input",
+        vec![ModuleSelectorEvaluation::matched(
+            "Moose",
+            ModuleActivationIdentity::new(
+                "Moose",
+                Some(FileId(12)),
+                SourceGeneration::known("sha256:project"),
+            ),
+            DetectionEvidenceClass::ResolvedModule,
+        )],
+    );
+    let input = AdapterDetectionInput::new(descriptor, observation, None, cancellation);
+
     // Simulate adapter: bail out immediately if cancelled.
-    let outcome = if cancellation.is_cancelled {
+    let outcome = if input.cancellation.is_cancelled {
         DetectionOutcome::Cancelled
     } else {
         panic!("adapter must not run when cancelled")
     };
-    let result =
-        AdapterDetectionResult::new(descriptor, SourceGeneration::known("sha256:project"), outcome);
+    let result = AdapterDetectionResult::for_input(&input, outcome);
 
     assert!(!result.is_detected());
-    assert!(!result.is_authoritative(), "cancelled result must not be authoritative");
+    // A cancelled admission is refused at the input, before any outcome is trusted.
+    assert_eq!(
+        result.validate_authority_against(&input),
+        Err(DetectionAuthorityError::CancelledInput),
+        "cancelled result must not be authoritative"
+    );
 }
 
 // ── Scenario 21: Framework Adapter — Explicit Declarations Win ────────────
@@ -1219,8 +1257,9 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
 fn given_budget_exceeded_when_adapter_returns_then_partial_facts_accessible_but_not_authoritative()
 {
     use perl_semantic_facts::framework::{
-        AdapterBudget, AdapterId, AdapterOutcome, AdapterResult, AdapterSourceScope, EmittedFact,
-        FactClass, FactSink, FactSinkId,
+        AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterId, AdapterInput,
+        AdapterOutcome, AdapterResult, AdapterSourceScope, EmittedFact, FactClass, FactSink,
+        FactSinkId,
     };
     use perl_semantic_facts::framework::{AdapterDescriptor, AdapterDisposition};
     use perl_semantic_facts::{
@@ -1276,6 +1315,14 @@ fn given_budget_exceeded_when_adapter_returns_then_partial_facts_accessible_but_
     ));
     partial.total_payload_bytes = AdapterBudget::new(1, 1_024).max_payload_bytes + 1;
 
+    let admitted = AdapterInput::new(
+        descriptor.clone(),
+        scope.clone(),
+        vec![FactClass::GeneratedMembers],
+        Vec::new(),
+        Some(AdapterBudget::new(1, 1_024)),
+        AdapterCancellation::active(),
+    );
     let result = AdapterResult::new(
         descriptor,
         scope,
@@ -1285,5 +1332,9 @@ fn given_budget_exceeded_when_adapter_returns_then_partial_facts_accessible_but_
 
     // Partial result is accessible but must not be authoritative.
     assert!(result.has_facts(), "partial facts must still be accessible");
-    assert!(!result.is_authoritative(), "budget-exhausted result must not be authoritative");
+    assert_eq!(
+        result.validate_authority_against(&admitted),
+        Err(AdapterAuthorityError::IncompleteOutcome),
+        "budget-exhausted result must not be authoritative"
+    );
 }

@@ -972,7 +972,10 @@ impl<'a> Parser<'a> {
                                         .collect(),
                                     _ => vec![args_node],
                                 };
-                                let call_end = self.previous_position();
+                                let call_end = args
+                                    .last()
+                                    .map(|arg| arg.location.end.max(self.previous_position()))
+                                    .unwrap_or_else(|| self.previous_position());
                                 let call = Node::new(
                                     NodeKind::FunctionCall { name, args },
                                     SourceLocation { start: call_start, end: call_end },

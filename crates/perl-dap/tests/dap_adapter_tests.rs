@@ -11,7 +11,7 @@ mod dap_phase2_tests {
     use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
     use perl_dap::platform::normalize_path;
     use perl_dap::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
-    use perl_dap::{BridgeAdapter, create_attach_json_snippet, create_launch_json_snippet};
+    use perl_dap::{create_attach_json_snippet, create_launch_json_snippet};
     use serde_json::{Value, json};
     use std::io::Write;
     use std::path::PathBuf;
@@ -91,20 +91,16 @@ mod dap_phase2_tests {
         Ok(())
     }
 
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac6-perl-shim-integration
-    #[tokio::test]
+    /// Tests the native attach configuration surface without activating a legacy bridge.
+    #[test]
     // AC:6
-    async fn test_perl_shim_integration() -> Result<()> {
-        // Bridge adapter remains available for Perl::LanguageServer-based workflows.
-        let _bridge = BridgeAdapter::new();
-
+    fn test_native_attach_configuration_integration() -> Result<()> {
         let attach_snippet = create_attach_json_snippet();
         let attach: Value = serde_json::from_str(&attach_snippet)?;
         assert_eq!(attach["request"], "attach");
         assert_eq!(attach["type"], "perl");
         assert!(attach.get("host").is_some());
         assert!(attach.get("port").is_some());
-
         Ok(())
     }
 
@@ -214,7 +210,7 @@ mod dap_phase2_tests {
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac8-lazy-variable-expansion
     ///
     /// Uses variablesReference=13 (Globals scope, frame_id=1) which always returns at
-    /// least one variable in fallback mode (`$_`).  Locals scope (ref=11) now returns
+    /// least one variable in fallback mode (`$_`). Locals scope (ref=11) now returns
     /// empty in fallback mode when the B module is unavailable (issue #1006 — honest
     /// empty rather than fake `$self`/`@_` placeholders), so this test uses Globals to
     /// verify the expansion round-trip shape.

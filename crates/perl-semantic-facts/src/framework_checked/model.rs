@@ -1,6 +1,6 @@
 use super::{
     AdapterBudget, AdapterCancellation, AdapterDescriptor, DetectionOutcome,
-    ModuleActivationIdentity, ModuleVersionEvidence, FRAMEWORK_ADAPTER_SDK_VERSION,
+    FRAMEWORK_ADAPTER_SDK_VERSION, ModuleActivationIdentity, ModuleVersionEvidence,
 };
 use crate::{Confidence, SourceGeneration};
 use serde::{Deserialize, Serialize};
@@ -75,20 +75,14 @@ impl ModuleSelectorEvaluation {
     ) -> Self {
         Self {
             selector: selector.into(),
-            outcome: ModuleSelectorOutcome::Matched {
-                activation,
-                evidence_class,
-            },
+            outcome: ModuleSelectorOutcome::Matched { activation, evidence_class },
         }
     }
 
     /// Construct an exact absent selector row.
     #[must_use]
     pub fn absent(selector: impl Into<String>) -> Self {
-        Self {
-            selector: selector.into(),
-            outcome: ModuleSelectorOutcome::Absent,
-        }
+        Self { selector: selector.into(), outcome: ModuleSelectorOutcome::Absent }
     }
 
     /// Construct an unresolved selector row.
@@ -96,9 +90,7 @@ impl ModuleSelectorEvaluation {
     pub fn unresolved(selector: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             selector: selector.into(),
-            outcome: ModuleSelectorOutcome::Unresolved {
-                reason: reason.into(),
-            },
+            outcome: ModuleSelectorOutcome::Unresolved { reason: reason.into() },
         }
     }
 }
@@ -229,11 +221,7 @@ impl DetectionConfigurationEvidence {
         excluding_value: DetectionConfigurationValue,
         rule_identity: impl Into<String>,
     ) -> Self {
-        Self {
-            observation,
-            excluding_value,
-            rule_identity: rule_identity.into(),
-        }
+        Self { observation, excluding_value, rule_identity: rule_identity.into() }
     }
 }
 
@@ -441,10 +429,7 @@ impl AdapterDetectionResult {
     }
 
     #[must_use]
-    pub fn with_configuration_evidence(
-        mut self,
-        evidence: DetectionConfigurationEvidence,
-    ) -> Self {
+    pub fn with_configuration_evidence(mut self, evidence: DetectionConfigurationEvidence) -> Self {
         self.configuration_evidence = Some(evidence);
         self
     }

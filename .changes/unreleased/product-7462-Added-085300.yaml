@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Added
+body: "Added a first-party Claude Code native-LSP plugin and root marketplace that launches the separately installed `perllsp --stdio`, binds to `${CLAUDE_PROJECT_DIR}`, and keeps Claude support claims bounded to directly proven activation and host behavior."
+time: 2026-08-12T08:53:00Z
+custom:
+  PR: "7462"
+  Slug: claude-code-plugin
+  Breaking: "no"
