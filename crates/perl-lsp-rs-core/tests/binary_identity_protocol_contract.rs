@@ -154,14 +154,21 @@ fn checked_typescript_projection_contains_every_current_literal()
             "TypeScript projection is missing compatibility reason {name:?}"
         );
     }
-    assert!(
-        typescript.contains("KnownBinaryCompatibilityReason | (string & {})"),
-        "TypeScript client lost its bounded unknown-reason representation"
-    );
-    assert!(
-        typescript.contains("redacted: boolean"),
-        "TypeScript projection still treats redaction as unconditionally true"
-    );
+    assert_projection_bounds_unknown_reasons_and_redaction(&typescript)?;
+    Ok(())
+}
+
+/// Observable oracle for the projection markers: returns the drift messages
+/// instead of panicking inline so the failure variants are assertable.
+fn assert_projection_bounds_unknown_reasons_and_redaction(
+    typescript: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !typescript.contains("KnownBinaryCompatibilityReason | (string & {})") {
+        return Err("TypeScript client lost its bounded unknown-reason representation".into());
+    }
+    if !typescript.contains("redacted: boolean") {
+        return Err("TypeScript projection still treats redaction as unconditionally true".into());
+    }
     Ok(())
 }
 
@@ -225,5 +232,82 @@ fn response_schema_preserves_mismatch_and_redaction_semantics()
         let name = serde_name(reason)?;
         assert_reason_admitted_by_schema_token(&schema, &name)?;
     }
+    Ok(())
+}
+
+#[test]
+fn reason_token_grammar_drift_is_reported() -> Result<(), Box<dyn std::error::Error>> {
+    // Observes the schema-drift error variant: a reasonToken pattern that no
+    // longer admits the current snake_case reason grammar must be named,
+    // not silently accepted.
+    let drifted = serde_json::json!({
+        "$defs": {"reasonToken": {"pattern": "^[A-Z]+$", "maxLength": 64}}
+    });
+    let error = assert_reason_admitted_by_schema_token(&drifted, "server_product_mismatch")
+        .expect_err("drifted reasonToken grammar must be rejected")
+        .to_string();
+    assert!(
+        error.contains("reasonToken grammar drifted"),
+        "grammar drift must be reported with the drifted pattern, got: {error}"
+    );
+    assert!(
+        error.contains("^[A-Z]+$"),
+        "the drifted pattern itself must appear in the report, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn inadmissible_reason_names_are_rejected_by_the_schema_token_contract()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Observes the admissibility error variant at the schema's own
+    // maxLength boundary: names that are empty, carry non-snake_case
+    // characters, or exceed maxLength must be named as inadmissible.
+    let root = repository_root()?;
+    let schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+    let max_length = schema["$defs"]["reasonToken"]["maxLength"]
+        .as_u64()
+        .ok_or("reasonToken maxLength must be an integer")? as usize;
+
+    let overlong = "a".repeat(max_length + 1);
+    for inadmissible in ["", "Has-Uppercase", &overlong] {
+        let error = assert_reason_admitted_by_schema_token(&schema, inadmissible)
+            .expect_err("inadmissible reason name must be rejected")
+            .to_string();
+        assert!(
+            error.contains("not admissible as a schema reasonToken"),
+            "inadmissible name {inadmissible:?} must be reported as such, got: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn projection_marker_drift_is_reported() -> Result<(), Box<dyn std::error::Error>> {
+    // Observes the marker-oracle failure variants: a projection that drops
+    // either the bounded unknown-reason representation or the redaction
+    // marker must be named with the exact drift message.
+    let root = repository_root()?;
+    let typescript = read(&root.join("vscode-extension/src/binaryIdentityProtocol.generated.ts"))?;
+
+    let dropped_redaction = typescript.replace("redacted: boolean", "redacted: string");
+    let error = assert_projection_bounds_unknown_reasons_and_redaction(&dropped_redaction)
+        .expect_err("projection without the redaction marker must be rejected")
+        .to_string();
+    assert_eq!(
+        error, "TypeScript projection still treats redaction as unconditionally true",
+        "redaction drift must be reported with its exact message"
+    );
+
+    let dropped_unknown = typescript.replace("KnownBinaryCompatibilityReason | (string & {})", "");
+    let error = assert_projection_bounds_unknown_reasons_and_redaction(&dropped_unknown)
+        .expect_err("projection without the unknown-reason bound must be rejected")
+        .to_string();
+    assert_eq!(
+        error, "TypeScript client lost its bounded unknown-reason representation",
+        "unknown-reason drift must be reported with its exact message"
+    );
     Ok(())
 }
