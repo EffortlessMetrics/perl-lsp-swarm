@@ -14,7 +14,7 @@ fn must_err_panic_names_error_type_and_value() -> Result<(), String> {
     let payload = must_err(catch_unwind(|| must::<i32, &str>(Err("boom"))));
     let message = must_some(panic_message(payload.as_ref()));
 
-    assert!(message.contains("unexpected Err<&str>"), "message was: {message}");
+    assert!(message.contains("must: unexpected Err<&str>"), "message was: {message}");
     assert!(message.contains("\"boom\""), "message was: {message}");
     Ok(())
 }
@@ -24,7 +24,10 @@ fn must_some_panic_names_option_payload_type() -> Result<(), String> {
     let payload = must_err(catch_unwind(|| must_some::<String>(None)));
     let message = must_some(panic_message(payload.as_ref()));
 
-    assert!(message.contains("unexpected None<alloc::string::String>"), "message was: {message}");
+    assert!(
+        message.contains("must_some: unexpected None<alloc::string::String>"),
+        "message was: {message}"
+    );
     Ok(())
 }
 
@@ -33,8 +36,11 @@ fn must_err_on_ok_panic_names_error_and_ok_types_and_value() -> Result<(), Strin
     let payload = must_err(catch_unwind(|| must_err::<i32, &str>(Ok(7))));
     let message = must_some(panic_message(payload.as_ref()));
 
-    assert!(message.contains("expected Err, got Ok"), "message was: {message}");
-    assert!(message.contains("expected Err<&str>, got Ok<i32>(7)"), "message was: {message}");
+    assert!(message.contains("must_err: expected Err"), "message was: {message}");
+    assert!(
+        message.contains("expected Err<&str>, got Ok<i32>: 7"),
+        "message was: {message}"
+    );
     Ok(())
 }
 
