@@ -16,6 +16,110 @@ fn repo_root() -> PathBuf {
         .expect("xtask manifest has no repository parent")
 }
 
+/// Rewrite one authority file in the fixture and assert the projection refuses it.
+///
+/// Each guard in `static_sources` exists to stop a specific way the two source
+/// files can stop meaning what the projection claims they mean. A guard with no
+/// falsifier is an unproven guard, so every `bail!` there is driven from here.
+fn rejects_when(file: &str, edit: impl Fn(&str) -> String) {
+    let temp = fixture_root();
+    let path = temp.path().join(file);
+    let original = fs::read_to_string(&path).expect("read fixture source");
+    fs::write(&path, edit(&original)).expect("write mutated fixture source");
+    assert!(
+        build_projection(temp.path(), None).is_err(),
+        "projection accepted a {file} mutation it must reject"
+    );
+}
+
+const IDENTITY: &str = "policy/product-identity.toml";
+const PROTOCOL: &str = "docs/swarm/sync-protocol.md";
+
+#[test]
+fn unsupported_identity_schema_is_rejected() {
+    rejects_when(IDENTITY, |text| text.replace("schema_version = 1", "schema_version = 2"));
+}
+
+#[test]
+fn missing_product_table_is_rejected() {
+    rejects_when(IDENTITY, |text| text.replace("[product]", "[produkt]"));
+}
+
+#[test]
+fn missing_development_repository_is_rejected() {
+    rejects_when(IDENTITY, |text| {
+        text.lines()
+            .filter(|line| !line.starts_with("development_repository"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+}
+
+#[test]
+fn identical_development_and_publication_repositories_are_rejected() {
+    rejects_when(IDENTITY, |text| {
+        text.replace(
+            "public_repository = \"EffortlessMetrics/perl-lsp\"",
+            "public_repository = \"EffortlessMetrics/perl-lsp-swarm\"",
+        )
+    });
+}
+
+#[test]
+fn repository_without_owner_slug_is_rejected() {
+    rejects_when(IDENTITY, |text| text.replace("\"EffortlessMetrics/perl-lsp\"", "\"perl-lsp\""));
+}
+
+#[test]
+fn repository_with_unsupported_characters_is_rejected() {
+    rejects_when(IDENTITY, |text| {
+        text.replace("\"EffortlessMetrics/perl-lsp\"", "\"Effortless Metrics/perl lsp\"")
+    });
+}
+
+#[test]
+fn duplicate_authority_rows_are_rejected() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace(
+            "| `perl-lsp-swarm/main` | Active development |",
+            "| `perl-lsp-swarm/main` | Active development |\n| `perl-lsp-swarm/trunk` | Duplicate |",
+        )
+    });
+}
+
+#[test]
+fn missing_authority_row_is_rejected() {
+    rejects_when(PROTOCOL, |text| text.replace("| `perl-lsp/master` | Release lineage |", ""));
+}
+
+#[test]
+fn missing_development_role_sentence_is_rejected() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("is the active development source of truth.", "is one of several repos.")
+    });
+}
+
+#[test]
+fn missing_publication_role_sentence_is_rejected() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("release, history, and canonical package-lineage repo.", "a mirror.")
+    });
+}
+
+#[test]
+fn missing_promotion_mechanics_heading_is_rejected() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("#### Mechanics: history-preserving complete-tree merge", "#### Mechanics")
+    });
+}
+
+#[test]
+fn missing_promotion_command_marker_is_rejected() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("git read-tree -u --reset swarm/main", "git checkout swarm/main")
+    });
+}
+
 #[test]
 fn swapped_branches_fail_static_validation() {
     let temp = fixture_root();
