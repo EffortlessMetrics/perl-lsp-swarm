@@ -42,6 +42,11 @@ jobs:
       # point at the exact reviewed commit below.
       PERLLSP_LSP_TAG: 4070-2.13.0
       PERLLSP_LSP_REF: cc9f5201d9f053d9ab67aa0ea575b494fd133803
+      # UnitTesting declares sublime_aio as a Package Control dependency for
+      # ST4 (dependencies.json), but this workflow disables Package Control,
+      # so the dependency is installed explicitly and pinned the same way.
+      PERLLSP_AIO_TAG: v0.2.3
+      PERLLSP_AIO_REF: b3d1d559ec223f276c9693e17476768257951266
     steps:
       - uses: actions/checkout@v4
 
@@ -72,6 +77,17 @@ jobs:
           fi
           echo "sublimelsp/LSP $PERLLSP_LSP_TAG is $PERLLSP_LSP_REF"
 
+      - name: Reject sublime_aio tag drift from the pinned commit
+        shell: bash
+        run: |
+          resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio             "refs/tags/$PERLLSP_AIO_TAG^{}" | cut -f1)
+          if [[ "$resolved" != "$PERLLSP_AIO_REF" ]]; then
+            echo "packagecontrol/sublime_aio tag $PERLLSP_AIO_TAG resolves to ${resolved:-<none>}," >&2
+            echo "but the pinned commit is $PERLLSP_AIO_REF." >&2
+            exit 1
+          fi
+          echo "packagecontrol/sublime_aio $PERLLSP_AIO_TAG is $PERLLSP_AIO_REF"
+
       - name: Stage the exact helper-package source
         shell: bash
         run: |
@@ -91,6 +107,7 @@ jobs:
           install-package-control: false
           extra-packages: |
             LSP:sublimelsp/LSP@${{ env.PERLLSP_LSP_TAG }}
+            sublime_aio:packagecontrol/sublime_aio@${{ env.PERLLSP_AIO_TAG }}
 
       - name: Run the real Sublime interoperability journey
         # The upstream run-tests action waits 30 s per attempt and restarts
