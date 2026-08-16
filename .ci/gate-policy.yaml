@@ -1800,7 +1800,7 @@ workflow_integration:
         - non_rust_inventory_check
         - v2_bundle_sync
         - nested_lock_check
-        - published_crate_count
+        - published_crate_count_pr_fast
       # Note: PR Smoke owns clippy_core/unit_core/parser stack. Parser audit,
       # v2 parity, workflow audit, and full policy closeout remain defined but
       # are too long for the bounded merge-blocking workflow shard.
