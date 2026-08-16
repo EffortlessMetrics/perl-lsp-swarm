@@ -101,12 +101,60 @@ class LegacyAuthorityBannerTests(unittest.TestCase):
                     )
 
                 # The authority index and the named successor must each be a
-                # real link target, not merely words somewhere in the header.
-                linked = {target.name for target in targets.values()}
-                self.assertIn("AUTHORITY_STATUS.md", linked, f"{path}: index not linked")
+                # real link target, not merely words somewhere in the header --
+                # and must be *the* canonical file, not merely something with a
+                # matching basename. Comparing names would accept a link to any
+                # other AUTHORITY_STATUS.md in the tree, which is the same class
+                # of near-miss as the plain-text mention this check replaced.
+                linked = set(targets.values())
+                registry_successor = registry_rows()[path]["successor"]
                 self.assertIn(
-                    Path(successor).name, linked, f"{path}: successor not linked"
+                    (ROOT / "docs/agents/AUTHORITY_STATUS.md").resolve(),
+                    linked,
+                    f"{path}: banner does not link the canonical authority index",
                 )
+                self.assertIn(
+                    (ROOT / registry_successor).resolve(),
+                    linked,
+                    f"{path}: banner does not link the registry successor "
+                    f"{registry_successor}",
+                )
+                # Guard the hardcoded expectation against the registry, so a
+                # successor change cannot leave this test asserting the old one.
+                self.assertEqual(Path(registry_successor).name, Path(successor).name)
+
+    def test_each_document_carries_exactly_one_banner(self) -> None:
+        """A second marker means two competing local statuses.
+
+        The migration appends a banner; running it twice, or hand-adding one to
+        an already-migrated document, yields a file whose first banner says one
+        thing and whose second says another. Every other check reads only the
+        first 24 lines, so the duplicate is invisible to them.
+        """
+        for path in EXPECTED:
+            with self.subTest(path=path):
+                body = (ROOT / path).read_text(encoding="utf-8")
+                self.assertEqual(
+                    body.count(MARKER), 1, f"{path}: expected exactly one banner marker"
+                )
+
+    def test_banner_links_stay_inside_the_repository(self) -> None:
+        """Reject a relative href that escapes the repository root.
+
+        `../../..`-style traversal resolves to a path outside the tree. On a
+        developer machine that can still be a real file, so `is_file()` alone
+        does not catch it.
+        """
+        for path in EXPECTED:
+            with self.subTest(path=path):
+                head = "\n".join(
+                    (ROOT / path).read_text(encoding="utf-8").splitlines()[:24]
+                )
+                for text, target in banner_link_targets(path, head).items():
+                    self.assertTrue(
+                        target.is_relative_to(ROOT),
+                        f"{path}: banner link [{text}] escapes the repository: {target}",
+                    )
 
     def test_explicit_old_statuses_are_not_still_current(self) -> None:
         pipeline = "\n".join(
