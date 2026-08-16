@@ -2,10 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[path = "client_compat_fixture.rs"]
-mod client_compat_fixture;
-
-pub use client_compat_fixture::{CANONICAL_EXPECTATION_IDS, fixture_digest};
+pub use xtask::client_compat_fixture::fixture_digest;
 
 pub const SCHEMA_VERSION: &str = "agent_client_compat.v1";
 

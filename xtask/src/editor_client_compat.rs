@@ -3,10 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-#[path = "client_compat_fixture.rs"]
-mod client_compat_fixture;
-
-pub use client_compat_fixture::{
+pub use crate::client_compat_fixture::{
     CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID, canonical_expectation_set_digest,
     fixture_digest,
 };
@@ -545,7 +542,7 @@ impl EditorClientCompatReceipt {
                 == Some(PROTOCOL_EVIDENCE_SCHEMA_VERSION),
             "protocol_evidence.receipt must declare {PROTOCOL_EVIDENCE_SCHEMA_VERSION}"
         );
-        xtask::actual_host_receipt::validate_receipt(&protocol.receipt)
+        crate::actual_host_receipt::validate_receipt(&protocol.receipt)
             .map_err(|error| anyhow::anyhow!("embedded protocol receipt is invalid: {error}"))?;
 
         let field = |path: &[&str]| -> Option<&str> {

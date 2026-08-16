@@ -1,8 +1,11 @@
-#[path = "support/editor_client_compat.rs"]
-mod editor_client_compat;
-
 use anyhow::{Context, Result, ensure};
-use editor_client_compat::{
+use serde_json::Value;
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
+use walkdir::WalkDir;
+use xtask::editor_client_compat::{
     ArtifactKind, CANONICAL_EXPECTATION_IDS, CANONICAL_EXPECTATION_SET_ID, CapabilityBasis,
     CapabilityIdentity, CleanupResult, ClientSourceState, DiagnosticMode, DiagnosticsIdentity,
     EditorClientCompatReceipt, EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity,
@@ -11,12 +14,6 @@ use editor_client_compat::{
     RegistrationState, SCHEMA_VERSION, ServerIdentity, WorkspaceFixtureIdentity,
     canonical_expectation_set_digest, fixture_digest,
 };
-use serde_json::Value;
-use std::collections::BTreeSet;
-use std::fs;
-use std::path::{Path, PathBuf};
-use tempfile::TempDir;
-use walkdir::WalkDir;
 
 fn repository_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -717,7 +714,7 @@ fn shared_fixture_and_expectation_set_are_deterministic_and_source_bound() -> Re
     fs::write(copy.path().join("app.pl"), b"# mutated\n")?;
     ensure!(fixture_digest(copy.path())? != before, "fixture digest ignored changed file bytes");
 
-    let files = WalkFixture::new(&root)?.files;
+    let files = fixture_files(&root)?;
     ensure!(
         files
             == BTreeSet::from([
@@ -779,21 +776,15 @@ fn checked_in_schema_names_the_same_contract_and_subject_boundaries() -> Result<
     Ok(())
 }
 
-struct WalkFixture {
-    files: BTreeSet<String>,
-}
-
-impl WalkFixture {
-    fn new(root: &Path) -> Result<Self> {
-        let mut files = BTreeSet::new();
-        for entry in WalkDir::new(root) {
-            let entry = entry?;
-            if entry.file_type().is_file() {
-                files.insert(entry.path().strip_prefix(root)?.to_string_lossy().replace('\\', "/"));
-            }
+fn fixture_files(root: &Path) -> Result<BTreeSet<String>> {
+    let mut files = BTreeSet::new();
+    for entry in WalkDir::new(root) {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            files.insert(entry.path().strip_prefix(root)?.to_string_lossy().replace('\\', "/"));
         }
-        Ok(Self { files })
     }
+    Ok(files)
 }
 
 fn copy_fixture(source: &Path, destination: &Path) -> Result<()> {
