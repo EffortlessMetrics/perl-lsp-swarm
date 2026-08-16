@@ -226,18 +226,21 @@ fn test_package_scope_variables() -> Result<(), Box<dyn std::error::Error>> {
     let args = json!({ "variablesReference": 12 }); // Package for frame 1
     let response = adapter.handle_request(1, "variables", Some(args));
 
-    if let DapMessage::Response { success, body, .. } = response {
-        assert!(success);
-        let body_val = body.ok_or("Expected body in response")?;
-        let vars = body_val
-            .get("variables")
-            .ok_or("Expected variables field")?
-            .as_array()
-            .ok_or("Expected variables array")?;
+    let DapMessage::Response { success, body, .. } = response else {
+        return Err("Expected a response to the variables request".into());
+    };
+    assert!(success);
+    let body_val = body.ok_or("Expected body in response")?;
+    let vars = body_val
+        .get("variables")
+        .ok_or("Expected variables field")?
+        .as_array()
+        .ok_or("Expected variables array")?;
 
-        // Package scope should have at least VERSION
-        assert!(vars.iter().any(|v| v.get("name").and_then(|n| n.as_str()) == Some("$VERSION")));
-    }
+    // Without a live debugger the adapter cannot observe package state, so it must
+    // report nothing rather than a representative `$VERSION = "1.0.0"` the client
+    // would render identically to a real observation (#7275).
+    assert!(vars.is_empty(), "Package scope without a live session must be empty; got: {vars:?}");
     Ok(())
 }
 
