@@ -400,7 +400,7 @@ jobs:
             # it unexecuted whenever that gate is red — which is chronic while
             # #6229 stands, since the committed inventory count is invalidated
             # by every merge that adds or removes a file.
-            gates: msrv_authority_sync docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
+            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master

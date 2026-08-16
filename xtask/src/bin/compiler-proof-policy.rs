@@ -780,20 +780,14 @@ fn validate_issue(name: &str, value: &str) -> Result<()> {
 
 fn validate_closure_authority(value: &str, controller_issue: &str) -> Result<()> {
     let authority = value.strip_prefix("issue:").ok_or_else(|| {
-        anyhow!(
-            "closure_authority must use issue:#<number>/<revision> syntax; got {value:?}"
-        )
+        anyhow!("closure_authority must use issue:#<number>/<revision> syntax; got {value:?}")
     })?;
     let (issue, revision) = authority.split_once('/').ok_or_else(|| {
-        anyhow!(
-            "closure_authority must use issue:#<number>/<revision> syntax; got {value:?}"
-        )
+        anyhow!("closure_authority must use issue:#<number>/<revision> syntax; got {value:?}")
     })?;
     validate_issue("closure_authority issue", issue)?;
     if issue != controller_issue {
-        bail!(
-            "closure_authority issue {issue:?} must match controller_issue {controller_issue:?}"
-        );
+        bail!("closure_authority issue {issue:?} must match controller_issue {controller_issue:?}");
     }
     validate_id("closure authority revision", revision)
 }
@@ -974,9 +968,7 @@ mod tests {
 
         let policy = ProofPolicy::from_str(POLICY)?;
         let mut concept_index = concepts()?;
-        concept_index.concepts.push(ConceptIndexRow {
-            family: "unexercised_family".to_string(),
-        });
+        concept_index.concepts.push(ConceptIndexRow { family: "unexercised_family".to_string() });
         assert!(policy.validate(&concept_index).is_err());
         Ok(())
     }
