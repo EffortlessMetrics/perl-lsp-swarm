@@ -954,6 +954,8 @@ impl LspServer {
                     crate::error::ParseError::Recovered { location, .. } => {
                         (*location, e.to_string())
                     }
+                    // Forward-compatible fallback for future variants (#2898)
+                    _ => (0, e.to_string()),
                 };
                 let message =
                     match perl_lsp_rs_core::providers::diagnostics::build_parse_error_hint(
@@ -2034,7 +2036,7 @@ impl LspServer {
         };
         let critic_context =
             crate::perl_critic::CriticContext::new(doc_text, ast.as_ref(), &critic_config);
-        let profile = crate::perl_critic::NativeCriticProfile::parse(&native_profile)
+        let profile = crate::perl_critic::NativeCriticProfile::parse_legacy(&native_profile)
             .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
         let registry = crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
             profile,
@@ -2951,6 +2953,34 @@ mod tests {
     }
 
     #[test]
+    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict() {
+        let (server, buf) = make_server_with_capture();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.config.lock().native_critic_profile = " RECOMMENDED ".to_string();
+        let uri = "file:///native_critic_legacy_profile_test.pl";
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "=pod\n=head1 NAME\n=cut\n"
+                }
+            })))
+            .unwrap();
+
+        server.publish_diagnostics(uri);
+        drop(server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let text = String::from_utf8(buf.lock().clone()).unwrap_or_default();
+        assert!(
+            text.contains("native.documentation.require_pod_sections"),
+            "legacy invalid profile fallback must remain strict; got: {text:?}"
+        );
+    }
+
+    #[test]
     fn native_critic_push_diagnostics_honor_include_and_exclude_filters() {
         let (server, buf) = make_server_with_capture();
         server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
@@ -3386,10 +3416,20 @@ mod tests {
             }
         })))?;
 
-        assert_eq!(
-            0,
-            buf.lock().len(),
-            "didOpen must not emit push diagnostics for pull-diagnostic clients"
+        // `didOpen` enqueues active-document readiness asynchronously and an
+        // outbound writer thread flushes it, so the buffer is not reliably
+        // empty here — it legitimately carries a
+        // `perl-lsp/active-document-ready` notification, which is not a
+        // diagnostic. Drain and let the writer flush, exactly as the fast-path
+        // guard above does, then assert the invariant this test actually names
+        // rather than byte-emptiness.
+        drain_pending_index_tasks(&server);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let after_did_open = String::from_utf8(buf.lock().clone())?;
+        assert!(
+            !after_did_open.contains("publishDiagnostics"),
+            "didOpen must not emit push diagnostics for pull-diagnostic clients; got: {after_did_open:?}"
         );
 
         server.publish_diagnostics(uri);

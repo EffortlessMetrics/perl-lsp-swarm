@@ -8,5 +8,9 @@
   "status": "pass",
   "claim_boundary": "Exact packaged VSIX and binary journey.",
   "limitation": null,
-  "source_receipt_sha256": null
+  "source_receipt_sha256": null,
+  "artifact_hashes": {
+    "vsix_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bundled_server_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
 }
