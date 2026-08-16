@@ -756,6 +756,18 @@ enum Commands {
         #[arg(long)]
         check: bool,
 
+        /// Format only the staged Rust diff and re-stage it.
+        ///
+        /// The apply half of the `rustfmt_staged` commit gate: that check
+        /// blocks a commit whose staged Rust would be reformatted, and this
+        /// fixes exactly those files instead of the whole workspace. Files
+        /// that are staged *and* separately modified in the worktree are left
+        /// untouched, so formatting never sweeps unstaged work into a commit.
+        ///
+        /// Cannot be combined with --check or --package.
+        #[arg(long, conflicts_with_all = ["check", "package"])]
+        staged: bool,
+
         /// Restrict formatting to one or more package names.
         ///
         /// Accepts repeated flags (`--package xtask --package perl-parser`) or
@@ -2154,6 +2166,21 @@ enum Commands {
     ResolvePackageName {
         /// Crate directory path, relative to workspace root (e.g., "crates/perl-lsp-rs")
         crate_dir: String,
+    },
+
+    /// Verify that every `crates/<dir>/` directory has a Cargo package name
+    /// that exactly equals `<dir>` (issue #2933 AC#3).
+    ///
+    /// Directories without a `Cargo.toml` (e.g. `crates/tree-sitter-perl`,
+    /// which is a JavaScript project) are skipped with a notice.
+    ///
+    /// Exit 0 if all checked directories pass; non-zero if any mismatch is found.
+    #[command(name = "check-naming-consistency")]
+    CheckNamingConsistency {
+        /// Workspace root to check. Defaults to the auto-detected workspace root.
+        /// Override for testing against a fixture workspace.
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Report (and, with `--force`, remove) stale `.claude/worktrees` entries.
@@ -4236,7 +4263,13 @@ fn run_cli(cli: Cli) -> Result<()> {
         ),
         Commands::Doc { open, all_features } => doc::run(open, all_features),
         Commands::Check { clippy, fmt, all } => check::run(clippy, fmt, all),
-        Commands::Fmt { check, package } => fmt::run(check, package),
+        Commands::Fmt { check, package, staged } => {
+            if staged {
+                fmt::run_staged()
+            } else {
+                fmt::run(check, package)
+            }
+        }
         #[cfg(feature = "legacy")]
         Commands::Corpus { path, scanner, diagnose, test } => {
             corpus::run(path, scanner, diagnose, test)
@@ -5190,6 +5223,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             let name = tasks::targeted_checks::resolve_single_package_name(&root, &crate_dir)?;
             println!("{name}");
             Ok(())
+        }
+        Commands::CheckNamingConsistency { root } => {
+            tasks::check_naming_consistency::run_default(root)
         }
         Commands::WorktreeCleanup { root, force } => worktrees::cleanup(root, force),
         Commands::ValidateSwarmAgentRoster { root } => swarm_agent_roster::run(root),

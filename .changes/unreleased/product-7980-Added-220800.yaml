@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Added
+body: "Added a read-only executable receipt lane for Zed-managed public perllsp assets, including current-stable drift detection, independent byte hashing, safe archive extraction, exact host-runnable stdio lifecycle proof, and explicit cross-build non-execution."
+time: 2026-08-13T22:08:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-public-asset-receipts
+  Breaking: "no"
