@@ -41,6 +41,16 @@ pub struct FormatRange {
     pub end: FormatPosition,
 }
 
+/// Locate the exact end-of-document position in LSP coordinates.
+///
+/// Saturation is the deliberate terminal behavior, not a swallowed error.
+/// `FormatPosition` carries the protocol's own `u32` line and character types,
+/// so a document large enough to saturate either counter — upwards of 4 GiB,
+/// since saturating `line` needs more than `u32::MAX` separators — has no
+/// representable LSP position at all, and no return type here could express
+/// one. Saturating is strictly safer than the `as u32` casts this replaced,
+/// which truncated modulo 2^32 and could report a large document as a very
+/// small position.
 fn true_eof_position(content: &str) -> FormatPosition {
     let mut line = 0_u32;
     let mut character = 0_u32;
@@ -60,8 +70,7 @@ fn true_eof_position(content: &str) -> FormatPosition {
                 character = 0;
             }
             _ => {
-                let width = if ch as u32 >= 0x10000 { 2 } else { 1 };
-                character = character.saturating_add(width);
+                character = character.saturating_add(ch.len_utf16() as u32);
             }
         }
     }
