@@ -1145,7 +1145,9 @@ impl<'a> Parser<'a> {
 
         // Statement modifiers are handled at the statement level in parse_statement()
 
-        let end = self.previous_position();
+        // Prefer the later of expression end and the last consumed token so
+        // wrappers such as `(42)` keep their closing delimiter in the span.
+        let end = expr.location.end.max(self.previous_position());
 
         // Wrap the expression in an ExpressionStatement node
         Ok(Node::new(
@@ -1608,7 +1610,12 @@ impl<'a> Parser<'a> {
                                 }
                             }
 
-                            let end = self.previous_position();
+                            // Keep closing `)` when args were parenthesized; bare
+                            // calls still end at the last argument.
+                            let end = args
+                                .last()
+                                .map(|arg| arg.location.end.max(self.previous_position()))
+                                .unwrap_or_else(|| self.previous_position());
                             let call = Node::new(
                                 NodeKind::FunctionCall { name: func_name.to_string(), args },
                                 SourceLocation { start, end },

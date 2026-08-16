@@ -535,25 +535,90 @@ gates:
     planning:
       role: rust_scoped
 
-  - name: inline_completion_contract
+  # NOTE (#6845): the former `inline_completion_contract` gate chained four
+  # Cargo commands with `&&`, masking which of the four contracts failed and
+  # preventing later contracts from running after an earlier failure.
+  # Replaced with four independent gates so each contract has its own receipt
+  # row, timing, result class, and narrow rerun.  The gate runner continues
+  # after any single failure, so all four results are always recorded.
+  - name: inline_completion_registration
     tier: pr_fast
-    description: "Inline-completion registration, capability, snapshot, and core provider contracts"
+    description: "Inline-completion provider registration tests (lsp_inline_completion_registration_tests)"
     required: true
-    command: >-
-      cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests &&
-      cargo test -p perl-lsp-rs --locked --test lsp_registration_tests &&
-      cargo test -p perl-lsp-rs --locked --test lsp_cap_snap &&
-      cargo test -p perl-lsp-rs-core --locked --lib inline_completion
-    timeout_seconds: 600
+    command: cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests
+    timeout_seconds: 150
     retry_count: 0
     budgets:
-      max_duration_ms: 540000
+      max_duration_ms: 135000
     quarantine: false
     tags:
       - test
       - lsp
       - inline-completion
+      - registration
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-lsp-rs
+        - perl-lsp-rs-core
+
+  - name: lsp_registration_contract
+    tier: pr_fast
+    description: "LSP capability registration contract (lsp_registration_tests)"
+    required: true
+    command: cargo test -p perl-lsp-rs --locked --test lsp_registration_tests
+    timeout_seconds: 150
+    retry_count: 0
+    budgets:
+      max_duration_ms: 135000
+    quarantine: false
+    tags:
+      - test
+      - lsp
+      - registration
       - protocol
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-lsp-rs
+        - perl-lsp-rs-core
+
+  - name: lsp_capability_snapshots
+    tier: pr_fast
+    description: "LSP capability snapshot contract — detects capability-negotiation drift (lsp_cap_snap)"
+    required: true
+    command: cargo test -p perl-lsp-rs --locked --test lsp_cap_snap
+    timeout_seconds: 150
+    retry_count: 0
+    budgets:
+      max_duration_ms: 135000
+    quarantine: false
+    tags:
+      - test
+      - lsp
+      - capability
+      - snapshot
+    planning:
+      role: rust_package_scoped
+      packages:
+        - perl-lsp-rs
+        - perl-lsp-rs-core
+
+  - name: inline_completion_core
+    tier: pr_fast
+    description: "Core inline-completion provider lib tests (perl-lsp-rs-core::inline_completion)"
+    required: true
+    command: cargo test -p perl-lsp-rs-core --locked --lib inline_completion
+    timeout_seconds: 150
+    retry_count: 0
+    budgets:
+      max_duration_ms: 135000
+    quarantine: false
+    tags:
+      - test
+      - lsp
+      - inline-completion
+      - core
     planning:
       role: rust_package_scoped
       packages:
@@ -700,7 +765,12 @@ gates:
     # regression in an untouched crate's `tests/` directory sails through pr_fast
     # and is only caught at the merge-gate full suite. This deferral is the
     # structural reason false-confidence patterns in `tests/` went undetected.
-    command: cargo test --locked --tests {package_args}
+    # Build the server binary first: binary_version_test (and every suite
+    # that spawns perllsp) resolves the binary through PERL_LSP_BIN ->
+    # CARGO_BIN_EXE -> target/debug/perllsp -> PATH -> cargo-run fallback;
+    # without a prebuilt binary the fallback compile exceeds the test's own
+    # initialize timeout and reds the gate nondeterministically (#9464).
+    command: cargo build -p perllsp --locked && cargo test --locked --tests {package_args}
     # PR #1585 produced timeout-only receipts at 600s and 900s for the
     # perl-lsp-rs/perl-lsp-rs-core/xtask route. Keep the required --tests proof
     # bounded while matching the PR Smoke watchdog for the heavier routed path.
@@ -893,14 +963,34 @@ gates:
 
   - name: lsp_smoke
     tier: merge_gate
-    description: "Deterministic LSP scenario test (semantic definitions)"
+    description: "Deterministic LSP semantic-definition and initialize-contract tests"
     required: true
-    # Single-threaded for determinism
+    # Single-threaded for determinism. Keep the wire-shape regression focused:
+    # this target contains many API contracts, but only textDocumentSync owns
+    # the reviewed recurrence claim in #6776.
+    #
+    # Build the server binary first, for the same reason the routed integration
+    # gate above does (#9464): `perllsp` is its own workspace package, so
+    # `cargo test -p perl-lsp-rs` never builds it. The harness then resolves
+    # PERL_LSP_BIN -> CARGO_BIN_EXE -> target/debug/perllsp -> PATH ->
+    # cargo-run fallback, and that fallback has to compile the whole binary
+    # inside each test's 16s initialize timeout. Every test in
+    # semantic_definition that spawns a server times out twice and fails,
+    # which is what made this gate red on main (#9677). With the binary
+    # prebuilt the same suite is 16/16 in about a second.
     command: >-
+      cargo build -p perllsp --locked
+      &&
       env -u RUSTC_WRAPPER
       RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
       cargo test -p perl-lsp-rs --test semantic_definition --locked
       -- --test-threads=1
+      &&
+      env -u RUSTC_WRAPPER
+      RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1
+      cargo test -p perl-lsp-rs --test lsp_api_contracts --locked
+      test_text_document_sync_option_keys_use_lsp_camel_case
+      -- --exact --test-threads=1
     timeout_seconds: 300
     retry_count: 1
     budgets:

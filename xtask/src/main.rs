@@ -20,6 +20,7 @@ mod types;
 mod utils;
 use tasks::check_test_wiring;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
+use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
 use tasks::issue_plan::IssuePlanOutputFormat;
@@ -755,6 +756,18 @@ enum Commands {
         #[arg(long)]
         check: bool,
 
+        /// Format only the staged Rust diff and re-stage it.
+        ///
+        /// The apply half of the `rustfmt_staged` commit gate: that check
+        /// blocks a commit whose staged Rust would be reformatted, and this
+        /// fixes exactly those files instead of the whole workspace. Files
+        /// that are staged *and* separately modified in the worktree are left
+        /// untouched, so formatting never sweeps unstaged work into a commit.
+        ///
+        /// Cannot be combined with --check or --package.
+        #[arg(long, conflicts_with_all = ["check", "package"])]
+        staged: bool,
+
         /// Restrict formatting to one or more package names.
         ///
         /// Accepts repeated flags (`--package xtask --package perl-parser`) or
@@ -814,6 +827,22 @@ enum Commands {
         /// Strict mode: fail on any regression above baseline
         #[arg(long)]
         strict: bool,
+    },
+
+    /// Dependency hygiene: identify unused Cargo dependencies (authority: #9364).
+    ///
+    /// Uses cargo-machete as the V1 primary instrument. Produces typed
+    /// item-level findings with outcome vocabulary:
+    /// SUCCESS | POLICY_FINDING | NOT_PROVEN | NOT_APPLICABLE.
+    ///
+    /// Never installs tools as a side effect. cargo-udeps is removed from the
+    /// active hygiene path; see issue #9364 for re-introduction criteria.
+    #[command(name = "dependency-hygiene")]
+    DependencyHygiene {
+        /// Mode: check (default) fails closed on any finding; report writes JSON
+        /// and exits 0.
+        #[arg(value_enum, default_value = "check")]
+        mode: DependencyHygieneMode,
     },
 
     /// Run a developer environment smoke check.
@@ -1117,6 +1146,22 @@ enum Commands {
 
     /// Run version-sync checks from `perl-ci-hygiene`.
     CheckVersionSync,
+
+    /// Classify an exact-SHA publication-drift observation.
+    #[command(name = "publication-drift")]
+    PublicationDrift {
+        /// Comparison observation JSON.
+        #[arg(long)]
+        input: PathBuf,
+
+        /// Repository root used to resolve the authority manifest.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/publication-drift.json")]
+        out: PathBuf,
+    },
 
     /// Sync active release narrative docs from workspace version and publish count.
     SyncReleaseDocs {
@@ -2123,6 +2168,21 @@ enum Commands {
         crate_dir: String,
     },
 
+    /// Verify that every `crates/<dir>/` directory has a Cargo package name
+    /// that exactly equals `<dir>` (issue #2933 AC#3).
+    ///
+    /// Directories without a `Cargo.toml` (e.g. `crates/tree-sitter-perl`,
+    /// which is a JavaScript project) are skipped with a notice.
+    ///
+    /// Exit 0 if all checked directories pass; non-zero if any mismatch is found.
+    #[command(name = "check-naming-consistency")]
+    CheckNamingConsistency {
+        /// Workspace root to check. Defaults to the auto-detected workspace root.
+        /// Override for testing against a fixture workspace.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
     /// Report (and, with `--force`, remove) stale `.claude/worktrees` entries.
     ///
     /// Defaults to a dry-run report: every agent worktree is classified
@@ -2229,6 +2289,12 @@ enum Commands {
         command: NonRustCommand,
     },
 
+    /// Read-only policy obligation tooling.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
+
     /// Check non-Rust files against the policy allowlist and report violations.
     ///
     /// Equivalent to `non-rust check`. Default mode is `advisory` (always
@@ -2290,8 +2356,8 @@ enum Commands {
         #[arg(long)]
         reason: Option<String>,
 
-        /// Also check binary freshness: verify that target/debug/perl-lsp and
-        /// target/release/perl-lsp are newer than the HEAD commit timestamp.
+        /// Also check binary freshness: verify that target/debug/perllsp and
+        /// target/release/perllsp are newer than the HEAD commit timestamp.
         /// Exits non-zero when a binary exists and is stale. Missing binaries
         /// are reported but do not cause a non-zero exit.
         #[arg(long)]
@@ -2425,6 +2491,25 @@ enum NonRustCommand {
         /// Override the workspace root used for `git ls-files`. Test seam only.
         #[arg(long, hide = true)]
         root: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Inventory registered review and expiry obligations at an explicit date.
+    Cadence {
+        /// Evaluation date. Defaults to the current UTC date in production;
+        /// tests and evidence runs should always pass it explicitly.
+        #[arg(long)]
+        as_of: Option<String>,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.json")]
+        json: PathBuf,
+
+        /// Deterministic Markdown summary path.
+        #[arg(long, default_value = "target/receipts/policy-cadence.md")]
+        markdown: PathBuf,
     },
 }
 
@@ -4178,7 +4263,13 @@ fn run_cli(cli: Cli) -> Result<()> {
         ),
         Commands::Doc { open, all_features } => doc::run(open, all_features),
         Commands::Check { clippy, fmt, all } => check::run(clippy, fmt, all),
-        Commands::Fmt { check, package } => fmt::run(check, package),
+        Commands::Fmt { check, package, staged } => {
+            if staged {
+                fmt::run_staged()
+            } else {
+                fmt::run(check, package)
+            }
+        }
         #[cfg(feature = "legacy")]
         Commands::Corpus { path, scanner, diagnose, test } => {
             corpus::run(path, scanner, diagnose, test)
@@ -4187,6 +4278,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Highlight { path, scanner } => highlight::run(path, scanner),
         Commands::Clean { all } => clean::run(all),
         Commands::DeadCode { mode, strict } => dead_code::run(DeadCodeConfig { mode, strict }),
+        Commands::DependencyHygiene { mode } => {
+            dependency_hygiene::run(DependencyHygieneConfig { mode })
+        }
         #[cfg(feature = "parser-tasks")]
         Commands::Bindings { header, output } => bindings::run(header, output),
         Commands::Dev { watch, port } => dev::run(watch, port),
@@ -4345,6 +4439,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
         }
         Commands::CheckVersionSync => check_version_sync::run(),
+        Commands::PublicationDrift { input, repo_root, out } => {
+            xtask::publication_drift::run_with_paths(input, repo_root, out)
+        }
         Commands::SyncReleaseDocs { write } => sync_release_docs::run(write),
         Commands::CheckFromRaw => ci_policy::check_from_raw(),
         Commands::CheckMemoryLifecyclePolicy => ci_policy::check_memory_lifecycle(),
@@ -5127,6 +5224,9 @@ fn run_cli(cli: Cli) -> Result<()> {
             println!("{name}");
             Ok(())
         }
+        Commands::CheckNamingConsistency { root } => {
+            tasks::check_naming_consistency::run_default(root)
+        }
         Commands::WorktreeCleanup { root, force } => worktrees::cleanup(root, force),
         Commands::ValidateSwarmAgentRoster { root } => swarm_agent_roster::run(root),
         Commands::CheckAgentCapabilities { root } => agent_capability_policy::run(root),
@@ -5208,6 +5308,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tasks::file_policy::non_rust_migration_candidates(
                     &root,
                     MigrationCandidatesConfig { format, output, limit, root_override },
+                )
+            }
+        },
+        Commands::Policy { command } => match command {
+            PolicyCommand::Cadence { as_of, json, markdown } => {
+                let root = utils::project_root()?;
+                tasks::policy_cadence::run(
+                    &root,
+                    tasks::policy_cadence::CadenceArgs { as_of, json, markdown },
                 )
             }
         },
