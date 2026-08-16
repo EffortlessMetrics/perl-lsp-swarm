@@ -218,12 +218,18 @@ class _MsvcrtLock:
     def try_acquire(self) -> bool:
         import msvcrt as _msvcrt  # noqa: PLC0415
 
-        if os.fstat(self._fh.fileno()).st_size == 0:
-            self._fh.seek(0)
-            self._fh.write(b"L")
-            self._fh.flush()
-        self._fh.seek(0)
+        # The sentinel write is inside the guarded block, not just the lock call.
+        # Windows byte-range locks are mandatory rather than advisory, so writing
+        # to a range another process already holds raises `PermissionError`. Two
+        # processes racing on a not-yet-created lock file both observe size 0, and
+        # whichever writes second hits that error. Letting it escape would crash
+        # the manager on the first concurrent run instead of reporting contention.
         try:
+            if os.fstat(self._fh.fileno()).st_size == 0:
+                self._fh.seek(0)
+                self._fh.write(b"L")
+                self._fh.flush()
+            self._fh.seek(0)
             # LK_NBLCK fails immediately instead of retrying for ~10s.
             _msvcrt.locking(self._fh.fileno(), _msvcrt.LK_NBLCK, self._NBYTES)
         except OSError:
