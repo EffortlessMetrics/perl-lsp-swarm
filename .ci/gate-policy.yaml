@@ -1235,6 +1235,58 @@ gates:
       - version
       - hygiene
 
+  # The compiler concept ledger (#6657) and proof policy (#6689) are fail-closed
+  # contracts: they reject untracked concept rows, unknown proof classes, circular
+  # gold, and stale generated status docs. Nothing executed either validator until
+  # this gate existed, so the fail-closed claim was inert and the committed status
+  # docs could drift silently against their contracts. Two gates rather than one
+  # `&&` chain, for the same reason policy_checks was decomposed: a chained
+  # command stops reporting once an early link fails.
+  - name: compiler_concept_ledger
+    tier: merge_gate
+    description: "Validate contracts/compiler/perl_compiler_concepts.v1.toml and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-concepts -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  - name: compiler_proof_policy
+    tier: merge_gate
+    description: "Validate contracts/compiler/perl_compiler_proof_policy.v1.toml against the concept ledger and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-proof-policy -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  - name: compiler_concept_proof
+    tier: merge_gate
+    description: "Validate the one-to-one concept proof-obligation matrix against the ledger and proof policy, and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-concept-proof -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
   # re-promotion.
@@ -1309,21 +1361,6 @@ gates:
     tags:
       - lockfile
       - hygiene
-
-  - name: published_crate_count
-    tier: merge_gate
-    description: "Ratchet: published crate count must not exceed baseline"
-    required: true
-    command: cargo xtask published-crate-count
-    timeout_seconds: 30
-    retry_count: 0
-    budgets:
-      max_duration_ms: 5000
-    quarantine: true  # Until collapse completes (~30-31 crates)
-    tags:
-      - ratchet
-      - microcrate
-      - collapse
 
   # ===========================================================================
   # Tier: nightly
@@ -1815,7 +1852,7 @@ workflow_integration:
         - non_rust_inventory_check
         - v2_bundle_sync
         - nested_lock_check
-        - published_crate_count
+        - published_crate_count_pr_fast
       # Note: PR Smoke owns clippy_core/unit_core/parser stack. Parser audit,
       # v2 parity, workflow audit, and full policy closeout remain defined but
       # are too long for the bounded merge-blocking workflow shard.
