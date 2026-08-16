@@ -1941,3 +1941,66 @@ reason = "Validates a produced host receipt against the v1 schema in CI."
 covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
 created = "2026-08-17"
 review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-product-7243-changelog-fragment"
+path = ".changes/unreleased/product-7243-Added-090000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing source-backed regex capture-group modeling with explicit numbering and named-capture families (#7243)."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-product-7799-changelog-fragment"
+path = ".changes/unreleased/product-7799-Added-100051.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing fail-closed Vim activation and workspace-root receipt contract for the canonical vim-lsp integration path (#7799)."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-product-7905-changelog-fragment"
+path = ".changes/unreleased/product-7905-Fixed-110832.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing deferred workspace/configuration pull until after initialize response so strict LSP clients no longer receive out-of-order server requests (#7905)."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-incremental-authority-contract"
+path = "crates/perl-parser/incremental_authority.json"
+kind = "config"
+language = "json"
+surface = "source"
+classification = "tooling"
+owner = "parser/incremental"
+reason = "Machine-readable contract declaring the canonical incremental-parsing authority: module path, entry points, and fact obligations for the single incremental API surface (#6742)."
+covered_by = [
+  "cargo test -p perl-incremental-parsing --locked",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
