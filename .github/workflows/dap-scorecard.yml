@@ -42,6 +42,7 @@ env:
   DAP_SCORECARD_RUN_ID: ${{ github.run_id }}
   DAP_SCORECARD_RUN_ATTEMPT: ${{ github.run_attempt }}
   DAP_SCORECARD_RAW_RECEIPT: target/dap_scorecard_receipt.json
+  DAP_SCORECARD_PACKET: target/receipts/dap-scorecard/packet.json
 
 jobs:
   scorecard:
@@ -100,13 +101,19 @@ jobs:
           echo "DAP_SCORECARD_BINARY_SHA256=$binary_sha256" >> "$GITHUB_ENV"
           echo "DAP_SCORECARD_PERL=$perl_path" >> "$GITHUB_ENV"
 
-      - name: Remove any restored scorecard receipt
+      - name: Remove any restored scorecard receipt and packet
         shell: bash
         run: |
           set -euo pipefail
+          # Both generated artifacts must be absent before measurement. `target/`
+          # can be restored from cache, so a surviving packet from an earlier run
+          # could otherwise be published under this candidate's artifact name by
+          # a run that fails before replacing it.
           mkdir -p "$(dirname "$DAP_SCORECARD_RAW_RECEIPT")"
           rm -f "$DAP_SCORECARD_RAW_RECEIPT"
+          rm -rf "$(dirname "$DAP_SCORECARD_PACKET")"
           test ! -e "$DAP_SCORECARD_RAW_RECEIPT"
+          test ! -e "$DAP_SCORECARD_PACKET"
           echo "DAP_SCORECARD_RECEIPT_NOT_BEFORE=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Drive the exact binary over real stdio sessions
@@ -168,13 +175,13 @@ jobs:
             --fixture crates/perl-dap/tests/fixtures/eval.pl \
             --fixture crates/perl-dap/tests/fixtures/args.pl \
             --fixture crates/perl-dap/tests/fixtures/breakpoints_begin_end.pl \
-            --output target/receipts/dap-scorecard/packet.json
+            --output "$DAP_SCORECARD_PACKET"
 
       - name: Validate exact packet identity and evidence
         run: |
           python3 scripts/ci/dap_scorecard_packet.py validate \
             --repository-root . \
-            --packet target/receipts/dap-scorecard/packet.json \
+            --packet "$DAP_SCORECARD_PACKET" \
             --expected-repository-sha "$DAP_SCORECARD_REPOSITORY_SHA" \
             --expected-binary-sha256 "$DAP_SCORECARD_BINARY_SHA256" \
             --expected-run-id "$DAP_SCORECARD_RUN_ID" \
@@ -202,8 +209,11 @@ jobs:
             sed -n '/<!-- BEGIN: DAP_LAUNCH_SCORECARD -->/,/<!-- END: DAP_SESSION_SCORECARD -->/p' docs/project/status/dap.md
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Accepted proof is published only when every preceding step succeeded,
+      # which includes the packet validating against this run's SHA, binary and
+      # run identity. Nothing between that validation and here writes the packet.
       - name: Upload exact scorecard packet
-        if: always()
+        if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dap-scorecard-${{ env.DAP_SCORECARD_CANDIDATE_SHA }}
@@ -212,4 +222,18 @@ jobs:
             target/receipts/dap-scorecard/packet.json
             docs/project/status/dap.md
           if-no-files-found: error
+          retention-days: 14
+
+      # A failed run publishes whatever it produced under a distinct name, so a
+      # diagnostic artifact can never be mistaken for accepted candidate proof.
+      - name: Upload failed-run diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dap-scorecard-diagnostic-${{ env.DAP_SCORECARD_CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/dap_scorecard_receipt.json
+            target/receipts/dap-scorecard/packet.json
+            docs/project/status/dap.md
+          if-no-files-found: ignore
           retention-days: 14
