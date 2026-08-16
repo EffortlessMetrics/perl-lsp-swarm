@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 mod workspace_doctor_inventory;
@@ -35,7 +36,7 @@ fn main() -> Result<()> {
         let inventory: Inventory =
             serde_json::from_str(&raw).with_context(|| format!("parsing {}", output.display()))?;
         validate_inventory(&args.root, &inventory)?;
-        println!("workspace-doctor-inventory: OK");
+        writeln!(std::io::stdout(), "workspace-doctor-inventory: OK")?;
         return Ok(());
     }
 
@@ -48,9 +49,9 @@ fn main() -> Result<()> {
             .with_context(|| format!("writing {}", output.display()))?;
     }
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&inventory)?);
+        writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&inventory)?)?;
     } else {
-        println!("{}", render_human(&inventory));
+        writeln!(std::io::stdout(), "{}", render_human(&inventory))?;
     }
     Ok(())
 }
