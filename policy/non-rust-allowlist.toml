@@ -1533,6 +1533,6 @@ surface = "release"
 classification = "documentation"
 owner = "release/ci"
 reason = "Changie product release-note fragment announcing the fail-closed real Vim + vim-lsp interoperability journey for the canonical perllsp client path (#7810)."
-covered_by = "['cargo xtask changelog check', 'cargo xtask check-file-policy']"
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
 created = "2026-08-15"
 review_after = "2026-09-15"
