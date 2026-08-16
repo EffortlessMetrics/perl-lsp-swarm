@@ -83,6 +83,13 @@ struct Requirement {
     composition_dimensions: Vec<String>,
     basis: Vec<String>,
     evidence: Vec<String>,
+    /// Receipt references per proof class, keyed by class id.
+    ///
+    /// The concept-level `evidence` list cannot say *which* receipt earned
+    /// which cell, so it can never admit a `satisfied` claim on its own: one
+    /// arbitrary string would otherwise unlock all 11 classes at once.
+    #[serde(default)]
+    evidence_by_class: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     positive_gold: Option<ProofStatus>,
     #[serde(default)]
@@ -127,7 +134,52 @@ struct ConceptLedgerIndex {
 struct ConceptIndexRow {
     concept_id: String,
     owner_issue: String,
+    body_hir: String,
+    pir_a: String,
+    compile_effects_world: String,
+    eir_profile: String,
 }
+
+impl ConceptIndexRow {
+    /// Stage state backing each stage-bound proof class, or `None` for classes
+    /// whose evidence is not produced by one compiler stage.
+    fn stage_for(&self, proof_class: &str) -> Option<(&'static str, &str)> {
+        match proof_class {
+            "hir_snapshot" => Some(("body_hir", self.body_hir.as_str())),
+            "pir_snapshot" => Some(("pir_a", self.pir_a.as_str())),
+            "effects_world_fixture" => {
+                Some(("compile_effects_world", self.compile_effects_world.as_str()))
+            }
+            "eir_differential" => Some(("eir_profile", self.eir_profile.as_str())),
+            _ => None,
+        }
+    }
+}
+
+/// Stage states that can back a `satisfied` claim for a stage-bound proof class.
+///
+/// `absent`, `boundary`, `opaque`, `bridge`, `skipped`, and `not_applicable` all
+/// describe a stage that does not represent the concept faithfully enough to
+/// produce evidence about it, so proof "passing" there proves nothing.
+const PROVING_STAGE_STATES: [&str; 2] = ["modeled", "executable"];
+
+/// The only proof class whose obligation may be postponed.
+///
+/// EIR is the one stage with no executable implementation anywhere in the
+/// ledger (`eir_profile` is `absent` or `boundary` for all 28 concepts), so its
+/// obligation cannot be discharged yet by anyone. Every other class is either
+/// provable today or explicitly `not_applicable` with the concept-level
+/// rationale that carries. Without this restriction `deferred` is a universal
+/// solvent: any mandatory gold cell could be moved out of `required_missing`
+/// and would then vanish from "Missing proof by concept" with nothing
+/// establishing that the proof may be postponed.
+const DEFERRABLE_PROOF_CLASS: &str = "eir_differential";
+
+/// Proof classes every concept must satisfy before the matrix may claim
+/// completeness. Snapshots and stage-bound fixtures are deliberately excluded:
+/// they are structural evidence, not semantic proof.
+const MANDATORY_PROOF_CLASSES: [&str; 4] =
+    ["positive_gold", "negative_gold", "boundary_gold", "composition_coverage"];
 
 #[derive(Debug, Clone, Deserialize)]
 struct ProofPolicyIndex {
@@ -265,6 +317,7 @@ impl Requirement {
         defaults: ProofCellSet,
         controller_issue: &str,
         dimensions: &BTreeSet<&str>,
+        concept: &ConceptIndexRow,
     ) -> Result<()> {
         validate_concept_id(&self.concept_id)?;
         validate_issue("owner_issue", &self.owner_issue)?;
@@ -322,20 +375,71 @@ impl Requirement {
                 self.concept_id
             );
         }
-        if resolved.entries().into_iter().any(|(_, status)| status == ProofStatus::Satisfied)
-            && self.evidence.is_empty()
-        {
-            bail!("compiler concept {} marks proof satisfied without evidence", self.concept_id);
-        }
-        for (proof_class, status) in resolved.entries() {
-            if status == ProofStatus::NotObservable
-                && !matches!(proof_class, "real_perl_oracle" | "eir_differential")
-            {
+        for class_id in self.evidence_by_class.keys() {
+            if !ProofCellSet::class_ids().contains(&class_id.as_str()) {
                 bail!(
-                    "compiler concept {} marks non-oracle proof class {} not_observable",
+                    "compiler concept {} binds evidence to unknown proof class {:?}",
                     self.concept_id,
-                    proof_class
+                    class_id
                 );
+            }
+        }
+        for (class_id, receipts) in &self.evidence_by_class {
+            validate_unique_nonempty(
+                &format!("evidence_by_class[{class_id}]"),
+                &self.concept_id,
+                receipts,
+            )?;
+        }
+
+        for (proof_class, status) in resolved.entries() {
+            match status {
+                ProofStatus::Satisfied => {
+                    // Concept-level `evidence` is a reading list, not a proof
+                    // binding: it cannot name which receipt earned this cell.
+                    // Require a receipt bound to this exact class.
+                    let receipts = self.evidence_by_class.get(proof_class);
+                    if receipts.is_none_or(|receipts| receipts.is_empty()) {
+                        bail!(
+                            "compiler concept {} marks proof class {} satisfied without evidence bound to that class",
+                            self.concept_id,
+                            proof_class
+                        );
+                    }
+                    // A stage that does not model the concept cannot produce
+                    // evidence about it, so "passing" proof there proves
+                    // nothing about the claim.
+                    if let Some((stage_name, stage_state)) = concept.stage_for(proof_class)
+                        && !PROVING_STAGE_STATES.contains(&stage_state)
+                    {
+                        bail!(
+                            "compiler concept {} marks {} satisfied while its {} stage is {:?}; expected one of {:?}",
+                            self.concept_id,
+                            proof_class,
+                            stage_name,
+                            stage_state,
+                            PROVING_STAGE_STATES
+                        );
+                    }
+                }
+                ProofStatus::Deferred if proof_class != DEFERRABLE_PROOF_CLASS => {
+                    bail!(
+                        "compiler concept {} defers proof class {}; only {} may be deferred",
+                        self.concept_id,
+                        proof_class,
+                        DEFERRABLE_PROOF_CLASS
+                    );
+                }
+                ProofStatus::NotObservable
+                    if !matches!(proof_class, "real_perl_oracle" | "eir_differential") =>
+                {
+                    bail!(
+                        "compiler concept {} marks non-oracle proof class {} not_observable",
+                        self.concept_id,
+                        proof_class
+                    );
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -419,13 +523,13 @@ impl ProofMatrix {
 
         let mut requirement_ids = BTreeSet::new();
         for requirement in &self.requirements {
-            requirement.validate(self.defaults, &self.controller_issue, &dimensions)?;
             if !requirement_ids.insert(requirement.concept_id.as_str()) {
                 bail!("duplicate proof requirement for concept {:?}", requirement.concept_id);
             }
             let concept = concepts_by_id.get(requirement.concept_id.as_str()).ok_or_else(|| {
                 anyhow!("proof requirement references unknown concept {:?}", requirement.concept_id)
             })?;
+            requirement.validate(self.defaults, &self.controller_issue, &dimensions, concept)?;
             if requirement.owner_issue != concept.owner_issue {
                 bail!(
                     "proof requirement {} owner {} does not match concept ledger owner {}",
@@ -447,16 +551,35 @@ impl ProofMatrix {
             );
         }
 
-        if self.complete
-            && self.requirements.iter().any(|requirement| {
-                requirement.resolved(self.defaults).entries().into_iter().any(|(_, status)| {
-                    matches!(status, ProofStatus::RequiredMissing | ProofStatus::Deferred)
-                })
-            })
-        {
-            bail!(
-                "complete compiler concept proof matrix cannot contain required_missing or deferred cells"
-            );
+        if self.complete {
+            for requirement in &self.requirements {
+                let resolved = requirement.resolved(self.defaults);
+                for (proof_class, status) in resolved.entries() {
+                    if matches!(status, ProofStatus::RequiredMissing | ProofStatus::Deferred) {
+                        bail!(
+                            "complete compiler concept proof matrix cannot leave {} {} for concept {}",
+                            proof_class,
+                            status.stable_name(),
+                            requirement.concept_id
+                        );
+                    }
+                    // Without this, a concept whose mandatory gold cells are all
+                    // `not_applicable` — plus one `not_observable` oracle — passes a
+                    // complete matrix having proved nothing. `all_not_applicable` does
+                    // not catch that combination, because the row is not uniformly
+                    // not_applicable.
+                    if MANDATORY_PROOF_CLASSES.contains(&proof_class)
+                        && status != ProofStatus::Satisfied
+                    {
+                        bail!(
+                            "complete compiler concept proof matrix requires concept {} to satisfy mandatory proof class {}, found {}",
+                            requirement.concept_id,
+                            proof_class,
+                            status.stable_name()
+                        );
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -468,6 +591,9 @@ impl ProofMatrix {
             requirement.composition_dimensions.sort();
             requirement.basis.sort();
             requirement.evidence.sort();
+            for receipts in requirement.evidence_by_class.values_mut() {
+                receipts.sort();
+            }
         }
         normalized
     }
@@ -600,6 +726,44 @@ impl ProofMatrix {
                     requirement.owner_issue,
                     code_list(&missing)
                 ),
+            )?;
+        }
+        line(&mut output, "")?;
+
+        // A count of satisfied cells is not an audit trail: a reviewer seeing a
+        // nonzero count has to reopen the TOML to learn which receipt earned it.
+        // Render the bindings so this document stays a proof index.
+        line(&mut output, "## Evidence index")?;
+        line(&mut output, "")?;
+        line(&mut output, "| Concept | Proof class | Receipts |")?;
+        line(&mut output, "| --- | --- | --- |")?;
+        let mut bound_rows = 0usize;
+        for requirement in &normalized.requirements {
+            for (class_id, receipts) in &requirement.evidence_by_class {
+                bound_rows += 1;
+                line(
+                    &mut output,
+                    &format!(
+                        "| `{}` | `{}` | {} |",
+                        requirement.concept_id,
+                        class_id,
+                        code_list(receipts)
+                    ),
+                )?;
+            }
+        }
+        if bound_rows == 0 {
+            line(&mut output, "| _none_ | | |")?;
+        }
+        line(&mut output, "")?;
+        line(&mut output, "## Concept reading basis")?;
+        line(&mut output, "")?;
+        line(&mut output, "| Concept | Evidence |")?;
+        line(&mut output, "| --- | --- |")?;
+        for requirement in &normalized.requirements {
+            line(
+                &mut output,
+                &format!("| `{}` | {} |", requirement.concept_id, code_list(&requirement.evidence)),
             )?;
         }
         Ok(output)
@@ -866,6 +1030,187 @@ mod tests {
             .expect_err("proof-class vocabulary drift must fail closed")
             .to_string();
         assert!(error.contains("proof policy classes do not match"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    /// Concept whose `body_hir` stage is `modeled`, i.e. the one stage state
+    /// that can back a `satisfied` `hir_snapshot` claim.
+    fn modeled_hir_concept(concepts: &ConceptLedgerIndex) -> Option<String> {
+        concepts
+            .concepts
+            .iter()
+            .find(|concept| PROVING_STAGE_STATES.contains(&concept.body_hir.as_str()))
+            .map(|concept| concept.concept_id.clone())
+    }
+
+    fn requirement_mut<'a>(
+        matrix: &'a mut ProofMatrix,
+        concept_id: &str,
+    ) -> Result<&'a mut Requirement> {
+        matrix
+            .requirements
+            .iter_mut()
+            .find(|requirement| requirement.concept_id == concept_id)
+            .ok_or_else(|| anyhow!("committed matrix has no requirement for {concept_id}"))
+    }
+
+    #[test]
+    fn satisfied_requires_evidence_bound_to_that_class() -> Result<()> {
+        let concepts = concepts()?;
+        let concept_id =
+            modeled_hir_concept(&concepts).ok_or_else(|| anyhow!("ledger has no modeled stage"))?;
+
+        // A concept-level evidence list, however long, must not admit a cell:
+        // it cannot say which receipt earned which of the 11 classes.
+        let mut matrix = ProofMatrix::from_str(MATRIX)?;
+        let requirement = requirement_mut(&mut matrix, &concept_id)?;
+        requirement.hir_snapshot = Some(ProofStatus::Satisfied);
+        requirement.evidence = vec!["docs/project/status/hir_lowering.md".to_string()];
+        let error = matrix
+            .validate(&concepts, &policy()?)
+            .expect_err("satisfied without class-bound evidence must fail closed")
+            .to_string();
+        assert!(error.contains("bound to that class"), "unexpected error: {error}");
+
+        // Evidence bound to a *different* class must not admit it either.
+        let mut matrix = ProofMatrix::from_str(MATRIX)?;
+        let requirement = requirement_mut(&mut matrix, &concept_id)?;
+        requirement.hir_snapshot = Some(ProofStatus::Satisfied);
+        requirement
+            .evidence_by_class
+            .insert("pir_snapshot".to_string(), vec!["receipt://elsewhere".to_string()]);
+        let error = matrix
+            .validate(&concepts, &policy()?)
+            .expect_err("evidence bound to another class must fail closed")
+            .to_string();
+        assert!(error.contains("bound to that class"), "unexpected error: {error}");
+
+        // Correctly bound evidence on a modeled stage validates.
+        let mut matrix = ProofMatrix::from_str(MATRIX)?;
+        let requirement = requirement_mut(&mut matrix, &concept_id)?;
+        requirement.hir_snapshot = Some(ProofStatus::Satisfied);
+        requirement
+            .evidence_by_class
+            .insert("hir_snapshot".to_string(), vec!["receipt://hir-snapshot".to_string()]);
+        matrix.validate(&concepts, &policy()?)?;
+        Ok(())
+    }
+
+    #[test]
+    fn satisfied_stage_proof_requires_a_modeled_stage() -> Result<()> {
+        let concepts = concepts()?;
+        // Every ledger concept has `eir_profile` absent or boundary, so no EIR
+        // execution proof can be claimed however good the receipt looks.
+        let mut matrix = ProofMatrix::from_str(MATRIX)?;
+        let first_id = matrix
+            .requirements
+            .first()
+            .ok_or_else(|| anyhow!("committed matrix unexpectedly empty"))?
+            .concept_id
+            .clone();
+        let requirement = requirement_mut(&mut matrix, &first_id)?;
+        requirement.eir_differential = Some(ProofStatus::Satisfied);
+        requirement
+            .evidence_by_class
+            .insert("eir_differential".to_string(), vec!["receipt://eir-run".to_string()]);
+        let error = matrix
+            .validate(&concepts, &policy()?)
+            .expect_err("EIR proof on an unmodeled stage must fail closed")
+            .to_string();
+        assert!(error.contains("eir_profile"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn deferring_a_mandatory_gold_class_fails_closed() -> Result<()> {
+        for class in ["positive_gold", "negative_gold", "boundary_gold", "composition_coverage"] {
+            let mut matrix = ProofMatrix::from_str(MATRIX)?;
+            let first = matrix
+                .requirements
+                .first_mut()
+                .ok_or_else(|| anyhow!("committed matrix unexpectedly empty"))?;
+            match class {
+                "positive_gold" => first.positive_gold = Some(ProofStatus::Deferred),
+                "negative_gold" => first.negative_gold = Some(ProofStatus::Deferred),
+                "boundary_gold" => first.boundary_gold = Some(ProofStatus::Deferred),
+                _ => first.composition_coverage = Some(ProofStatus::Deferred),
+            }
+            let error = matrix
+                .validate(&concepts()?, &policy()?)
+                .expect_err("deferring a mandatory gold class must fail closed")
+                .to_string();
+            assert!(error.contains("only eir_differential may be deferred"), "{class}: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn complete_matrix_requires_satisfied_mandatory_proof() -> Result<()> {
+        // The attack the earlier `complete` check missed: a row that is neither
+        // required_missing nor deferred, yet proves nothing.
+        let mut matrix = ProofMatrix::from_str(MATRIX)?;
+        matrix.complete = true;
+        for requirement in &mut matrix.requirements {
+            requirement.positive_gold = Some(ProofStatus::NotApplicable);
+            requirement.negative_gold = Some(ProofStatus::NotApplicable);
+            requirement.boundary_gold = Some(ProofStatus::NotApplicable);
+            requirement.recovery_gold = Some(ProofStatus::NotApplicable);
+            requirement.hir_snapshot = Some(ProofStatus::NotApplicable);
+            requirement.pir_snapshot = Some(ProofStatus::NotApplicable);
+            requirement.verifier_mutation = Some(ProofStatus::NotApplicable);
+            requirement.effects_world_fixture = Some(ProofStatus::NotApplicable);
+            requirement.eir_differential = Some(ProofStatus::NotApplicable);
+            requirement.composition_coverage = Some(ProofStatus::NotApplicable);
+            requirement.real_perl_oracle = Some(ProofStatus::NotObservable);
+        }
+        let error = matrix
+            .validate(&concepts()?, &policy()?)
+            .expect_err("complete matrix without satisfied mandatory proof must fail closed")
+            .to_string();
+        assert!(error.contains("mandatory proof class"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_bound_to_unknown_proof_class_fails_closed() -> Result<()> {
+        let mut matrix = ProofMatrix::from_str(MATRIX)?;
+        let first = matrix
+            .requirements
+            .first_mut()
+            .ok_or_else(|| anyhow!("committed matrix unexpectedly empty"))?;
+        first
+            .evidence_by_class
+            .insert("not_a_proof_class".to_string(), vec!["receipt://x".to_string()]);
+        let error = matrix
+            .validate(&concepts()?, &policy()?)
+            .expect_err("unknown proof class in evidence binding must fail closed")
+            .to_string();
+        assert!(error.contains("unknown proof class"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn status_renders_the_evidence_index() -> Result<()> {
+        let concepts = concepts()?;
+        let policy = policy()?;
+        let concept_id =
+            modeled_hir_concept(&concepts).ok_or_else(|| anyhow!("ledger has no modeled stage"))?;
+        let mut matrix = ProofMatrix::from_str(MATRIX)?;
+        let requirement = requirement_mut(&mut matrix, &concept_id)?;
+        requirement.hir_snapshot = Some(ProofStatus::Satisfied);
+        requirement
+            .evidence_by_class
+            .insert("hir_snapshot".to_string(), vec!["receipt://hir-snapshot".to_string()]);
+        let rendered = matrix.render_markdown(&concepts, &policy)?;
+        assert!(rendered.contains("## Evidence index"), "evidence index section missing");
+        assert!(
+            rendered.contains("receipt://hir-snapshot"),
+            "satisfied cell is countable but not traceable to its receipt"
+        );
+        assert!(
+            rendered.contains(&format!("| `{concept_id}` | `hir_snapshot` |")),
+            "evidence index does not bind the receipt to its concept and class"
+        );
         Ok(())
     }
 

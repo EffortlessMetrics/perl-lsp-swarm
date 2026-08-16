@@ -94,17 +94,39 @@
         "composition_coverage"
       ],
       "properties": {
-        "positive_gold": { "$ref": "#/$defs/proof_status" },
-        "negative_gold": { "$ref": "#/$defs/proof_status" },
-        "boundary_gold": { "$ref": "#/$defs/proof_status" },
-        "recovery_gold": { "$ref": "#/$defs/proof_status" },
-        "hir_snapshot": { "$ref": "#/$defs/proof_status" },
-        "pir_snapshot": { "$ref": "#/$defs/proof_status" },
-        "verifier_mutation": { "$ref": "#/$defs/proof_status" },
-        "effects_world_fixture": { "$ref": "#/$defs/proof_status" },
-        "eir_differential": { "$ref": "#/$defs/proof_status" },
-        "real_perl_oracle": { "$ref": "#/$defs/proof_status" },
-        "composition_coverage": { "$ref": "#/$defs/proof_status" }
+        "positive_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "negative_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "boundary_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "recovery_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "hir_snapshot": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "pir_snapshot": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "verifier_mutation": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "effects_world_fixture": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "eir_differential": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "real_perl_oracle": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "composition_coverage": {
+          "$ref": "#/$defs/proof_status"
+        }
       }
     },
     "requirement": {
@@ -148,18 +170,72 @@
             "minLength": 1
           }
         },
-        "positive_gold": { "$ref": "#/$defs/proof_status" },
-        "negative_gold": { "$ref": "#/$defs/proof_status" },
-        "boundary_gold": { "$ref": "#/$defs/proof_status" },
-        "recovery_gold": { "$ref": "#/$defs/proof_status" },
-        "hir_snapshot": { "$ref": "#/$defs/proof_status" },
-        "pir_snapshot": { "$ref": "#/$defs/proof_status" },
-        "verifier_mutation": { "$ref": "#/$defs/proof_status" },
-        "effects_world_fixture": { "$ref": "#/$defs/proof_status" },
-        "eir_differential": { "$ref": "#/$defs/proof_status" },
-        "real_perl_oracle": { "$ref": "#/$defs/proof_status" },
-        "composition_coverage": { "$ref": "#/$defs/proof_status" }
+        "evidence_by_class": {
+          "type": "object",
+          "description": "Receipt references per proof class. A `satisfied` cell requires a non-empty entry keyed by that exact class id; the concept-level `evidence` list cannot admit a cell because it does not say which receipt earned which class.",
+          "propertyNames": {
+            "$ref": "#/$defs/proofClassId"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "uniqueItems": true,
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "positive_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "negative_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "boundary_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "recovery_gold": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "hir_snapshot": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "pir_snapshot": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "verifier_mutation": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "effects_world_fixture": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "eir_differential": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "real_perl_oracle": {
+          "$ref": "#/$defs/proof_status"
+        },
+        "composition_coverage": {
+          "$ref": "#/$defs/proof_status"
+        }
       }
+    },
+    "proofClassId": {
+      "type": "string",
+      "enum": [
+        "positive_gold",
+        "negative_gold",
+        "boundary_gold",
+        "recovery_gold",
+        "hir_snapshot",
+        "pir_snapshot",
+        "verifier_mutation",
+        "effects_world_fixture",
+        "eir_differential",
+        "real_perl_oracle",
+        "composition_coverage"
+      ]
     }
   }
 }

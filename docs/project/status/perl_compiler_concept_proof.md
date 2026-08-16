@@ -105,3 +105,42 @@ Initial proof-obligation matrix for every concept row in the #6657 seed; not com
 - **`source.data_section` (#6675):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `effects_world_fixture`, `real_perl_oracle`, `composition_coverage`
 - **`source.ellipsis` (#6675):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `pir_snapshot`, `verifier_mutation`, `real_perl_oracle`, `composition_coverage`
 - **`values.v_string` (#6658):** `positive_gold`, `negative_gold`, `boundary_gold`, `recovery_gold`, `hir_snapshot`, `pir_snapshot`, `verifier_mutation`, `real_perl_oracle`, `composition_coverage`
+
+## Evidence index
+
+| Concept | Proof class | Receipts |
+| --- | --- | --- |
+| _none_ | | |
+
+## Concept reading basis
+
+| Concept | Evidence |
+| --- | --- |
+| `calls.ampersand` |  |
+| `calls.normalized_semantics` |  |
+| `context.value_context` |  |
+| `control.default` |  |
+| `control.given` |  |
+| `control.postfix_modifier` |  |
+| `control.when` |  |
+| `declarations.nested_variable_list` |  |
+| `dynamic.tie` |  |
+| `dynamic.untie` |  |
+| `exceptions.defer` |  |
+| `exceptions.try` |  |
+| `formats.declaration` |  |
+| `namespaces.typeglob` |  |
+| `objects.core_class` |  |
+| `operators.binary` |  |
+| `operators.chained_comparison` |  |
+| `phases.begin` |  |
+| `places.array_slice` |  |
+| `places.hash_slice` |  |
+| `places.key_value_slice` |  |
+| `regex.literal` |  |
+| `regex.match` |  |
+| `regex.substitution` |  |
+| `regex.transliteration` |  |
+| `source.data_section` |  |
+| `source.ellipsis` |  |
+| `values.v_string` |  |
