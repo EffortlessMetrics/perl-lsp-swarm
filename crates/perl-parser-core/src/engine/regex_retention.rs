@@ -123,6 +123,15 @@ pub(crate) fn record_operator_geometry(source: &str, start: usize) -> bool {
     })
 }
 
+/// Whether a canonical retained-analysis entry point owns the active parse.
+///
+/// This is the cheap guard callers test before doing any work to satisfy
+/// [`record_operator_geometry`]. It reads one thread-local vector's length and
+/// never touches the source, so the ordinary parse path pays nothing beyond it.
+pub(crate) fn has_active_session() -> bool {
+    ACTIVE_GEOMETRY_SESSIONS.with(|sessions| !sessions.borrow().is_empty())
+}
+
 fn finish_output(
     source: &str,
     mut parse_output: ParseOutput,
@@ -660,6 +669,21 @@ mod tests {
         // so the caller falls through to the validator instead of silently losing
         // its diagnostics.
         assert!(!record_operator_geometry("my $x = /a/;", 8));
+    }
+
+    #[test]
+    fn the_session_guard_tracks_the_session_and_costs_no_source_scan() {
+        // The parser tests this before validating the source as UTF-8, so it must agree
+        // with `record_operator_geometry` about whether a session is active. If it ever
+        // returned `true` with no session, ordinary parses would pay a full O(source)
+        // validation per regex body for a hook that then declines.
+        assert!(!has_active_session());
+        {
+            let session = PendingGeometryGuard::begin("my $x = /a/;");
+            assert!(has_active_session());
+            let _ = session.finish();
+        }
+        assert!(!has_active_session(), "the guard must clear when the session unwinds");
     }
 
     #[test]

@@ -193,10 +193,10 @@ impl RegexAnalysisRecord {
                     PatternControlKind::ImmediateEmbeddedCode
                         | PatternControlKind::OptimisticEmbeddedCode
                         | PatternControlKind::DeferredRuntimePattern
-                ) || matches!(
+                ) || (matches!(
                     fact.effect,
                     PatternControlEffect::DynamicExecution | PatternControlEffect::DynamicPattern
-                ) && !matches!(&fact.kind, PatternControlKind::SourceInterpolation)
+                ) && !matches!(&fact.kind, PatternControlKind::SourceInterpolation))
             })
     }
 

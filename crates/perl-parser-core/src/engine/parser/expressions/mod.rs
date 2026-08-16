@@ -9,7 +9,11 @@ impl<'a> Parser<'a> {
     /// whole operator here and defer the one body analysis until the completed
     /// AST supplies lexical language-profile state.
     fn analyze_regex_body_for_ast(&mut self, pattern: &str, start: usize) -> ParseResult<bool> {
-        if let Ok(source) = std::str::from_utf8(self.src_bytes)
+        // The session check comes first deliberately. `from_utf8` validates the whole
+        // source, so testing it before the session would charge every ordinary parse an
+        // O(source) scan per regex body for a hook that is about to decline anyway.
+        if crate::engine::regex_retention::has_active_session()
+            && let Ok(source) = std::str::from_utf8(self.src_bytes)
             && crate::engine::regex_retention::record_operator_geometry(source, start)
         {
             return Ok(false);
