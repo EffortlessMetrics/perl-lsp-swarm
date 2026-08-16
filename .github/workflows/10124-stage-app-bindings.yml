@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   build:
@@ -58,7 +59,7 @@ jobs:
             --root . \
             --receipt target/10124/gate-enforcement-contract.json
 
-      - name: Publish clean five-file branch
+      - name: Create clean five-file commit object
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -160,12 +161,6 @@ jobs:
           if not isinstance(head_sha, str):
               fail("candidate commit response lacks sha")
 
-          request(
-              "POST",
-              "/git/refs",
-              {"ref": f"refs/heads/{target_branch}", "sha": head_sha},
-          )
-
           receipt = {
               "schema_version": 1,
               "issue": 10124,
@@ -182,12 +177,48 @@ jobs:
           print(json.dumps(receipt, sort_keys=True))
           PY
 
+      - name: Publish candidate object receipt to issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          receipt = json.loads(Path("target/10124/result.json").read_text(encoding="utf-8"))
+          body = (
+              "<!-- issue-10124-clean-object -->\n"
+              "## Verified clean candidate object\n\n"
+              "All focused falsifiers and the exact static receipt passed before this object was created.\n\n"
+              "```json\n"
+              + json.dumps(receipt, indent=2, sort_keys=True)
+              + "\n```"
+          )
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues/10124/comments",
+              data=json.dumps({"body": body}).encode("utf-8"),
+              method="POST",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                  "Content-Type": "application/json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(req, timeout=60) as response:
+              print(json.load(response)["html_url"])
+          PY
+
       - name: Upload construction receipts
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
           name: issue-10124-static-app-bindings
           path: |
             target/10124/result.json
             target/10124/gate-enforcement-contract.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 1
