@@ -7,7 +7,7 @@
 //! This target exercises completion, definition, hover, and diagnostics against
 //! one four-file CPAN-style fixture. It deliberately does **not** keep the old
 //! receipt-first pattern where a static missing or wrong answer was printed as a
-//! "known gap" and returned `Ok(())` beside a hard regression-lock twin.
+//! nonblocking limitation and returned `Ok(())` beside a hard regression-lock twin.
 //!
 //! ## Operational dispositions
 //!
@@ -402,7 +402,9 @@ fn diagnostic_code(diag: &Value) -> Option<String> {
 }
 
 fn has_pl701(diags: &[Value]) -> bool {
-    diags.iter().any(|diag| matches!(diagnostic_code(diag).as_deref(), Some("PL701" | "701")))
+    diags.iter().any(|diag| {
+        matches!(diagnostic_code(diag).as_deref(), Some("PL701") | Some("701"))
+    })
 }
 
 fn validate_diagnostics(diags: &[Value]) -> anyhow::Result<()> {
@@ -552,7 +554,7 @@ fn scenario_20_completion_module_prefix_surfaces_real_baseline_app_hard_assert()
         &harness,
         "script/real-baseline.pl",
         3,
-        17,
+        18,
         |label| label == "App" || label.contains("RealBaseline::App"),
     )?;
 
@@ -693,7 +695,7 @@ fn scenario_20_goto_definition_static_new_to_app_pm_hard_assert() -> anyhow::Res
     let definitions = harness.definition_with_retry(
         "script/real-baseline.pl",
         5,
-        36,
+        30,
         SETTLEMENT_ATTEMPTS,
         SETTLEMENT_DELAY,
     )?;
@@ -737,7 +739,7 @@ fn scenario_20_goto_definition_typeglob_alias_dynamic_boundary() -> anyhow::Resu
             "typeglob alias boundary must not fabricate a target outside Util.pm: {definitions:?}"
         );
         anyhow::ensure!(
-            matches!(entry_start_line(entry), Some(7 | 11)),
+            matches!(entry_start_line(entry), Some(7) | Some(11)),
             "typeglob alias boundary may target helper or the alias assignment only: {definitions:?}"
         );
     }
@@ -898,7 +900,7 @@ fn scenario_20_diagnostics_typeglob_alias_no_false_positive_hard_assert()
 
     validate_diagnostics(&diagnostics)?;
     let false_positive = diagnostics.iter().any(|diag| {
-        matches!(diagnostic_code(diag).as_deref(), Some("PL304" | "304"))
+        matches!(diagnostic_code(diag).as_deref(), Some("PL304") | Some("304"))
             && diag
                 .get("message")
                 .and_then(Value::as_str)
