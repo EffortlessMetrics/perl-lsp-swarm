@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import os
+import subprocess
 import sys
+import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -198,6 +204,101 @@ class PublicationRuntimeIdentityTests(unittest.TestCase):
         )
         with self.assertRaises(RuntimeIdentityError):
             compose(value, bundle())
+
+
+class RuntimeIdentityVersionBindingTests(unittest.TestCase):
+    def test_bundle_for_another_published_version_is_rejected(self) -> None:
+        value = observation()
+        value["public"]["version"] = "9.9.9"
+        with self.assertRaises(RuntimeIdentityError):
+            compose(value, bundle())
+
+
+def _write_executable(path: Path, body: str) -> Path:
+    path.write_text("#!/usr/bin/env python3\n" + textwrap.dedent(body), encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+class RuntimeIdentityQueryTests(unittest.TestCase):
+    """Cover the one process-executing boundary, `_query_packet`."""
+
+    def test_relative_executable_is_hashed_and_executed_as_one_file(self) -> None:
+        emit = 'import json, sys\nsys.stdout.write(json.dumps({{"marker": "{0}"}}))\n'
+        with tempfile.TemporaryDirectory() as root:
+            staged = Path(root) / "staged"
+            decoy = Path(root) / "decoy"
+            staged.mkdir()
+            decoy.mkdir()
+            staged_binary = _write_executable(staged / "perllsp", emit.format("staged"))
+            _write_executable(decoy / "perllsp", emit.format("decoy"))
+            staged_digest = hashlib.sha256(staged_binary.read_bytes()).hexdigest()
+
+            previous_path = os.environ.get("PATH", "")
+            previous_cwd = Path.cwd()
+            os.environ["PATH"] = f"{decoy}{os.pathsep}{previous_path}"
+            os.chdir(staged)
+            try:
+                digest, packet_value = runtime_identity._query_packet(Path("./perllsp"), 30.0)
+            finally:
+                os.chdir(previous_cwd)
+                os.environ["PATH"] = previous_path
+
+        # A bare relative path stringifies to `perllsp`; without absolute resolution
+        # subprocess finds the decoy on PATH while the digest is read from the cwd.
+        self.assertEqual(
+            packet_value["marker"], "staged", "executed a different file than it hashed"
+        )
+        self.assertEqual(digest, staged_digest, "digest does not belong to the executed file")
+
+    def test_unbounded_writer_is_rejected_without_buffering_it_all(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            target = _write_executable(
+                Path(root) / "perllsp",
+                """
+                import sys
+                while True:
+                    sys.stdout.write("x" * 65536)
+                    sys.stdout.flush()
+                """,
+            )
+            with self.assertRaises(RuntimeIdentityError) as caught:
+                runtime_identity._query_packet(target, 30.0)
+        self.assertIn("too large", str(caught.exception))
+
+    def test_drain_stops_reading_shortly_after_the_limit(self) -> None:
+        """The bound must hold while output is produced, not after the child exits.
+
+        A post-hoc size check cannot bound memory against a writer that never exits,
+        so assert the reader itself stops near the limit rather than at EOF.
+        """
+        limit = 4096
+        with tempfile.TemporaryDirectory() as root:
+            target = _write_executable(
+                Path(root) / "noisy",
+                """
+                import sys
+                while True:
+                    sys.stdout.write("x" * 65536)
+                    sys.stdout.flush()
+                """,
+            )
+            with subprocess.Popen(
+                [str(target)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ) as process:
+                try:
+                    stdout, _, overflow = runtime_identity._drain_bounded(
+                        process, limit, 30.0, time.monotonic() + 30.0
+                    )
+                finally:
+                    process.kill()
+        self.assertTrue(overflow, "a never-ending writer must trip the bound")
+        self.assertLess(
+            len(stdout), limit + 1024 * 1024, "reader buffered far past the limit"
+        )
 
 
 if __name__ == "__main__":

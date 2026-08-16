@@ -16,8 +16,10 @@ import hashlib
 import json
 import os
 import re
+import selectors
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -66,33 +68,89 @@ def _optional_bounded(
     return None if value is None else _bounded(value, field, pattern=pattern)
 
 
+def _drain_bounded(
+    process: subprocess.Popen[bytes], limit: int, timeout: float, deadline: float
+) -> tuple[bytes, bytes, bool]:
+    """Read both pipes incrementally, stopping as soon as stdout exceeds ``limit``.
+
+    ``subprocess.run`` buffers each pipe without bound until the child exits, so a
+    malformed executable that writes continuously can exhaust the release runner
+    before any packet-size check runs. Reading incrementally keeps the bound ahead
+    of the writer, and draining stderr alongside stdout keeps a chatty child from
+    blocking on a full stderr pipe.
+    """
+    selector = selectors.DefaultSelector()
+    for name in ("stdout", "stderr"):
+        stream = getattr(process, name)
+        if stream is not None:
+            selector.register(stream, selectors.EVENT_READ, name)
+    collected = {"stdout": bytearray(), "stderr": bytearray()}
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            for key, _ in selector.select(timeout=remaining):
+                chunk = key.fileobj.read1(65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if key.data == "stderr":
+                    room = 1024 - len(collected["stderr"])
+                    if room > 0:
+                        collected["stderr"].extend(chunk[:room])
+                    continue
+                collected["stdout"].extend(chunk)
+                if len(collected["stdout"]) > limit:
+                    return bytes(collected["stdout"]), bytes(collected["stderr"]), True
+    finally:
+        selector.close()
+    return bytes(collected["stdout"]), bytes(collected["stderr"]), False
+
+
 def _query_packet(path: Path, timeout: float) -> tuple[str, dict[str, Any]]:
+    # Bind the hashed bytes and the executed command to one absolute path. A bare
+    # relative path such as `./perllsp` stringifies to `perllsp`, which subprocess
+    # resolves through PATH while the digest is read from the working directory —
+    # silently pairing one file's bytes with another binary's identity packet.
+    path = path.resolve()
     if not path.is_file() or not os.access(path, os.X_OK):
         raise RuntimeIdentityError(f"executable is missing or not executable: {path.name}")
     before = _sha256(path)
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [str(path), "--identity-json"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except OSError as error:
         raise RuntimeIdentityError(f"identity query failed to execute for {path.name}: {error}") from error
+    deadline = time.monotonic() + timeout
+    with process:
+        try:
+            stdout, stderr_bytes, overflow = _drain_bounded(
+                process, MAX_PACKET_BYTES, timeout, deadline
+            )
+            if overflow:
+                process.kill()
+                raise RuntimeIdentityError(f"identity packet too large for {path.name}")
+            returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as error:
+            process.kill()
+            raise RuntimeIdentityError(
+                f"identity query failed to execute for {path.name}: {error}"
+            ) from error
     after = _sha256(path)
     if before != after:
         raise RuntimeIdentityError(f"executable changed during observation: {path.name}")
-    if completed.returncode != 0:
-        stderr = completed.stderr[:1024].decode("utf-8", errors="replace").strip()
+    if returncode != 0:
+        stderr = stderr_bytes[:1024].decode("utf-8", errors="replace").strip()
         raise RuntimeIdentityError(
-            f"identity query failed for {path.name} with exit {completed.returncode}: {stderr}"
+            f"identity query failed for {path.name} with exit {returncode}: {stderr}"
         )
-    if len(completed.stdout) > MAX_PACKET_BYTES:
-        raise RuntimeIdentityError(f"identity packet too large for {path.name}")
     try:
-        packet = json.loads(completed.stdout)
+        packet = json.loads(stdout)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RuntimeIdentityError(f"identity packet is not valid JSON for {path.name}") from error
     if not isinstance(packet, dict):
@@ -287,6 +345,11 @@ def compose(observation: dict[str, Any], bundle: dict[str, Any]) -> dict[str, An
     public = observation.get("public")
     if not isinstance(public, dict) or public.get("sha") != expected["tree_sha"]:
         raise RuntimeIdentityError("runtime bundle tree SHA does not match public observation")
+    # Every downstream comparison is against `expected`, so a stale expected version
+    # would let runtime evidence certify a different published version whenever the
+    # tree SHA still lines up. Bind the version to the observation as well.
+    if public.get("version") != expected["version"]:
+        raise RuntimeIdentityError("runtime bundle version does not match public observation")
 
     result = copy.deepcopy(observation)
     differences = result.get("differences")
