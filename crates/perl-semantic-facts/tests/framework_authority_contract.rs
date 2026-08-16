@@ -4,13 +4,13 @@ use perl_semantic_facts::framework::{
     EmittedFact, FactClass, FactSink, FactSinkId,
 };
 use perl_semantic_facts::{
-    AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance,
-    SemanticConfidence, SemanticFactEnvelope, SemanticFactKind, SemanticFreshness,
-    SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
+    AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance, SemanticConfidence,
+    SemanticFactEnvelope, SemanticFactKind, SemanticFreshness, SemanticProducer,
+    SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
 };
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 struct AtomicCancellation(Arc<AtomicBool>);
@@ -69,10 +69,7 @@ fn result(disposition: AdapterDisposition, fact: EmittedFact) -> AdapterResult {
         descriptor(disposition),
         scope(),
         SourceGeneration::known("source-1"),
-        AdapterOutcome::Applied {
-            sink,
-            limitations: Vec::new(),
-        },
+        AdapterOutcome::Applied { sink, limitations: Vec::new() },
     )
 }
 

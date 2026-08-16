@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 use crate::{
-    AnchorId, Confidence, FileId, InvalidationDependency, LifecyclePhase, Provenance,
-    SemanticConfidence, SemanticFactEnvelope, SemanticFactStatus, SemanticFreshness,
-    SemanticProducer, SemanticProvenance, SourceGeneration,
+    AnchorId, Confidence, FileId, InvalidationDependency, Provenance, SemanticConfidence,
+    SemanticFactEnvelope, SemanticFactStatus, SemanticFreshness, SemanticProducer,
+    SemanticProvenance, SourceGeneration,
 };
 
 /// Current framework-adapter SDK wire version.
@@ -105,10 +105,7 @@ impl ModuleVersionEvidence {
     /// Construct known module-version evidence.
     #[must_use]
     pub fn new(version: impl Into<String>, generation: SourceGeneration) -> Self {
-        Self {
-            version: version.into(),
-            generation,
-        }
+        Self { version: version.into(), generation }
     }
 
     fn is_known(&self) -> bool {
@@ -139,12 +136,7 @@ impl ModuleActivationIdentity {
         file_id: Option<FileId>,
         generation: SourceGeneration,
     ) -> Self {
-        Self {
-            module_name: module_name.into(),
-            file_id,
-            generation,
-            observed_version: None,
-        }
+        Self { module_name: module_name.into(), file_id, generation, observed_version: None }
     }
 
     /// Attach version evidence produced from the same module generation.
@@ -170,9 +162,7 @@ impl AdapterCancellation {
     /// Construct an active admission snapshot.
     #[must_use]
     pub const fn active() -> Self {
-        Self {
-            is_cancelled: false,
-        }
+        Self { is_cancelled: false }
     }
 
     /// Construct a pre-cancelled admission snapshot.
@@ -212,10 +202,7 @@ impl AdapterBudget {
     /// Construct a budget.
     #[must_use]
     pub const fn new(max_emitted_facts: u32, max_payload_bytes: u64) -> Self {
-        Self {
-            max_emitted_facts,
-            max_payload_bytes,
-        }
+        Self { max_emitted_facts, max_payload_bytes }
     }
 }
 
@@ -264,10 +251,9 @@ impl AdapterDetectionInput {
         self.available_modules.iter().any(|module| {
             module.module_name == module_name
                 && module.generation.is_known()
-                && module
-                    .observed_version
-                    .as_ref()
-                    .is_some_and(|version| version.is_known() && version.generation == module.generation)
+                && module.observed_version.as_ref().is_some_and(|version| {
+                    version.is_known() && version.generation == module.generation
+                })
         })
     }
 }
@@ -358,12 +344,7 @@ impl AdapterDetectionResult {
         project_generation: SourceGeneration,
         outcome: DetectionOutcome,
     ) -> Self {
-        Self {
-            descriptor,
-            project_generation,
-            outcome,
-            version_evidence: None,
-        }
+        Self { descriptor, project_generation, outcome, version_evidence: None }
     }
 
     /// Attach the observed version used for a version-qualified verdict.
@@ -386,16 +367,11 @@ impl AdapterDetectionResult {
             return false;
         }
         match &self.outcome {
-            DetectionOutcome::Detected {
-                confidence,
-                framework_version,
-            } => {
+            DetectionOutcome::Detected { confidence, framework_version } => {
                 *confidence == Confidence::High
-                    && self
-                        .descriptor
-                        .framework_version_constraint
-                        .as_ref()
-                        .is_none_or(|_| framework_version.as_ref().is_some_and(|value| !value.trim().is_empty()))
+                    && self.descriptor.framework_version_constraint.as_ref().is_none_or(|_| {
+                        framework_version.as_ref().is_some_and(|value| !value.trim().is_empty())
+                    })
             }
             DetectionOutcome::Absent {
                 reason: DetectionAbsenceReason::VersionConstraintNotSatisfied,
@@ -524,11 +500,7 @@ impl FactLimitation {
         is_blocking: bool,
         confidence_impact: Confidence,
     ) -> Self {
-        Self {
-            description: description.into(),
-            is_blocking,
-            confidence_impact,
-        }
+        Self { description: description.into(), is_blocking, confidence_impact }
     }
 }
 
@@ -590,9 +562,7 @@ impl EmittedFact {
     /// Whether this fact has a blocking limitation.
     #[must_use]
     pub fn is_blocked(&self) -> bool {
-        self.limitation
-            .as_ref()
-            .is_some_and(|limitation| limitation.is_blocking)
+        self.limitation.as_ref().is_some_and(|limitation| limitation.is_blocking)
     }
 
     /// Whether source-backed evidence validates the precedence hint.
@@ -665,12 +635,7 @@ impl FactSink {
     /// Construct an empty sink.
     #[must_use]
     pub const fn new(sink_id: FactSinkId, adapter_id: AdapterId) -> Self {
-        Self {
-            sink_id,
-            adapter_id,
-            facts: Vec::new(),
-            total_payload_bytes: 0,
-        }
+        Self { sink_id, adapter_id, facts: Vec::new(), total_payload_bytes: 0 }
     }
 
     /// Whether the sink is empty.
@@ -882,12 +847,11 @@ impl AdapterResult {
         let AdapterOutcome::Applied { sink, limitations } = &self.outcome else {
             return Err(AdapterAuthorityError::IncompleteOutcome);
         };
-        if let Some(budget) = input.budget {
-            if sink.facts.len() > budget.max_emitted_facts as usize
-                || sink.total_payload_bytes > budget.max_payload_bytes
-            {
-                return Err(AdapterAuthorityError::BudgetExceeded);
-            }
+        if let Some(budget) = input.budget
+            && (sink.facts.len() > budget.max_emitted_facts as usize
+                || sink.total_payload_bytes > budget.max_payload_bytes)
+        {
+            return Err(AdapterAuthorityError::BudgetExceeded);
         }
         if sink.serialized_payload_bytes() != Some(sink.total_payload_bytes) {
             return Err(AdapterAuthorityError::PayloadMismatch);
@@ -966,38 +930,31 @@ fn confidence_exceeds(actual: Confidence, ceiling: Confidence) -> bool {
 }
 
 fn dependencies_are_coherent(dependencies: &[InvalidationDependency]) -> bool {
-    if dependencies
-        .iter()
-        .any(|dependency| dependency.dependency_key.trim().is_empty() || !dependency.generation.is_known())
-    {
+    if dependencies.iter().any(|dependency| {
+        dependency.dependency_key.trim().is_empty() || !dependency.generation.is_known()
+    }) {
         return false;
     }
     dependencies.windows(2).all(|pair| {
-        pair[0].dependency_key != pair[1].dependency_key
-            || pair[0].generation == pair[1].generation
+        pair[0].dependency_key != pair[1].dependency_key || pair[0].generation == pair[1].generation
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `LifecyclePhase` is referenced only from these tests, so importing it at
+    // module scope makes it an unused import in a non-test build.
     use crate::{
-        EntityId, FactId, SemanticFactKind, SemanticReasonCode, SourceAnchor,
+        EntityId, FactId, LifecyclePhase, SemanticFactKind, SemanticReasonCode, SourceAnchor,
     };
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     };
 
     fn descriptor(disposition: AdapterDisposition) -> AdapterDescriptor {
-        AdapterDescriptor::new(
-            AdapterId(1),
-            "moo",
-            "Moo",
-            None,
-            1,
-            disposition,
-        )
+        AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, disposition)
     }
 
     fn scope() -> AdapterSourceScope {
@@ -1050,10 +1007,7 @@ mod tests {
             descriptor(disposition),
             scope(),
             SourceGeneration::known("generation-1"),
-            AdapterOutcome::Applied {
-                sink,
-                limitations: Vec::new(),
-            },
+            AdapterOutcome::Applied { sink, limitations: Vec::new() },
         )
     }
 
@@ -1101,10 +1055,7 @@ mod tests {
 
     #[test]
     fn shadow_and_experimental_results_are_not_authoritative() {
-        for disposition in [
-            AdapterDisposition::Shadow,
-            AdapterDisposition::Experimental,
-        ] {
+        for disposition in [AdapterDisposition::Shadow, AdapterDisposition::Experimental] {
             let fact = EmittedFact::new(
                 FactSinkId(7),
                 AdapterId(1),
@@ -1258,8 +1209,15 @@ mod tests {
                 sink.total_payload_bytes = bytes;
             }
         }
+        // The shared `input()` budget caps emitted facts at 1, so a second fact
+        // trips `BudgetExceeded` before the duplicate scan is ever reached. Widen
+        // the budget here so this assertion actually exercises duplicate-fact-id
+        // detection; `authority_rejects_budget_class_dependency_and_payload_forgery`
+        // already covers the budget path on its own.
+        let mut duplicate_input = input();
+        duplicate_input.budget = Some(AdapterBudget::new(2, 4096));
         assert_eq!(
-            duplicate_result.validate_authority_against(&input()),
+            duplicate_result.validate_authority_against(&duplicate_input),
             Err(AdapterAuthorityError::DuplicateFactId)
         );
     }
