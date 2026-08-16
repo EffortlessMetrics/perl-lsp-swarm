@@ -40,9 +40,10 @@ installation. The Rust parser-backed runtime and workspace support crates are
 compiled into the shipped `perl-dap` binary; users do not install internal
 crates separately.
 
-`Perl::LanguageServer` is not a runtime backend, package feature, or user
-prerequisite. External tools may be used in repository-only conformance lanes,
-but the published crate contains no PLS process launcher or DAP proxy.
+`Perl::LanguageServer` is not required: it is not a runtime backend, package
+feature, or user prerequisite. External tools may be used in repository-only
+conformance lanes, but the published crate contains no PLS process launcher or
+DAP proxy.
 
 Optional debugger peers such as ptkdb are explicit, unbundled integrations where
 `perl-dap` remains the DAP server. They are not selected automatically and are
