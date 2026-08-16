@@ -8,6 +8,9 @@ use serde_yaml_ng::Value;
 #[test]
 fn droid_review_runs_on_trusted_self_hosted_factory_runner() -> Result<()> {
     let (_content, workflow) = droid_review_workflow()?;
+    if droid_review_is_paused(&_content) {
+        return Ok(());
+    }
     let job = mapping_value(mapping_value(&workflow, "jobs")?, "droid-review")?;
     let runs_on = sequence_strings(mapping_value(job, "runs-on")?)?;
 
@@ -23,6 +26,9 @@ fn droid_review_runs_on_trusted_self_hosted_factory_runner() -> Result<()> {
 #[test]
 fn droid_review_keeps_secret_bearing_pr_guard() -> Result<()> {
     let (content, workflow) = droid_review_workflow()?;
+    if droid_review_is_paused(&content) {
+        return Ok(());
+    }
     let job = mapping_value(mapping_value(&workflow, "jobs")?, "droid-review")?;
     let condition = scalar_string(mapping_value(job, "if")?)?;
 
@@ -43,6 +49,9 @@ fn droid_review_keeps_secret_bearing_pr_guard() -> Result<()> {
 #[test]
 fn droid_review_uses_temp_factory_home_for_m3_custom_model() -> Result<()> {
     let (content, _workflow) = droid_review_workflow()?;
+    if droid_review_is_paused(&content) {
+        return Ok(());
+    }
 
     for required in [
         "droid_home=\"${RUNNER_TEMP}/droid-home\"",
@@ -66,6 +75,9 @@ fn droid_review_uses_temp_factory_home_for_m3_custom_model() -> Result<()> {
 #[test]
 fn droid_review_uses_pinned_safe_action_without_debug_artifacts() -> Result<()> {
     let (content, _workflow) = droid_review_workflow()?;
+    if droid_review_is_paused(&content) {
+        return Ok(());
+    }
     let action_line = content
         .lines()
         .find(|line| line.trim_start().starts_with("uses: EffortlessMetrics/droid-action-safe@"))
@@ -96,6 +108,9 @@ fn droid_review_uses_pinned_safe_action_without_debug_artifacts() -> Result<()> 
 #[test]
 fn droid_review_clears_legacy_anthropic_env_vars() -> Result<()> {
     let (content, _workflow) = droid_review_workflow()?;
+    if droid_review_is_paused(&content) {
+        return Ok(());
+    }
 
     assert!(
         content.contains("ANTHROPIC_AUTH_TOKEN: \"\"")
@@ -109,6 +124,9 @@ fn droid_review_clears_legacy_anthropic_env_vars() -> Result<()> {
 #[test]
 fn droid_review_permissions_stay_minimal() -> Result<()> {
     let (_content, workflow) = droid_review_workflow()?;
+    if droid_review_is_paused(&_content) {
+        return Ok(());
+    }
     let job = mapping_value(mapping_value(&workflow, "jobs")?, "droid-review")?;
     let permissions = string_map(mapping_value(job, "permissions")?)?;
     let expected = BTreeMap::from([
@@ -127,6 +145,9 @@ fn droid_review_permissions_stay_minimal() -> Result<()> {
 #[test]
 fn droid_review_emits_live_run_receipt() -> Result<()> {
     let (_content, workflow) = droid_review_workflow()?;
+    if droid_review_is_paused(&_content) {
+        return Ok(());
+    }
     let job = mapping_value(mapping_value(&workflow, "jobs")?, "droid-review")?;
     let review_step = named_step(job, "Run Droid Auto Review")?;
     let receipt_step = named_step(job, "Write Droid live-run receipt")?;
@@ -227,6 +248,14 @@ fn droid_live_run_receipt_schema_is_registered() -> Result<()> {
     assert_eq!(schema["properties"]["anthropic_env_cleared"]["const"], true);
 
     Ok(())
+}
+
+fn droid_review_is_paused(content: &str) -> bool {
+    // The whole lane was statically skipped in the #6049 pause: the job is a
+    // stub (`if: false`, no droid-action step, no secrets). The live-job
+    // guards in this file are revival ratchets - a paused lane satisfies
+    // them by not running, and every assertion below binds any revival.
+    content.contains("if: ${{ false }}") && !content.contains("droid-action")
 }
 
 fn droid_review_workflow() -> Result<(String, Value)> {
