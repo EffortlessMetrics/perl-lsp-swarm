@@ -55,12 +55,14 @@ pub(super) fn run_cmd(root: &Path, args: &[&str], timeout: Duration) -> String {
     let started_at = Instant::now();
     let mut last_heartbeat = started_at;
     let command_name = args.join(" ");
+    let mut observation_failed = false;
 
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
                 if started_at.elapsed() >= timeout {
+                    observation_failed = true;
                     eprintln!(
                         "[update-status] command timed out after {timeout:?}: {command_name}"
                     );
@@ -74,12 +76,27 @@ pub(super) fn run_cmd(root: &Path, args: &[&str], timeout: Duration) -> String {
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(err) => {
+                observation_failed = true;
                 eprintln!("[update-status] failed to poll `{command_name}`: {err}");
                 let _ = child.kill();
                 break child.wait().ok();
             }
         }
     };
+
+    if observation_failed {
+        // `kill` reaches the direct child only. A grandchild — every `rustc`
+        // under a `cargo` invocation — inherits the stdout/stderr write ends
+        // and keeps them open, so joining the reader threads here would block
+        // until those descendants exit and defeat the very bound this timeout
+        // exists to enforce. Detach the readers and fail closed instead: a
+        // command that outlived its deadline, or that we stopped being able to
+        // observe, has no acceptable output regardless of what the final reap
+        // reports.
+        drop(out_handle);
+        drop(err_handle);
+        return String::new();
+    }
 
     let mut combined = String::new();
     if let Some(handle) = out_handle {
@@ -197,6 +214,29 @@ mod tests {
         assert!(
             !merged_output_is_acceptable(true, Some(true)),
             "timeout or poll failure must remain terminal when kill races or fails and reap succeeds"
+        );
+    }
+
+    /// `run_cmd` must honor its deadline even when a descendant inherits the
+    /// output pipes.
+    ///
+    /// `kill` reaches only the direct child, so joining the reader threads on
+    /// the timeout path waits for every grandchild to close the pipe write
+    /// ends. Before this was fixed the call blocked for the full 5s sleep
+    /// against a 100ms bound. `cargo check` under `count_missing_docs_perl_parser`
+    /// is exactly this shape: cargo dies, its `rustc` children do not.
+    #[cfg(unix)]
+    #[test]
+    fn run_cmd_timeout_does_not_wait_for_inherited_output_handles() {
+        let started_at = Instant::now();
+        let output =
+            run_cmd(Path::new("."), &["sh", "-c", "sleep 5 & wait"], Duration::from_millis(100));
+
+        assert_eq!(output, "");
+        assert!(
+            started_at.elapsed() < Duration::from_secs(2),
+            "run_cmd blocked for {:?} past its 100ms bound",
+            started_at.elapsed()
         );
     }
 
