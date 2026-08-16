@@ -900,6 +900,97 @@ mod tests {
     }
 
     #[test]
+    fn every_lifecycle_step_moves_the_observable_counters_and_clock() -> TestResult {
+        // The dispositions alone are a weak oracle: a registry could return the
+        // right disposition while mis-accounting its own state. This pins the
+        // gauges, the cumulative totals, and the phase clock at each step, so a
+        // transition that forgets to move one of them fails here.
+        let registry = IncomingRequestRegistry::new(4)?;
+        let before = registry.counters();
+        assert_eq!(before.admitted_total, 0);
+        assert_eq!(before.active, 0);
+        assert_eq!(before.capacity, 4);
+
+        let handle = registry.admit(JsonRpcId::Integer(41), "textDocument/references")?;
+        let accepted = registry.counters();
+        assert_eq!(accepted.admitted_total, 1, "admission is cumulative");
+        assert_eq!(accepted.active, 1);
+        assert_eq!(accepted.accepted, 1, "a fresh request sits in Accepted");
+        assert_eq!(accepted.queued, 0);
+        assert_eq!(accepted.running, 0);
+
+        let admitted_at =
+            registry.snapshots().into_iter().next().ok_or("missing snapshot after admission")?;
+        assert_eq!(admitted_at.phase, IncomingRequestPhase::Accepted);
+        assert_eq!(
+            admitted_at.accepted_at, admitted_at.phase_changed_at,
+            "phase clock starts at the admission instant"
+        );
+        assert!(admitted_at.terminal_kind.is_none());
+
+        assert_eq!(registry.mark_queued(&handle.id), PhaseTransitionDisposition::Advanced);
+        let queued = registry.counters();
+        assert_eq!(queued.accepted, 0, "the gauge moves rather than accumulating");
+        assert_eq!(queued.queued, 1);
+        assert_eq!(queued.phase_advanced, 1);
+
+        assert_eq!(registry.mark_running(&handle.id), PhaseTransitionDisposition::Advanced);
+        let running = registry.counters();
+        assert_eq!(running.queued, 0);
+        assert_eq!(running.running, 1);
+        assert_eq!(running.phase_advanced, 2);
+
+        let advanced =
+            registry.snapshots().into_iter().next().ok_or("missing snapshot after advancing")?;
+        assert_eq!(advanced.accepted_at, admitted_at.accepted_at, "admission instant is stable");
+        assert!(
+            advanced.phase_changed_at >= admitted_at.phase_changed_at,
+            "the phase clock must not run backwards across a transition"
+        );
+
+        let (disposition, selected) = registry.select_result(&handle.id, json!({"ok": true}));
+        assert_eq!(disposition, TerminalSelectionDisposition::Selected);
+        let selected = selected.ok_or("selected terminal must be returned to the caller")?;
+        assert_eq!(selected.method, "textDocument/references");
+        assert!(
+            selected.selected_at >= selected.accepted_at,
+            "a terminal cannot be selected before its request was accepted"
+        );
+        let terminal = registry.counters();
+        assert_eq!(terminal.terminal_selected_total, 1);
+        assert_eq!(terminal.result_selected, 1);
+        assert_eq!(terminal.error_selected, 0);
+        assert_eq!(terminal.shutdown_selected, 0);
+        assert_eq!(
+            terminal.terminal_selected_active, 1,
+            "still owned until the response is written"
+        );
+        assert_eq!(terminal.running, 0);
+        assert_eq!(terminal.active, 1);
+
+        assert_eq!(
+            registry.response_written(&handle.id),
+            ResponseWriteDisposition::WrittenAndCleaned
+        );
+        let done = registry.counters();
+        assert_eq!(done.responses_written, 1);
+        assert_eq!(done.response_write_failed, 0);
+        assert_eq!(done.terminal_selected_active, 0);
+        assert_eq!(done.active, 0);
+        assert_eq!(done.admitted_total, 1, "cumulative totals survive cleanup");
+        assert_eq!(done.duplicate_terminal, 0);
+        assert_eq!(done.unknown_request, 0);
+        assert_eq!(done.transport_cleaned, 0);
+        assert!(registry.snapshots().is_empty(), "cleanup removes the active entry");
+        assert!(
+            registry.anomalies().is_empty(),
+            "a clean lifecycle must raise no anomaly: {:?}",
+            registry.anomalies()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn phase_progression_is_monotonic() -> TestResult {
         let registry = IncomingRequestRegistry::new(2)?;
         let handle = registry.admit(JsonRpcId::Integer(7), "workspace/symbol")?;
