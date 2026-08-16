@@ -463,8 +463,7 @@ mod tests {
 
     #[test]
     fn remediation_preserves_the_selected_peer_mode() {
-        let peer =
-            editor_port_in_use_message(9000, &EditorListener::peer_bridge("127.0.0.1:5000"));
+        let peer = editor_port_in_use_message(9000, &EditorListener::peer_bridge("127.0.0.1:5000"));
         assert!(peer.contains("perl-dap --external-peer 127.0.0.1:5000 --socket --port 9001"));
 
         let listen = editor_port_in_use_message(9000, &EditorListener::peer_listen("127.0.0.1"));

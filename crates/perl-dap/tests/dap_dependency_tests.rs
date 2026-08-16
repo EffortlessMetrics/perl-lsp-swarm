@@ -20,13 +20,29 @@ mod dap_dependencies {
         Ok(std::fs::read_to_string(path)?)
     }
 
+    /// Strip doc-comment markers and rejoin hard-wrapped lines so prose
+    /// assertions match on wording rather than on where a line happens to wrap.
+    ///
+    /// Both surfaces this guards are wrapped prose: `README.md` breaks after
+    /// "or user" and `lib.rs` breaks after "compatibility", so a raw
+    /// `contains` for the full sentence fragment fails even though the text
+    /// says exactly what is required.
+    fn prose(content: &str) -> String {
+        content
+            .lines()
+            .map(|line| line.trim().trim_start_matches("//!").trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     #[test]
     // AC:18
     fn published_crate_rustdoc_is_native_only() -> Result<()> {
         let crate_root = read(repo_root().join("crates/perl-dap/src/lib.rs"))?;
-        assert!(crate_root.contains("Native Debug Adapter Protocol implementation for Perl"));
-        assert!(crate_root.contains("The supported first-mile runtime is the native"));
-        assert!(crate_root.contains("not a runtime backend or published compatibility feature"));
+        let crate_prose = prose(&crate_root);
+        assert!(crate_prose.contains("Native Debug Adapter Protocol implementation for Perl"));
+        assert!(crate_prose.contains("The supported first-mile runtime is the native"));
+        assert!(crate_prose.contains("not a runtime backend or published compatibility feature"));
 
         for forbidden in [
             "pub mod bridge_adapter",
@@ -114,9 +130,12 @@ mod dap_dependencies {
     // AC:18
     fn crate_readme_describes_native_runtime_and_repo_only_conformance() -> Result<()> {
         let readme = read(repo_root().join("crates/perl-dap/README.md"))?;
-        assert!(readme.contains("Native launch"));
-        assert!(readme.contains("not a runtime backend, package feature, or user prerequisite"));
-        assert!(readme.contains("repository-only conformance lanes"));
+        let readme_prose = prose(&readme);
+        assert!(readme_prose.contains("Native launch"));
+        assert!(
+            readme_prose.contains("not a runtime backend, package feature, or user prerequisite")
+        );
+        assert!(readme_prose.contains("repository-only conformance lanes"));
         assert!(!readme.contains("cpanm Perl::LanguageServer"));
         assert!(!readme.contains("--bridge"));
         Ok(())
