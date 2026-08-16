@@ -30,6 +30,13 @@ jobs:
       - name: Format candidate
         run: cargo fmt --all
 
+      - name: Show production wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -n "route_profile" xtask/src/tasks/gates.rs
+          git diff -- xtask/src/tasks/gates.rs | sed -n '1,320p'
+
       - name: Verify focused route-profile contract
         shell: bash
         run: |
