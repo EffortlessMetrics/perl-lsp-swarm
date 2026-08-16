@@ -2,7 +2,7 @@
   "schema_version": "zed_codex_train.v1",
   "programme_issue": 7759,
   "status": "planned_not_proven",
-  "updated": "2026-08-15",
+  "updated": "2026-08-16",
   "rules": {
     "branch_from_current_main_after_dependencies": true,
     "one_semantic_increment_per_pr": true,
@@ -14,7 +14,7 @@
     ],
     "dap_in_scope": false,
     "current_core_frontier": [
-      "P02",
+      "P03",
       "P06",
       "P09",
       "C01"
@@ -57,7 +57,7 @@
       "pull_request": 8369,
       "actor": "codex",
       "kind": "authority",
-      "state": "implementation_pr_open",
+      "state": "authority_merged_execution_not_proven",
       "depends_on": [
         "P00"
       ],
@@ -71,7 +71,7 @@
       "pull_request": null,
       "actor": "codex",
       "kind": "authority",
-      "state": "blocked_on_dependencies",
+      "state": "ready",
       "depends_on": [
         "P02"
       ],
@@ -85,10 +85,9 @@
       "pull_request": 8373,
       "actor": "codex",
       "kind": "authority",
-      "state": "blocked_on_dependencies",
+      "state": "authority_merged_execution_not_proven",
       "depends_on": [
-        "P02",
-        "P03"
+        "P02"
       ],
       "external_write": false,
       "closes_issue": false
@@ -100,10 +99,9 @@
       "pull_request": 8379,
       "actor": "codex",
       "kind": "authority",
-      "state": "blocked_on_dependencies",
+      "state": "authority_merged_execution_not_proven",
       "depends_on": [
-        "P02",
-        "P03"
+        "P02"
       ],
       "external_write": false,
       "closes_issue": false
@@ -337,6 +335,7 @@
           ".ci/fixtures/zed-perl-upstream/registry/manifest.toml",
           "docs/integrations/ZED_REGISTRY_SUBMISSION.md"
         ],
+        "acceptance_manifest": ".ci/fixtures/zed-perl-upstream/registry/manifest.toml",
         "repository": "tree-sitter-perl/zed-perl",
         "required_fields": [
           "extension.new_commit",
@@ -347,7 +346,18 @@
           "validation.submodule_commit_branch_reachable",
           "validation.manifest_version_matches"
         ],
-        "requires_changed_subject": true
+        "requires_changed_subject": true,
+        "changed_subject_fields": [
+          {
+            "candidate": "extension.new_commit",
+            "current": "extension.current_commit"
+          },
+          {
+            "candidate": "extension.new_version",
+            "current": "extension.current_version"
+          }
+        ],
+        "requires_released_build": false
       }
     },
     {
@@ -528,11 +538,17 @@
           "external_write": false,
           "closes_issue": false,
           "upstream_acceptance": {
+            "source_of_truth": [
+              ".ci/fixtures/zed-perl-upstream/registry/manifest.toml",
+              "docs/integrations/ZED_REGISTRY_SUBMISSION.md"
+            ],
+            "acceptance_manifest": ".ci/fixtures/zed-perl-upstream/registry/manifest.toml",
             "repository": "tree-sitter-perl/zed-perl",
             "required_fields": [
               "extension.new_commit",
               "extension.new_version",
-              "extension.upstream_branch_containing_commit"
+              "extension.upstream_branch_containing_commit",
+              "zed_defaults.released_build"
             ],
             "required_validation": [
               "validation.submodule_commit_branch_reachable",
@@ -540,7 +556,22 @@
               "validation.released_build_contains_commit"
             ],
             "requires_changed_subject": true,
-            "requires_released_build": true
+            "changed_subject_fields": [
+              {
+                "candidate": "extension.new_commit",
+                "current": "extension.current_commit"
+              },
+              {
+                "candidate": "extension.new_version",
+                "current": "extension.current_version"
+              }
+            ],
+            "requires_released_build": true,
+            "released_build_identity": {
+              "field": "zed_defaults.released_build",
+              "bound_by": "validation.released_build_contains_commit",
+              "binds_subject": "extension.new_commit"
+            }
           }
         },
         {

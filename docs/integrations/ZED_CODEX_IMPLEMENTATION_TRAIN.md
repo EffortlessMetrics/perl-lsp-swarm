@@ -24,13 +24,16 @@ These are not aliases. Every EffortlessMetrics LSP receipt must prove exact `per
 
 ## Current execution frontier
 
-The train was reconciled against GitHub on August 15, 2026.
+The train was reconciled against GitHub on August 16, 2026.
 
 | Stage | Live state | Codex action |
 |---|---|---|
 | P00 — #7975 / PR #8023 | merged; issue closed | historical substrate only |
 | P01 — #7980 / PR #8365 | authority merged; executable evidence not proven | do not rebuild; proceed to P06 |
-| P02 — #7984 / PR #8369 | open implementation PR | review, repair on current `main`, and merge the narrow authority increment |
+| P02 — #7984 / PR #8369 | authority merged; executable evidence not proven | do not rebuild; P03 is now unblocked |
+| P03 — #8647 | ready | add the deterministic fixture and expectation contract from current `main` |
+| P04 — #7990 / PR #8373 | authority merged; executable evidence not proven | do not rebuild; execution is owned by P12 |
+| P05 — #7992 / PR #8379 | authority merged; executable evidence not proven | do not rebuild; execution is owned by P13 |
 | P06 — #8661 | ready | add the read-only public-asset workflow from current `main` |
 | P09 — #9468 | ready | add the fail-closed support projection substrate from current `main` |
 | C01 — #9483 | ready | add stable checks, semantic routing, and receipt invalidation from current `main` |
@@ -39,13 +42,15 @@ The train was reconciled against GitHub on August 15, 2026.
 The first core wave is therefore:
 
 ```text
-Codex A -> P02 / PR #8369
+Codex A -> P03 / #8647
 Codex B -> P06 / #8661
 Codex C -> P09 / #9468
 Codex D -> C01 / #9483
 ```
 
-The first non-blocking debugger wave is D01 / #9485. P03 and the remaining exact-source authority leaves stay closed until P02 lands. DA01 / #9516 and D02 / #9486 stay closed until D01 establishes the exact adapter/configuration/target subject.
+The first non-blocking debugger wave is D01 / #9485. DA01 / #9516 and D02 / #9486 stay closed until D01 establishes the exact adapter/configuration/target subject.
+
+PR #8369, PR #8373, and PR #8379 landed their authority increments on `main` directly; the earlier successor plan to reconstruct P04/P05 as stacked seeds is superseded by that merge and is not revived here. Their owning issues #7984, #7990, and #7992 remain open because a merged authority increment is not executable host evidence: P11 owns the exact-source core receipt, P12 owns the settings receipts, and P13 owns the defaults receipts. P04 and P05 therefore depend on the P02 host driver they actually consume, and reach the P03 fixture through P11 at execution time rather than at authority time.
 
 ## Train rules
 
@@ -62,7 +67,9 @@ The first non-blocking debugger wave is D01 / #9485. P03 and the remaining exact
 
 ## Reusable Codex instruction
 
-> Implement only the named train stage. Re-fetch current `main`, the owning issue and comments, existing branches and PRs, and every named external read-only subject before editing. Treat stale branches as evidence rather than authority; reconstruct the narrowest current-base increment, write falsifiers first, preserve product and evidence-stage boundaries, run focused and policy checks, and open one draft PR. Use `Advances` until actual acceptance is earned. Perform no external submission, release, registry mutation, unsupported support promotion, or destructive cleanup.
+> Take the named train stage through `deliver-pr` as the accountable lane root, and record that route on the stage's GitHub subject. Re-fetch current `main`, the owning issue and comments, existing branches and PRs, and every named external read-only subject before editing. Treat stale branches as evidence rather than authority; reconstruct the narrowest current-base increment, write falsifiers first, preserve product and evidence-stage boundaries, run focused and policy checks, and open one PR. Use `Advances` until actual acceptance is earned. Perform no external submission, release, registry mutation, unsupported support promotion, or destructive cleanup.
+
+Each stage is one claim. Enter `deliver-pr` at the earliest absent or stale judgment for that stage, follow its named normal and material backward edges, and return a typed lane result rather than stopping at research, a green check, or a subagent verdict. A stage whose authority PR has merged is not finished: its owning issue stays open until the named execution stage earns the receipt, and the train records that separation as `authority_merged_execution_not_proven`.
 
 # Core LSP train
 
@@ -86,28 +93,36 @@ Do not reopen P01 to execute the matrix. P06 owns the workflow and P10 owns reta
 ### P02 — #7984 / PR #8369: exact-source real-Zed driver
 
 **Depends on:** P00.
-**State:** open implementation PR; first core priority.
+**State:** authority merged; #7984 remains open because executable host evidence is separate.
 
-Reconcile PR #8369 against current `main` and retain only the operator-assisted prepare/launch/finalize authority: exact Zed, extension, WASM, `perllsp`, fixture, profile, settings, process, and instrument identities; supported Zed surfaces only; shared receipt validation; isolated profile; bounded logs; no direct mutation of Zed internal state. The checked observation stays `not_run`.
+**Accepted increment:** the operator-assisted prepare/launch/finalize authority — exact Zed, extension, WASM, `perllsp`, fixture, profile, settings, process, and instrument identities; supported Zed surfaces only; shared receipt validation; isolated profile; bounded logs; no direct mutation of Zed internal state. The checked observation stays `not_run`.
 
-**Exit:** the authority PR is merged and P03 may branch. No actual host pass is inferred.
+Do not reopen P02 to run a host. P03 may now branch, and P11 owns the first actual host receipt.
 
 ### P03 — #8647: deterministic fixture and expectation contract
 
 **Depends on:** P02.
+**State:** ready now.
+
 Create the shared fixture authority for activation, `.pod` separation, diagnostics and repair, completion/navigation, edit or bounded refusal, UTF-16 positions, LF/CRLF, custom token cases, freshness, settings, and wrong-root discriminators.
 
 **Exit:** fixture and expectations are deterministic, content-addressed, and consumable by all host evidence leaves without duplicating semantic expectations.
 
 ### P04 — #7990 / PR #8373: settings behavior authority
 
-**Depends on:** P02 + P03.
-Define the checked `project_only`, `zed_override`, `zed_override_removed`, and `live_edit` experiment and validator. Preserve project/user authority, reversible precedence, restart/live boundaries, and secret-safe receipts. Keep results `not_run`.
+**Depends on:** P02.
+**State:** authority merged; #7990 remains open because the four checked experiments have not run.
+
+**Accepted increment:** the checked `project_only`, `zed_override`, `zed_override_removed`, and `live_edit` experiment and validator, preserving project/user authority, reversible precedence, restart/live boundaries, and secret-safe receipts. Results stay `not_run`.
+
+P12 owns execution and reaches the P03 fixture through P11.
 
 ### P05 — #7992 / PR #8379: defaults and provider-order authority
 
-**Depends on:** P02 + P03.
-Define the four-row defaults/extension/provider-selection matrix and a deterministic ruling contract. No publication-order result is earned before P13 executes it.
+**Depends on:** P02.
+**State:** authority merged; #7992 remains open because no row of the matrix has run.
+
+**Accepted increment:** the four-row defaults/extension/provider-selection matrix and its deterministic ruling contract. No publication-order result is earned before P13 executes it.
 
 ### P06 — #8661: public-asset matrix workflow
 
@@ -315,7 +330,25 @@ The maintainer submits and lands the external extension change. Semantic review 
 ### DU01 — merged and released DAP subject acceptance
 
 **Depends on:** DM01.
+**Acceptance source:** `.ci/fixtures/zed-perl-upstream/registry/manifest.toml`.
+
 Accept only the actual changed upstream commit/version/branch with branch reachability, manifest-version equality, and released-build containment proven. Submission or merge metadata alone is insufficient.
+
+DU01 is evaluated as a predicate over the named acceptance manifest, not as a prose promise. A DAP subject is accepted only when every one of these holds in that document:
+
+```text
+extension.new_commit                        non-empty and != extension.current_commit
+extension.new_version                       non-empty and != extension.current_version
+extension.upstream_branch_containing_commit non-empty
+zed_defaults.released_build                 non-empty
+validation.submodule_commit_branch_reachable  true
+validation.manifest_version_matches           true
+validation.released_build_contains_commit     true
+```
+
+The released-build identity is subject-bound: a named non-empty build is required, and `validation.released_build_contains_commit` must tie that build to the accepted `extension.new_commit`. A non-empty build with unproven containment, or proven containment with no named build, is not acceptance.
+
+This is exactly where DU01 and the LSP-side U01 differ. A subject that has merged upstream but has not shipped in a released build satisfies U01 and must still fail DU01. The train test drives both predicates over the same manifest and requires that difference to hold, so neither acceptance can silently collapse into the other.
 
 ### D04 — #9491: official existing-`perl` registry packet freeze
 
@@ -347,23 +380,31 @@ Reconcile sidecar state, mark superseded packets historical, preserve currentnes
 ## DAP sidecar graph
 
 ```text
-D01 #9485
-  ├─ DA01 #9516 public perl-dap asset receipts ───────────────────────────┐
-  └─ D02 #9486 exact-source Zed DAP ─ D03 #9490 ─ DM01                  │
-                                                   │                      │
-                                                   DU01                   │
-                                                   │                      │
-                                                   D04 #9491 ─ DM02       │
-                                                                        │
-C01 ─────────────────────────────────────────────────────────────────────┤
-DA01 + D02 + DM02 + C01 ─────────────────────────────── D05 #9487       │
-                                                               │         │
-P09 ─────────────────────────────────────────────────── D06 #9489       │
-                                                               │
-                                                               D07 #9484
+core P02 #7984/#8369 ─┐
+core P03 #8647 ───────┤
+D01 #9485 ────────────┤
+  │                   │
+  ├─ DA01 #9516 public perl-dap asset receipts ──────────┐
+  │                   │                                  │
+  └───────────────────┴─ D02 #9486 exact-source Zed DAP  │
+                             │                           │
+                             D03 #9490 ─ DM01            │
+                             │                           │
+                             DU01                        │
+                             │                           │
+                             D04 #9491 ─ DM02            │
+                                                         │
+core C01 #9483 ──────────────────────────────────────────┤
+DA01 + D02 + DM02 + C01 ───────────────── D05 #9487 ─────┘
+                                              │
+core P09 #9468 ───────────────────────── D06 #9489
+                                              │
+                                          D07 #9484
 ```
 
-Machine-checked sidecar fan-in includes `D01 -> DA01`, `D01 -> D02`, `DA01 -> D05`, `D02 -> D05`, `DM02 -> D05`, `C01 -> D05`, `D05 -> D06`, and `P09 -> D06`.
+D02 is gated by the core exact-source host authority as well as the sidecar: it cannot start before `P02` and `P03`, because a real Zed DAP session needs the exact-source host driver and the deterministic fixture. These are hard dependencies, not advisory ordering.
+
+Machine-checked sidecar fan-in includes `D01 -> DA01`, `D01 -> D02`, `P02 -> D02`, `P03 -> D02`, `DA01 -> D05`, `D02 -> D05`, `DM02 -> D05`, `C01 -> D05`, `D05 -> D06`, and `P09 -> D06`.
 
 ## Stop points
 
