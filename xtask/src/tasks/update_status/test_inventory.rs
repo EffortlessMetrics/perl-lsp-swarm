@@ -115,7 +115,10 @@ mod tests {
     #[test]
     fn quality_selection_propagates_collection_failure() {
         let result = collect_for_selection::<usize>(false, true, || bail!("unavailable"));
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "quality rendering is fail-closed: a failed inventory must propagate, not degrade"
+        );
     }
 
     #[test]
@@ -166,6 +169,9 @@ mod tests {
 
     #[test]
     fn zero_discovery_is_rejected() {
-        assert!(validate_per_crate_test_counts(PerCrateTestCounts::default()).is_err());
+        assert!(
+            validate_per_crate_test_counts(PerCrateTestCounts::default()).is_err(),
+            "zero discovered tests must be rejected rather than overwriting status with zeros"
+        );
     }
 }
