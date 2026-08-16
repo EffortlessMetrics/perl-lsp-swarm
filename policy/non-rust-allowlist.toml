@@ -1181,6 +1181,40 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 # =============================================================================
+# Compiler concept proof obligations (perl_compiler_concept_proof.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-compiler-concept-proof-contract"
+path = "contracts/compiler/perl_compiler_concept_proof.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "One-to-one proof-obligation matrix binding every #6657 concept row to the #6689 proof classes; validated by cargo run -p xtask --bin compiler-concept-proof -- --check in the policy merge-gate shard."
+covered_by = [
+  "cargo run -p xtask --bin compiler-concept-proof -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-compiler-concept-proof-schema"
+path = "schemas/perl_compiler_concept_proof.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the perl_compiler_concept_proof.v1 contract; the executable closure check is the obligation-matrix validator itself."
+covered_by = [
+  "cargo run -p xtask --bin compiler-concept-proof -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+# =============================================================================
 # Binary identity protocol (perl_lsp.binary_identity.v1)
 # =============================================================================
 
