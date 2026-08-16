@@ -403,7 +403,7 @@ impl EditorClientCompatReceipt {
                 cell.id
             );
             ensure!(
-                !(cell.result == ObservationResult::Pass && !cell.observed),
+                cell.result != ObservationResult::Pass || cell.observed,
                 "cell {} claims a pass without observing anything",
                 cell.id
             );
@@ -552,7 +552,7 @@ impl EditorClientCompatReceipt {
             }
             cursor.as_str()
         };
-        let mut require_agreement = |path: &[&str], expected: &str| -> Result<()> {
+        let require_agreement = |path: &[&str], expected: &str| -> Result<()> {
             let observed = field(path)
                 .with_context(|| format!("embedded protocol receipt omitted {}", path.join(".")))?;
             ensure!(
