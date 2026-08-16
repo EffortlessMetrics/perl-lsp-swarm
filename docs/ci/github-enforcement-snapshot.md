@@ -1,43 +1,100 @@
 # GitHub enforcement snapshot contract
 
-`github_enforcement_snapshot.v1` is the read-only input contract for reconciling checked-in status-context policy with GitHub's complete live enforcement union:
+`github_enforcement_snapshot.v1` is the offline input contract for reconciling checked-in status-context policy with GitHub's complete enforcement union for the default branch:
 
 ```text
 classic branch protection
-+ every active branch ruleset targeting the default branch
++ every active branch ruleset proven to target the default branch
 = observed live enforcement union
 ```
 
-The model is deliberately offline. It accepts captured observations, consumes the existing `Gate Enforcement Contract` receipt, and emits `MATCH`, `DRIFT`, or `NOT_PROVEN`. It performs no GitHub API call and cannot change branch protection, rulesets, bypass actors, or checked-in policy.
+The model performs no GitHub API call and has no settings-mutation path. A later trusted observer captures API responses, hashes the exact evidence, and feeds this contract. The reconciler owns normalization, target applicability, union construction, and `MATCH` / `DRIFT` / `NOT_PROVEN`; the observer does not reinterpret those semantics.
 
 ## Input identity
 
 A snapshot binds:
 
 - repository full name and numeric repository ID;
-- default branch, exact observed branch SHA, and observation time;
+- default branch, exact observed branch SHA, and normalized UTC observation time;
 - capture source, permission completeness, and explicit limitations;
 - the exact static-contract subject, policy digest, and repository SHA;
-- classic-protection instrument state, branch, contexts, and app IDs where available;
-- ruleset instrument state and every captured branch ruleset's ID, name, enforcement state, default-branch applicability, bypass actors, contexts, and app IDs.
+- classic-protection instrument state, response digest, branch, strictness, contexts, and app IDs;
+- ruleset-list response digest;
+- every captured branch ruleset's ID, name, source, enforcement state, detail-response digest, ref-name conditions, bypass actors, required-check settings, contexts, and app IDs.
 
-Inputs are closed and versioned. Unknown fields, malformed IDs, duplicate rulesets, ambiguous timestamps, unsupported states, or cross-subject identity produce `NOT_PROVEN` rather than an empty union.
+The accepted observation sources are:
+
+```text
+trusted_default_branch
+operator
+connector
+fixture
+```
+
+`fixture` exists for deterministic falsifiers but cannot produce a live `MATCH`; it returns `NOT_PROVEN` with `non_live_observation_source`. The other sources still require complete permission, both observed surfaces, exact subject identity, and no capture limitation.
+
+Observed surfaces require response digests. A missing, unreadable, or errored surface must not carry stale status-check or ruleset rows. Contradictory state and payload are invalid input, not partial truth.
+
+## Ruleset targeting is P2 authority
+
+The snapshot retains the ruleset's `conditions.ref_name.include` and `exclude` selectors. The observer does **not** supply a `targets_default_branch` boolean.
+
+P2 derives one targeting state against `refs/heads/<default_branch>`:
+
+```text
+TARGETED
+NOT_TARGETED
+NOT_PROVEN
+```
+
+The current closed evaluator proves GitHub's special selectors `~DEFAULT_BRANCH` and `~ALL`, plus exact branch refs. An active ruleset containing a wildcard selector that this bounded evaluator cannot prove is `NOT_PROVEN`; it is not silently excluded or counted. This keeps P3 from acquiring a second target-matching implementation.
+
+Only rulesets with:
+
+```text
+enforcement = active
+targeting.status = TARGETED
+```
+
+contribute status checks to the union. Evaluate/disabled rulesets and proven untargeted rulesets remain in `excluded_rulesets` with the exclusion reason. Ambiguous active targeting is a receipt limitation.
 
 ## Complete verdicts
 
-`MATCH` and `DRIFT` require both enforcement surfaces to be observed with complete permission and no capture limitation. Classic-only or ruleset-only observations are incomplete even when the visible surface is empty.
+`MATCH` and `DRIFT` require:
 
-Only rulesets with `enforcement = active` and `targets_default_branch = true` contribute to the union. Inactive, evaluate-only, disabled, or untargeted rulesets remain in `excluded_rulesets` so their exclusion is reviewable.
+- classic branch protection observed;
+- rulesets observed;
+- complete observation permission;
+- a live-capable observation source;
+- no capture limitation;
+- exact static subject, policy digest, repository SHA, and branch SHA;
+- proven applicability for every active ruleset that could affect the default branch.
 
-A context present in both systems is retained with `source_class = both`; it is not treated as a duplicate error. The reconciler reports exact differences for:
+`DRIFT` is a proved mismatch. `NOT_PROVEN` is incomplete, stale, contradictory, fixture-only, or semantically unresolved evidence. Neither applies a correction.
 
-- checked-in required context missing from live enforcement;
-- live required context absent from checked-in policy;
+The reconciler reports exact differences for:
+
+- checked-in required context absent from live enforcement;
+- live-required context absent from checked-in policy;
+- a checked-in advisory/informational context that is live-required;
 - classic/ruleset source mismatch;
-- context app-identity mismatch when checked-in policy declares one;
-- unsupported required enforcement claims.
+- app-identity mismatch for each declared enforcement source;
+- unsupported checked-in enforcement claims.
 
-`DRIFT` is a proved mismatch. `NOT_PROVEN` is incomplete or stale evidence. Neither applies a correction.
+Repository-owned static producers imply the GitHub Actions app identity (`15368`) already represented by the existing static producer contract. Live checks that are unbound or bound to another app are therefore visible as app-identity drift rather than being flattened away.
+
+## Receipt evidence
+
+The result retains more than the flat context set:
+
+- classic, ruleset-list, and per-ruleset response digests;
+- the normalized ruleset inventory, including target conditions and derived targeting state;
+- bypass actors and required-status-check settings;
+- each live context's source bindings, app IDs, and contributing ruleset IDs;
+- excluded rulesets and their reason;
+- exact limitations or differences.
+
+A context present in both systems has `source_class = both`; it is not a duplicate error. App IDs remain associated with each source rather than being compared only against a union-wide set.
 
 ## Commands
 
@@ -55,10 +112,14 @@ python3 scripts/ci/reconcile_github_enforcement_snapshot.py \
   explain target/receipts/github-enforcement-union.json
 ```
 
-The semantic snapshot digest is deterministic: input ordering of checks, rulesets, and bypass actors does not change the normalized receipt.
+Malformed JSON supplied to `reconcile --receipt` still writes a typed `NOT_PROVEN` receipt.
+
+The semantic snapshot digest is deterministic. Ordering of checks, rulesets, selectors, bypass actors, and equivalent UTC timestamp representations does not change the normalized subject.
 
 ## Authority boundary
 
-The static receipt remains the authority for checked-in roles, producer identity, workflow posture, and policy/workflow digests. This model owns only offline normalization and additive-union reconciliation.
+The Gate Enforcement Contract remains authority for checked-in roles, producer identity, workflow posture, event reachability, and policy/workflow digests. This model consumes that receipt; it does not parse workflows again.
 
-Issue #9154 owns the trusted observer that captures both live surfaces and feeds this model. Promotion and correction remain separate human-authorized transactions under #3048. A source PR, a green workflow, or one accessible API never establishes live enforcement by itself.
+Issue #9154 owns the least-privileged capture path and freshness policy. It can now provide classic and ruleset response digests, raw ref-name conditions, and a `trusted_default_branch`, `operator`, or `connector` source without redefining target or union semantics.
+
+Promotion and correction remain separate human-authorized transactions under #3048. A source PR, a green workflow, one accessible API surface, or a fixture cannot establish live enforcement by itself.
