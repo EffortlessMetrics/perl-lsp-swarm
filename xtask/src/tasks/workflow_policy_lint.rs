@@ -1274,10 +1274,10 @@ mod tests {
         Ok(())
     }
 
-    /// Droid's self-hosted label sequence normalizes to the policy token, so
-    /// the review workflow stays checked by the lane whitelist.
+    /// Droid's paused hosted runner matches the automatic lane policy, while a
+    /// stale self-hosted declaration remains detectable.
     #[test]
-    fn runner_droid_sequence_matches_self_hosted_droid_review() -> Result<()> {
+    fn runner_droid_paused_hosted_runner_matches_policy() -> Result<()> {
         let real_workflows_dir = {
             let root = project_root()?;
             root.join(".github").join("workflows")
@@ -1289,14 +1289,28 @@ mod tests {
             r#"
             workflow = ".github/workflows/droid-review.yml"
             job = "droid-review"
-            runner = "self_hosted_droid_review"
+            runner = "ubuntu_24_04"
             "#,
         )?;
         let mut issues = Vec::new();
         check_runner_label_mismatch(&real_workflows_dir, &lane, &mut issues)?;
         assert!(
             issues.iter().all(|i| i.code != "RUNNER_LABEL_MISMATCH"),
-            "unexpected RUNNER_LABEL_MISMATCH for Droid self-hosted runner: {issues:?}"
+            "unexpected RUNNER_LABEL_MISMATCH for paused Droid hosted runner: {issues:?}"
+        );
+
+        let stale_lane: toml::Value = toml::from_str(
+            r#"
+            workflow = ".github/workflows/droid-review.yml"
+            job = "droid-review"
+            runner = "self_hosted_droid_review"
+            "#,
+        )?;
+        issues.clear();
+        check_runner_label_mismatch(&real_workflows_dir, &stale_lane, &mut issues)?;
+        assert!(
+            issues.iter().any(|i| i.code == "RUNNER_LABEL_MISMATCH"),
+            "expected stale Droid self-hosted policy to mismatch: {issues:?}"
         );
         Ok(())
     }
