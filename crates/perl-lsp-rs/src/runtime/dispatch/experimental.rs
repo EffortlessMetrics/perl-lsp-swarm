@@ -25,7 +25,6 @@ impl LspServer {
     ///
     /// Available only in test builds or when `expose_lsp_test_api` is enabled;
     /// builds with neither configuration do not compile or route it (issue #4632).
-    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     // Left nested rather than collapsed into a let-chain. `enforce-new-ripr`
     // keys gap identity on the changed line, so collapsing here registers a
     // new gap that this PR cannot discharge; the nested form exists on main
@@ -33,6 +32,7 @@ impl LspServer {
     // function rather than the `if`, because annotating the seam directly
     // pulls it back into the changed hunk and re-creates the gap. See #9528.
     #[allow(clippy::collapsible_if)]
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(super) fn handle_slow_operation_dispatch(
         &self,
         id: &Option<Value>,
