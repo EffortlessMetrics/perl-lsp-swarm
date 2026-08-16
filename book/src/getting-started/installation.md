@@ -90,15 +90,34 @@ Then run `M-x eglot` in a Perl buffer.
 
 Add to `~/.config/helix/languages.toml`:
 
-```toml
-[[language]]
-name = "perl"
-language-servers = ["perl-lsp"]
+Helix's current built-in `perl` language entry also owns Raku/NQP/P6 file
+extensions. `perllsp` is a Perl 5 server, so use the reviewed override rather
+than replacing only the language-server name on the combined entry:
 
-[language-server.perl-lsp]
+```toml
+[language-server.perllsp]
 command = "perllsp"
 args = ["--stdio"]
+
+[[language]]
+name = "perl"
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]
 ```
+
+The checked fixture is
+[`docs/examples/helix/languages.toml`](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/examples/helix/languages.toml).
+This safe override deliberately stops the same entry from owning Raku-family
+file detection; it does not supply or imply Raku LSP support.
 
 ## Your First 5 Minutes
 
