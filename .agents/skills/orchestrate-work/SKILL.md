@@ -383,7 +383,7 @@ instrumentation that blocks the claim. An unchanged remote wait, failed spawn, h
 change, or unavailable cleanup operation does not stop independent campaign work.
 
 - whole claim / one PR → persistent `$deliver-pr` lane
-- independent cumulative review → persistent `pr-reviewer` context using `$review-pr`
+- independent cumulative review → persistent pr-reviewer context using `$review-pr`
 - durable multi-PR goal → `$deliver-goal`
 - proof challenge → `$review-tests` or `$prepare-proof` in the current context
 - candidate challenge → `$review-candidate` in the current context

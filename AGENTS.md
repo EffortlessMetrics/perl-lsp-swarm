@@ -228,7 +228,7 @@ proof. It should not be the first place ordinary staged or affected defects are 
 Do not retire a required remote check merely because a local hook exists. Replacement
 requires #3987/#3988 parity, provenance, ruleset, merge-group, and alternate-path proof.
 
-## Review and integration
+## Codex-native PR review
 
 For substantive PRs:
 
@@ -249,6 +249,10 @@ Review is not diff reading, green CI, mergeability, zero threads, bot approval, 
 agent verdict. It proportionately challenges proof discrimination, production
 reachability, external truth, claim honesty, semantic authority, compatibility, risk,
 and rollback. A clean review is valid; do not manufacture findings.
+
+Never weaken a test, ratchet, support claim, or required proof merely to obtain green
+status. Missing, partial, stale, contradictory, or instrument-failed evidence is
+`NOT_PROVEN`.
 
 ## Worktrees, Git, and currentness
 

@@ -54,7 +54,7 @@ cold start.
 2. Verify each finding against current source, governing authority, observed behavior,
    and candidate-bound proof. Do not patch comments literally.
 3. Refute findings already answered by the semantic currentness contract. A
-   conflict-free candidate is not defective because it is behind `main`, its head SHA
+   conflict-free candidate is not defective because it is behind main, its head SHA
    changed, or a check ran on an older SHA. Revalidate an unchanged affected seam when
    necessary; do not dismiss a genuine older-head failure merely because unrelated work
    landed. Base attribution requires an equivalent gate and matching failure signature
