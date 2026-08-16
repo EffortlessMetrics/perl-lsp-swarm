@@ -119,18 +119,19 @@ jobs:
         # and LSP's plugin.core.typing fails to import. The plugin host
         # imports bare dependency packages from Packages/<name>/__init__.py
         # (the proven shape: the sublime_aio dependency installs the same
-        # way), so the official single module, pinned by tag and digest, is
-        # vendored in exactly that layout.
+        # way), so the official single module (4.7.1: the era whose typing
+        # internals match ST4's python 3.8 vendor build), pinned by tag and
+        # digest, is vendored in exactly that layout.
         shell: bash
         run: >
           set -e
           && vendor="$SUBLIME_TEXT_PACKAGES/typing_extensions"
           && mkdir -p "$vendor"
           && curl -fsSL
-          "https://raw.githubusercontent.com/python/typing_extensions/4.16.0/src/typing_extensions.py"
+          "https://raw.githubusercontent.com/python/typing_extensions/4.7.1/src/typing_extensions.py"
           -o "$vendor/__init__.py"
           && printf '%s  %s\n'
-          "4040ca1a1ecbee00d1385c12a93084d1c5bd46f0b774f07e5ae7e91c4f55e696"
+          "ce42d78e130c4a62af2cbaa3f8c0ae9db49c18cbbb90f2d9614b0bba7dfc234d"
           "$vendor/__init__.py" | sha256sum -c -
 
       - name: Run the real Sublime interoperability journey
