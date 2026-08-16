@@ -94,6 +94,23 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
+id = "non-rust-lsp4ij-template"
+glob = "integrations/lsp4ij/perl-lsp/**"
+kind = "editor_integration_template"
+language = "json"
+surface = "editor"
+classification = "config"
+owner = "editor/lsp4ij"
+reason = "LSP4IJ consumes an importable template directory of JSON descriptors; the format is defined by the LSP4IJ host, so it cannot be expressed in Rust."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_template_projection_tests",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "One LSP4IJ template is a fixed directory of sibling descriptors (template, settings, settings schema, initialization options) plus its maintainer README; the host requires them to live together."
+created = "2026-08-15"
+review_after = "2026-11-15"
+
+[[allow]]
 id = "non-rust-license-files"
 glob = "**/LICENSE-*"
 kind = "license"
