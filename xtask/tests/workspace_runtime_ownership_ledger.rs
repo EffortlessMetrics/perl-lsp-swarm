@@ -138,16 +138,8 @@ fn validate_rows(rows: &[OwnershipRow]) -> Result<()> {
 
     let mut ids = BTreeSet::new();
     for row in rows {
-        ensure!(
-            row.id.starts_with("WRT-"),
-            "{}: stable row ID must start with WRT-",
-            row.id
-        );
-        ensure!(
-            ids.insert(row.id.as_str()),
-            "duplicate ownership row {}",
-            row.id
-        );
+        ensure!(row.id.starts_with("WRT-"), "{}: stable row ID must start with WRT-", row.id);
+        ensure!(ids.insert(row.id.as_str()), "duplicate ownership row {}", row.id);
         ensure!(
             ALLOWED_STATES.contains(&row.current_state.as_str()),
             "{}: unknown current state {}",
@@ -160,46 +152,22 @@ fn validate_rows(rows: &[OwnershipRow]) -> Result<()> {
             row.id,
             row.disposition
         );
-        ensure!(
-            !row.proposition.trim().is_empty(),
-            "{}: proposition is empty",
-            row.id
-        );
-        ensure!(
-            !row.current_owner.trim().is_empty(),
-            "{}: current owner is empty",
-            row.id
-        );
-        ensure!(
-            !row.identity.trim().is_empty(),
-            "{}: identity is empty",
-            row.id
-        );
+        ensure!(!row.proposition.trim().is_empty(), "{}: proposition is empty", row.id);
+        ensure!(!row.current_owner.trim().is_empty(), "{}: current owner is empty", row.id);
+        ensure!(!row.identity.trim().is_empty(), "{}: identity is empty", row.id);
         ensure!(
             !identity_is_path_or_uri_only(&row.identity),
             "{}: a path or URI alone cannot be root-runtime identity",
             row.id
         );
-        ensure!(
-            !row.publication.trim().is_empty(),
-            "{}: publication disposition is empty",
-            row.id
-        );
-        ensure!(
-            !row.cleanup.trim().is_empty(),
-            "{}: cleanup disposition is empty",
-            row.id
-        );
+        ensure!(!row.publication.trim().is_empty(), "{}: publication disposition is empty", row.id);
+        ensure!(!row.cleanup.trim().is_empty(), "{}: cleanup disposition is empty", row.id);
         ensure!(
             row.target_issue.starts_with('#'),
             "{}: target issue must be an issue identity",
             row.id
         );
-        ensure!(
-            !row.proof_family.trim().is_empty(),
-            "{}: proof family is empty",
-            row.id
-        );
+        ensure!(!row.proof_family.trim().is_empty(), "{}: proof family is empty", row.id);
 
         if let Some(expected) = expected_target_issue(&row.disposition) {
             ensure!(
@@ -324,41 +292,27 @@ fn generated_reviewer_projection_is_current() -> Result<()> {
     let actual = fs::read_to_string(root.join(GENERATED_PATH))
         .with_context(|| format!("read {GENERATED_PATH}"))?;
 
-    ensure!(
-        actual == expected,
-        "{GENERATED_PATH} is stale; regenerate it from {LEDGER_PATH}"
-    );
+    ensure!(actual == expected, "{GENERATED_PATH} is stale; regenerate it from {LEDGER_PATH}");
     Ok(())
 }
 
 #[test]
 fn duplicate_stable_row_id_is_rejected() -> Result<()> {
     let mut rows = load_rows()?;
-    let duplicate = rows
-        .first()
-        .cloned()
-        .context("ownership ledger unexpectedly empty")?;
+    let duplicate = rows.first().cloned().context("ownership ledger unexpectedly empty")?;
     rows.push(duplicate);
 
-    ensure!(
-        validate_rows(&rows).is_err(),
-        "duplicate row ID must fail validation"
-    );
+    ensure!(validate_rows(&rows).is_err(), "duplicate row ID must fail validation");
     Ok(())
 }
 
 #[test]
 fn path_or_uri_only_identity_is_rejected() -> Result<()> {
     let mut rows = load_rows()?;
-    let row = rows
-        .first_mut()
-        .context("ownership ledger unexpectedly empty")?;
+    let row = rows.first_mut().context("ownership ledger unexpectedly empty")?;
     row.identity = "root URI".to_string();
 
-    ensure!(
-        validate_rows(&rows).is_err(),
-        "path/URI-only root identity must fail validation"
-    );
+    ensure!(validate_rows(&rows).is_err(), "path/URI-only root identity must fail validation");
     Ok(())
 }
 
