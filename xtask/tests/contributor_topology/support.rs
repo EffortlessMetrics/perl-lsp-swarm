@@ -1,10 +1,9 @@
 #![allow(dead_code, clippy::expect_used)]
 
-// Each test target exercises a different slice of the projection API, so the
-// re-exports in `mod.rs` are only partly used per target.
-#[allow(dead_code, unused_imports)]
-#[path = "../../src/bin/contributor_topology/mod.rs"]
-pub mod contributor_topology;
+// Reach the library module the binary itself links, rather than compiling a
+// second copy of it through `#[path]`. A duplicate compilation would leave the
+// shipped code with no static path from any test.
+pub use xtask::contributor_topology;
 
 use serde_json::{Value, json};
 use std::fs;

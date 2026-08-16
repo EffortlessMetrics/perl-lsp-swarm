@@ -8,9 +8,9 @@ use clap::Parser;
 use std::fs;
 use std::path::PathBuf;
 
-mod contributor_topology;
-
-use contributor_topology::{Projection, build_projection, render_human, validate_projection};
+use xtask::contributor_topology::{
+    Projection, build_projection, render_human, validate_projection,
+};
 
 #[derive(Parser, Debug)]
 #[command(about = "Project the canonical contributor topology without network access")]
