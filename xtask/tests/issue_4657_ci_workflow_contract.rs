@@ -35,7 +35,7 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
     );
     assert!(
         title_check
-            .contains("uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9")
+            .contains("uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9")
             && !title_check.contains("actions/github-script@v9"),
         "pull_request_target title validation must use an immutable github-script v9 ref"
     );

@@ -2179,3 +2179,128 @@ created = "2026-07-17"
 review_after = "2026-08-17"
 expires = "2026-09-30"
 removal_criteria = "RIPR can trace the exact-head receipt/check runner through its focused contract oracles, or targeted mutation replaces this advisory static path."
+
+# -----------------------------------------------------------------------------
+# Formatting policy handlers (#7082 slice 2): advertise-gate / missing-params /
+# admit / CodeFormatter call sites are covered by named call_presence observers
+# colocated in handlers.rs plus live JSON-RPC dispatch tests, but RIPR 0.9.x
+# still reports weakly_gripped call_presence (unchanged_tests=true across
+# multiple observer iterations). Same static-tracing limit class as
+# ripr-suppress-type-hierarchy-cancellation-routing / EffortlessMetrics/ripr#1429.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-formatting-policy-handler-call-presence"
+kind = "call_presence_static_tracing_limit"
+paths = ["crates/perl-lsp-rs/src/runtime/language/formatting_policy/handlers.rs"]
+classification = ["weakly_gripped", "reachable_unrevealed", "call_presence", "static_unknown", "infection_unknown", "propagation_unknown"]
+owner = "lsp-lane"
+issue = "#7082"
+reason = "PR #7554 (#7082 slice 2) wires textDocument/formatting through handle_formatting_policy. Focused observers colocated in handlers.rs (handle_formatting_policy_call_presence_observer, _ensure_surface_advertised, _missing_params) assert the exact ripr candidate strings for ensure_surface_advertised, params.ok_or_else/invalid_params, admit, CodeFormatter::with_config_and_mode, and snapshot URI/generation bindings; live_dispatch_routes_document_formatting_through_receipt_policy and live_stale_request_returns_content_modified_not_successful_empty exercise the JSON-RPC dispatcher path. RIPR 0.9.x still reports weakly_gripped call_presence / reachable_unrevealed on those call sites with unchanged_tests=true because the static tracer cannot connect assertion messages and Result error codes through the handler. Narrow single-file suppression; remove when ripr#1429 can grip colocated call_presence observers or targeted mutation replaces this path."
+created = "2026-08-13"
+review_after = "2026-09-13"
+expires = "2026-10-31"
+removal_criteria = "RIPR grips the colocated handle_formatting_policy_call_presence_observer* tests against handlers.rs call sites, or targeted mutation replaces this advisory static path."
+
+# -----------------------------------------------------------------------------
+# Heredoc queue contract integration test (PR #6760 / issue #6727):
+# Result-style test plumbing misclassified as production seams (ripr#1428).
+#
+# The exact-head RIPR 0.9.0 artifact reports 639 findings in the newly added
+# integration-test file: 447 exposed, 28 reachable_unrevealed/error_path,
+# 2 weakly_exposed/predicate, 11 infection_unknown, 3 propagation_unknown,
+# and 148 static_unknown. The current matcher is path-only and ignores the
+# documentary `classification` field, so this exact-path entry suppresses all
+# 639, not only the 30 pre-suppression actionable/severe findings. It suppresses
+# zero production findings; the post-suppression actionable/severe count is 0
+# and the new-gap quality gate passes. The focused 7-case contract directly
+# observes FIFO queueing, opener/body/source geometry, complete false-opener
+# token streams, exact terminator exclusion, recovery absence, tail resumption,
+# and EOF.
+#
+# Suppression is exact-path and test-only: no production path, glob, severity
+# threshold, or repository-wide RIPR behavior is weakened. Remove when RIPR
+# distinguishes Result-style integration-test plumbing, when the matcher honors
+# classification filters, or when exact-head evidence no longer needs this
+# whole-file exception.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-heredoc-queue-contract-test-surface"
+kind = "test_receipt_surface"
+paths = ["crates/perl-lexer/tests/heredoc_queue_contract.rs"]
+owner = "lexer-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #6760 (issue #6727) adds heredoc_queue_contract.rs, an integration-test contract using the fallible `type R<T = ()> = Result<T, Box<dyn std::error::Error>>` alias required by repository policy. The fresh exact-head RIPR 0.9.0 receipt reports 639 findings in this test-only file: 447 exposed, 28 reachable_unrevealed/error_path, 2 weakly_exposed/predicate, 11 infection_unknown, 3 propagation_unknown, and 148 static_unknown. The repository matcher currently applies suppressions by path and ignores documentary classification filters, so this exact-path entry truthfully suppresses all 639 current findings, not only the 30 pre-suppression actionable/severe findings. Production findings suppressed are exactly 0; post-suppression actionable/severe findings are 0 and the new-gap quality gate passes. The 7 focused tests directly assert FIFO heredoc queueing, opener/body/source geometry, full false-opener token projections, exact terminator exclusion and non-overlap, recovery absence, tail resumption, and one terminal EOF. This time-boxed whole-test-file exception matches the ripr#1428 test_receipt_surface precedent. It changes no production path, glob, RIPR parser, or severity threshold."
+created = "2026-08-13"
+review_after = "2026-09-30"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr#1428 is fixed so Result-style integration-test helpers are not treated as production seams, OR the suppression matcher enforces finding-level classification filters and a narrower evidence-backed rule can replace this path-wide exception, OR an exact-head RIPR artifact no longer needs suppression for this file; then delete or narrow this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# Zed host/public-registry shared fail-closed validators (PR #7958 / #7912):
+# test-support helpers under xtask/tests/support misclassified as production
+# seams (ripr#1428).
+#
+# Exact-head RIPR reports 33 no_static_path + 2 weakly_exposed findings in
+# xtask/tests/support/zed_host_compat.rs (match arms, Ok(()) markers, public
+# pass identity predicates). The helpers are compiled only into Zed programme
+# contract tests; public-registry loaders exercise the remaining reachable
+# error paths in zed_public_registry_receipt.rs. Suppress this single
+# test-support file; do not suppress the contract tests or fixtures.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-zed-host-compat-test-support"
+kind = "test_receipt_surface"
+paths = ["xtask/tests/support/zed_host_compat.rs"]
+owner = "integrations-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #7958 adds xtask/tests/support/zed_host_compat.rs as shared fail-closed validators for the Zed host and public-registry programme contracts. Exact-head RIPR 0.9.x reports 33 no_static_path and 2 weakly_exposed findings on match-arm/Ok(())/predicate plumbing inside that support module even though it is compiled only into xtask tests and the discriminating oracles live in zed_host_receipt.rs / zed_public_registry_receipt.rs (including explicit public-subject read/parse failure coverage). Same ripr#1428 test_receipt_surface class as ripr-suppress-heredoc-queue-contract-test-surface and ripr-suppress-seam-proof-tests. Exact-path, test-support-only; production findings suppressed are 0."
+created = "2026-08-13"
+review_after = "2026-09-13"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr#1428 distinguishes xtask/tests/support helpers from production seams, or exact-head RIPR no longer reports actionable gaps in zed_host_compat.rs after the contract tests grip the validators; then delete this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# Shared client-compat fixture/expectation identity (PR #7874 / #7777):
+# Result-style contract plumbing misclassified as production seams (ripr#1428).
+#
+# Same class as ripr-suppress-zed-host-compat-test-support. The structural half
+# was fixed rather than suppressed first: the contract modules moved from
+# xtask/tests/support into xtask/src, which eliminated every no_static_path
+# finding (74 -> 0) and made the contract production-reachable like its
+# actual_host_receipt.v1 peer.
+#
+# What remains is not closable by proof. Exact-head RIPR 0.9.0 reports 23
+# reachable_unrevealed findings, of which 14 are the trailing `Ok(())` of the
+# contract test functions themselves; the rest are `Ok(())`, `})?` and
+# `digest_identity(hasher)` plumbing on already-covered paths. Writing more
+# tests raises the count rather than lowering it — measured across three
+# iterations on this candidate: 80 actionable before the move, 11 after it,
+# 23 after adding six discriminating guard tests, and 23 again after relocating
+# those tests to an integration contract. The guards themselves are proven in
+# xtask/tests/client_compat_fixture_contract.rs (empty/duplicate/untokenized
+# expectation sets, set-id binding, order independence, membership binding,
+# non-directory and empty fixture roots, path-versus-content separation).
+#
+# One genuinely uncovered path is retained deliberately and not claimed as
+# proven: the non-UTF-8 fixture path guard in fixture_digest, which needs a
+# platform-specific invalid filename to reach.
+#
+# Exact-path and contract-scoped; no provider, LSP, DAP, or parser finding is
+# suppressed.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-client-compat-fixture-contract-surface"
+kind = "test_receipt_surface"
+paths = [
+  "xtask/src/client_compat_fixture.rs",
+  "xtask/tests/client_compat_fixture_contract.rs",
+  "xtask/tests/support/agent_client_compat.rs",
+]
+classification = ["reachable_unrevealed", "no_static_path"]
+owner = "integrations-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #7874 establishes the shared fixture and expectation-set identity consumed by agent_client_compat.v1 and editor_client_compat.v1. Exact-head RIPR 0.9.0 reports 23 reachable_unrevealed findings on Result-style contract plumbing, 14 of which are the trailing Ok(()) of the contract tests themselves — a class no additional test can reveal, measured across three iterations (80 actionable before moving the modules into xtask/src, 11 after, 23 after adding guard tests, 23 after relocating them to an integration contract). The discriminating oracles live in xtask/tests/client_compat_fixture_contract.rs and cover every guard except the non-UTF-8 fixture path, which is left explicitly unproven. Same ripr#1428 test_receipt_surface class as ripr-suppress-zed-host-compat-test-support. Exact-path and contract-scoped; production provider/LSP/DAP/parser findings suppressed are 0."
+created = "2026-08-16"
+review_after = "2026-09-16"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr#1428 stops classifying Result-style test and contract plumbing as unrevealed production seams, or exact-head RIPR no longer reports actionable gaps in these files; then delete this entry and rerun the RIPR new-gap gate."

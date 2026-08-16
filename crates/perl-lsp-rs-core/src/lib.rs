@@ -35,6 +35,8 @@ pub mod hashing;
 pub mod performance;
 /// Cross-platform interpreter and toolchain detection helpers.
 pub mod platform;
+/// Canonical runtime product, executable, build, and artifact identity packets.
+pub mod product_identity;
 /// JSON-RPC and LSP protocol types used across providers and transport layers.
 pub mod protocol;
 /// Language Server Protocol request/notification provider implementations.

@@ -357,9 +357,7 @@ impl BuiltinCatalog {
 
     fn canonicalized(&self) -> Self {
         let mut normalized = self.clone();
-        normalized
-            .builtins
-            .sort_by(|left, right| left.builtin_id.cmp(&right.builtin_id));
+        normalized.builtins.sort_by(|left, right| left.builtin_id.cmp(&right.builtin_id));
         for builtin in &mut normalized.builtins {
             builtin.forms.sort();
             builtin.implicit_operands.sort();
@@ -402,20 +400,11 @@ impl BuiltinCatalog {
         line(&mut output, "")?;
         line(&mut output, &format!("- Schema: `{}`", normalized.schema_version))?;
         line(&mut output, &format!("- Catalog: `{}`", normalized.catalog_id))?;
-        line(
-            &mut output,
-            &format!("- Controller: {}", normalized.controller_issue),
-        )?;
+        line(&mut output, &format!("- Controller: {}", normalized.controller_issue))?;
         line(&mut output, &format!("- Complete: `{}`", normalized.complete))?;
-        line(
-            &mut output,
-            &format!("- Seed rows: `{}`", normalized.builtins.len()),
-        )?;
+        line(&mut output, &format!("- Seed rows: `{}`", normalized.builtins.len()))?;
         line(&mut output, "")?;
-        line(
-            &mut output,
-            &format!("**Claim boundary:** {}", normalized.claim_boundary),
-        )?;
+        line(&mut output, &format!("**Claim boundary:** {}", normalized.claim_boundary))?;
         line(&mut output, "")?;
 
         line(&mut output, "## State counts")?;
@@ -423,10 +412,7 @@ impl BuiltinCatalog {
         line(&mut output, "| Dimension | State | Count |")?;
         line(&mut output, "| --- | --- | ---: |")?;
         for ((dimension, state), count) in counts {
-            line(
-                &mut output,
-                &format!("| `{dimension}` | `{state}` | {count} |"),
-            )?;
+            line(&mut output, &format!("| `{dimension}` | `{state}` | {count} |"))?;
         }
         line(&mut output, "")?;
 
@@ -519,8 +505,7 @@ impl BuiltinEntry {
                     argument.role
                 );
             }
-            if argument.cardinality == Cardinality::ZeroOrMore
-                && index + 1 != self.arguments.len()
+            if argument.cardinality == Cardinality::ZeroOrMore && index + 1 != self.arguments.len()
             {
                 bail!(
                     "builtin {} zero_or_more argument {:?} must be final",
@@ -535,10 +520,7 @@ impl BuiltinEntry {
         validate_unique_enum("capabilities", &self.builtin_id, &self.capabilities)?;
 
         if self.side_effects.contains(&SideEffect::CallbackInvocation) {
-            if !self
-                .arguments
-                .iter()
-                .any(|argument| argument.context == ArgumentContext::Callback)
+            if !self.arguments.iter().any(|argument| argument.context == ArgumentContext::Callback)
             {
                 bail!(
                     "builtin {} callback_invocation requires a callback argument",
@@ -553,9 +535,7 @@ impl BuiltinEntry {
             }
         }
         if self.side_effects.contains(&SideEffect::TopicLocalization)
-            && !self
-                .implicit_operands
-                .contains(&ImplicitOperand::TopicAliasPerIteration)
+            && !self.implicit_operands.contains(&ImplicitOperand::TopicAliasPerIteration)
         {
             bail!(
                 "builtin {} topic_localization requires topic_alias_per_iteration",
@@ -573,16 +553,10 @@ impl BuiltinEntry {
                 );
             }
             if !self.boundaries.contains(&Boundary::TieMagic) {
-                bail!(
-                    "builtin {} container_mutation requires tie_magic boundary",
-                    self.builtin_id
-                );
+                bail!("builtin {} container_mutation requires tie_magic boundary", self.builtin_id);
             }
         }
-        if self
-            .arguments
-            .iter()
-            .any(|argument| argument.context == ArgumentContext::Filehandle)
+        if self.arguments.iter().any(|argument| argument.context == ArgumentContext::Filehandle)
             && (!self.capabilities.contains(&Capability::Io)
                 || !self.boundaries.contains(&Boundary::Io))
         {
@@ -591,19 +565,13 @@ impl BuiltinEntry {
                 self.builtin_id
             );
         }
-        if self.side_effects.contains(&SideEffect::StreamWrite) {
-            if !self.capabilities.contains(&Capability::Io)
-                || !self.boundaries.contains(&Boundary::Io)
-            {
-                bail!(
-                    "builtin {} stream_write requires io capability and boundary",
-                    self.builtin_id
-                );
-            }
+        if self.side_effects.contains(&SideEffect::StreamWrite)
+            && (!self.capabilities.contains(&Capability::Io)
+                || !self.boundaries.contains(&Boundary::Io))
+        {
+            bail!("builtin {} stream_write requires io capability and boundary", self.builtin_id);
         }
-        if self
-            .implicit_operands
-            .contains(&ImplicitOperand::SelectedOutputHandle)
+        if self.implicit_operands.contains(&ImplicitOperand::SelectedOutputHandle)
             && (!self.capabilities.contains(&Capability::Io)
                 || !self.boundaries.contains(&Boundary::SelectedHandleState))
         {
@@ -612,9 +580,7 @@ impl BuiltinEntry {
                 self.builtin_id
             );
         }
-        if self
-            .implicit_operands
-            .contains(&ImplicitOperand::CallerContext)
+        if self.implicit_operands.contains(&ImplicitOperand::CallerContext)
             && (!self.capabilities.contains(&Capability::InterpreterState)
                 || !self.boundaries.contains(&Boundary::InterpreterState))
         {
@@ -681,10 +647,7 @@ fn main() -> Result<()> {
                 "generated builtin status is stale: run `cargo run -p xtask --bin compiler-builtin-catalog -- --write-status`"
             );
         }
-        println!(
-            "builtin semantic catalog valid: {} catalog-only rows",
-            catalog.builtins.len()
-        );
+        println!("builtin semantic catalog valid: {} catalog-only rows", catalog.builtins.len());
         return Ok(());
     }
 
@@ -704,11 +667,7 @@ fn enum_list<T: StableName + Copy>(values: &[T]) -> String {
     if values.is_empty() {
         return "—".to_string();
     }
-    values
-        .iter()
-        .map(|value| format!("`{}`", value.stable_name()))
-        .collect::<Vec<_>>()
-        .join(", ")
+    values.iter().map(|value| format!("`{}`", value.stable_name())).collect::<Vec<_>>().join(", ")
 }
 
 fn empty_dash(value: &str) -> &str {
@@ -798,8 +757,7 @@ mod tests {
 
     const CATALOG: &str =
         include_str!("../../../contracts/compiler/perl_builtin_semantics.v1.toml");
-    const STATUS: &str =
-        include_str!("../../../docs/project/status/perl_builtin_semantics.md");
+    const STATUS: &str = include_str!("../../../docs/project/status/perl_builtin_semantics.md");
 
     #[test]
     fn committed_catalog_validates_and_status_is_current() -> Result<()> {

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "manifest_schema_version": 2,
+  "accepted_for_issue": "#6107",
+  "proofs": [
+    {
+      "id": "parser.ast.behavior",
+      "invocation_sha256": "04a692651ff6257474f4d8b7552eea2ab0b259ce9b0c1fc2596a1a9e77f03517"
+    },
+    {
+      "id": "parser.incremental.accuracy",
+      "invocation_sha256": "187f9c074665fa77b5902bb020f90aec379011508c78667d5d7b1a53039960d9"
+    },
+    {
+      "id": "parser.incremental.authority",
+      "invocation_sha256": "4ca6a13cb72d3cf2908ccdb5d9967eac45996a5d645732ec63975cf974b1e640"
+    },
+    {
+      "id": "parser.incremental.integration",
+      "invocation_sha256": "98bfa4782cd2d2cc0c011f5c8e8da509d8c54d40a117f43a6e5e8b463fa8c280"
+    },
+    {
+      "id": "parser.incremental.parse_output",
+      "invocation_sha256": "f89586c06aa3283f287be63d2a7d898da759483bd471416e184e59b271452e2e"
+    },
+    {
+      "id": "parser.pir.branch_body",
+      "invocation_sha256": "a75a559622e0bd1c033b4cb144ea7baed2fe52da06055135ae74c30a0bb01de9"
+    },
+    {
+      "id": "parser.pir.loop_body",
+      "invocation_sha256": "d2c564eb6c78a731ad3ddfcc882da2b30fa7dc86e660940742d61925526135bf"
+    },
+    {
+      "id": "parser.recovery.incomplete_brace",
+      "invocation_sha256": "60071e5852024c3ddc031285ad27e605e5cac7c3f5058ee1be91d3478174cfa8"
+    },
+    {
+      "id": "parser.recovery.regression",
+      "invocation_sha256": "8e9d842d8c175d5356de9abcb262ee2ca637df79ee58a367c2e3ca06b08f1337"
+    },
+    {
+      "id": "parser.semantic.smoke",
+      "invocation_sha256": "8352a9731eab0e40ee7f532a4aeb5222b16bc2cc9aa22f32c626008b54ac249d"
+    }
+  ]
+}

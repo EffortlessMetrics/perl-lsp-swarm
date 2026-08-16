@@ -1,9 +1,31 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::PredicateBooleanExt;
+
+mod support;
+
+fn product_command() -> assert_cmd::Command {
+    assert_cmd::Command::new(perl_tdd_support::must(support::product_binary_path()))
+}
+
+/// The file stem of the binary these tests actually spawn.
+///
+/// `--version` names the command as it was invoked rather than a fixed product
+/// string, so the expected name has to come from the same place the invocation
+/// does. Spelling it as a literal is what silently desynchronized this test
+/// when the product binary was renamed to `perllsp`: the assertion kept
+/// passing against a name nothing spawned anymore, then failed outright once
+/// the harness resolved the real binary.
+fn product_binary_name() -> Result<String, Box<dyn std::error::Error>> {
+    let path = support::product_binary_path()?;
+    Ok(std::path::Path::new(&path)
+        .file_stem()
+        .ok_or("product binary path has no file stem")?
+        .to_string_lossy()
+        .into_owned())
+}
 
 #[test]
 fn health_prints_ok() {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--health").assert().success().stdout(predicates::str::contains("ok"));
 }
 
@@ -14,12 +36,23 @@ fn version_shows_source_revision() -> Result<(), Box<dyn std::error::Error>> {
     // build made outside a git checkout. Any of the three is correct — what is
     // not acceptable is a blank value, which is what this line printed before
     // the build script checked whether `git` had actually succeeded.
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     let output = cmd.arg("--version").output()?;
     let stdout = String::from_utf8(output.stdout)?;
 
     assert_eq!(output.status.code(), Some(0));
-    assert!(stdout.contains("perl-lsp"), "version should name the binary: {stdout:?}");
+
+    // The banner opens with "<command> <version>". Compare the command token
+    // against the binary that was actually spawned rather than a literal, so a
+    // rename moves both sides together instead of quietly stranding the oracle.
+    let expected_name = product_binary_name()?;
+    let name_line = stdout.lines().next().ok_or("version output is empty")?;
+    let printed_name =
+        name_line.split_whitespace().next().ok_or("version output has no command token")?;
+    assert_eq!(
+        printed_name, expected_name,
+        "version should name the binary it was invoked as: {stdout:?}"
+    );
 
     let revision_line = stdout
         .lines()
@@ -36,13 +69,13 @@ fn version_shows_source_revision() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn help_prints_to_stdout() {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--help").assert().success().stdout(predicates::str::contains("Usage:"));
 }
 
 #[test]
 fn info_shows_version_and_features() {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--info")
         .assert()
         .success()
@@ -64,7 +97,7 @@ fn doctor_reports_workspace_setup() -> Result<(), Box<dyn std::error::Error>> {
     assert!(config_path.is_file(), "doctor fixture config was written");
     let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.env_remove("PERL5LIB");
     let output = cmd.args(["--doctor", dir_str]).output()?;
     let stdout = String::from_utf8(output.stdout)?;
@@ -153,7 +186,7 @@ fn doctor_invalid_project_config_fails() -> Result<(), Box<dyn std::error::Error
     assert!(config_path.is_file(), "invalid doctor fixture config was written");
     let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     let output = cmd.args(["--doctor", dir_str]).output()?;
     let stdout = String::from_utf8(output.stdout)?;
     let stderr = String::from_utf8(output.stderr)?;
@@ -167,7 +200,7 @@ fn doctor_invalid_project_config_fails() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn check_no_files_exits_with_error() {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--check").assert().failure().stderr(predicates::str::contains("No files specified"));
 }
 
@@ -177,7 +210,7 @@ fn check_valid_perl_file() -> Result<(), Box<dyn std::error::Error>> {
     let file = dir.path().join("test.pl");
     std::fs::write(&file, "use strict;\nprint \"hello\\n\";\n")?;
     let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--check").arg(file_str).assert().success().stdout(predicates::str::contains("ok"));
     Ok(())
 }
@@ -204,7 +237,7 @@ fn check_reports_recovered_parse_errors() -> Result<(), Box<dyn std::error::Erro
         std::fs::write(&file, source)?;
         let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
 
-        let mut cmd = cargo_bin_cmd!("perl-lsp");
+        let mut cmd = product_command();
         cmd.arg("--check")
             .arg(file_str)
             .assert()
@@ -232,7 +265,7 @@ fn check_reports_fatal_and_earlier_recovered_errors() -> Result<(), Box<dyn std:
     std::fs::write(&file, source)?;
     let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--check")
         .arg(file_str)
         .assert()
@@ -257,7 +290,7 @@ fn check_advisory_diagnostics_do_not_fail() -> Result<(), Box<dyn std::error::Er
     std::fs::write(&file, "my $r = qr/^(a+)+b$/;\nprint \"ok\\n\";\n")?;
     let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--check")
         .arg(file_str)
         .assert()
@@ -283,7 +316,7 @@ fn check_mixed_files_fails_and_counts_recovered_errors() -> Result<(), Box<dyn s
     let good_str = good.to_str().ok_or("non-UTF-8 temp path")?;
     let bad_str = bad.to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--check")
         .arg(good_str)
         .arg(bad_str)
@@ -308,7 +341,7 @@ fn check_reports_a_missing_statement_semicolon() -> Result<(), Box<dyn std::erro
     std::fs::write(&file, "my $x = 1\nprint \"hi\";\n")?;
     let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--check")
         .arg(file_str)
         .assert()
@@ -331,7 +364,7 @@ fn check_accepts_the_terminator_omissions_perl_permits() -> Result<(), Box<dyn s
     std::fs::write(&file, "sub f {\n    my $y = 2\n}\nmy $last = f()\n")?;
     let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--check")
         .arg(file_str)
         .assert()
@@ -344,7 +377,7 @@ fn check_accepts_the_terminator_omissions_perl_permits() -> Result<(), Box<dyn s
 
 #[test]
 fn check_nonexistent_file() {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("--check")
         .arg("/nonexistent/path/to/file.pl")
         .assert()
@@ -360,7 +393,7 @@ fn check_path_with_file_parent_reports_missing_path() -> Result<(), Box<dyn std:
     std::fs::write(&file_parent, "not a directory")?;
     let child = file_parent.join("file.pl");
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.args(["--check", child.to_str().ok_or("non-UTF-8 temp path")?])
         .assert()
         .failure()
@@ -371,7 +404,7 @@ fn check_path_with_file_parent_reports_missing_path() -> Result<(), Box<dyn std:
 
 #[test]
 fn completion_bash_produces_output() {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.args(["--completion", "bash"])
         .assert()
         .success()
@@ -380,7 +413,7 @@ fn completion_bash_produces_output() {
 
 #[test]
 fn completion_zsh_produces_output() {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.args(["--completion", "zsh"])
         .assert()
         .success()
@@ -393,7 +426,7 @@ fn perltidy_compat_report_prints_native_mapping() -> Result<(), Box<dyn std::err
     let profile = dir.path().join(".perltidyrc");
     std::fs::write(&profile, "-l=100\n-nsok\n-q\n")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.args(["--perltidy-compat-report", profile.to_str().ok_or("non-UTF-8 temp path")?])
         .assert()
         .success()
@@ -412,7 +445,7 @@ fn perlcritic_compat_report_prints_native_mapping() -> Result<(), Box<dyn std::e
         "severity = 3\n[TestingAndDebugging::RequireUseStrict]\n[InputOutput::RequireCheckedOpen]\n",
     )?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.args(["--perlcritic-compat-report", profile.to_str().ok_or("non-UTF-8 temp path")?])
         .assert()
         .success()
@@ -428,7 +461,7 @@ fn check_project_missing_dir_errors() -> Result<(), Box<dyn std::error::Error>> 
     let missing = dir.path().join("missing-project");
     let missing_str = missing.to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.args(["--check-project", missing_str])
         .assert()
         .failure()
@@ -444,7 +477,7 @@ fn check_project_file_path_errors() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&file, "use strict;\n")?;
     let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.args(["--check-project", file_str])
         .assert()
         .failure()
@@ -471,7 +504,7 @@ fn check_project_agrees_with_check_on_advisory_only_files() -> Result<(), Box<dy
     std::fs::write(dir.path().join("clean.pl"), "my $ok = 1;\n1;\n")?;
     let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut check = cargo_bin_cmd!("perl-lsp");
+    let mut check = product_command();
     let check_stdout = String::from_utf8(
         check.args(["--check", advisory.to_str().ok_or("non-UTF-8 temp path")?]).output()?.stdout,
     )?;
@@ -480,7 +513,7 @@ fn check_project_agrees_with_check_on_advisory_only_files() -> Result<(), Box<dy
         "--check should accept an advisory-only file, got:\n{check_stdout}"
     );
 
-    let mut project = cargo_bin_cmd!("perl-lsp");
+    let mut project = product_command();
     let output = project.args(["--check-project", dir_str]).output()?;
     let stdout = String::from_utf8(output.stdout)?;
 
@@ -514,7 +547,7 @@ fn check_project_still_fails_on_blocking_errors() -> Result<(), Box<dyn std::err
     std::fs::write(dir.path().join("advisory.pl"), ADVISORY_ONLY_SOURCE)?;
     let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     let output = cmd.args(["--check-project", dir_str]).output()?;
     let stdout = String::from_utf8(output.stdout)?;
 
@@ -548,7 +581,7 @@ fn check_project_reports_paths_it_could_not_scan() -> Result<(), Box<dyn std::er
     std::os::unix::fs::symlink(dir.path(), nested.join("loop"))?;
     let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     let output = cmd.args(["--check-project", dir_str]).output()?;
     let stdout = String::from_utf8(output.stdout)?;
 
@@ -570,7 +603,7 @@ fn check_project_reports_paths_it_could_not_scan() -> Result<(), Box<dyn std::er
 
 #[test]
 fn completion_fish_produces_output() {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.args(["--completion", "fish"])
         .assert()
         .success()
@@ -579,13 +612,13 @@ fn completion_fish_produces_output() {
 
 #[test]
 fn completion_unknown_shell_fails() {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.args(["--completion", "unknown-shell"]).assert().failure();
 }
 
 #[test]
 fn help_mentions_new_flags() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     let output = cmd.arg("--help").output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--info"), "help should mention --info");
@@ -598,7 +631,7 @@ fn help_mentions_new_flags() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn trailing_files_without_check_flag_errors() {
     // Trailing file arguments should require --check
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.arg("somefile.pl").assert().failure();
 }
 
@@ -625,7 +658,7 @@ fn ripr_facts_emits_schema_valid_deterministic_packet() -> Result<(), Box<dyn st
     // `--ripr-root` and `--ripr-out` must both be repo-relative; the tool
     // resolves them against the working directory, so run from the fixture root.
     let run = |out: &str| -> Result<(), Box<dyn std::error::Error>> {
-        let mut cmd = cargo_bin_cmd!("perl-lsp");
+        let mut cmd = product_command();
         cmd.current_dir(dir.path())
             .args(["--ripr-facts", "--ripr-root", ".", "--ripr-out", out])
             .assert()
@@ -725,7 +758,7 @@ fn ripr_facts_rejects_absolute_out_path() -> Result<(), Box<dyn std::error::Erro
     let abs_out = dir.path().join("packet.json");
     let abs_out_str = abs_out.to_str().ok_or("non-UTF-8 temp path")?;
 
-    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    let mut cmd = product_command();
     cmd.current_dir(dir.path())
         .args(["--ripr-facts", "--ripr-root", ".", "--ripr-out", abs_out_str])
         .assert()
