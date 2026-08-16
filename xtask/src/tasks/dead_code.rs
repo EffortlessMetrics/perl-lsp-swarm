@@ -178,6 +178,37 @@ fn output_dir(root: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Probe cargo-udeps without installing it.
+///
+/// `run_udeps` must use `.unchecked()`, because cargo-udeps exits non-zero both
+/// when it legitimately finds unused dependencies and when it is missing or
+/// broken. Those cannot be told apart after the fact, and `count_in_file`
+/// counts occurrences of `"unused"` — so an `error: no such command: 'udeps'`
+/// capture yields 0 and is written to the baseline/report as a measured zero.
+///
+/// Probing first is what keeps "the instrument did not run" from being recorded
+/// as "the instrument found nothing". This deliberately does not install
+/// anything: acquiring a toolchain is not a side effect a check may have.
+fn ensure_udeps_available() -> Result<()> {
+    let probe = cmd("cargo", ["+nightly", "udeps", "--version"])
+        .stdout_null()
+        .stderr_null()
+        .unchecked()
+        .run()
+        .context("Failed to probe cargo-udeps")?;
+
+    if !probe.status.success() {
+        return Err(eyre!(
+            "cargo-udeps is unavailable, so the legacy unused-dependency count cannot be \
+             measured. Install it with `cargo install cargo-udeps --locked` (requires the \
+             nightly toolchain), or use `cargo xtask dependency-hygiene`, which is the \
+             canonical dependency-unused authority. Refusing to write a baseline/report \
+             recording an unmeasured 0."
+        ));
+    }
+    Ok(())
+}
+
 /// Run legacy cargo-udeps with the historical target/feature scope and write
 /// output. This is advisory compatibility data, not the active dependency
 /// hygiene verdict.
@@ -338,6 +369,7 @@ fn check_against_baseline(root: &Path, baseline_path: &Path, strict: bool) -> Re
 fn run_baseline(root: &Path) -> Result<()> {
     println!("[INFO] Generating dead code baseline...");
 
+    ensure_udeps_available()?;
     let udeps_path = run_udeps(root)?;
     let clippy_path = run_clippy_dead_code(root)?;
 
@@ -455,6 +487,7 @@ maintenance:
 fn run_report(root: &Path) -> Result<()> {
     println!("[INFO] Generating JSON report...");
 
+    ensure_udeps_available()?;
     let udeps_path = run_udeps(root)?;
     let clippy_path = run_clippy_dead_code(root)?;
 
