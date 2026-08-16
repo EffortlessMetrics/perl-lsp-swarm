@@ -640,6 +640,23 @@ broad_glob_reason = "proptest writes regression files alongside the failing test
 created = "2026-05-07"
 review_after = "2026-08-07"
 
+[[allow]]
+id = "non-rust-lsp4ij-released-evidence"
+glob = "integrations/lsp4ij/upstream/0.20.1/**"
+kind = "upstream_evidence_snapshot"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "integrations/lsp4ij"
+reason = "Byte-exact snapshot of the released LSP4IJ 0.20.1 Perl LSP/DAP template subject, pinned as upstream evidence for compatibility and drift checks (#8565). These files are copied verbatim from redhat-developer/lsp4ij and must never be edited toward perl-lsp's desired state; each is addressed by its upstream Git blob identity in the sibling manifest.json."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_released_fixture_tests",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "One upstream release directory is one indivisible evidence subject. Its exact membership is already pinned by `evidence_namespace_holds_exactly_the_manifest_inventory`, which fails on any file absent from manifest.json, so per-file rows would duplicate that test without adding review value."
+created = "2026-08-16"
+review_after = "2026-11-16"
+
 # =============================================================================
 # CI / release scripts
 # =============================================================================
