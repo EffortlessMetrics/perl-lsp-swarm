@@ -21,8 +21,78 @@ jobs:
       - name: Materialize reviewed production files
         run: python3 scripts/ci/stage_pr_10048_repair.py materialize
 
-      - name: Verify closed model and static-contract compatibility
-        run: python3 scripts/ci/stage_pr_10048_repair.py verify
+      - name: Verify exact reviewed path set and digests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import subprocess
+          from pathlib import Path
+
+          expected = {
+              "scripts/ci/reconcile_github_enforcement_snapshot.py": "8d5dfc5a5904bd5979a5b25ba19420c2c0a72f3d211496551ced6cd7d38454c5",
+              "scripts/ci/test_reconcile_github_enforcement_snapshot.py": "082241c07f101c1bec3e9a39d9b7e33ee000ea75507c4592259e5a138528f6ac",
+              "docs/ci/github-enforcement-snapshot.md": "8b6946215e0b0707b7c4f054da1398498aa909c5dddbf101cfb981417d8e24ad",
+          }
+          tracked = subprocess.check_output(
+              ["git", "diff", "--name-only"], text=True
+          ).splitlines()
+          untracked = subprocess.check_output(
+              ["git", "ls-files", "--others", "--exclude-standard"], text=True
+          ).splitlines()
+          changed = {path for path in [*tracked, *untracked] if path}
+          if changed != set(expected):
+              raise SystemExit(
+                  "reviewed production path set drifted: "
+                  f"missing={sorted(set(expected) - changed)} "
+                  f"extra={sorted(changed - set(expected))}"
+              )
+          for raw_path, wanted in expected.items():
+              actual = hashlib.sha256(Path(raw_path).read_bytes()).hexdigest()
+              if actual != wanted:
+                  raise SystemExit(
+                      f"digest mismatch for {raw_path}: expected={wanted} actual={actual}"
+                  )
+              print(f"{raw_path} sha256={actual}")
+          PY
+
+      - name: Verify diff hygiene and Python syntax
+        run: |
+          git diff --no-index -- /dev/null scripts/ci/reconcile_github_enforcement_snapshot.py >/dev/null || test "$?" -eq 1
+          git diff --no-index -- /dev/null scripts/ci/test_reconcile_github_enforcement_snapshot.py >/dev/null || test "$?" -eq 1
+          python3 -m py_compile \
+            scripts/ci/reconcile_github_enforcement_snapshot.py \
+            scripts/ci/test_reconcile_github_enforcement_snapshot.py
+
+      - name: Run live-union model falsifiers
+        run: |
+          python3 -m unittest -v \
+            scripts/ci/test_reconcile_github_enforcement_snapshot.py
+
+      - name: Run static-contract compatibility falsifiers
+        run: |
+          python3 -m unittest -v \
+            scripts/ci/test_validate_gate_enforcement_contract.py
+
+      - name: Prove offline model has no client path
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("scripts/ci/reconcile_github_enforcement_snapshot.py").read_text(
+              encoding="utf-8"
+          )
+          forbidden = (
+              "urllib.request",
+              "requests.",
+              "httpx.",
+              'subprocess.run(["gh"',
+          )
+          present = [token for token in forbidden if token in text]
+          if present:
+              raise SystemExit(f"offline model acquired a network/client path: {present}")
+          print("offline model contains no GitHub/HTTP client path")
+          PY
 
       - name: Fast-forward existing PR branch
         env:
