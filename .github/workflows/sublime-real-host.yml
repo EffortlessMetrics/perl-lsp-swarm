@@ -81,6 +81,10 @@ jobs:
         shell: bash
         run: |
           resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio             "refs/tags/$PERLLSP_AIO_TAG^{}" | cut -f1)
+          if [[ -z "$resolved" ]]; then
+            # Lightweight tags have no peeled ref; the tag ref is the commit.
+            resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio               "refs/tags/$PERLLSP_AIO_TAG" | cut -f1)
+          fi
           if [[ "$resolved" != "$PERLLSP_AIO_REF" ]]; then
             echo "packagecontrol/sublime_aio tag $PERLLSP_AIO_TAG resolves to ${resolved:-<none>}," >&2
             echo "but the pinned commit is $PERLLSP_AIO_REF." >&2
