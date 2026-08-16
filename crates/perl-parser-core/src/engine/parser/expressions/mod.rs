@@ -5,9 +5,16 @@ impl<'a> Parser<'a> {
     }
 
     /// Validate parser-owned regex bodies while preserving Perl syntax that is
-    /// risky but valid. Embedded code is represented on the AST, and nested
-    /// quantifiers stay as non-fatal parser diagnostics.
+    /// risky but valid. Canonical retained-analysis entry points record the
+    /// whole operator here and defer the one body analysis until the completed
+    /// AST supplies lexical language-profile state.
     fn analyze_regex_body_for_ast(&mut self, pattern: &str, start: usize) -> ParseResult<bool> {
+        if let Ok(source) = std::str::from_utf8(self.src_bytes)
+            && crate::engine::regex_retention::record_operator_geometry(source, start)
+        {
+            return Ok(false);
+        }
+
         let validator = crate::engine::regex_validator::RegexValidator::new();
         let source_end = self
             .tokens
