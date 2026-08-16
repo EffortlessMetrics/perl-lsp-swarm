@@ -121,17 +121,20 @@ fn test_variables_globals_scope() -> Result<(), Box<dyn std::error::Error>> {
     let args = json!({ "variablesReference": 13 }); // Globals for frame 1
     let response = adapter.handle_request(1, "variables", Some(args));
 
-    if let DapMessage::Response { body, .. } = response {
-        let body_val = body.ok_or("Expected body in response")?;
-        let vars = body_val
-            .get("variables")
-            .ok_or("Expected variables field")?
-            .as_array()
-            .ok_or("Expected variables array")?;
+    let DapMessage::Response { body, .. } = response else {
+        return Err("Expected a response to the variables request".into());
+    };
+    let body_val = body.ok_or("Expected body in response")?;
+    let vars = body_val
+        .get("variables")
+        .ok_or("Expected variables field")?
+        .as_array()
+        .ok_or("Expected variables array")?;
 
-        // Should contain standard globals like $_
-        assert!(vars.iter().any(|v| v.get("name").and_then(|n| n.as_str()) == Some("$_")));
-    }
+    // Without a live debugger the adapter cannot observe `$_`, so it must report
+    // nothing rather than a hard-coded `$_ = undef` the client would render
+    // identically to a real observation (#7275).
+    assert!(vars.is_empty(), "Globals scope without a live session must be empty; got: {vars:?}");
     Ok(())
 }
 
