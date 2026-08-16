@@ -5,8 +5,7 @@ use super::{
 use perl_parser::{Node, NodeKind, SourceLocation};
 
 #[test]
-fn legacy_summary_uses_canonical_kind_name_for_struct_variant()
--> Result<(), Box<dyn std::error::Error>> {
+fn legacy_summary_uses_canonical_kind_name_for_struct_variant() -> Result<(), Box<dyn std::error::Error>> {
     let location = SourceLocation { start: 0, end: 2 };
     let child = Node::new(NodeKind::Number { value: "42".to_string() }, location);
     let root = Node::new(NodeKind::Program { statements: vec![child] }, location);
@@ -26,8 +25,7 @@ fn legacy_summary_uses_canonical_kind_name_for_struct_variant()
 }
 
 #[test]
-fn legacy_summary_uses_canonical_kind_name_for_unit_variant()
--> Result<(), Box<dyn std::error::Error>> {
+fn legacy_summary_uses_canonical_kind_name_for_unit_variant() -> Result<(), Box<dyn std::error::Error>> {
     let root = Node::new(NodeKind::Diamond, SourceLocation { start: 4, end: 6 });
     let summary = legacy_parse_summary(&root);
 
@@ -37,8 +35,7 @@ fn legacy_summary_uses_canonical_kind_name_for_unit_variant()
 }
 
 #[test]
-fn legacy_summary_serializes_as_valid_compact_and_pretty_json()
--> Result<(), Box<dyn std::error::Error>> {
+fn legacy_summary_serializes_as_valid_compact_and_pretty_json() -> Result<(), Box<dyn std::error::Error>> {
     let root = Node::new(
         NodeKind::Program { statements: Vec::new() },
         SourceLocation { start: 0, end: 0 },
@@ -102,8 +99,7 @@ fn read_source_bytes_decodes_latin1_losslessly() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn read_source_bytes_decodes_windows_1252_punctuation()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_decodes_windows_1252_punctuation() -> Result<(), Box<dyn std::error::Error>> {
     // “quote” in Windows-1252 bytes
     let decoded = read_source_bytes(vec![0x93, b'q', b'u', b'o', b't', b'e', 0x94, b'\n'])?;
     assert_eq!(decoded, "“quote”\n");
@@ -157,8 +153,7 @@ fn read_source_bytes_decodes_utf16_surrogate_pair() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn read_source_bytes_handles_unpaired_high_surrogate()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_handles_unpaired_high_surrogate() -> Result<(), Box<dyn std::error::Error>> {
     // UTF-16LE BOM + lone high surrogate (0xD83D) followed by a valid BMP char 'A' (0x0041).
     // from_utf16_lossy replaces the unpaired surrogate with U+FFFD.
     let bytes = vec![
@@ -172,8 +167,7 @@ fn read_source_bytes_handles_unpaired_high_surrogate()
 }
 
 #[test]
-fn read_source_bytes_handles_unpaired_low_surrogate()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_handles_unpaired_low_surrogate() -> Result<(), Box<dyn std::error::Error>> {
     // UTF-16LE BOM + lone low surrogate (0xDE00) without a preceding high surrogate.
     let bytes = vec![
         0xFF, 0xFE, // UTF-16LE BOM
@@ -185,8 +179,7 @@ fn read_source_bytes_handles_unpaired_low_surrogate()
 }
 
 #[test]
-fn read_source_bytes_handles_utf16_odd_byte_length()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_handles_utf16_odd_byte_length() -> Result<(), Box<dyn std::error::Error>> {
     // UTF-16LE BOM + 'A' (0x41 0x00) + trailing lone byte 0x42.
     // The loop condition `index + 1 < bytes.len()` drops the trailing byte.
     let bytes = vec![
@@ -215,8 +208,7 @@ fn read_source_bytes_handles_empty_input() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
-fn read_source_bytes_handles_truncated_utf8_multibyte()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_handles_truncated_utf8_multibyte() -> Result<(), Box<dyn std::error::Error>> {
     // Valid UTF-8 "ab" followed by a truncated 2-byte sequence (0xC3 without continuation).
     // from_utf8 fails → Windows-1252 fallback kicks in. 0xC3 is undefined in the mapping
     // table so it falls through to char::from(byte) = U+00C3 ('Ã').
@@ -227,8 +219,7 @@ fn read_source_bytes_handles_truncated_utf8_multibyte()
 }
 
 #[test]
-fn read_source_bytes_handles_lone_utf8_continuation_byte()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_handles_lone_utf8_continuation_byte() -> Result<(), Box<dyn std::error::Error>> {
     // 0x80 is a UTF-8 continuation byte with no leader — invalid UTF-8.
     // Falls through to Windows-1252 which maps 0x80 → U+20AC ('€').
     let bytes = vec![b'x', 0x80, b'y'];
@@ -238,8 +229,7 @@ fn read_source_bytes_handles_lone_utf8_continuation_byte()
 }
 
 #[test]
-fn read_source_bytes_preserves_null_bytes_in_utf8()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_preserves_null_bytes_in_utf8() -> Result<(), Box<dyn std::error::Error>> {
     // NUL (0x00) is valid UTF-8 and valid in Rust strings.
     let bytes = vec![b'a', 0x00, b'b'];
     let decoded = read_source_bytes(bytes)?;
@@ -248,8 +238,7 @@ fn read_source_bytes_preserves_null_bytes_in_utf8()
 }
 
 #[test]
-fn read_source_bytes_maps_undefined_windows_1252_bytes_as_latin1()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_maps_undefined_windows_1252_bytes_as_latin1() -> Result<(), Box<dyn std::error::Error>> {
     // Windows-1252 has five undefined slots: 0x81, 0x8D, 0x8F, 0x90, 0x9D.
     // The fallback's `_` arm maps them via `char::from(byte)` which is Latin-1 (U+00xx).
     // Combined with a truncated UTF-8 prefix byte to force the fallback path.
@@ -263,8 +252,7 @@ fn read_source_bytes_maps_undefined_windows_1252_bytes_as_latin1()
 }
 
 #[test]
-fn read_source_bytes_handles_utf16_with_embedded_null_code_unit()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_handles_utf16_with_embedded_null_code_unit() -> Result<(), Box<dyn std::error::Error>> {
     // UTF-16LE BOM + 'A' + U+0000 (NUL, as a 16-bit code unit) + 'B'.
     let bytes = vec![
         0xFF, 0xFE, // UTF-16LE BOM
@@ -278,8 +266,7 @@ fn read_source_bytes_handles_utf16_with_embedded_null_code_unit()
 }
 
 #[test]
-fn read_source_bytes_rejects_partial_bom_as_not_utf16()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_rejects_partial_bom_as_not_utf16() -> Result<(), Box<dyn std::error::Error>> {
     // A single 0xFF byte is neither a full BOM nor valid UTF-8; Windows-1252 fallback
     // maps 0xFF through the `_` arm to U+00FF ('ÿ').
     let decoded = read_source_bytes(vec![0xFF])?;
@@ -288,8 +275,7 @@ fn read_source_bytes_rejects_partial_bom_as_not_utf16()
 }
 
 #[test]
-fn read_source_bytes_keeps_valid_non_mojibake_text()
--> Result<(), Box<dyn std::error::Error>> {
+fn read_source_bytes_keeps_valid_non_mojibake_text() -> Result<(), Box<dyn std::error::Error>> {
     let decoded = read_source_bytes("Ångström\n".as_bytes().to_vec())?;
     assert_eq!(decoded, "Ångström\n");
     Ok(())
