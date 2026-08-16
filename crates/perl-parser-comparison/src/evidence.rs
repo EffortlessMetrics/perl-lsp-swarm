@@ -169,11 +169,7 @@ impl DivergencePath {
     /// Construct a non-empty bounded divergence path.
     pub fn new(value: impl Into<String>) -> Result<Self, EvidenceValueError> {
         let value = value.into();
-        validate_nonempty_bounded(
-            "divergence_path",
-            &value,
-            MAX_DIVERGENCE_PATH_BYTES,
-        )?;
+        validate_nonempty_bounded("divergence_path", &value, MAX_DIVERGENCE_PATH_BYTES)?;
         validate_no_control_characters("divergence_path", &value)?;
         Ok(Self(value))
     }
@@ -202,9 +198,7 @@ impl BoundedText {
     /// Bound text to at most `max_bytes` without splitting a UTF-8 code point.
     pub fn new(value: impl Into<String>, max_bytes: usize) -> Result<Self, EvidenceValueError> {
         if max_bytes == 0 {
-            return Err(EvidenceValueError::ZeroLimit {
-                kind: "bounded_text",
-            });
+            return Err(EvidenceValueError::ZeroLimit { kind: "bounded_text" });
         }
 
         let value = value.into();
@@ -368,11 +362,7 @@ impl DiagnosticSummary {
         recovery_observed: bool,
         error_node_observed: bool,
     ) -> Self {
-        Self {
-            diagnostic_count,
-            recovery_observed,
-            error_node_observed,
-        }
+        Self { diagnostic_count, recovery_observed, error_node_observed }
     }
 
     /// Number of diagnostics or equivalent parser findings observed.
@@ -476,9 +466,7 @@ impl SubjectExecution {
     }
 
     /// Deterministically ordered observation disposition map.
-    pub const fn observations(
-        &self,
-    ) -> &BTreeMap<ObservationPlane, ObservationDisposition> {
+    pub const fn observations(&self) -> &BTreeMap<ObservationPlane, ObservationDisposition> {
         &self.observations
     }
 
@@ -588,10 +576,7 @@ pub struct MismatchDetail {
 impl MismatchDetail {
     /// Construct typed mismatch details.
     pub fn new(class: MismatchClass, first_divergence: DivergencePath) -> Self {
-        Self {
-            class,
-            first_divergence,
-        }
+        Self { class, first_divergence }
     }
 
     /// Typed mismatch class.
@@ -753,12 +738,11 @@ impl fmt::Display for ComparisonModelError {
             Self::CompleteInstrumentFromFailedHarness => formatter.write_str(
                 "failed harness execution cannot carry complete subject instrumentation",
             ),
-            Self::ObservationFromFailedHarness => formatter.write_str(
-                "failed harness execution cannot carry an observed comparison plane",
-            ),
-            Self::ObservedFromIncompleteInstrument => formatter.write_str(
-                "complete observation requires complete instrumentation",
-            ),
+            Self::ObservationFromFailedHarness => formatter
+                .write_str("failed harness execution cannot carry an observed comparison plane"),
+            Self::ObservedFromIncompleteInstrument => {
+                formatter.write_str("complete observation requires complete instrumentation")
+            }
             Self::LimitedObservationFromUnusableInstrument => formatter.write_str(
                 "limited observation requires complete, partial, or truncated instrumentation",
             ),
@@ -774,9 +758,8 @@ impl fmt::Display for ComparisonModelError {
             Self::MatchFingerprintMismatch => formatter.write_str(
                 "matches-expected outcome requires identical expected and actual fingerprints",
             ),
-            Self::MismatchFingerprintMatch => formatter.write_str(
-                "mismatch outcome requires different expected and actual fingerprints",
-            ),
+            Self::MismatchFingerprintMatch => formatter
+                .write_str("mismatch outcome requires different expected and actual fingerprints"),
             Self::EvidenceValue(error) => error.fmt(formatter),
         }
     }
@@ -835,22 +818,12 @@ impl fmt::Display for EvidenceValueError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty { kind } => write!(formatter, "{kind} must not be empty"),
-            Self::TooLong {
-                kind,
-                actual,
-                maximum,
-            } => write!(
-                formatter,
-                "{kind} is {actual} bytes; maximum is {maximum} bytes"
-            ),
-            Self::InvalidCharacter {
-                kind,
-                index,
-                character,
-            } => write!(
-                formatter,
-                "{kind} contains invalid character {character:?} at byte {index}"
-            ),
+            Self::TooLong { kind, actual, maximum } => {
+                write!(formatter, "{kind} is {actual} bytes; maximum is {maximum} bytes")
+            }
+            Self::InvalidCharacter { kind, index, character } => {
+                write!(formatter, "{kind} contains invalid character {character:?} at byte {index}")
+            }
             Self::ZeroLimit { kind } => {
                 write!(formatter, "{kind} requires a non-zero byte limit")
             }
@@ -869,8 +842,7 @@ fn validate_observation_states(
         if matches!(harness, HarnessOutcome::Failed(_))
             && matches!(
                 disposition,
-                ObservationDisposition::Observed
-                    | ObservationDisposition::ObservedWithLimitations
+                ObservationDisposition::Observed | ObservationDisposition::ObservedWithLimitations
             )
         {
             return Err(ComparisonModelError::ObservationFromFailedHarness);
@@ -904,11 +876,7 @@ fn validate_nonempty_bounded(
         return Err(EvidenceValueError::Empty { kind });
     }
     if value.len() > maximum {
-        return Err(EvidenceValueError::TooLong {
-            kind,
-            actual: value.len(),
-            maximum,
-        });
+        return Err(EvidenceValueError::TooLong { kind, actual: value.len(), maximum });
     }
     Ok(())
 }
@@ -917,15 +885,10 @@ fn validate_no_control_characters(
     kind: &'static str,
     value: &str,
 ) -> Result<(), EvidenceValueError> {
-    if let Some((index, character)) = value
-        .char_indices()
-        .find(|(_, character)| character.is_control())
+    if let Some((index, character)) =
+        value.char_indices().find(|(_, character)| character.is_control())
     {
-        return Err(EvidenceValueError::InvalidCharacter {
-            kind,
-            index,
-            character,
-        });
+        return Err(EvidenceValueError::InvalidCharacter { kind, index, character });
     }
     Ok(())
 }

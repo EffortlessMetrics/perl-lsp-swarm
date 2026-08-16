@@ -78,7 +78,5 @@ pub use evidence::{
     ReviewedExpectationId, ScoredComparison, SemanticFingerprint, StableId, SubjectDisposition,
     SubjectExecution, SubjectRole,
 };
-pub use harness::{
-    ParseResult, ParserLabel, execute_v1, execute_v3, parse_v1, parse_v2, parse_v3,
-};
+pub use harness::{ParseResult, ParserLabel, execute_v1, execute_v3, parse_v1, parse_v2, parse_v3};
 pub use outcomes::Verdict;

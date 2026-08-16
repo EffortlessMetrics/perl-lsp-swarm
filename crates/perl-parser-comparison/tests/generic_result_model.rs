@@ -31,10 +31,7 @@ fn clean_execution_can_still_score_a_structural_mismatch() -> Result<(), Box<dyn
     let execution = execute_v3("my $x = 42;")?;
     assert_eq!(execution.subject(), SubjectRole::NativeRecursiveDescent);
     assert_eq!(execution.harness(), HarnessOutcome::Completed);
-    assert_eq!(
-        execution.subject_disposition(),
-        Some(&SubjectDisposition::AcceptedClean)
-    );
+    assert_eq!(execution.subject_disposition(), Some(&SubjectDisposition::AcceptedClean));
 
     let comparison = ScoredComparison::mismatch(
         &execution,
@@ -62,14 +59,8 @@ fn two_clean_subjects_do_not_create_correctness_agreement() -> Result<(), Box<dy
     let historical = execute_v1("my $x = 42;")?;
     let native = execute_v3("my $x = 42;")?;
 
-    assert_eq!(
-        historical.subject_disposition(),
-        Some(&SubjectDisposition::AcceptedClean)
-    );
-    assert_eq!(
-        native.subject_disposition(),
-        Some(&SubjectDisposition::AcceptedClean)
-    );
+    assert_eq!(historical.subject_disposition(), Some(&SubjectDisposition::AcceptedClean));
+    assert_eq!(native.subject_disposition(), Some(&SubjectDisposition::AcceptedClean));
 
     for execution in [&historical, &native] {
         let comparison = ScoredComparison::mismatch(
@@ -91,10 +82,7 @@ fn native_diagnostic_output_is_recovered_execution_not_rejection() -> Result<(),
     let execution = execute_v3("my $x = ;")?;
 
     assert_eq!(execution.harness(), HarnessOutcome::Completed);
-    assert_eq!(
-        execution.subject_disposition(),
-        Some(&SubjectDisposition::AcceptedRecovered)
-    );
+    assert_eq!(execution.subject_disposition(), Some(&SubjectDisposition::AcceptedRecovered));
     assert!(execution.diagnostics().recovery_observed());
     assert!(execution.diagnostics().diagnostic_count() > 0);
     Ok(())
@@ -102,15 +90,11 @@ fn native_diagnostic_output_is_recovered_execution_not_rejection() -> Result<(),
 
 #[test]
 fn historical_error_nodes_are_recovery_not_instrument_failure() -> Result<(), Box<dyn Error>> {
-    let execution = execute_v1(
-        "my $prefix = 1;\n@@@ this is garbage not perl @@@\nmy $suffix = 2;\n",
-    )?;
+    let execution =
+        execute_v1("my $prefix = 1;\n@@@ this is garbage not perl @@@\nmy $suffix = 2;\n")?;
 
     assert_eq!(execution.harness(), HarnessOutcome::Completed);
-    assert_eq!(
-        execution.subject_disposition(),
-        Some(&SubjectDisposition::AcceptedRecovered)
-    );
+    assert_eq!(execution.subject_disposition(), Some(&SubjectDisposition::AcceptedRecovered));
     assert!(execution.diagnostics().error_node_observed());
     assert_eq!(
         execution.observation(&ObservationPlane::Recovery),
@@ -121,25 +105,19 @@ fn historical_error_nodes_are_recovery_not_instrument_failure() -> Result<(), Bo
 }
 
 #[test]
-fn failed_harness_cannot_carry_subject_disposition_or_decisive_score(
-) -> Result<(), Box<dyn Error>> {
+fn failed_harness_cannot_carry_subject_disposition_or_decisive_score() -> Result<(), Box<dyn Error>>
+{
     let execution = SubjectExecution::failed(
         SubjectRole::NativeRecursiveDescent,
         HarnessFailure::TimedOut,
         DiagnosticSummary::default(),
-        BTreeMap::from([(
-            ObservationPlane::Structure,
-            ObservationDisposition::NotProven,
-        )]),
+        BTreeMap::from([(ObservationPlane::Structure, ObservationDisposition::NotProven)]),
         None,
         InstrumentState::Failed,
         Some(BoundedText::new("deadline exceeded", 64)?),
     )?;
 
-    assert_eq!(
-        execution.harness(),
-        HarnessOutcome::Failed(HarnessFailure::TimedOut)
-    );
+    assert_eq!(execution.harness(), HarnessOutcome::Failed(HarnessFailure::TimedOut));
     assert_eq!(execution.subject_disposition(), None);
 
     let comparison = ScoredComparison::matches_expected(
@@ -150,10 +128,7 @@ fn failed_harness_cannot_carry_subject_disposition_or_decisive_score(
         fingerprint("assignment(variable,integer)")?,
         fingerprint("assignment(variable,integer)")?,
     );
-    assert_eq!(
-        comparison,
-        Err(ComparisonModelError::ScoringRequiresCompletedHarness)
-    );
+    assert_eq!(comparison, Err(ComparisonModelError::ScoringRequiresCompletedHarness));
     Ok(())
 }
 
@@ -179,10 +154,7 @@ fn incomplete_instrument_cannot_carry_decisive_score() -> Result<(), Box<dyn Err
         fingerprint("assignment(variable,integer)")?,
         fingerprint("assignment(variable,integer)")?,
     );
-    assert_eq!(
-        comparison,
-        Err(ComparisonModelError::ScoringRequiresCompleteInstrument)
-    );
+    assert_eq!(comparison, Err(ComparisonModelError::ScoringRequiresCompleteInstrument));
     Ok(())
 }
 
@@ -192,18 +164,12 @@ fn complete_observation_requires_complete_instrument() {
         SubjectRole::NativeRecursiveDescent,
         SubjectDisposition::AcceptedClean,
         DiagnosticSummary::default(),
-        BTreeMap::from([(
-            ObservationPlane::Structure,
-            ObservationDisposition::Observed,
-        )]),
+        BTreeMap::from([(ObservationPlane::Structure, ObservationDisposition::Observed)]),
         None,
         InstrumentState::Partial,
     );
 
-    assert_eq!(
-        execution,
-        Err(ComparisonModelError::ObservedFromIncompleteInstrument)
-    );
+    assert_eq!(execution, Err(ComparisonModelError::ObservedFromIncompleteInstrument));
 }
 
 #[test]
@@ -218,10 +184,7 @@ fn match_and_mismatch_fingerprints_are_consistent() -> Result<(), Box<dyn Error>
         fingerprint("expected")?,
         fingerprint("actual")?,
     );
-    assert_eq!(
-        false_match,
-        Err(ComparisonModelError::MatchFingerprintMismatch)
-    );
+    assert_eq!(false_match, Err(ComparisonModelError::MatchFingerprintMismatch));
 
     let false_mismatch = ScoredComparison::mismatch(
         &execution,
@@ -232,10 +195,7 @@ fn match_and_mismatch_fingerprints_are_consistent() -> Result<(), Box<dyn Error>
         fingerprint("same")?,
         wrong_child_order()?,
     );
-    assert_eq!(
-        false_mismatch,
-        Err(ComparisonModelError::MismatchFingerprintMatch)
-    );
+    assert_eq!(false_mismatch, Err(ComparisonModelError::MismatchFingerprintMatch));
     Ok(())
 }
 
