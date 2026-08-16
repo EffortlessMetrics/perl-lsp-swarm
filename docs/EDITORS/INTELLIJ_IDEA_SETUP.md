@@ -76,8 +76,6 @@ For development or pre-upstream interoperability testing, point LSP4IJ at the ex
 
 Use the released built-in Perl entry only with the state that your installed LSP4IJ version actually ships.
 
-The upstream LSP4IJ entry should launch `perllsp` with stdio transport. Any other transport is a different subject and does not inherit this route's evidence.
-
 The currently reviewed upstream Perl material and the repository-owned corrected candidate are intentionally tracked as different subjects. In particular, generic server configuration belongs under canonical `perl.*` settings; VS Code extension settings under `perl-lsp.*` are not a generic LSP settings authority.
 
 The repository-owned corrected LSP4IJ template import route is **not available yet**. `docs/EDITORS/lsp4ij-perl-lsp.json` is a legacy manual descriptor, not that template. Until the importable corrected template lands under #7875, treat this verification route as unavailable and use [Legacy Raw Command Setup](INTELLIJ_IDEA_LEGACY_RAW_COMMAND.md) for local exact-source binding instead.
@@ -199,8 +197,6 @@ A cell may be `proven`, `limited`, `client_not_exposed`, or `not_proven`. Do not
 ### Inline completion
 
 LSP4IJ-shaped protocol profiles can negotiate standard `textDocument/inlineCompletion`, including dynamic registration through `client/registerCapability`. That is protocol-profile evidence.
-
-Which negotiation applies depends on the client. Static clients receive a top-level `inlineCompletionProvider` in the initialize result; dynamic clients omit that static provider and instead receive the capability through `client/registerCapability`. Seeing one shape does not prove the other.
 
 User-facing “inline completion works in IntelliJ/LSP4IJ” requires the actual host to consume the feature in #7719.
 
