@@ -1,0 +1,38 @@
+name: 10048 reviewed contract repair builder
+
+on:
+  push:
+    branches: [codex/10048-contract-repair-builder]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout construction branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Materialize reviewed production files
+        run: python3 scripts/ci/stage_pr_10048_repair.py materialize
+
+      - name: Verify closed model and static-contract compatibility
+        run: python3 scripts/ci/stage_pr_10048_repair.py verify
+
+      - name: Fast-forward existing PR branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/ci/stage_pr_10048_repair.py publish
+
+      - name: Upload construction receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: pr-10048-reviewed-repair
+          path: target/10048-repair/result.json
+          if-no-files-found: error
+          retention-days: 1
