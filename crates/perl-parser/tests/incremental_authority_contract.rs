@@ -167,14 +167,28 @@ fn production_rust_sources() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>>
 
 fn uses_lower_tier_incremental(source: &str) -> bool {
     let compact = compact_whitespace(source);
-    if compact.contains("perl_parser_core::incremental")
-        || (compact.contains("perl_parser_core::{")
-            && (compact.contains("incremental::{")
-                || compact.contains("incremental,")
-                || compact.contains("incremental}")
-                || compact.contains("incrementalas")))
-    {
+    if compact.contains("perl_parser_core::incremental") {
         return true;
+    }
+
+    // A braced `use perl_parser_core::{...}` consumes the lower tier only when
+    // the incremental module itself appears in the import list.  The token
+    // scan is scoped to each import statement: prose that merely mentions
+    // "incremental" in a file importing sibling modules (ast, edit, parser)
+    // must not classify the file as a kernel consumer, and a zero-reparse
+    // consumer cannot be expressed in the manifest's per-call-site allowlist.
+    let mut cursor = 0;
+    while let Some(offset) = compact[cursor..].find("perl_parser_core::{") {
+        let statement = &compact[cursor + offset..];
+        let imports = &statement[..statement.find(';').unwrap_or(statement.len())];
+        if imports.contains("incremental::{")
+            || imports.contains("incremental,")
+            || imports.contains("incremental}")
+            || imports.contains("incrementalas")
+        {
+            return true;
+        }
+        cursor += offset + "perl_parser_core::{".len();
     }
 
     compact.split(';').any(|statement| {
@@ -328,6 +342,16 @@ fn lower_tier_consumer_detector_covers_direct_nested_and_aliased_imports() {
         "extern crate perl_parser_core as core; core::incremental::IncrementalState;"
     ));
     assert!(!uses_lower_tier_incremental("use perl_parser_core::{ParseOutput, Parser};"));
+    // Prose mentioning the word "incremental" must not classify a file that
+    // only imports sibling modules as a kernel consumer: a zero-reparse
+    // consumer cannot be declared in the per-call-site allowlist.
+    assert!(!uses_lower_tier_incremental(
+        "use perl_parser_core::{ast::Node, edit::Edit};\n// reparse the tree with incremental, quoted text"
+    ));
+    assert!(uses_lower_tier_incremental("use perl_parser_core::{ast::Node, incremental};"));
+    assert!(uses_lower_tier_incremental(
+        "use perl_parser_core::{ast::Node};\nuse perl_parser_core::{incremental::{IncrementalState}};"
+    ));
 }
 
 #[test]
