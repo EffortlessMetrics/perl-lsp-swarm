@@ -12,7 +12,7 @@
 > - [`docs/project/RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) — preflight gate checklist
 > - [`docs/project/RELEASE_NOTES_DRAFT.md`](RELEASE_NOTES_DRAFT.md) — release notes source
 > - [`.github/workflows/version-bump.yml`](../../.github/workflows/version-bump.yml) — automated version bump workflow
-> - [`.github/workflows/release-orchestration.yml`](../../.github/workflows/release-orchestration.yml) — master release orchestration
+> - [`.github/workflows/release-orchestration.yml`](../../.github/workflows/release-orchestration.yml) — default-branch release orchestration
 > - [`.github/workflows/publish-crates.yml`](../../.github/workflows/publish-crates.yml) — crates.io publish pipeline
 > - [`.github/workflows/publish-extension.yml`](../../.github/workflows/publish-extension.yml) — VSCode extension publish
 > - [`.github/workflows/docker-publish.yml`](../../.github/workflows/docker-publish.yml) — Docker image publish
@@ -22,18 +22,18 @@
 
 ## Pre-flight
 
-### 1. Verify master branch CI is green
+### 1. Verify recent main branch CI runs
 
-**What**: Confirm the most recent CI runs on master are all successful.
+**What**: Inspect the five most recent `ci.yml` workflow runs on main and confirm their status and conclusion.
 
-**Why**: Release orchestration validates CI state before tagging. A red master blocks the workflow automatically; catching it here saves a wasted workflow dispatch.
+**Why**: Release orchestration validates CI state before tagging. A failed or incomplete `ci.yml` run on main warrants investigation before dispatching the release workflow.
 
 **Command**:
 ```bash
-rtk gh run list --branch master --limit 5
+gh run list --workflow ci.yml --branch main --limit 5
 ```
 
-**Expected output**: All 5 runs show `completed / success`. The `ci.yml` workflow must be among them.
+**Expected output**: Up to five `ci.yml` runs for main, with each run's status and conclusion. Proceed only after the relevant current run reports `completed / success`; this history listing alone does not prove release readiness.
 
 **If it fails**: Do not proceed. Identify the failing job, fix the root cause on a feature branch, merge, and re-check. The release-orchestration workflow will also reject a non-green HEAD (see `release-orchestration.yml` step "Check default branch and CI status").
 
@@ -258,7 +258,7 @@ gh pr checks <PR_NUMBER> --watch
 gh pr merge <PR_NUMBER> --squash --delete-branch
 ```
 
-**Expected output**: All checks pass. The PR merges cleanly into master. `release/v0.12.3` branch is deleted.
+**Expected output**: All checks pass. The PR merges cleanly into main. `release/v0.12.3` branch is deleted.
 
 **If it fails**: If a test asserts a hardcoded version string, update the test. Do not skip CI.
 
@@ -268,7 +268,7 @@ gh pr merge <PR_NUMBER> --squash --delete-branch
 
 ### 12. Dispatch `release-orchestration.yml` — the single entry point
 
-**What**: Trigger the master release orchestration workflow with `version=0.12.3`. This workflow validates the workspace version, verifies CI state, creates the annotated git tag, and dispatches all downstream workflows (release binary build, crates.io publish, VSCode extension, Docker).
+**What**: Trigger the default-branch release orchestration workflow with `version=0.12.3`. This workflow validates the workspace version, verifies CI state, creates the annotated git tag, and dispatches all downstream workflows (release binary build, crates.io publish, VSCode extension, Docker).
 
 **Why**: Direct `git tag` + `git push` is the old manual path (see `docs/project/GA_RUNBOOK.md` — it is stale). The current canonical path is `release-orchestration.yml`, which validates the workspace version matches the input, checks CI state, and creates the tag server-side with the correct changelog annotation. This prevents the "tag points to wrong commit" class of error.
 
@@ -285,8 +285,8 @@ gh workflow run release-orchestration.yml \
 **Expected output**: The workflow run starts. Navigate to the Actions tab to watch it. The `validate` job confirms workspace version matches `0.12.3` and CI state is `success`. The `create-tag` job pushes `v0.12.3`. The `trigger-release` job dispatches `release.yml`, `publish-crates.yml`, `publish-extension.yml`, and `docker-publish.yml`.
 
 **If it fails**:
-- `validate` fails with "Workspace version does not match": The version bump PR did not merge, or merged to a different branch. Verify `grep '^version' Cargo.toml | head -1` on master.
-- `validate` fails with "Commit is not in a successful CI state": Master CI is still running or red. Wait or fix.
+- `validate` fails with "Workspace version does not match": The version bump PR did not merge, or merged to a different branch. Verify `grep '^version' Cargo.toml | head -1` on main.
+- `validate` fails with "Commit is not in a successful CI state": Main CI is still running or red. Wait or fix.
 - `create-tag` fails with "Tag v0.12.3 already exists": A previous attempt partially succeeded. Delete the tag (`git push origin :v0.12.3`) and re-dispatch only if you are certain no downstream workflows ran against it.
 
 ---
@@ -329,7 +329,7 @@ gh run watch <RUN_ID>
 
 **If it fails**:
 - If a single crate fails after 3 attempts, check `https://index.crates.io/<path>/<crate-name>` directly. A transient crates.io outage may require a re-run (`gh run rerun <RUN_ID>`). The workflow's sparse-index check ensures already-published crates are skipped safely.
-- If `validate crate versions` fails: the workspace version on master does not match 0.12.3. This means the bump PR did not merge correctly.
+- If `validate crate versions` fails: the workspace version on main does not match 0.12.3. This means the bump PR did not merge correctly.
 - Do not manually `cargo publish` individual crates — the topological order logic in the workflow handles dev-dependency cycles.
 
 ---

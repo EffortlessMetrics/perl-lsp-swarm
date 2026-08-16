@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "ruling": {
+    "model": "staged_migration",
+    "controller": "#2477",
+    "implementation_issue": "#7058",
+    "next_implementation": "#7063",
+    "proof_issue": "#7065"
+  },
+  "sources": {
+    "manifest": "crates/perl-parser/Cargo.toml",
+    "lib": "crates/perl-parser/src/lib.rs",
+    "incremental": "crates/perl-parser/src/incremental/mod.rs",
+    "parser_core_manifest": "crates/perl-parser-core/Cargo.toml",
+    "generated_doc": "docs/project/PARSER_FACADE_AUTHORITY.md"
+  },
+  "default_features": [
+    "workspace",
+    "lsp-compat",
+    "workspace_refactor"
+  ]
+}

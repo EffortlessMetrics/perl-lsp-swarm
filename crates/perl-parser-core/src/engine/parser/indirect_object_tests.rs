@@ -72,14 +72,151 @@ mod tests {
     }
 
     #[test]
+    fn test_parenthesized_expression_statement_span_keeps_closer() {
+        let source = "(42);";
+        let stmt = first_statement(source);
+        assert_eq!(
+            stmt.location.end,
+            source.len() - 1,
+            "ExpressionStatement span must include the closing parenthesis"
+        );
+        match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => {
+                assert_eq!(expression.location.start, 1);
+                assert_eq!(expression.location.end, 3);
+            }
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parenthesized_builtin_call_span_keeps_closer() {
+        let source = "print(1);";
+        let stmt = first_statement(source);
+        let expression = match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => expression,
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        };
+        match expression.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "print");
+                assert_eq!(args.len(), 1);
+                assert_eq!(
+                    expression.location.end,
+                    source.len() - 1,
+                    "parenthesized builtin FunctionCall span must include ')'"
+                );
+            }
+            other => panic!("Expected FunctionCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_unparenthesized_builtin_call_span_covers_argument() {
+        let source = "print qq/value=$café/;";
+        let stmt = first_statement(source);
+        let statement_end = stmt.location.end;
+        let expression = match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => expression,
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        };
+        assert_eq!(
+            statement_end,
+            source.len() - 1,
+            "ExpressionStatement span must cover its expression"
+        );
+        match expression.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "print");
+                assert_eq!(args.len(), 1);
+                assert_eq!(
+                    expression.location.end,
+                    source.len() - 1,
+                    "builtin FunctionCall span must cover its argument"
+                );
+            }
+            other => panic!("Expected FunctionCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_require_call_span_covers_string_argument() {
+        let source = "require 'relative/file.pl';";
+        let stmt = first_statement(source);
+        let statement_end = stmt.location.end;
+        let expression = match stmt.kind {
+            NodeKind::ExpressionStatement { expression } => expression,
+            other => panic!("Expected ExpressionStatement node, got {other:?}"),
+        };
+        assert_eq!(statement_end, source.len() - 1);
+        match expression.kind {
+            NodeKind::FunctionCall { name, args } => {
+                assert_eq!(name, "require");
+                assert_eq!(args.len(), 1);
+                assert_eq!(expression.location.end, source.len() - 1);
+            }
+            other => panic!("Expected FunctionCall node, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_unknown_lowercase_name_preserves_nested_arguments() {
+        // Keep the bare unknown-lowercase call shape so this exercises
+        // `is_unknown_lowercase_bareword_call_pattern` / the specialized
+        // production path (not generic parenthesized-call parsing).
         let source = "my_custom_method $obj ($title // 'Untitled'), $options->{limit};";
         let stmt = first_statement(source);
         match stmt.kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
-                assert!(matches!(&args[0].kind, NodeKind::Variable { .. }));
+                assert!(matches!(
+                    &args[0].kind,
+                    NodeKind::Variable {
+                        sigil,
+                        name
+                    } if sigil == "$" && name == "obj"
+                ));
+                assert_eq!(args[0].location.start, 17);
+                assert_eq!(args[0].location.end, 21);
+                match &args[1].kind {
+                    NodeKind::Binary { op, left, right } => {
+                        assert_eq!(op, "//", "second arg must keep defined-or Binary shape");
+                        assert!(matches!(
+                            &left.kind,
+                            NodeKind::Variable {
+                                sigil,
+                                name
+                            } if sigil == "$" && name == "title"
+                        ));
+                        assert!(matches!(
+                            &right.kind,
+                            NodeKind::String { value, .. } if value == "'Untitled'"
+                        ));
+                        assert_eq!(args[1].location.start, 23);
+                        assert_eq!(args[1].location.end, 43);
+                    }
+                    other => panic!("Expected Binary // for second arg, got {other:?}"),
+                }
+                match &args[2].kind {
+                    NodeKind::Binary { op, left, right } => {
+                        assert_eq!(op, "->{}", "third arg must keep arrow-hash-deref shape");
+                        assert!(matches!(
+                            &left.kind,
+                            NodeKind::Variable {
+                                sigil,
+                                name
+                            } if sigil == "$" && name == "options"
+                        ));
+                        assert!(matches!(
+                            &right.kind,
+                            NodeKind::Identifier { name } if name == "limit"
+                        ));
+                        assert_eq!(args[2].location.start, 46);
+                        assert_eq!(args[2].location.end, 63);
+                    }
+                    other => panic!("Expected Binary ->{{}} for third arg, got {other:?}"),
+                }
                 assert_eq!(
                     stmt.location.end,
                     source.len() - 1,
@@ -92,6 +229,7 @@ mod tests {
 
     #[test]
     fn test_unknown_lowercase_name_inside_control_flow_is_function_call() {
+        // Bare call inside the block remains the specialized bareword path.
         let stmt = first_statement("if ($enabled) { my_custom_method $obj 10, 20; }");
         let then_branch = match stmt.kind {
             NodeKind::If { then_branch, .. } => then_branch,
@@ -101,12 +239,14 @@ mod tests {
             NodeKind::Block { statements } => statements,
             other => panic!("Expected Block node, got {other:?}"),
         };
+        // The bareword call path returns the call unwrapped; an
+        // `ExpressionStatement` wrapper here is a regression, not an alternative.
         match &body[0].kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
             }
-            other => panic!("Expected FunctionCall node in block, got {other:?}"),
+            other => panic!("Expected unwrapped FunctionCall node in block, got {other:?}"),
         }
     }
 

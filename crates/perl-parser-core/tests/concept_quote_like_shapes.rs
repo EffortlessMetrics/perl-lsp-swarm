@@ -1,0 +1,181 @@
+//! Structural parser contracts for quote-like operators (#6692 follow-up).
+//!
+//! The parser-accuracy manifest proves fixture-level coverage. These tests also
+//! pin native AST payloads and forbid paired quote delimiters from becoming blocks.
+//! `String.value` intentionally remains the complete quote-operator lexeme here;
+//! decoded interpolation fragments are outside this opaque parser boundary.
+
+use perl_parser_core::{Node, NodeKind, Parser};
+
+fn parse_clean(source: &str) -> Result<Node, String> {
+    let mut parser = Parser::new(source);
+    let ast = parser.parse().map_err(|error| format!("parse failed: {error:?}"))?;
+    if parser.errors().is_empty() {
+        Ok(ast)
+    } else {
+        Err(format!("expected a clean parse, got diagnostics: {:?}", parser.errors()))
+    }
+}
+
+fn walk(node: &Node, visit: &mut impl FnMut(&Node) -> Result<(), String>) -> Result<(), String> {
+    visit(node)?;
+    for child in node.children() {
+        walk(child, visit)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn substitution_transliteration_and_quotes_keep_exact_native_payloads() -> Result<(), String> {
+    let source = concat!(
+        "my $message = q{hello};\n",
+        "$message =~ s/hello/hello world/g;\n",
+        "$message =~ tr/a-z/A-Z/;\n",
+        "$message =~ y{a-z}{A-Z}r;\n",
+        "return qq{$message};\n",
+    );
+    let ast = parse_clean(source)?;
+    let mut substitution_count = 0usize;
+    let mut transliterations = Vec::new();
+    let mut quote_payloads = Vec::new();
+
+    walk(&ast, &mut |node| {
+        match &node.kind {
+            NodeKind::Substitution {
+                expr,
+                pattern,
+                replacement,
+                modifiers,
+                has_embedded_code,
+                negated,
+            } => {
+                if !matches!(
+                    &expr.kind,
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
+                ) {
+                    return Err("substitution target was not $message".into());
+                }
+                if pattern != "hello" || replacement != "hello world" || modifiers != "g" {
+                    return Err(format!(
+                        "unexpected substitution payload: pattern={pattern:?}, replacement={replacement:?}, modifiers={modifiers:?}"
+                    ));
+                }
+                if *has_embedded_code || *negated {
+                    return Err("substitution flags were not preserved".into());
+                }
+                if source.get(node.location.start..node.location.end)
+                    != Some("$message =~ s/hello/hello world/g")
+                {
+                    return Err("substitution source span was not preserved".into());
+                }
+                substitution_count += 1;
+            }
+            NodeKind::Transliteration { expr, search, replace, modifiers, negated } => {
+                if !matches!(
+                    &expr.kind,
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
+                ) {
+                    return Err("transliteration target was not $message".into());
+                }
+                if let Some(text) = source.get(node.location.start..node.location.end) {
+                    transliterations.push((
+                        text.to_owned(),
+                        search.clone(),
+                        replace.clone(),
+                        modifiers.clone(),
+                        *negated,
+                    ));
+                }
+            }
+            NodeKind::VariableDeclaration { variable, initializer: Some(initializer), .. }
+                if matches!(
+                    &variable.kind,
+                    NodeKind::Variable { sigil, name } if sigil == "$" && name == "message"
+                ) =>
+            {
+                let NodeKind::String { value, interpolated } = &initializer.kind else {
+                    return Err("$message declaration did not own a String initializer".into());
+                };
+                quote_payloads.push((
+                    "declaration".to_string(),
+                    source
+                        .get(initializer.location.start..initializer.location.end)
+                        .map(ToOwned::to_owned),
+                    value.clone(),
+                    *interpolated,
+                ));
+            }
+            NodeKind::Return { value: Some(value) } => {
+                let NodeKind::String { value: string_value, interpolated } = &value.kind else {
+                    return Err("return did not own a String value".into());
+                };
+                quote_payloads.push((
+                    "return".to_string(),
+                    source.get(value.location.start..value.location.end).map(ToOwned::to_owned),
+                    string_value.clone(),
+                    *interpolated,
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+
+    transliterations.sort();
+    quote_payloads.sort();
+    if substitution_count != 1 {
+        return Err(format!("expected exactly one substitution node, got {substitution_count}"));
+    }
+    let expected_transliterations = vec![
+        (
+            "$message =~ tr/a-z/A-Z/".to_string(),
+            "a-z".to_string(),
+            "A-Z".to_string(),
+            String::new(),
+            false,
+        ),
+        (
+            "$message =~ y{a-z}{A-Z}r".to_string(),
+            "a-z".to_string(),
+            "A-Z".to_string(),
+            "r".to_string(),
+            false,
+        ),
+    ];
+    if transliterations != expected_transliterations {
+        return Err(format!("unexpected transliteration payloads: {transliterations:?}"));
+    }
+    let expected_quote_payloads = vec![
+        ("declaration".to_string(), Some("q{hello}".to_string()), "q{hello}".to_string(), false),
+        ("return".to_string(), Some("qq{$message}".to_string()), "qq{$message}".to_string(), true),
+    ];
+    if quote_payloads != expected_quote_payloads {
+        return Err(format!("unexpected owned quote payloads: {quote_payloads:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn paired_quote_delimiters_do_not_fabricate_block_nodes() -> Result<(), String> {
+    let source = "my $literal = q{hello}; my $interpolated = qq{$literal};";
+    let ast = parse_clean(source)?;
+    let mut fabricated_blocks = Vec::new();
+
+    walk(&ast, &mut |node| {
+        if matches!(&node.kind, NodeKind::Block { .. }) {
+            let text = source.get(node.location.start..node.location.end).map_or_else(
+                || format!("<unmapped {}..{}>", node.location.start, node.location.end),
+                ToOwned::to_owned,
+            );
+            fabricated_blocks.push(text);
+        }
+        Ok(())
+    })?;
+
+    if !fabricated_blocks.is_empty() {
+        return Err(format!(
+            "quote delimiters were misclassified as blocks: {fabricated_blocks:?}"
+        ));
+    }
+    Ok(())
+}

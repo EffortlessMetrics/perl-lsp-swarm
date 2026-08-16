@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Defer workspace/configuration pulls until after the initialize response so strict LSP clients no longer receive an out-of-order server request during startup. Server-to-client requests are now rejected at the common request seam until initialization completes, and a pending configuration pull is cleared on shutdown."
+time: 2026-08-13T11:08:32Z
+custom:
+  PR: "7905"
+  Slug: initialize-configuration-ordering
+  Breaking: "no"
