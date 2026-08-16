@@ -281,7 +281,13 @@ jobs:
   open-ratchet-pr:
     name: Open refreshed corpus receipt PR
     needs: corpus-ratchet-full
-    if: needs.corpus-ratchet-full.outputs.changed == 'true'
+    # The trusted-event anchor is deliberately restated here rather than
+    # inherited through `needs`. The only write surface in this workflow must
+    # be statically unreachable from `pull_request` by reading this job alone,
+    # without tracing the producer's guards.
+    if: |
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.corpus-ratchet-full.outputs.changed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
