@@ -621,12 +621,16 @@ impl DebugAdapter {
             };
         };
 
+        // Correlate the read-back against the variable being set, not an empty subject.
+        // The commands sent are `p {name} = {value}` then `p {name}`; an empty subject can
+        // never equal a parsed assignment name, and the `continue` guarding the literal
+        // branch would then discard such a line outright (#7275).
         let parsed = output_frame_markers
             .as_ref()
             .and_then(|(begin, end)| {
                 self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
             })
-            .and_then(|lines| Self::parse_evaluate_result_from_lines(&lines, "", true));
+            .and_then(|lines| Self::parse_evaluate_result_from_lines(&lines, name, true));
 
         let Some((rendered_value, rendered_type)) = parsed else {
             return DapMessage::Response {
