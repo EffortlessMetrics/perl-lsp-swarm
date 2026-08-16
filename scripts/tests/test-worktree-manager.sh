@@ -259,6 +259,21 @@ LINKED_WT="${TMPDIR_BASE}/linked-worktree"
 LINKED_BRANCH="test/case4-linked-wt"
 CASE4_EXIT=0
 
+# The root probe is shared by Case 4 and Case 4b, so it is written
+# unconditionally. Defining it inside Case 4's `else` branch would leave it
+# unbound under `set -u` whenever Case 4's setup failed, aborting the whole
+# suite at Case 4b and masking every later result.
+CASE4_SCRIPT="${TMPDIR_BASE}/case4_root_probe.py"
+cat > "${CASE4_SCRIPT}" << PYEOF
+import sys, importlib.util, pathlib
+
+script_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location('worktree_manager', script_path)
+wm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(wm)
+print(str(wm._resolve_primary_repo_root()))
+PYEOF
+
 # Create a linked worktree from agent-one, copy the script into it, then
 # compare the roots each invocation resolves.
 git_q -C "${AGENT_ONE}" worktree add -b "${LINKED_BRANCH}" "${LINKED_WT}" || CASE4_EXIT=$?
@@ -268,17 +283,6 @@ if [[ "${CASE4_EXIT}" -ne 0 ]]; then
 else
   mkdir -p "${LINKED_WT}/scripts"
   cp "${AGENT_ONE}/scripts/worktree-manager.py" "${LINKED_WT}/scripts/worktree-manager.py"
-
-  CASE4_SCRIPT="${TMPDIR_BASE}/case4_root_probe.py"
-  cat > "${CASE4_SCRIPT}" << PYEOF
-import sys, importlib.util, pathlib
-
-script_path = sys.argv[1]
-spec = importlib.util.spec_from_file_location('worktree_manager', script_path)
-wm = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(wm)
-print(str(wm._resolve_primary_repo_root()))
-PYEOF
 
   # Root resolved from primary checkout
   PRIMARY_ROOT="$(cd "${AGENT_ONE}" && python3 "${CASE4_SCRIPT}" "${AGENT_ONE}/scripts/worktree-manager.py" 2>&1)"
@@ -299,6 +303,203 @@ PYEOF
   # Clean up
   git_q -C "${AGENT_ONE}" worktree remove --force "${LINKED_WT}" 2>/dev/null || true
   git_q -C "${AGENT_ONE}" branch -D "${LINKED_BRANCH}" 2>/dev/null || true
+fi
+
+# ── Case 4b: a BARE repository has no working tree, so root resolution must
+#    fall back to the script-location heuristic instead of returning the git
+#    directory.  `git worktree list --porcelain` reports a bare repo as
+#    `worktree <gitdir>` followed by a `bare` attribute; taking that first
+#    record at face value treats the gitdir as the repository root, which is
+#    what the docstring explicitly promises not to do. ──────────────────────
+#
+# The two candidate answers must differ for this case to discriminate, so the
+# script lives in a nested `sub/scripts/` directory inside the bare repo:
+#   correct (heuristic)  = <...>/inner.git/sub
+#   wrong   (bare record)= <...>/inner.git
+CASE4B_ROOTDIR="${TMPDIR_BASE}/case4b"
+mkdir -p "${CASE4B_ROOTDIR}"
+git -c init.defaultBranch=main init -q --bare "${CASE4B_ROOTDIR}/inner.git"
+mkdir -p "${CASE4B_ROOTDIR}/inner.git/sub/scripts"
+cp "${AGENT_ONE}/scripts/worktree-manager.py" \
+  "${CASE4B_ROOTDIR}/inner.git/sub/scripts/worktree-manager.py"
+
+CASE4B_ROOT="$(cd "${CASE4B_ROOTDIR}/inner.git/sub" && python3 "${CASE4_SCRIPT}" \
+  "${CASE4B_ROOTDIR}/inner.git/sub/scripts/worktree-manager.py" 2>&1)" || true
+
+CASE4B_EXPECTED="$(cd "${CASE4B_ROOTDIR}/inner.git/sub" && pwd -P)"
+CASE4B_BUGGY="$(cd "${CASE4B_ROOTDIR}/inner.git" && pwd -P)"
+
+if [[ "${CASE4B_ROOT}" == "${CASE4B_EXPECTED}" ]]; then
+  pass "bare repository falls back to the script-location heuristic instead of using the git directory"
+elif [[ "${CASE4B_ROOT}" == "${CASE4B_BUGGY}" ]]; then
+  fail "bare repository resolved to the git directory ${CASE4B_ROOT} — the 'bare' record was not rejected"
+else
+  fail "bare repository root: expected=${CASE4B_EXPECTED} got=${CASE4B_ROOT}"
+fi
+
+# ── Case 4c: a slot record with a missing, null, or empty recorded path must
+#    be rejected with an actionable error rather than raising TypeError or
+#    silently resolving to the repository root itself. ──────────────────────
+CASE4C_SCRIPT="${TMPDIR_BASE}/case4c_slot_path.py"
+cat > "${CASE4C_SCRIPT}" << PYEOF
+import importlib.util, pathlib, sys
+
+spec = importlib.util.spec_from_file_location(
+    'worktree_manager_slotpath',
+    '${AGENT_ONE}/scripts/worktree-manager.py',
+)
+wm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(wm)
+
+repo_root = pathlib.Path('/repo')
+failures = []
+
+for label, slot in [
+    ('null path', {'path': None}),
+    ('empty path', {'path': ''}),
+    ('absent path', {}),
+    ('non-string path', {'path': 123}),
+]:
+    try:
+        resolved = wm.slot_abs_path(slot, 'probe-slot', repo_root)
+    except RuntimeError as exc:
+        if 'probe-slot' not in str(exc):
+            failures.append(f'{label}: error does not name the slot: {exc}')
+        continue
+    except Exception as exc:
+        failures.append(f'{label}: raised {type(exc).__name__} instead of RuntimeError: {exc}')
+        continue
+    failures.append(f'{label}: returned {resolved} instead of raising')
+
+# A well-formed record must still resolve normally.
+ok = wm.slot_abs_path({'path': 'slots/one'}, 'probe-slot', repo_root)
+if ok != repo_root / 'slots/one':
+    failures.append(f'valid path resolved to {ok}')
+
+if failures:
+    for f in failures:
+        print('FAIL: ' + f)
+    sys.exit(1)
+print('PASS: malformed slot paths are rejected; valid paths still resolve')
+sys.exit(0)
+PYEOF
+
+CASE4C_EXIT=0
+CASE4C_OUT="$(python3 "${CASE4C_SCRIPT}" 2>&1)" || CASE4C_EXIT=$?
+
+if [[ "${CASE4C_EXIT}" -eq 0 && "${CASE4C_OUT}" == *"PASS"* ]]; then
+  pass "malformed recorded slot paths are rejected instead of resolving to the repository root"
+else
+  fail "slot path validation: ${CASE4C_OUT}"
+fi
+
+# ── Case 4d: the same malformed state must be survivable through the actual
+#    CLI, not merely through the helper.  `sync_state` runs on every command
+#    ahead of the per-command handlers, so a unit-level check of
+#    `slot_abs_path` passes while `query`/`release` still die with a raw
+#    TypeError traceback.  This case exercises the reachable path. ──────────
+CASE4D_STATE="${TMPDIR_BASE}/case4d-state.json"
+CASE4D_MANAGED="${TMPDIR_BASE}/case4d-worktrees"
+
+cat > "${CASE4D_STATE}" << 'JSONEOF'
+{
+  "version": 1,
+  "managed_root": ".",
+  "updated_at": null,
+  "slots": [
+    {"slot_id": "bad-null", "path": null, "branch": "x", "status": "active"},
+    {"slot_id": "bad-empty", "path": "", "branch": "y", "status": "active"},
+    {"slot_id": "bad-int", "path": 123, "branch": "z", "status": "active"}
+  ]
+}
+JSONEOF
+
+run_manager4d() {
+  local subcommand="$1"
+  shift
+  (
+    cd "$AGENT_ONE"
+    python3 scripts/worktree-manager.py "$subcommand" \
+      --state-file "${CASE4D_STATE}" \
+      --managed-root "${CASE4D_MANAGED}" "$@"
+  )
+}
+
+# `query` must survive the malformed records rather than traceback.
+CASE4D_QUERY_EXIT=0
+CASE4D_QUERY_OUT="$(run_manager4d query 2>&1)" || CASE4D_QUERY_EXIT=$?
+
+if [[ "${CASE4D_QUERY_EXIT}" -ne 0 || "${CASE4D_QUERY_OUT}" == *"Traceback"* ]]; then
+  fail "malformed state: query crashed instead of tolerating unusable slot records: ${CASE4D_QUERY_OUT}"
+else
+  pass "malformed state: query tolerates null/empty/non-string recorded paths"
+fi
+
+# `release` on such a slot must fail with an actionable error naming the slot,
+# not a TypeError traceback.
+CASE4D_REL_EXIT=0
+CASE4D_REL_OUT="$(run_manager4d release --slot bad-int 2>&1)" || CASE4D_REL_EXIT=$?
+
+if [[ "${CASE4D_REL_EXIT}" -eq 0 ]]; then
+  fail "malformed state: release of a slot with a non-string path unexpectedly succeeded"
+elif [[ "${CASE4D_REL_OUT}" == *"Traceback"* ]]; then
+  fail "malformed state: release raised a raw traceback instead of an actionable error: ${CASE4D_REL_OUT}"
+elif [[ "${CASE4D_REL_OUT}" == *"bad-int"* ]]; then
+  pass "malformed state: release fails with an actionable error naming the slot"
+else
+  fail "malformed state: release error does not name the slot: ${CASE4D_REL_OUT}"
+fi
+
+# ── Case 4e: `cleanup` must *drop* the same malformed records rather than
+#    join them.  Cases 4c/4d pin `slot_abs_path`, `query`, and `release`, but
+#    `cleanup` reaches the recorded path through its own branch — and it is the
+#    command `slot_abs_path`'s error message tells the operator to run.  A
+#    regression that joins `bad-int` before validating (TypeError), or that
+#    keeps the unusable records instead of pruning them, passes every
+#    assertion above.  The state is written fresh rather than copied from
+#    Case 4d so this case does not depend on the earlier commands' rewrites. ─
+CASE4E_STATE="${TMPDIR_BASE}/case4e-state.json"
+CASE4E_MANAGED="${TMPDIR_BASE}/case4e-worktrees"
+
+cat > "${CASE4E_STATE}" << 'JSONEOF'
+{
+  "version": 1,
+  "managed_root": ".",
+  "updated_at": null,
+  "slots": [
+    {"slot_id": "bad-null", "path": null, "branch": "x", "status": "active"},
+    {"slot_id": "bad-empty", "path": "", "branch": "y", "status": "active"},
+    {"slot_id": "bad-int", "path": 123, "branch": "z", "status": "active"}
+  ]
+}
+JSONEOF
+
+CASE4E_EXIT=0
+CASE4E_OUT="$(
+  cd "$AGENT_ONE"
+  python3 scripts/worktree-manager.py cleanup \
+    --state-file "${CASE4E_STATE}" \
+    --managed-root "${CASE4E_MANAGED}" 2>&1
+)" || CASE4E_EXIT=$?
+
+if [[ "${CASE4E_EXIT}" -ne 0 || "${CASE4E_OUT}" == *"Traceback"* ]]; then
+  fail "malformed state: cleanup crashed instead of dropping unusable slot records: ${CASE4E_OUT}"
+else
+  CASE4E_REMAINING="$(python3 -c '
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+slots = state.get("slots", [])
+print(len(slots), ",".join(sorted(str(s.get("slot_id")) for s in slots)))
+' "${CASE4E_STATE}")"
+  if [[ "${CASE4E_REMAINING%% *}" != "0" ]]; then
+    fail "malformed state: cleanup retained unusable slot records (count/ids: ${CASE4E_REMAINING})"
+  elif [[ "${CASE4E_OUT}" != *"removed_state=3"* ]]; then
+    fail "malformed state: cleanup did not account for all three dropped records: ${CASE4E_OUT}"
+  else
+    pass "malformed state: cleanup drops null/empty/non-string recorded paths and persists an empty slot list"
+  fi
 fi
 
 # ── Case 5: owner guard — ownerless and wrong-owner release both fail;

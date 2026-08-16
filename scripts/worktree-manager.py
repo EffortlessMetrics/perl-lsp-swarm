@@ -54,13 +54,25 @@ def _resolve_primary_repo_root() -> Path:
             check=False,
         )
         if proc.returncode == 0:
+            # Porcelain records are blank-line separated; the first record is
+            # the main working tree, and its attribute lines follow the
+            # `worktree <path>` line.  A bare repository reports the git
+            # directory itself followed by a `bare` attribute — that is not a
+            # working tree, so it must fall through to the heuristic below
+            # rather than be treated as the repository root.
+            raw = ""
             for line in proc.stdout.splitlines():
-                # The first `worktree <path>` record is the main working tree.
-                if line.startswith("worktree "):
-                    raw = line[len("worktree ") :].strip()
-                    if raw:
-                        return Path(raw).resolve()
+                if not raw:
+                    if line.startswith("worktree "):
+                        raw = line[len("worktree ") :].strip()
+                    continue
+                if not line.strip():
+                    break  # end of the first record
+                if line.strip() == "bare":
+                    raw = ""
                     break
+            if raw:
+                return Path(raw).resolve()
     except Exception:
         pass
     # Fallback: script-location heuristic (same as original code).
@@ -660,6 +672,28 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     save_json(path, state)
 
 
+def slot_abs_path(slot: dict[str, Any], slot_id: str, repo_root: Path) -> Path:
+    """Resolve a recorded slot path against *repo_root*, refusing empty values.
+
+    ``slot.get("path", "")`` is not enough: a slot recorded with an explicit
+    ``"path": null`` returns ``None`` (the default only applies when the key is
+    absent), and ``repo_root / None`` raises ``TypeError``.  An empty string is
+    worse than an error — it resolves to *repo_root itself*, pointing the
+    dirty-check and worktree removal in ``release`` at the primary checkout.
+
+    ``sync_state`` skips slots whose recorded path is falsy, so such records
+    genuinely reach the state file and must be rejected explicitly here.
+    """
+    recorded = slot.get("path")
+    if not recorded or not isinstance(recorded, str):
+        raise RuntimeError(
+            f"slot {slot_id!r} has no recorded worktree path (found {recorded!r}); "
+            "its state record is incomplete. Run `query` to inspect the slot, or "
+            "`cleanup` to drop the stale record."
+        )
+    return repo_root / recorded
+
+
 def slot_lookup(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
     slots: dict[str, dict[str, Any]] = {}
     for slot in state.get("slots", []):
@@ -720,7 +754,12 @@ def sync_state(state: dict[str, Any], managed_root: Path, repo_root: Path) -> No
 
     for slot in state.get("slots", []):
         slot_path = slot.get("path")
-        if not slot_path:
+        # `sync_state` runs on *every* command, ahead of the per-command
+        # handlers, so an unusable recorded path has to be tolerated here or
+        # the tool dies with a raw traceback before `release`/`cleanup` can
+        # report it. A non-string is skipped for the same reason a falsy value
+        # is: this reconciliation pass cannot say anything useful about it.
+        if not slot_path or not isinstance(slot_path, str):
             continue
         abs_path = repo_root / slot_path  # was REPO_ROOT (defect 4)
         if abs_path not in known_paths and not abs_path.exists() and slot.get("status") not in {"retired", "missing"}:
@@ -856,7 +895,7 @@ def release(
     if slot is None:
         raise RuntimeError(f"unknown slot {args.slot!r}")
 
-    slot_path = repo_root / slot.get("path", "")  # defect 4: was REPO_ROOT
+    slot_path = slot_abs_path(slot, args.slot, repo_root)  # defect 4: was REPO_ROOT
     if slot_path.exists() and worktree_dirty(slot_path) and not args.force:
         raise RuntimeError(f"slot {args.slot!r} is dirty; clean it before release or use --force")
 
@@ -933,8 +972,16 @@ def cleanup(
             raise RuntimeError("low-level cleanup script failed")
 
     for slot in slots:
-        slot_path = repo_root / slot.get("path", "")  # defect 4: was REPO_ROOT
-        if not slot.get("path") or not slot_path.exists():
+        # Test the recorded path *before* joining it: `path: null` would make
+        # the join raise TypeError, and `path: ""` would resolve to repo_root
+        # itself.  Dropping such a record is exactly what cleanup is for, so
+        # this stays a drop rather than the hard error `release` raises.
+        recorded = slot.get("path")
+        if not recorded or not isinstance(recorded, str):
+            removed += 1
+            continue
+        slot_path = repo_root / recorded  # defect 4: was REPO_ROOT
+        if not slot_path.exists():
             removed += 1
             continue
 
