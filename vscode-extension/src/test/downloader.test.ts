@@ -1300,11 +1300,30 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
-  type TestResponse = EventEmitter;
+  // A real http.IncomingMessage always carries a status, and getLatestRelease
+  // now rejects non-success responses before parsing, so the fixture supplies
+  // one too.
+  type TestResponse = EventEmitter & {
+    statusCode?: number;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+  };
+  type TestCancellation = {
+    isCancellationRequested: boolean;
+    onCancellationRequested: (listener: () => void) => { dispose: () => void };
+  };
   type DownloaderSeams = {
-    getLatestRelease: (timeoutMs?: number) => Promise<unknown>;
+    getLatestRelease: (timeoutMs?: number, token?: TestCancellation) => Promise<unknown>;
     httpGet: (...args: unknown[]) => TestRequest;
   };
+
+  function makeResponse(statusCode = 200): TestResponse {
+    const response = new EventEmitter() as TestResponse;
+    response.statusCode = statusCode;
+    response.headers = {};
+    response.destroy = jest.fn();
+    return response;
+  }
 
   let downloader: TestDownloader;
 
@@ -1347,7 +1366,7 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
   test('resolves a successful release response and clears the pending timer', async () => {
     const seams = downloader as unknown as DownloaderSeams;
     const release = { tag_name: 'v1.2.3', assets: [] };
-    const response = new EventEmitter() as TestResponse;
+    const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
@@ -1361,6 +1380,222 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
     await expect(seams.getLatestRelease(1000)).resolves.toEqual(release);
     expect(request.destroy).not.toHaveBeenCalled();
+  });
+
+  // The array response is only requested for `channel === 'stable'`. These
+  // three controls pin the fail-closed selection: an explicit `prerelease:
+  // false` is required, and neither a prerelease nor a release that omits the
+  // field may be installed for a user who selected stable.
+  function stableChannelConfig(): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'stable';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+  }
+
+  function respondWithReleaseList(seams: DownloaderSeams, releases: unknown[]): void {
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify(releases));
+        response.emit('end');
+      });
+      return request;
+    });
+  }
+
+  test('selects the release that explicitly declares prerelease false', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [
+      { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
+      { tag_name: 'v1.9.0', prerelease: false, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+  });
+
+  test('refuses to install a prerelease when the stable channel has no stable release', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [
+      { tag_name: 'v2.0.0-rc.2', prerelease: true, assets: [] },
+      { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No stable release found');
+  });
+
+  test('does not treat a release that omits prerelease as stable', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    respondWithReleaseList(seams, [{ tag_name: 'v1.9.0', assets: [] }]);
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No stable release found');
+  });
+
+  test('reports a missing release when GitHub answers 404', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse(404);
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ message: 'Not Found' }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No releases found');
+  });
+
+  test('rejects release metadata that does not match the expected schema', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: 'not-an-array' }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'Release metadata response has an invalid schema',
+    );
+  });
+
+  test('stops an in-flight metadata request when the progress token cancels', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    const listeners = new Set<() => void>();
+    const token: TestCancellation = {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        listeners.add(listener);
+        return { dispose: () => listeners.delete(listener) };
+      },
+    };
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      // The body never completes; only cancellation can settle this request.
+      process.nextTick(() => {
+        response.emit('data', '{');
+        token.isCancellationRequested = true;
+        for (const listener of [...listeners]) {
+          listener();
+        }
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(60000, token)).rejects.toThrow('Release fetch cancelled');
+    expect(request.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  test('encodes a configured release tag before it reaches the API path', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return '../../../other-repo/releases/latest?x=1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    let capturedUrl = '';
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, url, _options, callback) => {
+      capturedUrl = url as string;
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: [] }));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await seams.getLatestRelease(1000);
+
+    expect(capturedUrl).toBe(
+      'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases/tags/' +
+        '..%2F..%2F..%2Fother-repo%2Freleases%2Flatest%3Fx%3D1',
+    );
+  });
+
+  test('hands the progress cancellation token to the metadata request', async () => {
+    const seams = downloader as unknown as DownloaderSeams & {
+      downloadWithProgress: () => Promise<string>;
+    };
+    const vscode = require('vscode');
+    let progressToken: TestCancellation | undefined;
+    vscode.window.withProgress.mockImplementationOnce(
+      async (_options: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) => {
+        progressToken = {
+          isCancellationRequested: false,
+          onCancellationRequested: jest.fn(() => ({ dispose: jest.fn() })),
+        };
+        return task({ report: jest.fn() }, progressToken);
+      },
+    );
+    const getLatestRelease = jest
+      .spyOn(seams, 'getLatestRelease')
+      .mockRejectedValue(new Error('metadata seam reached'));
+
+    await expect(seams.downloadWithProgress()).rejects.toThrow('metadata seam reached');
+    expect(getLatestRelease).toHaveBeenCalledWith(30000, progressToken);
+  });
+
+  test('rejects a metadata body that exceeds the release envelope', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        // Two chunks of 768 KiB cross the 1 MiB envelope mid-stream.
+        response.emit('data', Buffer.alloc(768 * 1024, 0x61));
+        response.emit('data', Buffer.alloc(768 * 1024, 0x61));
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(60000)).rejects.toThrow('exceeded 1048576 bytes');
+    expect(request.destroy).toHaveBeenCalledTimes(1);
   });
 
   test('rejects with the request error before the timeout fires', async () => {
@@ -1379,7 +1614,7 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
   test('omits GitHub bearer credentials when proxyStrictSSL is disabled', async () => {
     const seams = downloader as unknown as DownloaderSeams;
-    const response = new EventEmitter() as TestResponse;
+    const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const priorToken = process.env.GITHUB_TOKEN;
