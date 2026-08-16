@@ -24,6 +24,25 @@
 //!
 //! The provider migrations in #1690 and #7409 must consume the indexed mapper,
 //! not this module.
+//!
+//! # Newline contract — provisional, owned by #4973
+//!
+//! This module currently treats a **bare CR as a logical line separator**,
+//! alongside LF and CRLF. That matches `LineStartsCache::new`, but it disagrees
+//! with this crate's own `convert::offset_to_utf16_line_col`, which splits on
+//! LF only and therefore reads a bare CR as ordinary line content.
+//!
+//! That disagreement is the confirmed divergence #4973 was opened to rule on,
+//! and it is **not settled yet**. The ruling proposed in #9947 amends ADR-0013
+//! the other way — bare CR becomes addressable source content rather than a
+//! boundary — and realigns the string and Rope constructors accordingly.
+//!
+//! So do not read this module's bare-CR behavior as the accepted contract. It
+//! is the current unreconciled reading, pinned by
+//! `bare_cr_is_a_separator_pending_the_4973_ruling` so the choice is visible
+//! rather than implicit. When #4973 rules, that test and `LineScan` are the
+//! sites to reconcile; nothing consumes this module yet, so no caller has
+//! inherited the unmade decision.
 
 use crate::{WirePosition, WireRange};
 use serde::{Deserialize, Serialize};
@@ -768,7 +787,10 @@ mod tests {
     }
 
     #[test]
-    fn bare_cr_and_mixed_endings_use_logical_lsp_lines() {
+    fn bare_cr_is_a_separator_pending_the_4973_ruling() {
+        // Pins the module's current, unreconciled bare-CR reading so the choice
+        // is explicit. #4973 owns the ruling and #9947 proposes the opposite
+        // (bare CR as content); when that lands, update this test with it.
         let source = "a\rb\r\nc\nd";
         for (line, byte) in [(0, 0), (1, 2), (2, 5), (3, 7)] {
             let mapping = wire_position_to_byte(
