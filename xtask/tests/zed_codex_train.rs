@@ -162,9 +162,9 @@ fn acceptance_rejections(
         let field = string(identity, "field")?;
         let bound_by = string(identity, "bound_by")?;
 
-        if !toml_path(manifest, field)
+        if toml_path(manifest, field)
             .and_then(toml::Value::as_str)
-            .is_some_and(|build| !build.trim().is_empty())
+            .is_none_or(|build| build.trim().is_empty())
         {
             rejections.push(format!("`{field}` names no released build"));
         }
@@ -201,7 +201,7 @@ fn core_stages(train: &Value) -> Result<&[Value], Box<dyn Error>> {
     array(train, "stages")
 }
 
-fn core_index<'a>(train: &'a Value) -> Result<BTreeMap<&'a str, &'a Value>, Box<dyn Error>> {
+fn core_index(train: &Value) -> Result<BTreeMap<&str, &Value>, Box<dyn Error>> {
     let mut index = BTreeMap::new();
     for stage in core_stages(train)? {
         let id = string(stage, "id")?;
@@ -223,7 +223,7 @@ fn dap_stages(train: &Value) -> Result<&[Value], Box<dyn Error>> {
     array(dap_sidecar(train)?, "stages")
 }
 
-fn dap_index<'a>(train: &'a Value) -> Result<BTreeMap<&'a str, &'a Value>, Box<dyn Error>> {
+fn dap_index(train: &Value) -> Result<BTreeMap<&str, &Value>, Box<dyn Error>> {
     let mut index = BTreeMap::new();
     for stage in dap_stages(train)? {
         let id = string(stage, "id")?;
