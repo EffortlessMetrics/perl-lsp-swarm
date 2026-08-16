@@ -208,6 +208,63 @@ jobs:
     Ok(())
 }
 
+/// Every spelling of the same delete must be caught, not just `rm -f`.
+///
+/// `"rm -rf".contains("rm -f")` is false, so flag-pattern matching missed the
+/// most common recursive form outright, and a bare `rm <path>` with it.
+#[test]
+fn self_deleting_writer_is_caught_across_delete_spellings() -> Result<(), String> {
+    for command in [
+        "rm -rf .github/workflows/repair.yml",
+        "rm -fr .github/workflows/repair.yml",
+        "rm -r -f .github/workflows/repair.yml",
+        "rm .github/workflows/repair.yml",
+        "rm --force .github/workflows/repair.yml",
+        "git rm .github/workflows/repair.yml",
+        "sed -i.bak s/on:/off:/ .github/workflows/repair.yml",
+        "sed --in-place s/on:/off:/ .github/workflows/repair.yml",
+        "python -c \"import os; os.unlink('.github/workflows/repair.yml')\"",
+    ] {
+        let workflow = parse(&format!(
+            r#"
+on: pull_request_target
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - run: {command} && git commit -m cleanup && git push
+"#
+        ))?;
+        let findings = scan_workflow("repair.yml", &workflow);
+        assert!(
+            findings.iter().any(|finding| finding.kind == FindingKind::SelfModifyingWriter),
+            "delete spelling was not detected: {command}"
+        );
+    }
+    Ok(())
+}
+
+/// The workflow-path anchor still bounds the rule.
+#[test]
+fn deleting_unrelated_paths_is_not_self_modification() -> Result<(), String> {
+    let workflow = parse(
+        r#"
+on: pull_request_target
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - run: rm -rf target/debug && git commit -m cleanup && git push
+"#,
+    )?;
+    assert!(scan_workflow("repair.yml", &workflow).is_empty());
+    Ok(())
+}
+
 #[test]
 fn arbitrary_write_capable_steps_are_rejected_without_command_heuristics() -> Result<(), String> {
     let workflow = parse(

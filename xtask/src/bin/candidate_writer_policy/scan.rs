@@ -497,15 +497,22 @@ fn parse_remote_reusable_workflow(uses: &str) -> Option<TrustedWriter> {
     Some(TrustedWriter::new(repository, workflow_path, reference))
 }
 
+/// Recognize a step that deletes or rewrites workflow files in place.
+///
+/// Detection is word-level rather than flag-pattern matching. Requiring a force
+/// flag missed every other spelling of the same delete — `rm -rf`, `rm -fr`, and
+/// a bare `rm <path>` all remove the file just as well.
 fn run_self_modifies_writer(run: &str) -> bool {
     let normalized = normalize_shell(run);
-    let workflow_path = ".github/workflows/";
-    (normalized.contains("git rm")
-        || normalized.contains("rm -f")
-        || normalized.contains("rm --force")
-        || normalized.contains("sed -i")
-        || normalized.contains("python") && normalized.contains("unlink"))
-        && normalized.contains(workflow_path)
+    if !normalized.contains(".github/workflows/") {
+        return false;
+    }
+    let words = normalized.split_whitespace().collect::<Vec<_>>();
+    let deletes =
+        words.iter().any(|word| matches!(*word, "rm" | "shred")) || normalized.contains("unlink");
+    let rewrites_in_place = words.contains(&"sed")
+        && words.iter().any(|word| *word == "--in-place" || word.starts_with("-i"));
+    deletes || rewrites_in_place
 }
 
 fn normalize_shell(run: &str) -> String {
