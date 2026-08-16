@@ -115,17 +115,34 @@ pub(crate) enum RegexMalformedKind {
 pub(crate) enum RegexEventKind {
     Atom,
     Escape,
-    QuotedLiteral { closed: bool },
-    CharacterClass { closed: bool },
+    QuotedLiteral {
+        closed: bool,
+    },
+    CharacterClass {
+        closed: bool,
+    },
     Comment(RegexCommentKind),
     GroupOpen(RegexGroupKind),
     GroupClose(RegexGroupKind),
     ModeChange,
     Alternation,
     Quantifier(RegexQuantifier),
-    UnicodeProperty { negated: bool, closed: bool },
-    EmbeddedCode { kind: RegexEmbeddedCodeKind, opener_range: RegexRange, closed: bool },
-    Interpolation,
+    UnicodeProperty {
+        negated: bool,
+        closed: bool,
+    },
+    EmbeddedCode {
+        kind: RegexEmbeddedCodeKind,
+        opener_range: RegexRange,
+        closed: bool,
+    },
+    /// Interpolation of runtime text into the pattern. `quoted` marks
+    /// `\Q...\E`-protected interpolation: the value is quoted before regex
+    /// interpretation, so it cannot inject captures or other structure the
+    /// way bare pattern interpolation can.
+    Interpolation {
+        quoted: bool,
+    },
     Malformed(RegexMalformedKind),
 }
 
@@ -336,7 +353,7 @@ impl<'a> EventParser<'a> {
             let _ = self.emit(
                 range.start,
                 range.end,
-                RegexEventKind::Interpolation,
+                RegexEventKind::Interpolation { quoted: true },
                 self.mode,
                 self.stack.len(),
             );
@@ -451,7 +468,7 @@ impl<'a> EventParser<'a> {
             let _ = self.emit(
                 range.start,
                 range.end,
-                RegexEventKind::Interpolation,
+                RegexEventKind::Interpolation { quoted: false },
                 self.mode,
                 self.stack.len(),
             );
@@ -823,7 +840,13 @@ impl<'a> EventParser<'a> {
         if !self.advance(end) {
             return true;
         }
-        let _ = self.emit(start, end, RegexEventKind::Interpolation, self.mode, self.stack.len());
+        let _ = self.emit(
+            start,
+            end,
+            RegexEventKind::Interpolation { quoted: false },
+            self.mode,
+            self.stack.len(),
+        );
         if !closed {
             let _ = self.emit(
                 end,
@@ -1251,7 +1274,9 @@ mod tests {
             .events
             .iter()
             .filter_map(|event| match event.kind {
-                RegexEventKind::Interpolation => pattern.get(event.range.start..event.range.end),
+                RegexEventKind::Interpolation { .. } => {
+                    pattern.get(event.range.start..event.range.end)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();

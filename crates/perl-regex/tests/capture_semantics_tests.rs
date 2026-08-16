@@ -560,30 +560,43 @@ fn invalid_capture_name_does_not_leave_profile_diagnostics()
 }
 
 #[test]
-fn quoted_literal_interpolation_degrades_capture_numbering_confidence()
+fn quoted_literal_interpolation_records_runtime_text_without_numbering_impact()
 -> Result<(), Box<dyn std::error::Error>> {
-    // `\Q...\E` quotes regex metacharacters but does NOT suppress Perl variable
-    // interpolation.  `\Q$runtime\E` still expands `$runtime` at eval time, so any
-    // capturing group that follows cannot know its own number statically — the
-    // interpolated text may itself contain capturing groups.
-    //
-    // Before the fix this defect went undetected: the quoted-literal scanner did not
-    // emit an Interpolation event for `$runtime`, so the capture analyser treated the
-    // result as completely static and assigned `Exact` number confidence to `(after)`.
-    let interpolated = RegexAnalyzer::analyze_captures(
+    // `\Q...\E` quotes the interpolated value before regex interpretation:
+    // `\Q$runtime\E` is how callers interpolate runtime text literally.  Even
+    // if `$runtime` contains capture-looking text such as `(z)`, those
+    // parentheses are quoted and cannot become a capture, so a following
+    // `(after)` keeps its exact number.  The analysis still records that
+    // runtime text is present (`status.dynamic`), because other consumers need
+    // to know the match text is not fully static.
+    let quoted = RegexAnalyzer::analyze_captures(
         r"\Q$runtime\E(after)",
         EffectiveModifiers::default(),
         CaptureLanguageProfile::unknown(),
     );
-    assert!(interpolated.status.dynamic, "interpolation inside \\Q..\\E must set the dynamic flag");
     assert!(
-        !interpolated.status.is_complete(),
-        "analysis with runtime interpolation must not be complete"
+        quoted.status.dynamic,
+        "quoted interpolation must still record that runtime text is present"
     );
+    assert!(!quoted.status.is_complete(), "a pattern containing runtime text is not fully static");
     assert_eq!(
-        interpolated.declarations[0].confidence.number,
+        quoted.declarations[0].confidence.number,
+        CaptureNumberConfidence::Exact,
+        "quoted interpolation cannot inject captures, so numbering stays Exact"
+    );
+
+    // Opposite control: the same interpolation outside `\Q...\E` really can
+    // inject captures, so later numbering must degrade to DynamicUnknown.
+    let unquoted = RegexAnalyzer::analyze_captures(
+        r"$runtime(after)",
+        EffectiveModifiers::default(),
+        CaptureLanguageProfile::unknown(),
+    );
+    assert!(unquoted.status.dynamic, "bare interpolation sets the dynamic flag");
+    assert_eq!(
+        unquoted.declarations[0].confidence.number,
         CaptureNumberConfidence::DynamicUnknown,
-        "capture after \\Q$x\\E must have DynamicUnknown number confidence"
+        "unquoted interpolation makes later capture numbering DynamicUnknown"
     );
 
     // A purely literal `\Q...\E` body introduces no interpolation and the
@@ -595,19 +608,17 @@ fn quoted_literal_interpolation_degrades_capture_numbering_confidence()
     );
     assert!(
         !literal.status.dynamic,
-        "no interpolation in \\Q..\\E must leave the dynamic flag clear"
+        r"no interpolation in \Q..\E must leave the dynamic flag clear"
     );
-    assert!(literal.status.is_complete(), "analysis with purely literal \\Q..\\E must be complete");
+    assert!(literal.status.is_complete(), r"analysis with purely literal \Q..\E must be complete");
     assert_eq!(
         literal.declarations[0].confidence.number,
         CaptureNumberConfidence::Exact,
-        "capture after \\Qliteral\\E must keep Exact number confidence"
+        r"capture after \Qliteral\E must keep Exact number confidence"
     );
 
     // An escaped sigil does not interpolate: `\Q\$x\E` and `\Q\@x\E` are the
-    // literal texts `$x` and `@x`, so the analysis stays fully static.  Before
-    // the escape-aware scan the quoted-literal scanner walked past the
-    // backslash and reported `$x`/`@x` as runtime interpolations.
+    // literal texts `$x` and `@x`, so no runtime text is recorded at all.
     for escaped in [r"\Q\$runtime\E(after)", r"\Q\@items\E(after)"] {
         let static_literal = RegexAnalyzer::analyze_captures(
             escaped,
@@ -631,21 +642,21 @@ fn quoted_literal_interpolation_degrades_capture_numbering_confidence()
 
     // Backslash parity is decided by escape pairs, not by mere adjacency: the
     // `\\` in `\Q\\$x\E` is a literal backslash, so the `$x` that follows is
-    // unescaped and interpolates, while the `\\\$` in `\Q\\\$x\E` leaves the
-    // sigil escaped and fully static.
-    let odd_backslashes = RegexAnalyzer::analyze_captures(
+    // unescaped and interpolates (quoted, so numbering stays Exact), while the
+    // `\\\$` in `\Q\\\$x\E` leaves the sigil escaped and fully static.
+    let pair_then_unescaped = RegexAnalyzer::analyze_captures(
         r"\Q\\$runtime\E(after)",
         EffectiveModifiers::default(),
         CaptureLanguageProfile::unknown(),
     );
     assert!(
-        odd_backslashes.status.dynamic,
-        "unescaped sigil after a backslash pair in \\Q..\\E must set the dynamic flag"
+        pair_then_unescaped.status.dynamic,
+        r"unescaped sigil after a backslash pair in \Q..\E records runtime text"
     );
     assert_eq!(
-        odd_backslashes.declarations[0].confidence.number,
-        CaptureNumberConfidence::DynamicUnknown,
-        "capture after \\Q\\\\$x\\E must have DynamicUnknown number confidence"
+        pair_then_unescaped.declarations[0].confidence.number,
+        CaptureNumberConfidence::Exact,
+        "even an unescaped quoted interpolation keeps Exact numbering"
     );
 
     let pair_then_escaped = RegexAnalyzer::analyze_captures(
@@ -660,7 +671,7 @@ fn quoted_literal_interpolation_degrades_capture_numbering_confidence()
     assert_eq!(
         pair_then_escaped.declarations[0].confidence.number,
         CaptureNumberConfidence::Exact,
-        "capture after \\Q\\\\\\$x\\E must keep Exact number confidence"
+        r"capture after \Q\\\$x\E must keep Exact number confidence"
     );
     Ok(())
 }
