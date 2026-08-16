@@ -35,6 +35,8 @@ on:
       - 'docs/ci/gate-policy-economics.md'
       - 'scripts/ci/validate_trust_lanes.py'
       - 'scripts/ci/check_bounded_result_overflow.py'
+      - 'scripts/ci/verify_homebrew_formula_digests.py'
+      - 'scripts/ci/test_verify_homebrew_formula_digests.py'
       - 'docs/agents/bounded-subagent-result-v1.schema.json'
       - 'docs/agents/bounded-subagent-result-v1.fixtures.json'
       - '.github/workflows/policy-validators.yml'
@@ -105,3 +107,10 @@ jobs:
         run: |
           python3 scripts/ci/test_parser_facade_authority.py
           python3 scripts/ci/check_parser_facade_authority.py --check-doc
+
+      # brew-bump.yml only runs on release/dispatch, so its own workflow never
+      # gates a PR. Without this step the digest-to-stanza binding would have a
+      # swapped-digest negative control that never runs (#6013).
+      - name: Validate Homebrew formula digest binding
+        run: |
+          python3 scripts/ci/test_verify_homebrew_formula_digests.py

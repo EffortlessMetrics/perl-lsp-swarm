@@ -79,27 +79,27 @@ notes = "PR #6863 landed on main as e9a698285f. The amended specification retire
 
 [[documents]]
 path = "docs/reference/MAINTAINER_AGENT_DOCTRINE.md"
-status = "transitional"
-successor = "issue #4555 / PR #6868"
-notes = "Current main still exposes the legacy conveyor-era maintainer contract; PR #6868 replaces the active entrypoint."
+status = "current"
+successor = ""
+notes = "PR #6868 landed on main as 709b4ca939. The rewritten contract declares itself the current maintainer authority and defines semantic review currentness, one candidate writer, and concrete-purpose integration; classifying it transitional would demote a current authority."
 
 [[documents]]
 path = "docs/reference/WORKTREE_PROTOCOL.md"
-status = "transitional"
-successor = "issue #4555 / PR #6868"
-notes = "Useful worktree safety mixed with stale branch and mutation doctrine; PR #6868 separates the surviving controls."
+status = "current"
+successor = ""
+notes = "PR #6868 landed on main as 709b4ca939. The rewritten protocol declares itself the current operational reference, scopes worktrees to genuine concurrent write claims, and requires one mutation owner before rewrite."
 
 [[documents]]
 path = "CONTRIBUTING.md"
-status = "transitional"
-successor = "issue #4555 / PR #6868"
-notes = "Current main still describes the retired model/label review conveyor; PR #6868 replaces it while retaining useful contributor routes."
+status = "current"
+successor = ""
+notes = "PR #6868 landed on main as 709b4ca939. The retired model/label review conveyor is gone, the crate map matches current workspace entrypoints, and the specialized contributor routes were retained."
 
 [[documents]]
 path = ".github/copilot-instructions.md"
-status = "transitional"
-successor = "issue #4555 / PR #6868"
-notes = "Current main duplicates a stale architecture and fixed workflow; PR #6868 reduces it to the current route map."
+status = "current"
+successor = ""
+notes = "PR #6868 landed on main as 709b4ca939. The file is now a current route map that points at the root provider contracts and forbids reconstructing a fixed conveyor or lifecycle-label state machine."
 
 [[documents]]
 path = "scripts/ci/check-pr-claim-currentness"
@@ -116,8 +116,9 @@ notes = "PR #6871 landed on main as c5c43757ed. The CLI entry point now prints a
 [[documents]]
 path = "scripts/ci/check-pr-review-convergence-core"
 status = "transitional"
-successor = "scripts/ci/check-pr-review-convergence and issue #5778"
-notes = "Compatibility collector with historical exact-head terminology; consume only through the public semantic wrapper until containment lands."
+successor = "scripts/ci/check-pr-review-convergence"
+stale_marker = "CANONICAL review-convergence authority"
+notes = "Compatibility collector that still calls itself the canonical authority and still carries exact-head receipt terminology; consume only through the public semantic wrapper. Containment is not finished: scripts/pre-merge-check.sh still invokes the core directly, bypassing the wrapper. Issue #5778 closed as completed on 2026-08-14 without landing that containment, so this row names the wrapper rather than a closed issue, and the remaining work is residual #4555 work."
 
 [[documents]]
 path = "docs/reference/ORCHESTRATION_DOCTRINE.md"

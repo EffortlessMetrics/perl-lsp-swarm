@@ -1,11 +1,6 @@
-use crate::incremental::{
-    IncrementalState, diagnostics::ReparseResult, edit::Edit, lex::create_lex_checkpoints,
-};
+use crate::incremental::{diagnostics::ReparseResult, edit::Edit, IncrementalState};
 use anyhow::Result;
 use perl_lexer::{PerlLexer, TokenType};
-use perl_parser_core::ast::{Node, NodeKind, SourceLocation};
-use perl_parser_core::parser::Parser;
-use ropey::Rope;
 use std::ops::Range;
 
 pub(crate) struct SingleEditReparse {
@@ -25,20 +20,18 @@ fn shift_offset(offset: usize, byte_shift: isize) -> usize {
 }
 
 pub(crate) fn apply_text_edit_to_state(state: &mut IncrementalState, edit: &Edit) -> Result<()> {
-    let old_end = edit.old_end_byte.min(state.source.len());
-    let start = edit.start_byte.min(state.source.len());
-    if !state.source.is_char_boundary(start) || !state.source.is_char_boundary(old_end) {
+    let old_end = edit.old_end_byte.min(state.source().len());
+    let start = edit.start_byte.min(state.source().len());
+    if !state.source().is_char_boundary(start) || !state.source().is_char_boundary(old_end) {
         anyhow::bail!("edit range is not on UTF-8 boundaries");
     }
 
     let mut new_source =
-        String::with_capacity(state.source.len() - (old_end - start) + edit.new_text.len());
-    new_source.push_str(&state.source[..start]);
+        String::with_capacity(state.source().len() - (old_end - start) + edit.new_text.len());
+    new_source.push_str(&state.source()[..start]);
     new_source.push_str(&edit.new_text);
-    new_source.push_str(&state.source[old_end..]);
-    state.source = new_source;
-    state.rope = Rope::from_str(&state.source);
-    state.line_index = perl_line_index::LineIndex::new(&state.source);
+    new_source.push_str(&state.source()[old_end..]);
+    state.replace_source_text(new_source);
 
     Ok(())
 }
@@ -51,13 +44,13 @@ pub(crate) fn apply_single_edit(
         apply_text_edit_to_state(state, edit)?;
         anyhow::bail!("No checkpoint found");
     };
-    let old_end = edit.old_end_byte.min(state.source.len());
-    let start = edit.start_byte.min(state.source.len());
+    let old_end = edit.old_end_byte.min(state.source().len());
+    let start = edit.start_byte.min(state.source().len());
     let byte_shift = edit.new_text.len() as isize - (old_end - start) as isize;
     apply_text_edit_to_state(state, edit)?;
 
     use perl_lexer::{Checkpointable, LexerCheckpoint, Position};
-    let mut lexer = PerlLexer::new(&state.source);
+    let mut lexer = PerlLexer::new(state.source());
     let mut lex_cp = LexerCheckpoint::new();
     lex_cp.position = cp.byte;
     lex_cp.mode = cp.mode;
@@ -114,27 +107,14 @@ pub(crate) fn apply_single_edit(
             new_tokens.push(adjusted);
         }
     }
-    state.tokens.splice(start_idx.., new_tokens);
-    state.lex_checkpoints = create_lex_checkpoints(&state.tokens, &state.line_index);
+    state.splice_tokens(start_idx, new_tokens);
     Ok(SingleEditReparse { range: cp.byte..last, reused_tokens, token_count: state.tokens.len() })
 }
 
-#[expect(deprecated, reason = "full reparse is the legacy AST field's supported refresh boundary")]
 pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult> {
-    let mut parser = Parser::new(&state.source);
-    state.ast = match parser.parse() {
-        Ok(ast) => ast,
-        Err(e) => Node::new(
-            NodeKind::Error {
-                message: e.to_string(),
-                expected: vec![],
-                found: None,
-                partial: None,
-            },
-            SourceLocation { start: 0, end: state.source.len() },
-        ),
-    };
-    let mut lexer = PerlLexer::new(&state.source);
+    state.refresh_parse_output();
+    let source = state.source().to_owned();
+    let mut lexer = PerlLexer::new(&source);
     let mut tokens = Vec::new();
     while let Some(token) = lexer.next_token() {
         if token.token_type == TokenType::EOF {
@@ -142,15 +122,12 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
         }
         tokens.push(token);
     }
-    state.tokens = tokens;
-    state.rope = Rope::from_str(&state.source);
-    state.line_index = perl_line_index::LineIndex::new(&state.source);
-    state.lex_checkpoints = create_lex_checkpoints(&state.tokens, &state.line_index);
-    state.parse_checkpoints = IncrementalState::create_parse_checkpoints(&state.ast);
+    state.replace_tokens(tokens);
     Ok(ReparseResult {
-        changed_ranges: vec![0..state.source.len()],
+        changed_ranges: vec![0..source.len()],
+        parse_output: state.parse_output.clone(),
         diagnostics: vec![],
-        reparsed_bytes: state.source.len(),
+        reparsed_bytes: source.len(),
         reused_tokens: 0,
         token_count: state.tokens.len(),
     })
@@ -201,7 +178,7 @@ mod reparse_offset_tests {
         // in which case the wrapping branch was never reached. The invariant we
         // assert is: if it succeeds, every resulting token offset is in range.
         if apply_single_edit(&mut state, &edit).is_ok() {
-            let new_len = state.source.len();
+            let new_len = state.source().len();
             for tok in &state.tokens {
                 assert!(
                     tok.start <= new_len && tok.end <= new_len,

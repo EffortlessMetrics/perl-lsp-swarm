@@ -27,6 +27,11 @@ REQUIRED_CURRENT = {
     "docs/how-to/AGENT_CONTRIBUTING.md",
     # Amended by PR #6863 (e9a698285f) and current on `main` since.
     "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md",
+    # Rewritten by PR #6868 (709b4ca939) and current on `main` since.
+    "docs/reference/MAINTAINER_AGENT_DOCTRINE.md",
+    "docs/reference/WORKTREE_PROTOCOL.md",
+    "CONTRIBUTING.md",
+    ".github/copilot-instructions.md",
 }
 REQUIRED_LEGACY = {
     "docs/reference/ORCHESTRATION_DOCTRINE.md",
@@ -40,16 +45,26 @@ REQUIRED_LEGACY = {
     ".spec/3988-merge-readiness/spec.md",
 }
 REQUIRED_TRANSITIONAL = {
-    "docs/reference/MAINTAINER_AGENT_DOCTRINE.md",
-    "docs/reference/WORKTREE_PROTOCOL.md",
-    "CONTRIBUTING.md",
-    ".github/copilot-instructions.md",
     "scripts/ci/check-pr-review-convergence-core",
 }
 
 # A `transitional` row asserts a fact about the document's *present* content: the
 # retired text is still live on `main`, and a named replacement is still pending.
-# Two document self-declarations contradict that assertion outright.
+# That assertion has two halves, and both need an oracle.
+#
+# The negative half -- "the document does not consider itself settled" -- is
+# checked by self-declaration. The positive half -- "the retired text is still
+# there" -- is checked by `stale_marker`: each transitional row names an exact
+# substring that must still appear in the document. When the replacement lands
+# and removes that text, the row fails.
+#
+# Only the negative half existed at first, and it let four rows go stale
+# undetected when PR #6868 landed. `MAINTAINER_AGENT_DOCTRINE.md` and
+# `WORKTREE_PROTOCOL.md` were caught, because the rewrite gave them a
+# `Status: current` line. `CONTRIBUTING.md` and `.github/copilot-instructions.md`
+# were not: their retired conveyor text was deleted, but neither file declares a
+# status, so nothing contradicted the row. A vanished `stale_marker` catches
+# exactly that case without needing the document to say anything about itself.
 #
 # A `current` self-claim catches the authority inversion this registry exists to
 # prevent -- a document that declares itself the current contract must not be
@@ -69,15 +84,16 @@ RETIRED_SELF_CLAIMS = (
 # legitimately discusses the retirement of *other* things -- WORKTREE_PROTOCOL.md
 # says "is retired" about a branch -- which is not a self-declaration.
 SELF_CLAIM_HEADER_LINES = 40
-WORKFLOW_PATHS = {
-    "AGENTS.md",
-    "CLAUDE.md",
-    "docs/agents/AUTHORITY_STATUS.md",
-    "docs/agents/authority_status.toml",
-    "docs/agents/README.md",
+# The workflow's own files. Every other trigger path is derived from the
+# registry rather than restated here -- a hand-maintained list is exactly the
+# blind spot this coverage check exists to close.
+WORKFLOW_OWN_FILES = {
     "tests/test_agent_authority_status.py",
     ".github/workflows/agent-authority-status.yml",
 }
+# A successor is either a repository path or a bounded issue/PR reference.
+SUCCESSOR_REFERENCE = re.compile(r"\b(?:issue|PR) #\d+\b")
+SUCCESSOR_PATH_TOKEN = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$")
 
 
 def load_registry() -> dict[str, Any]:
@@ -90,6 +106,23 @@ def prose(path: Path) -> str:
 
 def _normalize(text: str) -> str:
     return " ".join(text.split())
+
+
+def stale_marker_contradiction(path: str, marker: str, text: str) -> str | None:
+    """Report a `transitional` row whose retired text is no longer in the document.
+
+    This is the half of the transitional claim that no self-declaration can
+    carry. A replacement PR that simply deletes the stale passage leaves a
+    document that says nothing about its own status, so only the absence of the
+    text it was classified for can reveal that the row is now false.
+    """
+    if _normalize(marker) in _normalize(text):
+        return None
+    return (
+        f"{path}: classified transitional, but its stale_marker {marker!r} is no "
+        f"longer present; the text this row was classified for is gone, so the "
+        f"replacement has landed and the row is stale"
+    )
 
 
 def self_claim_contradictions(path: str, text: str) -> list[str]:
@@ -162,6 +195,75 @@ def workflow_event_paths(event: str) -> set[str]:
     return paths
 
 
+def required_workflow_paths() -> set[str]:
+    """Every registered path, plus the workflow's own files.
+
+    `validate_registry` asserts that each `documents[].path` exists. That
+    assertion is only load-bearing if a change to one of those paths actually
+    runs this workflow: deleting or renaming a registered authority under a
+    filter that does not name it leaves the registry pointing at a missing file
+    on `main` with no gate having run. Deriving the requirement from the
+    registry means adding a row cannot silently widen the blind spot.
+    """
+    return {row["path"] for row in load_registry()["documents"]} | WORKFLOW_OWN_FILES
+
+
+def workflow_coverage_errors(
+    actual: dict[str, set[str]], required: set[str]
+) -> list[str]:
+    """Compare each event's filter against the required set.
+
+    Split out from the test so the mutation controls can feed it a filter that
+    is wrong in one specific way, rather than asserting a set differs from
+    itself.
+    """
+    errors: list[str] = []
+    for event in sorted(actual):
+        missing = required - actual[event]
+        extra = actual[event] - required
+        if missing:
+            errors.append(
+                f"on.{event}.paths omits registered authority paths: {sorted(missing)!r}"
+            )
+        if extra:
+            errors.append(
+                f"on.{event}.paths names unregistered paths: {sorted(extra)!r}"
+            )
+    return errors
+
+
+def successor_errors(rows: list[dict[str, Any]]) -> list[str]:
+    """A non-empty successor string is not yet a usable successor.
+
+    The human index tells agents to follow these. A typo'd path or a bare
+    sentence passes a non-empty check while routing every reader nowhere, so
+    resolve path-shaped tokens against the tree and require anything else to
+    carry a bounded issue/PR reference.
+    """
+    errors: list[str] = []
+    for row in rows:
+        path = row.get("path")
+        successor = row.get("successor")
+        if not isinstance(successor, str) or not successor:
+            continue
+        tokens = [
+            token.strip(".,;")
+            for token in successor.split()
+            if SUCCESSOR_PATH_TOKEN.match(token.strip(".,;"))
+        ]
+        for token in tokens:
+            if not (ROOT / token).exists():
+                errors.append(
+                    f"{path}: successor names {token!r}, which does not exist"
+                )
+        if not tokens and not SUCCESSOR_REFERENCE.search(successor):
+            errors.append(
+                f"{path}: successor {successor!r} resolves to neither a repository "
+                f"path nor an 'issue #N' / 'PR #N' reference"
+            )
+    return errors
+
+
 def validate_registry(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if document.get("schema_version") != 1:
@@ -204,10 +306,21 @@ def validate_registry(document: dict[str, Any]) -> list[str]:
         if not (ROOT / path).exists():
             errors.append(f"{path}: registry path does not exist")
         elif status == "transitional":
-            errors.extend(
-                self_claim_contradictions(
-                    path, (ROOT / path).read_text(encoding="utf-8", errors="replace")
+            text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
+            errors.extend(self_claim_contradictions(path, text))
+            marker = row.get("stale_marker")
+            if not isinstance(marker, str) or not marker.strip():
+                errors.append(
+                    f"{path}: transitional rows must name a non-empty stale_marker "
+                    f"so the row fails when its retired text is removed"
                 )
+            else:
+                problem = stale_marker_contradiction(path, marker, text)
+                if problem:
+                    errors.append(problem)
+        elif "stale_marker" in row:
+            errors.append(
+                f"{path}: stale_marker is only meaningful for transitional rows"
             )
 
     for field in TOP_LEVEL_PATH_FIELDS:
@@ -241,6 +354,8 @@ def validate_registry(document: dict[str, Any]) -> list[str]:
         if by_path.get(path, {}).get("status") != "transitional":
             errors.append(f"{path}: current-main replacement must remain transitional")
 
+    errors.extend(successor_errors([row for row in rows if isinstance(row, dict)]))
+
     return errors
 
 
@@ -271,14 +386,87 @@ class AgentAuthorityStatusTests(unittest.TestCase):
             self.assertIn("active doctrine", contract)
             self.assertIn("north star", contract)
 
-    def test_workflow_covers_root_delegation_for_both_events(self) -> None:
-        for event in ("pull_request", "push"):
-            paths = workflow_event_paths(event)
-            self.assertEqual(
-                paths,
-                WORKFLOW_PATHS,
-                f"on.{event}.paths must exactly cover the authority contract",
-            )
+    def test_workflow_triggers_on_every_registered_path(self) -> None:
+        """Both event filters must equal the registry, not a hand-kept subset.
+
+        Previously the filters named only the registry and front-door files.
+        Deleting or renaming `DEVELOPMENT_METHOD.md`, `CONTRIBUTING.md`, or any
+        other registered authority therefore skipped this workflow entirely,
+        leaving the registry's `path exists` assertion false on `main` with no
+        check having run.
+        """
+        actual = {event: workflow_event_paths(event) for event in ("pull_request", "push")}
+        self.assertEqual(workflow_coverage_errors(actual, required_workflow_paths()), [])
+
+    def test_dropping_a_registered_path_from_one_filter_is_caught(self) -> None:
+        """The control the exact-set assertion could not provide.
+
+        Removal is checked one event at a time: a one-sided filter is the
+        realistic mistake, and it is invisible to any check that looks at the
+        union of both events.
+        """
+        required = required_workflow_paths()
+        for path in (
+            "docs/agents/DEVELOPMENT_METHOD.md",  # a registered current authority
+            "CONTRIBUTING.md",  # reclassified current by #6868
+            "scripts/ci/check-pr-review-convergence-core",  # still transitional
+        ):
+            for event in ("pull_request", "push"):
+                with self.subTest(path=path, event=event):
+                    actual = {
+                        name: workflow_event_paths(name)
+                        for name in ("pull_request", "push")
+                    }
+                    actual[event] = actual[event] - {path}
+                    errors = workflow_coverage_errors(actual, required)
+                    self.assertTrue(
+                        any(
+                            f"on.{event}.paths omits" in error and path in error
+                            for error in errors
+                        ),
+                        errors,
+                    )
+
+    def test_registering_a_document_without_covering_it_is_caught(self) -> None:
+        """Adding a row must widen the trigger, not the blind spot."""
+        required = required_workflow_paths() | {"docs/agents/NEW_AUTHORITY.md"}
+        actual = {
+            event: workflow_event_paths(event) for event in ("pull_request", "push")
+        }
+
+        errors = workflow_coverage_errors(actual, required)
+        self.assertTrue(
+            any("NEW_AUTHORITY.md" in error for error in errors), errors
+        )
+
+    def test_successor_must_resolve_to_a_path_or_a_bounded_reference(self) -> None:
+        self.assertEqual(successor_errors(load_registry()["documents"]), [])
+
+    def test_unresolvable_successor_targets_are_rejected(self) -> None:
+        """Non-empty is not the same as usable.
+
+        Each mutation is a way a successor can be wrong while still being a
+        non-empty string: a path that does not exist, and prose that names no
+        route at all.
+        """
+        for successor, expected in (
+            ("docs/agents/DOES_NOT_EXIST.md", "does not exist"),
+            ("scripts/ci/typo-convergence and issue #5778", "does not exist"),
+            ("see the maintainers", "resolves to neither"),
+        ):
+            with self.subTest(successor=successor):
+                document = copy.deepcopy(load_registry())
+                row = next(
+                    item
+                    for item in document["documents"]
+                    if item["path"] == "docs/reference/ORCHESTRATION_DOCTRINE.md"
+                )
+                row["successor"] = successor
+
+                errors = successor_errors(document["documents"])
+                self.assertTrue(
+                    any(expected in error for error in errors), errors
+                )
 
     def test_registry_cannot_remove_its_own_current_status(self) -> None:
         document = copy.deepcopy(load_registry())
@@ -311,7 +499,7 @@ class AgentAuthorityStatusTests(unittest.TestCase):
         document["documents"] = [
             row
             for row in document["documents"]
-            if row["path"] != "docs/reference/MAINTAINER_AGENT_DOCTRINE.md"
+            if row["path"] != "scripts/ci/check-pr-review-convergence-core"
         ]
 
         errors = validate_registry(document)
@@ -350,7 +538,11 @@ class AgentAuthorityStatusTests(unittest.TestCase):
         either one asserts a replacement is still pending when it has already
         landed.
         """
-        for path in ("scripts/ci/check-pr-claim-currentness", "scripts/reviews/claim-digest"):
+        markers = {
+            "scripts/ci/check-pr-claim-currentness": "review-convergence authority",
+            "scripts/reviews/claim-digest": "claim-digest command-line entry point",
+        }
+        for path, marker in markers.items():
             with self.subTest(path=path):
                 document = copy.deepcopy(load_registry())
                 row = next(
@@ -358,22 +550,76 @@ class AgentAuthorityStatusTests(unittest.TestCase):
                 )
                 row["status"] = "transitional"
                 row["successor"] = "issue #5778 / PR #6871"
+                # A present marker, so the row fails on the self-declaration
+                # rather than incidentally on a missing or vanished marker.
+                row["stale_marker"] = marker
 
                 errors = validate_registry(document)
                 self.assertTrue(
                     any("already retired" in error for error in errors), errors
                 )
+                self.assertFalse(
+                    any("stale_marker" in error for error in errors), errors
+                )
 
-    def test_self_claim_check_does_not_fire_on_genuine_transitional_rows(self) -> None:
-        """Negative control: the five rows that are still correctly transitional.
+    def test_transitional_checks_do_not_fire_on_genuine_transitional_rows(self) -> None:
+        """Negative control over every row still genuinely transitional.
 
-        Without this, the check above could be satisfied by a rule broad enough
+        Without this, the checks above could be satisfied by rules broad enough
         to condemn every transitional row, which would make the status useless.
+
+        This control is weaker than when it was written: four of the five rows
+        it covered were reclassified `current` after PR #6868 landed, leaving
+        one. It narrows as the migration succeeds, which is the intended
+        direction, but a single subject cannot separate a targeted rule from an
+        accidentally-passing one. The mutation tests carry that weight instead.
         """
+        rows = {row["path"]: row for row in load_registry()["documents"]}
         for path in sorted(REQUIRED_TRANSITIONAL):
             with self.subTest(path=path):
                 text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
                 self.assertEqual(self_claim_contradictions(path, text), [])
+                self.assertIsNone(
+                    stale_marker_contradiction(path, rows[path]["stale_marker"], text)
+                )
+
+    def test_transitional_row_fails_when_its_stale_text_is_removed(self) -> None:
+        """The defect no self-declaration can catch.
+
+        `CONTRIBUTING.md` and `.github/copilot-instructions.md` went stale
+        exactly this way: PR #6868 deleted the retired conveyor text those rows
+        were classified for, and neither file declares a status, so every
+        self-declaration check stayed green while both rows asserted a
+        replacement was still pending.
+        """
+        document = copy.deepcopy(load_registry())
+        row = next(
+            item
+            for item in document["documents"]
+            if item["path"] == "scripts/ci/check-pr-review-convergence-core"
+        )
+        row["stale_marker"] = "text a successor PR has already deleted"
+
+        errors = validate_registry(document)
+        self.assertTrue(
+            any("is no longer present" in error for error in errors), errors
+        )
+
+    def test_transitional_row_must_name_a_stale_marker(self) -> None:
+        """A row cannot opt out of the content oracle by omitting the field."""
+        document = copy.deepcopy(load_registry())
+        row = next(
+            item
+            for item in document["documents"]
+            if item["path"] == "scripts/ci/check-pr-review-convergence-core"
+        )
+        del row["stale_marker"]
+
+        errors = validate_registry(document)
+        self.assertTrue(
+            any("must name a non-empty stale_marker" in error for error in errors),
+            errors,
+        )
 
     def test_duplicate_path_is_rejected(self) -> None:
         document = copy.deepcopy(load_registry())
