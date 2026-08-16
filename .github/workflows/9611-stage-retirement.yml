@@ -10,7 +10,7 @@ permissions:
 jobs:
   stage:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout exact branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -27,7 +27,7 @@ jobs:
       - name: Patch only the obsolete duplicate surfaces
         run: python3 scripts/ci/stage_issue_9611.py patch
 
-      - name: Verify mapping, active gate, and current ratchet
+      - name: Verify diff and lane mapping
         shell: bash
         run: |
           set -euo pipefail
@@ -36,8 +36,12 @@ jobs:
             scripts/ci/validate_gate_lane_mapping.py \
             scripts/ci/stage_issue_9611.py
           python3 scripts/ci/validate_gate_lane_mapping.py --strict
-          cargo test -p xtask --test published_crate_count_gate_integration --locked
-          cargo run -p xtask --locked -- published-crate-count
+
+      - name: Verify active gate integration contract
+        run: cargo test -p xtask --test published_crate_count_gate_integration --locked
+
+      - name: Verify current published crate-count ratchet
+        run: cargo run -p xtask --locked -- published-crate-count
 
       - name: Create exact candidate blobs
         env:
