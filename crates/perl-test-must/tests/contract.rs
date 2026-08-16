@@ -1,8 +1,7 @@
 //! Public contract tests for `perl-test-must`.
 
-use std::any::Any;
 use std::fmt;
-use std::panic::{UnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, UnwindSafe};
 
 use perl_test_must::{
     must, must_err, must_err_with, must_some, must_some_with, must_with,
