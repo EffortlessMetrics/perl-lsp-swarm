@@ -12,6 +12,34 @@ const CANDIDATE_EVENTS: &[&str] = &["pull_request", "pull_request_target", "merg
 /// `pull_request` and `merge_group` both execute candidate-supplied workflow content.
 const BASE_DEFINED_EVENTS: &[&str] = &["pull_request_target"];
 
+/// Writer jobs that predate this control and are tracked for conversion under #6873.
+///
+/// This exists so the control can be enforced now without silently pretending the
+/// repository is already clean. It is deliberately weak in only one direction: these exact
+/// `(workflow, job)` pairs do not fail the gate. It is **shrink-only** — a new candidate
+/// writer is never accepted, and [`stale_known_writers`] fails the population test if an
+/// entry no longer matches a real finding, so an entry cannot outlive its subject or be
+/// reused to cover a different job.
+pub(crate) const KNOWN_UNCONVERTED_WRITERS: &[(&str, &str)] = &[("tokmd.yml", "comment")];
+
+pub(crate) fn is_known_unconverted(finding: &Finding) -> bool {
+    KNOWN_UNCONVERTED_WRITERS
+        .iter()
+        .any(|(workflow, job)| finding.workflow == *workflow && finding.job == *job)
+}
+
+/// Baseline entries with no corresponding finding. A non-empty result means the underlying
+/// writer was converted or removed and the entry must go with it.
+pub(crate) fn stale_known_writers(findings: &[Finding]) -> Vec<(&'static str, &'static str)> {
+    KNOWN_UNCONVERTED_WRITERS
+        .iter()
+        .filter(|(workflow, job)| {
+            !findings.iter().any(|finding| finding.workflow == *workflow && finding.job == *job)
+        })
+        .copied()
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionDisposition {
     ExplicitReadOnly,

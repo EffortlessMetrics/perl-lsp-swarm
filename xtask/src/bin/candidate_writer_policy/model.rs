@@ -87,10 +87,7 @@ impl TrustedWriterPolicy {
         policy_identity: impl Into<String>,
         writers: impl IntoIterator<Item = TrustedWriter>,
     ) -> Self {
-        Self {
-            policy_identity: policy_identity.into(),
-            writers: writers.into_iter().collect(),
-        }
+        Self { policy_identity: policy_identity.into(), writers: writers.into_iter().collect() }
     }
 
     pub(crate) fn contains(&self, writer: &TrustedWriter) -> bool {

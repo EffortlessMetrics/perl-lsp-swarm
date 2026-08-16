@@ -1,5 +1,8 @@
 use crate::model::{FindingKind, TrustedWriter, TrustedWriterPolicy};
-use crate::scan::{project_root, scan_repository, scan_workflow, scan_workflow_with_policy};
+use crate::scan::{
+    is_known_unconverted, project_root, scan_repository, scan_workflow, scan_workflow_with_policy,
+    stale_known_writers,
+};
 use serde_yaml_ng::Value;
 
 fn parse(raw: &str) -> Result<Value, String> {
@@ -348,6 +351,22 @@ jobs:
 #[test]
 fn repository_workflows_satisfy_candidate_writer_policy() -> Result<(), String> {
     let findings = scan_repository(&project_root()?)?;
-    assert!(findings.is_empty(), "candidate writer findings: {findings:#?}");
+
+    let new: Vec<_> = findings.iter().filter(|finding| !is_known_unconverted(finding)).collect();
+    assert!(
+        new.is_empty(),
+        "new candidate writer findings (the baseline in KNOWN_UNCONVERTED_WRITERS covers only \
+         writers that predate this control; a new one must be built as a trusted writer, not \
+         added to the list): {new:#?}"
+    );
+
+    // Shrink-only: an entry whose writer is gone must be removed with it, so the baseline
+    // cannot silently persist past its subject or be reused to excuse a different job.
+    let stale = stale_known_writers(&findings);
+    assert!(
+        stale.is_empty(),
+        "KNOWN_UNCONVERTED_WRITERS entries no longer match any finding — remove them: {stale:?}"
+    );
+
     Ok(())
 }

@@ -10,7 +10,7 @@ mod model;
 #[path = "candidate_writer_policy/scan.rs"]
 mod scan;
 
-use scan::{project_root, scan_repository};
+use scan::{is_known_unconverted, project_root, scan_repository, stale_known_writers};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -22,16 +22,36 @@ fn main() -> ExitCode {
         }
     };
     match scan_repository(&root) {
-        Ok(findings) if findings.is_empty() => {
-            println!("candidate-writer policy: no candidate-defined repository writers found");
-            ExitCode::SUCCESS
-        }
         Ok(findings) => {
-            eprintln!(
-                "candidate-writer policy: {} prohibited writer path(s)",
-                findings.len()
-            );
-            for finding in findings {
+            let (known, new): (Vec<_>, Vec<_>) =
+                findings.iter().partition(|finding| is_known_unconverted(finding));
+
+            let stale = stale_known_writers(&findings);
+            if !stale.is_empty() {
+                eprintln!(
+                    "candidate-writer policy: {} stale known-writer entr(ies) — the writer is gone, so remove the baseline entry",
+                    stale.len()
+                );
+                for (workflow, job) in stale {
+                    eprintln!("{workflow}: job `{job}` no longer matches any finding");
+                }
+                return ExitCode::FAILURE;
+            }
+
+            for finding in &known {
+                println!("known unconverted writer (tracked by #6873): {finding}");
+            }
+
+            if new.is_empty() {
+                println!(
+                    "candidate-writer policy: no new candidate-defined repository writers ({} known, tracked)",
+                    known.len()
+                );
+                return ExitCode::SUCCESS;
+            }
+
+            eprintln!("candidate-writer policy: {} prohibited writer path(s)", new.len());
+            for finding in new {
                 eprintln!("{finding}");
             }
             ExitCode::FAILURE
