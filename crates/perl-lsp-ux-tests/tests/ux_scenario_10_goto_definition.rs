@@ -159,7 +159,13 @@ fn scenario_10_definition_cross_file_module_symbol_points_to_module() -> Result<
 
     let scenario = DefinitionScenario::single_file()?;
 
-    // Given a static workspace module and script using it through `use lib`.
+    // Given a static workspace module and a script that consumes it.
+    //
+    // Note the fixture's `use lib 'lib'` is scene-setting, not the thing under
+    // test: resolution runs through the workspace symbol index keyed on
+    // `package Counter`, not through `use lib` filename lookup. Moving the same
+    // package into `lib/Other.pm` still resolves, so this journey must not be
+    // described as proving `use lib` path handling. See #6897 closeout.
     scenario.given_file_is_open("lib/Counter.pm", CROSS_FILE_MODULE)?;
     scenario.given_file_is_open("main.pl", CROSS_FILE_SCRIPT)?;
 
