@@ -5,49 +5,50 @@ issue = 7910
 programme = 7759
 
 [registry]
-repository = "zed-industries/extensions"
-branch = "main"
-captured_base_commit = "3823ee669031bb22e2d1b8e1bdb1417823808e9a"
-captured_tree = "9abdbbddd5ab0a1be93cd4f85155b424409ff8cc"
-extensions_toml_blob = "b11c7fe3e57646a9fb9ec243085f362e220df331"
-gitmodules_blob = "d020322a746febba0c8cb9e97183ab13928b860f"
+  repository = "zed-industries/extensions"
+  branch = "main"
+  captured_base_commit = "3823ee669031bb22e2d1b8e1bdb1417823808e9a"
+  captured_tree = "9abdbbddd5ab0a1be93cd4f85155b424409ff8cc"
+  extensions_toml_blob = "b11c7fe3e57646a9fb9ec243085f362e220df331"
+  gitmodules_blob = "d020322a746febba0c8cb9e97183ab13928b860f"
 
 [extension]
-id = "perl"
-submodule_path = "extensions/perl"
-submodule_remote = "https://github.com/tree-sitter-perl/zed-perl.git"
-current_version = "0.4.0"
-current_commit = "eb27a19e69fed8a041b706b23a1f42fbafb29fd8"
-new_version = ""
-new_commit = ""
-upstream_branch_containing_commit = ""
-license = "MIT"
+  id = "perl"
+  submodule_path = "extensions/perl"
+  submodule_remote = "https://github.com/tree-sitter-perl/zed-perl.git"
+  current_version = "0.4.0"
+  current_commit = "eb27a19e69fed8a041b706b23a1f42fbafb29fd8"
+  new_version = ""
+  new_commit = ""
+  upstream_branch_containing_commit = ""
+  license = "MIT"
 
 [zed_defaults]
-issue = 7908
-state = "unresolved_pending_actual_host"
-released_build = ""
+  issue = 7908
+  state = "unresolved_pending_actual_host"
+  released_build = ""
 
 [validation]
-pnpm_sort_extensions = "not_run"
-registry_package_check = "not_run"
-registry_danger_check = "not_run"
-diff_sha256 = ""
-submodule_commit_branch_reachable = false
-manifest_version_matches = false
-https_remote_verified = true
+  pnpm_sort_extensions = "not_run"
+  registry_package_check = "not_run"
+  registry_danger_check = "not_run"
+  diff_sha256 = ""
+  submodule_commit_branch_reachable = false
+  manifest_version_matches = false
+  released_build_contains_commit = false
+  https_remote_verified = true
 
 [submission]
-pr_title = "Update Perl extension to vNEXT"
-pr_body = ".ci/fixtures/zed-perl-upstream/registry/pr-body.md"
-expected_changed_paths = ["extensions/perl", "extensions.toml"]
+  pr_title = "Update Perl extension to vNEXT"
+  pr_body = ".ci/fixtures/zed-perl-upstream/registry/pr-body.md"
+  expected_changed_paths = ["extensions/perl", "extensions.toml"]
 
-blockers = [
-  "tree-sitter-perl/zed-perl has not merged the accepted perllsp extension update",
-  "the merged extension version and branch-reachable commit do not yet exist",
-  "the Zed-core default-selection merge or release order remains unresolved",
-  "registry sort and validation commands have not run against an exact current registry base",
-  "the final submodule/version diff and digest cannot be frozen before the upstream merge"
-]
+  blockers = [
+    "tree-sitter-perl/zed-perl has not merged the accepted perllsp extension update",
+    "the merged extension version and branch-reachable commit do not yet exist",
+    "the Zed-core default-selection merge or release order remains unresolved",
+    "registry sort and validation commands have not run against an exact current registry base",
+    "the final submodule/version diff and digest cannot be frozen before the upstream merge",
+  ]
 
-claim_boundary = "This packet describes the existing official Perl registry entry and the only allowed update shape. It cannot become ready from a swarm candidate or fork commit; the submodule target must be an exact merged, upstream-branch-reachable tree-sitter-perl/zed-perl commit with a matching manifest version."
+  claim_boundary = "This packet describes the existing official Perl registry entry and the only allowed update shape. It cannot become ready from a swarm candidate or fork commit; the submodule target must be an exact merged, upstream-branch-reachable tree-sitter-perl/zed-perl commit with a matching manifest version."

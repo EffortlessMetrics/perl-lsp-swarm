@@ -30,6 +30,23 @@ coverage_required_for_production_surfaces = true
 # =============================================================================
 
 [[allow]]
+id = "non-rust-changelog-fragments"
+glob = ".changes/unreleased/*.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie release-note fragments staged for the next release. Each fragment is generated into a fixed naming convention and its content is validated by the changelog gate, so per-fragment allowlist rows added no review value and instead blocked every PR that produced one."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "The fragment directory is a generated, uniformly shaped staging area drained on release. `cargo xtask changelog check` owns fragment schema and content; the file gate only needs to know the directory is accounted for."
+created = "2026-08-15"
+review_after = "2026-11-15"
+
+[[allow]]
 id = "non-rust-generated-badge-endpoints"
 glob = "badges/*.json"
 kind = "generated_badge_endpoint"
@@ -75,230 +92,6 @@ covered_by = [
 broad_glob_reason = "Repo root markdown files are governance/documentation by convention; non-Rust by definition."
 created = "2026-05-07"
 review_after = "2026-08-07"
-
-[[allow]]
-id = "non-rust-product-7821-changelog-fragment"
-path = ".changes/unreleased/product-7821-Changed-101512.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7834-changelog-fragment"
-path = ".changes/unreleased/product-7834-Added-102449.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment announcing the fail-closed Vim + Vimspector launch journey for the native perl-dap debug adapter (#7834)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-product-7819-changelog-fragment"
-path = ".changes/unreleased/product-7819-Added-101327.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment announcing the fail-closed actual Coc-on-Vim interoperability journey for the perllsp client path (#7819)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-product-7902-changelog-fragment"
-path = ".changes/unreleased/product-7902-Added-115000.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7903-changelog-fragment"
-path = ".changes/unreleased/product-7903-Added-114500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7909-changelog-fragment"
-path = ".changes/unreleased/product-7909-Added-120500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7975-changelog-fragment"
-path = ".changes/unreleased/product-7975-Changed-213500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7980-changelog-fragment"
-path = ".changes/unreleased/product-7980-Added-220800.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-vscode-7911-changelog-fragment"
-path = ".changes/unreleased/vscode-7911-Security-111200.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie security release-note fragment recording that the generic configured-command MCP passthrough is disabled so stale public-beta settings cannot register arbitrary local MCP processes (#7119)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-vscode-7879-changelog-fragment"
-path = ".changes/unreleased/vscode-7879-Added-105100.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie release-note fragment announcing the typed structurally redacted VS Code support-packet model (#7860)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-vscode-7880-changelog-fragment"
-path = ".changes/unreleased/vscode-7880-Added-105230.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie release-note fragment announcing the versioned VS Code managed-cache candidate and mutation-lease protocol identities (#7857)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-vscode-7882-changelog-fragment"
-path = ".changes/unreleased/vscode-7882-Added-105400.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie release-note fragment announcing the versioned accessibility inventory and semantic guards for extension-authored VS Code control surfaces (#7864)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-vscode-7884-changelog-fragment"
-path = ".changes/unreleased/vscode-7884-Added-105530.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie release-note fragment announcing the bounded VS Code client measurement recorder (#7866)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-product-7992-changelog-fragment"
-path = ".changes/unreleased/product-7992-Added-234500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
 
 [[allow]]
 id = "non-rust-license-files"
@@ -1232,21 +1025,6 @@ covered_by = [
 created = "2026-08-08"
 review_after = "2026-11-08"
 
-[[allow]]
-id = "non-rust-changelog-fragment-6844"
-path = ".changes/unreleased/product-6844-Added-204043.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "config"
-owner = "release/ci"
-reason = "Changie fragment for PR #6844; merged into generated release notes."
-covered_by = [
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-11"
-review_after = "2026-11-11"
-
 # =============================================================================
 # Receipts / status / metrics
 # =============================================================================
@@ -1369,6 +1147,25 @@ created = "2026-08-16"
 review_after = "2026-11-16"
 
 # =============================================================================
+# Binary identity protocol (perl_lsp.binary_identity.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-binary-identity-schema"
+path = "schemas/binary_identity_protocol.v1.schema.json"
+kind = "protocol_contract"
+language = "json"
+surface = "lsp"
+classification = "config"
+owner = "identity"
+reason = "JSON Schema for the perl_lsp.binary_identity.v1 wire contract (#6852); schema-leg parity is ratcheted by the binary identity protocol contract test."
+covered_by = [
+  "cargo test -p perl-lsp-rs-core --test ripr_seam_proof_binary_identity --locked",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
+
+# =============================================================================
 # Editor-intelligence gap-matrix fixture tree
 # =============================================================================
 
@@ -1420,36 +1217,6 @@ created = "2026-08-14"
 review_after = "2026-11-14"
 
 [[allow]]
-id = "non-rust-product-7984-changelog-fragment"
-path = ".changes/unreleased/product-7984-Added-230000.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-13"
-review_after = "2026-11-13"
-
-[[allow]]
-id = "non-rust-product-7990-changelog-fragment"
-path = ".changes/unreleased/product-7990-Added-233000.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-11-14"
-
-[[allow]]
 id = "non-rust-zed-settings-behavior-fixtures"
 glob = ".ci/fixtures/zed-perl-upstream/**"
 kind = "test_fixture"
@@ -1464,22 +1231,6 @@ covered_by = [
 broad_glob_reason = "The zed-perl-upstream fixture tree holds versioned contract/receipt JSON pairs consumed by name from the xtask zed contract tests; a missing or malformed fixture fails those tests by name."
 created = "2026-08-15"
 review_after = "2026-11-15"
-
-[[allow]]
-id = "non-rust-product-7701-changelog-fragment"
-path = ".changes/unreleased/product-7701-Changed-113000.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
 
 [[allow]]
 id = "non-rust-helix-initialize-profiles"
@@ -1526,3 +1277,79 @@ covered_by = [
 ]
 created = "2026-08-15"
 review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-dependency-hygiene-machete-fixtures"
+glob = "xtask/tests/fixtures/dependency-hygiene/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "devex/dependency-hygiene"
+reason = "Documented cargo-machete `--json` result shapes — one finding case and three malformed/incomplete cases — that pin the fail-closed parser boundary so unrecognized exit-0 output cannot become SUCCESS with zero findings (#9364)."
+covered_by = [
+  "cargo test -p xtask --locked --bins dependency_hygiene",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-product-7310-changelog-fragment"
+path = ".changes/unreleased/product-7310-Changed-051500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-publication-runtime-identity-schema"
+path = "schemas/publication_runtime_identity.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned bundle schema for staged-executable runtime identity evidence — host-side digests, path roles, and self-reported packets — projected into the publication-drift classifier input (#6856)."
+covered_by = [
+  "python3 -m unittest scripts.release.test_publication_runtime_identity",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-product-7810-changelog-fragment"
+path = ".changes/unreleased/product-7810-Added-100438.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing the fail-closed real Vim + vim-lsp interoperability journey for the canonical perllsp client path (#7810)."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-product-6991-changelog-fragment"
+path = ".changes/unreleased/product-6991-Changed-031000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
