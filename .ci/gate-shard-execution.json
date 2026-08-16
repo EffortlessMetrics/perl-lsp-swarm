@@ -27,6 +27,8 @@
     "unit_dap_support_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "common_corpus_clean": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "msrv_authority_sync": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+    "compiler_concept_ledger": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+    "compiler_proof_policy": {"requires": ["compiler_concept_ledger"], "on_dependency_failure": "blocked_not_proven"},
     "docs_build": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "adr_link_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "non_rust_inventory_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
