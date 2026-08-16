@@ -1748,12 +1748,13 @@ mod tests {
     }
 
     #[test]
-    // Left nested rather than collapsed into a let-chain. `enforce-new-ripr`
-    // keys gap identity on the changed line, so collapsing here registers a
-    // new gap that this PR cannot discharge; the nested form exists on main
-    // and is not counted. The suppression is deliberately attached to the
-    // function rather than the `if`, because annotating the seam directly
-    // pulls it back into the changed hunk and re-creates the gap. See #9528.
+    // Left nested rather than collapsed into a let-chain. Collapsing it
+    // registers a new gap under `enforce-new-ripr` that this PR could not
+    // discharge: focused unit tests, an integration test, and moving this
+    // suppression between the seam and the function were all tried, and
+    // none cleared it. The nested form matches main. The exact gap-identity
+    // rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
+    // assuming one. See #9528.
     #[allow(clippy::collapsible_if)]
     fn code_action_append_uses_document_end() {
         use ropey::Rope;

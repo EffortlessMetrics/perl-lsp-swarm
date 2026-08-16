@@ -55,14 +55,13 @@ fn main() {
     );
 }
 
-/// Walk from the binary's directory up to find the workspace root
-/// (the directory containing `Cargo.toml` with `[workspace]`).
-// Collapsing these into let-chains creates new production seams that
-// `enforce-new-ripr` counts as new RIPR gaps (gap 504dd3276b0652ab at the
-// `candidate.exists() && let Ok(content) = ...` seam). The same nested form
-// exists on main and is not counted. A cosmetic style win is not worth
-// introducing a gate obligation this PR cannot discharge, so the lint is
-// scoped off here with its reason recorded. See #9528.
+// Left nested rather than collapsed into a let-chain. Collapsing it
+// registers a new gap under `enforce-new-ripr` that this PR could not
+// discharge: focused unit tests, an integration test, and moving this
+// suppression between the seam and the function were all tried, and
+// none cleared it. The nested form matches main. The exact gap-identity
+// rule is NOT established -- see the NOT_PROVEN note on PR #9674 before
+// assuming one. See #9528.
 #[allow(clippy::collapsible_if)]
 fn locate_workspace_root() -> PathBuf {
     // Try CARGO_MANIFEST_DIR env var first (set by cargo when running tests/bins)
