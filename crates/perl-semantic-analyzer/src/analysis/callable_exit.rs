@@ -401,12 +401,22 @@ mod tests {
     use super::*;
     use crate::Parser;
 
-    fn parse_first_callable(source: &str) -> Node {
+    type TestResult = Result<(), String>;
+
+    fn parse_first_callable(source: &str) -> Result<Node, String> {
         let mut parser = Parser::new(source);
-        let ast = parser.parse().expect("fixture should parse");
+        let ast = parser
+            .parse()
+            .map_err(|errors| format!("fixture should parse: {errors:?}"))?;
         find_first_callable(&ast)
             .cloned()
-            .expect("fixture should contain a callable")
+            .ok_or_else(|| "fixture should contain a callable".to_string())
+    }
+
+    fn summarize(source: &str) -> Result<CallableExitSummary, String> {
+        let callable = parse_first_callable(source)?;
+        CallableExitSummary::analyze(&callable)
+            .ok_or_else(|| "callable should produce an exit summary".to_string())
     }
 
     fn find_first_callable(node: &Node) -> Option<&Node> {
@@ -418,46 +428,45 @@ mod tests {
         }
         node.children()
             .into_iter()
-            .find_map(|child| find_first_callable(child))
+            .find_map(find_first_callable)
     }
 
     #[test]
-    fn straight_line_implicit_value_is_complete() {
-        let callable = parse_first_callable("sub build { Foo->new; }");
-        let summary = CallableExitSummary::analyze(&callable).expect("callable summary");
+    fn straight_line_implicit_value_is_complete() -> TestResult {
+        let summary = summarize("sub build { Foo->new; }")?;
 
         assert_eq!(summary.completeness, CallableExitCompleteness::Complete);
         assert_eq!(summary.exits.len(), 1);
         assert_eq!(summary.exits[0].kind, CallableExitKind::ImplicitValue);
         assert!(summary.exits[0].value_range.is_some());
         assert!(summary.boundaries.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn top_level_return_makes_later_statements_unreachable() {
-        let callable = parse_first_callable("sub build { return 1; 'dead'; }");
-        let summary = CallableExitSummary::analyze(&callable).expect("callable summary");
+    fn top_level_return_makes_later_statements_unreachable() -> TestResult {
+        let summary = summarize("sub build { return 1; 'dead'; }")?;
 
         assert_eq!(summary.completeness, CallableExitCompleteness::Complete);
         assert_eq!(summary.exits.len(), 1);
         assert_eq!(summary.exits[0].kind, CallableExitKind::ExplicitValue);
         assert_eq!(summary.unreachable_tail_count, 1);
+        Ok(())
     }
 
     #[test]
-    fn nested_callable_returns_do_not_leak() {
-        let callable = parse_first_callable("sub outer { sub inner { return 1; } return 2; }");
-        let summary = CallableExitSummary::analyze(&callable).expect("callable summary");
+    fn nested_callable_returns_do_not_leak() -> TestResult {
+        let summary = summarize("sub outer { sub inner { return 1; } return 2; }")?;
 
         assert_eq!(summary.nested_callable_count, 1);
         assert_eq!(summary.exits.len(), 1);
         assert_eq!(summary.exits[0].kind, CallableExitKind::ExplicitValue);
+        Ok(())
     }
 
     #[test]
-    fn conditional_returns_are_retained_but_partial() {
-        let callable = parse_first_callable("sub choose { if ($flag) { return 1; } return 2; }");
-        let summary = CallableExitSummary::analyze(&callable).expect("callable summary");
+    fn conditional_returns_are_retained_but_partial() -> TestResult {
+        let summary = summarize("sub choose { if ($flag) { return 1; } return 2; }")?;
 
         assert_eq!(summary.completeness, CallableExitCompleteness::Partial);
         assert!(
@@ -473,21 +482,22 @@ mod tests {
                 .count(),
             2
         );
+        Ok(())
     }
 
     #[test]
-    fn empty_body_has_complete_implicit_void_exit() {
-        let callable = parse_first_callable("sub empty { }");
-        let summary = CallableExitSummary::analyze(&callable).expect("callable summary");
+    fn empty_body_has_complete_implicit_void_exit() -> TestResult {
+        let summary = summarize("sub empty { }")?;
 
         assert_eq!(summary.completeness, CallableExitCompleteness::Complete);
         assert_eq!(summary.exits.len(), 1);
         assert_eq!(summary.exits[0].kind, CallableExitKind::ImplicitVoid);
+        Ok(())
     }
 
     #[test]
-    fn traversal_budget_widens_instead_of_truncating_to_complete() {
-        let callable = parse_first_callable("sub build { my $x = Foo->new; $x->prepare; $x; }");
+    fn traversal_budget_widens_instead_of_truncating_to_complete() -> TestResult {
+        let callable = parse_first_callable("sub build { my $x = Foo->new; $x->prepare; $x; }")?;
         let summary = CallableExitSummary::analyze_with_budget(
             &callable,
             CallableExitBudget {
@@ -495,7 +505,7 @@ mod tests {
                 max_depth: 1,
             },
         )
-        .expect("callable summary");
+        .ok_or_else(|| "callable should produce a budgeted exit summary".to_string())?;
 
         assert_eq!(summary.completeness, CallableExitCompleteness::Partial);
         assert!(
@@ -509,5 +519,6 @@ mod tests {
                 .iter()
                 .any(|exit| exit.kind == CallableExitKind::ImplicitUnknown)
         );
+        Ok(())
     }
 }
