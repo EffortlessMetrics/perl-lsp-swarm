@@ -1,19 +1,18 @@
+//! Fixture-driven projection tests; localized expect calls keep setup readable.
+#![allow(clippy::expect_used)]
+
 #[path = "contributor_topology/support.rs"]
 mod support;
 
 use serde_json::{Value, json};
-use support::contributor_topology::{
-    ObservationStatus, PublicationStage, build_projection,
-};
+use support::contributor_topology::{ObservationStatus, PublicationStage, build_projection};
 use support::{captured_observation, fixture_root, write_observation};
 
 #[test]
 fn observation_repository_mismatch_fails() {
     let temp = fixture_root();
-    let value = captured_observation(&[(
-        "development_repository",
-        json!("EffortlessMetrics/perl-lsp"),
-    )]);
+    let value =
+        captured_observation(&[("development_repository", json!("EffortlessMetrics/perl-lsp"))]);
     let path = write_observation(temp.path(), "mismatch.json", &value);
     assert!(build_projection(temp.path(), Some(&path)).is_err());
 }
@@ -57,14 +56,8 @@ fn not_proven_can_retain_partial_observation_without_stage_claim() {
 fn channel_input_order_does_not_change_projection_digest() {
     let temp = fixture_root();
     let shared = [
-        (
-            "prepared_swarm_sha",
-            json!("cccccccccccccccccccccccccccccccccccccccc"),
-        ),
-        (
-            "publication_join_sha",
-            json!("dddddddddddddddddddddddddddddddddddddddd"),
-        ),
+        ("prepared_swarm_sha", json!("cccccccccccccccccccccccccccccccccccccccc")),
+        ("publication_join_sha", json!("dddddddddddddddddddddddddddddddddddddddd")),
         ("public_release_tag", json!("v0.18.0")),
     ];
     let mut first = captured_observation(&shared);
@@ -85,10 +78,7 @@ fn channel_input_order_does_not_change_projection_digest() {
         build_projection(temp.path(), Some(&first_path)).expect("first projection");
     let second_projection =
         build_projection(temp.path(), Some(&second_path)).expect("second projection");
-    assert_eq!(
-        first_projection.projection_digest,
-        second_projection.projection_digest
-    );
+    assert_eq!(first_projection.projection_digest, second_projection.projection_digest);
 }
 
 #[test]

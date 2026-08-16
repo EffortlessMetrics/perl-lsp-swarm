@@ -105,23 +105,14 @@ pub(super) fn load_static_topology(
 
 fn repository_branch(protocol: &str, repository: &str) -> Result<String> {
     let name = repository_name(repository)?;
-    let pattern = Regex::new(&format!(
-        r"(?m)^\|\s*`{}/([^`]+)`\s*\|\s*[^|]+\|\s*$",
-        regex::escape(name)
-    ))?;
+    let pattern =
+        Regex::new(&format!(r"(?m)^\|\s*`{}/([^`]+)`\s*\|\s*[^|]+\|\s*$", regex::escape(name)))?;
     let matches: Vec<String> = pattern
         .captures_iter(protocol)
-        .filter_map(|captures| {
-            captures
-                .get(1)
-                .map(|branch| branch.as_str().trim().to_string())
-        })
+        .filter_map(|captures| captures.get(1).map(|branch| branch.as_str().trim().to_string()))
         .collect();
     if matches.len() != 1 {
-        bail!(
-            "expected one authority row for {repository}; found {}",
-            matches.len()
-        );
+        bail!("expected one authority row for {repository}; found {}", matches.len());
     }
     let branch = &matches[0];
     if branch.is_empty() || branch.starts_with('-') || branch.chars().any(char::is_whitespace) {
@@ -132,7 +123,7 @@ fn repository_branch(protocol: &str, repository: &str) -> Result<String> {
 
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn validate_repository(repository: &str) -> Result<()> {
@@ -143,8 +134,7 @@ fn validate_repository(repository: &str) -> Result<()> {
         bail!("repository must be an owner/name slug: {repository:?}");
     }
     let valid = |part: &str| {
-        part.chars()
-            .all(|character| character.is_ascii_alphanumeric() || "_.-".contains(character))
+        part.chars().all(|character| character.is_ascii_alphanumeric() || "_.-".contains(character))
     };
     if !valid(owner) || !valid(name) {
         bail!("repository contains unsupported characters: {repository:?}");
@@ -154,8 +144,5 @@ fn validate_repository(repository: &str) -> Result<()> {
 
 fn repository_name(repository: &str) -> Result<&str> {
     validate_repository(repository)?;
-    repository
-        .split_once('/')
-        .map(|(_, name)| name)
-        .context("repository has no name")
+    repository.split_once('/').map(|(_, name)| name).context("repository has no name")
 }

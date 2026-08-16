@@ -1,6 +1,8 @@
-#![allow(dead_code)]
+#![allow(dead_code, clippy::expect_used)]
 
-#[allow(dead_code)]
+// Each test target exercises a different slice of the projection API, so the
+// re-exports in `mod.rs` are only partly used per target.
+#[allow(dead_code, unused_imports)]
 #[path = "../../src/bin/contributor_topology/mod.rs"]
 pub mod contributor_topology;
 
@@ -76,10 +78,7 @@ pub fn captured_observation(overrides: &[(&str, Value)]) -> Value {
 
 pub fn write_observation(root: &Path, name: &str, value: &Value) -> PathBuf {
     let path = root.join(name);
-    fs::write(
-        &path,
-        serde_json::to_string_pretty(value).expect("serialize observation"),
-    )
-    .expect("write observation");
+    fs::write(&path, serde_json::to_string_pretty(value).expect("serialize observation"))
+        .expect("write observation");
     path
 }

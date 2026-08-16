@@ -20,21 +20,12 @@ pub fn build_projection(root: &Path, observation_path: Option<&Path>) -> Result<
     let (static_topology, sources) = load_static_topology(root)?;
     let observation = load_observation(observation_path, &static_topology)?;
     let projection_digest = projection_digest(&static_topology, &observation, &sources)?;
-    Ok(Projection {
-        schema: SCHEMA,
-        static_topology,
-        observation,
-        sources,
-        projection_digest,
-    })
+    Ok(Projection { schema: SCHEMA, static_topology, observation, sources, projection_digest })
 }
 
 pub fn validate_projection(root: &Path, projection: &Projection) -> Result<()> {
     if projection.schema != SCHEMA {
-        bail!(
-            "unsupported contributor topology schema {}; expected {SCHEMA}",
-            projection.schema
-        );
+        bail!("unsupported contributor topology schema {}; expected {SCHEMA}", projection.schema);
     }
     let (static_topology, sources) = load_static_topology(root)?;
     if projection.static_topology != static_topology {
@@ -58,14 +49,8 @@ pub fn validate_projection(root: &Path, projection: &Projection) -> Result<()> {
 pub fn render_human(projection: &Projection) -> String {
     let static_topology = &projection.static_topology;
     let observation = &projection.observation;
-    let development_sha = observation
-        .development_sha
-        .as_deref()
-        .unwrap_or("NOT_PROVEN");
-    let publication_sha = observation
-        .publication_sha
-        .as_deref()
-        .unwrap_or("NOT_PROVEN");
+    let development_sha = observation.development_sha.as_deref().unwrap_or("NOT_PROVEN");
+    let publication_sha = observation.publication_sha.as_deref().unwrap_or("NOT_PROVEN");
     let mut lines = vec![
         format!("contributor-topology: {}", observation.status.as_str()),
         format!(
@@ -98,12 +83,7 @@ fn projection_digest(
     observation: &Observation,
     sources: &BTreeMap<String, SourceDigest>,
 ) -> Result<String> {
-    let body = ProjectionBody {
-        schema: SCHEMA,
-        static_topology,
-        observation,
-        sources,
-    };
+    let body = ProjectionBody { schema: SCHEMA, static_topology, observation, sources };
     let bytes = serde_json::to_vec(&body)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect())
 }

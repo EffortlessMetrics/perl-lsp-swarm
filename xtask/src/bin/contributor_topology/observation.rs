@@ -1,6 +1,4 @@
-use super::{
-    ChannelState, Observation, ObservationStatus, PublicationStage, StaticTopology,
-};
+use super::{ChannelState, Observation, ObservationStatus, PublicationStage, StaticTopology};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -47,8 +45,8 @@ pub(super) fn load_observation(
         });
     };
     let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let captured: CapturedObservation = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let captured: CapturedObservation =
+        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
     normalize_observation(captured, static_topology)
 }
 
@@ -66,19 +64,12 @@ fn normalize_observation(
     validate_sha(captured.development_sha.as_deref(), "development_sha")?;
     validate_sha(captured.publication_sha.as_deref(), "publication_sha")?;
     validate_sha(captured.prepared_swarm_sha.as_deref(), "prepared_swarm_sha")?;
-    validate_sha(
-        captured.publication_join_sha.as_deref(),
-        "publication_join_sha",
-    )?;
+    validate_sha(captured.publication_join_sha.as_deref(), "publication_join_sha")?;
 
     if captured.source.trim().is_empty() || captured.observed_at.trim().is_empty() {
         bail!("captured observation source and observed_at must be non-empty");
     }
-    if captured
-        .public_release_tag
-        .as_deref()
-        .is_some_and(|value| value.trim().is_empty())
-    {
+    if captured.public_release_tag.as_deref().is_some_and(|value| value.trim().is_empty()) {
         bail!("public_release_tag cannot be empty");
     }
 
@@ -92,11 +83,7 @@ fn normalize_observation(
             }
         }
         ObservationStatus::NotProven => {
-            if captured
-                .limitation
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty())
-            {
+            if captured.limitation.as_deref().is_none_or(|value| value.trim().is_empty()) {
                 bail!("NOT_PROVEN observation requires a limitation");
             }
         }
@@ -135,21 +122,12 @@ pub(super) fn validate_normalized_observation(observation: &Observation) -> Resu
     validate_sha(observation.development_sha.as_deref(), "development_sha")?;
     validate_sha(observation.publication_sha.as_deref(), "publication_sha")?;
     validate_sha(observation.prepared_swarm_sha.as_deref(), "prepared_swarm_sha")?;
-    validate_sha(
-        observation.publication_join_sha.as_deref(),
-        "publication_join_sha",
-    )?;
+    validate_sha(observation.publication_join_sha.as_deref(), "publication_join_sha")?;
 
     match observation.status {
         ObservationStatus::Proven => {
-            if observation
-                .source
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty())
-                || observation
-                    .observed_at
-                    .as_deref()
-                    .is_none_or(|value| value.trim().is_empty())
+            if observation.source.as_deref().is_none_or(|value| value.trim().is_empty())
+                || observation.observed_at.as_deref().is_none_or(|value| value.trim().is_empty())
             {
                 bail!("PROVEN observation requires source and observed_at");
             }
@@ -161,11 +139,7 @@ pub(super) fn validate_normalized_observation(observation: &Observation) -> Resu
             }
         }
         ObservationStatus::NotProven => {
-            if observation
-                .limitation
-                .as_deref()
-                .is_none_or(|value| value.trim().is_empty())
-            {
+            if observation.limitation.as_deref().is_none_or(|value| value.trim().is_empty()) {
                 bail!("NOT_PROVEN observation requires a limitation");
             }
             if observation.source.is_some() != observation.observed_at.is_some() {
@@ -173,11 +147,7 @@ pub(super) fn validate_normalized_observation(observation: &Observation) -> Resu
             }
         }
     }
-    if observation
-        .public_release_tag
-        .as_deref()
-        .is_some_and(|value| value.trim().is_empty())
-    {
+    if observation.public_release_tag.as_deref().is_some_and(|value| value.trim().is_empty()) {
         bail!("public_release_tag cannot be empty");
     }
     validate_publication_evidence(
@@ -225,25 +195,20 @@ fn validate_publication_evidence(
     if release_tag.is_some() && join_sha.is_none() {
         bail!("public release requires publication join SHA");
     }
-    if channels
-        .values()
-        .any(|state| *state == ChannelState::Available)
-        && release_tag.is_none()
-    {
+    if channels.values().any(|state| *state == ChannelState::Available) && release_tag.is_none() {
         bail!("AVAILABLE channel requires public release tag");
     }
     Ok(())
 }
 
 fn validate_sha(value: Option<&str>, label: &str) -> Result<()> {
-    if let Some(value) = value {
-        if value.len() != 40
-            || !value.chars().all(|character| {
-                character.is_ascii_hexdigit() && !character.is_ascii_uppercase()
-            })
-        {
-            bail!("{label} must be a full lowercase commit SHA");
-        }
+    if let Some(value) = value
+        && (value.len() != 40
+            || !value
+                .chars()
+                .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()))
+    {
+        bail!("{label} must be a full lowercase commit SHA");
     }
     Ok(())
 }

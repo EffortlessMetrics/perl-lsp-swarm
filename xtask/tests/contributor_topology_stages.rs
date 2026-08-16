@@ -1,3 +1,6 @@
+//! Fixture-driven projection tests; localized expect calls keep setup readable.
+#![allow(clippy::expect_used)]
+
 #[path = "contributor_topology/support.rs"]
 mod support;
 
@@ -49,21 +52,12 @@ fn prepared_candidate_is_distinct() {
 fn post_join_pre_release_is_distinct() {
     let temp = fixture_root();
     let value = captured_observation(&[
-        (
-            "prepared_swarm_sha",
-            json!("cccccccccccccccccccccccccccccccccccccccc"),
-        ),
-        (
-            "publication_join_sha",
-            json!("dddddddddddddddddddddddddddddddddddddddd"),
-        ),
+        ("prepared_swarm_sha", json!("cccccccccccccccccccccccccccccccccccccccc")),
+        ("publication_join_sha", json!("dddddddddddddddddddddddddddddddddddddddd")),
     ]);
     let path = write_observation(temp.path(), "joined.json", &value);
     let projection = build_projection(temp.path(), Some(&path)).expect("build projection");
-    assert_eq!(
-        projection.observation.stage,
-        PublicationStage::PostJoinPreRelease
-    );
+    assert_eq!(projection.observation.stage, PublicationStage::PostJoinPreRelease);
     assert!(projection.observation.public_release_tag.is_none());
 }
 
@@ -71,30 +65,15 @@ fn post_join_pre_release_is_distinct() {
 fn public_release_keeps_channel_state_separate() {
     let temp = fixture_root();
     let value = captured_observation(&[
-        (
-            "prepared_swarm_sha",
-            json!("cccccccccccccccccccccccccccccccccccccccc"),
-        ),
-        (
-            "publication_join_sha",
-            json!("dddddddddddddddddddddddddddddddddddddddd"),
-        ),
+        ("prepared_swarm_sha", json!("cccccccccccccccccccccccccccccccccccccccc")),
+        ("publication_join_sha", json!("dddddddddddddddddddddddddddddddddddddddd")),
         ("public_release_tag", json!("v0.18.0")),
-        (
-            "channels",
-            json!({"crates_io": "AVAILABLE", "open_vsx": "NOT_PROVEN"}),
-        ),
+        ("channels", json!({"crates_io": "AVAILABLE", "open_vsx": "NOT_PROVEN"})),
     ]);
     let path = write_observation(temp.path(), "released.json", &value);
     let projection = build_projection(temp.path(), Some(&path)).expect("build projection");
     assert_eq!(projection.observation.stage, PublicationStage::PublicRelease);
-    assert_eq!(
-        projection.observation.channels.get("crates_io"),
-        Some(&ChannelState::Available)
-    );
-    assert_eq!(
-        projection.observation.channels.get("open_vsx"),
-        Some(&ChannelState::NotProven)
-    );
+    assert_eq!(projection.observation.channels.get("crates_io"), Some(&ChannelState::Available));
+    assert_eq!(projection.observation.channels.get("open_vsx"), Some(&ChannelState::NotProven));
     assert!(render_human(&projection).contains("stage: public_release"));
 }
