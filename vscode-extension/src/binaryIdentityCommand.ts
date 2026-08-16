@@ -2,6 +2,8 @@ import {
   BINARY_IDENTITY_FEATURE_VERSION,
   BINARY_IDENTITY_METHOD,
   CANONICAL_EXTENSION_ID,
+  CANONICAL_EXTENSION_PACKAGE,
+  CANONICAL_EXTENSION_PUBLISHER,
   type BinaryIdentityRequestV1,
   type BinaryIdentityResponseV1,
 } from './binaryIdentityProtocol.generated';
@@ -39,8 +41,14 @@ function request(input: BinaryIdentityCommandInput): BinaryIdentityRequestV1 {
   return {
     feature_version: BINARY_IDENTITY_FEATURE_VERSION,
     expected_extension: {
+      publisher: CANONICAL_EXTENSION_PUBLISHER,
+      package_name: CANONICAL_EXTENSION_PACKAGE,
       id: CANONICAL_EXTENSION_ID,
       version: input.extensionVersion,
+      // The selected channel is the artifact role the server must agree with.
+      binary_artifact_role: input.selectedRole,
+      // The installed VSIX is the authority that produced this expectation.
+      authority_identity: `vsix:${input.extensionVersion}`,
       ...(input.extensionCandidate === undefined
         ? {}
         : { candidate_identity: input.extensionCandidate }),
