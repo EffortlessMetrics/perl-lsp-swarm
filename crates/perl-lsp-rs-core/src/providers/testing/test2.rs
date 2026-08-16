@@ -259,6 +259,20 @@ pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
     Some(group)
 }
 
+/// The reviewed export-plus-export-ok set for a known Test2 module.
+///
+/// Most currently modeled modules use the same reviewed set for defaults and
+/// `:ALL`. `Test2::Tools::Compare` is the important exception: standalone
+/// default imports are only `is`/`like`, while the already-reviewed `COMPARE`
+/// table records its complete known menu. Unknown/custom modules remain
+/// `None` rather than receiving invented names.
+fn module_all_exports(module: &str) -> Option<&'static [&'static str]> {
+    match module {
+        "Test2::Tools::Compare" => Some(COMPARE),
+        _ => module_default_exports(module),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Import resolution.
 // ---------------------------------------------------------------------------
@@ -325,6 +339,8 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         && (args_contains_option(raw_args, "import") || v1_short_flag(raw_args, 'i'));
     let default_set =
         if v1_import_all { Some(V0_DEFAULT.as_slice()) } else { module_default_exports(module) };
+    let all_set =
+        if v1_import_all { Some(V0_DEFAULT.as_slice()) } else { module_all_exports(module) };
 
     // Pragma resolution (bundles only). Most bundles (`Test2::V0`, `Test2::Suite`,
     // `Test2::Bundle::*`) enable strict/warnings by default and opt OUT via
@@ -414,28 +430,36 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
 
     let rename_aliases: Vec<String> = renames.iter().map(|(_, alias)| alias.clone()).collect();
 
-    // Decide the base set. An explicit selection (positive names, renames, or
-    // `:ALL`) replaces the default unless `:DEFAULT` is also present.
-    let has_explicit = !positives.is_empty() || !renames.is_empty() || include_all_tag;
-    let use_default = !has_explicit || include_default_tag;
+    // Decide the base set. Explicit local-name selections replace the default
+    // unless a tag requests a reviewed set as well. Importer supplies automatic
+    // `:DEFAULT` and `:ALL` tags; asking for `:ALL` must not suppress every
+    // known import merely because the tag itself is explicit.
+    let has_local_selection = !positives.is_empty() || !renames.is_empty();
+    let use_default = !has_local_selection || include_default_tag || include_all_tag;
+    let requested_base_set = if include_all_tag { all_set } else { default_set };
 
-    // `:ALL` is handled via `use_default` above: we do not enumerate EXPORT_OK,
-    // so the default set is our best-effort superset for known bundles.
-    let mut symbols: BTreeSet<String> = BTreeSet::new();
-    if use_default && let Some(defaults) = default_set {
-        for &sym in defaults {
-            symbols.insert(sym.to_string());
-        }
-    }
+    let base_symbols: BTreeSet<String> = if use_default {
+        requested_base_set
+            .into_iter()
+            .flat_map(|symbols| symbols.iter().copied())
+            .map(str::to_string)
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let mut symbols = base_symbols.clone();
     for name in &positives {
         symbols.insert(name.clone());
     }
     for alias in &rename_aliases {
         symbols.insert(alias.clone());
     }
-    // Renamed originals are not imported under their original name.
+    // A rename replaces the original only when that original was not also
+    // requested independently by a tag or a positive import entry. Importer
+    // expands `:DEFAULT`/`:ALL` into their own entries before applying the
+    // renamed entry, so both local names remain installed in that composition.
     for (orig, _) in &renames {
-        if !positives.iter().any(|p| p == orig) {
+        if !positives.iter().any(|positive| positive == orig) && !base_symbols.contains(orig) {
             symbols.remove(orig);
         }
     }
