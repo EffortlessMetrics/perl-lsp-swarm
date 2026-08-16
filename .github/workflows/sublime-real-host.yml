@@ -93,10 +93,15 @@ jobs:
             LSP:sublimelsp/LSP@${{ env.PERLLSP_LSP_TAG }}
 
       - name: Run the real Sublime interoperability journey
-        uses: SublimeText/UnitTesting/actions/run-tests@b8abedefd5fbc0f64a8c6082506ebd1e24203164
-        with:
-          package-name: LSP-perllsp
-          coverage: false
+        # The upstream run-tests action waits 30 s per attempt and restarts
+        # Sublime three times; this package's deferred host journey legitimately
+        # needs minutes (cold Sublime + pinned LSP load + current-source server
+        # spawn + LSP round trips, each condition bounded by condition_timeout
+        # in unittesting.json).  The self-owned runner keeps the upstream
+        # schedule mechanics but polls once with an honest wall and dumps the
+        # recorded Sublime log on failure.
+        run: python scripts/sublime/run_unit_tests.py LSP-perllsp
+        shell: bash
 
       - name: Reject an orphaned perllsp process
         if: runner.os != 'Windows'

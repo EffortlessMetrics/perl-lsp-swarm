@@ -1243,3 +1243,16 @@ covered_by = [
 ]
 created = "2026-08-14"
 review_after = "2026-11-14"
+
+[[allow]]
+id = "non-rust-sublime-unittesting-runner"
+path = "scripts/sublime/run_unit_tests.py"
+kind = "ci_tooling"
+language = "python"
+surface = "ci"
+classification = "test_infrastructure"
+owner = "editor-clients"
+reason = "Self-owned Sublime UnitTesting runner with an honest wall clock for the LSP-perllsp deferred host journey (#7694); the upstream action's 30 s x3 restart loop aborts a progressing suite."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest"]
+created = "2026-08-16"
+review_after = "2026-09-16"
