@@ -67,7 +67,6 @@ jobs:
             target/receipts/workflow-trigger-lint.json
             target/receipts/action-pin-provenance.json
           if-no-files-found: warn
-          if-no-files-found: warn
 
       - name: Summary
         if: always()
