@@ -30,14 +30,16 @@ fn ptkdb_docs_separate_bootstrap_host_protocol_and_live_partner_proof()
     let decisions = read("docs/reference/EXTERNAL_DEBUGGER_PEER_DECISIONS.md")?;
     assert!(decisions.contains("stock ptkdb live compatibility  not proven"));
     assert!(decisions.contains("A session starts with `none`"));
-    assert!(decisions.contains("The Microsoft DAP implementor listing names `perl-dap`, not ptkdb"));
+    assert!(
+        decisions.contains("The Microsoft DAP implementor listing names `perl-dap`, not ptkdb")
+    );
 
     Ok(())
 }
 
 #[test]
-fn ptkdb_docs_do_not_reintroduce_optimistic_v1_defaults()
--> Result<(), Box<dyn std::error::Error>> {
+fn ptkdb_docs_do_not_reintroduce_optimistic_v1_defaults() -> Result<(), Box<dyn std::error::Error>>
+{
     for path in [
         "docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md",
         "docs/reference/PTKDB_PEER_INTEGRATION_TARGET.md",
@@ -61,8 +63,7 @@ fn ptkdb_docs_do_not_reintroduce_optimistic_v1_defaults()
 }
 
 #[test]
-fn vscode_keeps_native_as_the_default_debugger_backend()
--> Result<(), Box<dyn std::error::Error>> {
+fn vscode_keeps_native_as_the_default_debugger_backend() -> Result<(), Box<dyn std::error::Error>> {
     let manifest = read("vscode-extension/package.json")?;
     assert!(manifest.contains("debuggerBackend"));
     assert!(manifest.contains("\"default\": \"native\""));
