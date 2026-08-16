@@ -10,12 +10,15 @@ use regex::Regex;
 
 use super::run_cmd_merged;
 
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static ANSI_ESCAPE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").expect("ANSI escape regex is valid"));
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static RUNNING_TEST_BINARY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"Running unittests[^\(]*\([^\)]*deps[/\\]([a-zA-Z0-9_-]+)-[0-9a-f]+(?:\.exe)?\)")
         .expect("running-test regex is valid")
 });
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static TEST_LIST_LINE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r":\s*test\s*$").expect("test-list-line regex is valid"));
 
