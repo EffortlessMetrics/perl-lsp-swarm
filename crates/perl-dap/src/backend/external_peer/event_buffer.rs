@@ -101,6 +101,14 @@ impl PeerEventBuffer {
             truncate_utf8(output, MAX_SINGLE_OUTPUT_BYTES);
             let removed = original_len.saturating_sub(output.len());
             if removed > 0 {
+                // `String::truncate` keeps the original allocation, and
+                // `estimated_event_bytes` accounts capacity because that is the
+                // memory actually retained. Without releasing the tail here, a
+                // legal multi-megabyte frame (the framer admits up to
+                // `MAX_FRAME_SIZE`) would still be charged its untruncated size
+                // and rejected as oversized — so the per-chunk limit would drop
+                // exactly the output it exists to preserve.
+                output.shrink_to_fit();
                 self.dropped_output_bytes = self.dropped_output_bytes.saturating_add(removed);
                 degraded = true;
             }
@@ -543,5 +551,29 @@ mod tests {
         let drained = buffer.drain();
         assert_eq!(drained.len(), 1);
         assert!(matches!(drained[0], DebugEvent::Terminated { .. }));
+    }
+
+    #[test]
+    fn oversized_single_output_chunk_is_retained_truncated_not_dropped() {
+        // The framer admits frames up to `MAX_FRAME_SIZE` (16 MiB), so a single
+        // legal output frame can exceed the whole 1 MiB retention envelope. The
+        // per-chunk limit exists to keep such a chunk *visible* at 64 KiB. This
+        // fails if truncation leaves the original allocation in place, because
+        // capacity-based accounting then rejects the chunk as oversized and the
+        // user sees no output at all.
+        let mut buffer = PeerEventBuffer::default();
+        let outcome = buffer.push(output(2 * 1024 * 1024));
+        assert!(!matches!(outcome, PushOutcome::ResourceLimit(_)));
+        let drained = buffer.drain();
+        let retained: usize = drained
+            .iter()
+            .filter_map(|e| match e {
+                DebugEvent::Output { output, .. } if !output.starts_with("[perl-dap]") => {
+                    Some(output.len())
+                }
+                _ => None,
+            })
+            .sum();
+        assert_eq!(retained, MAX_SINGLE_OUTPUT_BYTES, "large chunk must be retained truncated");
     }
 }
