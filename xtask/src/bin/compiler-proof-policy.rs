@@ -973,19 +973,64 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn composition_coverage_contract_is_canonical() -> Result<()> {
+    /// Mutate exactly one field of the committed `composition_coverage` class and
+    /// return the resulting validation error.
+    ///
+    /// One field at a time is the point: a mutation that flips authority, stages,
+    /// circularity, and missing-effect together passes as soon as *any* one of the
+    /// four is guarded, which is precisely the gap that let compiler-generated
+    /// output stand as its own composition proof.
+    fn composition_mutation_error(mutate: impl FnOnce(&mut ProofClass)) -> Result<String> {
         let mut policy = ProofPolicy::from_str(POLICY)?;
         let composition = policy
             .proof_classes
             .iter_mut()
             .find(|proof_class| proof_class.class_id == "composition_coverage")
             .ok_or_else(|| anyhow!("committed policy has no composition class"))?;
-        composition.authority = Authority::CompilerSnapshot;
-        composition.circular_output_allowed = true;
-        composition.claim_stages = vec![ClaimStage::Provider];
-        composition.missing_effect = MissingEffect::BlocksStage;
-        assert!(policy.validate(&concepts()?).is_err());
+        mutate(composition);
+        Ok(policy
+            .validate(&concepts()?)
+            .expect_err("composition_coverage mutation must fail closed")
+            .to_string())
+    }
+
+    #[test]
+    fn composition_coverage_authority_mutation_fails_closed() -> Result<()> {
+        let error = composition_mutation_error(|class| {
+            class.authority = Authority::CompilerSnapshot;
+        })?;
+        assert!(error.contains("composition_coverage"), "unexpected error: {error}");
+        assert!(error.contains("authority"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn composition_coverage_circular_output_mutation_fails_closed() -> Result<()> {
+        let error = composition_mutation_error(|class| {
+            class.circular_output_allowed = true;
+        })?;
+        assert!(error.contains("composition_coverage"), "unexpected error: {error}");
+        assert!(error.contains("circular"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn composition_coverage_stage_mutation_fails_closed() -> Result<()> {
+        let error = composition_mutation_error(|class| {
+            class.claim_stages = vec![ClaimStage::Provider];
+        })?;
+        assert!(error.contains("composition_coverage"), "unexpected error: {error}");
+        assert!(error.contains("claim stages"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn composition_coverage_missing_effect_mutation_fails_closed() -> Result<()> {
+        let error = composition_mutation_error(|class| {
+            class.missing_effect = MissingEffect::BlocksStage;
+        })?;
+        assert!(error.contains("composition_coverage"), "unexpected error: {error}");
+        assert!(error.contains("missing effect"), "unexpected error: {error}");
         Ok(())
     }
 
