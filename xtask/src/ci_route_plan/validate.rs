@@ -1,10 +1,11 @@
-use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
 use super::{
-    Applicability, CI_ROUTE_PLAN_PRODUCER, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1, PlannedOutcome,
-    RoutePlanRow, RoutePlanSummary, RouteSelectionEvidence, RouteSubjectRef,
+    Applicability, CI_ROUTE_PLAN_PRODUCER, CI_ROUTE_PLAN_SCHEMA, CiRoutePlanV1,
+    PlannedOutcome, RoutePlanRow, RoutePlanSummary, RouteSelectionEvidence, RouteSubjectRef,
 };
 
 #[derive(Serialize)]
@@ -20,7 +21,8 @@ struct SemanticPlan<'a> {
 }
 
 pub(super) fn normalize(plan: &mut CiRoutePlanV1) -> Result<(), String> {
-    plan.rows.sort_by(|left, right| left.gate_id.cmp(&right.gate_id));
+    plan.rows
+        .sort_by(|left, right| left.gate_id.cmp(&right.gate_id));
     plan.summary = summarize(&plan.rows)?;
     plan.semantic_fingerprint = semantic_fingerprint(plan)?;
     validate(plan)
@@ -31,7 +33,10 @@ pub(super) fn validate(plan: &CiRoutePlanV1) -> Result<(), String> {
         return Err(format!("unsupported route-plan schema {:?}", plan.schema));
     }
     if plan.producer != CI_ROUTE_PLAN_PRODUCER {
-        return Err(format!("unsupported route-plan producer {:?}", plan.producer));
+        return Err(format!(
+            "unsupported route-plan producer {:?}",
+            plan.producer
+        ));
     }
     validate_subject(&plan.subject)?;
     validate_nonempty("profile", &plan.profile)?;
@@ -89,7 +94,10 @@ fn summarize(rows: &[RoutePlanRow]) -> Result<RoutePlanSummary, String> {
         ..RoutePlanSummary::default()
     };
     for row in rows {
-        *summary.by_policy_role.entry(row.policy_role).or_default() += 1;
+        *summary
+            .by_policy_role
+            .entry(row.policy_role)
+            .or_default() += 1;
         match &row.outcome {
             PlannedOutcome::Run { .. } => summary.run += 1,
             PlannedOutcome::ScopedNoop { .. } => summary.scoped_noop += 1,
@@ -105,57 +113,59 @@ fn summarize(rows: &[RoutePlanRow]) -> Result<RoutePlanSummary, String> {
 }
 
 fn validate_row(row: &RoutePlanRow) -> Result<(), String> {
-    match (&row.applicability, &row.outcome) {
-        (
-            Applicability::Applicable,
-            PlannedOutcome::Run {
-                command,
-                timeout_seconds,
-                reason,
-            },
-        ) => {
+    match &row.outcome {
+        PlannedOutcome::Run {
+            command,
+            timeout_seconds,
+            reason,
+        } => {
+            require_applicability(row, Applicability::Applicable)?;
             validate_nonempty("run command", command)?;
             validate_nonempty("run reason", reason)?;
             if *timeout_seconds == 0 {
                 return Err(format!("run gate {:?} has zero timeout", row.gate_id));
             }
         }
-        (
-            Applicability::NotApplicable,
-            PlannedOutcome::ScopedNoop {
-                reason,
-                selector_digest,
-            },
-        ) => {
+        PlannedOutcome::ScopedNoop {
+            reason,
+            selector_digest,
+        } => {
+            require_applicability(row, Applicability::NotApplicable)?;
             validate_nonempty("scoped-noop reason", reason)?;
             validate_digest("selector_digest", selector_digest)?;
         }
-        (
-            Applicability::Applicable,
-            PlannedOutcome::Quarantined {
-                reason,
-                owner_issue,
-                review_after,
-            },
-        ) => {
+        PlannedOutcome::Quarantined {
+            reason,
+            owner_issue,
+            review_after,
+        } => {
+            require_applicability(row, Applicability::Applicable)?;
             validate_nonempty("quarantine reason", reason)?;
             if *owner_issue == 0 {
-                return Err(format!("quarantined gate {:?} has no owner", row.gate_id));
+                return Err(format!(
+                    "quarantined gate {:?} has no owner",
+                    row.gate_id
+                ));
             }
             if let Some(review_after) = review_after {
                 validate_nonempty("quarantine review_after", review_after)?;
             }
         }
-        (Applicability::Unknown, PlannedOutcome::Error { code, message }) => {
+        PlannedOutcome::Error { code, message } => {
+            require_applicability(row, Applicability::Unknown)?;
             validate_reason_token("error code", code)?;
             validate_nonempty("error message", message)?;
         }
-        _ => {
-            return Err(format!(
-                "gate {:?} has contradictory applicability/outcome",
-                row.gate_id
-            ));
-        }
+    }
+    Ok(())
+}
+
+fn require_applicability(row: &RoutePlanRow, expected: Applicability) -> Result<(), String> {
+    if row.applicability != expected {
+        return Err(format!(
+            "gate {:?} has contradictory applicability/outcome",
+            row.gate_id
+        ));
     }
     Ok(())
 }
@@ -172,13 +182,13 @@ pub(super) fn validate_subject(subject: &RouteSubjectRef) -> Result<(), String> 
 fn validate_selection(selection: &RouteSelectionEvidence) -> Result<(), String> {
     validate_nonempty("selection base", &selection.base)?;
     validate_digest("selection selector_digest", &selection.selector_digest)?;
-    if selection.fallback_used
-        && selection.fallback_reason.as_deref().unwrap_or("").trim().is_empty()
-    {
-        return Err("fallback_used requires fallback_reason".to_string());
-    }
-    if !selection.fallback_used && selection.fallback_reason.is_some() {
-        return Err("fallback_reason is present while fallback_used is false".to_string());
+    match (selection.fallback_used, &selection.fallback_reason) {
+        (true, Some(reason)) => validate_nonempty("fallback_reason", reason)?,
+        (true, None) => return Err("fallback_used requires fallback_reason".to_string()),
+        (false, Some(_)) => {
+            return Err("fallback_reason is present while fallback_used is false".to_string());
+        }
+        (false, None) => {}
     }
     if selection.package_args.iter().any(|arg| arg.is_empty()) {
         return Err("selection package_args contain an empty argument".to_string());
@@ -211,13 +221,7 @@ fn is_sorted_unique(values: &[String]) -> bool {
 }
 
 pub(super) fn validate_gate_id(value: &str) -> Result<(), String> {
-    if value.is_empty()
-        || !value.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'_' | b'.' | b'-')
-        })
-    {
+    if value.is_empty() || !value.bytes().all(valid_gate_byte) {
         return Err(format!(
             "gate identity must match ^[a-z0-9_.-]+$: {value:?}"
         ));
@@ -225,17 +229,21 @@ pub(super) fn validate_gate_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn valid_gate_byte(byte: u8) -> bool {
+    byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'.' | b'-')
+}
+
 pub(super) fn validate_reason_token(subject: &str, value: &str) -> Result<(), String> {
-    if value.is_empty()
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-    {
+    if value.is_empty() || !value.bytes().all(valid_reason_byte) {
         return Err(format!(
             "{subject} must match ^[a-z0-9_]+$: {value:?}"
         ));
     }
     Ok(())
+}
+
+fn valid_reason_byte(byte: u8) -> bool {
+    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
 }
 
 pub(super) fn validate_nonempty(subject: &str, value: &str) -> Result<(), String> {
@@ -254,7 +262,9 @@ pub(super) fn validate_sha(subject: &str, value: &str) -> Result<(), String> {
 
 pub(super) fn validate_digest(subject: &str, value: &str) -> Result<(), String> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("{subject} must be a 64-character hexadecimal digest"));
+        return Err(format!(
+            "{subject} must be a 64-character hexadecimal digest"
+        ));
     }
     Ok(())
 }
