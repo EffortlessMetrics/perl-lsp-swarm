@@ -1,5 +1,12 @@
 {
   "schema": 1,
+  "policy": {
+    "source": {
+      "types": [],
+      "noUncheckedSideEffectImports": true,
+      "libReplacement": false
+    }
+  },
   "configs": [
     {
       "path": "tsconfig.json",
