@@ -1,8 +1,8 @@
 # Historical DAP 0.9 Shim Design — Superseded
 
-**Status**: Historical record; not product architecture  
-**Original design date**: 2025-10-04  
-**Superseded by**: native `perl-dap` architecture and `docs/reference/NATIVE_STACK_POLICY.md`
+- **Status**: Historical record; not product architecture
+- **Original design date**: 2025-10-04
+- **Superseded by**: native `perl-dap` architecture and `docs/reference/NATIVE_STACK_POLICY.md`
 
 The original DAP greenfield plan proposed two transitional/runtime components:
 

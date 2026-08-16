@@ -1,9 +1,9 @@
 # DAP Crate Architecture
 <!-- Labels: architecture:dap, crate:perl-dap, integration:native -->
 
-**Status**: Current product architecture  
-**Release line**: v0.18 candidate  
-**Updated**: 2026-08-12
+- **Status**: Current product architecture
+- **Release line**: v0.18 candidate
+- **Updated**: 2026-08-12
 
 This document replaces the 0.9-era greenfield design that proposed a bundled
 `Devel::TSPerlDAP` runtime shim and a bridge-first migration path. That design is
