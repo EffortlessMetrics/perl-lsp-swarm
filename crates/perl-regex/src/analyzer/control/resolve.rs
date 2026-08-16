@@ -257,3 +257,264 @@ pub(super) fn diagnostic_for_resolution(
         | PatternControlResolution::StructuralUnknown { .. } => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analyzer::{
+        CaptureLanguageProfile, EffectiveModifiers, FeatureState, PerlVersion,
+        RegexLanguageProfile, capture::analyze_captures,
+    };
+
+    fn captures_of(pattern: &str) -> CaptureAnalysis {
+        let profile = CaptureLanguageProfile::new(
+            RegexLanguageProfile::new(Some(PerlVersion::new(5, 44)), FeatureState::Disabled),
+            FeatureState::Enabled,
+        );
+        analyze_captures(pattern, EffectiveModifiers::default(), profile)
+    }
+
+    fn at(pattern: &str, needle: &str) -> RegexRange {
+        let start = pattern.find(needle).expect("needle present in pattern");
+        RegexRange { start, end: start + needle.len() }
+    }
+
+    fn resolved_indexes(resolution: &PatternControlResolution) -> Vec<usize> {
+        match resolution {
+            PatternControlResolution::Resolved { targets } => {
+                targets.iter().map(|id| id.index()).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn no_request_is_not_applicable_rather_than_unresolved() {
+        // `\K` and friends carry no operand; "nothing to resolve" and "resolved to
+        // nothing" are different answers and must not be conflated.
+        let resolution = resolve_request(
+            "abc",
+            &captures_of("abc"),
+            &ResolutionRequest::None,
+            RegexRange { start: 0, end: 1 },
+            &[],
+            &[],
+        );
+        assert_eq!(resolution, PatternControlResolution::NotApplicable);
+    }
+
+    #[test]
+    fn a_numeric_request_resolves_to_the_declaration_with_that_number() {
+        let pattern = r"(a)(b)\2";
+        let resolution = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Number { number: 2, ambiguous_plain_escape: false },
+            at(pattern, r"\2"),
+            &[],
+            &[],
+        );
+        assert_eq!(resolved_indexes(&resolution), vec![1]);
+    }
+
+    #[test]
+    fn a_named_request_keeps_every_duplicate_declaration() {
+        // Perl permits duplicate names; selecting one arbitrarily would invent a fact.
+        let pattern = r"(?<x>a)(?<x>b)\k<x>";
+        let resolution = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Name("x".to_string()),
+            at(pattern, r"\k<x>"),
+            &[],
+            &[],
+        );
+        assert_eq!(resolved_indexes(&resolution), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_missing_target_is_unresolved_with_the_matching_reason() {
+        let pattern = r"(a)\9";
+        let missing_number = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Number { number: 9, ambiguous_plain_escape: false },
+            at(pattern, r"\9"),
+            &[],
+            &[],
+        );
+        assert_eq!(
+            missing_number,
+            PatternControlResolution::Unresolved(
+                PatternControlUnresolvedReason::MissingCaptureNumber
+            )
+        );
+
+        let named = r"(a)\k<nope>";
+        let missing_name = resolve_request(
+            named,
+            &captures_of(named),
+            &ResolutionRequest::Name("nope".to_string()),
+            at(named, r"\k<nope>"),
+            &[],
+            &[],
+        );
+        assert_eq!(
+            missing_name,
+            PatternControlResolution::Unresolved(
+                PatternControlUnresolvedReason::MissingCaptureName
+            )
+        );
+    }
+
+    #[test]
+    fn dynamic_and_structural_positions_fail_a_missing_target_closed() {
+        // With runtime or malformed text in play, a missing declaration is not evidence
+        // that the capture does not exist, so it must not become a hard error.
+        let pattern = r"(a)\9";
+        let dynamic = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Number { number: 9, ambiguous_plain_escape: false },
+            at(pattern, r"\9"),
+            &[0],
+            &[],
+        );
+        assert!(matches!(dynamic, PatternControlResolution::DynamicUnknown { .. }));
+
+        let structural = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Number { number: 9, ambiguous_plain_escape: false },
+            at(pattern, r"\9"),
+            &[],
+            &[0],
+        );
+        assert!(matches!(structural, PatternControlResolution::StructuralUnknown { .. }));
+    }
+
+    #[test]
+    fn an_ambiguous_plain_escape_only_accepts_targets_declared_before_it() {
+        // `\12` could be capture 12 or capture 1 followed by a literal `2`. A target
+        // that opens after the escape cannot be the one meant, so it is dropped, and
+        // the ambiguity is reported rather than guessed.
+        let pattern = r"\1(a)";
+        let resolution = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Number { number: 1, ambiguous_plain_escape: true },
+            at(pattern, r"\1"),
+            &[],
+            &[],
+        );
+        assert_eq!(
+            resolution,
+            PatternControlResolution::Unresolved(
+                PatternControlUnresolvedReason::AmbiguousNumericEscape
+            )
+        );
+    }
+
+    #[test]
+    fn relative_numbering_counts_from_the_highest_preceding_capture_number() {
+        // This pins the `next_number` computation: with two captures open before the
+        // reference, `(?-1)` must select the second, not the first. Taking the count
+        // instead of the maximum, or the first instead of the last, both break here.
+        let pattern = "(a)(b)(?-1)";
+        let back_one = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Relative(-1),
+            at(pattern, "(?-1)"),
+            &[],
+            &[],
+        );
+        assert_eq!(resolved_indexes(&back_one), vec![1]);
+
+        let back_two = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Relative(-2),
+            at(pattern, "(?-1)"),
+            &[],
+            &[],
+        );
+        assert_eq!(resolved_indexes(&back_two), vec![0]);
+    }
+
+    #[test]
+    fn a_forward_relative_reference_resolves_to_a_later_capture() {
+        let pattern = "(?+1)(a)";
+        let resolution = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Relative(1),
+            at(pattern, "(?+1)"),
+            &[],
+            &[],
+        );
+        assert_eq!(resolved_indexes(&resolution), vec![0]);
+    }
+
+    #[test]
+    fn a_relative_reference_past_either_end_stays_unresolved() {
+        let pattern = "(a)(?-9)";
+        let resolution = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Relative(-9),
+            at(pattern, "(?-9)"),
+            &[],
+            &[],
+        );
+        assert_eq!(
+            resolution,
+            PatternControlResolution::Unresolved(
+                PatternControlUnresolvedReason::MissingCaptureNumber
+            )
+        );
+    }
+
+    #[test]
+    fn earlier_dynamic_text_makes_relative_numbering_unknown() {
+        // Interpolated text before the reference can open its own groups, so the
+        // relative count is no longer knowable from this source.
+        let pattern = "(a)(?-1)";
+        let resolution = resolve_request(
+            pattern,
+            &captures_of(pattern),
+            &ResolutionRequest::Relative(-1),
+            at(pattern, "(?-1)"),
+            &[0],
+            &[],
+        );
+        assert!(matches!(resolution, PatternControlResolution::DynamicUnknown { .. }));
+    }
+
+    #[test]
+    fn diagnostics_are_emitted_only_for_resolutions_that_need_repair() {
+        assert_eq!(
+            diagnostic_for_resolution(&PatternControlResolution::Resolved { targets: Vec::new() }),
+            None
+        );
+        assert_eq!(diagnostic_for_resolution(&PatternControlResolution::NotApplicable), None);
+        assert_eq!(
+            diagnostic_for_resolution(&PatternControlResolution::Unresolved(
+                PatternControlUnresolvedReason::MissingCaptureName
+            )),
+            Some(PatternControlDiagnosticCode::UnresolvedReference)
+        );
+        assert_eq!(
+            diagnostic_for_resolution(&PatternControlResolution::Unresolved(
+                PatternControlUnresolvedReason::InvalidOperand
+            )),
+            Some(PatternControlDiagnosticCode::InvalidReference)
+        );
+        assert_eq!(
+            diagnostic_for_resolution(&PatternControlResolution::Unresolved(
+                PatternControlUnresolvedReason::ProfileIncompatible
+            )),
+            Some(PatternControlDiagnosticCode::ProfileIncompatibleReference)
+        );
+    }
+}

@@ -329,3 +329,162 @@ pub(super) fn unsupported_control(pattern: &str, range: RegexRange, fallback: &s
         diagnostic: Some(PatternControlDiagnosticCode::UnsupportedControl),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn control(pattern: &str) -> RawControl {
+        parse_special_group_control(pattern, 0).expect("special group control")
+    }
+
+    #[test]
+    fn only_question_mark_groups_are_special_group_controls() {
+        // The dispatcher offers every `(`; plain and star groups belong elsewhere.
+        assert!(parse_special_group_control("(abc)", 0).is_none());
+        assert!(parse_special_group_control("(*ACCEPT)", 0).is_none());
+        // An out-of-range or non-boundary start yields no fact rather than panicking.
+        assert!(parse_special_group_control("(?R)", 99).is_none());
+    }
+
+    #[test]
+    fn both_whole_pattern_recursion_spellings_agree() {
+        // `(?R)` and `(?0)` are the same control; they must not diverge.
+        for pattern in ["(?R)", "(?0)"] {
+            let fact = control(pattern);
+            assert_eq!(fact.kind, PatternControlKind::WholePatternRecursion, "{pattern}");
+            assert_eq!(fact.effect, PatternControlEffect::SubpatternCall, "{pattern}");
+            assert_eq!((fact.range.start, fact.range.end), (0, 4), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn parenthesized_named_forms_split_reads_from_calls() {
+        // `(?P=x)` reads a capture; `(?P>x)` and `(?&x)` call a subpattern. Publishing a
+        // call as a capture read would misreport what the construct does.
+        let read = control("(?P=x)");
+        assert!(matches!(read.kind, PatternControlKind::NamedBackreference { .. }));
+        assert_eq!(read.effect, PatternControlEffect::CaptureRead);
+
+        for pattern in ["(?P>x)", "(?&x)"] {
+            let call = control(pattern);
+            assert!(
+                matches!(call.kind, PatternControlKind::NamedSubpatternCall { .. }),
+                "{pattern}"
+            );
+            assert_eq!(call.effect, PatternControlEffect::SubpatternCall, "{pattern}");
+        }
+    }
+
+    #[test]
+    fn an_empty_named_operand_is_invalid_rather_than_an_empty_name() {
+        let fact = control("(?&)");
+        assert!(matches!(fact.kind, PatternControlKind::Unsupported { .. }));
+        assert_eq!(fact.diagnostic, Some(PatternControlDiagnosticCode::InvalidReference));
+    }
+
+    #[test]
+    fn numeric_subpattern_calls_separate_absolute_from_relative() {
+        assert!(matches!(
+            control("(?1)").kind,
+            PatternControlKind::NumberedSubpatternCall { number: 1 }
+        ));
+        assert!(matches!(
+            control("(?+1)").kind,
+            PatternControlKind::RelativeSubpatternCall { offset: 1 }
+        ));
+        assert!(matches!(
+            control("(?-1)").kind,
+            PatternControlKind::RelativeSubpatternCall { offset: -1 }
+        ));
+        // `(?0)` is whole-pattern recursion, not a call to capture zero.
+        assert_eq!(control("(?0)").kind, PatternControlKind::WholePatternRecursion);
+    }
+
+    #[test]
+    fn an_unclosed_numeric_operand_does_not_become_a_call() {
+        let fact = control("(?12");
+        assert!(matches!(fact.kind, PatternControlKind::Unsupported { .. }));
+    }
+
+    #[test]
+    fn conditionals_distinguish_capture_number_name_and_recursion() {
+        assert!(matches!(
+            control("(?(1)yes|no)").kind,
+            PatternControlKind::CaptureConditionalNumber { number: 1 }
+        ));
+        assert!(matches!(
+            control("(?(<x>)yes|no)").kind,
+            PatternControlKind::CaptureConditionalName { .. }
+        ));
+        for pattern in ["(?(R)yes|no)", "(?(R1)yes|no)", "(?(R&x)yes|no)"] {
+            assert_eq!(
+                control(pattern).kind,
+                PatternControlKind::RecursionConditional,
+                "{pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn assertion_predicates_are_unsupported_not_malformed() {
+        // Perl accepts these; they are unmodelled input, and the two must stay
+        // distinguishable so a reader is not told their pattern is misspelled.
+        for pattern in ["(?(?=x)y|n)", "(?(?!x)y|n)", "(?(?<=x)y|n)", "(?(?<!x)y|n)"] {
+            let fact = parse_special_group_control(pattern, 0).expect("conditional fact");
+            assert_eq!(
+                fact.diagnostic,
+                Some(PatternControlDiagnosticCode::UnsupportedControl),
+                "{pattern}"
+            );
+        }
+        // A predicate that is not an assertion stays an invalid-reference report.
+        let fact = control("(?(?#x)y|n)");
+        assert_eq!(fact.diagnostic, Some(PatternControlDiagnosticCode::InvalidReference));
+    }
+
+    #[test]
+    fn star_controls_separate_code_blocks_from_verbs() {
+        let code = parse_star_control("(*{ 1 })", 0);
+        assert_eq!(code.kind, PatternControlKind::OptimisticEmbeddedCode);
+        assert_eq!(code.effect, PatternControlEffect::DynamicExecution);
+        assert_eq!(code.boundary, Some(PatternBoundaryKind::EmbeddedCodeExecution));
+
+        let verb = parse_star_control("(*ACCEPT)", 0);
+        assert!(matches!(verb.kind, PatternControlKind::Unsupported { .. }));
+        assert_eq!((verb.range.start, verb.range.end), (0, 9));
+    }
+
+    #[test]
+    fn a_star_code_block_extent_counts_balanced_braces_and_skips_quoted_ones() {
+        // A brace inside a quoted run must not close the block early.
+        let quoted = parse_star_control(r#"(*{ $x = "}" })ab"#, 0);
+        assert_eq!(quoted.range.end, 15);
+        // Nested braces are balanced, so the outer one closes the block.
+        let nested = parse_star_control("(*{ { } })ab", 0);
+        assert_eq!(nested.range.end, 10);
+    }
+
+    #[test]
+    fn an_unterminated_star_block_fails_open_to_the_pattern_end() {
+        // Over-extending is the safe direction: the construct is reported as an
+        // unsupported boundary either way, and truncating early would hand the tail
+        // back to the pattern scanner as if it were regex source.
+        let fact = parse_star_control("(*{ unterminated", 0);
+        assert_eq!(fact.range.end, "(*{ unterminated".len());
+    }
+
+    #[test]
+    fn unsupported_control_uses_the_source_spelling_when_it_has_one() {
+        let range = RegexRange { start: 0, end: 5 };
+        let named = unsupported_control("(*XY)", range, "(*");
+        assert!(
+            matches!(named.kind, PatternControlKind::Unsupported { spelling } if spelling == "(*XY)")
+        );
+        // An empty slice falls back rather than publishing an empty spelling.
+        let empty = unsupported_control("", RegexRange { start: 0, end: 0 }, "(*");
+        assert!(
+            matches!(empty.kind, PatternControlKind::Unsupported { spelling } if spelling == "(*")
+        );
+    }
+}

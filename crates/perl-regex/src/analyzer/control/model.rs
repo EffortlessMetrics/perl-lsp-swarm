@@ -484,3 +484,131 @@ pub(super) fn map_source_range(range: RegexRange, source_start: usize) -> Option
         end: source_start.checked_add(range.end)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn complete_status() -> PatternControlAnalysisStatus {
+        PatternControlAnalysisStatus {
+            dynamic_pattern: false,
+            dynamic_execution: false,
+            unsupported: false,
+            structural_uncertainty: false,
+            malformed: false,
+            exhausted: None,
+            source_mapping_complete: true,
+        }
+    }
+
+    #[test]
+    fn source_mapping_offsets_a_body_relative_range() {
+        let mapped = map_source_range(RegexRange { start: 2, end: 5 }, 10)
+            .expect("range within usize bounds");
+        assert_eq!((mapped.start, mapped.end), (12, 15));
+        // A zero offset is the identity, not a special case.
+        let identity =
+            map_source_range(RegexRange { start: 2, end: 5 }, 0).expect("identity mapping");
+        assert_eq!((identity.start, identity.end), (2, 5));
+    }
+
+    #[test]
+    fn source_mapping_returns_none_instead_of_wrapping_on_overflow() {
+        // Fabricating a wrapped offset would point a reader at an unrelated byte.
+        assert_eq!(map_source_range(RegexRange { start: 1, end: 2 }, usize::MAX), None);
+        assert_eq!(
+            map_source_range(RegexRange { start: 0, end: usize::MAX }, 1),
+            None,
+            "the end offset must be checked as well as the start"
+        );
+    }
+
+    #[test]
+    fn a_status_is_complete_only_when_every_boundary_is_clear() {
+        assert!(complete_status().is_complete());
+
+        // Each field independently defeats completeness; none may be ignored.
+        let mut dynamic = complete_status();
+        dynamic.dynamic_pattern = true;
+        assert!(!dynamic.is_complete());
+
+        let mut execution = complete_status();
+        execution.dynamic_execution = true;
+        assert!(!execution.is_complete());
+
+        let mut unsupported = complete_status();
+        unsupported.unsupported = true;
+        assert!(!unsupported.is_complete());
+
+        let mut structural = complete_status();
+        structural.structural_uncertainty = true;
+        assert!(!structural.is_complete());
+
+        let mut malformed = complete_status();
+        malformed.malformed = true;
+        assert!(!malformed.is_complete());
+
+        let mut unmapped = complete_status();
+        unmapped.source_mapping_complete = false;
+        assert!(!unmapped.is_complete());
+    }
+
+    #[test]
+    fn fact_ids_expose_their_source_order_index() {
+        assert_eq!(PatternControlId(0).index(), 0);
+        assert_eq!(PatternControlId(7).index(), 7);
+    }
+
+    #[test]
+    fn machine_tokens_are_stable_and_distinct() {
+        // These strings are consumed by adapters and receipts, so a collision would
+        // silently merge two different facts downstream.
+        let kinds = [
+            PatternControlKind::KeepAnchor.as_str(),
+            PatternControlKind::WholePatternRecursion.as_str(),
+            PatternControlKind::RecursionConditional.as_str(),
+            PatternControlKind::ImmediateEmbeddedCode.as_str(),
+            PatternControlKind::OptimisticEmbeddedCode.as_str(),
+            PatternControlKind::DeferredRuntimePattern.as_str(),
+            PatternControlKind::SourceInterpolation.as_str(),
+        ];
+        let mut unique = kinds.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), kinds.len(), "kind tokens must not collide");
+
+        let effects = [
+            PatternControlEffect::ReportedMatchStart.as_str(),
+            PatternControlEffect::CaptureRead.as_str(),
+            PatternControlEffect::SubpatternCall.as_str(),
+            PatternControlEffect::ConditionalControl.as_str(),
+            PatternControlEffect::DynamicExecution.as_str(),
+            PatternControlEffect::DynamicPattern.as_str(),
+            PatternControlEffect::Unsupported.as_str(),
+        ];
+        let mut unique_effects = effects.to_vec();
+        unique_effects.sort_unstable();
+        unique_effects.dedup();
+        assert_eq!(unique_effects.len(), effects.len(), "effect tokens must not collide");
+    }
+
+    #[test]
+    fn reference_carrying_kinds_report_their_operand() {
+        assert_eq!(
+            PatternControlKind::NumericBackreference {
+                number: 3,
+                syntax: PatternReferenceSyntax::PlainNumeric,
+            }
+            .as_str(),
+            "numeric_backreference"
+        );
+        assert_eq!(
+            PatternControlKind::NamedBackreference {
+                name: "x".to_string(),
+                syntax: PatternReferenceSyntax::KReference,
+            }
+            .as_str(),
+            "named_backreference"
+        );
+    }
+}

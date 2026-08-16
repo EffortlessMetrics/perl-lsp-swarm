@@ -147,3 +147,90 @@ fn raw_reference(
         diagnostic,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind_of(pattern: &str) -> Option<PatternControlKind> {
+        parse_escape_control(pattern, 0).map(|control| control.kind)
+    }
+
+    fn range_of(pattern: &str) -> Option<(usize, usize)> {
+        parse_escape_control(pattern, 0).map(|control| (control.range.start, control.range.end))
+    }
+
+    #[test]
+    fn non_escape_bytes_are_not_escape_controls() {
+        // The dispatcher offers every byte; only a backslash may open one here.
+        assert!(parse_escape_control("K", 0).is_none());
+        assert!(parse_escape_control("(?<x>a)", 0).is_none());
+        // A trailing lone backslash has no second byte to classify.
+        assert!(parse_escape_control(r"\", 0).is_none());
+    }
+
+    #[test]
+    fn keep_anchor_spans_exactly_the_two_escape_bytes() {
+        assert_eq!(kind_of(r"\Kabc"), Some(PatternControlKind::KeepAnchor));
+        assert_eq!(range_of(r"\Kabc"), Some((0, 2)));
+    }
+
+    #[test]
+    fn traditional_numeric_backreference_carries_its_number() {
+        assert!(matches!(
+            kind_of(r"\1"),
+            Some(PatternControlKind::NumericBackreference { number: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn g_reference_accepts_braced_numeric_named_and_relative_operands() {
+        assert!(matches!(
+            kind_of(r"\g{2}"),
+            Some(PatternControlKind::NumericBackreference { number: 2, .. })
+        ));
+        assert!(matches!(
+            kind_of(r"\g{name}"),
+            Some(PatternControlKind::NamedBackreference { .. })
+        ));
+        assert!(matches!(
+            kind_of(r"\g{-1}"),
+            Some(PatternControlKind::RelativeBackreference { .. })
+        ));
+        // The whole `\g{...}` run belongs to the fact, not just the escape pair.
+        assert_eq!(range_of(r"\g{2}"), Some((0, 5)));
+    }
+
+    #[test]
+    fn unterminated_g_operand_reports_invalid_rather_than_a_guessed_target() {
+        // Failing closed matters here: a truncated operand must not resolve to
+        // whatever digits happen to precede the end of the pattern.
+        let control = parse_escape_control(r"\g{2", 0).expect("invalid reference fact");
+        assert!(matches!(control.kind, PatternControlKind::Unsupported { .. }));
+        assert_eq!(control.diagnostic, Some(PatternControlDiagnosticCode::InvalidReference));
+        assert!(matches!(control.request, ResolutionRequest::None));
+        assert_eq!((control.range.start, control.range.end), (0, 4));
+    }
+
+    #[test]
+    fn k_reference_is_named_only_across_all_three_spellings() {
+        for pattern in [r"\k<name>", r"\k{name}", r"\k'name'"] {
+            assert!(
+                matches!(kind_of(pattern), Some(PatternControlKind::NamedBackreference { .. })),
+                "{pattern} should be a named backreference"
+            );
+        }
+        // `\k` has no numeric spelling, so digits must not be promoted to a numeric
+        // capture read; they fail closed as an invalid reference instead.
+        let control = parse_escape_control(r"\k<1>", 0).expect("k reference fact");
+        assert!(matches!(control.kind, PatternControlKind::Unsupported { .. }));
+        assert_eq!(control.diagnostic, Some(PatternControlDiagnosticCode::InvalidReference));
+    }
+
+    #[test]
+    fn escape_controls_are_found_at_a_non_zero_start() {
+        // Ranges are absolute in the pattern, not relative to `start`.
+        let control = parse_escape_control(r"ab\K", 2).expect("keep anchor fact");
+        assert_eq!((control.range.start, control.range.end), (2, 4));
+    }
+}
