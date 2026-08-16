@@ -1,0 +1,54 @@
+name: 10176 stage gate disposition authority
+
+on:
+  push:
+    branches: [codex/10176-stage-gate-disposition]
+
+permissions:
+  contents: write
+
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact construction branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.95.0
+          components: rustfmt,clippy
+
+      - name: Materialize bounded production candidate
+        run: python3 scripts/ci/stage_issue_10176.py patch
+
+      - name: Format candidate
+        run: cargo fmt --all
+
+      - name: Verify focused disposition contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          cargo fmt --all -- --check
+          cargo test -p xtask --bin xtask gate_disposition --locked
+          cargo clippy -p xtask --bin xtask --locked -- -D warnings
+          cargo run -p xtask --locked -- gate-policy check
+
+      - name: Publish clean production branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/ci/stage_issue_10176.py publish
+
+      - name: Upload construction receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: issue-10176-clean-branch
+          path: target/10176-result.json
+          if-no-files-found: error
+          retention-days: 1
