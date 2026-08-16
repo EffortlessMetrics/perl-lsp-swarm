@@ -84,7 +84,9 @@ pub(super) fn initialize_result(method: &str, value: &Value) -> Result<(), Schem
         })?,
     )?;
     for key in object.keys() {
-        if key.starts_with("perl") || key.starts_with("$/") {
+        // Compared case-insensitively: `PerlLsp` and `PERL_LSP` are the same
+        // project namespace as `perlLsp` for the purpose of this boundary.
+        if key.to_ascii_lowercase().starts_with("perl") || key.starts_with("$/") {
             return Err(SchemaError::new(
                 Some(method),
                 format!("$.result.{key}"),
@@ -232,17 +234,10 @@ pub(super) fn did_change_params(method: &str, value: &Value) -> Result<(), Schem
         })?,
     )?;
     let _ = expect_string(Some(method), "$.params.textDocument.uri", document.get("uri"))?;
-    if let Some(version) = document.get("version")
-        && !version.is_null()
-        && version.as_i64().is_none()
-    {
-        return Err(SchemaError::at_value(
-            Some(method),
-            "$.params.textDocument.version",
-            "integer or null",
-            version,
-        ));
-    }
+    // `textDocument/didChange` carries a VersionedTextDocumentIdentifier, whose
+    // `version` is a required integer. The nullable form belongs to
+    // OptionalVersionedTextDocumentIdentifier, which this method does not use.
+    let _ = expect_integer(Some(method), "$.params.textDocument.version", document.get("version"))?;
     let changes = expect_array(
         Some(method),
         "$.params.contentChanges",

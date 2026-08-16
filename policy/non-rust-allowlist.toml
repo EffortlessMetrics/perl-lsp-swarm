@@ -1129,6 +1129,21 @@ covered_by = [
 created = "2026-08-14"
 review_after = "2026-11-14"
 
+[[allow]]
+id = "non-rust-lsp-protocol-schema-source"
+path = "crates/perl-lsp-rs-core/protocol_schema_source.json"
+kind = "protocol_contract"
+language = "json"
+surface = "lsp"
+classification = "config"
+owner = "lsp"
+reason = "Pinned LSP method-direction manifest for the protocol schema validator (#7113); bound to the Rust registry by SCHEMA_SOURCE_MANIFEST_SHA256 and pinned_manifest_and_rust_registry_are_consistent."
+covered_by = [
+  "cargo test -p perl-lsp-rs-core --lib protocol::schema",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
 # =============================================================================
 # Binary identity protocol (perl_lsp.binary_identity.v1)
 # =============================================================================

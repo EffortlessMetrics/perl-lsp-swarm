@@ -20,7 +20,7 @@ pub const SCHEMA_SOURCE_JSON: &str = include_str!("../../../protocol_schema_sour
 pub const UPSTREAM_PROTOCOL_COMMIT: &str = "8d5153933153aed3a488b9b8f46b22ed0f90f552";
 /// SHA-256 of the reviewed, checked-in source manifest bytes.
 pub const SCHEMA_SOURCE_MANIFEST_SHA256: &str =
-    "216c51b51f0231401e3dc42ee38fe71f39dca221effbb64a6684b35ceba78858";
+    "0964e665fe3eb073a3ac34690230ff65d07574ab45cb536b78564b1dafbedae2";
 
 /// Direction of a protocol message on the LSP connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

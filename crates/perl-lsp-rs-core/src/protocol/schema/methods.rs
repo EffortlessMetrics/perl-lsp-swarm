@@ -142,6 +142,9 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
         text_document_position_params,
         location_result
     ),
+    // The base protocol lets either party cancel a request it previously sent,
+    // so the server-originated direction is registered beside the client one.
+    notification!("$/cancelRequest", ServerToClient, Lsp317, cancel_params),
     notification!("$/progress", ServerToClient, Lsp317, progress_params),
     request!("client/registerCapability", ServerToClient, Lsp317, registration_params, null_only),
     request!(

@@ -25,7 +25,10 @@ fn pinned_manifest_and_rust_registry_are_consistent() {
     let manifest_digest = Sha256::digest(SCHEMA_SOURCE_JSON.as_bytes());
     let manifest_digest =
         manifest_digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-    assert_eq!(manifest_digest, SCHEMA_SOURCE_MANIFEST_SHA256);
+    assert_eq!(
+        manifest_digest, SCHEMA_SOURCE_MANIFEST_SHA256,
+        "protocol_schema_source.json changed; refresh SCHEMA_SOURCE_MANIFEST_SHA256 to the new digest"
+    );
 
     let source: Value =
         serde_json::from_str(SCHEMA_SOURCE_JSON).expect("pinned schema source must be valid JSON");
@@ -49,7 +52,11 @@ fn pinned_manifest_and_rust_registry_are_consistent() {
         .iter()
         .map(|value| value.as_str().expect("source registry entry must be a string").to_string())
         .collect::<Vec<_>>();
-    assert_eq!(registered_schema_identities(), declared);
+    assert_eq!(
+        registered_schema_identities(),
+        declared,
+        "METHOD_SCHEMAS and the pinned manifest registry must list identical entries in identical order"
+    );
 }
 
 #[test]
@@ -167,6 +174,56 @@ fn initialize_request_and_response_validate_in_actual_wire_directions() {
     assert_eq!(response_validated.kind, MessageKind::SuccessResponse);
     assert_eq!(response_validated.direction, Direction::ServerToClient);
     assert_eq!(response_validated.version, ProtocolVersion::Lsp317);
+}
+
+/// The base protocol lets either party cancel a request it previously sent, so
+/// a server-originated `$/cancelRequest` is valid traffic and must not be
+/// rejected as an unregistered method/direction pair.
+#[test]
+fn cancel_request_validates_in_both_wire_directions() {
+    let cancel = json!({
+        "jsonrpc": "2.0",
+        "method": "$/cancelRequest",
+        "params": { "id": 4 }
+    });
+
+    for direction in [Direction::ClientToServer, Direction::ServerToClient] {
+        let validated = validate(&cancel, direction, Some("$/cancelRequest"))
+            .expect("cancellation is valid in both directions");
+        assert_eq!(validated.direction, direction);
+        assert_eq!(validated.version, ProtocolVersion::Lsp317);
+    }
+}
+
+/// `textDocument/didChange` carries a VersionedTextDocumentIdentifier, whose
+/// `version` is required. The nullable spelling belongs to
+/// OptionalVersionedTextDocumentIdentifier and must not be accepted here.
+#[test]
+fn did_change_requires_an_integer_document_version() {
+    let without_version = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": "file:///workspace/main.pl" },
+            "contentChanges": [{ "text": "print 1;\n" }]
+        }
+    });
+    let error =
+        validate(&without_version, Direction::ClientToServer, Some("textDocument/didChange"))
+            .expect_err("a missing document version must be rejected");
+    assert_eq!(error.path, "$.params.textDocument.version");
+
+    let null_version = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": "file:///workspace/main.pl", "version": null },
+            "contentChanges": [{ "text": "print 1;\n" }]
+        }
+    });
+    let error = validate(&null_version, Direction::ClientToServer, Some("textDocument/didChange"))
+        .expect_err("a null document version must be rejected");
+    assert_eq!(error.path, "$.params.textDocument.version");
 }
 
 #[test]
@@ -335,6 +392,21 @@ fn initialize_extensions_are_confined_to_capabilities_experimental() {
     let error = validate(&forbidden, Direction::ServerToClient, Some("initialize"))
         .expect_err("project metadata must not occupy a standard top-level field");
     assert_eq!(error.path, "$.result.perlLsp");
+
+    // Casing is not an escape hatch out of the project namespace.
+    for spelling in ["PerlLsp", "PERL_LSP", "Perl"] {
+        let mixed_case = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "capabilities": {},
+                spelling: { "schemaVersion": 1 }
+            }
+        });
+        let error = validate(&mixed_case, Direction::ServerToClient, Some("initialize"))
+            .expect_err("case must not smuggle project metadata to the top level");
+        assert_eq!(error.path, format!("$.result.{spelling}"));
+    }
 
     let allowed = json!({
         "jsonrpc": "2.0",

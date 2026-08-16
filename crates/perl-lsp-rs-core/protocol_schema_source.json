@@ -45,6 +45,7 @@
     "client_to_server:request:textDocument/rename:3.17",
     "client_to_server:request:textDocument/semanticTokens/full:3.17",
     "client_to_server:request:textDocument/typeDefinition:3.17",
+    "server_to_client:notification:$/cancelRequest:3.17",
     "server_to_client:notification:$/progress:3.17",
     "server_to_client:request:client/registerCapability:3.17",
     "server_to_client:request:client/unregisterCapability:3.17",
