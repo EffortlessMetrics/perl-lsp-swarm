@@ -76,7 +76,8 @@ impl TotalStats {
         eprintln!("Total nodes: {}", self.total_nodes);
 
         if self.files_parsed > 0 {
-            let avg_speed = self.total_bytes as f64 / self.total_time.as_secs_f64() / 1_000_000.0;
+            let avg_speed =
+                self.total_bytes as f64 / self.total_time.as_secs_f64() / 1_000_000.0;
             eprintln!("Average speed: {:.2} MB/s", avg_speed);
             eprintln!("Average nodes per file: {}", self.total_nodes / self.files_parsed);
         }
