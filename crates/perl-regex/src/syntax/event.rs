@@ -105,6 +105,7 @@ pub(crate) enum RegexMalformedKind {
     UnterminatedComment,
     UnterminatedEmbeddedCode,
     UnterminatedNamedCapture,
+    UnterminatedInterpolation,
     UnmatchedGroupClose,
     UnclosedGroup,
 }
@@ -114,17 +115,34 @@ pub(crate) enum RegexMalformedKind {
 pub(crate) enum RegexEventKind {
     Atom,
     Escape,
-    QuotedLiteral { closed: bool },
-    CharacterClass { closed: bool },
+    QuotedLiteral {
+        closed: bool,
+    },
+    CharacterClass {
+        closed: bool,
+    },
     Comment(RegexCommentKind),
     GroupOpen(RegexGroupKind),
     GroupClose(RegexGroupKind),
     ModeChange,
     Alternation,
     Quantifier(RegexQuantifier),
-    UnicodeProperty { negated: bool, closed: bool },
-    EmbeddedCode { kind: RegexEmbeddedCodeKind, opener_range: RegexRange, closed: bool },
-    Interpolation,
+    UnicodeProperty {
+        negated: bool,
+        closed: bool,
+    },
+    EmbeddedCode {
+        kind: RegexEmbeddedCodeKind,
+        opener_range: RegexRange,
+        closed: bool,
+    },
+    /// Interpolation of runtime text into the pattern. `quoted` marks
+    /// `\Q...\E`-protected interpolation: the value is quoted before regex
+    /// interpretation, so it cannot inject captures or other structure the
+    /// way bare pattern interpolation can.
+    Interpolation {
+        quoted: bool,
+    },
     Malformed(RegexMalformedKind),
 }
 
@@ -270,6 +288,8 @@ impl<'a> EventParser<'a> {
 
         let start = self.pos;
         let mut cursor = start + 2;
+        let mut interpolations = Vec::new();
+        let mut truncated_interpolation = false;
         let mut closed = false;
         while cursor + 1 < self.bytes.len() {
             if self.bytes[cursor] == b'\\' && self.bytes[cursor + 1] == b'E' {
@@ -277,10 +297,37 @@ impl<'a> EventParser<'a> {
                 closed = true;
                 break;
             }
+            // A backslash escapes the byte that follows it inside `\Q...\E`, so
+            // `\Q\$x\E` is a literal `$x` rather than a runtime interpolation.
+            // Skipping the escaped byte as a unit also keeps backslash parity
+            // honest, matching the character-class scanner: in `\Q\\$x\E` the
+            // `\\` pair is a literal backslash and the `$x` still interpolates.
+            if self.bytes[cursor] == b'\\' {
+                cursor = self.next_char_end(cursor + 1);
+                continue;
+            }
+            // `\Q...\E` suppresses regex metacharacter interpretation but does NOT
+            // suppress Perl variable interpolation: `\Q$x\E` still expands `$x` at
+            // runtime, so a `$` or `@` here introduces a dynamic boundary exactly as
+            // it would outside a quoted region.  Omitting this scan would let a
+            // caller treat the result as a complete static literal when it is not.
+            if matches!(self.bytes[cursor], b'$' | b'@')
+                && let Some((end, interpolation_closed)) = self.interpolation_end_at(cursor)
+            {
+                if !interpolation_closed {
+                    truncated_interpolation = true;
+                }
+                interpolations.push(RegexRange { start: cursor, end });
+                cursor = end;
+                continue;
+            }
             cursor += 1;
         }
         if !closed {
             cursor = self.bytes.len();
+            self.malformed = true;
+        }
+        if truncated_interpolation {
             self.malformed = true;
         }
         if !self.advance(cursor) {
@@ -298,6 +345,15 @@ impl<'a> EventParser<'a> {
                 cursor,
                 cursor,
                 RegexEventKind::Malformed(RegexMalformedKind::UnterminatedQuotedLiteral),
+                self.mode,
+                self.stack.len(),
+            );
+        }
+        for range in interpolations {
+            let _ = self.emit(
+                range.start,
+                range.end,
+                RegexEventKind::Interpolation { quoted: true },
                 self.mode,
                 self.stack.len(),
             );
@@ -357,6 +413,8 @@ impl<'a> EventParser<'a> {
 
         let start = self.pos;
         let mut cursor = start + 1;
+        let mut interpolations = Vec::new();
+        let mut truncated_interpolation = false;
         if self.bytes.get(cursor) == Some(&b'^') {
             cursor += 1;
         }
@@ -374,6 +432,17 @@ impl<'a> EventParser<'a> {
                         self.bytes.len()
                     };
                 }
+                b'$' | b'@' => {
+                    if let Some((end, interpolation_closed)) = self.interpolation_end_at(cursor) {
+                        if !interpolation_closed {
+                            truncated_interpolation = true;
+                        }
+                        interpolations.push(RegexRange { start: cursor, end });
+                        cursor = end;
+                    } else {
+                        cursor = self.next_char_end(cursor);
+                    }
+                }
                 b']' => {
                     cursor += 1;
                     closed = true;
@@ -382,7 +451,7 @@ impl<'a> EventParser<'a> {
                 _ => cursor = self.next_char_end(cursor),
             }
         }
-        if !closed {
+        if !closed || truncated_interpolation {
             self.malformed = true;
         }
         if !self.advance(cursor) {
@@ -395,6 +464,15 @@ impl<'a> EventParser<'a> {
             self.mode,
             self.stack.len(),
         );
+        for range in interpolations {
+            let _ = self.emit(
+                range.start,
+                range.end,
+                RegexEventKind::Interpolation { quoted: false },
+                self.mode,
+                self.stack.len(),
+            );
+        }
         if !closed {
             let _ = self.emit(
                 cursor,
@@ -465,6 +543,10 @@ impl<'a> EventParser<'a> {
         }
         let start = self.pos;
 
+        if self.bytes.get(start + 1) == Some(&b'*') {
+            return self.open_group(start, start + 2, RegexGroupKind::NonCapturing, self.mode);
+        }
+
         if self.bytes.get(start + 1) != Some(&b'?') {
             let kind = if self.mode.captures_by_default {
                 RegexGroupKind::Capturing
@@ -504,6 +586,19 @@ impl<'a> EventParser<'a> {
             }
             Some(b'|') => {
                 return self.open_group(start, start + 3, RegexGroupKind::BranchReset, self.mode);
+            }
+            Some(b'(') => {
+                // Conditional group. A simple condition such as `(1)`, `(<name>)`,
+                // `('name')`, `(R1)`, or `(DEFINE)` is a condition token rather than a
+                // capturing group, so it belongs to the opener and must never be
+                // numbered. An assertion condition such as `(?(?=...)...)` is a real
+                // group, so it stays in the stream and is classified on its own.
+                if self.bytes.get(start + 3) != Some(&b'?')
+                    && let Some(end) = self.simple_condition_end(start + 2)
+                {
+                    return self.open_group(start, end, RegexGroupKind::Special, self.mode);
+                }
+                return self.open_group(start, start + 2, RegexGroupKind::Special, self.mode);
             }
             Some(b'<') => return self.parse_angle_group(start),
             Some(b'\'') => return self.parse_quoted_name_group(start),
@@ -735,39 +830,71 @@ impl<'a> EventParser<'a> {
     }
 
     fn parse_interpolation(&mut self) -> bool {
-        let sigil = match self.bytes.get(self.pos).copied() {
-            Some(b'$' | b'@') => self.bytes[self.pos],
-            _ => return false,
-        };
         let start = self.pos;
-        let Some(next) = self.bytes.get(start + 1).copied() else {
+        let Some((end, closed)) = self.interpolation_end_at(start) else {
             return false;
         };
-        let dynamic = if next == b'{' {
-            true
-        } else if sigil == b'$' {
-            next.is_ascii_alphanumeric()
-                || next == b'_'
-                || matches!(next, b'$' | b'@' | b'%' | b'&' | b'`' | b'\'')
-        } else {
-            next.is_ascii_alphabetic() || next == b'_'
-        };
-        if !dynamic {
-            return false;
+        if !closed {
+            self.malformed = true;
         }
-
-        let end = if next == b'{' {
-            self.braced_interpolation_end(start + 1)
-        } else if next.is_ascii_alphanumeric() || next == b'_' {
-            self.identifier_interpolation_end(start + 1)
-        } else {
-            (start + 2).min(self.bytes.len())
-        };
         if !self.advance(end) {
             return true;
         }
-        let _ = self.emit(start, end, RegexEventKind::Interpolation, self.mode, self.stack.len());
+        let _ = self.emit(
+            start,
+            end,
+            RegexEventKind::Interpolation { quoted: false },
+            self.mode,
+            self.stack.len(),
+        );
+        if !closed {
+            let _ = self.emit(
+                end,
+                end,
+                RegexEventKind::Malformed(RegexMalformedKind::UnterminatedInterpolation),
+                self.mode,
+                self.stack.len(),
+            );
+        }
         true
+    }
+
+    /// End of an interpolation starting at `start`, plus whether it is well formed.
+    fn interpolation_end_at(&self, start: usize) -> Option<(usize, bool)> {
+        let sigil = match self.bytes.get(start).copied() {
+            Some(b'$' | b'@') => self.bytes[start],
+            _ => return None,
+        };
+        let next = self.bytes.get(start + 1).copied()?;
+        let end = if next == b'{' {
+            return Some(self.braced_interpolation_end(start + 1));
+        } else if sigil == b'$' && next == b'^' && self.bytes.get(start + 2) == Some(&b'R') {
+            start.saturating_add(3).min(self.bytes.len())
+        } else if sigil == b'$'
+            && next == b':'
+            && self.bytes.get(start + 2) == Some(&b':')
+            && self.bytes.get(start + 3).is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == b'_')
+        {
+            self.identifier_interpolation_end(start + 1)
+        } else if sigil == b'$' {
+            if next.is_ascii_alphanumeric()
+                || next == b'_'
+                || matches!(next, b'$' | b'@' | b'%' | b'&' | b'`' | b'\'')
+            {
+                if next.is_ascii_alphanumeric() || next == b'_' {
+                    self.identifier_interpolation_end(start + 1)
+                } else {
+                    (start + 2).min(self.bytes.len())
+                }
+            } else {
+                return None;
+            }
+        } else if next.is_ascii_alphabetic() || next == b'_' {
+            self.identifier_interpolation_end(start + 1)
+        } else {
+            return None;
+        };
+        Some((end, true))
     }
 
     fn quantifier_at(&self, start: usize) -> Option<(RegexQuantifier, usize)> {
@@ -916,10 +1043,16 @@ impl<'a> EventParser<'a> {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
                         cursor += 1;
-                        if self.bytes.get(cursor) == Some(&b')') {
+                        // `(?{ code })` requires the closing `)` after the `}`.  A
+                        // bare `(?{ code }` without `)` is rejected by Perl as
+                        // unterminated.  Track whether the paren was actually found
+                        // and propagate that as the closed flag so callers can mark
+                        // the construct malformed when it is absent.
+                        let paren_closed = self.bytes.get(cursor) == Some(&b')');
+                        if paren_closed {
                             cursor += 1;
                         }
-                        return (cursor, true);
+                        return (cursor, paren_closed);
                     }
                 }
                 _ => {}
@@ -929,7 +1062,11 @@ impl<'a> EventParser<'a> {
         (self.bytes.len(), false)
     }
 
-    fn braced_interpolation_end(&self, open: usize) -> usize {
+    /// End of a `${...}` interpolation and whether the brace actually closed.
+    ///
+    /// A truncated form reports the input end with `closed == false` so callers can
+    /// record the malformed construct instead of silently accepting the clamp.
+    fn braced_interpolation_end(&self, open: usize) -> (usize, bool) {
         let mut cursor = open + 1;
         let mut depth = 1usize;
         let mut escaped = false;
@@ -944,12 +1081,30 @@ impl<'a> EventParser<'a> {
             } else if ch == b'}' {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return cursor + 1;
+                    return (cursor + 1, true);
                 }
             }
             cursor = self.next_char_end(cursor);
         }
-        self.bytes.len()
+        (self.bytes.len(), false)
+    }
+
+    /// End of a simple parenthesized conditional condition token, when the token
+    /// contains no nested group. Returns `None` for anything structurally richer so
+    /// the scanner keeps classifying the inner construct itself.
+    fn simple_condition_end(&self, start: usize) -> Option<usize> {
+        if self.bytes.get(start) != Some(&b'(') {
+            return None;
+        }
+        let mut cursor = start + 1;
+        while let Some(ch) = self.bytes.get(cursor).copied() {
+            match ch {
+                b')' => return Some(cursor + 1),
+                b'(' => return None,
+                _ => cursor += 1,
+            }
+        }
+        None
     }
 
     fn identifier_interpolation_end(&self, start: usize) -> usize {
@@ -1108,6 +1263,25 @@ mod tests {
         assert_eq!(embedded.len(), 1);
         assert!(embedded[0].range.start > 20);
         assert!(!embedded[0].mode.extended.enabled());
+        Ok(())
+    }
+
+    #[test]
+    fn interpolation_events_preserve_source_spans_including_character_classes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pattern = r"$^R$::foo[$runtime@items]";
+        let interpolations = parse_regex_events(pattern, RegexModeState::default())
+            .events
+            .iter()
+            .filter_map(|event| match event.kind {
+                RegexEventKind::Interpolation { .. } => {
+                    pattern.get(event.range.start..event.range.end)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(interpolations, vec!["$^R", "$::foo", "$runtime", "@items"]);
         Ok(())
     }
 
