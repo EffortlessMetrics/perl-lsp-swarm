@@ -10,6 +10,9 @@
 mod dap_dependencies {
     use anyhow::Result;
     use perl_lsp_rs_core::config::PerlOracleEnv;
+    // Retained for `test_devel_tsperldap_version_detection`, which survives the
+    // bridge removal: the archived shim mock is still the parsing fixture.
+    use serde_json::Value;
     use std::path::PathBuf;
 
     fn repo_root() -> PathBuf {
@@ -138,6 +141,39 @@ mod dap_dependencies {
         assert!(readme_prose.contains("repository-only conformance lanes"));
         assert!(!readme.contains("cpanm Perl::LanguageServer"));
         assert!(!readme.contains("--bridge"));
+        Ok(())
+    }
+
+    /// Tests fixture provenance: the archived `Devel::TSPerlDAP` mock stays a
+    /// self-describing test double.
+    ///
+    /// The shim is superseded product architecture (#7272); this fixture is
+    /// retained only so parsing tests keep a stable stack/scope sample. The
+    /// architecture claim itself is owned by
+    /// `tests/tsperldap_architecture_guard.rs`, which asserts the current
+    /// surfaces do *not* prescribe the shim. The former
+    /// `test_bundled_shim_fallback` asserted the opposite — that
+    /// `CRATE_ARCHITECTURE_DAP.md` still documented a bundled shim fallback —
+    /// and was removed rather than weakened, because that claim is no longer
+    /// true of the product.
+    #[test]
+    // AC:18
+    fn test_devel_tsperldap_version_detection() -> Result<()> {
+        let fixture =
+            repo_root().join("crates/perl-dap/tests/fixtures/mocks/perl_shim_responses.json");
+        let json: Value = serde_json::from_str(&read(fixture)?)?;
+        let description = json
+            .get("description")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing fixture description"))?;
+        assert!(description.contains("Devel::TSPerlDAP"));
+        assert!(json.get("set_breakpoints").is_some());
+        assert!(json.get("stack_trace").is_some());
+        assert!(json.get("scopes").is_some());
+
+        let fixture_index =
+            read(repo_root().join("crates/perl-dap/tests/fixtures/FIXTURE_INDEX.md"))?;
+        assert!(fixture_index.contains("perl_shim_responses.json"));
         Ok(())
     }
 
