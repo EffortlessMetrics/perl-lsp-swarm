@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: write
-  issues: write
 
 jobs:
   build:
@@ -53,163 +52,92 @@ jobs:
           git commit -m "test(ci): prove issue 10124 exact static subject"
           test -z "$(git status --porcelain --untracked-files=no)"
 
-      - name: Validate exact static contract and receipt
+      - name: Validate temporary static contract and receipt
         run: |
           python3 scripts/ci/validate_gate_enforcement_contract.py \
             --root . \
-            --receipt target/10124/gate-enforcement-contract.json
+            --receipt target/10124/gate-enforcement-contract-temporary.json
 
-      - name: Create clean five-file commit object
+      - name: Fetch exact main base object
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            cdc3bdce56bdda4b5d3fcc4e7d4d2cbbec19a266
+
+      - name: Build, revalidate, and push clean five-file commit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          python3 - <<'PY'
-          import base64
+          set -euo pipefail
+
+          base_sha="cdc3bdce56bdda4b5d3fcc4e7d4d2cbbec19a266"
+          target_branch="codex/10124-static-app-bindings"
+          index_file="$RUNNER_TEMP/issue-10124.index"
+          clean_root="$RUNNER_TEMP/issue-10124-clean"
+          rm -f "$index_file"
+          rm -rf "$clean_root"
+
+          GIT_INDEX_FILE="$index_file" git read-tree "$base_sha^{tree}"
+          for path in \
+            .ci/policies/required-checks.toml \
+            .github/workflows/gate-enforcement-contract.yml \
+            docs/ci/gate-enforcement-app-bindings.md \
+            scripts/ci/test_gate_enforcement_app_bindings.py \
+            scripts/ci/validate_gate_enforcement_contract.py
+          do
+            GIT_INDEX_FILE="$index_file" git add -- "$path"
+          done
+
+          tree_sha="$(GIT_INDEX_FILE="$index_file" git write-tree)"
+          head_sha="$(printf '%s\n' \
+            'feat(ci): declare source-specific enforcement app bindings (#10124)' \
+            | git commit-tree "$tree_sha" -p "$base_sha")"
+
+          cat > "$RUNNER_TEMP/issue-10124-expected.txt" <<'EOF'
+          .ci/policies/required-checks.toml
+          .github/workflows/gate-enforcement-contract.yml
+          docs/ci/gate-enforcement-app-bindings.md
+          scripts/ci/test_gate_enforcement_app_bindings.py
+          scripts/ci/validate_gate_enforcement_contract.py
+          EOF
+          git diff-tree --no-commit-id --name-only -r "$head_sha" \
+            | sort > "$RUNNER_TEMP/issue-10124-actual.txt"
+          diff -u \
+            "$RUNNER_TEMP/issue-10124-expected.txt" \
+            "$RUNNER_TEMP/issue-10124-actual.txt"
+
+          git worktree add --detach "$clean_root" "$head_sha"
+          python3 "$clean_root/scripts/ci/validate_gate_enforcement_contract.py" \
+            --root "$clean_root" \
+            --receipt "$GITHUB_WORKSPACE/target/10124/gate-enforcement-contract-clean.json"
+
+          remote_url="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push "$remote_url" "$head_sha:refs/heads/$target_branch"
+
+          HEAD_SHA="$head_sha" python3 - <<'PY'
           import json
           import os
-          import urllib.error
-          import urllib.request
           from pathlib import Path
-
-          base_sha = "cdc3bdce56bdda4b5d3fcc4e7d4d2cbbec19a266"
-          target_branch = "codex/10124-static-app-bindings"
-          paths = (
-              ".ci/policies/required-checks.toml",
-              ".github/workflows/gate-enforcement-contract.yml",
-              "docs/ci/gate-enforcement-app-bindings.md",
-              "scripts/ci/test_gate_enforcement_app_bindings.py",
-              "scripts/ci/validate_gate_enforcement_contract.py",
-          )
-
-          def fail(message):
-              raise SystemExit(message)
-
-          def request(method, path, payload=None):
-              data = None if payload is None else json.dumps(payload).encode("utf-8")
-              req = urllib.request.Request(
-                  f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}{path}",
-                  data=data,
-                  method=method,
-                  headers={
-                      "Accept": "application/vnd.github+json",
-                      "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-                      "Content-Type": "application/json",
-                      "X-GitHub-Api-Version": "2022-11-28",
-                  },
-              )
-              try:
-                  with urllib.request.urlopen(req, timeout=60) as response:
-                      return json.load(response)
-              except urllib.error.HTTPError as error:
-                  fail(
-                      f"GitHub API {method} {path} failed: {error.code} "
-                      f"{error.read().decode(errors='replace')}"
-                  )
-
-          base_commit = request("GET", f"/git/commits/{base_sha}")
-          base_tree = base_commit.get("tree", {}).get("sha")
-          if not isinstance(base_tree, str):
-              fail("base commit response lacks tree.sha")
-
-          entries = []
-          blobs = {}
-          for raw_path in paths:
-              path = Path(raw_path)
-              if not path.is_file():
-                  fail(f"production file is missing: {raw_path}")
-              blob = request(
-                  "POST",
-                  "/git/blobs",
-                  {
-                      "content": base64.b64encode(path.read_bytes()).decode("ascii"),
-                      "encoding": "base64",
-                  },
-              )
-              blob_sha = blob.get("sha")
-              if not isinstance(blob_sha, str):
-                  fail(f"blob response lacks sha: {raw_path}")
-              blobs[raw_path] = blob_sha
-              entries.append(
-                  {
-                      "path": raw_path,
-                      "mode": "100755" if raw_path.startswith("scripts/ci/") else "100644",
-                      "type": "blob",
-                      "sha": blob_sha,
-                  }
-              )
-
-          tree = request(
-              "POST",
-              "/git/trees",
-              {"base_tree": base_tree, "tree": entries},
-          )
-          tree_sha = tree.get("sha")
-          if not isinstance(tree_sha, str):
-              fail("candidate tree response lacks sha")
-
-          commit = request(
-              "POST",
-              "/git/commits",
-              {
-                  "message": "feat(ci): declare source-specific enforcement app bindings (#10124)",
-                  "tree": tree_sha,
-                  "parents": [base_sha],
-              },
-          )
-          head_sha = commit.get("sha")
-          if not isinstance(head_sha, str):
-              fail("candidate commit response lacks sha")
 
           receipt = {
               "schema_version": 1,
               "issue": 10124,
-              "base_sha": base_sha,
-              "branch": target_branch,
-              "head_sha": head_sha,
-              "paths": list(paths),
-              "blobs": blobs,
+              "base_sha": "cdc3bdce56bdda4b5d3fcc4e7d4d2cbbec19a266",
+              "branch": "codex/10124-static-app-bindings",
+              "head_sha": os.environ["HEAD_SHA"],
+              "paths": [
+                  ".ci/policies/required-checks.toml",
+                  ".github/workflows/gate-enforcement-contract.yml",
+                  "docs/ci/gate-enforcement-app-bindings.md",
+                  "scripts/ci/test_gate_enforcement_app_bindings.py",
+                  "scripts/ci/validate_gate_enforcement_contract.py",
+              ],
           }
           Path("target/10124/result.json").write_text(
               json.dumps(receipt, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
           )
           print(json.dumps(receipt, sort_keys=True))
-          PY
-
-      - name: Publish candidate object receipt to issue
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import urllib.request
-          from pathlib import Path
-
-          receipt = json.loads(Path("target/10124/result.json").read_text(encoding="utf-8"))
-          body = (
-              "<!-- issue-10124-clean-object -->\n"
-              "## Verified clean candidate object\n\n"
-              "All focused falsifiers and the exact static receipt passed before this object was created.\n\n"
-              "```json\n"
-              + json.dumps(receipt, indent=2, sort_keys=True)
-              + "\n```"
-          )
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues/10124/comments",
-              data=json.dumps({"body": body}).encode("utf-8"),
-              method="POST",
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-                  "Content-Type": "application/json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-              },
-          )
-          with urllib.request.urlopen(req, timeout=60) as response:
-              print(json.load(response)["html_url"])
           PY
 
       - name: Upload construction receipts
@@ -219,6 +147,7 @@ jobs:
           name: issue-10124-static-app-bindings
           path: |
             target/10124/result.json
-            target/10124/gate-enforcement-contract.json
+            target/10124/gate-enforcement-contract-temporary.json
+            target/10124/gate-enforcement-contract-clean.json
           if-no-files-found: warn
           retention-days: 1
