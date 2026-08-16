@@ -1,0 +1,303 @@
+name: One-shot implementation for issue 8035
+
+on:
+  push:
+    branches:
+      - agent/8035-live-index-generations
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-8035
+  cancel-in-progress: false
+
+jobs:
+  implement-test-and-remove-self:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Setup pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt,clippy
+
+      - name: Apply issue 8035 implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          def replace_count(path: str, old: str, new: str, expected: int) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} matches, found {count}: {old[:80]!r}")
+              p.write_text(text.replace(old, new))
+
+          store = "crates/perl-workspace/src/workspace/document_store.rs"
+          replace_once(
+              store,
+              "    /// Close a document\n",
+              '''    /// Atomically replace a document only when the accepted predecessor is unchanged.\n    ///\n    /// Candidate index work uses this as its publication boundary: parsing and\n    /// extraction happen against a private [`Document`], then the replacement\n    /// is installed only if no newer source state won while that work ran.\n    pub fn replace_if_current(\n        &self,\n        uri: &str,\n        expected: Option<&Document>,\n        replacement: Document,\n    ) -> bool {\n        let key = Self::uri_key(uri);\n        let Ok(mut docs) = self.documents.write() else {\n            return false;\n        };\n\n        let predecessor_matches = match (docs.get(&key), expected) {\n            (None, None) => true,\n            (Some(current), Some(expected)) => {\n                current.uri == expected.uri\n                    && current.version == expected.version\n                    && current.text() == expected.text()\n            }\n            _ => false,\n        };\n        if !predecessor_matches {\n            return false;\n        }\n        if docs\n            .get(&key)\n            .is_some_and(|current| replacement.version < current.version)\n        {\n            return false;\n        }\n\n        docs.insert(key, replacement);\n        true\n    }\n\n    /// Close a document\n''',
+          )
+
+          p = Path(store)
+          text = p.read_text()
+          insert_at = text.rfind("\n}")
+          if insert_at < 0:
+              raise SystemExit("document_store.rs: test-module closing brace not found")
+          tests = r'''
+
+    #[test]
+    fn replace_if_current_rejects_stale_predecessor() {
+        let store = DocumentStore::new();
+        let uri = "file:///replace-current.pl";
+        store.open(uri.to_string(), 5, "accepted".to_string());
+        let expected = store.get(uri).expect("accepted document");
+
+        assert!(store.update(uri, 6, "newer".to_string()));
+        assert!(!store.replace_if_current(
+            uri,
+            Some(&expected),
+            Document::new(uri.to_string(), 7, "candidate".to_string()),
+        ));
+        assert_eq!(store.get_text(uri).as_deref(), Some("newer"));
+    }
+
+    #[test]
+    fn replace_if_current_rejects_lower_version() {
+        let store = DocumentStore::new();
+        let uri = "file:///replace-version.pl";
+        store.open(uri.to_string(), 5, "accepted".to_string());
+        let expected = store.get(uri).expect("accepted document");
+
+        assert!(!store.replace_if_current(
+            uri,
+            Some(&expected),
+            Document::new(uri.to_string(), 4, "candidate".to_string()),
+        ));
+        assert_eq!(store.get_text(uri).as_deref(), Some("accepted"));
+    }
+
+    #[test]
+    fn replace_if_current_commits_matching_candidate() {
+        let store = DocumentStore::new();
+        let uri = "file:///replace-commit.pl";
+        store.open(uri.to_string(), 5, "accepted".to_string());
+        let expected = store.get(uri).expect("accepted document");
+
+        assert!(store.replace_if_current(
+            uri,
+            Some(&expected),
+            Document::new(uri.to_string(), 6, "candidate".to_string()),
+        ));
+        let committed = store.get(uri).expect("committed document");
+        assert_eq!(committed.version, 6);
+        assert_eq!(committed.text(), "candidate");
+    }
+'''
+          p.write_text(text[:insert_at] + tests + text[insert_at:])
+
+          index = "crates/perl-workspace/src/workspace/workspace_index.rs"
+          replace_once(
+              index,
+              "    write_version: Arc<AtomicU64>,\n}",
+              '''    write_version: Arc<AtomicU64>,\n    /// Next non-zero generation reserved for post-initialization live source work.\n    live_generation: Arc<AtomicU64>,\n}''',
+          )
+          replace_count(
+              index,
+              "            write_version: Arc::new(AtomicU64::new(0)),\n",
+              "            write_version: Arc::new(AtomicU64::new(0)),\n            live_generation: Arc::new(AtomicU64::new(1)),\n",
+              2,
+          )
+          replace_once(
+              index,
+              '''    pub fn index_file(&self, uri: Url, text: String) -> Result<(), String> {\n        self.index_file_with_generation(uri, text, 0)\n    }\n\n    /// Index a file from its URI, text content, and document generation.\n''',
+              '''    pub fn index_file(&self, uri: Url, text: String) -> Result<(), String> {\n        self.index_file_with_generation(uri, text, 0)\n    }\n\n    /// Index one post-initialization source mutation with a non-zero generation.\n    ///\n    /// Initial discovery may continue to use [`Self::index_file`]. Runtime\n    /// watcher and explicit file-operation paths must use this method (or an\n    /// exact document generation) so generation zero cannot bypass stale-work\n    /// rejection. The later reload coordinator may supply a stronger typed\n    /// source generation without changing this invariant.\n    pub fn index_live_file(&self, uri: Url, text: String) -> Result<u32, String> {\n        let generation = self.allocate_live_generation()?;\n        self.index_file_with_generation(uri, text, generation)?;\n        Ok(generation)\n    }\n\n    fn allocate_live_generation(&self) -> Result<u32, String> {\n        let generation = self\n            .live_generation\n            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {\n                (current < i32::MAX as u64).then_some(current + 1)\n            })\n            .map_err(|_| "Live workspace generation space exhausted".to_string())?;\n        u32::try_from(generation)\n            .map_err(|_| "Live workspace generation exceeds supported range".to_string())\n    }\n\n    /// Index a file from its URI, text content, and document generation.\n''',
+          )
+
+          p = Path(index)
+          text = p.read_text()
+          old = "                if existing_index.content_hash == content_hash {\n"
+          new = '''                if existing_index.content_hash == content_hash\n                    && self\n                        .document_store\n                        .get(&uri_str)\n                        .is_some_and(|document| document.text() == text)\n                {\n'''
+          if text.count(old) < 1:
+              raise SystemExit("workspace_index.rs: unchanged-content guard not found")
+          text = text.replace(old, new, 1)
+
+          start_marker = "        // Update document store AFTER releasing `files.write()` (#3722).\n"
+          end_marker = "        let mut parser = Parser::new(&text);\n"
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit("workspace_index.rs: candidate staging block not found")
+          candidate = '''        // Build source and line-index state privately. Accepted workspace source\n        // remains untouched until parse, extraction, admission, and generation\n        // checks have succeeded (#8035).\n        let doc_version = i32::try_from(generation)\n            .map_err(|_| "Document generation exceeds supported range".to_string())?\n            .max(1);\n        let candidate_document = Document::new(uri_str.clone(), doc_version, text.clone());\n'''
+          text = text[:start] + candidate + text[end:]
+          text = text.replace(
+              '                self.restore_document(&uri_str, &text, previous_document.as_ref());\n',
+              '',
+          )
+          old_doc = '''        let mut doc = match self.document_store.get(&uri_str) {\n            Some(document) => document,\n            None => {\n                return Err("Document not found".to_string());\n            }\n        };\n'''
+          if text.count(old_doc) != 1:
+              raise SystemExit(f"workspace_index.rs: expected one accepted-document lookup, found {text.count(old_doc)}")
+          text = text.replace(
+              old_doc,
+              '''        // Extraction consumes the exact same private bytes and line index as\n        // the parser above; no accepted DocumentStore entry is consulted.\n        let mut doc = candidate_document.clone();\n''',
+              1,
+          )
+          helper = '''    fn restore_document(&self, uri: &str, rejected_text: &str, previous: Option<&Document>) {\n        self.document_store.restore_if_current(uri, 1, rejected_text, previous);\n    }\n\n'''
+          if text.count(helper) != 1:
+              raise SystemExit(f"workspace_index.rs: restore helper count {text.count(helper)}")
+          text = text.replace(helper, '', 1)
+          commit_marker = "            // Remove stale global references from previous version of this file\n"
+          if text.count(commit_marker) != 1:
+              raise SystemExit("workspace_index.rs: document publication insertion point not found")
+          commit = '''            // Publish the candidate source only after every fallible semantic and\n            // admission step has succeeded. A concurrent newer source change makes\n            // this compare-and-replace fail without contaminating accepted state.\n            if !self.document_store.replace_if_current(\n                &uri_str,\n                previous_document.as_ref(),\n                candidate_document,\n            ) {\n                #[cfg(test)]\n                reindex_metrics::record_stale_rejected_post_parse();\n                return Ok(());\n            }\n\n'''
+          text = text.replace(commit_marker, commit + commit_marker, 1)
+          p.write_text(text)
+
+          lifecycle = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
+          replace_once(
+              lifecycle,
+              "                        let _ = index.index_file(url, text);\n",
+              "                        let _ = index.index_file_with_generation(url, text, doc_gen_val);\n",
+          )
+
+          workspace = "crates/perl-lsp-rs/src/runtime/workspace.rs"
+          replace_once(
+              workspace,
+              '''                // Clear old index data before re-indexing\n                workspace_index.clear_file(uri);\n                match workspace_index.index_file(url, content.clone()) {\n                    Ok(()) => tracing::debug!("Re-indexed file: {}", uri),\n''',
+              '''                // Keep live source mutations generation-tracked. The transactional\n                // stable-read path later replaces this legacy clear/rebuild shape.\n                workspace_index.clear_file(uri);\n                match workspace_index.index_live_file(url, content.clone()) {\n                    Ok(generation) => {\n                        tracing::debug!(generation, "Re-indexed file: {}", uri)\n                    }\n''',
+          )
+          replace_once(
+              workspace,
+              '''                                match coordinator.index().index_file(url, content) {\n                                    Ok(()) => {\n                                        tracing::debug!("Indexed new file: {}", uri)\n                                    }\n''',
+              '''                                match coordinator.index().index_live_file(url, content) {\n                                    Ok(generation) => {\n                                        tracing::debug!(generation, "Indexed new file: {}", uri)\n                                    }\n''',
+          )
+          replace_once(
+              workspace,
+              '''                                    match coordinator.index().index_file(url, content) {\n                                        Ok(()) => {\n                                            tracing::debug!("Indexed renamed file: {}", new_uri)\n                                        }\n''',
+              '''                                    match coordinator.index().index_live_file(url, content) {\n                                        Ok(generation) => {\n                                            tracing::debug!(generation, "Indexed renamed file: {}", new_uri)\n                                        }\n''',
+          )
+
+          test_path = Path("crates/perl-workspace/tests/live_generation_commit.rs")
+          test_path.write_text(r'''use perl_workspace::workspace::workspace_index::{IndexResourceLimits, WorkspaceIndex};
+use url::Url;
+
+#[test]
+fn live_index_generation_is_nonzero_and_monotonic() -> Result<(), String> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///live-generation.pl").map_err(|error| error.to_string())?;
+
+    let first = index.index_live_file(uri.clone(), "sub first { 1 }".to_string())?;
+    let second = index.index_live_file(uri.clone(), "sub second { 2 }".to_string())?;
+
+    assert!(first > 0);
+    assert!(second > first);
+    assert_eq!(index.indexed_generation(uri.as_str()), Some(second));
+    assert_eq!(index.document_store().get_text(uri.as_str()).as_deref(), Some("sub second { 2 }"));
+    Ok(())
+}
+
+#[test]
+fn failed_candidate_does_not_replace_accepted_source() -> Result<(), String> {
+    let mut limits = IndexResourceLimits::default();
+    limits.max_total_symbols = 1;
+    let index = WorkspaceIndex::with_resource_limits(limits);
+    let uri = Url::parse("file:///candidate-rejection.pl").map_err(|error| error.to_string())?;
+    let accepted = "# accepted source\n";
+
+    index.index_file_with_generation(uri.clone(), accepted.to_string(), 5)?;
+    let result = index.index_file_with_generation(
+        uri.clone(),
+        "sub one { 1 }\nsub two { 2 }\n".to_string(),
+        6,
+    );
+
+    assert!(result.is_err(), "resource admission must reject the candidate");
+    assert_eq!(index.indexed_generation(uri.as_str()), Some(5));
+    assert_eq!(index.document_store().get_text(uri.as_str()).as_deref(), Some(accepted));
+    Ok(())
+}
+
+#[test]
+fn older_candidate_cannot_replace_newer_accepted_source() -> Result<(), String> {
+    let index = WorkspaceIndex::new();
+    let uri = Url::parse("file:///candidate-order.pl").map_err(|error| error.to_string())?;
+
+    index.index_file_with_generation(uri.clone(), "sub current { 2 }".to_string(), 8)?;
+    index.index_file_with_generation(uri.clone(), "sub stale { 1 }".to_string(), 7)?;
+
+    assert_eq!(index.indexed_generation(uri.as_str()), Some(8));
+    assert_eq!(index.document_store().get_text(uri.as_str()).as_deref(), Some("sub current { 2 }"));
+    Ok(())
+}
+''')
+          PY
+
+      - name: Format and prove focused behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo test -p perl-workspace --test live_generation_commit --locked
+          cargo test -p perl-workspace document_store --locked
+          cargo test -p perl-lsp-rs --lib did_save --locked
+          cargo clippy -p perl-workspace -p perl-lsp-rs --all-targets --locked -- -D warnings
+          git diff --check
+
+      - name: Assert live runtime callers do not use generation-zero wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          checks = {
+              "crates/perl-lsp-rs/src/runtime/workspace.rs": [
+                  "workspace_index.index_file(url, content.clone())",
+                  "coordinator.index().index_file(url, content)",
+              ],
+              "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs": [
+                  "let _ = index.index_file(url, text);",
+              ],
+          }
+          for path, forbidden in checks.items():
+              text = Path(path).read_text()
+              for token in forbidden:
+                  if token in text:
+                      raise SystemExit(f"{path}: live generation-zero caller remains: {token}")
+          PY
+
+      - name: Commit implementation and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/one-shot-8035.yml
+          git diff --check
+          git config user.name "EffortlessSteven"
+          git config user.email "git@effortlesssteven.com"
+          git add crates/perl-workspace/src/workspace/document_store.rs \
+                  crates/perl-workspace/src/workspace/workspace_index.rs \
+                  crates/perl-workspace/tests/live_generation_commit.rs \
+                  crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs \
+                  crates/perl-lsp-rs/src/runtime/workspace.rs \
+                  .github/workflows/one-shot-8035.yml
+          git commit -m "fix(workspace): prohibit generation-zero live index commits (#8035)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
