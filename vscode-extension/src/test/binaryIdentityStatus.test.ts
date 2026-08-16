@@ -4,10 +4,7 @@ import type {
   BinaryIdentityPacketV1,
   BinaryIdentityResponseV1,
 } from '../binaryIdentityProtocol.generated';
-import {
-  BinaryIdentityNoticeTracker,
-  projectBinaryIdentityStatus,
-} from '../binaryIdentityStatus';
+import { BinaryIdentityNoticeTracker, projectBinaryIdentityStatus } from '../binaryIdentityStatus';
 
 function packet(role: 'server' | 'dap' = 'server'): BinaryIdentityPacketV1 {
   const executable = role === 'server' ? 'perllsp' : 'perl-dap';
