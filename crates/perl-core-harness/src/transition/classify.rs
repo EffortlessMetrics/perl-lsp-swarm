@@ -16,7 +16,8 @@
 use crate::transition::model::AcceptedBaseline;
 use crate::transition::validate::{validate_accepted_baseline, validate_run_report};
 use perl_core_harness_types::{
-    CompatibilityTransition, CompileBaselineV2, RunFileResult, RunReport, RunnerStatus,
+    CompatibilityTransition, CompileBaseline, CompileBaselineV2, RunFileResult, RunReport,
+    RunnerStatus,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,10 +52,17 @@ pub fn classify_transition(accepted: &AcceptedBaseline, current: &RunReport) -> 
         ));
     }
 
-    if let AcceptedBaseline::V2(value) = accepted
-        && let Some(reason) = v2_subject_incomparable(value, current)
-    {
-        return not_proven(reason);
+    match accepted {
+        AcceptedBaseline::V2(value) => {
+            if let Some(reason) = v2_subject_incomparable(value, current) {
+                return not_proven(reason);
+            }
+        }
+        AcceptedBaseline::V1(value) => {
+            if let Some(reason) = v1_subject_incomparable(value, current) {
+                return not_proven(reason);
+            }
+        }
     }
 
     let accepted_by_path = index_by_path(accepted.file_results());
@@ -120,6 +128,30 @@ fn v2_subject_incomparable(value: &CompileBaselineV2, current: &RunReport) -> Op
         "accepted and current observations are not comparable: V2 subject identity or immutable file membership differs"
             .into(),
     )
+}
+
+/// V1 baselines carry mode and profile but no canonical membership list, so
+/// comparability is limited to the run subject dimensions that are present.
+///
+/// V1 subject checks are deliberately more conservative than V2: runner is
+/// required on V1 baselines via the struct field, but there is no immutable
+/// `file_membership` denominator to cross-check, so file sets are compared
+/// directly from `file_results`.
+fn v1_subject_incomparable(value: &CompileBaseline, current: &RunReport) -> Option<String> {
+    // Mode and profile must match so the observations are measuring the same thing.
+    if value.mode != current.mode {
+        return Some(format!(
+            "accepted and current observations are not comparable: V1 accepted mode {:?} differs from current mode {:?}",
+            value.mode, current.mode
+        ));
+    }
+    if value.profile != current.profile {
+        return Some(format!(
+            "accepted and current observations are not comparable: V1 accepted profile {:?} differs from current profile {:?}",
+            value.profile, current.profile
+        ));
+    }
+    None
 }
 
 fn not_proven(reason: String) -> Classification {

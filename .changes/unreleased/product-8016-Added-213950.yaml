@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Added checked test fixtures.
+time: 2026-08-13T21:39:50Z
+custom:
+  PR: "8016"
+  Slug: checked-test-fixtures
+  Breaking: "no"
