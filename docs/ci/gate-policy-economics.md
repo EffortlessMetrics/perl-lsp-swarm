@@ -43,9 +43,9 @@ number of gates (e.g. `lsp_tier_a`) span two lanes.
 Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping.py --strict`,
 which is the authority for these counts. Last refreshed 2026-08-03 (#5709):
 
-- 67 gates in `.ci/gate-policy.yaml`
+- 71 gates in `.ci/gate-policy.yaml`
 - 24 lanes in `policy/ci-lanes.toml`
-- 67 / 67 gates have at least one lane mapping
+- 71 / 71 gates have at least one lane mapping
 - 0 gates point at a non-existent lane
 
 ---
@@ -60,7 +60,7 @@ which is the authority for these counts. Last refreshed 2026-08-03 (#5709):
 | `conflict_markers` | `check_conflict_markers` |
 | `ux_tests` | `lsp_smoke`, `lsp_tier_a` |
 | `docs_gate` | `adr_link_check`, `docs_build` |
-| `release_check` | `published_crate_count`, `release_build`, `version_sync`, `sbom_verify`, `determinism_check`, `inline_completion_binary_smoke` |
+| `release_check` | `release_build`, `version_sync`, `sbom_verify`, `determinism_check`, `inline_completion_binary_smoke` |
 | `security_audit` | `security_audit` |
 | `mutation` | `mutation`, `corpus_validation`, `corpus_sweep` |
 | `fuzz` | `fuzz` |
