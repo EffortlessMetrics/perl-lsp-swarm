@@ -20,6 +20,7 @@ mod types;
 mod utils;
 use tasks::check_test_wiring;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
+use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
 use tasks::issue_plan::IssuePlanOutputFormat;
@@ -826,6 +827,22 @@ enum Commands {
         /// Strict mode: fail on any regression above baseline
         #[arg(long)]
         strict: bool,
+    },
+
+    /// Dependency hygiene: identify unused Cargo dependencies (authority: #9364).
+    ///
+    /// Uses cargo-machete as the V1 primary instrument. Produces typed
+    /// item-level findings with outcome vocabulary:
+    /// SUCCESS | POLICY_FINDING | NOT_PROVEN | NOT_APPLICABLE.
+    ///
+    /// Never installs tools as a side effect. cargo-udeps is removed from the
+    /// active hygiene path; see issue #9364 for re-introduction criteria.
+    #[command(name = "dependency-hygiene")]
+    DependencyHygiene {
+        /// Mode: check (default) fails closed on any finding; report writes JSON
+        /// and exits 0.
+        #[arg(value_enum, default_value = "check")]
+        mode: DependencyHygieneMode,
     },
 
     /// Run a developer environment smoke check.
@@ -4261,6 +4278,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Highlight { path, scanner } => highlight::run(path, scanner),
         Commands::Clean { all } => clean::run(all),
         Commands::DeadCode { mode, strict } => dead_code::run(DeadCodeConfig { mode, strict }),
+        Commands::DependencyHygiene { mode } => {
+            dependency_hygiene::run(DependencyHygieneConfig { mode })
+        }
         #[cfg(feature = "parser-tasks")]
         Commands::Bindings { header, output } => bindings::run(header, output),
         Commands::Dev { watch, port } => dev::run(watch, port),
