@@ -46,54 +46,33 @@ pub struct LocalSymbolTable {
 impl LocalSymbolTable {
     /// Scan Perl source for statically declared `sub NAME` forms.
     ///
-    /// The scanner is O(n) over source bytes and deliberately source-only. It
-    /// recognizes the same Unicode identifier starts/continuations as the
-    /// native lexer, including `::` and legacy apostrophe package separators.
-    /// It excludes declarations spelled inside line comments, ordinary and
-    /// quote-like strings, pattern bodies, POD, recognized heredoc bodies, and
-    /// `__DATA__`/`__END__`.
+    /// The scanner is deliberately source-only. It recognizes the same Unicode
+    /// identifier starts/continuations as the native lexer, including `::` and
+    /// legacy apostrophe package separators. It excludes declarations spelled
+    /// inside line comments, ordinary and quote-like strings, pattern bodies,
+    /// POD, recognized heredoc bodies, and `__DATA__`/`__END__`.
     ///
     /// Imported symbols, dynamic declarations, format bodies, `eval`, `AUTOLOAD`,
-    /// source filters, and workspace symbols are not inferred.
+    /// source filters, and workspace symbols are not inferred. A heredoc opener
+    /// is therefore still missed when its callable is only imported, never
+    /// declared in this file.
+    ///
+    /// # Cost
+    ///
+    /// Two linear passes over source bytes on well-formed input, including
+    /// input carrying many *closed* quote-like constructs. Input carrying many
+    /// *unclosed* quote-like openers is quadratic, because each opener
+    /// pre-validates closure against the remaining source; see #6732 for the
+    /// bounded-lookahead follow-up.
     pub fn scan_subs(input: &str) -> Self {
-        let mut known_subs = HashSet::new();
-        let mut state = ScanState::default();
-        let bytes = input.as_bytes();
-        let mut line_start = 0usize;
-
-        while line_start < bytes.len() {
-            let (line_end, next_line_start) = line_bounds(bytes, line_start);
-            let line = &input[line_start..line_end];
-
-            if let Some(pending) = state.pending_heredocs.front() {
-                if pending.matches_terminator(line) {
-                    state.pending_heredocs.pop_front();
-                }
-                line_start = next_line_start;
-                continue;
-            }
-
-            if state.in_pod {
-                if is_pod_cut(line) {
-                    state.in_pod = false;
-                }
-                line_start = next_line_start;
-                continue;
-            }
-
-            if state.quote == QuoteState::Code && starts_pod(line) {
-                state.in_pod = true;
-                line_start = next_line_start;
-                continue;
-            }
-
-            if state.quote == QuoteState::Code && is_data_marker(line) {
-                break;
-            }
-
-            scan_code_line(input, line_start, line, &mut state, &mut known_subs);
-            line_start = next_line_start;
-        }
+        // Two passes. Whether `NAME <<TERM` opens a heredoc depends on whether
+        // `NAME` is a callable, but a single forward pass only knows the
+        // declarations it has already walked past, so an opener whose callable
+        // is declared further down the file is missed and its body is scanned
+        // as code. The first pass therefore only collects candidate declaration
+        // names; the second pass consults them from the first line onward.
+        let hints = scan_pass(input, &HashSet::new());
+        let known_subs = scan_pass(input, &hints);
 
         Self { known_subs: Arc::new(known_subs) }
     }
@@ -245,12 +224,69 @@ fn is_data_marker(line: &str) -> bool {
     matches!(line.trim_end_matches([' ', '\t']), "__DATA__" | "__END__")
 }
 
+/// Run one full forward scan, treating `hints` as additional callable names.
+///
+/// `hints` is empty on the first pass and carries the first pass's declaration
+/// names on the second, which is what lets a heredoc opener recognize a
+/// callable declared later in the file.
+fn scan_pass(input: &str, hints: &HashSet<Box<str>>) -> HashSet<Box<str>> {
+    let mut known_subs = HashSet::new();
+    let mut state = ScanState::default();
+    let bytes = input.as_bytes();
+    let mut line_start = 0usize;
+
+    while line_start < bytes.len() {
+        let (line_end, next_line_start) = line_bounds(bytes, line_start);
+        let line = &input[line_start..line_end];
+
+        if let Some(pending) = state.pending_heredocs.front() {
+            if pending.matches_terminator(line) {
+                state.pending_heredocs.pop_front();
+            }
+            line_start = next_line_start;
+            continue;
+        }
+
+        if state.in_pod {
+            if is_pod_cut(line) {
+                state.in_pod = false;
+            }
+            line_start = next_line_start;
+            continue;
+        }
+
+        if state.quote == QuoteState::Code && starts_pod(line) {
+            state.in_pod = true;
+            line_start = next_line_start;
+            continue;
+        }
+
+        if state.quote == QuoteState::Code && is_data_marker(line) {
+            break;
+        }
+
+        scan_code_line(input, line_start, line, &mut state, &mut known_subs, hints);
+        line_start = next_line_start;
+    }
+
+    known_subs
+}
+
+/// Return `true` if `word` names something callable for prepass purposes.
+///
+/// `known_subs` holds declarations already seen in this pass; `hints` holds the
+/// previous pass's declarations, which cover callables declared further down.
+fn is_callable_word(word: &str, known_subs: &HashSet<Box<str>>, hints: &HashSet<Box<str>>) -> bool {
+    is_builtin_function(word) || known_subs.contains(word) || hints.contains(word)
+}
+
 fn scan_code_line(
     input: &str,
     line_start: usize,
     line: &str,
     state: &mut ScanState,
     known_subs: &mut HashSet<Box<str>>,
+    hints: &HashSet<Box<str>>,
 ) {
     let mut offset = 0usize;
 
@@ -295,7 +331,7 @@ fn scan_code_line(
         }
 
         if ch == '\'' {
-            if apostrophe_is_package_separator(line, offset, known_subs) {
+            if apostrophe_is_package_separator(line, offset, known_subs, hints) {
                 offset += ch.len_utf8();
             } else {
                 state.quote = QuoteState::Single;
@@ -315,7 +351,7 @@ fn scan_code_line(
         }
 
         if line[offset..].starts_with("<<")
-            && heredoc_allowed_before(line, offset, known_subs)
+            && heredoc_allowed_before(line, offset, known_subs, hints)
             && let Some((pending, end)) = parse_heredoc_opener(line, offset)
         {
             state.pending_heredocs.push_back(pending);
@@ -367,6 +403,7 @@ fn apostrophe_is_package_separator(
     line: &str,
     offset: usize,
     known_subs: &HashSet<Box<str>>,
+    hints: &HashSet<Box<str>>,
 ) -> bool {
     let before = line[..offset].chars().next_back();
     let after = line[offset + '\''.len_utf8()..].chars().next();
@@ -375,8 +412,7 @@ fn apostrophe_is_package_separator(
         return false;
     }
 
-    previous_word_before(line, offset)
-        .is_none_or(|word| !is_builtin_function(word) && !known_subs.contains(word))
+    previous_word_before(line, offset).is_none_or(|word| !is_callable_word(word, known_subs, hints))
 }
 
 fn paired_delimiter(opener: char) -> Option<char> {
@@ -659,7 +695,12 @@ fn is_name_segment_continue(ch: char) -> bool {
     ch != '\'' && is_perl_identifier_continue(ch)
 }
 
-fn heredoc_allowed_before(line: &str, offset: usize, known_subs: &HashSet<Box<str>>) -> bool {
+fn heredoc_allowed_before(
+    line: &str,
+    offset: usize,
+    known_subs: &HashSet<Box<str>>,
+    hints: &HashSet<Box<str>>,
+) -> bool {
     let prefix = line[..offset].trim_end_matches([' ', '\t']);
     if prefix.is_empty() {
         return true;
@@ -673,8 +714,7 @@ fn heredoc_allowed_before(line: &str, offset: usize, known_subs: &HashSet<Box<st
         return true;
     }
 
-    previous_word_before(line, offset)
-        .is_some_and(|word| is_builtin_function(word) || known_subs.contains(word))
+    previous_word_before(line, offset).is_some_and(|word| is_callable_word(word, known_subs, hints))
 }
 
 fn parse_heredoc_opener(line: &str, start: usize) -> Option<(PendingHeredoc, usize)> {
@@ -939,6 +979,35 @@ mod tests {
         assert!(table.is_known_sub("sink"));
         assert!(table.is_known_sub("real"));
         assert!(!table.is_known_sub("fake"));
+    }
+
+    #[test]
+    fn later_declared_callable_heredoc_excludes_its_body() {
+        // The declaration order that a single forward pass cannot see: `sink`
+        // is only declared after the opener that uses it.
+        let source = concat!("sink <<END;\n", "sub fake { }\n", "END\n", "sub sink { }\n",);
+        let table = LocalSymbolTable::scan_subs(source);
+
+        assert!(table.is_known_sub("sink"), "the real declaration must still be recorded");
+        assert!(
+            !table.is_known_sub("fake"),
+            "a heredoc body must not declare a sub even when its callable is declared later"
+        );
+    }
+
+    #[test]
+    fn later_declared_callable_heredoc_preserves_the_division_path() {
+        // The consequence the exclusion exists for: a name spelled only inside
+        // the heredoc body must not flip a later slash to a regex.
+        let source =
+            concat!("sink <<END;\n", "sub fake { }\n", "END\n", "sub sink { }\n", "fake /x/;\n",);
+        let table = LocalSymbolTable::scan_subs(source);
+        let tokens = tokens_with_table(source, table);
+
+        assert!(
+            !tokens.iter().any(|token| matches!(&token.token_type, TokenType::RegexMatch)),
+            "a heredoc-only name must keep the division path"
+        );
     }
 
     #[test]
