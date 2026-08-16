@@ -1525,6 +1525,22 @@ created = "2026-08-16"
 review_after = "2026-09-16"
 
 [[allow]]
+id = "non-rust-publication-runtime-identity-schema"
+path = "schemas/publication_runtime_identity.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned bundle schema for staged-executable runtime identity evidence — host-side digests, path roles, and self-reported packets — projected into the publication-drift classifier input (#6856)."
+covered_by = [
+  "python3 -m unittest scripts.release.test_publication_runtime_identity",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
 id = "non-rust-product-7810-changelog-fragment"
 path = ".changes/unreleased/product-7810-Added-100438.yaml"
 kind = "release_metadata"
