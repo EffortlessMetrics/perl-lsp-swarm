@@ -102,7 +102,8 @@ Host binaries on an internal web server for automatic distribution.
    }
    ```
 
-3. **Configure VS Code** workspace settings:
+3. **Configure VS Code** User settings — `downloadBaseUrl` and `versionTag` are
+   machine-scoped too, so a repository cannot supply them:
    ```json
    {
      "perl-lsp.autoDownload": true,
@@ -157,7 +158,7 @@ Package the binary directly with the extension.
    npx vsce package
    ```
 
-4. **Configure workspace** (optional - binaries auto-detected):
+4. **Configure User settings** (optional - binaries auto-detected):
    ```json
    {
      "perl-lsp.autoDownload": false
