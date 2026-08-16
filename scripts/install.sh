@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Perl LSP installer — Linux and macOS
 #
-# Usage (curl-pipeable):
-#   curl -fsSL https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp/master/scripts/install.sh | bash
+# Run from a reviewed clone or through the identity-bound root install.sh
+# wrapper. The canonical installer is not itself a mutable curl-pipe authority.
 #
-# Or with options via environment variables:
+# Options via environment variables:
 #   VERSION=v0.12.0 INSTALL_DIR=/usr/local/bin bash scripts/install.sh
 #   PERL_LSP_LINUX_LIBC=gnu bash scripts/install.sh
 #   PERL_LSP_LINUX_LIBC=musl bash scripts/install.sh
 #   BUILD_FROM_SOURCE=1 bash scripts/install.sh   # force cargo build/install
 #   bash scripts/install.sh --print-target
+#   bash scripts/install.sh --with-claude        # install perllsp, then reconcile Claude
 #
 # Supported platforms:
 #   Linux x86_64 (musl/gnu), Linux aarch64 (musl/gnu), macOS x86_64, macOS aarch64
@@ -23,6 +24,8 @@ PERL_LSP_LINUX_LIBC="${PERL_LSP_LINUX_LIBC:-auto}"
 PREFER_GNU="${PREFER_GNU:-0}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-0}"
 PRINT_TARGET=0
+WITH_CLAUDE=0
+CLAUDE_SETUP_RESULT="not_requested"
 
 # Determine install directory: user-local by default, system-wide if explicitly set
 if [ -z "${INSTALL_DIR:-}" ]; then
@@ -59,9 +62,19 @@ while [ "$#" -gt 0 ]; do
             PRINT_TARGET=1
             shift
             ;;
+        --with-claude)
+            WITH_CLAUDE=1
+            shift
+            ;;
         -h|--help)
             cat <<'USAGE'
-Usage: scripts/install.sh [--print-target]
+Usage: scripts/install.sh [--print-target] [--with-claude]
+
+Options:
+  --print-target                         Print selected release target and exit.
+  --with-claude                          After installing/verifying perllsp, run
+                                         `perllsp setup claude` through the exact
+                                         installed binary.
 
 Environment:
   VERSION=<latest|vX.Y.Z|X.Y.Z>        Release to install.
@@ -73,6 +86,11 @@ Environment:
 Most Linux distributions use gnu/glibc. Use musl mainly for Alpine Linux and
 musl-based containers. --print-target prints the selected release target and
 exits without downloading.
+
+--with-claude is composition only: the installer still installs one `perllsp`
+binary and delegates all Claude marketplace/plugin lifecycle to the Rust-owned
+`perllsp setup claude` command. It does not prove fresh-process PATH visibility;
+that remains a separate installation receipt.
 USAGE
             exit 0
             ;;
@@ -280,14 +298,100 @@ Check your internet connection or set VERSION=v<x.y.z> to pin a version."
 
 # ── Download and verify ────────────────────────────────────────────────────────
 
+select_sha256_tool() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s\n' "sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s\n' "shasum"
+    else
+        err "sha256sum or shasum is required to verify release artifacts"
+    fi
+}
+
+calculate_sha256() {
+    local _tool="$1" _path="$2" _output
+    case "$_tool" in
+        sha256sum)
+            _output="$(sha256sum "$_path")" || err "sha256sum failed for $_path"
+            ;;
+        shasum)
+            _output="$(shasum -a 256 "$_path")" || err "shasum failed for $_path"
+            ;;
+        *)
+            err "unsupported SHA-256 tool: $_tool"
+            ;;
+    esac
+    printf '%s\n' "${_output%%[[:space:]]*}"
+}
+
+checksum_for_asset() {
+    local _sums="$1" _asset="$2"
+    local _line _hash _rest _name _expected="" _count=0
+
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        _line="${_line%$'\r'}"
+        [ -z "$_line" ] && continue
+
+        _hash="${_line%%[[:space:]]*}"
+        _rest="${_line#"$_hash"}"
+        while [ -n "$_rest" ]; do
+            case "$_rest" in
+                ' '*) _rest="${_rest# }" ;;
+                $'\t'*) _rest="${_rest#$'\t'}" ;;
+                *) break ;;
+            esac
+        done
+        _name="${_rest#\*}"
+
+        if [ "$_name" != "$_asset" ]; then
+            continue
+        fi
+
+        _count=$((_count + 1))
+        if [ "${#_hash}" -ne 64 ]; then
+            err "malformed SHA256SUMS entry for ${_asset}: expected 64 hexadecimal characters"
+        fi
+        case "$_hash" in
+            *[!0-9a-f]*)
+                err "malformed SHA256SUMS entry for ${_asset}: hash must be lowercase hexadecimal"
+                ;;
+        esac
+        _expected="$_hash"
+    done < "$_sums"
+
+    if [ "$_count" -eq 0 ]; then
+        err "SHA256SUMS contains no exact entry for ${_asset}"
+    fi
+    if [ "$_count" -ne 1 ]; then
+        err "SHA256SUMS contains duplicate entries for ${_asset}"
+    fi
+
+    printf '%s\n' "$_expected"
+}
+
 download_and_verify() {
     local _asset="${BIN_NAME}-${VERSION_NUM}-${TARGET}.tar.gz"
     local _base_url="https://github.com/${REPO}/releases/download/${TAG}"
+    local _archive="${TMPDIR}/${_asset}"
+    local _sums="${TMPDIR}/SHA256SUMS"
+    local _sha_tool _expected _actual
 
     ASSET_URL="${_base_url}/${_asset}"
     CHECKSUM_URL="${_base_url}/SHA256SUMS"
 
-    local _archive="${TMPDIR}/${_asset}"
+    # Fail before network access when this host cannot verify the downloaded
+    # artifact. Integrity is a required control, not a warning-only feature.
+    if ! _sha_tool="$(select_sha256_tool)"; then
+        return 1
+    fi
+
+    info "downloading SHA256SUMS"
+    if ! curl -fsSL "$CHECKSUM_URL" -o "$_sums"; then
+        err "failed to download required checksum manifest: $CHECKSUM_URL"
+    fi
+    if ! _expected="$(checksum_for_asset "$_sums" "$_asset")"; then
+        return 1
+    fi
 
     info "downloading ${_asset}"
     if ! curl -fsSL --progress-bar "$ASSET_URL" -o "$_archive"; then
@@ -299,38 +403,16 @@ If this version does not have a pre-built binary for your platform, try:
   cargo install perllsp --target $TARGET"
     fi
 
-    # Verify checksum when SHA256SUMS is available.
-    local _sums="${TMPDIR}/SHA256SUMS"
-    if curl -fsSL "$CHECKSUM_URL" -o "$_sums" 2>/dev/null; then
-        local _expected _actual
-        _expected="$(grep "${_asset}" "$_sums" | awk '{print $1}')"
-
-        if [ -z "$_expected" ]; then
-            warn "no checksum entry found for ${_asset}; skipping verification"
-        else
-            if command -v sha256sum >/dev/null 2>&1; then
-                _actual="$(sha256sum "$_archive" | awk '{print $1}')"
-            elif command -v shasum >/dev/null 2>&1; then
-                _actual="$(shasum -a 256 "$_archive" | awk '{print $1}')"
-            else
-                warn "neither sha256sum nor shasum found; skipping checksum verification"
-                _actual=""
-            fi
-
-            if [ -n "$_actual" ]; then
-                if [ "$_expected" = "$_actual" ]; then
-                    info "checksum verified"
-                else
-                    err "checksum mismatch for ${_asset}
+    if ! _actual="$(calculate_sha256 "$_sha_tool" "$_archive")"; then
+        return 1
+    fi
+    if [ "$_expected" != "$_actual" ]; then
+        err "checksum mismatch for ${_asset}
   expected: $_expected
   actual:   $_actual
 The download may be corrupted. Delete any cached files and retry."
-                fi
-            fi
-        fi
-    else
-        warn "could not download SHA256SUMS; skipping checksum verification"
     fi
+    info "checksum verified"
 
     ARCHIVE_PATH="$_archive"
     EXTRACT_DIR="${TMPDIR}/${BIN_NAME}-${VERSION_NUM}-${TARGET}"
@@ -440,6 +522,46 @@ check_path() {
     esac
 }
 
+configure_claude() {
+    if [ "$WITH_CLAUDE" != "1" ]; then
+        return 0
+    fi
+
+    # User-scoped Claude reconciliation must not run as root. Elevated installs
+    # (`sudo INSTALL_DIR=...`) remain supported for the binary stage only.
+    if [ "$(id -u)" -eq 0 ]; then
+        CLAUDE_SETUP_RESULT="skipped_elevated"
+        warn "skipping Claude reconciliation under elevated privileges; install kept the binary and the invoking user should rerun '$BIN_NAME setup claude' without sudo"
+        return 2
+    fi
+
+    local _bin="$INSTALL_DIR/$BIN_NAME"
+    local _status=0
+    info "reconciling Claude Code through '$BIN_NAME setup claude'"
+
+    # Invoke the exact verified binary by absolute path because this installer process may
+    # still have a stale PATH. This is composition only and MUST NOT be interpreted as
+    # fresh-process PATH proof; #7832/#7746 own that separate receipt.
+    "$_bin" setup claude || _status=$?
+
+    case "$_status" in
+        0)
+            CLAUDE_SETUP_RESULT="complete"
+            info "Claude integration reconciled"
+            ;;
+        2)
+            CLAUDE_SETUP_RESULT="action_required"
+            warn "perllsp installed successfully, but Claude integration still requires an action; the binary has been preserved"
+            ;;
+        *)
+            CLAUDE_SETUP_RESULT="failed"
+            warn "perllsp installed successfully, but Claude reconciliation failed; rerun '$BIN_NAME setup claude' after resolving the reported problem"
+            ;;
+    esac
+
+    return "$_status"
+}
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 main() {
@@ -481,16 +603,31 @@ main() {
     verify_install
     check_path
 
+    local _combined_exit=0
+    configure_claude || _combined_exit=$?
+
     say ""
     say "Done. ${BIN_NAME} ${VERSION_NUM} installed to ${INSTALL_DIR}/${BIN_NAME}"
+    if [ "$WITH_CLAUDE" = "1" ]; then
+        say "Claude integration: ${CLAUDE_SETUP_RESULT}"
+    fi
     say ""
     say "Get started:"
     say "  VS Code:  install the Perl LSP extension from the marketplace"
     say "  Vim/Neovim: add perllsp to your LSP config"
     say "  Other:    configure to use '${INSTALL_DIR}/${BIN_NAME} --stdio'"
+    if [ "$WITH_CLAUDE" = "1" ] && [ "$CLAUDE_SETUP_RESULT" != "complete" ]; then
+        say "  Claude:   rerun '${BIN_NAME} setup claude' after the reported action is resolved"
+    fi
     say ""
     say "Docs: https://github.com/$REPO"
     say ""
+
+    return "$_combined_exit"
 }
 
-main "$@"
+# Internal proof seam: tests may source the functions without performing an
+# install. Ordinary execution remains unchanged.
+if [ "${PERL_LSP_INSTALLER_LIBRARY_ONLY:-0}" != "1" ]; then
+    main "$@"
+fi

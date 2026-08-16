@@ -1,9 +1,10 @@
 //! Property-based tests for `perl-regex` validation functions.
 //!
 //! Verifies that all public APIs are panic-free on arbitrary input and that
-//! key invariants hold: determinism, capture-index monotonicity, and
+//! key invariants hold: determinism, source-ordered capture declarations, and
 //! conservative code-execution detection.
 
+use perl_regex::analyzer::{CaptureLanguageProfile, EffectiveModifiers};
 use perl_regex::{RegexAnalyzer, RegexValidator};
 use proptest::prelude::*;
 
@@ -60,6 +61,16 @@ proptest! {
         let _ = RegexAnalyzer::extract_named_captures(&s);
     }
 
+    /// `analyze_captures()` must never panic.
+    #[test]
+    fn analyze_captures_never_panics(s in ascii_pattern()) {
+        let _ = RegexAnalyzer::analyze_captures(
+            &s,
+            EffectiveModifiers::default(),
+            CaptureLanguageProfile::unknown(),
+        );
+    }
+
     /// `hover_text_for_regex()` must never panic on arbitrary pattern + modifiers.
     #[test]
     fn hover_text_never_panics(s in ascii_pattern(), m in modifiers()) {
@@ -100,18 +111,24 @@ proptest! {
         prop_assert_eq!(v.detect_nested_quantifiers(&s), v.detect_nested_quantifiers(&s));
     }
 
-    /// Named capture indices are strictly monotonically increasing (1-based).
+    /// Capture declarations stay in source order even when branch-reset numbering
+    /// intentionally restarts and therefore is not monotonic.
     #[test]
-    fn capture_indices_are_monotonic(s in ascii_pattern()) {
-        let caps = RegexAnalyzer::extract_named_captures(&s);
-        for window in caps.windows(2) {
+    fn capture_declarations_are_source_ordered(s in ascii_pattern()) {
+        let analysis = RegexAnalyzer::analyze_captures(
+            &s,
+            EffectiveModifiers::default(),
+            CaptureLanguageProfile::unknown(),
+        );
+        for window in analysis.declarations.windows(2) {
             prop_assert!(
-                window[1].index > window[0].index,
-                "indices not strictly increasing: {} then {} in {:?}",
-                window[0].index,
-                window[1].index,
+                window[1].group_range.start >= window[0].group_range.start,
+                "capture declaration ranges not source ordered: {:?} then {:?} in {:?}",
+                window[0].group_range,
+                window[1].group_range,
                 s,
             );
+            prop_assert!(window[1].id.index() > window[0].id.index());
         }
     }
 
@@ -123,12 +140,18 @@ proptest! {
         }
     }
 
-    /// Capture indices start at 1 or higher.
+    /// Every statically known capture number is one-based.
     #[test]
-    fn capture_indices_start_at_one(s in ascii_pattern()) {
-        let caps = RegexAnalyzer::extract_named_captures(&s);
-        if let Some(first) = caps.first() {
-            prop_assert!(first.index >= 1, "capture index < 1 in {:?}", s);
+    fn capture_numbers_start_at_one(s in ascii_pattern()) {
+        let analysis = RegexAnalyzer::analyze_captures(
+            &s,
+            EffectiveModifiers::default(),
+            CaptureLanguageProfile::unknown(),
+        );
+        for declaration in analysis.declarations {
+            if let Some(number) = declaration.number {
+                prop_assert!(number >= 1, "capture number < 1 in {:?}", s);
+            }
         }
     }
 }
