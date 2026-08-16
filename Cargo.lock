@@ -2057,6 +2057,7 @@ version = "0.17.0"
 dependencies = [
  "anyhow",
  "perl-lsp-rs",
+ "perl-lsp-rs-core",
  "serde_json",
  "tempfile",
 ]
