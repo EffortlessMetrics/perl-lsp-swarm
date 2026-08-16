@@ -1,7 +1,7 @@
 use perl_semantic_facts::framework::{
-    AdapterBudget, AdapterCancellation, AdapterCancellationControl, AdapterDescriptor,
-    AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome, AdapterResult, AdapterSourceScope,
-    EmittedFact, FactClass, FactSink, FactSinkId,
+    AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterCancellationControl,
+    AdapterDescriptor, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome, AdapterResult,
+    AdapterSourceScope, EmittedFact, FactClass, FactSink, FactSinkId,
 };
 use perl_semantic_facts::{
     AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance, SemanticConfidence,
@@ -111,7 +111,10 @@ fn nonproduction_output_cannot_become_authority() {
             None,
             false,
         );
-        assert!(!result(disposition, fact).is_authoritative());
+        assert_eq!(
+            result(disposition, fact).validate_authority_against(&input()),
+            Err(AdapterAuthorityError::NonProduction)
+        );
     }
 }
 
@@ -130,7 +133,10 @@ fn generated_precedence_claim_is_not_publication_authority() {
     );
     assert!(fact.is_stronger_than_generated, "compatibility input is retained");
     assert!(!fact.can_override_generated(), "generated provenance cannot validate the hint");
-    assert!(!result(AdapterDisposition::Production, fact).is_authoritative());
+    assert_eq!(
+        result(AdapterDisposition::Production, fact).validate_authority_against(&input()),
+        Err(AdapterAuthorityError::InvalidFact)
+    );
 }
 
 #[test]
@@ -149,5 +155,8 @@ fn exact_source_precedence_is_generation_bound() {
     let mut candidate = result(AdapterDisposition::Production, fact);
     assert!(candidate.is_authoritative_against(&input()));
     candidate.invocation_generation = SourceGeneration::known("source-2");
-    assert!(!candidate.is_authoritative());
+    assert_eq!(
+        candidate.validate_authority_against(&input()),
+        Err(AdapterAuthorityError::GenerationMismatch)
+    );
 }

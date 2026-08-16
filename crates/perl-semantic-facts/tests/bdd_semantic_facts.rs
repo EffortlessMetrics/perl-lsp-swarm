@@ -1219,8 +1219,9 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
 fn given_budget_exceeded_when_adapter_returns_then_partial_facts_accessible_but_not_authoritative()
 {
     use perl_semantic_facts::framework::{
-        AdapterBudget, AdapterId, AdapterOutcome, AdapterResult, AdapterSourceScope, EmittedFact,
-        FactClass, FactSink, FactSinkId,
+        AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterId, AdapterInput,
+        AdapterOutcome, AdapterResult, AdapterSourceScope, EmittedFact, FactClass, FactSink,
+        FactSinkId,
     };
     use perl_semantic_facts::framework::{AdapterDescriptor, AdapterDisposition};
     use perl_semantic_facts::{
@@ -1276,6 +1277,14 @@ fn given_budget_exceeded_when_adapter_returns_then_partial_facts_accessible_but_
     ));
     partial.total_payload_bytes = AdapterBudget::new(1, 1_024).max_payload_bytes + 1;
 
+    let admitted = AdapterInput::new(
+        descriptor.clone(),
+        scope.clone(),
+        vec![FactClass::GeneratedMembers],
+        Vec::new(),
+        Some(AdapterBudget::new(1, 1_024)),
+        AdapterCancellation::active(),
+    );
     let result = AdapterResult::new(
         descriptor,
         scope,
@@ -1285,5 +1294,9 @@ fn given_budget_exceeded_when_adapter_returns_then_partial_facts_accessible_but_
 
     // Partial result is accessible but must not be authoritative.
     assert!(result.has_facts(), "partial facts must still be accessible");
-    assert!(!result.is_authoritative(), "budget-exhausted result must not be authoritative");
+    assert_eq!(
+        result.validate_authority_against(&admitted),
+        Err(AdapterAuthorityError::IncompleteOutcome),
+        "budget-exhausted result must not be authoritative"
+    );
 }

@@ -1067,7 +1067,10 @@ mod tests {
                 None,
                 false,
             );
-            assert!(!applied(disposition, fact).is_authoritative());
+            assert_eq!(
+                applied(disposition, fact).validate_authority_against(&input()),
+                Err(AdapterAuthorityError::NonProduction)
+            );
         }
     }
 
@@ -1237,7 +1240,10 @@ mod tests {
         );
         assert!(fact.is_stronger_than_generated);
         assert!(!fact.can_override_generated());
-        assert!(!applied(AdapterDisposition::Production, fact).is_authoritative());
+        assert_eq!(
+            applied(AdapterDisposition::Production, fact).validate_authority_against(&input()),
+            Err(AdapterAuthorityError::InvalidFact)
+        );
     }
 
     #[test]
