@@ -1,6 +1,8 @@
 use crate::{
     analyzer::{CaptureMode, EffectiveModifiers, ExtendedMode},
-    syntax::event::{RegexEventBudget, RegexExtendedMode, RegexModeState, parse_regex_events},
+    syntax::event::{
+        RegexEventBudget, RegexEventKind, RegexExtendedMode, RegexModeState, parse_regex_events,
+    },
 };
 
 use super::{
@@ -44,6 +46,20 @@ pub(crate) fn analyze(
             diagnostics.push(RegexDiagnostic::new(code, range, None));
         }
     }
+
+    // Source interpolation is a dynamic boundary: the pattern text that reaches the
+    // engine is not knowable from this source alone, so the analysis must fail closed
+    // rather than report a complete static interpretation of a partial pattern.
+    for event in &stream.events {
+        if matches!(event.kind, RegexEventKind::Interpolation { .. }) {
+            facts.dynamic_regions.push(RegexDynamicRegionFact {
+                kind: RegexDynamicRegionKind::Interpolation,
+                range: event.range,
+            });
+        }
+    }
+
+    facts.dynamic_regions.sort_by_key(|region| (region.range.start, region.range.end));
 
     for offset in nested_quantifier::find_nested_quantifiers(&stream) {
         if let Some(range) = RegexRange::anchored(offset, 1, pattern.len()) {

@@ -1,0 +1,34 @@
+{
+  "contributions": {
+    "settings": [
+      {
+        "file_patterns": ["/LSP-perllsp.sublime-settings"],
+        "schema": {
+          "$id": "sublime://settings/LSP-perllsp",
+          "allOf": [
+            { "$ref": "sublime://settings/LSP-plugin-base" },
+            { "$ref": "sublime://settings/LSP-perllsp#/definitions/PluginConfig" }
+          ],
+          "definitions": {
+            "PluginConfig": {
+              "properties": {
+                "server_path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "default": "auto",
+                  "markdownDescription": "Use `auto` for the package's pinned, verified perllsp build, or set an explicit user-owned executable path for development. Project settings cannot replace the launch executable."
+                },
+                "env": {
+                  "type": "object",
+                  "default": {},
+                  "additionalProperties": { "type": "string" },
+                  "markdownDescription": "User-owned environment variables for the perllsp process. Project-level LSP overrides are not accepted for process environment authority."
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

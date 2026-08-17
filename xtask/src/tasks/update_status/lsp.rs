@@ -56,12 +56,18 @@ pub(super) fn count_lsp_coverage(root: &Path) -> Result<LspCoverage> {
         ((ux_implemented.len() as f64 / ux_trackable.len() as f64) * 100.0).round() as usize
     };
 
-    // Protocol Compliance: all features regardless of counts_in_coverage
-    let protocol_trackable: Vec<_> = catalog
-        .feature
-        .iter()
-        .filter(|f| f.maturity != perl_lsp_rs_core::feature_catalog::Maturity::Planned)
-        .collect();
+    // Protocol Compliance: every catalog feature, regardless of
+    // `counts_in_coverage` and regardless of maturity.
+    //
+    // `Planned` features stay in this denominator on purpose. They are protocol
+    // surface the project has acknowledged and not yet implemented, so dropping
+    // them would let the headline reach 100% by planning the gap away — and it
+    // would disagree with `compute_compliance_table`, which counts every
+    // feature. That disagreement is the #6909 defect: two denominators for one
+    // "Protocol Compliance" claim rendered into the same document, where the
+    // headline reported `123/123 — 100%` beside a table reporting
+    // `123/125 — 98%`. One denominator, shared with the table, is the fix.
+    let protocol_trackable: Vec<_> = catalog.feature.iter().collect();
 
     let protocol_implemented: Vec<_> = protocol_trackable
         .iter()
@@ -228,6 +234,7 @@ pub(super) fn update_roadmap(root: &Path, original: &str) -> Result<String> {
 mod tests {
     use super::*;
     use crate::utils::project_root;
+    use color_eyre::eyre::eyre;
 
     #[test]
     fn test_lsp_coverage_from_catalog() -> Result<()> {
@@ -236,6 +243,75 @@ mod tests {
         assert!(cov.ux_total > 0, "expected non-zero ux_total");
         assert!(cov.protocol_total > 0, "expected non-zero protocol_total");
         assert!(cov.ux_percent <= 100, "ux_percent should be <= 100, got {}", cov.ux_percent);
+        Ok(())
+    }
+
+    /// The protocol-compliance headline and the compliance table are rendered
+    /// into the same document and make the same claim, so they must be computed
+    /// from the same numerator and denominator.
+    ///
+    /// Regression for #6909: the headline previously dropped `Planned` features
+    /// from its denominator only, so it published `123/123 — 100%` directly
+    /// above a table publishing `123/125 — 98%`.
+    #[test]
+    fn protocol_headline_and_compliance_table_share_one_denominator() -> Result<()> {
+        let root = project_root()?;
+        let cov = count_lsp_coverage(&root)?;
+        let table = compute_compliance_table(&root)?;
+
+        let overall = table
+            .lines()
+            .find(|line| line.contains("**Overall**"))
+            .ok_or_else(|| eyre!("compliance table is missing its Overall row"))?;
+        let cells: Vec<usize> = overall
+            .split('|')
+            .filter_map(|cell| cell.trim().trim_matches('*').trim_end_matches('%').parse().ok())
+            .collect();
+        let [table_implemented, table_total, table_percent] = cells[..] else {
+            panic!("could not read numerator/denominator/percent from Overall row: {overall}");
+        };
+
+        assert_eq!(
+            (cov.protocol_implemented, cov.protocol_total, cov.protocol_percent),
+            (table_implemented, table_total, table_percent),
+            "headline reports {}/{} = {}% but the table reports {}/{} = {}%; \
+             one Protocol Compliance claim must not render two denominators (#6909)",
+            cov.protocol_implemented,
+            cov.protocol_total,
+            cov.protocol_percent,
+            table_implemented,
+            table_total,
+            table_percent,
+        );
+        Ok(())
+    }
+
+    /// A feature the project has acknowledged but not implemented must stay in
+    /// the denominator, so the headline cannot reach 100% by planning a gap away.
+    #[test]
+    fn planned_features_remain_in_the_protocol_denominator() -> Result<()> {
+        let root = project_root()?;
+        let catalog = perl_lsp_rs_core::feature_catalog::read_catalog(&root.join("features.toml"))?;
+        let cov = count_lsp_coverage(&root)?;
+
+        assert_eq!(
+            cov.protocol_total,
+            catalog.feature.len(),
+            "every catalog feature belongs in the protocol denominator",
+        );
+
+        let planned = catalog
+            .feature
+            .iter()
+            .filter(|f| f.maturity == perl_lsp_rs_core::feature_catalog::Maturity::Planned)
+            .count();
+        if planned > 0 {
+            assert!(
+                cov.protocol_percent < 100,
+                "{planned} planned feature(s) are unimplemented, so protocol compliance \
+                 must not render as 100%",
+            );
+        }
         Ok(())
     }
 }
