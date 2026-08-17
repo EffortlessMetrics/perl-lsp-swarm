@@ -1,0 +1,9 @@
+project: vscode
+component: Compatibility
+kind: Added
+body: Added a versioned public-beta VS Code settings migration registry with deterministic security and scope invariants.
+time: 2026-08-13T10:49:00Z
+custom:
+  PR: 7878
+  Slug: vscode-public-beta-migration-registry
+  Breaking: "no"
