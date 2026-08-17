@@ -1,0 +1,90 @@
+{
+  "schema_version": "zed_codex_implementation_train.v2",
+  "programme_issue": 7759,
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "purpose": "Stable PR-by-PR topology for repository-owned Zed work. Mutable GitHub and external state belongs only to the typed observation subject.",
+  "public_state_until_final_projection": "planned_not_proven",
+  "product_identities": {
+    "perlnavigator-server": "Perl Navigator",
+    "perl-lsp": "tree-sitter-perl/perl-tree-sitter-lsp",
+    "perllsp": "EffortlessMetrics/perl-lsp",
+    "perl-dap": "EffortlessMetrics/perl-lsp debugger executable"
+  },
+  "rules": {
+    "live_github_state_forbidden": true,
+    "one_canonical_unsuperseded_pr_per_internal_stage": true,
+    "historical_branches_are_mining_subjects_not_authority": true,
+    "templates_are_not_behavioral_evidence": true,
+    "issue_closure_is_not_exit_evidence": true,
+    "static_or_ci_green_is_not_host_evidence": true,
+    "external_writes_are_maintainer_only": true,
+    "managed_and_path_routes_remain_distinct": true,
+    "platforms_do_not_inherit_evidence": true,
+    "dap_sidecar_never_blocks_core_lsp": true,
+    "pod_remains_a_separate_language": true
+  },
+  "actor_contracts": {
+    "codex": {
+      "canonical_pr_required": true,
+      "external_write": "forbidden",
+      "completion": "deliver_pr"
+    },
+    "read_only_acceptance": {
+      "canonical_pr_required": true,
+      "external_write": "forbidden",
+      "completion": "deliver_pr"
+    },
+    "maintainer": {
+      "canonical_pr_required": false,
+      "external_write": "maintainer_only",
+      "completion": "checkpoint_record"
+    }
+  },
+  "deliver_pr": {
+    "steps": [
+      "read the owning issue and latest comments",
+      "observe current main and every merged dependency",
+      "inspect canonical PRs and historical branches only as patch-mining subjects",
+      "observe every named external subject read-only when the stage requires it",
+      "state one bounded claim and changed-file map",
+      "write falsifiers before implementation",
+      "reconstruct the narrowest increment on current main",
+      "run focused and applicable repository-policy checks",
+      "commit and push intentionally",
+      "open one draft PR and update the issue handoff",
+      "stop before merge or external write unless separately instructed"
+    ],
+    "pr_language": "Use Advances until the owning issue's actual exit authority is earned.",
+    "required_handoff": [
+      "exact base and subject identities",
+      "changed-file map",
+      "commands and results",
+      "non-pass cells and limitations",
+      "dependency and invalidation state",
+      "next unblocked train stages"
+    ]
+  },
+  "manual_stop_points": [
+    "M01",
+    "M02",
+    "DM01",
+    "DM02"
+  ],
+  "fragments": [
+    "core-authorities.json",
+    "core-evidence.json",
+    "core-delivery.json",
+    "dap-sidecar.json"
+  ],
+  "current_frontier_source": {
+    "stable_topology": "these fragments",
+    "live_observation_issue": 10479,
+    "currentness_issue": 9483,
+    "hand_edited_frontier_forbidden": true
+  },
+  "closeout": {
+    "implementation_issue": 10400,
+    "controller_closed_on_success": 7759,
+    "remote_branch_deletion_requires_separate_maintainer_authorization": true
+  }
+}
