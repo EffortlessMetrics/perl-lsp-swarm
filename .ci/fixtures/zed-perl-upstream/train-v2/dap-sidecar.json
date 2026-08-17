@@ -1,0 +1,138 @@
+{
+  "schema_version": "zed_codex_implementation_train_fragment.v2",
+  "fragment": "dap-sidecar",
+  "stages": [
+    {
+      "id": "D01",
+      "lane": "dap_sidecar",
+      "issue": 9485,
+      "actor": "codex",
+      "objective": "Add the static perl-dap adapter authority to the existing Perl extension candidate.",
+      "depends_on": ["P00"],
+      "evidence": "dap_static_authority",
+      "route": "internal_repository",
+      "blocks_core": false,
+      "exit": "issue #9485 static adapter acceptance"
+    },
+    {
+      "id": "DA01",
+      "lane": "dap_sidecar",
+      "issue": 9516,
+      "actor": "codex",
+      "objective": "Execute and freeze public perl-dap asset receipts independently of Zed.",
+      "depends_on": ["D01", "C01"],
+      "evidence": "dap_public_asset_evidence",
+      "route": "matching_host_and_cross_build",
+      "blocks_core": false,
+      "exit": "issue #9516 public perl-dap asset acceptance"
+    },
+    {
+      "id": "D02",
+      "lane": "dap_sidecar",
+      "issue": 9486,
+      "actor": "codex",
+      "objective": "Execute and freeze one exact-source real-Zed perl-dap debug session.",
+      "depends_on": ["D01", "P02", "P03", "C01"],
+      "evidence": "dap_exact_source_host_evidence",
+      "route": "development_extension",
+      "blocks_core": false,
+      "exit": "issue #9486 exact-source DAP acceptance"
+    },
+    {
+      "id": "D03",
+      "lane": "dap_sidecar",
+      "issue": 9490,
+      "actor": "codex",
+      "objective": "Freeze the evidence-bound upstream Perl-extension packet for perl-dap.",
+      "depends_on": ["D01", "D02"],
+      "evidence": "dap_upstream_packet",
+      "route": "internal_packet",
+      "blocks_core": false,
+      "exit": "issue #9490 ready DAP extension packet"
+    },
+    {
+      "id": "DM01",
+      "lane": "dap_sidecar",
+      "issue": null,
+      "actor": "maintainer",
+      "objective": "Manually submit the DAP extension packet upstream.",
+      "depends_on": ["D03"],
+      "evidence": "manual_checkpoint",
+      "route": "external_submission",
+      "blocks_core": false,
+      "exit": "maintainer records DAP upstream submission"
+    },
+    {
+      "id": "DU01",
+      "lane": "dap_sidecar",
+      "issue": 10353,
+      "actor": "read_only_acceptance",
+      "objective": "Bind the actually merged and released upstream perl-dap extension subject.",
+      "depends_on": ["DM01"],
+      "evidence": "dap_merged_released_acceptance",
+      "route": "read_only_external_observation",
+      "blocks_core": false,
+      "exit": "issue #10353 DAP upstream acceptance"
+    },
+    {
+      "id": "D04",
+      "lane": "dap_sidecar",
+      "issue": 9491,
+      "actor": "codex",
+      "objective": "Freeze the official existing-perl registry packet for the accepted DAP extension subject.",
+      "depends_on": ["DU01"],
+      "evidence": "dap_registry_packet",
+      "route": "internal_packet",
+      "blocks_core": false,
+      "exit": "issue #9491 ready DAP registry packet"
+    },
+    {
+      "id": "DM02",
+      "lane": "dap_sidecar",
+      "issue": null,
+      "actor": "maintainer",
+      "objective": "Manually submit the DAP registry packet.",
+      "depends_on": ["D04"],
+      "evidence": "manual_checkpoint",
+      "route": "external_submission",
+      "blocks_core": false,
+      "exit": "maintainer records DAP registry submission"
+    },
+    {
+      "id": "D05",
+      "lane": "dap_sidecar",
+      "issue": 9487,
+      "actor": "codex",
+      "objective": "Execute the clean official-registry managed perl-dap journey in real Zed.",
+      "depends_on": ["DA01", "D02", "DM02", "C01"],
+      "evidence": "dap_public_registry_host_evidence",
+      "route": "official_registry_managed",
+      "blocks_core": false,
+      "exit": "issue #9487 public Zed DAP acceptance"
+    },
+    {
+      "id": "D06",
+      "lane": "dap_sidecar",
+      "issue": 9489,
+      "actor": "codex",
+      "objective": "Project proven Zed debugger cells separately into #7122 and generated documentation.",
+      "depends_on": ["D05", "P09"],
+      "evidence": "dap_support_projection",
+      "route": "internal_repository",
+      "blocks_core": false,
+      "exit": "issue #9489 DAP projection acceptance"
+    },
+    {
+      "id": "D07",
+      "lane": "dap_sidecar",
+      "issue": 9484,
+      "actor": "codex",
+      "objective": "Reconcile and close the non-blocking Zed DAP programme without changing the Zed LSP verdict.",
+      "depends_on": ["D06"],
+      "evidence": "dap_programme_closeout",
+      "route": "internal_repository",
+      "blocks_core": false,
+      "exit": "issue #9484 closeout acceptance"
+    }
+  ]
+}
