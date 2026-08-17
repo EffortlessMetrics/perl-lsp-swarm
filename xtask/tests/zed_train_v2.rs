@@ -24,7 +24,9 @@ fn read_json(root: &Path, relative: &str) -> TestResult<Value> {
 }
 
 fn as_object<'a>(value: &'a Value, context: &str) -> TestResult<&'a Map<String, Value>> {
-    value.as_object().ok_or_else(|| io::Error::other(format!("{context} is not an object")).into())
+    value
+        .as_object()
+        .ok_or_else(|| io::Error::other(format!("{context} is not an object")).into())
 }
 
 fn as_array<'a>(value: &'a Value, context: &str) -> TestResult<&'a [Value]> {
@@ -35,7 +37,9 @@ fn as_array<'a>(value: &'a Value, context: &str) -> TestResult<&'a [Value]> {
 }
 
 fn as_str<'a>(value: &'a Value, context: &str) -> TestResult<&'a str> {
-    value.as_str().ok_or_else(|| io::Error::other(format!("{context} is not a string")).into())
+    value
+        .as_str()
+        .ok_or_else(|| io::Error::other(format!("{context} is not a string")).into())
 }
 
 fn manifest(root: &Path) -> TestResult<Value> {
@@ -43,8 +47,9 @@ fn manifest(root: &Path) -> TestResult<Value> {
 }
 
 fn fragments(root: &Path, train: &Value) -> TestResult<Vec<Value>> {
-    let entries =
-        train.get("fragments").ok_or_else(|| io::Error::other("manifest lacks fragments"))?;
+    let entries = train
+        .get("fragments")
+        .ok_or_else(|| io::Error::other("manifest lacks fragments"))?;
     let mut result = Vec::new();
     for entry in as_array(entries, "manifest.fragments")? {
         let filename = as_str(entry, "fragment filename")?;
@@ -56,7 +61,10 @@ fn fragments(root: &Path, train: &Value) -> TestResult<Vec<Value>> {
 fn stages(source: &[Value]) -> TestResult<Vec<&Map<String, Value>>> {
     let mut result = Vec::new();
     for fragment in source {
-        let name = fragment.get("fragment").and_then(Value::as_str).unwrap_or("<unknown>");
+        let name = fragment
+            .get("fragment")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>");
         let entries = fragment
             .get("stages")
             .ok_or_else(|| io::Error::other(format!("{name} lacks stages")))?;
@@ -105,7 +113,9 @@ fn reject_mutable_keys(value: &Value, path: &str) -> Result<(), String> {
 }
 
 fn id(stage: &Map<String, Value>) -> TestResult<&str> {
-    let value = stage.get("id").ok_or_else(|| io::Error::other("stage lacks id"))?;
+    let value = stage
+        .get("id")
+        .ok_or_else(|| io::Error::other("stage lacks id"))?;
     as_str(value, "stage.id")
 }
 
@@ -118,6 +128,29 @@ fn dependencies(stage: &Map<String, Value>) -> TestResult<Vec<&str>> {
         .iter()
         .map(|value| as_str(value, &format!("{stage_id} dependency")))
         .collect()
+}
+
+fn stage_maps<'a>(
+    all: &'a [&'a Map<String, Value>],
+) -> TestResult<(
+    BTreeMap<&'a str, Option<u64>>,
+    BTreeMap<&'a str, Vec<&'a str>>,
+    BTreeMap<&'a str, &'a str>,
+)> {
+    let mut issues = BTreeMap::new();
+    let mut deps = BTreeMap::new();
+    let mut lanes = BTreeMap::new();
+    for stage in all {
+        let stage_id = id(stage)?;
+        issues.insert(stage_id, stage.get("issue").and_then(Value::as_u64));
+        deps.insert(stage_id, dependencies(stage)?);
+        let lane = stage
+            .get("lane")
+            .and_then(Value::as_str)
+            .ok_or_else(|| io::Error::other(format!("{stage_id} lacks lane")))?;
+        lanes.insert(stage_id, lane);
+    }
+    Ok((issues, deps, lanes))
 }
 
 #[test]
@@ -141,16 +174,24 @@ fn stable_train_excludes_live_github_state() -> TestResult<()> {
         reject_mutable_keys(fragment, "fragment").map_err(io::Error::other)?;
     }
 
-    assert_eq!(
-        train.pointer("/rules/live_github_state_forbidden").and_then(Value::as_bool),
-        Some(true)
-    );
-    assert_eq!(
-        train
-            .pointer("/rules/one_canonical_unsuperseded_pr_per_codex_stage")
-            .and_then(Value::as_bool),
-        Some(true)
-    );
+    for rule in [
+        "live_github_state_forbidden",
+        "one_canonical_unsuperseded_pr_per_codex_stage",
+        "extension_subject_must_be_materialized_and_attested",
+        "host_cells_must_be_derived_from_immutable_evidence",
+        "managed_projection_must_be_generated_from_canonical_topology",
+        "compatibility_requires_exact_host_receipts",
+        "known_good_cache_must_survive_unproven_candidates",
+        "public_support_requires_official_registry_compatibility",
+    ] {
+        assert_eq!(
+            train
+                .pointer(&format!("/rules/{rule}"))
+                .and_then(Value::as_bool),
+            Some(true),
+            "train rule `{rule}` drifted"
+        );
+    }
     Ok(())
 }
 
@@ -165,9 +206,13 @@ fn stage_graph_is_unique_topological_and_actor_bounded() -> TestResult<()> {
     let mut lane = BTreeMap::new();
     for (position, stage) in all.iter().enumerate() {
         let stage_id = id(stage)?;
-        assert!(index.insert(stage_id, position).is_none(), "duplicate train stage {stage_id}");
-        let lane_value =
-            stage.get("lane").ok_or_else(|| io::Error::other(format!("{stage_id} lacks lane")))?;
+        assert!(
+            index.insert(stage_id, position).is_none(),
+            "duplicate train stage {stage_id}"
+        );
+        let lane_value = stage
+            .get("lane")
+            .ok_or_else(|| io::Error::other(format!("{stage_id} lacks lane")))?;
         lane.insert(stage_id, as_str(lane_value, &format!("{stage_id}.lane"))?);
     }
 
@@ -186,7 +231,10 @@ fn stage_graph_is_unique_topological_and_actor_bounded() -> TestResult<()> {
             .get("issue")
             .ok_or_else(|| io::Error::other(format!("{stage_id} lacks issue")))?;
         if actor == "maintainer" {
-            assert!(issue.is_null(), "{stage_id} manual checkpoint must not invent an issue");
+            assert!(
+                issue.is_null(),
+                "{stage_id} manual checkpoint must not invent an issue"
+            );
         } else {
             assert!(
                 issue.as_u64().is_some(),
@@ -232,62 +280,129 @@ fn stage_graph_is_unique_topological_and_actor_bounded() -> TestResult<()> {
 }
 
 #[test]
-fn key_control_and_acceptance_stages_have_exact_owners() -> TestResult<()> {
+fn missing_evidentiary_joints_have_exact_owners() -> TestResult<()> {
     let root = repo_root()?;
     let train = manifest(&root)?;
     let source = fragments(&root, &train)?;
     let all = stages(&source)?;
-
-    let mut issues = BTreeMap::new();
-    let mut deps = BTreeMap::new();
-    let mut blocks_core = BTreeMap::new();
-    for stage in all {
-        let stage_id = id(stage)?;
-        issues.insert(stage_id, stage.get("issue").and_then(Value::as_u64));
-        deps.insert(stage_id, dependencies(stage)?);
-        blocks_core.insert(stage_id, stage.get("blocks_core").and_then(Value::as_bool));
-    }
+    let (issues, deps, lanes) = stage_maps(&all)?;
 
     for (stage_id, issue) in [
         ("C00", 10338),
+        ("R00", 10395),
         ("I00", 10340),
+        ("S00", 10392),
+        ("E00", 10393),
+        ("L00", 10396),
+        ("K00", 10394),
+        ("K01", 10401),
+        ("K02", 10402),
         ("P15", 10343),
         ("P16", 10345),
         ("P17", 10347),
         ("U01", 10350),
         ("U02", 10351),
         ("C02", 10352),
-        ("DU01", 10353),
-        ("DU02", 10366),
+        ("P22", 10400),
     ] {
-        assert_eq!(issues.get(stage_id), Some(&Some(issue)), "{stage_id} owner drifted");
+        assert_eq!(
+            issues.get(stage_id),
+            Some(&Some(issue)),
+            "{stage_id} owner drifted"
+        );
     }
 
-    assert_eq!(blocks_core.get("C02"), Some(&Some(true)));
+    assert_eq!(lanes.get("R00"), Some(&"core_release"));
+    assert_eq!(lanes.get("S00"), Some(&"core_subject"));
+    assert_eq!(lanes.get("E00"), Some(&"core_evidence"));
+    assert_eq!(lanes.get("K00"), Some(&"core_compatibility"));
+    assert_eq!(lanes.get("K01"), Some(&"core_compatibility"));
+    assert_eq!(lanes.get("K02"), Some(&"core_compatibility"));
+
+    for dependency in ["P02", "P03", "S00", "I00"] {
+        assert!(
+            deps.get("E00")
+                .is_some_and(|values| values.contains(&dependency)),
+            "E00 lost immutable-evidence prerequisite {dependency}"
+        );
+    }
+    for dependency in ["R00", "S00", "E00", "L00", "I00"] {
+        assert!(
+            deps.get("K00")
+                .is_some_and(|values| values.contains(&dependency)),
+            "K00 lost compatibility prerequisite {dependency}"
+        );
+    }
     for dependency in ["P10", "P11", "P12", "P13", "P14"] {
         assert!(
-            deps.get("P15").is_some_and(|values| values.contains(&dependency)),
+            deps.get("K01")
+                .is_some_and(|values| values.contains(&dependency)),
+            "K01 lost exact compatibility evidence {dependency}"
+        );
+        assert!(
+            deps.get("P15")
+                .is_some_and(|values| values.contains(&dependency)),
             "P15 lost child evidence dependency {dependency}"
         );
     }
-    assert!(deps.get("P17").is_some_and(|values| values.contains(&"P16")));
+    for dependency in ["K01", "R00", "S00", "E00"] {
+        assert!(
+            deps.get("P15")
+                .is_some_and(|values| values.contains(&dependency)),
+            "P15 lost submission authority {dependency}"
+        );
+    }
+    assert!(
+        deps.get("P14")
+            .is_some_and(|values| values.contains(&"L00")),
+        "managed evidence bypasses the cache lifecycle authority"
+    );
+    assert!(
+        deps.get("P20")
+            .is_some_and(|values| values.contains(&"K01") && values.contains(&"U02")),
+        "public execution bypasses exact-source compatibility or public availability"
+    );
+    assert!(
+        deps.get("K02")
+            .is_some_and(|values| values.contains(&"K00") && values.contains(&"P20")),
+        "public compatibility does not consume its authority and receipt"
+    );
+    assert!(
+        deps.get("P21")
+            .is_some_and(|values| values.contains(&"P20") && values.contains(&"K02")),
+        "support projection bypasses public receipt or compatibility"
+    );
+    assert_eq!(deps.get("P22"), Some(&vec!["P21", "C02"]));
+    Ok(())
+}
+
+#[test]
+fn manual_and_external_acceptance_sequence_is_preserved() -> TestResult<()> {
+    let root = repo_root()?;
+    let train = manifest(&root)?;
+    let source = fragments(&root, &train)?;
+    let all = stages(&source)?;
+    let (_, deps, _) = stage_maps(&all)?;
+
+    assert!(
+        deps.get("P17")
+            .is_some_and(|values| values.contains(&"P16") && values.contains(&"K01"))
+    );
     assert_eq!(deps.get("U01"), Some(&vec!["M01"]));
     assert_eq!(deps.get("P19"), Some(&vec!["U01"]));
     assert_eq!(deps.get("M02"), Some(&vec!["P19"]));
     assert!(
         deps.get("U02")
-            .is_some_and(|values| { values.contains(&"M02") && values.contains(&"U01") })
+            .is_some_and(|values| values.contains(&"M02") && values.contains(&"U01"))
     );
-    assert!(deps.get("P20").is_some_and(|values| {
-        values.contains(&"P12") && values.contains(&"U02")
-    }));
     assert!(
         deps.get("DU02")
             .is_some_and(|values| values.contains(&"DM02") && values.contains(&"DU01"))
     );
-    assert!(deps.get("D05").is_some_and(|values| values.contains(&"DU02")));
-    assert!(deps.get("P21").is_some_and(|values| values.contains(&"P20")));
-    assert!(deps.get("P22").is_some_and(|values| values.contains(&"P21")));
+    assert!(
+        deps.get("D05")
+            .is_some_and(|values| values.contains(&"DU02"))
+    );
     Ok(())
 }
 
@@ -300,18 +415,30 @@ fn observation_template_is_empty_and_non_evidentiary() -> TestResult<()> {
         observation.get("schema_version").and_then(Value::as_str),
         Some("zed_codex_train_observation.v1")
     );
-    assert_eq!(observation.get("result").and_then(Value::as_str), Some("not_run"));
+    assert_eq!(
+        observation.get("result").and_then(Value::as_str),
+        Some("not_run")
+    );
     assert!(observation.get("observed_at").is_some_and(Value::is_null));
     assert!(observation.get("main_sha").is_some_and(Value::is_null));
-    assert!(observation.get("stages").and_then(Value::as_object).is_some_and(Map::is_empty));
+    assert!(
+        observation
+            .get("stages")
+            .and_then(Value::as_object)
+            .is_some_and(Map::is_empty)
+    );
 
     let limitations = observation
         .get("limitations")
         .ok_or_else(|| io::Error::other("observation lacks limitations"))?;
     assert!(
-        as_array(limitations, "observation limitations")?.iter().any(|value| {
-            value.as_str().is_some_and(|text| text.contains("cannot satisfy product"))
-        }),
+        as_array(limitations, "observation limitations")?
+            .iter()
+            .any(|value| {
+                value
+                    .as_str()
+                    .is_some_and(|text| text.contains("cannot satisfy product"))
+            }),
         "observation template must deny product evidence"
     );
     Ok(())
@@ -327,20 +454,33 @@ fn human_train_preserves_delivery_and_evidence_boundaries() -> TestResult<()> {
         "perlnavigator-server -> Perl Navigator",
         "perl-lsp             -> tree-sitter-perl/perl-tree-sitter-lsp",
         "perllsp              -> EffortlessMetrics/perl-lsp",
+        "reproducible attested package",
+        "immutable evidence derivation",
+        "generated managed projection",
+        "safe cache lifecycle",
+        "exact compatibility rows",
+        "S00",
+        "E00",
+        "K00",
+        "K01",
+        "K02",
+        "P22 | #10400",
         "deliver-pr",
         "M01",
         "U01",
         "M02",
         "U02",
-        "DU02",
         "canonical `perl_lsp.binary_identity.v1`",
         "Submitted is not merged",
         "merged is not released",
-        "registry submission             != registry publication",
-        "DAP sidecar may run",
+        "registry submission                 != registry publication",
+        "DAP sidecar",
     ] {
         assert!(doc.contains(needle), "human train lacks `{needle}`");
     }
-    assert!(!doc.contains("Codex may submit upstream"), "human train authorizes an external write");
+    assert!(
+        !doc.contains("Codex may submit upstream"),
+        "human train authorizes an external write"
+    );
     Ok(())
 }
