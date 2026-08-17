@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Changed
+body: "Rebuilt the Zed Codex implementation train on current main with separate stable topology and live observation, reproducible extension materialization, immutable host evidence, generated release projection, exact compatibility and cache-lifecycle authorities, evidence fan-in, public compatibility, explicit closeout, and a non-blocking DAP identity sidecar."
+time: 2026-08-17T10:59:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-implementation-train-v2-current
+  Breaking: "no"
