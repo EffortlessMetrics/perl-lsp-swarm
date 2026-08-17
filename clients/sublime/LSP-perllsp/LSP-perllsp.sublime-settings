@@ -1,0 +1,19 @@
+{
+  "selector": "source.perl",
+  "schemes": ["file", "buffer"],
+  "command": ["${server_path}", "--stdio"],
+  "server_path": "auto",
+  "env": {},
+  "initialization_options": {},
+  "semantic_tokens": {
+    "sql_string": "string.quoted.other.sql",
+    "sql_heredoc_keyword": "keyword.other.sql",
+    "json_heredoc_key": "string.unquoted.key.json",
+    "variable.scalarVariable": "variable.other.scalar.perl",
+    "variable.arrayVariable": "variable.other.array.perl",
+    "variable.hashVariable": "variable.other.hash.perl"
+  },
+  "syntax_map": {
+    "perldoc": "Packages/Perl/Perl.sublime-syntax"
+  }
+}
