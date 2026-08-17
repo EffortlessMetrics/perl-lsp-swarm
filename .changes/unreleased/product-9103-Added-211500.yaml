@@ -1,7 +1,7 @@
 project: product
 component: Developer experience
 kind: Added
-body: Added a typed, repository-wide install and package surface inventory with deterministic discovery and diagnostic receipts.
+body: Added a typed, repository-wide install and package surface inventory with deterministic discovery, explicit external-source separation, and diagnostic receipts.
 time: 2026-08-16T21:15:00Z
 custom:
   PR: "9103"
