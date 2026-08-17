@@ -1294,9 +1294,7 @@ pub fn collect_semantic_tokens_controlled(
                     // start at node.location.start — painting them produces garbage).
                     match name.as_str() {
                         "eval" | "do" | "use" | "no" | "return" | "my" | "our" | "local"
-                        | "state" | "next" | "last" | "redo" | "goto" | "await" => {
-                            return Ok(true)
-                        }
+                        | "state" | "next" | "last" | "redo" | "goto" | "await" => return Ok(true),
                         // Synthetic FunctionCall names from postfix.rs (coderef invocation)
                         // and variables.rs (deref).  The name is not a real identifier at
                         // node.location.start, so narrowing to name.len() bytes paints
