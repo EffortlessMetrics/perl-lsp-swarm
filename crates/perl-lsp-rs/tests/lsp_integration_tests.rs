@@ -213,9 +213,9 @@ sub TestPackage::test_method {
 
     let lenses_array = lenses.as_array().ok_or("Expected lenses array")?;
 
-    // Code lenses may be empty if parsing failed or no test functions found
-    // Just check that we got a valid array response
-    assert!(lenses_array.is_empty() || !lenses_array.is_empty());
+    // A valid array response is already proven by the `is_array` assertion above;
+    // the count itself is not constrained (lenses may legitimately be empty when
+    // no test functions are found).
 
     // Check shebang lens is first
     if !lenses_array.is_empty() {

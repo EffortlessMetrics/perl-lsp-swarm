@@ -34,7 +34,7 @@ use crate::model::{
 };
 
 /// Errors a backend can surface.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum BackendError {
     /// The backend is not connected to its engine (peer not attached yet).
     #[error("debug backend is not connected")]
@@ -42,6 +42,9 @@ pub enum BackendError {
     /// A timeout elapsed waiting for the engine/peer to respond.
     #[error("debug backend timed out: {0}")]
     Timeout(String),
+    /// A bounded backend resource envelope was exhausted.
+    #[error("debug backend resource limit exceeded: {0}")]
+    ResourceLimit(String),
     /// The peer/engine reported an error for a request.
     #[error("debug backend reported an error: {0}")]
     Engine(String),
@@ -68,6 +71,8 @@ impl perl_parser_core::ErrorClass for BackendError {
             Self::Transport(_) => perl_parser_core::ErrorCategory::Infra,
             // Operation may succeed on retry.
             Self::Timeout(_) => perl_parser_core::ErrorCategory::Transient,
+            // The backend deliberately terminated work at a declared bound.
+            Self::ResourceLimit(_) => perl_parser_core::ErrorCategory::ResourceLimit,
             // The peer reported an error — surfaces an unexpected engine-side
             // failure. Note: this reports what the engine said (which can
             // include a debuggee die), but the error itself is an adapter-
