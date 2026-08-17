@@ -15,13 +15,62 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - name: Inspect declaration version surface
+      - name: Classify declaration variant sites
         shell: bash
         run: |
           set -euo pipefail
-          echo 'PACKAGE_CONSTRUCTORS'
-          grep -RIn -C 4 --include='*.rs' 'NodeKind::Package' crates | head -n 1200 || true
-          echo 'CLASS_CONSTRUCTORS'
-          grep -RIn -C 4 --include='*.rs' 'NodeKind::Class' crates/perl-ast crates/perl-parser-core | head -n 1200 || true
-          echo 'VERSION_TOKENS'
-          grep -RIn -C 4 --include='*.rs' -E 'VString|VersionLiteral|declaration version|VERSION' crates/perl-ast crates/perl-parser-core | head -n 1000 || true
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def balanced(text: str, open_pos: int) -> int:
+              depth = 0
+              in_string = None
+              escape = False
+              i = open_pos
+              while i < len(text):
+                  c = text[i]
+                  if in_string:
+                      if escape:
+                          escape = False
+                      elif c == '\\':
+                          escape = True
+                      elif c == in_string:
+                          in_string = None
+                  else:
+                      if c in ('"', "'"):
+                          in_string = c
+                      elif c == '{':
+                          depth += 1
+                      elif c == '}':
+                          depth -= 1
+                          if depth == 0:
+                              return i
+                  i += 1
+              raise RuntimeError(f'unbalanced brace at {open_pos}')
+
+          for path in sorted(Path('crates').rglob('*.rs')):
+              text = path.read_text()
+              for variant in ('Package', 'Class'):
+                  needle = f'NodeKind::{variant} {{'
+                  start = 0
+                  while True:
+                      pos = text.find(needle, start)
+                      if pos < 0:
+                          break
+                      brace = text.find('{', pos)
+                      end = balanced(text, brace)
+                      segment = text[pos:end+1]
+                      before = text[max(0, pos-120):pos].replace('\n', ' ')
+                      after = text[end+1:end+80].replace('\n', ' ')
+                      line = text.count('\n', 0, pos) + 1
+                      if '..' in segment:
+                          kind = 'pattern-open'
+                      elif after.lstrip().startswith('=>') or 'match ' in before[-80:] or 'if let ' in before[-80:] or 'matches!' in before[-100:]:
+                          kind = 'pattern-exact'
+                      elif any(token in segment for token in ('Box::new(', 'block: None', 'block: Some(', 'parents: vec!', '.to_string()', 'String::from(')):
+                          kind = 'constructor'
+                      else:
+                          kind = 'unknown'
+                      print(f'{kind:13} {path}:{line} {variant} before={before[-60:]!r} after={after[:45]!r}')
+                      start = end + 1
+          PY
