@@ -227,7 +227,7 @@ jobs:
       - name: Upload test results to Codecov without a repository secret
         if: always() && steps.harness_check.outputs.harness_available == 'true'
         continue-on-error: true
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           report_type: test_results
           files: target/test-results/ux-regression-gate-junit.xml
