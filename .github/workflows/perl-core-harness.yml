@@ -146,6 +146,17 @@ jobs:
           PY
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The upload below is `if: always()`, so failing this job is not enough to
+      # keep a leaking receipt private. `--quarantine` deletes the rejected
+      # files, so a receipt this gate rejects cannot reach the artifact.
+      - name: Reject embedded host paths in public receipts
+        if: always()
+        run: |
+          cargo run --locked -p perl-core-harness \
+            --bin perl-core-harness-public-evidence -- \
+            --evidence-dir target/perl-core \
+            --quarantine
+
       - name: Upload Perl core harness receipts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
