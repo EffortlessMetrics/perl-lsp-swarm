@@ -48,6 +48,21 @@ git read-tree -u --reset swarm/main
 "#,
     )
     .expect("write protocol");
+
+    let release_schema = root.join("schemas/release_topology.v1.schema.json");
+    fs::create_dir_all(release_schema.parent().expect("release schema parent"))
+        .expect("create schemas dir");
+    fs::write(
+        release_schema,
+        r#"{
+  "properties": {
+    "primary_channels": {
+      "const": ["github_release", "crates_io", "vscode_marketplace", "open_vsx"]
+    }
+  }
+}"#,
+    )
+    .expect("write release schema");
     temp
 }
 

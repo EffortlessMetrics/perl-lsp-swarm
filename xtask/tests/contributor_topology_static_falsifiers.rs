@@ -4,6 +4,7 @@
 #[path = "contributor_topology/support.rs"]
 mod support;
 
+use assert_cmd::Command;
 use std::fs;
 use std::path::{Path, PathBuf};
 use support::contributor_topology::{build_projection, validate_projection};
@@ -34,6 +35,7 @@ fn rejects_when(file: &str, edit: impl Fn(&str) -> String) {
 
 const IDENTITY: &str = "policy/product-identity.toml";
 const PROTOCOL: &str = "docs/swarm/sync-protocol.md";
+const RELEASE_SCHEMA: &str = "schemas/release_topology.v1.schema.json";
 
 #[test]
 fn unsupported_identity_schema_is_rejected() {
@@ -50,6 +52,16 @@ fn missing_development_repository_is_rejected() {
     rejects_when(IDENTITY, |text| {
         text.lines()
             .filter(|line| !line.starts_with("development_repository"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+}
+
+#[test]
+fn missing_publication_repository_is_rejected() {
+    rejects_when(IDENTITY, |text| {
+        text.lines()
+            .filter(|line| !line.starts_with("public_repository"))
             .collect::<Vec<_>>()
             .join("\n")
     });
@@ -107,6 +119,37 @@ fn missing_publication_role_sentence_is_rejected() {
 }
 
 #[test]
+fn contradictory_authority_labels_are_rejected() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("| Active development |", "| Temporary role |")
+            .replace("| Release lineage |", "| Active development |")
+            .replace("| Temporary role |", "| Release lineage |")
+    });
+}
+
+#[test]
+fn invalid_branch_syntax_is_rejected() {
+    rejects_when(PROTOCOL, |text| text.replace("perl-lsp-swarm/main", "perl-lsp-swarm/-main"));
+}
+
+#[test]
+fn missing_merge_marker_is_rejected() {
+    rejects_when(PROTOCOL, |text| {
+        text.replace("git merge -s ours --no-commit swarm/main", "git merge swarm/main")
+    });
+}
+
+#[test]
+fn missing_primary_channel_authority_is_rejected() {
+    rejects_when(RELEASE_SCHEMA, |text| text.replace("\"primary_channels\"", "\"other_channels\""));
+}
+
+#[test]
+fn duplicate_primary_channel_authority_is_rejected() {
+    rejects_when(RELEASE_SCHEMA, |text| text.replace("open_vsx", "crates_io"));
+}
+
+#[test]
 fn missing_promotion_mechanics_heading_is_rejected() {
     rejects_when(PROTOCOL, |text| {
         text.replace("#### Mechanics: history-preserving complete-tree merge", "#### Mechanics")
@@ -149,6 +192,10 @@ fn real_repository_authority_still_projects() {
     assert_eq!(static_topology.publication_repository, "EffortlessMetrics/perl-lsp");
     assert_eq!(static_topology.publication_branch, "master");
     assert_eq!(static_topology.issue_repository, static_topology.development_repository);
+    assert_eq!(
+        static_topology.primary_channels,
+        ["github_release", "crates_io", "vscode_marketplace", "open_vsx"]
+    );
     validate_projection(&root, &projection).expect("validate real repository projection");
 }
 
@@ -161,4 +208,52 @@ fn source_change_makes_checked_projection_stale() {
     text.push_str("\nAdditional historical note.\n");
     fs::write(path, text).expect("write protocol");
     assert!(validate_projection(temp.path(), &projection).is_err());
+}
+
+#[test]
+fn source_digest_changes_when_authority_changes() {
+    let temp = fixture_root();
+    let original = build_projection(temp.path(), None).expect("build projection");
+    let path = temp.path().join(PROTOCOL);
+    let mut text = fs::read_to_string(&path).expect("read protocol");
+    text.push_str("\nAuthority digest mutation.\n");
+    fs::write(path, text).expect("write protocol mutation");
+    let changed = build_projection(temp.path(), None).expect("build changed projection");
+    assert_ne!(
+        original.sources.get(PROTOCOL).expect("protocol source").sha256,
+        changed.sources.get(PROTOCOL).expect("changed protocol source").sha256
+    );
+}
+
+#[test]
+fn cli_check_rejects_stale_output() {
+    let temp = fixture_root();
+    let output = temp.path().join("projection.json");
+    Command::cargo_bin("contributor-topology")
+        .expect("find contributor-topology binary")
+        .args([
+            "--root",
+            temp.path().to_str().expect("fixture root is UTF-8"),
+            "--output",
+            output.to_str().expect("output path is UTF-8"),
+        ])
+        .assert()
+        .success();
+
+    let protocol = temp.path().join(PROTOCOL);
+    let mut text = fs::read_to_string(&protocol).expect("read protocol");
+    text.push_str("\nStale output must be rejected.\n");
+    fs::write(protocol, text).expect("write protocol mutation");
+
+    Command::cargo_bin("contributor-topology")
+        .expect("find contributor-topology binary")
+        .args([
+            "--root",
+            temp.path().to_str().expect("fixture root is UTF-8"),
+            "--check",
+            "--output",
+            output.to_str().expect("output path is UTF-8"),
+        ])
+        .assert()
+        .failure();
 }

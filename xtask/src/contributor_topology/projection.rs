@@ -34,7 +34,7 @@ pub fn validate_projection(root: &Path, projection: &Projection) -> Result<()> {
     if projection.sources != sources {
         bail!("projection source digests are stale");
     }
-    validate_normalized_observation(&projection.observation)?;
+    validate_normalized_observation(&projection.observation, &static_topology.primary_channels)?;
     let expected = projection_digest(
         &projection.static_topology,
         &projection.observation,

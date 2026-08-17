@@ -22,6 +22,7 @@ fn missing_observation_is_not_proven() {
         projection.static_topology.development_repository,
         "EffortlessMetrics/perl-lsp-swarm"
     );
+    assert_eq!(projection.observation.channels.len(), 4);
     validate_projection(temp.path(), &projection).expect("validate projection");
 }
 
@@ -32,7 +33,7 @@ fn development_only_does_not_imply_public_availability() {
     let projection = build_projection(temp.path(), Some(&path)).expect("build projection");
     assert_eq!(projection.observation.stage, PublicationStage::DevelopmentOnly);
     assert!(projection.observation.public_release_tag.is_none());
-    assert!(projection.observation.channels.is_empty());
+    assert_eq!(projection.observation.channels.len(), 4);
 }
 
 #[test]

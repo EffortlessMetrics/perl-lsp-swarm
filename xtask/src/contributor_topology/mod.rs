@@ -12,6 +12,7 @@ pub use projection::{build_projection, render_human, validate_projection};
 pub(super) const SCHEMA: u32 = 1;
 pub(super) const PRODUCT_IDENTITY_PATH: &str = "policy/product-identity.toml";
 pub(super) const SYNC_PROTOCOL_PATH: &str = "docs/swarm/sync-protocol.md";
+pub(super) const RELEASE_TOPOLOGY_SCHEMA_PATH: &str = "schemas/release_topology.v1.schema.json";
 pub(super) const PROMOTION_PROTOCOL: &str =
     "docs/swarm/sync-protocol.md#mechanics-history-preserving-complete-tree-merge";
 pub(super) const EXPECTED_DEVELOPMENT_BRANCH: &str = "main";
@@ -34,6 +35,7 @@ pub struct StaticTopology {
     pub issue_repository: String,
     pub pull_request_repository: String,
     pub promotion_protocol: String,
+    pub primary_channels: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -41,7 +41,7 @@ pub(super) fn load_observation(
             publication_join_sha: None,
             public_release_tag: None,
             stage: PublicationStage::NotProven,
-            channels: BTreeMap::new(),
+            channels: not_proven_channels(&static_topology.primary_channels),
         });
     };
     let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -61,17 +61,16 @@ fn normalize_observation(
     {
         bail!("captured observation disagrees with static repository topology");
     }
+    validate_observation_metadata(Some(&captured.source), Some(&captured.observed_at))?;
     validate_sha(captured.development_sha.as_deref(), "development_sha")?;
     validate_sha(captured.publication_sha.as_deref(), "publication_sha")?;
     validate_sha(captured.prepared_swarm_sha.as_deref(), "prepared_swarm_sha")?;
     validate_sha(captured.publication_join_sha.as_deref(), "publication_join_sha")?;
 
-    if captured.source.trim().is_empty() || captured.observed_at.trim().is_empty() {
-        bail!("captured observation source and observed_at must be non-empty");
-    }
     if captured.public_release_tag.as_deref().is_some_and(|value| value.trim().is_empty()) {
         bail!("public_release_tag cannot be empty");
     }
+    let channels = complete_channels(captured.channels, &static_topology.primary_channels)?;
 
     match captured.status {
         ObservationStatus::Proven => {
@@ -92,7 +91,7 @@ fn normalize_observation(
         captured.prepared_swarm_sha.as_deref(),
         captured.publication_join_sha.as_deref(),
         captured.public_release_tag.as_deref(),
-        &captured.channels,
+        &channels,
     )?;
 
     let stage = stage_for(
@@ -112,23 +111,28 @@ fn normalize_observation(
         publication_join_sha: captured.publication_join_sha,
         public_release_tag: captured.public_release_tag,
         stage,
-        channels: captured.channels,
+        channels,
     };
-    validate_normalized_observation(&observation)?;
+    validate_normalized_observation(&observation, &static_topology.primary_channels)?;
     Ok(observation)
 }
 
-pub(super) fn validate_normalized_observation(observation: &Observation) -> Result<()> {
+pub(super) fn validate_normalized_observation(
+    observation: &Observation,
+    primary_channels: &[String],
+) -> Result<()> {
     validate_sha(observation.development_sha.as_deref(), "development_sha")?;
     validate_sha(observation.publication_sha.as_deref(), "publication_sha")?;
     validate_sha(observation.prepared_swarm_sha.as_deref(), "prepared_swarm_sha")?;
     validate_sha(observation.publication_join_sha.as_deref(), "publication_join_sha")?;
+    validate_observation_metadata(
+        observation.source.as_deref(),
+        observation.observed_at.as_deref(),
+    )?;
 
     match observation.status {
         ObservationStatus::Proven => {
-            if observation.source.as_deref().is_none_or(|value| value.trim().is_empty())
-                || observation.observed_at.as_deref().is_none_or(|value| value.trim().is_empty())
-            {
+            if observation.source.is_none() || observation.observed_at.is_none() {
                 bail!("PROVEN observation requires source and observed_at");
             }
             if observation.limitation.is_some() {
@@ -142,9 +146,6 @@ pub(super) fn validate_normalized_observation(observation: &Observation) -> Resu
             if observation.limitation.as_deref().is_none_or(|value| value.trim().is_empty()) {
                 bail!("NOT_PROVEN observation requires a limitation");
             }
-            if observation.source.is_some() != observation.observed_at.is_some() {
-                bail!("partial observation source and observed_at must move together");
-            }
         }
     }
     if observation.public_release_tag.as_deref().is_some_and(|value| value.trim().is_empty()) {
@@ -156,6 +157,7 @@ pub(super) fn validate_normalized_observation(observation: &Observation) -> Resu
         observation.public_release_tag.as_deref(),
         &observation.channels,
     )?;
+    validate_channels(&observation.channels, primary_channels)?;
     let expected_stage = stage_for(
         observation.status,
         observation.prepared_swarm_sha.as_deref(),
@@ -164,6 +166,52 @@ pub(super) fn validate_normalized_observation(observation: &Observation) -> Resu
     );
     if observation.stage != expected_stage {
         bail!("observation stage does not match its evidence");
+    }
+    Ok(())
+}
+
+fn validate_observation_metadata(source: Option<&str>, observed_at: Option<&str>) -> Result<()> {
+    match (source, observed_at) {
+        (None, None) => Ok(()),
+        (Some(source), Some(observed_at))
+            if !source.trim().is_empty() && !observed_at.trim().is_empty() =>
+        {
+            Ok(())
+        }
+        (Some(_), Some(_)) => {
+            bail!("captured observation source and observed_at must be non-empty")
+        }
+        _ => bail!("partial observation source and observed_at must move together"),
+    }
+}
+
+fn complete_channels(
+    mut channels: BTreeMap<String, ChannelState>,
+    primary_channels: &[String],
+) -> Result<BTreeMap<String, ChannelState>> {
+    validate_channels(&channels, primary_channels)?;
+    for channel in primary_channels {
+        channels.entry(channel.clone()).or_insert(ChannelState::NotProven);
+    }
+    Ok(channels)
+}
+
+fn not_proven_channels(primary_channels: &[String]) -> BTreeMap<String, ChannelState> {
+    primary_channels.iter().map(|channel| (channel.clone(), ChannelState::NotProven)).collect()
+}
+
+fn validate_channels(
+    channels: &BTreeMap<String, ChannelState>,
+    primary_channels: &[String],
+) -> Result<()> {
+    if let Some(unknown) =
+        channels.keys().find(|channel| !primary_channels.iter().any(|known| known == *channel))
+    {
+        bail!("unknown primary release channel {unknown:?}");
+    }
+    if let Some(missing) = primary_channels.iter().find(|channel| !channels.contains_key(*channel))
+    {
+        bail!("primary release channel {missing:?} is missing");
     }
     Ok(())
 }
