@@ -262,7 +262,7 @@ class SublimePerllspHostJourney(DeferrableTestCase):
                 import json as _json
 
                 tokens = []
-                raw = self.buffer.semantic_tokens.data.get("data") or []
+                raw = self.buffer.semantic_tokens.data or []
                 for index in range(0, len(raw), 5):
                     _delta, dline, dchar, dlength, dtype = raw[index:index + 5]
                     tokens.append(
