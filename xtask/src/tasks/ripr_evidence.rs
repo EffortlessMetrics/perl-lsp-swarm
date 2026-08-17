@@ -4317,7 +4317,9 @@ paths = ["archive/["]
             "[[suppress]]\nid = \"test-suppression\"\nkind = \"test_receipt_surface\"\npaths = [\"crates/suppressed/**\"]\nreason = \"test fixture\"\n",
         )?;
         let raw_check = repo.join(PR_RAW_CHECK_JSON);
-        fs::create_dir_all(raw_check.parent().expect("raw-check parent"))?;
+        if let Some(parent) = raw_check.parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(
             &raw_check,
             json!({
@@ -4365,7 +4367,10 @@ paths = ["archive/["]
         assert_eq!(packet.pointer("/warnings/0/kind"), Some(&json!("tool_error")), "{packet}");
         assert_eq!(packet.pointer("/warnings/1/kind"), Some(&json!("guidance_fallback")));
 
-        let items = packet.get("summary_only").and_then(Value::as_array).expect("summary_only");
+        let items = packet
+            .get("summary_only")
+            .and_then(Value::as_array)
+            .ok_or_else(|| eyre!("missing summary_only array"))?;
         assert_eq!(items[0]["path"], json!("crates/foo/src/a.rs"));
         assert_eq!(items[0]["line"], json!(10));
         assert_eq!(items[1]["path"], json!("crates/foo/src/b.rs"));
