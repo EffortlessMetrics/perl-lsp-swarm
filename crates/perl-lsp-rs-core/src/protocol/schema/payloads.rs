@@ -1,4 +1,4 @@
-use super::{SchemaError, expect_null, expect_object};
+use super::{SchemaError, expect_integer, expect_null, expect_object, expect_string};
 use serde_json::{Map, Value};
 
 pub(super) fn null_params(method: &str, value: &Value) -> Result<(), SchemaError> {
@@ -106,5 +106,58 @@ pub(super) fn cancel_params(method: &str, value: &Value) -> Result<(), SchemaErr
             Err(SchemaError::at_value(Some(method), "$.params.id", "integer or string", value))
         }
         None => Err(SchemaError::new(Some(method), "$.params.id", "request ID", "missing")),
+    }
+}
+
+/// `window/showMessage` and `window/logMessage` share `ShowMessageParams`.
+pub(super) fn window_message_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    window_message_fields(method, value).map(|_| ())
+}
+
+/// `window/showMessageRequest` adds optional `actions` on the same params object.
+pub(super) fn show_message_request_params(method: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = window_message_fields(method, value)?;
+    if let Some(actions) = object.get("actions") {
+        let array = actions.as_array().ok_or_else(|| {
+            SchemaError::at_value(Some(method), "$.params.actions", "array", actions)
+        })?;
+        for (index, action) in array.iter().enumerate() {
+            message_action_item(method, &format!("$.params.actions[{index}]"), action)?;
+        }
+    }
+    Ok(())
+}
+
+/// Success result is `MessageActionItem | null`.
+pub(super) fn show_message_request_result(method: &str, value: &Value) -> Result<(), SchemaError> {
+    if value.is_null() {
+        return Ok(());
+    }
+    message_action_item(method, "$.result", value)
+}
+
+fn window_message_fields<'a>(
+    method: &str,
+    value: &'a Value,
+) -> Result<&'a Map<String, Value>, SchemaError> {
+    let object = expect_object(Some(method), "$.params", value)?;
+    message_type(method, "$.params.type", object.get("type"))?;
+    expect_string(Some(method), "$.params.message", object.get("message"))?;
+    Ok(object)
+}
+
+fn message_action_item(method: &str, path: &str, value: &Value) -> Result<(), SchemaError> {
+    let object = expect_object(Some(method), path, value)?;
+    expect_string(Some(method), &format!("{path}.title"), object.get("title"))?;
+    Ok(())
+}
+
+/// LSP 3.17 `MessageType`: Error=1, Warning=2, Info=3, Log=4. Debug=5 is 3.18.
+fn message_type(method: &str, path: &str, value: Option<&Value>) -> Result<i64, SchemaError> {
+    let number = expect_integer(Some(method), path, value)?;
+    if (1..=4).contains(&number) {
+        Ok(number)
+    } else {
+        Err(SchemaError::new(Some(method), path, "MessageType integer 1..=4", number.to_string()))
     }
 }

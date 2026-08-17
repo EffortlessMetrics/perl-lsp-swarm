@@ -26,6 +26,9 @@
     "client_to_server:request:initialize:3.17",
     "client_to_server:notification:initialized:3.17",
     "client_to_server:request:shutdown:3.17",
-    "server_to_client:notification:$/cancelRequest:3.17"
+    "server_to_client:notification:$/cancelRequest:3.17",
+    "server_to_client:notification:window/logMessage:3.17",
+    "server_to_client:notification:window/showMessage:3.17",
+    "server_to_client:request:window/showMessageRequest:3.17"
   ]
 }
