@@ -18,9 +18,11 @@ const FIRST_ISSUE_SEQUENCE: u64 = 1;
 
 /// Bounded session-local authenticator used by one LSP connection.
 ///
-/// Four independently randomized [`RandomState`] lanes produce the fixed
-/// 32-byte tag. The result is valid only inside one server session; it is not a
-/// durable signature, credential, password KDF, or cross-process identity.
+/// Four separately keyed [`RandomState`] lanes produce the fixed 32-byte tag.
+/// Keys come from the standard library's per-process random state, so lanes and
+/// instances never share a key. The result is valid only inside one server
+/// session; it is not a durable signature, credential, password KDF, or
+/// cross-process identity.
 pub struct SessionResolveAuthenticator {
     session_identity: ResolveIdentityRef,
     hash_lanes: [RandomState; AUTHENTICATOR_LANES],
@@ -47,9 +49,7 @@ impl SessionResolveAuthenticator {
     /// Reserve the next nonzero, nonwrapping token issue sequence.
     pub fn next_issue_sequence(&self) -> Result<u64, ResolveAuthenticatorFailure> {
         self.next_issue_sequence
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1)
-            })
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
             .map_err(|_| ResolveAuthenticatorFailure::Internal)
     }
 
@@ -71,13 +71,15 @@ impl ResolveEnvelopeAuthenticator for SessionResolveAuthenticator {
         &self,
         canonical_unsigned: &[u8],
     ) -> Result<ResolveAuthTag, ResolveAuthenticatorFailure> {
-        let message_len = u64::try_from(canonical_unsigned.len())
-            .map_err(|_| ResolveAuthenticatorFailure::Internal)?;
+        // Bounded by the codec's maximum decoded size, so this widening is
+        // infallible on every supported target.
+        let message_len = canonical_unsigned.len() as u64;
         let mut tag = [0_u8; RESOLVE_AUTH_TAG_BYTES];
 
         for (lane_index, lane) in self.hash_lanes.iter().enumerate() {
-            let lane_id =
-                u64::try_from(lane_index).map_err(|_| ResolveAuthenticatorFailure::Internal)?;
+            // `lane_index` is bounded by `AUTHENTICATOR_LANES` (0..4), so this
+            // widening is infallible.
+            let lane_id = lane_index as u64;
             let mut hasher = lane.build_hasher();
             hasher.write(AUTHENTICATOR_DOMAIN);
             hasher.write(&lane_id.to_be_bytes());
@@ -99,10 +101,7 @@ impl fmt::Debug for SessionResolveAuthenticator {
         formatter
             .debug_struct("SessionResolveAuthenticator")
             .field("session_identity", &self.session_identity)
-            .field(
-                "next_issue_sequence",
-                &self.next_issue_sequence.load(Ordering::Relaxed),
-            )
+            .field("next_issue_sequence", &self.next_issue_sequence.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
 }
@@ -185,14 +184,8 @@ mod tests {
             identity("session:exhausted")?,
             u64::MAX,
         );
-        assert_eq!(
-            exhausted.next_issue_sequence(),
-            Err(ResolveAuthenticatorFailure::Internal)
-        );
-        assert_eq!(
-            exhausted.next_issue_sequence(),
-            Err(ResolveAuthenticatorFailure::Internal)
-        );
+        assert_eq!(exhausted.next_issue_sequence(), Err(ResolveAuthenticatorFailure::Internal));
+        assert_eq!(exhausted.next_issue_sequence(), Err(ResolveAuthenticatorFailure::Internal));
         Ok(())
     }
 
@@ -206,17 +199,11 @@ mod tests {
 
         let token = codec.issue(
             header(&first)?,
-            TestSubject {
-                identity: "symbol:7".to_string(),
-            },
+            TestSubject { identity: "symbol:7".to_string() },
             &first,
         )?;
 
-        assert!(
-            codec
-                .validate::<TestSubject, _>(&token, first.session_identity(), &first)
-                .is_ok()
-        );
+        assert!(codec.validate::<TestSubject, _>(&token, first.session_identity(), &first).is_ok());
         assert_eq!(
             codec.validate::<TestSubject, _>(
                 &token,
