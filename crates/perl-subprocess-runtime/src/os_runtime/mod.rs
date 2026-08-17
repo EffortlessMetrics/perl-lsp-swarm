@@ -79,9 +79,7 @@ impl OsSubprocessRuntime {
     /// define its own upper bound without changing unrelated subprocess users.
     pub fn with_bounded_timeout(timeout_secs: u64, max_timeout_secs: u64) -> Self {
         let max_timeout_secs = max_timeout_secs.max(MIN_TIMEOUT_SECS);
-        Self {
-            timeout_secs: Some(timeout_secs.clamp(MIN_TIMEOUT_SECS, max_timeout_secs)),
-        }
+        Self { timeout_secs: Some(timeout_secs.clamp(MIN_TIMEOUT_SECS, max_timeout_secs)) }
     }
 }
 
