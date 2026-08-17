@@ -15,7 +15,13 @@
     "historical_branches_are_mining_subjects_not_authority": true,
     "templates_are_not_behavioral_evidence": true,
     "manual_external_writes_are_maintainer_only": true,
-    "dap_sidecar_never_blocks_core_lsp": true
+    "dap_sidecar_never_blocks_core_lsp": true,
+    "extension_subject_must_be_materialized_and_attested": true,
+    "host_cells_must_be_derived_from_immutable_evidence": true,
+    "managed_projection_must_be_generated_from_canonical_topology": true,
+    "compatibility_requires_exact_host_receipts": true,
+    "known_good_cache_must_survive_unproven_candidates": true,
+    "public_support_requires_official_registry_compatibility": true
   },
   "actor_contracts": {
     "codex": {
