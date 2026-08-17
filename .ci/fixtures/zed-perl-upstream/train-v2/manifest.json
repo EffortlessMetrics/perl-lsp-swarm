@@ -67,8 +67,8 @@
   "manual_stop_points": [
     "M01",
     "M02",
-    "DM01",
-    "DM02"
+    "QM01",
+    "QM02"
   ],
   "fragments": [
     "core-authorities.json",
