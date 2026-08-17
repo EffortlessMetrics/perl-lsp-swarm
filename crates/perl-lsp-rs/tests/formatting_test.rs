@@ -1,7 +1,10 @@
 //! Integration tests for code formatting
 
 use perl_lsp::convert::{WirePosition, WireRange};
-use perl_lsp::features::formatting::{CodeFormatter, FormattingOptions};
+use perl_lsp::features::formatting::{
+    CodeFormatter, FormatContext, FormattingOptions,
+};
+use perl_lsp_rs_core::tooling::perltidy::native::{FormatDisposition, FormatReasonCode};
 use perl_tdd_support::must;
 
 #[test]
@@ -37,8 +40,8 @@ fn test_range_formatting() {
     // Multi-line code
     let code = "my $x = 1;\nsub test{return$x;}\nmy $y = 2;";
 
-    // Format only the middle line
-    let range = WireRange { start: WirePosition::new(1, 0), end: WirePosition::new(1, 20) };
+    // Format only the middle line. The endpoint is the exact UTF-16 line length.
+    let range = WireRange { start: WirePosition::new(1, 0), end: WirePosition::new(1, 19) };
 
     let edits = must(formatter.format_range(code, &range, &options));
     assert_eq!(edits.len(), 1, "native default range formatting should return one edit");
@@ -132,12 +135,82 @@ fn test_range_formatting_preserves_simple_block_trailing_comment() {
         trim_final_newlines: None,
     };
     let code = "if($ok){return 1;} # if tail\nmy$z=3;\n";
-    let range = WireRange { start: WirePosition::new(0, 0), end: WirePosition::new(0, 29) };
+    let range = WireRange { start: WirePosition::new(0, 0), end: WirePosition::new(0, 28) };
 
     let edits = must(formatter.format_range(code, &range, &options));
 
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].new_text, "if ($ok) {\n    return 1;\n} # if tail");
+}
+
+#[test]
+fn test_range_formatting_rejects_one_past_end_without_clamping() {
+    let formatter = CodeFormatter::new();
+    let options = FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        trim_trailing_whitespace: None,
+        insert_final_newline: None,
+        trim_final_newlines: None,
+    };
+
+    for (code, line, exact_end) in [
+        ("my $x = 1;\nsub test{return$x;}\nmy $y = 2;", 1, 19),
+        ("if($ok){return 1;} # if tail\nmy$z=3;\n", 0, 28),
+    ] {
+        let range = WireRange {
+            start: WirePosition::new(line, 0),
+            end: WirePosition::new(line, exact_end + 1),
+        };
+        let decision = must(formatter.format_range_decision(
+            code,
+            &range,
+            &options,
+            &FormatContext::default(),
+        ));
+
+        assert_eq!(
+            decision.outcome.disposition,
+            FormatDisposition::Refused,
+            "a one-past-end range must refuse rather than clamp: {code:?}"
+        );
+        assert_eq!(decision.outcome.reason, FormatReasonCode::UnsafeRange);
+        assert!(decision.document.edits.is_empty());
+        assert_eq!(decision.document.text, code);
+    }
+}
+
+#[test]
+fn test_range_formatting_uses_utf16_columns_for_non_bmp_text() {
+    let formatter = CodeFormatter::new();
+    let options = FormattingOptions {
+        tab_size: 4,
+        insert_spaces: true,
+        trim_trailing_whitespace: None,
+        insert_final_newline: None,
+        trim_final_newlines: None,
+    };
+    let code = "my$x=1; # 😀\n";
+    let selected_line = "my$x=1; # 😀";
+    let exact_end = selected_line.encode_utf16().count() as u32;
+    assert_eq!(exact_end, 12, "the emoji occupies two UTF-16 code units");
+    assert_ne!(exact_end as usize, selected_line.len(), "UTF-16 is not byte length");
+
+    let range = WireRange {
+        start: WirePosition::new(0, 0),
+        end: WirePosition::new(0, exact_end),
+    };
+    let decision = must(formatter.format_range_decision(
+        code,
+        &range,
+        &options,
+        &FormatContext::default(),
+    ));
+
+    assert_eq!(decision.outcome.disposition, FormatDisposition::Applied);
+    assert_eq!(decision.outcome.reason, FormatReasonCode::Applied);
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].new_text, "my $x = 1; # 😀");
 }
 
 #[test]
