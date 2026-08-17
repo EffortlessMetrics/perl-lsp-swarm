@@ -1,0 +1,27 @@
+name: codex-9234-inspect
+
+on:
+  push:
+    branches:
+      - "codex/9234-field-declaration-schema"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Inspect field source representation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'FIELD_PARSER'
+          grep -RIn -C 5 --include='*.rs' -E 'TokenKind::Field|Keyword::Field|"field"|in_class_body' crates/perl-parser-core | head -n 1800 || true
+          echo 'VARIABLE_DECLARATION'
+          grep -RIn -C 5 --include='*.rs' -E 'VariableDeclaration|VariableDecl' crates/perl-ast crates/perl-parser-core | head -n 1800 || true
+          echo 'FIELD_CONSUMERS'
+          grep -RIn -C 4 --include='*.rs' -E 'declarator.*field|field.*declarator|ClassField|FieldDeclaration' crates | head -n 1800 || true
