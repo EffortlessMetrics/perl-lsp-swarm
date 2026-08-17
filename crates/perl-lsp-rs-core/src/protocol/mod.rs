@@ -20,6 +20,7 @@ pub mod error_inventory;
 mod errors;
 mod jsonrpc;
 pub mod methods;
+pub mod resolve_envelope;
 
 pub use error_disposition::{Disposition, disposition_for};
 pub use error_inventory::{
