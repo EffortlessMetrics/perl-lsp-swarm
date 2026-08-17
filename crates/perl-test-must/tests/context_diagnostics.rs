@@ -21,17 +21,12 @@ struct ExpectedError;
 
 #[test]
 fn must_with_renders_context_error_and_type_once() -> Result<(), String> {
-    let payload = catch_unwind(|| {
-        must_with::<i32, &str>(Err("boom"), "fixture config must be valid")
-    });
+    let payload =
+        catch_unwind(|| must_with::<i32, &str>(Err("boom"), "fixture config must be valid"));
     let message = panic_message(payload.err().ok_or("expected must_with to panic")?)?;
 
     assert_eq!(occurrences(&message, "must:"), 1, "message was: {message}");
-    assert_eq!(
-        occurrences(&message, "fixture config must be valid"),
-        1,
-        "message was: {message}"
-    );
+    assert_eq!(occurrences(&message, "fixture config must be valid"), 1, "message was: {message}");
     assert_eq!(occurrences(&message, "unexpected Err<&str>"), 1, "message was: {message}");
     assert_eq!(occurrences(&message, "\"boom\""), 1, "message was: {message}");
     Ok(())
@@ -39,17 +34,12 @@ fn must_with_renders_context_error_and_type_once() -> Result<(), String> {
 
 #[test]
 fn must_some_with_renders_context_and_payload_type_once() -> Result<(), String> {
-    let payload = catch_unwind(|| {
-        must_some_with(Option::<IndexedSymbol>::None, "indexed symbol must exist")
-    });
+    let payload =
+        catch_unwind(|| must_some_with(Option::<IndexedSymbol>::None, "indexed symbol must exist"));
     let message = panic_message(payload.err().ok_or("expected must_some_with to panic")?)?;
 
     assert_eq!(occurrences(&message, "must_some:"), 1, "message was: {message}");
-    assert_eq!(
-        occurrences(&message, "indexed symbol must exist"),
-        1,
-        "message was: {message}"
-    );
+    assert_eq!(occurrences(&message, "indexed symbol must exist"), 1, "message was: {message}");
     assert_eq!(occurrences(&message, "unexpected None<"), 1, "message was: {message}");
     assert_eq!(occurrences(&message, "IndexedSymbol"), 1, "message was: {message}");
     Ok(())
@@ -85,25 +75,16 @@ fn context_variants_accept_borrowed_values_and_format_arguments() -> Result<(), 
     let context_subject = String::from("fixture");
 
     let result: Result<&str, &str> = Ok(owned.as_str());
-    assert_eq!(
-        must_with(result, format_args!("{context_subject} must load")),
-        "borrowed"
-    );
+    assert_eq!(must_with(result, format_args!("{context_subject} must load")), "borrowed");
 
     assert_eq!(
-        must_some_with(
-            Some(owned.as_str()),
-            format_args!("{context_subject} contains an item")
-        ),
+        must_some_with(Some(owned.as_str()), format_args!("{context_subject} contains an item")),
         "borrowed"
     );
 
     let error_result: Result<&str, &str> = Err(owned.as_str());
     assert_eq!(
-        must_err_with(
-            error_result,
-            format_args!("{context_subject} must reject invalid input")
-        ),
+        must_err_with(error_result, format_args!("{context_subject} must reject invalid input")),
         "borrowed"
     );
     Ok(())

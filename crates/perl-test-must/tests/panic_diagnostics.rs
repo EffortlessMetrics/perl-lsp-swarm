@@ -37,10 +37,7 @@ fn must_err_on_ok_panic_names_error_and_ok_types_and_value() -> Result<(), Strin
     let message = must_some(panic_message(payload.as_ref()));
 
     assert!(message.contains("must_err: expected Err"), "message was: {message}");
-    assert!(
-        message.contains("expected Err<&str>, got Ok<i32>: 7"),
-        "message was: {message}"
-    );
+    assert!(message.contains("expected Err<&str>, got Ok<i32>: 7"), "message was: {message}");
     Ok(())
 }
 

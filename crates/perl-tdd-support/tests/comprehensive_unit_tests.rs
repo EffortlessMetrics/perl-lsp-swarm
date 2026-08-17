@@ -63,7 +63,7 @@ fn must_some_panics_on_none() {
 }
 
 #[test]
-#[should_panic(expected = "expected Err, got Ok")]
+#[should_panic(expected = "expected Err<&str>, got Ok<i32>: 1")]
 fn must_err_panics_on_ok() {
     let val: Result<i32, &str> = Ok(1);
     let _ = must_err(val);
