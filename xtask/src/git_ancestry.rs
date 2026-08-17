@@ -332,7 +332,10 @@ pub fn classify_ancestry(repository: &Path, base: &str, head: &str) -> AncestryR
 
     let merge_base = match run_git(repository, &["merge-base", &base_sha, &head_sha]) {
         Ok(output) if output.succeeded() => Some(output.stdout.trim().to_string()),
-        Ok(output) if output.no_match() => None,
+        // Exit 1 proves no common ancestor only when it is clean. Git also exits 1
+        // with a diagnostic on stderr when an interior commit object is unreadable,
+        // which is an incomplete graph, not proven-unrelated history.
+        Ok(output) if output.no_match() && output.stderr.trim().is_empty() => None,
         Ok(output) => {
             receipt.limitations.push(output.diagnostic());
             return receipt.finish(
@@ -518,6 +521,21 @@ mod tests {
     }
 
     #[test]
+    fn head_behind_base_is_diverged_not_ancestor() -> Result<()> {
+        let repository = initialized_repository()?;
+        let first = git(&repository, &["rev-parse", "HEAD"])?;
+        commit_file(&repository, "second.txt", "second\n", "second")?;
+        let second = git(&repository, &["rev-parse", "HEAD"])?;
+
+        let receipt = classify_ancestry(repository.path(), &second, &first);
+
+        assert_eq!(receipt.disposition, AncestryDisposition::Diverged);
+        assert_eq!(receipt.base_is_ancestor_of_head, Some(false));
+        assert_eq!(receipt.head_is_ancestor_of_base, Some(true));
+        Ok(())
+    }
+
+    #[test]
     fn complete_orphan_histories_are_unrelated() -> Result<()> {
         let repository = initialized_repository()?;
         let original = git(&repository, &["rev-parse", "HEAD"])?;
@@ -586,6 +604,26 @@ mod tests {
     }
 
     #[test]
+    fn damaged_interior_object_is_instrument_failure_not_unrelated() -> Result<()> {
+        let repository = initialized_repository()?;
+        let first = git(&repository, &["rev-parse", "HEAD"])?;
+        commit_file(&repository, "second.txt", "second\n", "second")?;
+        let interior = git(&repository, &["rev-parse", "HEAD"])?;
+        commit_file(&repository, "third.txt", "third\n", "third")?;
+        // Both endpoints still resolve, but the walk between them hits a missing
+        // object: `git merge-base` exits 1 with an error on stderr, which must not
+        // be read as proven-unrelated history.
+        let (prefix, rest) = interior.split_at(2);
+        fs::remove_file(repository.path().join(".git/objects").join(prefix).join(rest))?;
+
+        let receipt = classify_ancestry(repository.path(), &first, "HEAD");
+
+        assert_eq!(receipt.disposition, AncestryDisposition::InstrumentFailure);
+        assert!(receipt.merge_base.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn option_like_revision_is_invalid_input() -> Result<()> {
         let repository = initialized_repository()?;
 
@@ -593,6 +631,16 @@ mod tests {
 
         assert_eq!(receipt.disposition, AncestryDisposition::InvalidInput);
         assert_eq!(receipt.disposition.exit_code(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_revision_is_invalid_input() -> Result<()> {
+        let repository = initialized_repository()?;
+
+        let receipt = classify_ancestry(repository.path(), "", "HEAD");
+
+        assert_eq!(receipt.disposition, AncestryDisposition::InvalidInput);
         Ok(())
     }
 
@@ -614,16 +662,43 @@ mod tests {
         let refs_before = git(&repository, &["show-ref", "--head"])?;
         let status_before = git(&repository, &["status", "--porcelain=v1"])?;
         let index_before = fs::read(repository.path().join(".git/index"))?;
+        // A full .git listing also catches fetch-shaped writes (FETCH_HEAD, new
+        // objects, config edits) that ref/index/worktree snapshots cannot see.
+        let listing_before = git_dir_listing(&repository.path().join(".git"))?;
 
         let receipt = classify_ancestry(repository.path(), "HEAD", "HEAD");
 
         let refs_after = git(&repository, &["show-ref", "--head"])?;
         let status_after = git(&repository, &["status", "--porcelain=v1"])?;
         let index_after = fs::read(repository.path().join(".git/index"))?;
+        let listing_after = git_dir_listing(&repository.path().join(".git"))?;
         assert_eq!(receipt.disposition, AncestryDisposition::Ancestor);
         assert_eq!(refs_before, refs_after);
         assert_eq!(status_before, status_after);
         assert_eq!(index_before, index_after);
+        assert_eq!(listing_before, listing_after);
+        Ok(())
+    }
+
+    #[test]
+    fn classification_of_shallow_clone_does_not_deepen() -> Result<()> {
+        let source = initialized_repository()?;
+        commit_file(&source, "second.txt", "second\n", "second")?;
+        let clone_parent = tempfile::tempdir()?;
+        let clone = clone_parent.path().join("repository");
+        let source_arg = source.path().to_string_lossy().into_owned();
+        let clone_arg = clone.to_string_lossy().into_owned();
+        git_at(
+            clone_parent.path(),
+            &["clone", "--depth", "1", "--no-local", &source_arg, &clone_arg],
+        )?;
+        let listing_before = git_dir_listing(&clone.join(".git"))?;
+
+        let receipt = classify_ancestry(&clone, "HEAD", "HEAD");
+
+        let listing_after = git_dir_listing(&clone.join(".git"))?;
+        assert_eq!(receipt.disposition, AncestryDisposition::NotProvenShallow);
+        assert_eq!(listing_before, listing_after);
         Ok(())
     }
 
@@ -668,6 +743,30 @@ mod tests {
 
     fn git(repository: &tempfile::TempDir, arguments: &[&str]) -> Result<String> {
         git_at(repository.path(), arguments)
+    }
+
+    fn git_dir_listing(git_dir: &Path) -> Result<Vec<String>> {
+        let mut entries = Vec::new();
+        collect_listing(git_dir, git_dir, &mut entries)?;
+        entries.sort();
+        Ok(entries)
+    }
+
+    fn collect_listing(root: &Path, directory: &Path, entries: &mut Vec<String>) -> Result<()> {
+        for entry in fs::read_dir(directory)? {
+            let path = entry?.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| anyhow::anyhow!("listing escaped root: {error}"))?
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                collect_listing(root, &path, entries)?;
+            } else {
+                entries.push(format!("{}:{}", relative, path.metadata()?.len()));
+            }
+        }
+        Ok(())
     }
 
     fn git_at(repository: &Path, arguments: &[&str]) -> Result<String> {
