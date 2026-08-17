@@ -32,6 +32,18 @@ name = "corpus_differential"
 path = "src/bin/corpus_differential.rs"
 required-features = ["historical"]
 
+[[test]]
+name = "differential"
+required-features = ["historical"]
+
+[[test]]
+name = "corpus_differential"
+required-features = ["historical"]
+
+[[test]]
+name = "recovery_differential"
+required-features = ["historical"]
+
 [lib]
 doctest = false
 

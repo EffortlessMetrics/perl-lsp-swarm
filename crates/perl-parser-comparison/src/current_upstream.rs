@@ -25,20 +25,17 @@ pub const CURRENT_UPSTREAM_SUBJECT: CurrentUpstreamSubjectManifest =
         package_name: "ts-parser-perl",
         package_version: "1.2.1",
         package_requirement: "=1.2.1",
-        package_checksum:
-            "d125f7bfdd1fd82a7e87d2e85793f486ad1b5f465144e9e22132dbe5bd80e694",
+        package_checksum: "d125f7bfdd1fd82a7e87d2e85793f486ad1b5f465144e9e22132dbe5bd80e694",
         upstream_repository: "https://github.com/tree-sitter-perl/tree-sitter-perl",
         upstream_tag: "v1.2.1",
         upstream_commit: "c3e17b31179bf8f658c9f37c7a3ea6a202212d5a",
-        tree_sitter_runtime_version: "0.26.11",
+        tree_sitter_runtime_version: "0.26.12",
         tree_sitter_language_version: "0.1.7",
         upstream_rust_version: "1.77",
-        semantic_digest:
-            "sha256:79a0c1498571dbdac8fec19877937571fe660283df6e683f495942e4867c797b",
-        reviewed_on: "2026-08-15",
+        semantic_digest: "sha256:750bf42fd1190088c649e5c0ab50995b8895a8002ac15d6bbe560721a97134b2",
+        reviewed_on: "2026-08-17",
         refresh_owner: "#7255",
-        claim_boundary:
-            "exact current-upstream comparison subject; no consumer migration or superiority claim",
+        claim_boundary: "exact current-upstream comparison subject; no consumer migration or superiority claim",
     };
 
 /// Exact immutable identity of the maintained-current upstream subject.
@@ -431,18 +428,12 @@ impl CurrentUpstreamAdapter {
 
     /// Compile the exact upstream highlight query against the active language.
     pub fn highlight_query(&self) -> Result<Query, CurrentUpstreamAdapterError> {
-        self.compile_query(
-            CurrentUpstreamQueryKind::Highlights,
-            ts_parser_perl::HIGHLIGHTS_QUERY,
-        )
+        self.compile_query(CurrentUpstreamQueryKind::Highlights, ts_parser_perl::HIGHLIGHTS_QUERY)
     }
 
     /// Compile the exact upstream injection query against the active language.
     pub fn injection_query(&self) -> Result<Query, CurrentUpstreamAdapterError> {
-        self.compile_query(
-            CurrentUpstreamQueryKind::Injections,
-            ts_parser_perl::INJECTIONS_QUERY,
-        )
+        self.compile_query(CurrentUpstreamQueryKind::Injections, ts_parser_perl::INJECTIONS_QUERY)
     }
 
     /// Upstream node-types payload supplied by the exact pinned package.
@@ -460,12 +451,7 @@ impl CurrentUpstreamAdapter {
             .parser
             .parse(source, old_tree)
             .ok_or(CurrentUpstreamAdapterError::ParseReturnedNone)?;
-        Ok(CurrentUpstreamParse {
-            tree,
-            mode,
-            source_len: source.len(),
-            subject: self.subject,
-        })
+        Ok(CurrentUpstreamParse { tree, mode, source_len: source.len(), subject: self.subject })
     }
 
     fn compile_query(
@@ -475,10 +461,7 @@ impl CurrentUpstreamAdapter {
     ) -> Result<Query, CurrentUpstreamAdapterError> {
         Query::new(&self.language, source).map_err(|error| CurrentUpstreamAdapterError::Query {
             kind,
-            message: BoundedSubjectText::new(
-                error.to_string(),
-                MAX_ADAPTER_DIAGNOSTIC_BYTES,
-            ),
+            message: BoundedSubjectText::new(error.to_string(), MAX_ADAPTER_DIAGNOSTIC_BYTES),
         })
     }
 }
@@ -503,19 +486,15 @@ pub enum CurrentUpstreamAdapterError {
 impl fmt::Display for CurrentUpstreamAdapterError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LanguageSetup(message) => write!(
-                formatter,
-                "current-upstream language setup failed: {}",
-                message.as_str()
-            ),
+            Self::LanguageSetup(message) => {
+                write!(formatter, "current-upstream language setup failed: {}", message.as_str())
+            }
             Self::ParseReturnedNone => {
                 formatter.write_str("current-upstream parser returned no tree")
             }
-            Self::Query { kind, message } => write!(
-                formatter,
-                "current-upstream {kind} query failed: {}",
-                message.as_str()
-            ),
+            Self::Query { kind, message } => {
+                write!(formatter, "current-upstream {kind} query failed: {}", message.as_str())
+            }
         }
     }
 }

@@ -28,16 +28,13 @@ fn exact_subject_manifest_is_one_complete_authority() {
         "d125f7bfdd1fd82a7e87d2e85793f486ad1b5f465144e9e22132dbe5bd80e694"
     );
     assert_eq!(subject.upstream_tag(), "v1.2.1");
-    assert_eq!(
-        subject.upstream_commit(),
-        "c3e17b31179bf8f658c9f37c7a3ea6a202212d5a"
-    );
-    assert_eq!(subject.tree_sitter_runtime_version(), "0.26.11");
+    assert_eq!(subject.upstream_commit(), "c3e17b31179bf8f658c9f37c7a3ea6a202212d5a");
+    assert_eq!(subject.tree_sitter_runtime_version(), "0.26.12");
     assert_eq!(subject.tree_sitter_language_version(), "0.1.7");
     assert_eq!(subject.upstream_rust_version(), "1.77");
     assert_eq!(
         subject.semantic_digest(),
-        "sha256:79a0c1498571dbdac8fec19877937571fe660283df6e683f495942e4867c797b"
+        "sha256:750bf42fd1190088c649e5c0ab50995b8895a8002ac15d6bbe560721a97134b2"
     );
     assert_eq!(
         subject.semantic_identity(),
@@ -49,10 +46,7 @@ fn exact_subject_manifest_is_one_complete_authority() {
 
 #[test]
 fn checked_in_manifest_is_an_exact_generated_projection() {
-    assert_eq!(
-        SUBJECT_MANIFEST_TOML,
-        CURRENT_UPSTREAM_SUBJECT.render_toml()
-    );
+    assert_eq!(SUBJECT_MANIFEST_TOML, CURRENT_UPSTREAM_SUBJECT.render_toml());
     assert_eq!(CURRENT_UPSTREAM_SUBJECT.canonical_semantic_json().len(), 542);
 }
 
@@ -143,10 +137,7 @@ fn root_projection_is_bounded_and_reports_omissions() -> Result<(), Box<dyn Erro
 
     assert!(projection.as_str().len() <= 4_096);
     assert!(projection.original_bytes() >= projection.as_str().len());
-    assert_eq!(
-        projection.omitted_bytes(),
-        projection.original_bytes() - projection.as_str().len()
-    );
+    assert_eq!(projection.omitted_bytes(), projection.original_bytes() - projection.as_str().len());
     assert!(projection.is_truncated());
     Ok(())
 }
@@ -178,10 +169,9 @@ fn manifest_and_lock_bind_the_exact_crates_io_subject() -> Result<(), Box<dyn Er
         CURRENT_UPSTREAM_SUBJECT.package_version()
     );
     assert!(lock.contains(&package_marker));
-    assert!(lock.contains(&format!(
-        "checksum = \"{}\"",
-        CURRENT_UPSTREAM_SUBJECT.package_checksum()
-    )));
+    assert!(
+        lock.contains(&format!("checksum = \"{}\"", CURRENT_UPSTREAM_SUBJECT.package_checksum()))
+    );
     assert!(lock.contains(&format!(
         "name = \"tree-sitter\"\nversion = \"{}\"",
         CURRENT_UPSTREAM_SUBJECT.tree_sitter_runtime_version()
@@ -194,11 +184,9 @@ fn manifest_and_lock_bind_the_exact_crates_io_subject() -> Result<(), Box<dyn Er
 }
 
 #[test]
-fn adapter_does_not_reintroduce_a_private_comparison_outcome_model(
-) -> Result<(), Box<dyn Error>> {
-    let source = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/current_upstream.rs"),
-    )?;
+fn adapter_does_not_reintroduce_a_private_comparison_outcome_model() -> Result<(), Box<dyn Error>> {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/current_upstream.rs"))?;
 
     for forbidden in [
         "CurrentUpstreamExecutionDisposition",
