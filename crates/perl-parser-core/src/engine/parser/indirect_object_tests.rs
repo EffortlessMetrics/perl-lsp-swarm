@@ -239,16 +239,14 @@ mod tests {
             NodeKind::Block { statements } => statements,
             other => panic!("Expected Block node, got {other:?}"),
         };
-        let call = match &body[0] {
-            Node { kind: NodeKind::ExpressionStatement { expression }, .. } => expression.as_ref(),
-            node => node,
-        };
-        match &call.kind {
+        // The bareword call path returns the call unwrapped; an
+        // `ExpressionStatement` wrapper here is a regression, not an alternative.
+        match &body[0].kind {
             NodeKind::FunctionCall { name, args } => {
                 assert_eq!(name, "my_custom_method");
                 assert_eq!(args.len(), 3);
             }
-            other => panic!("Expected FunctionCall node in block, got {other:?}"),
+            other => panic!("Expected unwrapped FunctionCall node in block, got {other:?}"),
         }
     }
 

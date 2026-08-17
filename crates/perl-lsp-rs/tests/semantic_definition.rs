@@ -15,52 +15,9 @@ mod common;
 
 #[cfg(test)]
 mod semantic_definition_tests {
-    use crate::common::test_utils::TestServerBuilder;
-    use serde_json::Value;
-
-    /// Extract the first definition location from an LSP response.
-    /// Returns (uri, line, character) for easier assertions.
-    fn first_location(resp: &Value) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
-        let arr = resp
-            .get("result")
-            .ok_or("missing result field")?
-            .as_array()
-            .ok_or("result is not an array")?;
-        let first = arr.first().ok_or("result array is empty")?;
-        let uri = first
-            .get("uri")
-            .ok_or("missing uri field")?
-            .as_str()
-            .ok_or("uri is not a string")?
-            .to_string();
-        let range = first.get("range").ok_or("missing range field")?;
-        let start = &range["start"];
-        let line =
-            start.get("line").ok_or("missing line field")?.as_u64().ok_or("line is not a number")?
-                as u32;
-        let character = start
-            .get("character")
-            .ok_or("missing character field")?
-            .as_u64()
-            .ok_or("character is not a number")? as u32;
-        Ok((uri, line, character))
-    }
-
-    /// Compute (line, character) for a given `needle` on a specific `target_line`.
-    fn find_pos(
-        code: &str,
-        needle: &str,
-        target_line: usize,
-    ) -> Result<(u32, u32), Box<dyn std::error::Error>> {
-        let line = code
-            .lines()
-            .nth(target_line)
-            .ok_or_else(|| format!("no line {} in test code", target_line))?;
-        let col = line
-            .find(needle)
-            .ok_or_else(|| format!("could not find `{needle}` on line {target_line}"))?;
-        Ok((target_line as u32, col as u32))
-    }
+    use crate::common::test_utils::{
+        TestServerBuilder, assertions::assert_definition_at, semantic::find_pos,
+    };
 
     #[test]
     fn definition_finds_scalar_variable_declaration() -> Result<(), Box<dyn std::error::Error>> {
@@ -71,14 +28,11 @@ mod semantic_definition_tests {
         server.open_document(uri, code);
 
         // Position on the `$x` reference in the second line
-        let (line, character) = find_pos(code, "$x", 1)?;
+        let (line, character) = find_pos(code, "$x", 1);
         let response = server.get_definition(uri, line, character);
         println!("SCALAR DEF RESPONSE: {response:#}");
 
-        let (def_uri, def_line, _def_char) = first_location(&response)?;
-
-        assert_eq!(def_uri, uri, "definition should be in same file");
-        assert_eq!(def_line, 0, "definition for $x should be on line 0");
+        assert_definition_at(&response, uri, 0)?;
         Ok(())
     }
 
@@ -90,15 +44,12 @@ mod semantic_definition_tests {
         let server = TestServerBuilder::new().build();
         server.open_document(uri, code);
 
-        // Position on "foo" in the call
-        let (line, character) = find_pos(code, "foo()", 1)?;
+        // Position on "foo" in the call expression
+        let (line, character) = find_pos(code, "foo()", 1);
         let response = server.get_definition(uri, line, character);
         println!("SUB DEF RESPONSE: {response:#}");
 
-        let (def_uri, def_line, _def_char) = first_location(&response)?;
-
-        assert_eq!(def_uri, uri, "definition should be in same file");
-        assert_eq!(def_line, 0, "definition for foo should be on line 0");
+        assert_definition_at(&response, uri, 0)?;
         Ok(())
     }
 
@@ -115,15 +66,12 @@ sub foo {
         let server = TestServerBuilder::new().build();
         server.open_document(uri, code);
 
-        // Position on `$inner` in the return expression
-        let (line, character) = find_pos(code, "$inner", 3)?;
+        // Position on `$inner` in the return expression (line 3)
+        let (line, character) = find_pos(code, "$inner", 3);
         let response = server.get_definition(uri, line, character);
         println!("SCOPED DEF RESPONSE: {response:#}");
 
-        let (def_uri, def_line, _def_char) = first_location(&response)?;
-
-        assert_eq!(def_uri, uri, "definition should be in same file");
-        assert_eq!(def_line, 2, "definition for $inner should be on line 2");
+        assert_definition_at(&response, uri, 2)?;
         Ok(())
     }
 
@@ -141,15 +89,12 @@ Foo::bar();
         let server = TestServerBuilder::new().build();
         server.open_document(uri, code);
 
-        // Position on "bar" in Foo::bar()
-        let (line, character) = find_pos(code, "bar()", 5)?;
+        // Position on "bar" in Foo::bar() (line 5)
+        let (line, character) = find_pos(code, "bar()", 5);
         let response = server.get_definition(uri, line, character);
         println!("PKG DEF RESPONSE: {response:#}");
 
-        let (def_uri, def_line, _def_char) = first_location(&response)?;
-
-        assert_eq!(def_uri, uri, "definition should be in same file");
-        assert_eq!(def_line, 1, "definition for bar should be on line 1");
+        assert_definition_at(&response, uri, 1)?;
         Ok(())
     }
 }
