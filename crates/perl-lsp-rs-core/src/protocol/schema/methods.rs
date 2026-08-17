@@ -1,6 +1,6 @@
 use super::payloads::{
     cancel_params, initialize_params, initialize_result, null_or_empty_object, null_params,
-    null_result,
+    null_result, show_message_request_params, show_message_request_result, window_message_params,
 };
 use super::{Direction, MessageKind, ProtocolVersion, SchemaError};
 use serde_json::Value;
@@ -42,8 +42,8 @@ macro_rules! notification {
     };
 }
 
-/// Lifecycle and base-protocol cancellation only. Remaining method payloads
-/// belong to a follow-up so this slice stays within RIPR's review budget.
+/// Lifecycle, cancellation, and the window-message family. Remaining method
+/// payloads stay on #10477 so each family stays within RIPR's review budget.
 static METHOD_SCHEMAS: &[MethodSchema] = &[
     notification!("$/cancelRequest", ClientToServer, Lsp317, cancel_params),
     notification!("exit", ClientToServer, Lsp317, null_or_empty_object),
@@ -52,6 +52,15 @@ static METHOD_SCHEMAS: &[MethodSchema] = &[
     request!("shutdown", ClientToServer, Lsp317, null_params, null_result),
     // The base protocol lets either party cancel a request it previously sent.
     notification!("$/cancelRequest", ServerToClient, Lsp317, cancel_params),
+    notification!("window/logMessage", ServerToClient, Lsp317, window_message_params),
+    notification!("window/showMessage", ServerToClient, Lsp317, window_message_params),
+    request!(
+        "window/showMessageRequest",
+        ServerToClient,
+        Lsp317,
+        show_message_request_params,
+        show_message_request_result
+    ),
 ];
 
 pub(super) fn schema_for(
