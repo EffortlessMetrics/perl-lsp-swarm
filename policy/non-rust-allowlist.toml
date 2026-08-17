@@ -255,6 +255,22 @@ covered_by = [
 created = "2026-08-15"
 review_after = "2026-11-15"
 
+[[allow]]
+id = "non-rust-agent-authority-status-test"
+path = "tests/test_agent_authority_status.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Validator and mutation controls for the document-authority registry that both root provider routes delegate to. Standard-library `unittest` and `tomllib` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_agent_authority_status.py",
+  ".github/workflows/agent-authority-status.yml",
+]
+created = "2026-08-15"
+review_after = "2026-11-15"
+
 # =============================================================================
 # Perl fixtures (the corpus the LSP parses)
 # =============================================================================
