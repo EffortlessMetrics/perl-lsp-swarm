@@ -551,8 +551,15 @@ impl DiscoverySubject {
                 bail!("discovery subject {label} digest is not a sha256 digest: {digest}");
             }
         }
-        if self.runner_script.contains('/') || self.host_perl_file_name.contains('/') {
-            bail!("discovery subject must record file names, not host paths");
+        for (label, value) in [
+            ("runner script", self.runner_script.as_str()),
+            ("host Perl file name", self.host_perl_file_name.as_str()),
+        ] {
+            // check-discovery validates evidence captured on other hosts, so a
+            // Windows-shaped path must be rejected on a Unix reader too.
+            if value.contains('/') || value.contains('\\') || value.contains(':') {
+                bail!("discovery subject {label} must be a file name, not a host path: {value}");
+            }
         }
         Ok(())
     }
@@ -1583,31 +1590,44 @@ fn reject_subject_destinations(
     Ok(())
 }
 
+/// Resolve a destination to the path that would actually be written.
+///
+/// The path is walked forward from the root, canonicalizing each prefix that
+/// already exists before continuing. That ordering matters: `..` after a symlink
+/// means the parent of the *target*, so folding it lexically without resolving
+/// the symlink first would name a different file. Components that do not exist
+/// yet cannot be symlinks, so folding those lexically is exact.
+///
+/// Both guards depend on this. `reject_subject_destinations` compares the result
+/// against the prepared tree with `starts_with`, which matches components
+/// textually, and `reject_output_aliases` compares it against canonicalized
+/// inputs. An unfolded `<elsewhere>/../<perl-tree>/t/x.json` would slip past
+/// both and then be written inside the measured subject.
 fn resolve_destination(path: &Path) -> Result<PathBuf> {
-    if path.exists() {
-        return fs::canonicalize(path)
-            .with_context(|| format!("canonicalizing output path {}", path.display()));
-    }
+    use std::path::Component;
+
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir().context("reading current directory")?.join(path)
     };
-    let mut ancestor = absolute.as_path();
-    let mut suffix = Vec::new();
-    while !ancestor.exists() {
-        let component = ancestor.file_name().ok_or_else(|| {
-            color_eyre::eyre::eyre!("output path has no existing ancestor: {}", path.display())
-        })?;
-        suffix.push(component.to_os_string());
-        ancestor = ancestor.parent().ok_or_else(|| {
-            color_eyre::eyre::eyre!("output path has no existing ancestor: {}", path.display())
-        })?;
-    }
-    let mut resolved = fs::canonicalize(ancestor)
-        .with_context(|| format!("canonicalizing output ancestor {}", ancestor.display()))?;
-    for component in suffix.into_iter().rev() {
-        resolved.push(component);
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(part) => {
+                resolved.push(part);
+                if resolved.exists() {
+                    resolved = fs::canonicalize(&resolved).with_context(|| {
+                        format!("canonicalizing output path component {}", resolved.display())
+                    })?;
+                }
+            }
+        }
     }
     Ok(resolved)
 }
@@ -2011,9 +2031,12 @@ mod tests {
             stdout: stream,
             stderr: RawByteStream::empty(RAW_STREAM_MAX_BYTES),
         };
-        assert!(envelope.complete_success());
+        assert!(
+            envelope.complete_success(),
+            "a zero exit with complete streams must be authoritative success"
+        );
         envelope.process = DiscoveryProcessOutcome::Exited { code: 1 };
-        assert!(!envelope.complete_success());
+        assert!(!envelope.complete_success(), "a nonzero exit must not be authoritative success");
         Ok(())
     }
 
@@ -2383,10 +2406,17 @@ mod tests {
 
     #[test]
     fn discovery_subject_rejects_host_paths_and_malformed_digests() -> TestResult {
-        let mut host_path = sample_subject();
-        host_path.host_perl_file_name = "/usr/bin/perl".into();
-        if host_path.validate().is_ok() {
-            bail!("an absolute host Perl path must not be published as subject identity");
+        for host_path in ["/usr/bin/perl", "C:\\perl\\perl.exe", "bin\\perl"] {
+            let mut subject = sample_subject();
+            subject.host_perl_file_name = host_path.into();
+            if subject.validate().is_ok() {
+                bail!("host path {host_path} must not be published as subject identity");
+            }
+        }
+        let mut runner_path = sample_subject();
+        runner_path.runner_script = "t\\TEST".into();
+        if runner_path.validate().is_ok() {
+            bail!("a Windows-shaped runner script path must not be published as identity");
         }
         let mut short_digest = sample_subject();
         short_digest.runner_script_sha256 = "sha256:beef".into();
@@ -2509,6 +2539,45 @@ mod tests {
         if validate_report(&unrecorded).is_ok() {
             bail!("a failing file with no failure bucket record must be rejected");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn traversing_destinations_cannot_escape_either_guard() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("perl");
+        fs::create_dir_all(perl_tree.join("t"))?;
+        let host_perl = temp.path().join("perl-bin");
+        fs::write(&host_perl, "#!/bin/sh\n")?;
+        let perl_tree = fs::canonicalize(&perl_tree)?;
+
+        // `absent` does not exist, so the destination's `..` survives into the
+        // rejoined suffix. Without folding, `starts_with` compares components
+        // textually, the guard accepts it, and the write lands in the tree.
+        let traversing = temp.path().join("absent").join("..").join("perl/t/raw.json");
+        let Err(error) =
+            reject_subject_destinations(&host_perl, &perl_tree, std::slice::from_ref(&traversing))
+        else {
+            bail!("a traversing destination must not escape the prepared-tree guard");
+        };
+        if !error.to_string().contains("inside the prepared Perl tree") {
+            bail!("unexpected traversal error: {error}");
+        }
+
+        // The same shape must not defeat the input-alias guard either.
+        let report = temp.path().join("report.json");
+        fs::write(&report, "{}\n")?;
+        let aliasing = temp.path().join("absent").join("..").join("report.json");
+        if reject_output_aliases(std::slice::from_ref(&report), std::slice::from_ref(&aliasing))
+            .is_ok()
+        {
+            bail!("a traversing destination must not defeat the input-alias guard");
+        }
+
+        // A destination that genuinely resolves elsewhere is still accepted, so
+        // the two rejections above are not a blanket ban on `..`.
+        let elsewhere = temp.path().join("out").join("..").join("raw.json");
+        reject_subject_destinations(&host_perl, &perl_tree, std::slice::from_ref(&elsewhere))?;
         Ok(())
     }
 
