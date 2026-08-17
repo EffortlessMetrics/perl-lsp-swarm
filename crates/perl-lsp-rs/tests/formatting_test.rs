@@ -1,9 +1,7 @@
 //! Integration tests for code formatting
 
 use perl_lsp::convert::{WirePosition, WireRange};
-use perl_lsp::features::formatting::{
-    CodeFormatter, FormatContext, FormattingOptions,
-};
+use perl_lsp::features::formatting::{CodeFormatter, FormatContext, FormattingOptions};
 use perl_lsp_rs_core::tooling::perltidy::native::{FormatDisposition, FormatReasonCode};
 use perl_tdd_support::must;
 
@@ -194,7 +192,11 @@ fn test_range_formatting_uses_utf16_columns_for_non_bmp_text() {
     let selected_line = "my$x=1; # 😀";
     let exact_end = selected_line.encode_utf16().count() as u32;
     assert_eq!(exact_end, 12, "the emoji occupies two UTF-16 code units");
-    assert_ne!(exact_end as usize, selected_line.len(), "UTF-16 is not byte length");
+    assert_ne!(
+        exact_end as usize,
+        selected_line.len(),
+        "UTF-16 is not byte length"
+    );
 
     let range = WireRange {
         start: WirePosition::new(0, 0),
