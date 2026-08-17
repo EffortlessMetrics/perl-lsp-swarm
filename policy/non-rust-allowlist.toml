@@ -271,6 +271,37 @@ covered_by = [
 created = "2026-08-15"
 review_after = "2026-11-15"
 
+[[allow]]
+id = "non-rust-legacy-authority-banners-test"
+path = "tests/test_legacy_authority_banners.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Requires every legacy document classified historical or superseded by the authority registry to carry one local status banner linking the canonical successor and index. Standard-library `unittest`, `re`, and `tomllib` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_legacy_authority_banners.py",
+  ".github/workflows/legacy-authority-banners.yml",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-legacy-authority-banner-migrator"
+path = "scripts/migrate-legacy-authority-banners.py"
+kind = "retired_one_shot_helper"
+language = "python"
+surface = "ci"
+classification = "tool"
+owner = "release/ci"
+reason = "Inert stub for the completed one-shot #4555 banner migration. It carries no writer path and exits non-zero; `test_legacy_authority_banners.py` mutation-tests that it stays inert, so it is retained as a signpost rather than deleted."
+covered_by = [
+  "python3 -m unittest tests/test_legacy_authority_banners.py",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
 # =============================================================================
 # Perl fixtures (the corpus the LSP parses)
 # =============================================================================
