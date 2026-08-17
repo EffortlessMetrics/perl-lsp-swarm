@@ -153,6 +153,31 @@ jobs:
           && test "$(git -C "$staging/wcmatch" rev-parse HEAD)" = "ff57d25c4104bc6e7e8d9e962ffec88b293b9bdb"
           && test "$(git -C "$staging/bracex" rev-parse HEAD)" = "9c9e5465f1a6d6e40763c9a2501b47a039909c30"
 
+      - name: Vendor the pinned mdpopups dependency
+        # LSP 2.13.0 imports mdpopups at plugin load. The upstream repo was
+        # renamed (facelessuser/mdpopups -> facelessuser/sublime-markdown-
+        # popups) and the PyPI package is gone, but the Package Control
+        # channel still resolves the ST4 python-3.8 line from this repo's
+        # st3- tag wheels; the 4.3.5 wheel vendors markdown/jinja2/coloraide
+        # internally, so it has no further pip dependencies. orjson, the one
+        # remaining declared dependency, is optional in LSP with a stdlib
+        # fallback. The wheel is pinned by its digest and unpacked into the
+        # bare dependency-package layout.
+        shell: bash
+        run: >
+          set -e
+          && staging="$(mktemp -d)"
+          && curl -fsSL
+          "https://github.com/facelessuser/sublime-markdown-popups/releases/download/st3-4.3.5/mdpopups-4.3.5-py3-none-any.whl"
+          -o "$staging/mdpopups.whl"
+          && printf '%s  %s\n'
+          "a28858842f758f1b83f519c589ee0d5d859581be4acc98317ad56610793ca927"
+          "$staging/mdpopups.whl" | sha256sum -c -
+          && python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])'
+          "$staging/mdpopups.whl" "$staging/unpacked"
+          && cp -R "$staging/unpacked/mdpopups" "$SUBLIME_TEXT_PACKAGES/mdpopups"
+          && test -f "$SUBLIME_TEXT_PACKAGES/mdpopups/__init__.py"
+
       - name: Run the real Sublime interoperability journey
         # The upstream run-tests action waits 30 s per attempt and restarts
         # Sublime three times; this package's deferred host journey legitimately
