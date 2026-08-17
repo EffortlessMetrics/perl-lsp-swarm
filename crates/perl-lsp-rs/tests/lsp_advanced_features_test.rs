@@ -60,8 +60,9 @@ impl AdvancedTestContext {
         );
         template_cache.insert(
             "test".to_string(),
-            "use Test::More tests => {{ TEST_COUNT }};\nuse {{ MODULE_NAME }};\ndone_testing();\n"
-                .to_string(),
+            // A fixed plan and `done_testing()` are mutually exclusive in Test::More
+            // (one plan per file), so this template declares the plan only.
+            "use Test::More tests => {{ TEST_COUNT }};\nuse {{ MODULE_NAME }};\n".to_string(),
         );
 
         Self {
