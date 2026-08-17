@@ -2258,3 +2258,49 @@ created = "2026-08-13"
 review_after = "2026-09-13"
 expires = "2026-10-31"
 removal_criteria = "EffortlessMetrics/ripr#1428 distinguishes xtask/tests/support helpers from production seams, or exact-head RIPR no longer reports actionable gaps in zed_host_compat.rs after the contract tests grip the validators; then delete this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# Shared client-compat fixture/expectation identity (PR #7874 / #7777):
+# Result-style contract plumbing misclassified as production seams (ripr#1428).
+#
+# Same class as ripr-suppress-zed-host-compat-test-support. The structural half
+# was fixed rather than suppressed first: the contract modules moved from
+# xtask/tests/support into xtask/src, which eliminated every no_static_path
+# finding (74 -> 0) and made the contract production-reachable like its
+# actual_host_receipt.v1 peer.
+#
+# What remains is not closable by proof. Exact-head RIPR 0.9.0 reports 23
+# reachable_unrevealed findings, of which 14 are the trailing `Ok(())` of the
+# contract test functions themselves; the rest are `Ok(())`, `})?` and
+# `digest_identity(hasher)` plumbing on already-covered paths. Writing more
+# tests raises the count rather than lowering it — measured across three
+# iterations on this candidate: 80 actionable before the move, 11 after it,
+# 23 after adding six discriminating guard tests, and 23 again after relocating
+# those tests to an integration contract. The guards themselves are proven in
+# xtask/tests/client_compat_fixture_contract.rs (empty/duplicate/untokenized
+# expectation sets, set-id binding, order independence, membership binding,
+# non-directory and empty fixture roots, path-versus-content separation).
+#
+# One genuinely uncovered path is retained deliberately and not claimed as
+# proven: the non-UTF-8 fixture path guard in fixture_digest, which needs a
+# platform-specific invalid filename to reach.
+#
+# Exact-path and contract-scoped; no provider, LSP, DAP, or parser finding is
+# suppressed.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-client-compat-fixture-contract-surface"
+kind = "test_receipt_surface"
+paths = [
+  "xtask/src/client_compat_fixture.rs",
+  "xtask/tests/client_compat_fixture_contract.rs",
+  "xtask/tests/support/agent_client_compat.rs",
+]
+classification = ["reachable_unrevealed", "no_static_path"]
+owner = "integrations-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #7874 establishes the shared fixture and expectation-set identity consumed by agent_client_compat.v1 and editor_client_compat.v1. Exact-head RIPR 0.9.0 reports 23 reachable_unrevealed findings on Result-style contract plumbing, 14 of which are the trailing Ok(()) of the contract tests themselves — a class no additional test can reveal, measured across three iterations (80 actionable before moving the modules into xtask/src, 11 after, 23 after adding guard tests, 23 after relocating them to an integration contract). The discriminating oracles live in xtask/tests/client_compat_fixture_contract.rs and cover every guard except the non-UTF-8 fixture path, which is left explicitly unproven. Same ripr#1428 test_receipt_surface class as ripr-suppress-zed-host-compat-test-support. Exact-path and contract-scoped; production provider/LSP/DAP/parser findings suppressed are 0."
+created = "2026-08-16"
+review_after = "2026-09-16"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr#1428 stops classifying Result-style test and contract plumbing as unrevealed production seams, or exact-head RIPR no longer reports actionable gaps in these files; then delete this entry and rerun the RIPR new-gap gate."
