@@ -10,7 +10,14 @@ use perl_lsp_rs_core::providers::diagnostics::unreachable_code::check_unreachabl
 use perl_parser::Parser;
 
 fn diagnostics(source: &str) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
-    let ast = Parser::new(source).parse()?;
+    let mut parser = Parser::new(source);
+    let ast = parser.parse()?;
+    assert!(
+        parser.errors().is_empty(),
+        "test source must parse cleanly; a recovered Error node falls through and \
+         would make absence assertions vacuous: {:?}",
+        parser.errors()
+    );
     let mut diagnostics = Vec::new();
     check_unreachable_code(&ast, &mut diagnostics);
     Ok(diagnostics)
@@ -102,6 +109,36 @@ fn ordinary_loop_body_detection_remains_local() -> Result<(), Box<dyn std::error
         1,
         "ordinary loop body",
     )
+}
+
+#[test]
+fn continue_block_transfer_does_not_poison_code_after_the_loop()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (source, context) in [
+        (r#"while (1) { work(); } continue { next; } print "after loop";"#, "next in continue"),
+        (r#"while (1) { work(); } continue { die "err"; } print "after loop";"#, "die in continue"),
+    ] {
+        assert_pl406_count(source, 0, context)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn pl406_range_identifies_the_unreachable_statement() -> Result<(), Box<dyn std::error::Error>> {
+    let source = r#"while (1) { die "err"; print "dead"; }"#;
+    let diagnostics = diagnostics(source)?;
+    let anchor = r#"print "dead""#;
+    let start = source.find(anchor).ok_or("source anchor must exist")?;
+    let pl406 = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("PL406"))
+        .ok_or("expected exactly the dead print to be flagged")?;
+    assert_eq!(
+        pl406.range,
+        (start, start + anchor.len()),
+        "PL406 must point at the unreachable statement, not the transfer: {diagnostics:?}"
+    );
+    Ok(())
 }
 
 #[test]

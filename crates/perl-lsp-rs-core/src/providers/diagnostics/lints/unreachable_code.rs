@@ -412,7 +412,14 @@ mod tests {
     use perl_tdd_support::{must, must_some};
 
     fn unreachable_diags(source: &str) -> Vec<Diagnostic> {
-        let ast = must(Parser::new(source).parse());
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        assert!(
+            parser.errors().is_empty(),
+            "test source must parse cleanly; a recovered Error node falls through and \
+             would make absence assertions vacuous: {:?}",
+            parser.errors()
+        );
         let mut diags = Vec::new();
         check_unreachable_code(&ast, &mut diags);
         diags
@@ -428,8 +435,29 @@ mod tests {
 
     #[test]
     fn return_then_statement_is_flagged() {
-        let diags = unreachable_diags("sub f { return 1; my $x = 2; }");
+        let source = "sub f { return 1; my $x = 2; }";
+        let diags = unreachable_diags(source);
         assert!(has_pl406(&diags), "statement after return should be PL406: {diags:?}");
+        let anchor = "my $x = 2";
+        let start = must_some(source.find(anchor));
+        let pl406 = must_some(diags.iter().find(|d| d.code.as_deref() == Some("PL406")));
+        assert_eq!(
+            pl406.range,
+            (start, start + anchor.len()),
+            "PL406 must identify the unreachable statement itself, not just exist: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn elsif_body_fallthrough_keeps_following_sibling_reachable() {
+        let diags = unreachable_diags(
+            r#"sub f { if ($x) { return 1; } elsif ($y) { print "live"; } else { exit 0; } print "also live"; }"#,
+        );
+        assert!(
+            !has_pl406(&diags),
+            "a fallthrough elsif body must keep the parent reachable even when \
+             then and else both transfer: {diags:?}"
+        );
     }
 
     #[test]
