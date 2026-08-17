@@ -1,13 +1,17 @@
-use super::*;
+//! Seam proofs for the protocol schema envelope, bounds, and lifecycle registry.
+//!
+//! RIPR exposure policy homes focused seam proofs in tests/ripr_seam_proof_*.rs
+//! so production modules stay small enough for review-comments to finish.
+use perl_lsp_rs_core::protocol::schema::{
+    Direction, MessageKind, ProtocolSchemaValidator, ProtocolVersion, SCHEMA_SOURCE_JSON,
+    SCHEMA_SOURCE_MANIFEST_SHA256, SchemaError, UPSTREAM_PROTOCOL_COMMIT, ValidatedMessage,
+    ValidationContext, ValidationLimits, registered_schema_identities,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-fn context<'a>(
-    direction: Direction,
-    method: Option<&'a str>,
-    allow_lsp_318_development: bool,
-) -> ValidationContext<'a> {
-    ValidationContext { direction, method, allow_lsp_318_development }
+fn context<'a>(direction: Direction, method: Option<&'a str>) -> ValidationContext<'a> {
+    ValidationContext { direction, method }
 }
 
 fn validate(
@@ -15,13 +19,11 @@ fn validate(
     direction: Direction,
     method: Option<&str>,
 ) -> Result<ValidatedMessage, SchemaError> {
-    ProtocolSchemaValidator::default().validate(message, context(direction, method, false))
+    ProtocolSchemaValidator::default().validate(message, context(direction, method))
 }
 
 #[test]
 fn pinned_manifest_and_rust_registry_are_consistent() {
-    // This offline digest binds the checked-in source artifact to the reviewed
-    // bytes; it does not claim to re-fetch or semantically verify upstream.
     let manifest_digest = Sha256::digest(SCHEMA_SOURCE_JSON.as_bytes());
     let manifest_digest =
         manifest_digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
@@ -57,84 +59,17 @@ fn pinned_manifest_and_rust_registry_are_consistent() {
         declared,
         "METHOD_SCHEMAS and the pinned manifest registry must list identical entries in identical order"
     );
-}
-
-#[test]
-fn show_document_known_fields_reject_wrong_types_at_stable_paths() {
-    let valid = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "window/showDocument",
-        "params": {
-            "uri": "file:///workspace/main.pl",
-            "external": false,
-            "takeFocus": true,
-            "selection": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 3 }
-            }
-        }
-    });
-    validate(&valid, Direction::ServerToClient, Some("window/showDocument"))
-        .expect("valid optional ShowDocumentParams fields should pass");
-
-    for (field, value, path, expected) in [
-        ("external", json!("yes"), "$.params.external", "boolean"),
-        ("takeFocus", json!(1), "$.params.takeFocus", "boolean"),
-        ("selection", json!([]), "$.params.selection", "object"),
-    ] {
-        let mut message = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "window/showDocument",
-            "params": { "uri": "file:///workspace/main.pl" }
-        });
-        let params = message
-            .get_mut("params")
-            .and_then(Value::as_object_mut)
-            .expect("show document params must be an object");
-        params.insert(field.to_string(), value);
-
-        let error = validate(&message, Direction::ServerToClient, Some("window/showDocument"))
-            .expect_err("wrong known ShowDocumentParams field type must fail");
-        assert_eq!(error.path, path);
-        assert_eq!(error.expected, expected);
-    }
-}
-
-#[test]
-fn unregistration_params_require_the_pinned_historical_field_name() {
-    let historical = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "client/unregisterCapability",
-        "params": {
-            "unregisterations": [{
-                "id": "registration-1",
-                "method": "textDocument/hover"
-            }]
-        }
-    });
-    validate(&historical, Direction::ServerToClient, Some("client/unregisterCapability"))
-        .expect("the pinned historical LSP field name should validate");
-
-    let corrected = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "client/unregisterCapability",
-        "params": {
-            "unregistrations": [{
-                "id": "registration-1",
-                "method": "textDocument/hover"
-            }]
-        }
-    });
-    let error =
-        validate(&corrected, Direction::ServerToClient, Some("client/unregisterCapability"))
-            .expect_err("the corrected spelling is outside the pinned schema contract");
-    assert_eq!(error.path, "$.params.unregisterations");
-    assert_eq!(error.expected, "unregistration array");
-    assert_eq!(error.observed, "missing");
+    assert_eq!(
+        declared,
+        vec![
+            "client_to_server:notification:$/cancelRequest:3.17",
+            "client_to_server:notification:exit:3.17",
+            "client_to_server:request:initialize:3.17",
+            "client_to_server:notification:initialized:3.17",
+            "client_to_server:request:shutdown:3.17",
+            "server_to_client:notification:$/cancelRequest:3.17",
+        ]
+    );
 }
 
 #[test]
@@ -176,9 +111,6 @@ fn initialize_request_and_response_validate_in_actual_wire_directions() {
     assert_eq!(response_validated.version, ProtocolVersion::Lsp317);
 }
 
-/// The base protocol lets either party cancel a request it previously sent, so
-/// a server-originated `$/cancelRequest` is valid traffic and must not be
-/// rejected as an unregistered method/direction pair.
 #[test]
 fn cancel_request_validates_in_both_wire_directions() {
     let cancel = json!({
@@ -195,64 +127,26 @@ fn cancel_request_validates_in_both_wire_directions() {
     }
 }
 
-/// `textDocument/didChange` carries a VersionedTextDocumentIdentifier, whose
-/// `version` is required. The nullable spelling belongs to
-/// OptionalVersionedTextDocumentIdentifier and must not be accepted here.
 #[test]
-fn did_change_requires_an_integer_document_version() {
-    let without_version = json!({
+fn shutdown_null_params_and_result_report_positional_paths() {
+    let bad_params = json!({
         "jsonrpc": "2.0",
-        "method": "textDocument/didChange",
-        "params": {
-            "textDocument": { "uri": "file:///workspace/main.pl" },
-            "contentChanges": [{ "text": "print 1;\n" }]
-        }
+        "id": 1,
+        "method": "shutdown",
+        "params": {}
     });
-    let error =
-        validate(&without_version, Direction::ClientToServer, Some("textDocument/didChange"))
-            .expect_err("a missing document version must be rejected");
-    assert_eq!(error.path, "$.params.textDocument.version");
+    let params_error = validate(&bad_params, Direction::ClientToServer, Some("shutdown"))
+        .expect_err("non-null shutdown params must fail at $.params");
+    assert_eq!(params_error.path, "$.params");
 
-    let null_version = json!({
+    let bad_result = json!({
         "jsonrpc": "2.0",
-        "method": "textDocument/didChange",
-        "params": {
-            "textDocument": { "uri": "file:///workspace/main.pl", "version": null },
-            "contentChanges": [{ "text": "print 1;\n" }]
-        }
+        "id": 1,
+        "result": {}
     });
-    let error = validate(&null_version, Direction::ClientToServer, Some("textDocument/didChange"))
-        .expect_err("a null document version must be rejected");
-    assert_eq!(error.path, "$.params.textDocument.version");
-}
-
-#[test]
-fn server_request_and_client_response_use_opposite_schema_directions() {
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 7,
-        "method": "workspace/configuration",
-        "params": {
-            "items": [
-                { "scopeUri": "file:///workspace", "section": "perl" }
-            ]
-        }
-    });
-    let request_validated =
-        validate(&request, Direction::ServerToClient, Some("workspace/configuration"))
-            .expect("server-originated request should validate");
-    assert_eq!(request_validated.direction, Direction::ServerToClient);
-
-    let response = json!({
-        "jsonrpc": "2.0",
-        "id": 7,
-        "result": [{ "formatting": { "enabled": true } }]
-    });
-    let response_validated =
-        validate(&response, Direction::ClientToServer, Some("workspace/configuration"))
-            .expect("client response should resolve the originating server-request schema");
-    assert_eq!(response_validated.kind, MessageKind::SuccessResponse);
-    assert_eq!(response_validated.direction, Direction::ClientToServer);
+    let result_error = validate(&bad_result, Direction::ServerToClient, Some("shutdown"))
+        .expect_err("non-null shutdown result must fail at $.result");
+    assert_eq!(result_error.path, "$.result");
 }
 
 #[test]
@@ -309,50 +203,33 @@ fn known_field_type_errors_report_the_exact_json_path() {
 }
 
 #[test]
-fn wrong_location_union_variant_is_rejected() {
-    let response = json!({
+fn unregistered_standard_methods_fail_closed() {
+    let definition = json!({
         "jsonrpc": "2.0",
-        "id": 9,
-        "result": {
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 3 }
-            }
+        "id": 1,
+        "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": "file:///workspace/main.pl" },
+            "position": { "line": 0, "character": 0 }
         }
     });
-    let error = validate(&response, Direction::ServerToClient, Some("textDocument/definition"))
-        .expect_err("object must be a Location or LocationLink");
-    assert_eq!(error.path, "$.result.targetUri");
-}
+    let error = validate(&definition, Direction::ClientToServer, None)
+        .expect_err("payload methods deferred from this slice must not pass as registered");
+    assert_eq!(error.path, "$.method");
+    assert!(error.expected.contains("registered"));
 
-#[test]
-fn selected_318_methods_require_explicit_development_opt_in() {
-    let request = json!({
+    let inline = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "textDocument/inlineCompletion",
         "params": {
             "textDocument": { "uri": "file:///workspace/main.pl" },
-            "position": { "line": 0, "character": 0 },
-            "context": { "triggerKind": 0 }
+            "position": { "line": 0, "character": 0 }
         }
     });
-    let denied = ProtocolSchemaValidator::default()
-        .validate(
-            &request,
-            context(Direction::ClientToServer, Some("textDocument/inlineCompletion"), false),
-        )
-        .expect_err("3.18-development method must fail closed by default");
-    assert_eq!(denied.path, "$.method");
-    assert!(denied.expected.contains("3.18-development"));
-
-    let allowed = ProtocolSchemaValidator::default()
-        .validate(
-            &request,
-            context(Direction::ClientToServer, Some("textDocument/inlineCompletion"), true),
-        )
-        .expect("explicitly selected 3.18-development method should validate");
-    assert_eq!(allowed.version, ProtocolVersion::Lsp318Development);
+    let error = validate(&inline, Direction::ClientToServer, None)
+        .expect_err("3.18 methods are unregistered until the payload follow-up");
+    assert_eq!(error.path, "$.method");
 }
 
 #[test]
@@ -393,7 +270,6 @@ fn initialize_extensions_are_confined_to_capabilities_experimental() {
         .expect_err("project metadata must not occupy a standard top-level field");
     assert_eq!(error.path, "$.result.perlLsp");
 
-    // Casing is not an escape hatch out of the project namespace.
     for spelling in ["PerlLsp", "PERL_LSP", "Perl"] {
         let mixed_case = json!({
             "jsonrpc": "2.0",
@@ -421,45 +297,6 @@ fn initialize_extensions_are_confined_to_capabilities_experimental() {
     });
     validate(&allowed, Direction::ServerToClient, Some("initialize"))
         .expect("experimental extension surface should remain available");
-}
-
-#[test]
-fn semantic_token_data_is_a_complete_five_integer_stream() {
-    let invalid = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "result": { "data": [0, 0, 3, 1] }
-    });
-    let error =
-        validate(&invalid, Direction::ServerToClient, Some("textDocument/semanticTokens/full"))
-            .expect_err("incomplete semantic token tuple must fail");
-    assert_eq!(error.path, "$.result.data");
-    assert!(error.expected.contains("divisible by 5"));
-
-    let valid = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "result": { "resultId": "current-1", "data": [0, 0, 3, 1, 0] }
-    });
-    validate(&valid, Direction::ServerToClient, Some("textDocument/semanticTokens/full"))
-        .expect("complete semantic token tuple should validate");
-}
-
-#[test]
-fn apply_edit_rejection_result_preserves_typed_failure_fields() {
-    let response = json!({
-        "jsonrpc": "2.0",
-        "id": "apply-edit-1",
-        "result": {
-            "applied": false,
-            "failureReason": "document changed",
-            "failedChange": 2
-        }
-    });
-    let validated = validate(&response, Direction::ClientToServer, Some("workspace/applyEdit"))
-        .expect("typed ApplyWorkspaceEditResult rejection should validate");
-    assert_eq!(validated.direction, Direction::ClientToServer);
-    assert_eq!(validated.kind, MessageKind::SuccessResponse);
 }
 
 #[test]
@@ -498,9 +335,34 @@ fn pathological_depth_node_and_string_inputs_are_bounded() {
         "params": { "a": { "b": { "c": { "d": true } } } }
     });
     let depth_error = validator
-        .validate(&deep, context(Direction::ClientToServer, None, false))
+        .validate(&deep, context(Direction::ClientToServer, None))
         .expect_err("deep payload must be bounded before method validation");
     assert!(depth_error.expected.contains("depth at most"));
+
+    let dotted_validator = ProtocolSchemaValidator::with_limits(ValidationLimits {
+        max_depth: 3,
+        max_nodes: 20,
+        max_string_bytes: 64,
+    });
+    let dotted = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "$/perl-lsp/dotted",
+        "params": { "a.b": { "c": { "d": { "e": true } } } }
+    });
+    let dotted_error = dotted_validator
+        .validate(&dotted, context(Direction::ClientToServer, None))
+        .expect_err("dotted object keys must remain distinguishable in failure paths");
+    assert!(
+        dotted_error.path.contains("['a.b']"),
+        "dotted key must be quoted, got {}",
+        dotted_error.path
+    );
+    assert!(
+        !dotted_error.path.contains(".a.b."),
+        "dotted key must not look like nested members, got {}",
+        dotted_error.path
+    );
 
     let long = json!({
         "jsonrpc": "2.0",
@@ -509,9 +371,21 @@ fn pathological_depth_node_and_string_inputs_are_bounded() {
         "params": { "value": "this string is longer than sixteen bytes" }
     });
     let string_error = validator
-        .validate(&long, context(Direction::ClientToServer, None, false))
+        .validate(&long, context(Direction::ClientToServer, None))
         .expect_err("long string must be bounded");
     assert!(string_error.expected.contains("string at most"));
+
+    let long_key = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "$/perl-lsp/k",
+        "params": { "this key is longer": true }
+    });
+    let key_error = validator
+        .validate(&long_key, context(Direction::ClientToServer, None))
+        .expect_err("long object keys must be bounded");
+    assert!(key_error.expected.contains("key at most"));
+    assert!(key_error.path.contains("['this key is longer']"));
 
     let many = json!({
         "jsonrpc": "2.0",
@@ -520,7 +394,7 @@ fn pathological_depth_node_and_string_inputs_are_bounded() {
         "params": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     });
     let node_error = validator
-        .validate(&many, context(Direction::ClientToServer, None, false))
+        .validate(&many, context(Direction::ClientToServer, None))
         .expect_err("large node population must be bounded");
     assert!(node_error.expected.contains("JSON nodes"));
 }

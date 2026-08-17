@@ -1,9 +1,10 @@
 //! Versioned, bounded validation for JSON-RPC and LSP method payloads.
 //!
-//! The validator is intentionally independent of provider semantics. It proves
-//! that a captured message has the correct envelope, direction, protocol
-//! version, and method-specific payload shape. Exact-process coverage is wired
-//! separately by #7116.
+//! This slice proves the reusable envelope, input bounds, source pin, and a
+//! small lifecycle registry (`initialize` / `initialized` / `shutdown` /
+//! `exit` / `$/cancelRequest`). Remaining method payload validators are a
+//! follow-up so review-comments can finish within the RIPR budget. Exact-process
+//! coverage is wired separately by #7116.
 
 mod methods;
 mod payloads;
@@ -20,7 +21,7 @@ pub const SCHEMA_SOURCE_JSON: &str = include_str!("../../../protocol_schema_sour
 pub const UPSTREAM_PROTOCOL_COMMIT: &str = "8d5153933153aed3a488b9b8f46b22ed0f90f552";
 /// SHA-256 of the reviewed, checked-in source manifest bytes.
 pub const SCHEMA_SOURCE_MANIFEST_SHA256: &str =
-    "0964e665fe3eb073a3ac34690230ff65d07574ab45cb536b78564b1dafbedae2";
+    "cb8558037963bc8d32a7f45ee1b537cc349ef9061e99fd84cd1ecb39766dd999";
 
 /// Direction of a protocol message on the LSP connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -99,8 +100,6 @@ pub struct ValidationContext<'a> {
     pub direction: Direction,
     /// Method identity. Required for responses because JSON-RPC responses do not carry it.
     pub method: Option<&'a str>,
-    /// Whether an individually registered 3.18-development method is allowed.
-    pub allow_lsp_318_development: bool,
 }
 
 /// Limits applied before shape validation.
@@ -266,17 +265,6 @@ impl ProtocolSchemaValidator {
             ));
         };
 
-        if schema.version == ProtocolVersion::Lsp318Development
-            && !context.allow_lsp_318_development
-        {
-            return Err(SchemaError::new(
-                Some(method),
-                "$.method",
-                "explicitly enabled 3.18-development method",
-                "3.18-development disabled",
-            ));
-        }
-
         match kind {
             MessageKind::Request | MessageKind::Notification => {
                 let params = object.get("params").unwrap_or(&Value::Null);
@@ -418,7 +406,12 @@ fn validate_extension_payload(
                 SchemaError::new(Some(method), "$.result", "extension result", "missing")
             })?;
         }
-        MessageKind::ErrorResponse => validate_error_object(method, &object["error"])?,
+        MessageKind::ErrorResponse => {
+            let error = object.get("error").ok_or_else(|| {
+                SchemaError::new(Some(method), "$.error", "error object", "missing")
+            })?;
+            validate_error_object(method, error)?;
+        }
     }
     Ok(())
 }
@@ -467,12 +460,12 @@ fn validate_limits(value: &Value, limits: ValidationLimits) -> Result<(), Schema
                     if key.len() > limits.max_string_bytes {
                         return Err(SchemaError::new(
                             None,
-                            format!("{path}.<key>"),
+                            format!("{path}{}", object_key_segment(key)),
                             format!("key at most {} bytes", limits.max_string_bytes),
                             format!("{} bytes", key.len()),
                         ));
                     }
-                    stack.push((child, depth + 1, format!("{path}.{key}")));
+                    stack.push((child, depth + 1, format!("{path}{}", object_key_segment(key))));
                 }
             }
             _ => {}
@@ -481,20 +474,24 @@ fn validate_limits(value: &Value, limits: ValidationLimits) -> Result<(), Schema
     Ok(())
 }
 
+pub(super) fn object_key_segment(key: &str) -> String {
+    let simple = !key.is_empty()
+        && key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        && key.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_');
+    if simple {
+        format!(".{key}")
+    } else {
+        let escaped = key.replace('\\', "\\\\").replace('\'', "\\'");
+        format!("['{escaped}']")
+    }
+}
+
 pub(super) fn expect_object<'a>(
     method: Option<&str>,
     path: &str,
     value: &'a Value,
 ) -> Result<&'a Map<String, Value>, SchemaError> {
     value.as_object().ok_or_else(|| SchemaError::at_value(method, path, "object", value))
-}
-
-pub(super) fn expect_array<'a>(
-    method: Option<&str>,
-    path: &str,
-    value: &'a Value,
-) -> Result<&'a Vec<Value>, SchemaError> {
-    value.as_array().ok_or_else(|| SchemaError::at_value(method, path, "array", value))
 }
 
 pub(super) fn expect_string<'a>(
@@ -520,15 +517,6 @@ pub(super) fn expect_exact_string(
     }
 }
 
-pub(super) fn expect_boolean(
-    method: Option<&str>,
-    path: &str,
-    value: Option<&Value>,
-) -> Result<bool, SchemaError> {
-    let value = value.ok_or_else(|| SchemaError::new(method, path, "boolean", "missing"))?;
-    value.as_bool().ok_or_else(|| SchemaError::at_value(method, path, "boolean", value))
-}
-
 pub(super) fn expect_integer(
     method: Option<&str>,
     path: &str,
@@ -536,15 +524,6 @@ pub(super) fn expect_integer(
 ) -> Result<i64, SchemaError> {
     let value = value.ok_or_else(|| SchemaError::new(method, path, "integer", "missing"))?;
     value.as_i64().ok_or_else(|| SchemaError::at_value(method, path, "integer", value))
-}
-
-pub(super) fn expect_uinteger(
-    method: Option<&str>,
-    path: &str,
-    value: Option<&Value>,
-) -> Result<u64, SchemaError> {
-    let value = value.ok_or_else(|| SchemaError::new(method, path, "uinteger", "missing"))?;
-    value.as_u64().ok_or_else(|| SchemaError::at_value(method, path, "uinteger", value))
 }
 
 pub(super) fn expect_null(
@@ -568,6 +547,3 @@ pub(super) fn observed(value: &Value) -> String {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;
