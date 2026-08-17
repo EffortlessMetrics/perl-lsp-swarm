@@ -99,6 +99,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
     "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
     "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
+    "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
+    "compiler_proof_policy": {"lanes": ["merge_gate_shards"]},
+    "compiler_concept_proof": {"lanes": ["merge_gate_shards"]},
 
     # commit-tier staged-tree hygiene (local pre-commit; not CI)
     "staged_tree_identity": {"lanes": ["commit_checks"]},
@@ -115,7 +118,6 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     # release-adjacent gates
     "adr_link_check": {"lanes": ["docs_gate"]},
     "docs_build": {"lanes": ["docs_gate"]},
-    "published_crate_count": {"lanes": ["release_check"]},
     "release_build": {"lanes": ["release_check"]},
     "inline_completion_binary_smoke": {"lanes": ["release_check"]},
     "version_sync": {"lanes": ["release_check"]},
