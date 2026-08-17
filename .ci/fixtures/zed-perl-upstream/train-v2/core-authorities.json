@@ -39,6 +39,18 @@
       "exit": "public-asset producer authority accepted; executable evidence remains P10"
     },
     {
+      "id": "R00",
+      "lane": "core_release",
+      "issue": 10395,
+      "actor": "codex",
+      "objective": "Generate the Zed managed-download projection offline from canonical release topology and one reviewed public-release input.",
+      "depends_on": ["P00", "P01"],
+      "evidence": "managed_release_projection_authority",
+      "route": "internal_repository",
+      "blocks_core": true,
+      "exit": "issue #10395 acceptance: deterministic generated projection and separate read-only refresh candidate"
+    },
+    {
       "id": "P02",
       "lane": "core_lsp",
       "issue": 7984,
@@ -63,6 +75,18 @@
       "exit": "issue #10340 acceptance: all current Zed perllsp subjects consume canonical identity"
     },
     {
+      "id": "S00",
+      "lane": "core_subject",
+      "issue": 10392,
+      "actor": "codex",
+      "objective": "Materialize and attest one reproducible development-extension source tree and WebAssembly package from the exact reviewed upstream base and candidate.",
+      "depends_on": ["P00", "P02", "I00"],
+      "evidence": "development_extension_subject_authority",
+      "route": "development_extension",
+      "blocks_core": true,
+      "exit": "issue #10392 acceptance: content-addressed source, manifest, toolchain, resources, and wasm subject"
+    },
+    {
       "id": "P03",
       "lane": "core_lsp",
       "issue": 8647,
@@ -73,6 +97,18 @@
       "route": "internal_repository",
       "blocks_core": true,
       "exit": "issue #8647 fixture and expectation acceptance"
+    },
+    {
+      "id": "E00",
+      "lane": "core_evidence",
+      "issue": 10393,
+      "actor": "codex",
+      "objective": "Derive required host observations from immutable logs, process inventories, fixture effects, and narrowly allowlisted operator evidence.",
+      "depends_on": ["P02", "P03", "S00", "I00"],
+      "evidence": "host_evidence_derivation_authority",
+      "route": "all_zed_host_runs",
+      "blocks_core": true,
+      "exit": "issue #10393 acceptance: required cells are derivable and free-form pass injection fails closed"
     },
     {
       "id": "P04",
@@ -104,7 +140,7 @@
       "issue": 8661,
       "actor": "codex",
       "objective": "Run the public perllsp asset producer through a read-only Windows, Linux, and macOS workflow matrix.",
-      "depends_on": ["P01", "I00"],
+      "depends_on": ["P01", "R00", "I00"],
       "evidence": "public_asset_execution_surface",
       "route": "github_actions",
       "blocks_core": true,
@@ -116,11 +152,23 @@
       "issue": 8753,
       "actor": "codex",
       "objective": "Provide the exact-source managed route, cache reuse, and known-good recovery authority.",
-      "depends_on": ["P01", "P02", "P03", "I00"],
+      "depends_on": ["P01", "R00", "P02", "P03", "I00"],
       "evidence": "managed_route_authority",
       "route": "development_extension_managed",
       "blocks_core": true,
       "exit": "issue #8753 authority acceptance; execution remains P14"
+    },
+    {
+      "id": "L00",
+      "lane": "core_release",
+      "issue": 10396,
+      "actor": "codex",
+      "objective": "Define and enforce a managed-cache lifecycle that never destroys the prior known-good subject before observed candidate success.",
+      "depends_on": ["P07", "R00", "I00"],
+      "evidence": "managed_cache_lifecycle_authority",
+      "route": "development_extension_managed",
+      "blocks_core": true,
+      "exit": "issue #10396 acceptance: promotion, retention, retry, and bounded cleanup are evidence-backed or explicitly conservative"
     },
     {
       "id": "P08",
@@ -128,7 +176,7 @@
       "issue": 9467,
       "actor": "codex",
       "objective": "Provide the official-registry public-host prepare, launch, finalize, and public-stage validation authority.",
-      "depends_on": ["P02", "P03", "I00"],
+      "depends_on": ["P02", "P03", "S00", "E00", "I00"],
       "evidence": "public_registry_host_authority",
       "route": "official_registry",
       "blocks_core": true,
@@ -147,12 +195,24 @@
       "exit": "issue #9468 substrate acceptance; public projection remains P21"
     },
     {
+      "id": "K00",
+      "lane": "core_compatibility",
+      "issue": 10394,
+      "actor": "codex",
+      "objective": "Define one exact-subject compatibility authority for Zed, extension package, perllsp binary, platform, and capability contract.",
+      "depends_on": ["R00", "S00", "E00", "P04", "P05", "P07", "L00", "I00"],
+      "evidence": "compatibility_authority",
+      "route": "all_zed_routes",
+      "blocks_core": true,
+      "exit": "issue #10394 acceptance: compatibility can be projected only from validated exact-host receipts"
+    },
+    {
       "id": "C01",
       "lane": "core_control",
       "issue": 9483,
       "actor": "codex",
       "objective": "Add subject-aware Zed CI selection, exact invalidation, fail-closed fan-in, and stable final checks.",
-      "depends_on": ["C00", "P01", "P02", "I00"],
+      "depends_on": ["C00", "P01", "R00", "P02", "I00", "S00", "E00", "L00", "K00"],
       "evidence": "ci_currentness_authority",
       "route": "internal_ci",
       "blocks_core": true,
