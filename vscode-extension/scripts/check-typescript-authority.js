@@ -409,13 +409,17 @@ function declaredTscBin(typescriptDir) {
  * `path.win32.resolve()` resets to the drive root. Strip only the generated
  * wrapper separator when it is immediately followed by `..`; a genuinely
  * rooted target remains rooted and is rejected rather than normalized into an
- * apparently safe relative path.
+ * apparently safe relative path. Legacy cmd-shim 2.x wrappers (yarn 1,
+ * npm <= 6) use `%~dp0\\..` without the trailing `%`, so the capture starts
+ * at the leaked `dp0\\` segment; npm's POSIX wrapper prefixes its target with
+ * `$basedir/`, whose variable name is captured the same way (`$` is not a
+ * path character). Both leaked generator segments are dropped before
+ * resolving, because each names the `.bin` directory itself.
  *
- * npm's POSIX wrapper prefixes its target with `$basedir/`, and the regex
- * captures the variable name (`$` is not a path character), so the match sees
- * `basedir/../typescript/bin/tsc`. `$basedir` is the `.bin` directory itself,
- * so the leaked `basedir` segment is dropped before resolving; leaving it in
- * place would resolve under `.bin/typescript` instead of the package root.
+ * Every `typescript/bin/tsc` mention must resolve to the same target: a
+ * boundary check keeps `tsc.bak` from matching as a truncated `tsc`, and
+ * conflicting mentions are refused rather than letting an inert first
+ * mention (for example a comment) vouch for a different executed target.
  *
  * @param {string} script
  * @param {string} binDir
@@ -423,21 +427,31 @@ function declaredTscBin(typescriptDir) {
  * @returns {{target: string} | {reason: string}}
  */
 function resolveGeneratedShimTarget(script, binDir, pathApi = path) {
-  const match = /[\w.\\/-]*typescript[\\/]bin[\\/]tsc/i.exec(script);
-  if (!match) {
+  const mentions =
+    script.match(/[\w.\\/-]*typescript[\\/]bin[\\/]tsc(?![\w.])/gi) ?? [];
+  if (mentions.length === 0) {
     return { reason: 'the generated shim names no typescript/bin/tsc target' };
   }
 
-  const wrapperRelative = match[0]
-    .replace(/^[\\/]+(?=\.\.[\\/])/, '')
-    .replace(/^basedir[\\/]/i, '');
-  const normalized = wrapperRelative.replace(/[\\/]/g, pathApi.sep);
-  if (pathApi.isAbsolute(normalized)) {
+  const targets = new Set();
+  for (const mention of mentions) {
+    const wrapperRelative = mention
+      .replace(/^[\\/]+(?=\.\.[\\/])/, '')
+      .replace(/^(?:basedir|dp0)[\\/]/i, '');
+    const normalized = wrapperRelative.replace(/[\\/]/g, pathApi.sep);
+    if (pathApi.isAbsolute(normalized)) {
+      return {
+        reason: `the generated shim target ${JSON.stringify(mention)} is rooted rather than relative to node_modules/.bin`,
+      };
+    }
+    targets.add(pathApi.resolve(binDir, normalized));
+  }
+  if (targets.size > 1) {
     return {
-      reason: `the generated shim target ${JSON.stringify(match[0])} is rooted rather than relative to node_modules/.bin`,
+      reason: `the generated shim names conflicting typescript/bin/tsc targets: ${JSON.stringify([...targets])}`,
     };
   }
-  return { target: pathApi.resolve(binDir, normalized) };
+  return { target: [...targets][0] };
 }
 
 /**
