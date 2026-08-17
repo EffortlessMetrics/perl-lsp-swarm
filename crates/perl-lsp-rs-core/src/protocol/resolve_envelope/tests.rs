@@ -62,9 +62,8 @@ impl ResolveEnvelopeAuthenticator for TestAuthenticator {
         let mut tag = [0_u8; RESOLVE_AUTH_TAG_BYTES];
         for (index, byte) in canonical_unsigned.iter().copied().enumerate() {
             let slot = index % RESOLVE_AUTH_TAG_BYTES;
-            tag[slot] = tag[slot]
-                .wrapping_add(byte.rotate_left((index % 8) as u32))
-                .wrapping_add(self.key);
+            tag[slot] =
+                tag[slot].wrapping_add(byte.rotate_left((index % 8) as u32)).wrapping_add(self.key);
         }
         tag[0] ^= (canonical_unsigned.len() & 0xff) as u8;
         tag[1] ^= ((canonical_unsigned.len() >> 8) & 0xff) as u8;
@@ -85,10 +84,7 @@ fn header<T: ResolveEnvelopeSubject>(
         identity("result:23")?,
         identity("profile:utf16-tooltip")?,
         vec![
-            ResolveCurrentnessRef::new(
-                ResolveCurrentnessKind::Document,
-                identity("document:4")?,
-            ),
+            ResolveCurrentnessRef::new(ResolveCurrentnessKind::Document, identity("document:4")?),
             ResolveCurrentnessRef::new(
                 ResolveCurrentnessKind::Configuration,
                 identity("config:9")?,
@@ -103,10 +99,7 @@ fn subject(first: (&str, &str), second: (&str, &str)) -> SyntheticSubject {
     let mut facts = HashMap::new();
     facts.insert(first.0.to_string(), first.1.to_string());
     facts.insert(second.0.to_string(), second.1.to_string());
-    SyntheticSubject {
-        identity: "entity:42".to_string(),
-        facts,
-    }
+    SyntheticSubject { identity: "entity:42".to_string(), facts }
 }
 
 #[test]
@@ -127,10 +120,7 @@ fn typed_token_round_trips_through_the_issuing_session() -> Result<(), Box<dyn E
 
     assert_eq!(validated.header().family(), ResolveFamily::Synthetic);
     assert_eq!(validated.subject().identity, "entity:42");
-    assert_eq!(
-        validated.subject().facts.get("a").map(String::as_str),
-        Some("1")
-    );
+    assert_eq!(validated.subject().facts.get("a").map(String::as_str), Some("1"));
     Ok(())
 }
 
@@ -164,21 +154,12 @@ fn altered_authentication_tag_fails_integrity() -> Result<(), Box<dyn Error>> {
         &authenticator,
     )?;
 
-    let encoded = token
-        .as_str()
-        .strip_prefix(RESOLVE_ENVELOPE_TOKEN_PREFIX)
-        .ok_or("missing token prefix")?;
+    let encoded =
+        token.as_str().strip_prefix(RESOLVE_ENVELOPE_TOKEN_PREFIX).ok_or("missing token prefix")?;
     let decoded = decode_hex_bounded(encoded, DEFAULT_MAX_DECODED_BYTES)?;
     let mut value: Value = serde_json::from_slice(&decoded)?;
-    let current_tag = value
-        .get("tag")
-        .and_then(Value::as_str)
-        .ok_or("missing tag")?;
-    let replacement = if current_tag.starts_with('0') {
-        '1'
-    } else {
-        '0'
-    };
+    let current_tag = value.get("tag").and_then(Value::as_str).ok_or("missing tag")?;
+    let replacement = if current_tag.starts_with('0') { '1' } else { '0' };
     let mut changed_tag = current_tag.to_string();
     changed_tag.replace_range(0..1, &replacement.to_string());
     value["tag"] = Value::String(changed_tag);
@@ -209,10 +190,8 @@ fn noncanonical_internal_bytes_are_rejected() -> Result<(), Box<dyn Error>> {
         &authenticator,
     )?;
 
-    let encoded = token
-        .as_str()
-        .strip_prefix(RESOLVE_ENVELOPE_TOKEN_PREFIX)
-        .ok_or("missing token prefix")?;
+    let encoded =
+        token.as_str().strip_prefix(RESOLVE_ENVELOPE_TOKEN_PREFIX).ok_or("missing token prefix")?;
     let decoded = decode_hex_bounded(encoded, DEFAULT_MAX_DECODED_BYTES)?;
     let mut text = String::from_utf8(decoded)?;
     text.insert(1, ' ');
@@ -243,11 +222,7 @@ fn another_session_is_distinct_from_integrity_failure() -> Result<(), Box<dyn Er
     )?;
 
     assert_eq!(
-        codec.validate::<SyntheticSubject, _>(
-            &token,
-            &identity("session:beta")?,
-            &authenticator,
-        ),
+        codec.validate::<SyntheticSubject, _>(&token, &identity("session:beta")?, &authenticator,),
         Err(ResolveEnvelopeRejection::ForeignSession)
     );
     Ok(())
@@ -282,18 +257,10 @@ fn unknown_subject_version_remains_explicit() -> Result<(), Box<dyn Error>> {
         identity: "entity:42".to_string(),
         facts: subject(("a", "1"), ("b", "2")).facts,
     };
-    let token = codec.issue(
-        header::<SyntheticSubjectV2>("session:alpha")?,
-        v2,
-        &authenticator,
-    )?;
+    let token = codec.issue(header::<SyntheticSubjectV2>("session:alpha")?, v2, &authenticator)?;
 
     assert_eq!(
-        codec.validate::<SyntheticSubject, _>(
-            &token,
-            &identity("session:alpha")?,
-            &authenticator,
-        ),
+        codec.validate::<SyntheticSubject, _>(&token, &identity("session:alpha")?, &authenticator,),
         Err(ResolveEnvelopeRejection::UnknownSubjectVersion(2))
     );
     Ok(())
@@ -307,17 +274,10 @@ fn unknown_envelope_version_remains_explicit() -> Result<(), Box<dyn Error>> {
     let mut header = header::<SyntheticSubject>("session:alpha")?;
     header.envelope_version = 2;
 
-    let unsigned = UnsignedResolveEnvelopeRef {
-        header: &header,
-        subject: &subject,
-    };
+    let unsigned = UnsignedResolveEnvelopeRef { header: &header, subject: &subject };
     let unsigned_bytes = canonical_json_bytes(&unsigned)?;
     let tag = authenticator.authenticate(&unsigned_bytes)?;
-    let signed = SignedResolveEnvelope {
-        header,
-        subject,
-        tag,
-    };
+    let signed = SignedResolveEnvelope { header, subject, tag };
     let signed_bytes = canonical_json_bytes(&signed)?;
     let token = ResolveEnvelopeToken(format!(
         "{RESOLVE_ENVELOPE_TOKEN_PREFIX}{}",
@@ -325,11 +285,7 @@ fn unknown_envelope_version_remains_explicit() -> Result<(), Box<dyn Error>> {
     ));
 
     assert_eq!(
-        codec.validate::<SyntheticSubject, _>(
-            &token,
-            &identity("session:alpha")?,
-            &authenticator,
-        ),
+        codec.validate::<SyntheticSubject, _>(&token, &identity("session:alpha")?, &authenticator,),
         Err(ResolveEnvelopeRejection::UnknownEnvelopeVersion(2))
     );
     Ok(())
@@ -337,17 +293,10 @@ fn unknown_envelope_version_remains_explicit() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn path_uri_and_prose_identity_references_are_rejected() {
-    for invalid in [
-        "file:///tmp/source.pl",
-        "/tmp/source.pl",
-        "C:\\source.pl",
-        "contains whitespace",
-        "",
-    ] {
-        assert!(
-            ResolveIdentityRef::new(invalid).is_err(),
-            "{invalid:?} must be rejected"
-        );
+    for invalid in
+        ["file:///tmp/source.pl", "/tmp/source.pl", "C:\\source.pl", "contains whitespace", ""]
+    {
+        assert!(ResolveIdentityRef::new(invalid).is_err(), "{invalid:?} must be rejected");
     }
 }
 
@@ -359,22 +308,13 @@ fn duplicate_and_excess_currentness_references_fail_issue() -> Result<(), Box<dy
         identity("result:23")?,
         identity("profile:utf16-tooltip")?,
         vec![
-            ResolveCurrentnessRef::new(
-                ResolveCurrentnessKind::Document,
-                identity("document:4")?,
-            ),
-            ResolveCurrentnessRef::new(
-                ResolveCurrentnessKind::Document,
-                identity("document:5")?,
-            ),
+            ResolveCurrentnessRef::new(ResolveCurrentnessKind::Document, identity("document:4")?),
+            ResolveCurrentnessRef::new(ResolveCurrentnessKind::Document, identity("document:5")?),
         ],
         ResolveReplayDisposition::CurrentSubjectBound,
         1,
     );
-    assert!(matches!(
-        duplicate,
-        Err(ResolveEnvelopeIssueError::DuplicateCurrentnessKind)
-    ));
+    assert!(matches!(duplicate, Err(ResolveEnvelopeIssueError::DuplicateCurrentnessKind)));
 
     let mut excessive = Vec::new();
     for index in 0..=DEFAULT_MAX_CURRENTNESS_REFS {
@@ -385,10 +325,7 @@ fn duplicate_and_excess_currentness_references_fail_issue() -> Result<(), Box<dy
             3 => ResolveCurrentnessKind::Workspace,
             _ => ResolveCurrentnessKind::Configuration,
         };
-        excessive.push(ResolveCurrentnessRef::new(
-            kind,
-            identity(&format!("current:{index}"))?,
-        ));
+        excessive.push(ResolveCurrentnessRef::new(kind, identity(&format!("current:{index}"))?));
     }
     let excessive_header = ResolveEnvelopeHeaderV1::for_subject::<SyntheticSubject>(
         identity("session:alpha")?,
@@ -412,18 +349,11 @@ fn oversized_subject_is_rejected_before_authentication() -> Result<(), Box<dyn E
     let authenticator = TestAuthenticator::new(21);
     let oversized = SyntheticSubject {
         identity: "entity:large".to_string(),
-        facts: HashMap::from([(
-            "payload".to_string(),
-            "x".repeat(DEFAULT_MAX_SUBJECT_BYTES + 1),
-        )]),
+        facts: HashMap::from([("payload".to_string(), "x".repeat(DEFAULT_MAX_SUBJECT_BYTES + 1))]),
     };
 
     assert!(matches!(
-        codec.issue(
-            header::<SyntheticSubject>("session:alpha")?,
-            oversized,
-            &authenticator,
-        ),
+        codec.issue(header::<SyntheticSubject>("session:alpha")?, oversized, &authenticator,),
         Err(ResolveEnvelopeIssueError::OversizedOrResourceBound)
     ));
     Ok(())
@@ -461,9 +391,6 @@ fn uppercase_outer_hex_is_not_an_alternate_wire_form() -> Result<(), Box<dyn Err
     )?;
     let uppercase = token.as_str().to_ascii_uppercase();
 
-    assert_eq!(
-        ResolveEnvelopeToken::parse(uppercase),
-        Err(ResolveEnvelopeRejection::Malformed)
-    );
+    assert_eq!(ResolveEnvelopeToken::parse(uppercase), Err(ResolveEnvelopeRejection::Malformed));
     Ok(())
 }

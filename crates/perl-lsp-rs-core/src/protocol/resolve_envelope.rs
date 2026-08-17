@@ -133,9 +133,7 @@ impl ResolveIdentityRef {
     /// durable wire token.
     pub fn new(value: impl Into<String>) -> Result<Self, ResolveEnvelopeIssueError> {
         let reference = Self(value.into());
-        reference
-            .validate(DEFAULT_MAX_IDENTITY_BYTES)
-            .map_err(ResolveEnvelopeIssueError::from)?;
+        reference.validate(DEFAULT_MAX_IDENTITY_BYTES).map_err(ResolveEnvelopeIssueError::from)?;
         Ok(reference)
     }
 
@@ -150,9 +148,11 @@ impl ResolveIdentityRef {
             return Err(HeaderValidationError::InvalidIdentityReference);
         }
 
-        if !self.0.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':')
-        }) {
+        if !self
+            .0
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':'))
+        {
             return Err(HeaderValidationError::InvalidIdentityReference);
         }
 
@@ -305,9 +305,7 @@ impl ResolveEnvelopeHeaderV1 {
         limits: &ResolveEnvelopeLimits,
     ) -> Result<(), HeaderValidationError> {
         if self.envelope_version != RESOLVE_ENVELOPE_VERSION {
-            return Err(HeaderValidationError::UnknownEnvelopeVersion(
-                self.envelope_version,
-            ));
+            return Err(HeaderValidationError::UnknownEnvelopeVersion(self.envelope_version));
         }
         if self.family != T::FAMILY
             || self.method != T::FAMILY.method()
@@ -316,17 +314,14 @@ impl ResolveEnvelopeHeaderV1 {
             return Err(HeaderValidationError::WrongMethodOrFamily);
         }
         if self.subject_version != T::VERSION {
-            return Err(HeaderValidationError::UnknownSubjectVersion(
-                self.subject_version,
-            ));
+            return Err(HeaderValidationError::UnknownSubjectVersion(self.subject_version));
         }
         if self.issue_sequence == 0 {
             return Err(HeaderValidationError::InvalidIssueSequence);
         }
 
         self.server_session.validate(limits.max_identity_bytes)?;
-        self.originating_operation
-            .validate(limits.max_identity_bytes)?;
+        self.originating_operation.validate(limits.max_identity_bytes)?;
         self.originating_result.validate(limits.max_identity_bytes)?;
         self.effective_profile.validate(limits.max_identity_bytes)?;
 
@@ -473,7 +468,7 @@ impl ResolveEnvelopeToken {
             return Err(ResolveEnvelopeRejection::Malformed);
         };
         if encoded.is_empty()
-            || encoded.len() % 2 != 0
+            || !encoded.len().is_multiple_of(2)
             || encoded.len() / 2 > limits.max_decoded_bytes
         {
             return Err(ResolveEnvelopeRejection::OversizedOrResourceBound);
@@ -637,9 +632,7 @@ impl From<HeaderValidationError> for ResolveEnvelopeRejection {
             HeaderValidationError::InvalidIdentityReference
             | HeaderValidationError::DuplicateCurrentnessKind
             | HeaderValidationError::InvalidIssueSequence => Self::Malformed,
-            HeaderValidationError::TooManyCurrentnessReferences => {
-                Self::OversizedOrResourceBound
-            }
+            HeaderValidationError::TooManyCurrentnessReferences => Self::OversizedOrResourceBound,
         }
     }
 }
@@ -675,9 +668,7 @@ impl ResolveEnvelopeCodec {
         T: ResolveEnvelopeSubject,
         A: ResolveEnvelopeAuthenticator + ?Sized,
     {
-        header
-            .validate_for::<T>(&self.limits)
-            .map_err(ResolveEnvelopeIssueError::from)?;
+        header.validate_for::<T>(&self.limits).map_err(ResolveEnvelopeIssueError::from)?;
 
         let subject_bytes =
             canonical_json_bytes(&subject).map_err(|_| ResolveEnvelopeIssueError::Serialization)?;
@@ -685,12 +676,9 @@ impl ResolveEnvelopeCodec {
             return Err(ResolveEnvelopeIssueError::OversizedOrResourceBound);
         }
 
-        let unsigned = UnsignedResolveEnvelopeRef {
-            header: &header,
-            subject: &subject,
-        };
-        let unsigned_bytes =
-            canonical_json_bytes(&unsigned).map_err(|_| ResolveEnvelopeIssueError::Serialization)?;
+        let unsigned = UnsignedResolveEnvelopeRef { header: &header, subject: &subject };
+        let unsigned_bytes = canonical_json_bytes(&unsigned)
+            .map_err(|_| ResolveEnvelopeIssueError::Serialization)?;
         if unsigned_bytes.len() > self.limits.max_decoded_bytes {
             return Err(ResolveEnvelopeIssueError::OversizedOrResourceBound);
         }
@@ -702,11 +690,7 @@ impl ResolveEnvelopeCodec {
             return Err(ResolveEnvelopeIssueError::InvalidAuthenticatorTag);
         }
 
-        let signed = SignedResolveEnvelope {
-            header,
-            subject,
-            tag,
-        };
+        let signed = SignedResolveEnvelope { header, subject, tag };
         let signed_bytes =
             canonical_json_bytes(&signed).map_err(|_| ResolveEnvelopeIssueError::Serialization)?;
         if signed_bytes.len() > self.limits.max_decoded_bytes {
@@ -755,10 +739,7 @@ impl ResolveEnvelopeCodec {
 
         let signed: SignedResolveEnvelope<T> =
             serde_json::from_value(value).map_err(|_| ResolveEnvelopeRejection::Malformed)?;
-        signed
-            .header
-            .validate_for::<T>(&self.limits)
-            .map_err(ResolveEnvelopeRejection::from)?;
+        signed.header.validate_for::<T>(&self.limits).map_err(ResolveEnvelopeRejection::from)?;
 
         if signed.header.server_session != *expected_session {
             return Err(ResolveEnvelopeRejection::ForeignSession);
@@ -773,10 +754,8 @@ impl ResolveEnvelopeCodec {
             return Err(ResolveEnvelopeRejection::OversizedOrResourceBound);
         }
 
-        let unsigned = UnsignedResolveEnvelopeRef {
-            header: &signed.header,
-            subject: &signed.subject,
-        };
+        let unsigned =
+            UnsignedResolveEnvelopeRef { header: &signed.header, subject: &signed.subject };
         let unsigned_bytes =
             canonical_json_bytes(&unsigned).map_err(|_| ResolveEnvelopeRejection::Malformed)?;
         let expected_tag = authenticator
@@ -789,10 +768,7 @@ impl ResolveEnvelopeCodec {
             return Err(ResolveEnvelopeRejection::IntegrityFailure);
         }
 
-        Ok(ValidatedResolveEnvelope {
-            header: signed.header,
-            subject: signed.subject,
-        })
+        Ok(ValidatedResolveEnvelope { header: signed.header, subject: signed.subject })
     }
 }
 
@@ -827,12 +803,8 @@ fn canonicalize_json(value: &mut Value) {
 
 fn json_depth(value: &Value) -> usize {
     match value {
-        Value::Array(values) => {
-            1 + values.iter().map(json_depth).max().unwrap_or_default()
-        }
-        Value::Object(object) => {
-            1 + object.values().map(json_depth).max().unwrap_or_default()
-        }
+        Value::Array(values) => 1 + values.iter().map(json_depth).max().unwrap_or_default(),
+        Value::Object(object) => 1 + object.values().map(json_depth).max().unwrap_or_default(),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => 1,
     }
 }
@@ -851,7 +823,7 @@ fn decode_hex_bounded(
     encoded: &str,
     max_decoded_bytes: usize,
 ) -> Result<Vec<u8>, ResolveEnvelopeRejection> {
-    if encoded.len() % 2 != 0 || encoded.len() / 2 > max_decoded_bytes {
+    if !encoded.len().is_multiple_of(2) || encoded.len() / 2 > max_decoded_bytes {
         return Err(ResolveEnvelopeRejection::OversizedOrResourceBound);
     }
     if !encoded.bytes().all(is_lower_hex) {
