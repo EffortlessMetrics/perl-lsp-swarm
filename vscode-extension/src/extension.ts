@@ -2190,6 +2190,12 @@ async function restartServer(_context: vscode.ExtensionContext) {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.error(`Failed to restart perl-lsp: ${message}`);
+    // A rejected restart() means the running generation was stopped and its
+    // replacement failed: the server is stopped. Tell the demand owner,
+    // otherwise its stale `running`/in-flight belief suppresses all later
+    // document demand, and even an explicit health-check retry no-ops because
+    // `retry` only overrides `failed`.
+    serverDemand?.noteStopped();
     vscode.window
       .showErrorMessage(`Failed to restart Perl Language Server: ${message}`, 'Show Output')
       .then((selection) => {

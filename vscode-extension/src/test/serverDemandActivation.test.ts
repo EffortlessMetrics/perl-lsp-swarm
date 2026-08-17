@@ -293,6 +293,34 @@ describe('deferred language-server startup (#8180)', () => {
     expect(errorMessages.some((message) => message.includes('Failed to start'))).toBe(true);
   });
 
+  test('a failed restart does not suppress fresh demand', async () => {
+    // First start succeeds, so demand reaches `running`.
+    mockLanguageClientStart.mockImplementationOnce(async () => undefined);
+    setOpenDocuments([fakeDocument('perl')]);
+
+    await activate(makeContext(makeExtensionRoot()));
+    await waitForStarts(1);
+
+    // Fresh demand is correctly ignored while the server is running.
+    fireDocumentOpened(fakeDocument('perl'));
+    await settle();
+    expect(mockLanguageClientStart).toHaveBeenCalledTimes(1);
+
+    // A failed explicit restart stops the running generation and fails to
+    // replace it. The demand owner must learn the server is gone, otherwise
+    // its stale `running` belief turns every later Perl document into a no-op.
+    mockLanguageClientStart.mockImplementationOnce(async () => {
+      throw new Error('spawn refused');
+    });
+    await vscode.commands.executeCommand('perl-lsp.restart');
+    await settle();
+
+    fireDocumentOpened(fakeDocument('perl'));
+    await waitForStarts(3);
+
+    expect(mockLanguageClientStart).toHaveBeenCalledTimes(3);
+  });
+
   test('the status widget reports dormant rather than starting', async () => {
     await activate(makeContext(makeExtensionRoot()));
     await settle();

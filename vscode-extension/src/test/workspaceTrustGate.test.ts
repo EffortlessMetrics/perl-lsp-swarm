@@ -130,22 +130,29 @@ describe('workspace trust activation gate (#4631)', () => {
   test('does not start the language server when workspace is untrusted', async () => {
     process.env.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '0';
     (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
+    // Demand must be present, otherwise this test passes vacuously: without a
+    // Perl document even a deleted trust gate starts nothing.
+    const restoreDocuments = openPerlDocument();
 
-    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
-    const serverPath = path.join(
-      extensionRoot,
-      process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
-    );
-    fs.writeFileSync(serverPath, '');
-    mockConfig(serverPath);
+    try {
+      const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-trust-'));
+      const serverPath = path.join(
+        extensionRoot,
+        process.platform === 'win32' ? 'perl-lsp.exe' : 'perl-lsp',
+      );
+      fs.writeFileSync(serverPath, '');
+      mockConfig(serverPath);
 
-    await activate(makeContext(extensionRoot));
+      await activate(makeContext(extensionRoot));
 
-    // Give a brief window for any background work to surface.
-    await delay(100);
+      // Give a brief window for any background work to surface.
+      await delay(100);
 
-    // The language client must not have been started.
-    expect(mockLanguageClientStart).not.toHaveBeenCalled();
+      // The language client must not have been started.
+      expect(mockLanguageClientStart).not.toHaveBeenCalled();
+    } finally {
+      restoreDocuments();
+    }
   });
 
   test('presents untrusted deferral as configuration action, not an endless start', async () => {

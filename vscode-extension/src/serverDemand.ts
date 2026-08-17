@@ -105,7 +105,10 @@ export interface ServerEntryPointRow {
 }
 
 /**
- * Commands whose implementation touches the language client.
+ * Demand dispositions for the commands that can be asked for something only a
+ * running server provides. Commands not listed here (status, test, critic,
+ * navigation, binary-identity, …) only read the current client projection and
+ * behave as `never`: they report the server as not running when dormant.
  *
  * `on-first-use` means the command routes through `ensureStarted` and may start
  * a dormant server, because the user explicitly asked for something that needs
