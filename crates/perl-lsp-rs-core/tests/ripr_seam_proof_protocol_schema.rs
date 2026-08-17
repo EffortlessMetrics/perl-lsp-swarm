@@ -2,6 +2,7 @@
 //!
 //! RIPR exposure policy homes focused seam proofs in tests/ripr_seam_proof_*.rs
 //! so production modules stay small enough for review-comments to finish.
+#![allow(clippy::expect_used)]
 use perl_lsp_rs_core::protocol::schema::{
     Direction, MessageKind, ProtocolSchemaValidator, ProtocolVersion, SCHEMA_SOURCE_JSON,
     SCHEMA_SOURCE_MANIFEST_SHA256, SchemaError, UPSTREAM_PROTOCOL_COMMIT, ValidatedMessage,
@@ -68,6 +69,9 @@ fn pinned_manifest_and_rust_registry_are_consistent() {
             "client_to_server:notification:initialized:3.17",
             "client_to_server:request:shutdown:3.17",
             "server_to_client:notification:$/cancelRequest:3.17",
+            "server_to_client:notification:window/logMessage:3.17",
+            "server_to_client:notification:window/showMessage:3.17",
+            "server_to_client:request:window/showMessageRequest:3.17",
         ]
     );
 }

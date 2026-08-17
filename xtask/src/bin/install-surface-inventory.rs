@@ -1,5 +1,7 @@
 //! Diagnostic entry point for the typed install/package surface inventory.
 
+#![allow(clippy::print_stdout)]
+
 #[path = "../tasks/install_surface_inventory.rs"]
 mod install_surface_inventory;
 
