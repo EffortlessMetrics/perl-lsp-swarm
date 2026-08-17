@@ -1,4 +1,6 @@
 #![cfg(feature = "current-upstream")]
+// Integration test: expect_err keeps negative-pin assertions compact (repo pattern).
+#![allow(clippy::expect_used)]
 
 use std::error::Error;
 use std::fs;
