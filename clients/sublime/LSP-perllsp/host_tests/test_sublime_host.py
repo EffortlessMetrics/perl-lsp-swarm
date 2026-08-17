@@ -246,6 +246,14 @@ class SublimePerllspHostJourney(DeferrableTestCase):
             "condition": lambda: bool(self.buffer.semantic_tokens.data),
             "timeout": TIMEOUT_MS,
         }
+        # Token data arriving is not yet the scope being applied: the client
+        # decodes and adds the semantic regions on the UI thread afterwards,
+        # so the custom-scope assertion waits for the regions like every
+        # other observation in this journey.
+        yield {
+            "condition": lambda: bool(self.view.find_by_selector("variable.other.scalar.perl")),
+            "timeout": TIMEOUT_MS,
+        }
         self.assertTrue(
             self.view.find_by_selector("variable.other.scalar.perl"),
             "custom scalar-variable semantic scope was not applied",
