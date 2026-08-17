@@ -87,7 +87,7 @@ P15 + P13 + I00 ─ P16 current upstream candidate
 P16 + P15 + P13 + P10 + I00 ─ P17 extension packet
 P13 ─ P18 defaults packet
 P17 + P18 ─ M01 ─ U01 ─ P19 registry packet ─ M02 ─ U02
-P08 + P10 + P13 + P14 + I00 + C01 + U02 ─ P20 public host evidence
+P08 + P10 + P12 + P13 + P14 + I00 + C01 + U02 ─ P20 public host evidence
 P09 + P20 + C01 ─ P21 exact support projection
 P21 + C02 ─ P22 programme closeout
 ```
@@ -134,7 +134,7 @@ P21 + C02 ─ P22 programme closeout
 | P19 | #7910 | codex | U01 | Freeze the exact existing-perl official registry update packet from the accepted upstream subject. |
 | M02 | manual | maintainer | P19 | Manually submit the official registry packet and record the external submission identity. |
 | U02 | #10351 | read_only_acceptance | M02, U01 | Bind official registry publication and the released Zed defaults subject required for public execution. |
-| P20 | #7912 | codex | P08, P10, P13, P14, I00, C01, U02 | Execute the clean ordinary official-registry installation and exact public Zed host journey. |
+| P20 | #7912 | codex | P08, P10, P12, P13, P14, I00, C01, U02 | Execute the clean ordinary official-registry installation and exact public Zed host journey. |
 | P21 | #8000 | codex | P09, P20, C01 | Project only exact public Zed receipt cells into #7122 and deterministic generated documentation. |
 | P22 | #7759 | codex | P21, C02 | Reconcile the programme ledger, preserve limitations, and close only the proven Zed LSP programme. |
 
@@ -150,7 +150,8 @@ P21 + C02 ─ P22 programme closeout
 | DU01 | #10353 | read_only_acceptance | DM01 | Bind the actually merged and released upstream perl-dap extension subject. |
 | D04 | #9491 | codex | DU01 | Freeze the official existing-perl registry packet for the accepted DAP extension subject. |
 | DM02 | manual | maintainer | D04 | Manually submit the DAP registry packet. |
-| D05 | #9487 | codex | DA01, D02, DM02, C01 | Execute the clean official-registry managed perl-dap journey in real Zed. |
+| DU02 | #10366 | read_only_acceptance | DM02, DU01 | Bind official registry publication of the exact DAP-capable Perl extension subject. |
+| D05 | #9487 | codex | DA01, D02, DU02, C01 | Execute the clean official-registry managed perl-dap journey in real Zed. |
 | D06 | #9489 | codex | D05, P09 | Project proven Zed debugger cells separately into #7122 and generated documentation. |
 | D07 | #9484 | codex | D06 | Reconcile and close the non-blocking Zed DAP programme without changing the Zed LSP verdict. |
 
@@ -167,6 +168,7 @@ canonical packet                != observed file SHA-256
 release metadata                != downloaded executable bytes
 public executable smoke         != real Zed host behavior
 development extension           != official registry distribution
+registry submission             != registry publication
 registry merge                  != released Zed defaults
 merged source                   != public availability
 PATH route                      != managed route
@@ -184,12 +186,17 @@ Every Zed `perllsp` process subject must consume the canonical `perl_lsp.binary_
 
 ## External acceptance
 
-The train contains two read-only gates after manual writes:
+The core train contains two read-only gates after manual writes:
 
 - **U01 / #10350** compares the actual merged extension and Zed defaults source against the prepared packets. It classifies exact acceptance, compatible delta requiring revalidation, semantic drift, partial acceptance, or not merged.
 - **U02 / #10351** binds the actual official `perl` registry publication and one released Zed build containing the accepted provider order. Both must exist before public execution.
 
-Neither gate writes externally.
+The DAP sidecar has its own independent gates:
+
+- **DU01 / #10353** binds the actually merged and released upstream DAP-capable extension subject.
+- **DU02 / #10366** binds ordinary official-registry publication of that exact DAP-capable subject before the public debug journey.
+
+None of these gates writes externally.
 
 ## Current frontier
 
