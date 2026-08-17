@@ -325,13 +325,18 @@ where
     F: Fn(&str) -> bool,
 {
     let mut last_text = None;
+    let mut last_error = None;
     for attempt in 1..=SETTLEMENT_ATTEMPTS {
         if let Some(hover) = harness.hover(relative_path, line, character)? {
-            let text = hover_text(&hover)?;
-            if useful(&text) {
-                return Ok(hover);
+            match hover_text(&hover) {
+                Ok(text) => {
+                    if useful(&text) {
+                        return Ok(hover);
+                    }
+                    last_text = Some(text);
+                }
+                Err(error) => last_error = Some(error.to_string()),
             }
-            last_text = Some(text);
         }
 
         if attempt < SETTLEMENT_ATTEMPTS {
@@ -341,7 +346,7 @@ where
 
     anyhow::bail!(
         "hover at {relative_path}:{line}:{character} never produced the required subject after \
-         {SETTLEMENT_ATTEMPTS} attempts; last text: {last_text:?}"
+         {SETTLEMENT_ATTEMPTS} attempts; last text: {last_text:?}; last error: {last_error:?}"
     )
 }
 

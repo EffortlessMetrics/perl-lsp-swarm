@@ -51,6 +51,36 @@ fn function_signature(name: &str) -> String {
     format!("fn {name}(")
 }
 
+/// Names recorded in the target's `CASE_DISPOSITIONS` table.
+fn disposition_names() -> Vec<&'static str> {
+    let Some(start) = TARGET.find("const CASE_DISPOSITIONS") else {
+        panic!("Scenario 20 disposition table disappeared from the target");
+    };
+    let rest = TARGET.get(start..).unwrap_or("");
+    let Some(length) = rest.find("\n];") else {
+        panic!("Scenario 20 disposition table is not terminated");
+    };
+    rest.get(..length)
+        .unwrap_or("")
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|name| name.starts_with("scenario_20_"))
+        .collect()
+}
+
+#[test]
+fn scenario_20_disposition_table_matches_retained_authorities() {
+    let mut recorded = disposition_names();
+    recorded.sort_unstable();
+    let mut retained = RETAINED_TESTS.to_vec();
+    retained.sort_unstable();
+    assert_eq!(
+        recorded, retained,
+        "CASE_DISPOSITIONS and RETAINED_TESTS disagree about the reviewed Scenario 20 cells"
+    );
+}
+
 #[test]
 fn scenario_20_has_one_current_authority_per_reviewed_cell() {
     let forbidden_soft_phrase = ["known", "gap"].join(" ");
@@ -71,9 +101,13 @@ fn scenario_20_has_one_current_authority_per_reviewed_cell() {
     }
 
     for retained in RETAINED_TESTS {
+        let signature = function_signature(retained);
+        let Some(position) = TARGET.find(&signature) else {
+            panic!("reviewed Scenario 20 authority disappeared: {retained}");
+        };
         assert!(
-            TARGET.contains(&function_signature(retained)),
-            "reviewed Scenario 20 authority disappeared: {retained}"
+            TARGET[..position].trim_end().ends_with("#[test]"),
+            "reviewed Scenario 20 authority is no longer annotated with #[test]: {retained}"
         );
     }
 }
