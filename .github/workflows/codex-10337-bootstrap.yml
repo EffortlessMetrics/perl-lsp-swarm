@@ -6,10 +6,11 @@ on:
       - "codex/10337-class-ast-schema"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   inspect:
+    if: github.event.head_commit.message == 'chore: capture class migration inventory'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -19,9 +20,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo '=== NodeKind::Class references ==='
-          grep -RIn -C 3 --include='*.rs' 'NodeKind::Class' crates || true
-          echo '=== direct Class constructors ==='
-          grep -RIn -C 3 --include='*.rs' 'Class {' crates || true
-          echo '=== parser class context ==='
-          grep -RIn -C 3 --include='*.rs' -E 'in_class_body|parse_class' crates/perl-parser-core || true
+          {
+            echo '=== NodeKind::Class references ==='
+            grep -RIn -C 3 --include='*.rs' 'NodeKind::Class' crates || true
+            echo
+            echo '=== direct Class constructors ==='
+            grep -RIn -C 3 --include='*.rs' 'Class {' crates || true
+            echo
+            echo '=== class destructuring without NodeKind prefix ==='
+            grep -RIn -C 3 --include='*.rs' -E 'Class[[:space:]]*\{' crates || true
+            echo
+            echo '=== parser class context ==='
+            grep -RIn -C 3 --include='*.rs' -E 'in_class_body|parse_class' crates/perl-parser-core || true
+            echo
+            echo '=== FieldId definition and users ==='
+            grep -RIn -C 3 --include='*.rs' -E 'enum FieldId|struct FieldId|FieldId::' crates/perl-ast crates/perl-parser-core | head -n 1200 || true
+          } > codex-10337-inventory.txt
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add codex-10337-inventory.txt
+          git commit -m 'chore: record class migration inventory'
+          git push origin HEAD
