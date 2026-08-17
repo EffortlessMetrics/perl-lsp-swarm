@@ -84,10 +84,11 @@ impl FormatDoc {
             }
             Self::Space | Self::SoftLine => Some(1),
             Self::Line | Self::HardLine => None,
-            Self::Group(parts) | Self::Indent(parts) => parts.iter().try_fold(
-                0_usize,
-                |sum, doc| doc.flat_width().and_then(|width| sum.checked_add(width)),
-            ),
+            Self::Group(parts) | Self::Indent(parts) => {
+                parts.iter().try_fold(0_usize, |sum, doc| {
+                    doc.flat_width().and_then(|width| sum.checked_add(width))
+                })
+            }
             Self::IfBreak { flat, .. } => flat.flat_width(),
         }
     }
@@ -103,9 +104,8 @@ struct DocRenderer {
 
 impl DocRenderer {
     fn new(config: &FormatConfig) -> Self {
-        let line_width = usize::try_from(config.line_width)
-            .unwrap_or(MAX_LINE_WIDTH)
-            .clamp(1, MAX_LINE_WIDTH);
+        let line_width =
+            usize::try_from(config.line_width).unwrap_or(MAX_LINE_WIDTH).clamp(1, MAX_LINE_WIDTH);
         let indent_width = usize::try_from(config.indent_width)
             .unwrap_or(MAX_INDENT_WIDTH)
             .clamp(1, MAX_INDENT_WIDTH);
@@ -166,11 +166,8 @@ impl DocRenderer {
                 .unwrap_or(MAX_RENDER_INDENT_COLUMNS)
                 .min(MAX_RENDER_INDENT_COLUMNS)
         };
-        let indent = if self.use_tabs {
-            "\t".repeat(indent_columns)
-        } else {
-            " ".repeat(indent_columns)
-        };
+        let indent =
+            if self.use_tabs { "\t".repeat(indent_columns) } else { " ".repeat(indent_columns) };
         self.output.push_str(&indent);
         self.column = indent_columns;
     }
