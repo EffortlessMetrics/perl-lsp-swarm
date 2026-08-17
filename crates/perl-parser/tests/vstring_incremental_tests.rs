@@ -107,9 +107,9 @@ fn vstring_node_survives_incremental_edit_outside_literal() {
 /// The fast-path update rewrites the VString node in place. The result is a
 /// v-string containing the inserted character.
 ///
-/// Non-vacuous guarantee: the sexp must contain `(vstring "v10.2.3")` — the
+/// Non-vacuous guarantee: the sexp must contain `(vstring "v01.2.3")` — the
 /// v-string expanded by the insertion.  Reverting the primary.rs VString arm
-/// would produce `(string "v10.2.3")` instead.
+/// would produce `(string "v01.2.3")` instead.
 #[test]
 fn vstring_edit_inside_literal_exercises_is_single_token_edit_arm() {
     // `my $v = v1.2.3;`
@@ -119,28 +119,29 @@ fn vstring_edit_inside_literal_exercises_is_single_token_edit_arm() {
     let source = "my $v = v1.2.3;".to_string();
     let mut doc = must(IncrementalDocument::new(source));
 
-    // Insert '0' at byte 9 (inside the VString, after the leading 'v').
-    // New source: "my $v = v10.2.3;"
+    // Insert '0' at byte 9 (inside the VString, immediately after the leading
+    // 'v' and *before* the '1' that occupies byte 9).
+    // New source: "my $v = v01.2.3;"
     // edit.start_byte = 9, which is inside VString (8..14), so
     // is_single_token_edit calls find_node_at_position(9) → finds VString →
     // VString arm at incremental_document.rs:345 is executed → returns true.
     let edit = IncrementalEdit::new(9, 9, "0".to_string());
     must(doc.apply_edit(edit));
 
-    // After the reparse the new source is "my $v = v10.2.3;"
-    // v10.2.3 is a valid v-string and must be NodeKind::VString.
-    // Reverting primary.rs VString arm would produce (string "v10.2.3") here.
+    // After the reparse the new source is "my $v = v01.2.3;"
+    // v01.2.3 is a valid v-string and must be NodeKind::VString.
+    // Reverting primary.rs VString arm would produce (string "v01.2.3") here.
     let sexp = doc.root.to_sexp();
     assert!(
-        sexp.contains("(vstring \"v10.2.3\")"),
+        sexp.contains("(vstring \"v01.2.3\")"),
         "after inserting '0' inside VString, result must contain the exact edited vstring; \
          reverting primary.rs VString arm would produce a string node instead. \
          Got: {}",
         sexp
     );
     assert!(
-        !sexp.contains("(string \"v10.2.3\")"),
-        "v10.2.3 must be NodeKind::VString not NodeKind::String; got: {}",
+        !sexp.contains("(string \"v01.2.3\")"),
+        "v01.2.3 must be NodeKind::VString not NodeKind::String; got: {}",
         sexp
     );
 }

@@ -814,13 +814,45 @@ gates:
       - unit
       - workspace
 
+  # perl-parser's `incremental` feature is not in its default set, so a plain
+  # `cargo test -p perl-parser` compiles every `#[cfg(feature = "incremental")]`
+  # test out of existence. The lib selection below therefore names the feature
+  # explicitly (qualified, because more than one package is selected): feature-on
+  # is a strict superset — 227 lib tests become 334 — for roughly 4.7s.
+  #
+  # The second invocation runs the incremental integration targets that no gate
+  # reached. `parser_integration` already executes three of them with the feature
+  # on via its manifest (parser.incremental.integration / .accuracy /
+  # .parse_output), so they are deliberately not repeated here.
+  #
+  # Four incremental targets are deliberately excluded because they assert over
+  # wall-clock samples and are not merge oracles: incremental_edge_cases_test,
+  # incremental_comprehensive_test, incremental_performance_tests, and
+  # incremental_statistical_validation_test. That exclusion is recorded here so
+  # "not run" stays visible rather than silently uncompiled (#9795); the
+  # unsatisfiable distribution-shape assertion inside the last of them is tracked
+  # by #9831.
   - name: unit_parser_stack_full
     tier: merge_gate
-    description: "Parser, lexer, and parser-core library tests"
+    description: "Parser, lexer, and parser-core library tests, plus deterministic incremental integration targets"
     required: true
     command: >-
       cargo test --locked --lib
       -p perl-parser -p perl-lexer -p perl-parser-core
+      --features perl-parser/incremental
+      -- --test-threads=4
+      &&
+      cargo test --locked -p perl-parser --features incremental
+      --test advanced_reuse_analyzer_heuristics_tests
+      --test facade_pattern_edge_cases
+      --test g2_api_regression_guards
+      --test incremental_edit_set_normalization
+      --test incremental_parsing_tests
+      --test incremental_regression_slices
+      --test mutation_hardening_tests
+      --test ripr_seam_proof_concept_ast_invariant_contract
+      --test vstring_incremental_tests
+      --test wave4_completion_absorption_tests
       -- --test-threads=4
     timeout_seconds: 180
     retry_count: 1
@@ -1234,6 +1266,58 @@ gates:
       - policy
       - version
       - hygiene
+
+  # The compiler concept ledger (#6657) and proof policy (#6689) are fail-closed
+  # contracts: they reject untracked concept rows, unknown proof classes, circular
+  # gold, and stale generated status docs. Nothing executed either validator until
+  # this gate existed, so the fail-closed claim was inert and the committed status
+  # docs could drift silently against their contracts. Two gates rather than one
+  # `&&` chain, for the same reason policy_checks was decomposed: a chained
+  # command stops reporting once an early link fails.
+  - name: compiler_concept_ledger
+    tier: merge_gate
+    description: "Validate contracts/compiler/perl_compiler_concepts.v1.toml and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-concepts -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  - name: compiler_proof_policy
+    tier: merge_gate
+    description: "Validate contracts/compiler/perl_compiler_proof_policy.v1.toml against the concept ledger and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-proof-policy -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
+
+  - name: compiler_concept_proof
+    tier: merge_gate
+    description: "Validate the one-to-one concept proof-obligation matrix against the ledger and proof policy, and its generated status doc"
+    required: true
+    command: cargo run --locked -p xtask --bin compiler-concept-proof -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - generated
 
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
