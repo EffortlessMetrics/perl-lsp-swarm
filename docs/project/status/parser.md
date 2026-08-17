@@ -9,7 +9,7 @@
 | <!-- BEGIN: PARSER_TRACKING_TABLE -->
 | **Ubuntu system Perl** | 99.3% clean (`7047/7095`) | Compatibility baseline; Perl `5.038002`, `48` unreadable, `0` recovery-only, `0` ERROR-node files, `0` catastrophic, baseline `2026-05-18` | `.ci/parser-corpus-baseline.json` |
 | **CPAN top 1000** | 95.3% clean (`8931/9372`) | Ecosystem breadth baseline; `6` unreadable, `insufficient_data` recovery-only, `insufficient_data` ERROR-node files, `insufficient_data` catastrophic, cached downloads in `target/cpan-corpus/.cpanm`, baseline `2026-04-09` | `.ci/cpan-corpus-baseline.json` |
-| **Project corpus** | 100.0% clean (`96/96`) | Deterministic regression baseline; `74` `test_corpus/` + `22` `perl-corpus` files, `0` errors, `0` timeouts, `0` panics, `66/69` NodeKinds, `12/12` GA features | `test_corpus/` + `crates/perl-corpus/src/gen` |
+| **Project corpus** | 100.0% clean (`199/199`) | Deterministic regression baseline; `177` `test_corpus/` + `22` `perl-corpus` files, `0` errors, `0` timeouts, `0` panics, `71/76` NodeKinds, `12/12` GA features | `test_corpus/` + `crates/perl-corpus/src/gen` |
 <!-- END: PARSER_TRACKING_TABLE -->
 
 ## Parser Scorecard
@@ -17,7 +17,7 @@
 | Metric | Value | Notes | Source |
 | --- | --- | --- |
 <!-- BEGIN: PARSER_NODEKIND_ROW -->
-| **Node-kind coverage** | 66/69 (95.7%) | 0 actionable never-seen; 3 recovery-only allowlisted | `corpus_audit` |
+| **Node-kind coverage** | 71/76 (93.4%) | 2 actionable never-seen; 3 recovery-only allowlisted; 5 total never-seen | `corpus_audit` |
 <!-- END: PARSER_NODEKIND_ROW -->
 <!-- BEGIN: PARSER_RELIABILITY_ROW -->
 | **Reliability** | Ubuntu: 48 unread / CPAN: 6 unread / Project: 0 timeout, 0 panic, 0 unread | -- | `.ci/*-baseline.json` |
@@ -37,11 +37,11 @@
 | Layer | State | Notes | Source |
 | --- | --- | --- |
 <!-- BEGIN: PARSER_ACCURACY_SUMMARY -->
-| **Accuracy denominator** | 50 fixtures / 29 families | 139 scored lines, 117 scored symbols, 5 fully labeled, 44 partial, 32 unknown, 5 negative, 13 dynamic boundaries, 9 unsupported, 0 real-project, 0 generated, 50 hand-labeled; cadence `pr` | `target/metrics/parser_accuracy.json`; `.kiro/specs/parser-accuracy-observability` |
-| **Accuracy families** | autoload (1), control_flow (1), dynamic_require (1), eval_string (1), export_tags (1), format (1), +23 more | fixture family inventory from parser accuracy manifest | `target/metrics/parser_accuracy.json` |
-| **Accuracy scorers** | selected line_construct_f1=1.0 (n=114), ast_node_kind_f1=1.0 (n=9), symbol_decl_f1=1.0 (n=42), symbol_ref_f1=1.0 (n=18), dynamic_false_precision_count=0.0 (n=2), fast_path_wrong_result_count=0.0 (n=1), method_completion_receiver_hit_rate=1.0 (n=4), method_completion_false_receiver_count=0.0 (n=5), method_completion_dynamic_receiver_fallback_count=5.0 (n=5), method_completion_visible_symbol_relevance=1.0 (n=37), diagnostic_dynamic_boundary_false_positive_count=0.0 (n=4), diagnostic_undefined_symbol_false_positive_count=0.0 (n=2), diagnostic_undefined_symbol_false_negative_count=0.0 (n=2), document_symbol_span_exact_rate=1.0 (n=11), goto_definition_hit_rate=1.0 (n=3), goto_definition_span_exact_rate=1.0 (n=3), goto_definition_false_target_count=0.0 (n=3), references_precision=1.0 (n=1), references_recall=1.0 (n=1), references_false_positive_count=0.0 (n=2), hover_origin_accuracy=1.0 (n=1), whitespace_invariance_rate=0.3 (trailing whitespace; n=44); 170 additional measured rows | missing accuracy rows stay `insufficient_data`; they are not rendered as zero or pass | `.ci/schemas/parser-accuracy.schema.json` |
-| **Failure packets** | 0 active packets | See `parser_accuracy_failure_packets.json` for committed packet details | generated |
-| **Fixture inventory** | 50 fixtures / 29 families | See `parser_accuracy_fixture_inventory.json` for compact fixture metadata | generated |
+| **Accuracy denominator** | 52 fixtures / 30 families | 149 scored lines, 130 scored symbols, 6 fully labeled, 45 partial, 33 unknown, 6 negative, 13 dynamic boundaries, 9 unsupported, 0 real-project, 0 generated, 52 hand-labeled; cadence `pr` | `target/metrics/parser_accuracy.json`; `.kiro/specs/parser-accuracy-observability` |
+| **Accuracy families** | autoload (1), control_flow (2), dynamic_require (1), eval_string (1), export_tags (1), format (1), +24 more | fixture family inventory from parser accuracy manifest | `target/metrics/parser_accuracy.json` |
+| **Accuracy scorers** | selected line_construct_f1=1.0 (n=125), ast_node_kind_f1=1.0 (n=279), symbol_decl_f1=1.0 (n=42), symbol_ref_f1=1.0 (n=18), dynamic_false_precision_count=0.0 (n=2), fast_path_wrong_result_count=0.0 (n=1), method_completion_receiver_hit_rate=1.0 (n=4), method_completion_false_receiver_count=0.0 (n=5), method_completion_dynamic_receiver_fallback_count=5.0 (n=5), method_completion_visible_symbol_relevance=1.0 (n=37), diagnostic_dynamic_boundary_false_positive_count=0.0 (n=4), diagnostic_undefined_symbol_false_positive_count=0.0 (n=2), diagnostic_undefined_symbol_false_negative_count=0.0 (n=2), document_symbol_span_exact_rate=1.0 (n=11), goto_definition_hit_rate=1.0 (n=3), goto_definition_span_exact_rate=1.0 (n=3), goto_definition_false_target_count=0.0 (n=3), references_precision=1.0 (n=1), references_recall=1.0 (n=1), references_false_positive_count=0.0 (n=2), hover_origin_accuracy=1.0 (n=1), whitespace_invariance_rate=0.4 (trailing whitespace; n=46); 170 additional measured rows | missing accuracy rows stay `insufficient_data`; they are not rendered as zero or pass | `.ci/schemas/parser-accuracy.schema.json` |
+| **Failure packets** | 50 active packets | See `parser_accuracy_failure_packets.json` for committed packet details | generated |
+| **Fixture inventory** | 52 fixtures / 30 families | See `parser_accuracy_fixture_inventory.json` for compact fixture metadata | generated |
 <!-- END: PARSER_ACCURACY_SUMMARY -->
 
 ## Parser Performance Regimes

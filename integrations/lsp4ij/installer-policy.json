@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "release_authority": "docs/reference/downstream-dap-integrations.json",
+  "managed_targets": [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc"
+  ],
+  "external_binary_targets": [
+    {
+      "triple": "x86_64-unknown-linux-musl",
+      "reason": "Current LSP4IJ installer selection distinguishes OS and CPU architecture but has no proven libc discriminator."
+    },
+    {
+      "triple": "aarch64-unknown-linux-musl",
+      "reason": "Current LSP4IJ installer selection distinguishes OS and CPU architecture but has no proven libc discriminator."
+    }
+  ],
+  "checksum_manifest": {
+    "file": "SHA256SUMS",
+    "consumed_by_current_lsp4ij_installer": false,
+    "claim": "not_checksum_verified_by_lsp4ij"
+  },
+  "stale_url_fallback_allowed": false
+}

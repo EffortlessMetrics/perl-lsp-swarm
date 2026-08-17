@@ -17,6 +17,7 @@ include = [
     "build.rs",
     "build_catalog.rs",
     "features_sot.toml",
+    "protocol_schema_source.json",
     "Cargo.toml",
     "README.md",
 ]
@@ -37,6 +38,7 @@ perl-semantic-analyzer.workspace = true
 perl-semantic-facts.workspace = true
 perl-lexer.workspace = true
 perl-ast.workspace = true
+perl-test-facts.workspace = true
 walkdir.workspace = true
 regex.workspace = true
 url.workspace = true
@@ -82,6 +84,7 @@ ai-provider = ["dep:ureq"]
 
 [dev-dependencies]
 perl-tdd-support.workspace = true
+sha2.workspace = true
 serde_json.workspace = true
 perl-lsp-rs.workspace = true
 perl-subprocess-runtime.workspace = true

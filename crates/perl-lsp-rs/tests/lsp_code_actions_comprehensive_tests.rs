@@ -736,8 +736,14 @@ fn test_code_actions_invalid_range() -> TestResult {
         Duration::from_secs(2),
     );
 
-    // Should handle invalid range gracefully (either empty actions or error)
-    assert!(actions_result.is_ok() || actions_result.is_err(), "Should handle invalid range");
+    // Graceful handling means the server answers within the timeout rather than
+    // hanging or dropping the connection; an out-of-range request is not itself an
+    // error condition, so a response is required.
+    assert!(
+        actions_result.is_ok(),
+        "server must answer a code-action request whose range is beyond EOF: {:?}",
+        actions_result
+    );
 
     Ok(())
 }

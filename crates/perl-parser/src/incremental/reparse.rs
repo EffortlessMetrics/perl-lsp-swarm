@@ -1,4 +1,4 @@
-use crate::incremental::{diagnostics::ReparseResult, edit::Edit, IncrementalState};
+use crate::incremental::{IncrementalState, diagnostics::ReparseResult, edit::Edit};
 use anyhow::Result;
 use perl_lexer::{PerlLexer, TokenType};
 use std::ops::Range;
