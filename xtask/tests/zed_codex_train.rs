@@ -264,7 +264,7 @@ fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>
     let rules = train.get("rules").ok_or_else(|| io::Error::other("train lacks rules"))?;
     assert_eq!(
         string_set(rules, "current_core_frontier")?,
-        BTreeSet::from(["C01", "P03", "P06", "P09"])
+        BTreeSet::from(["C01", "P03", "P06", "P07", "P09"])
     );
     assert_eq!(string_set(rules, "current_dap_frontier")?, BTreeSet::from(["D01"]));
 
@@ -287,7 +287,7 @@ fn live_frontier_matches_merged_and_open_pr_state() -> Result<(), Box<dyn Error>
         );
     }
 
-    for ready in ["P03", "P06", "P09", "C01"] {
+    for ready in ["P03", "P06", "P07", "P09", "C01"] {
         assert_eq!(string(core[ready], "state")?, "ready");
     }
 
@@ -334,6 +334,61 @@ fn landed_stages_never_depend_on_unlanded_stages() -> Result<(), Box<dyn Error>>
             );
         }
     }
+    Ok(())
+}
+
+/// The complement of `landed_stages_never_depend_on_unlanded_stages`.
+///
+/// That test only looks down from a landed stage. It therefore cannot see a stage
+/// left `blocked_on_dependencies` after the last thing blocking it merged, and it
+/// cannot see the declared frontier drift away from the stages that are actually
+/// startable. Both are the reconciliation this train misses when an ordinary merge
+/// lands, so the frontier is derived here and compared rather than restated.
+#[test]
+fn ready_stages_and_the_declared_frontier_follow_from_landed_dependencies()
+-> Result<(), Box<dyn Error>> {
+    let train = load_train()?;
+    let core = core_index(&train)?;
+
+    let mut derived_frontier = BTreeSet::new();
+    for (id, stage) in &core {
+        let state = string(stage, "state")?;
+        let mut unlanded = BTreeSet::new();
+        for dependency in string_set(stage, "depends_on")? {
+            let declared = core.get(dependency).ok_or_else(|| {
+                io::Error::other(format!("`{id}` depends on unknown `{dependency}`"))
+            })?;
+            if !LANDED_STATES.contains(&string(declared, "state")?) {
+                unlanded.insert(dependency);
+            }
+        }
+
+        match state {
+            "ready" => {
+                assert!(
+                    unlanded.is_empty(),
+                    "core stage `{id}` is `ready` while dependencies {unlanded:?} have not landed"
+                );
+                assert!(
+                    stage.get("pull_request").and_then(Value::as_u64).is_none(),
+                    "core stage `{id}` is `ready` but already names a pull request"
+                );
+                derived_frontier.insert(*id);
+            }
+            "blocked_on_dependencies" => assert!(
+                !unlanded.is_empty(),
+                "core stage `{id}` is blocked but every dependency has landed"
+            ),
+            _ => {}
+        }
+    }
+
+    let rules = train.get("rules").ok_or_else(|| io::Error::other("train lacks rules"))?;
+    assert_eq!(
+        string_set(rules, "current_core_frontier")?,
+        derived_frontier,
+        "declared core frontier drifted from the frontier derived from landed dependencies"
+    );
     Ok(())
 }
 

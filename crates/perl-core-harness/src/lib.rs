@@ -8,6 +8,7 @@
 //! modes. Execute mode is limited to explicit selected base tests.
 
 mod normalization;
+pub mod public_evidence;
 mod series;
 pub mod transition;
 
@@ -40,6 +41,7 @@ pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 pub use series::{SeriesManifestConfig, series_manifest};
 
 use normalization::{hex_lower, sha256_digest_bytes};
+use public_evidence::PublicStringClass;
 use serde::{Deserialize, de::DeserializeOwned};
 use series::{read_series_manifest, validate_series_manifest};
 use sha2::{Digest, Sha256};
@@ -2876,7 +2878,22 @@ fn registry_boundary_key_from_observed(boundary: &ObservedSemanticBoundary) -> S
     )
 }
 
+/// Validate one declared public path field.
+///
+/// Declared path fields must be repository-relative. The structural classifier
+/// in [`public_evidence`] owns detection of host-path material embedded
+/// anywhere inside a public string; this function additionally rejects the
+/// relative forms that are legal paths but still private (`..` traversal and
+/// `target`/`tmp`/`temp` components).
+///
+/// The rejected value is deliberately not echoed: failures surface in public CI
+/// logs, so reporting the classification has to be enough.
 fn validate_public_path(value: &str, label: &str) -> Result<()> {
+    if let Some(kind) = public_evidence::classify_public_string(value, PublicStringClass::Ordinary)
+    {
+        bail!("{label} contains a private host path ({}); the value was not echoed", kind.as_str());
+    }
+
     let normalized = value.replace('\\', "/");
     let private_component = normalized.split('/').any(|component| {
         matches!(component.to_ascii_lowercase().as_str(), "target" | "tmp" | "temp")
@@ -2887,7 +2904,7 @@ fn validate_public_path(value: &str, label: &str) -> Result<()> {
         || normalized.split('/').any(|part| part == "..")
         || private_component
     {
-        bail!("{label} contains a private or temporary host path: {value}");
+        bail!("{label} is not a public repository-relative path; the value was not echoed");
     }
     Ok(())
 }
@@ -5423,6 +5440,65 @@ mod tests {
 
     type TestResult<T = ()> = Result<T>;
 
+    /// Parity: the declared-path validator must not be weaker than the
+    /// structural classifier. If a form is host-path material anywhere in a
+    /// public string, a declared path field carrying that same value has to be
+    /// rejected too, or the two publication surfaces disagree about what is
+    /// publishable.
+    #[test]
+    fn declared_path_validation_is_not_weaker_than_structural_classification() {
+        for value in [
+            "/etc/passwd",
+            "/home/runner/work/",
+            "///etc/passwd",
+            "//etc/hostname",
+            r"C:\Users\runner\repo",
+            "C:/Users/runner/repo",
+            r"\\server\share\repo",
+            r"\\?\C:\Users\runner",
+            r"\??\C:\Users\runner",
+            "file:///tmp/repo/report.json",
+        ] {
+            assert!(
+                public_evidence::classify_public_string(value, PublicStringClass::Ordinary)
+                    .is_some(),
+                "structural classifier must reject {value}"
+            );
+            assert!(
+                validate_public_path(value, "parity probe").is_err(),
+                "declared-path validator must also reject {value}"
+            );
+        }
+    }
+
+    /// Both validators must keep publishing the repository-relative paths the
+    /// harness legitimately writes into its receipts.
+    #[test]
+    fn public_validators_agree_on_repository_relative_paths() -> TestResult {
+        for value in ["crates/perl-parser/src/lib.rs", "smoke/base/smoke.json", "base/if.t"] {
+            assert_eq!(
+                public_evidence::classify_public_string(value, PublicStringClass::Ordinary),
+                None,
+                "structural classifier must accept {value}"
+            );
+            validate_public_path(value, "parity probe")?;
+        }
+        Ok(())
+    }
+
+    /// #6882 acceptance: a public failure message must not republish the
+    /// private path it rejected.
+    #[test]
+    fn declared_path_rejection_does_not_echo_the_private_value() {
+        let Err(error) = validate_public_path("/home/runner/work/private", "failure path") else {
+            unreachable!("absolute host path must be rejected")
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains("failure path"), "label missing: {rendered}");
+        assert!(rendered.contains("unix_absolute"), "classification missing: {rendered}");
+        assert!(!rendered.contains("/home/runner"), "message echoed the private path: {rendered}");
+    }
+
     #[test]
     fn parses_dumptests_paths_and_ignores_noise() -> TestResult {
         let output = b"base/if.t\n# note from harness\n./base/lex.t\n t/base/term.t \n";
@@ -7476,7 +7552,14 @@ mod tests {
         let violations = validate_boundary_registry_shape(&registry);
         assert!(violations.iter().any(|violation| violation.contains("non-admissible")));
         assert!(violations.iter().any(|violation| violation.contains("invalid owner issue")));
-        assert!(violations.iter().any(|violation| violation.contains("private or temporary")));
+        // The Windows drive path is rejected under its structural
+        // classification, and the violation must not republish the path it
+        // rejected.
+        assert!(violations.iter().any(|violation| violation.contains("windows_drive")));
+        assert!(
+            !violations.iter().any(|violation| violation.contains("C:/private")),
+            "violation echoed the private path: {violations:?}"
+        );
     }
 
     #[test]
