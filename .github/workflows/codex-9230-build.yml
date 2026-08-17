@@ -1,0 +1,27 @@
+name: codex-9230-build
+
+on:
+  push:
+    branches:
+      - "codex/9230-declaration-version-schema"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Inspect declaration version surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'PACKAGE_CONSTRUCTORS'
+          grep -RIn -C 4 --include='*.rs' 'NodeKind::Package' crates | head -n 1200 || true
+          echo 'CLASS_CONSTRUCTORS'
+          grep -RIn -C 4 --include='*.rs' 'NodeKind::Class' crates/perl-ast crates/perl-parser-core | head -n 1200 || true
+          echo 'VERSION_TOKENS'
+          grep -RIn -C 4 --include='*.rs' -E 'VString|VersionLiteral|declaration version|VERSION' crates/perl-ast crates/perl-parser-core | head -n 1000 || true
