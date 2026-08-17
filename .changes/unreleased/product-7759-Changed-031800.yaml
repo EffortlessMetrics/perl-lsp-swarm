@@ -1,0 +1,9 @@
+project: product
+component: Editor integrations
+kind: Changed
+body: "Reworked the Zed Codex train into a stable topology plus separate live observation boundary, adding canonical binary identity, exact-source fan-in, current-upstream reconstruction, merged/public acceptance, and non-destructive supersession stages."
+time: 2026-08-17T03:18:00Z
+custom:
+  PR: "TBD"
+  Slug: zed-implementation-train-v2
+  Breaking: "no"
