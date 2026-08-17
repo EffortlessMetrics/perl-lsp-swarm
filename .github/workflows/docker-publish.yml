@@ -32,27 +32,32 @@ jobs:
   init:
     name: Prepare version metadata
     runs-on: ubuntu-24.04
+    # Narrower than the workflow-level grant, which also carries packages:write.
+    # This job decides whether a dispatch version may publish at all, so it must
+    # not itself hold registry authority — enforced here rather than asserted.
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       major_minor: ${{ steps.version.outputs.major_minor }}
       major: ${{ steps.version.outputs.major }}
+      is_stable: ${{ steps.version.outputs.is_stable }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Validation and tag derivation live in scripts/ci/docker_publish_metadata.py
+      # so they can be tested directly. See scripts/ci/test_docker_publish_metadata.py
+      # for the negative cases (workflow-command injection, shell metacharacters,
+      # control characters, and prerelease stable-channel promotion).
+      # This job holds no registry credentials.
       - name: Parse version
         id: version
         env:
-          INPUT_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          VERSION="$INPUT_VERSION"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo "::error::Invalid version: $VERSION"
-            exit 1
-          fi
-          BASE_VERSION="${VERSION%%-*}"
-          MAJOR="$(echo "$BASE_VERSION" | cut -d. -f1)"
-          MINOR="$(echo "$BASE_VERSION" | cut -d. -f2)"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "major_minor=${MAJOR}.${MINOR}" >> "$GITHUB_OUTPUT"
-          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: python3 scripts/ci/docker_publish_metadata.py
 
   build:
     name: Build builder image (multi-arch)
@@ -62,16 +67,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -79,19 +86,22 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # Keep deterministic semver-like tags for manual dispatch runs.
           # `version` input is provided by release orchestration.
           tags: |
             type=raw,value=${{ needs.init.outputs.version }}
-            type=raw,value=${{ needs.init.outputs.major_minor }}
-            type=raw,value=${{ needs.init.outputs.major }}
-            type=raw,value=latest
+            # Alias tags are stable channels. A prerelease publishes only its
+            # own exact tag so that dispatching e.g. 1.2.3-rc.1 cannot silently
+            # replace latest / 1 / 1.2 for every consumer.
+            type=raw,value=${{ needs.init.outputs.major_minor }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=${{ needs.init.outputs.major }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=latest,enable=${{ needs.init.outputs.is_stable == 'true' }}
 
       - name: Build and push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: .docker/rust/Dockerfile
@@ -130,16 +140,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -147,17 +159,20 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-perl
           tags: |
             type=raw,value=${{ needs.init.outputs.version }}
-            type=raw,value=${{ needs.init.outputs.major_minor }}
-            type=raw,value=${{ needs.init.outputs.major }}
-            type=raw,value=latest
+            # Alias tags are stable channels. A prerelease publishes only its
+            # own exact tag so that dispatching e.g. 1.2.3-rc.1 cannot silently
+            # replace latest / 1 / 1.2 for every consumer.
+            type=raw,value=${{ needs.init.outputs.major_minor }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=${{ needs.init.outputs.major }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=latest,enable=${{ needs.init.outputs.is_stable == 'true' }}
 
       - name: Build and push perl-lsp runtime image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: .docker/perl-lsp/Dockerfile
@@ -197,33 +212,38 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: effortlessmetrics/perl-lsp
           tags: |
             type=raw,value=${{ needs.init.outputs.version }}
-            type=raw,value=${{ needs.init.outputs.major_minor }}
-            type=raw,value=${{ needs.init.outputs.major }}
-            type=raw,value=latest
+            # Alias tags are stable channels. A prerelease publishes only its
+            # own exact tag so that dispatching e.g. 1.2.3-rc.1 cannot silently
+            # replace latest / 1 / 1.2 for every consumer.
+            type=raw,value=${{ needs.init.outputs.major_minor }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=${{ needs.init.outputs.major }},enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=latest,enable=${{ needs.init.outputs.is_stable == 'true' }}
 
       - name: Build and push multi-arch (builder image)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: .docker/rust/Dockerfile
@@ -245,32 +265,35 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Extract metadata
         id: meta-perl
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: effortlessmetrics/perl-lsp
           tags: |
             type=raw,value=${{ needs.init.outputs.version }}-perl
-            type=raw,value=${{ needs.init.outputs.major_minor }}-perl
-            type=raw,value=latest-perl
+            # See the builder job: prereleases claim no stable alias.
+            type=raw,value=${{ needs.init.outputs.major_minor }}-perl,enable=${{ needs.init.outputs.is_stable == 'true' }}
+            type=raw,value=latest-perl,enable=${{ needs.init.outputs.is_stable == 'true' }}
 
       - name: Build and push multi-arch (perl-lsp runtime image)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: .docker/perl-lsp/Dockerfile
@@ -285,36 +308,61 @@ jobs:
 
   summary:
     name: Summary
-    needs: [build, build-perl-runtime, publish-dockerhub, publish-dockerhub-perl]
+    needs: [init, build, build-perl-runtime, publish-dockerhub, publish-dockerhub-perl]
     runs-on: ubuntu-24.04
     if: always()
+    # Writes only to GITHUB_STEP_SUMMARY. It reports on the publish and must not
+    # be able to alter it, so it takes no token scopes at all. Naming `contents`
+    # explicitly rather than writing `permissions: {}` is deliberate: declaring
+    # any scope drops every unlisted one to none, so this is the same grant, and
+    # the workflow-security ratchet is a line scanner that rejects inline flow
+    # mappings on security-sensitive keys because it cannot read them.
+    permissions:
+      contents: none
 
     steps:
-      - name: Get version
-        id: version
-        env:
-          INPUT_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          VERSION="$INPUT_VERSION"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-
       - name: Summary
+        env:
+          VERSION: ${{ needs.init.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          IS_STABLE: ${{ needs.init.outputs.is_stable }}
         run: |
-          echo "## Docker Images Published" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Platforms**: linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Builder image (Rust CI)" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`effortlessmetrics/perl-lsp:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Runtime image (perllsp + Perl)" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/${{ github.repository }}-perl:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`effortlessmetrics/perl-lsp:${{ steps.version.outputs.version }}-perl\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Usage" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "# Run LSP server with your project mounted (stdio transport)" >> $GITHUB_STEP_SUMMARY
-          echo "docker run --rm -i -v \"\${PWD}:/workspace\" effortlessmetrics/perl-lsp:${{ steps.version.outputs.version }}-perl" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+
+          # This job runs under always(), so it also runs when init rejected the
+          # version. In that case needs.init.outputs.version is empty and the
+          # image-reference block below would advertise tags that were never
+          # published. Report the failure instead.
+          if [ -z "$VERSION" ]; then
+            {
+              echo "## Docker Image Publish"
+              echo ""
+              echo "Version validation failed; no images were published."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "## Docker Images Published"
+            echo ""
+            printf -- '- **Version**: %s\n' "$VERSION"
+            if [ "$IS_STABLE" = "true" ]; then
+              echo "- **Channel**: stable (latest, major, and major.minor aliases updated)"
+            else
+              echo "- **Channel**: prerelease (exact tag only; stable aliases unchanged)"
+            fi
+            echo "- **Platforms**: linux/amd64, linux/arm64"
+            echo ""
+            echo "### Builder image (Rust CI)"
+            printf -- '- `ghcr.io/%s:%s`\n' "$REPOSITORY" "$VERSION"
+            printf -- '- `effortlessmetrics/perl-lsp:%s`\n' "$VERSION"
+            echo ""
+            echo "### Runtime image (perllsp + Perl)"
+            printf -- '- `ghcr.io/%s-perl:%s`\n' "$REPOSITORY" "$VERSION"
+            printf -- '- `effortlessmetrics/perl-lsp:%s-perl`\n' "$VERSION"
+            echo ""
+            echo "### Usage"
+            echo '```bash'
+            printf 'docker run --rm -i -v "${PWD}:/workspace" effortlessmetrics/perl-lsp:%s-perl\n' "$VERSION"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

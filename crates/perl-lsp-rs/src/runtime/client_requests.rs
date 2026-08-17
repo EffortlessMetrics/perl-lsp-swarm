@@ -2,6 +2,11 @@
 //!
 //! Each method checks the relevant client capability before sending.
 
+// #7007 lands the bounded registry independently; #7010 removes this temporary
+// expectation when inbound responses and LspServer ownership are wired.
+#[expect(dead_code, reason = "registry is unwired until #7010 attaches it to LspServer")]
+pub(crate) mod registry;
+
 use super::{LspServer, Ordering, ServerRequestId, Value, io, json};
 use crate::protocol::methods::WORKSPACE_APPLY_EDIT;
 
