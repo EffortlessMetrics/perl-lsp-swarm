@@ -167,7 +167,7 @@
       "depends_on": ["C00"],
       "evidence": "history_reconciliation",
       "route": "internal_repository",
-      "blocks_core": false,
+      "blocks_core": true,
       "exit": "issue #10352 acceptance; destructive branch deletion remains separately authorized"
     }
   ]
