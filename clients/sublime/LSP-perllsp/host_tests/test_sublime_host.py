@@ -273,8 +273,8 @@ class SublimePerllspHostJourney(DeferrableTestCase):
                     "scope-diagnostic view-sample=" + _json.dumps(
                         self.view.substr(sublime.Region(0, min(80, self.view.size())))
                     ),
-                    "scope-diagnostic regions=" + _json.dumps(
-                        [k for k in self.view.regions() if "lsp" in k.lower() or "semantic" in k.lower()]
+                    "scope-diagnostic scope-at-zero=" + _json.dumps(
+                        self.view.scope_name(0)
                     ),
                 )
             except Exception as error:  # noqa: BLE001 - diagnostics must never mask
