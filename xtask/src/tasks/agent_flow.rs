@@ -1113,10 +1113,8 @@ mod tests {
     /// flow" must not match "entry flow").
     #[test]
     fn word_boundary_guard_prevents_suffix_false_positive() {
-        // "xentery flow:" — ends with "entry flow" in bytes but is not the
+        // "Reentry flow:" — ends with "entry flow" in bytes but is not the
         // label "entry flow" because there is no word boundary before it.
-        // (Using a realistic-looking scenario-prefix to avoid a trivially
-        // empty-line test.)
         let observations = route_line_observations("- Reentry flow: `deliver-pr`", 1, true);
         assert_eq!(observations.len(), 1, "the single token is observed");
         assert!(
