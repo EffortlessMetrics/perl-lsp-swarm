@@ -145,10 +145,9 @@ pub fn parse_cargo_json_stream(input: &str) -> RustHygieneParsedStreamV1 {
         let envelope = match serde_json::from_str::<CargoMessageEnvelope>(line) {
             Ok(envelope) => envelope,
             Err(error) => {
-                parsed.parse_errors.push(RustHygieneParseErrorV1 {
-                    line: offset + 1,
-                    message: error.to_string(),
-                });
+                parsed
+                    .parse_errors
+                    .push(RustHygieneParseErrorV1 { line: offset + 1, message: error.to_string() });
                 continue;
             }
         };
@@ -265,11 +264,7 @@ fn is_selected_lint(code: &str) -> bool {
 
 fn normalize_target(package_id: String, target: Option<CargoTarget>) -> RustHygieneTargetV1 {
     match target {
-        Some(target) => RustHygieneTargetV1 {
-            package_id,
-            name: target.name,
-            kinds: target.kind,
-        },
+        Some(target) => RustHygieneTargetV1 { package_id, name: target.name, kinds: target.kind },
         None => RustHygieneTargetV1 { package_id, name: String::new(), kinds: Vec::new() },
     }
 }
@@ -300,13 +295,7 @@ fn finding_key(finding: &RustHygieneFindingV1) -> (&str, &str, u32, u32, &str) {
         .as_ref()
         .map(|span| (span.file_name.as_str(), span.line_start, span.column_start))
         .unwrap_or(("", 0, 0));
-    (
-        finding.target.package_id.as_str(),
-        path,
-        line,
-        column,
-        finding.lint_code.as_str(),
-    )
+    (finding.target.package_id.as_str(), path, line, column, finding.lint_code.as_str())
 }
 
 fn diagnostic_sort_key(
@@ -332,7 +321,7 @@ fn diagnostic_key(diagnostic: &RustHygieneNativeDiagnosticV1) -> (&str, &str, u3
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -474,20 +463,14 @@ mod tests {
 
     #[test]
     fn malformed_output_is_not_proven_and_preserves_prior_findings() {
-        let stdout = format!(
-            "{}\nnot-json\n{}",
-            compiler_message("dead_code"),
-            build_finished(true)
-        );
+        let stdout =
+            format!("{}\nnot-json\n{}", compiler_message("dead_code"), build_finished(true));
         let receipt = build_rust_hygiene_receipt(input(stdout, Some(0)));
         assert_eq!(receipt.result_class, RustHygieneResultClassV1::NotProven);
         assert_eq!(receipt.findings.len(), 1);
         assert_eq!(receipt.parse_errors.len(), 1);
         assert!(
-            receipt
-                .limitations
-                .iter()
-                .any(|value| value == "malformed_or_unrecognized_cargo_json")
+            receipt.limitations.iter().any(|value| value == "malformed_or_unrecognized_cargo_json")
         );
     }
 
@@ -507,12 +490,7 @@ mod tests {
         let receipt = build_rust_hygiene_receipt(input(compiler_message("dead_code"), Some(0)));
         assert_eq!(receipt.result_class, RustHygieneResultClassV1::NotProven);
         assert_eq!(receipt.findings.len(), 1);
-        assert!(
-            receipt
-                .limitations
-                .iter()
-                .any(|value| value == "missing_build_finished")
-        );
+        assert!(receipt.limitations.iter().any(|value| value == "missing_build_finished"));
     }
 
     #[test]
@@ -521,12 +499,7 @@ mod tests {
         let receipt = build_rust_hygiene_receipt(input(stdout, Some(1)));
         assert_eq!(receipt.result_class, RustHygieneResultClassV1::NotProven);
         assert_eq!(receipt.findings.len(), 1);
-        assert!(
-            receipt
-                .limitations
-                .iter()
-                .any(|value| value == "cargo_build_failed")
-        );
+        assert!(receipt.limitations.iter().any(|value| value == "cargo_build_failed"));
     }
 
     #[test]
@@ -537,5 +510,13 @@ mod tests {
         let second = build_rust_hygiene_receipt(changed);
         assert_eq!(first.native_stdout_sha256, second.native_stdout_sha256);
         assert_ne!(first.native_stderr_sha256, second.native_stderr_sha256);
+    }
+
+    #[test]
+    fn native_output_digest_is_fixed_width_lowercase_hex() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 }
