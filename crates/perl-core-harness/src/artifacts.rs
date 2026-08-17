@@ -1026,13 +1026,15 @@ fn digest_file(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
-        let read = file
-            .read(&mut buffer)
-            .with_context(|| format!("reading subject file {}", path.display()))?;
-        if read == 0 {
-            break;
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => hasher.update(&buffer[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reading subject file {}", path.display()));
+            }
         }
-        hasher.update(&buffer[..read]);
     }
     Ok(format!("sha256:{}", encode_hex(&hasher.finalize())))
 }
@@ -1372,18 +1374,20 @@ fn records_from_reports(reports: &[RunReport]) -> Result<Vec<RunnerRecord>> {
             .iter()
             .map(|failure| (failure.path.as_str(), failure))
             .collect::<BTreeMap<_, _>>();
+        let mut boundaries_by_path = BTreeMap::<&str, Vec<&ObservedSemanticBoundary>>::new();
+        for boundary in &report.semantic_boundaries {
+            boundaries_by_path.entry(boundary.path.as_str()).or_default().push(boundary);
+        }
         for result in &report.file_results {
             let key = (report.mode.as_str().to_string(), result.path.clone());
             if !keys.insert(key) {
                 bail!("multiple reports declare {} mode for {}", report.mode, result.path);
             }
             let failure = failures.get(result.path.as_str()).copied();
-            let semantic_boundaries = report
-                .semantic_boundaries
-                .iter()
-                .filter(|boundary| boundary.path == result.path)
-                .map(boundary_record)
-                .collect();
+            let semantic_boundaries = boundaries_by_path
+                .get(result.path.as_str())
+                .map(|boundaries| boundaries.iter().copied().map(boundary_record).collect())
+                .unwrap_or_default();
             records.push(RunnerRecord {
                 schema_version: RUNNER_RECORD_SCHEMA_VERSION.to_string(),
                 mode: report.mode.as_str().to_string(),
@@ -1427,7 +1431,7 @@ fn compile_boundaries(reports: &[RunReport]) -> Result<Vec<ObservedSemanticBound
         .first()
         .map(|report| report.semantic_boundaries.clone())
         .unwrap_or_default();
-    boundaries.sort_by_key(boundary_key);
+    boundaries.sort_by(compare_boundaries);
     Ok(boundaries)
 }
 
@@ -1448,7 +1452,7 @@ fn validate_record_files(
         let mut actual_boundaries: Vec<ObservedSemanticBoundary> = serde_json::from_str(&raw)
             .with_context(|| format!("decoding semantic boundaries {}", path.display()))?;
         reject_invalid_semantic_boundaries(&actual_boundaries)?;
-        actual_boundaries.sort_by_key(boundary_key);
+        actual_boundaries.sort_by(compare_boundaries);
         if actual_boundaries != compile_boundaries(reports)? {
             bail!("semantic-boundary artifact does not match the compile report");
         }
@@ -1484,13 +1488,15 @@ fn sort_records(records: &mut [RunnerRecord]) {
         .sort_by(|left, right| left.mode.cmp(&right.mode).then_with(|| left.path.cmp(&right.path)));
 }
 
-fn boundary_key(boundary: &ObservedSemanticBoundary) -> (String, String, usize, usize) {
-    (
-        boundary.path.clone(),
-        boundary.id.clone(),
-        boundary.source_span.start,
-        boundary.source_span.end,
-    )
+fn compare_boundaries(
+    left: &ObservedSemanticBoundary,
+    right: &ObservedSemanticBoundary,
+) -> std::cmp::Ordering {
+    left.path
+        .cmp(&right.path)
+        .then_with(|| left.id.cmp(&right.id))
+        .then_with(|| left.source_span.start.cmp(&right.source_span.start))
+        .then_with(|| left.source_span.end.cmp(&right.source_span.end))
 }
 
 /// The filesystem identity of an existing path, where the host exposes one.
