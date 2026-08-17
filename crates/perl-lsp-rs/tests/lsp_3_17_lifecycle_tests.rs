@@ -437,8 +437,9 @@ fn test_initialized_notification() -> TestResult {
         }),
     );
 
-    // Should get a valid response (even if null)
-    assert!(response.is_ok() || response.is_err());
+    // The point of this test is that the server serves requests once `initialized`
+    // has been received, so the request must actually succeed.
+    assert!(response.is_ok(), "server must accept requests after `initialized`: {:?}", response);
     Ok(())
 }
 
