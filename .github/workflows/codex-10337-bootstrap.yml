@@ -12,7 +12,7 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Inventory class AST references
@@ -20,8 +20,8 @@ jobs:
         run: |
           set -euo pipefail
           echo '=== NodeKind::Class references ==='
-          rg -n -C 3 'NodeKind::Class' crates --glob '*.rs' || true
+          grep -RIn -C 3 --include='*.rs' 'NodeKind::Class' crates || true
           echo '=== direct Class constructors ==='
-          rg -n -C 3 'Class \{' crates --glob '*.rs' || true
+          grep -RIn -C 3 --include='*.rs' 'Class {' crates || true
           echo '=== parser class context ==='
-          rg -n -C 3 'in_class_body|parse_class' crates/perl-parser-core --glob '*.rs' || true
+          grep -RIn -C 3 --include='*.rs' -E 'in_class_body|parse_class' crates/perl-parser-core || true
