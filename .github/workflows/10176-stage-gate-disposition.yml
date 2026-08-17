@@ -5,16 +5,26 @@ on:
     branches: [codex/10176-stage-gate-disposition]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   stage:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout exact construction branch
+      - name: Checkout construction source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
+          ref: codex/10176-stage-gate-disposition
+          path: construction
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout current main candidate base
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: main
+          path: candidate
           fetch-depth: 1
           persist-credentials: false
 
@@ -25,12 +35,15 @@ jobs:
           components: rustfmt,clippy
 
       - name: Materialize bounded production candidate
-        run: python3 scripts/ci/stage_issue_10176.py patch
+        working-directory: candidate
+        run: python3 ../construction/scripts/ci/stage_issue_10176.py patch
 
       - name: Format candidate
+        working-directory: candidate
         run: cargo fmt --all
 
       - name: Verify focused disposition contract
+        working-directory: candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -40,15 +53,29 @@ jobs:
           cargo clippy -p xtask --bin xtask --locked -- -D warnings
           cargo run -p xtask --locked -- gate-policy check
 
-      - name: Publish clean production branch
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 scripts/ci/stage_issue_10176.py publish
+      - name: Capture verified production candidate
+        if: always()
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/issue-10176
+          git rev-parse HEAD > target/issue-10176/base-sha.txt
+          git diff --binary > target/issue-10176/candidate.patch
+          tar -czf target/issue-10176/candidate-files.tar.gz \
+            .ci/gate-policy.yaml \
+            xtask/src/tasks/mod.rs \
+            xtask/src/tasks/gate_disposition.rs \
+            docs/ci/gate-disposition-authority.md
+          sha256sum target/issue-10176/candidate.patch \
+            target/issue-10176/candidate-files.tar.gz \
+            > target/issue-10176/SHA256SUMS
 
-      - name: Upload construction receipt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - name: Upload verified candidate receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
         with:
-          name: issue-10176-clean-branch
-          path: target/10176-result.json
+          name: issue-10176-verified-candidate
+          path: candidate/target/issue-10176
           if-no-files-found: error
           retention-days: 1
