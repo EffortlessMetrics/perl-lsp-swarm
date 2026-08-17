@@ -173,7 +173,10 @@ fn test_range_formatting_rejects_one_past_end_without_clamping() {
             "a one-past-end range must refuse rather than clamp: {code:?}"
         );
         assert_eq!(decision.outcome.reason, FormatReasonCode::UnsafeRange);
-        assert!(decision.document.edits.is_empty());
+        assert!(
+            decision.document.edits.is_empty(),
+            "a one-past-end range must not emit edits: {code:?}"
+        );
         assert_eq!(decision.document.text, code);
     }
 }
