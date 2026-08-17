@@ -276,6 +276,12 @@ class SublimePerllspHostJourney(DeferrableTestCase):
                     "scope-diagnostic scope-at-zero=" + _json.dumps(
                         self.view.scope_name(0)
                     ),
+                    "scope-diagnostic config-map=" + _json.dumps(
+                        dict(getattr(getattr(self.buffer.session.config, "semantic_tokens", None) or {}, "data", getattr(self.buffer.session.config, "semantic_tokens", None) or {}))
+                    ),
+                    "scope-diagnostic legend=" + _json.dumps(
+                        getattr(self.buffer.session, "semantic_legend", None)
+                    ),
                 )
             except Exception as error:  # noqa: BLE001 - diagnostics must never mask
                 print("scope-diagnostic failed: " + repr(error))
