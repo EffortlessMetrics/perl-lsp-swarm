@@ -47,6 +47,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p target/issue-10176
+          exec > >(tee target/issue-10176/proof.log) 2>&1
           git diff --check
           cargo fmt --all -- --check
           cargo test -p xtask --bin xtask gate_disposition --locked
