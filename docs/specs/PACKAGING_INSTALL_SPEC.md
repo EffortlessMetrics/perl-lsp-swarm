@@ -1,3 +1,10 @@
+<!-- install-surface-role: historical_fixture; owner: #9104 -->
+> [!WARNING]
+> Historical design record. Its runnable commands, alpha wording, settings,
+> target names, and client examples are not current installation guidance.
+> Current routes and claims come from the authorities referenced by
+> `policy/install-surface-registry.toml`.
+
 # Packaging + Install Story Specification
 
 **Status**: Draft
