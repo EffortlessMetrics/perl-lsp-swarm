@@ -118,8 +118,12 @@ fn inline_completion_initialize_shape_selects_static_or_dynamic_mode() -> Result
     // success reply below exists only to leave the process terminally clean;
     // #6724 owns whether success activates durable registration state and how
     // failure, timeout, retry, or unregistration changes that state.
+    // A client that never declares `textDocument.inlineCompletion` cannot
+    // consume either the standard provider or the custom stream, so the
+    // initialize result must omit both rather than advertise a surface the
+    // negotiated client has no way to use (#7682).
     let cases = [
-        (json!({}), true, false, "absent inline-completion declaration"),
+        (json!({}), false, false, "absent inline-completion declaration"),
         (
             json!({
                 "textDocument": {
@@ -164,7 +168,24 @@ fn inline_completion_initialize_shape_selects_static_or_dynamic_mode() -> Result
         } else {
             ensure!(
                 static_provider.is_none(),
-                "dynamic clients must not receive a static inline-completion provider for {label}: {response}"
+                "clients that negotiate dynamic registration or declare no inline-completion support must not receive a static inline-completion provider for {label}: {response}"
+            );
+        }
+
+        // The custom stream extension is only consumable alongside the standard
+        // capability, so it must track the client's declaration rather than the
+        // build feature alone.
+        let stream_provider =
+            response.pointer("/result/capabilities/experimental/perlInlineCompletionStream");
+        if expect_static || expect_dynamic_request {
+            ensure!(
+                stream_provider.is_some(),
+                "custom inline-completion stream must be advertised to declaring clients for {label}: {response}"
+            );
+        } else {
+            ensure!(
+                stream_provider.is_none(),
+                "custom inline-completion stream must not be advertised to clients that omit textDocument.inlineCompletion for {label}: {response}"
             );
         }
 

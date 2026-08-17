@@ -1,0 +1,31 @@
+{
+  "schema_version": "perl_lsp.protocol_schema_source.v1",
+  "upstream": {
+    "repository": "microsoft/language-server-protocol",
+    "branch": "gh-pages",
+    "commit": "8d5153933153aed3a488b9b8f46b22ed0f90f552",
+    "lsp_3_17": {
+      "path": "_specifications/lsp/3.17/specification.md",
+      "status": "stable"
+    },
+    "lsp_3_18": {
+      "path": "_specifications/lsp/3.18/specification.md",
+      "status": "under_development"
+    }
+  },
+  "base_protocol": {
+    "jsonrpc": "2.0",
+    "batch_supported": false,
+    "request_id_types": ["integer", "string"],
+    "response_id_types": ["integer", "string", "null"],
+    "content_charset": "utf-8"
+  },
+  "registry": [
+    "client_to_server:notification:$/cancelRequest:3.17",
+    "client_to_server:notification:exit:3.17",
+    "client_to_server:request:initialize:3.17",
+    "client_to_server:notification:initialized:3.17",
+    "client_to_server:request:shutdown:3.17",
+    "server_to_client:notification:$/cancelRequest:3.17"
+  ]
+}

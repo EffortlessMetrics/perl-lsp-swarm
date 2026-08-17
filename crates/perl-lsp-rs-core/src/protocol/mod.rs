@@ -9,6 +9,7 @@
 //! - [`methods`] — LSP 3.18 method name constants for request/notification routing
 //! - [`capabilities`] — Server capability configuration advertised during `initialize`
 //! - [`document_version`] — Typed decoder for `textDocument/version` fields (#10240)
+//! - [`schema`] — Versioned, bounded method/direction payload validation
 //!
 //! Previously the standalone `perl-lsp-protocol` crate; absorbed into
 //! `perl-lsp-rs-core::protocol` in Wave G3 (#4535).
@@ -22,6 +23,7 @@ pub mod error_inventory;
 mod errors;
 mod jsonrpc;
 pub mod methods;
+pub mod schema;
 
 pub use document_version::{
     ClientDocumentVersion, DocumentVersionDecodeError, DocumentVersionField, IntegerRangeClass,
