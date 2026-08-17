@@ -45,15 +45,43 @@ jobs:
 
           path = Path("xtask/src/tasks/gates/route_profile.rs")
           text = path.read_text(encoding="utf-8")
-          old = '    format!("{:x}", Sha256::digest(bytes))\n'
-          new = '''    Sha256::digest(bytes)
+          old_digest = '    format!("{:x}", Sha256::digest(bytes))\n'
+          new_digest = '''    Sha256::digest(bytes)
               .iter()
               .map(|byte| format!("{byte:02x}"))
               .collect()
           '''
-          if text.count(old) != 1:
+          if text.count(old_digest) != 1:
               raise SystemExit("sha256 formatter repair did not match exactly once")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          text = text.replace(old_digest, new_digest, 1)
+
+          start = text.index("fn validate_policy_identity(")
+          end = text.index("fn canonical_native_tiers(", start)
+          replacement = '''fn validate_policy_identity(policy: &GatePolicy) -> Result<()> {
+              let known_native_tiers = ["commit", "pr_fast", "merge_gate", "nightly", "release"];
+              for tier in policy.tiers.keys() {
+                  if !known_native_tiers.contains(&tier.as_str()) {
+                      bail!("policy declares unsupported native tier '{}'", tier);
+                  }
+              }
+              let mut gate_ids = HashSet::new();
+              for gate in &policy.gates {
+                  if !known_native_tiers.contains(&gate.tier.as_str()) {
+                      bail!(
+                          "gate '{}' references unsupported native tier '{}'",
+                          gate.name,
+                          gate.tier
+                      );
+                  }
+                  if !gate_ids.insert(gate.name.as_str()) {
+                      bail!("duplicate governed gate identity '{}'", gate.name);
+                  }
+              }
+              Ok(())
+          }
+
+          '''
+          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
           PY
 
       - name: Format candidate
