@@ -103,7 +103,7 @@ jobs:
             https://github.com/EffortlessMetrics/perl-lsp-swarm.git
 
       - name: Install Sublime Text, UnitTesting, and exact LSP 2.13.0 source
-        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164
+        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164  # master (sublime-journey)
         with:
           package-name: LSP-perllsp
           package-path: target/LSP-perllsp-package

@@ -334,5 +334,5 @@ value = 'v2.85.13'
 action = 'SublimeText/UnitTesting/actions/setup'
 sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
 kind = 'branch_commit'
-value = 'master (sublime-real-host journey pin)'
+value = 'master (sublime-journey)'
 
