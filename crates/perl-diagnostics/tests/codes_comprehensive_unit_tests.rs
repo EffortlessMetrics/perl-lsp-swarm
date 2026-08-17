@@ -559,9 +559,11 @@ fn from_message_parse_error() -> Result<(), Box<dyn std::error::Error>> {
         DiagnosticCode::from_message("parse error near line 5"),
         Some(DiagnosticCode::ParseError)
     );
+    // "Syntax error" messages map to SyntaxError (PL002), not ParseError (PL001).
+    // Fixed in #2218: these are distinct codes with distinct semantics.
     assert_eq!(
         DiagnosticCode::from_message("Syntax error at line 10"),
-        Some(DiagnosticCode::ParseError)
+        Some(DiagnosticCode::SyntaxError)
     );
     Ok(())
 }
@@ -972,12 +974,13 @@ fn from_message_avoids_embedded_phrase_false_positives() -> TestResult {
     Ok(())
 }
 
+/// Regression guard for issue #2218: "syntax error" messages must map to
+/// `SyntaxError` (PL002), not `ParseError` (PL001). Both are distinct codes.
 #[test]
-fn from_message_syntax_error_matches_parse_error() {
-    // "syntax error" in message triggers ParseError code
+fn from_message_syntax_error_maps_to_pl002() {
     assert_eq!(
         DiagnosticCode::from_message("syntax error near token"),
-        Some(DiagnosticCode::ParseError)
+        Some(DiagnosticCode::SyntaxError)
     );
 }
 

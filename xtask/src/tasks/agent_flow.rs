@@ -889,26 +889,49 @@ fn strip_strong_emphasis(text: &str) -> &str {
     text.strip_prefix("**").and_then(|inner| inner.strip_suffix("**")).unwrap_or(text)
 }
 
+/// The set of imperative verbs that introduce a route invocation when they
+/// appear immediately before a backtick-quoted skill name.
+///
+/// Multi-word entries are matched as a suffix so that prose can precede the
+/// verb on the same line (e.g. `"See `foo` — invoke `bar`"`), while a word-
+/// boundary guard prevents false positives like `"reinvoke"` matching
+/// `"invoke"`.
+const IMPERATIVE_ROUTE_VERBS: &[&str] = &[
+    "invoke",
+    "route to",
+    "continue with",
+    "proceed through",
+    "enter through",
+    "call",
+    "hand off to",
+    "return to",
+];
+
 /// Check whether `prefix_before_opening` — everything in the source line
-/// before the current token's opening backtick — is exactly an imperative
+/// before the current token's opening backtick — ends with an imperative
 /// route verb (after stripping the list marker and surrounding whitespace).
+///
+/// Uses suffix matching (not equality) so that prose text preceding the verb
+/// on the same line — such as a prior prose code span — does not prevent
+/// recognition. A word-boundary guard (the character before the matched verb
+/// must be whitespace or absent) prevents `"reinvoke"` from matching
+/// `"invoke"`.
 ///
 /// Accepts the raw `&line[..opening]` slice. The list marker and whitespace
 /// are stripped internally.
 fn has_imperative_route_prefix(prefix_before_opening: &str) -> bool {
     let candidate = strip_markdown_list_marker(prefix_before_opening.trim());
     let prefix = candidate.trim().to_ascii_lowercase();
-    matches!(
-        prefix.as_str(),
-        "invoke"
-            | "route to"
-            | "continue with"
-            | "proceed through"
-            | "enter through"
-            | "call"
-            | "hand off to"
-            | "return to"
-    )
+    IMPERATIVE_ROUTE_VERBS.iter().any(|&verb| {
+        if let Some(before) = prefix.strip_suffix(verb) {
+            // An exact match yields an empty `before`, which also passes.
+            // A non-empty `before` must end with whitespace to ensure a word
+            // boundary: "reinvoke" must not match "invoke".
+            before.is_empty() || before.ends_with(char::is_whitespace)
+        } else {
+            false
+        }
+    })
 }
 
 fn is_markdown_list_item(line: &str) -> bool {
@@ -1105,6 +1128,72 @@ mod tests {
             edge_targets(&observations),
             vec!["delver-pr"],
             "only the labeled occurrence contributes to the edge set"
+        );
+    }
+
+    /// Regression test for #10539.
+    ///
+    /// When prose precedes an imperative verb on the same line — e.g. a
+    /// descriptive sentence followed by "— invoke `skill`" — the second code
+    /// span must be classified as `ImperativeInvocation`, not `InlineCode`.
+    ///
+    /// The historical bug: `has_imperative_route_prefix` compared the trimmed
+    /// prefix for exact equality against the imperative verb list, so any prose
+    /// before the verb caused the check to fail and the invocation to be
+    /// silently downgraded to `InlineCode`.
+    #[test]
+    fn prose_before_imperative_verb_does_not_shadow_invocation() {
+        // "See `typo-skill`" is prose. "— invoke `typo-skill`" is an imperative
+        // invocation that must be classified as an edge even though an earlier
+        // occurrence of the same span exists on the same line.
+        let line = "- See `typo-skill` \u{2014} invoke `typo-skill`";
+        let observations = route_line_observations(line, 1, true);
+        assert_eq!(observations.len(), 2, "both occurrences of `typo-skill` are observed");
+
+        // First occurrence: prose prefix "- See " → InlineCode.
+        let prose = observations
+            .iter()
+            .find(|obs| obs.column_start < 10)
+            .expect("first (prose) occurrence is present");
+        assert_eq!(
+            prose.syntax,
+            RouteSyntax::InlineCode,
+            "prose occurrence has no imperative verb and stays InlineCode"
+        );
+
+        // Second occurrence: prefix ends with "invoke" → ImperativeInvocation.
+        let imperative = observations
+            .iter()
+            .find(|obs| obs.column_start > 10)
+            .expect("second (imperative) occurrence is present");
+        assert_eq!(
+            imperative.syntax,
+            RouteSyntax::ImperativeInvocation,
+            "the occurrence after an imperative verb is an executable edge"
+        );
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["typo-skill"],
+            "only the imperative occurrence contributes to the edge set"
+        );
+    }
+
+    /// Verify that the word-boundary guard in `has_imperative_route_prefix`
+    /// rejects a prefix whose text contains the verb as a substring of a longer
+    /// word (e.g. "reinvoke" must not match "invoke").
+    #[test]
+    fn imperative_verb_boundary_guard_prevents_substring_false_positive() {
+        // "reinvoke" ends with "invoke" in bytes but is not an imperative verb.
+        let observations = route_line_observations("- reinvoke `deliver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "the single token is observed");
+        assert!(
+            edge_targets(&observations).is_empty(),
+            "'reinvoke' contains 'invoke' but is not an imperative verb: no edge"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::InlineCode,
+            "a non-imperative prefix does not create an ImperativeInvocation"
         );
     }
 
