@@ -240,10 +240,12 @@ fn key_control_and_acceptance_stages_have_exact_owners() -> TestResult<()> {
 
     let mut issues = BTreeMap::new();
     let mut deps = BTreeMap::new();
+    let mut blocks_core = BTreeMap::new();
     for stage in all {
         let stage_id = id(stage)?;
         issues.insert(stage_id, stage.get("issue").and_then(Value::as_u64));
         deps.insert(stage_id, dependencies(stage)?);
+        blocks_core.insert(stage_id, stage.get("blocks_core").and_then(Value::as_bool));
     }
 
     for (stage_id, issue) in [
@@ -256,10 +258,12 @@ fn key_control_and_acceptance_stages_have_exact_owners() -> TestResult<()> {
         ("U02", 10351),
         ("C02", 10352),
         ("DU01", 10353),
+        ("DU02", 10366),
     ] {
         assert_eq!(issues.get(stage_id), Some(&Some(issue)), "{stage_id} owner drifted");
     }
 
+    assert_eq!(blocks_core.get("C02"), Some(&Some(true)));
     for dependency in ["P10", "P11", "P12", "P13", "P14"] {
         assert!(
             deps.get("P15").is_some_and(|values| values.contains(&dependency)),
@@ -274,7 +278,14 @@ fn key_control_and_acceptance_stages_have_exact_owners() -> TestResult<()> {
         deps.get("U02")
             .is_some_and(|values| { values.contains(&"M02") && values.contains(&"U01") })
     );
-    assert!(deps.get("P20").is_some_and(|values| values.contains(&"U02")));
+    assert!(deps.get("P20").is_some_and(|values| {
+        values.contains(&"P12") && values.contains(&"U02")
+    }));
+    assert!(
+        deps.get("DU02")
+            .is_some_and(|values| values.contains(&"DM02") && values.contains(&"DU01"))
+    );
+    assert!(deps.get("D05").is_some_and(|values| values.contains(&"DU02")));
     assert!(deps.get("P21").is_some_and(|values| values.contains(&"P20")));
     assert!(deps.get("P22").is_some_and(|values| values.contains(&"P21")));
     Ok(())
@@ -321,9 +332,11 @@ fn human_train_preserves_delivery_and_evidence_boundaries() -> TestResult<()> {
         "U01",
         "M02",
         "U02",
+        "DU02",
         "canonical `perl_lsp.binary_identity.v1`",
         "Submitted is not merged",
         "merged is not released",
+        "registry submission             != registry publication",
         "DAP sidecar may run",
     ] {
         assert!(doc.contains(needle), "human train lacks `{needle}`");
