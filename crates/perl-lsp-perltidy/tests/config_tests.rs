@@ -433,7 +433,8 @@ fn builtin_formatter_carries_multiline_regex_state() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn with_os_runtime_clamps_zero_timeout() {
-    // OsSubprocessRuntime::with_timeout panics on 0; this must not panic.
+    // OsSubprocessRuntime::with_timeout normalizes 0 to 1s; construction must
+    // not panic for a zero configured timeout.
     let config = PerlTidyConfig { timeout_secs: 0, ..PerlTidyConfig::default() };
     let _formatter = PerlTidyFormatter::with_os_runtime(config);
 }
