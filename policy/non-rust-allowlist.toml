@@ -1759,3 +1759,107 @@ reason = "Self-owned Sublime UnitTesting runner with an honest wall clock for th
 covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest"]
 created = "2026-08-16"
 review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-sublime-host-ci-launcher"
+path = "clients/sublime/LSP-perllsp/host_ci_launcher.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "CI launcher plugin that imports UnitTesting scheduler at plugin_loaded when a schedule exists; inert in editor installs."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-journey-test"
+path = "clients/sublime/LSP-perllsp/host_tests/test_sublime_host.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Deferred real-Sublime interoperability journey: initialize, diagnostics, completion, definition, hover, rename, semantic scopes, and the host receipt."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-journey-init"
+path = "clients/sublime/LSP-perllsp/host_tests/__init__.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Package marker for the host test module."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-contract-test"
+path = "clients/sublime/LSP-perllsp/tests/test_host_contract.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Static contract tests for the host journey configuration and package layout."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-unittesting-config"
+path = "clients/sublime/LSP-perllsp/unittesting.json"
+kind = "test"
+language = "json"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "UnitTesting configuration binding the deferred host journey with its condition timeout."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-fixture-config"
+path = "clients/sublime/host-fixture/.perl-lsp.toml"
+kind = "test"
+language = "toml"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Project configuration for the host journey fixture workspace."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-receipt-schema"
+path = "clients/sublime/sublime-host-receipt.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "JSON Schema for the exact-source host receipt the journey publishes."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-receipt-validator"
+path = "clients/sublime/validate_sublime_host_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Validates a produced host receipt against the v1 schema in CI."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
