@@ -470,3 +470,75 @@ fn runner_switch_order_is_part_of_identity() -> Result<(), String> {
     assert_ne!(first, second);
     Ok(())
 }
+
+// --- Exact error-variant tests for the `validate()` return seams -------------
+// Each of these targets one `Err(format!(...))` return path inside
+// `TargetSelectionContract::validate()` and asserts the exact error string, so
+// a wording change to a rejection reason is caught rather than silently
+// shifting the contract surface.
+
+#[test]
+fn validate_rejects_unsupported_schema_version_with_exact_message() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.schema_version = "perl_core_harness.target_selection.v0".to_string();
+    let Err(error) = contract.validate() else {
+        return Err("an unsupported schema version was accepted".to_string());
+    };
+    assert_eq!(
+        error,
+        "target component_base uses unsupported schema perl_core_harness.target_selection.v0"
+    );
+    Ok(())
+}
+
+#[test]
+fn validate_rejects_alias_repeating_upstream_name_with_exact_message() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.aliases = vec![contract.upstream_name.clone()];
+    let Err(error) = contract.validate() else {
+        return Err("an alias repeating the upstream name was accepted".to_string());
+    };
+    assert_eq!(error, "target component_base repeats its upstream name as an alias");
+    Ok(())
+}
+
+#[test]
+fn validate_rejects_make_selection_authority_with_exact_message() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.selection_authority =
+        Some(TargetAuthority { kind: TargetAuthorityKind::Make, entrypoint: "t/TEST".to_string() });
+    let Err(error) = contract.validate() else {
+        return Err("a Make selection authority was accepted".to_string());
+    };
+    assert_eq!(
+        error,
+        "target component_base selection authority must name a test scheduler, not a Make target"
+    );
+    Ok(())
+}
+
+#[test]
+fn validate_rejects_replacement_without_change_reason_with_exact_message() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.replaces_target_id = Some("component_comp".to_string());
+    contract.change_reason = None;
+    let Err(error) = contract.validate() else {
+        return Err("a replacement without a change reason was accepted".to_string());
+    };
+    assert_eq!(error, "target component_base replaces another target without a change reason");
+    Ok(())
+}
+
+#[test]
+fn validate_rejects_duplicate_selector_with_exact_message() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.selectors = vec![
+        TargetSelector::RecursiveRoot { path: "base".to_string() },
+        TargetSelector::RecursiveRoot { path: "base".to_string() },
+    ];
+    let Err(error) = contract.validate() else {
+        return Err("a duplicate selector was accepted".to_string());
+    };
+    assert_eq!(error, "target component_base contains a duplicate selector");
+    Ok(())
+}
