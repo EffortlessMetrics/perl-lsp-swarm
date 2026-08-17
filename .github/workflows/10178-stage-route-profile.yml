@@ -36,7 +36,25 @@ jobs:
 
       - name: Materialize bounded production candidate
         working-directory: candidate
-        run: python3 ../construction/scripts/ci/stage_issue_10178.py patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ../construction/scripts/ci/stage_issue_10178.py patch
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("xtask/src/tasks/gates/route_profile.rs")
+          text = path.read_text(encoding="utf-8")
+          old = '    format!("{:x}", Sha256::digest(bytes))\n'
+          new = '''    Sha256::digest(bytes)
+              .iter()
+              .map(|byte| format!("{byte:02x}"))
+              .collect()
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("sha256 formatter repair did not match exactly once")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
 
       - name: Format candidate
         working-directory: candidate
