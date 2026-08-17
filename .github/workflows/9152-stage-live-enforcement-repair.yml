@@ -5,7 +5,7 @@ on:
     branches: [codex/p2-live-enforcement-model]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   stage:
@@ -47,8 +47,8 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path(".github/workflows/gate-enforcement-contract.yml")
-          text = path.read_text(encoding="utf-8")
+          workflow = Path(".github/workflows/gate-enforcement-contract.yml")
+          text = workflow.read_text(encoding="utf-8")
           old = "            scripts/ci/test_gate_enforcement_app_bindings.py\n"
           new = (
               "            scripts/ci/test_gate_enforcement_app_bindings.py \\\n"
@@ -56,7 +56,35 @@ jobs:
           )
           if text.count(old) != 1:
               raise SystemExit("gate-enforcement test wiring marker did not match exactly once")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          workflow.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          docs = Path("docs/ci/github-enforcement-snapshot.md")
+          text = docs.read_text(encoding="utf-8")
+          old_claim = (
+              "Repository-owned static producers imply the GitHub Actions app identity (`15368`) already represented by the existing static producer contract. "
+              "Live checks that are unbound or bound to another app are therefore visible as app-identity drift rather than being flattened away."
+          )
+          new_claim = (
+              "Producer identity supplies no enforcement binding. The static contract may declare `classic_app_id` and `ruleset_integration_id` independently; "
+              "an absent binding remains unconstrained rather than being synthesized from a repository-owned job."
+          )
+          if text.count(old_claim) != 1:
+              raise SystemExit("outdated producer-binding claim did not match exactly once")
+          text = text.replace(old_claim, new_claim, 1)
+          old_cli = (
+              "  --snapshot snapshot.json \\\n"
+              "  --static-receipt target/receipts/gate-enforcement-contract.json \\\n"
+              "  --receipt target/receipts/github-enforcement-union.json"
+          )
+          new_cli = (
+              "  --snapshot snapshot.json \\\n"
+              "  --static-receipt target/receipts/gate-enforcement-contract.json \\\n"
+              "  --authority reconciliation-authority.json \\\n"
+              "  --receipt target/receipts/github-enforcement-union.json"
+          )
+          if text.count(old_cli) != 1:
+              raise SystemExit("reconcile CLI example did not match exactly once")
+          docs.write_text(text.replace(old_cli, new_cli, 1), encoding="utf-8")
           PY
 
       - name: Verify stacked offline model
@@ -109,19 +137,3 @@ jobs:
           path: candidate/target/issue-9152
           if-no-files-found: error
           retention-days: 1
-
-      - name: Publish exact clean stack to PR branch
-        working-directory: candidate
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPECTED_REMOTE_HEAD: ${{ github.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          branch="codex/p2-live-enforcement-model"
-          git remote set-url origin \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push \
-            --force-with-lease="refs/heads/${branch}:${EXPECTED_REMOTE_HEAD}" \
-            origin \
-            "HEAD:refs/heads/${branch}"
