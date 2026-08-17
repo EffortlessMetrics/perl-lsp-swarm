@@ -177,7 +177,7 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
             self.assertEqual(len(result.sha256), 64)
 
     def test_digest_mismatch_against_trusted_topology_row(self) -> None:
-        observed = ObservedBinary(
+        under_test = ObservedBinary(
             expected=ExpectedBinary(
                 Path("staged-perllsp"), "perllsp", "perllsp", "server", expected_sha256="a" * 64
             ),
@@ -185,7 +185,7 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
             packet=packet(),
         )
         receipt = verify(
-            observed,
+            under_test,
             None,
             expected_version=packet()["binary"]["version"],
             expected_target=None,
@@ -197,7 +197,7 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
 
     def test_matching_trusted_digest_is_required_for_verified(self) -> None:
         digest = "c" * 64
-        observed = ObservedBinary(
+        under_test = ObservedBinary(
             expected=ExpectedBinary(
                 Path("staged-perllsp"), "perllsp", "perllsp", "server", expected_sha256=digest
             ),
@@ -205,7 +205,7 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
             packet=packet(),
         )
         receipt = verify(
-            observed,
+            under_test,
             None,
             expected_version=packet()["binary"]["version"],
             expected_target=None,
@@ -218,13 +218,13 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
         raw = packet()
         raw["private_path"] = "/home/user/secret"
         raw["binary"]["oversized"] = "x" * 2048
-        observed = ObservedBinary(
+        under_test = ObservedBinary(
             expected=ExpectedBinary(Path("staged-perllsp"), "perllsp", "perllsp", "server"),
             sha256="d" * 64,
             packet=raw,
         )
         receipt = verify(
-            observed,
+            under_test,
             None,
             expected_version=raw["binary"]["version"],
             expected_target=None,
@@ -245,7 +245,8 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
             lines = [
                 "#!/usr/bin/env python3",
                 "import sys",
-                "print('x' * 4096, flush=True)",
+                "limit = 128 * 1024",
+                "print('x' * (limit + 4096), flush=True)",
                 "while True:",
                 "    pass",
             ]
@@ -340,6 +341,25 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
             jsonschema.validate(instance={"schema_version": SCHEMA_VERSION, "verdict": "verified", "reasons": []}, schema=schema)
         with self.assertRaises(jsonschema.ValidationError):
             jsonschema.validate(instance={"schema_version": SCHEMA_VERSION, "verdict": "mismatch", "reasons": []}, schema=schema)
+
+    @unittest.skipUnless(os.name == "posix", "shebang executables")
+    def test_self_mutating_staged_binary_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory, "perllsp")
+            payload = json.dumps(packet())
+            lines = [
+                "#!/usr/bin/env python3",
+                "import os, sys",
+                "with open(os.path.abspath(sys.argv[0]), 'a', encoding='utf-8') as handle:",
+                "    handle.write('# mutation' + 'x' * 64)",
+                f"payload = {payload!r}",
+                "print(payload)",
+            ]
+            executable.write_text('\n'.join(lines) + '\n', encoding="utf-8")
+            executable.chmod(0o755)
+            with self.assertRaises(VerificationError) as caught:
+                observe(ExpectedBinary(executable, "perllsp", "perllsp", "server"), 5.0)
+            self.assertIn("changed during observation", str(caught.exception))
 
     def test_malformed_packet_is_not_proven(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

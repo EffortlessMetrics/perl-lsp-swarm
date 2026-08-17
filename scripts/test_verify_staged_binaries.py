@@ -62,8 +62,56 @@ class VerifyStagedBinariesAdapterTests(unittest.TestCase):
             self.assertIn("--require-dap", arguments)
             self.assertIn("--expected-candidate", arguments)
             self.assertIn("rc1", arguments)
+            # Pair binding, not mere membership: swapped --server/--dap
+            # forwarding fails here.
+            self.assertEqual(arguments[arguments.index("--server") + 1], "/stage/perllsp")
+            self.assertEqual(arguments[arguments.index("--dap") + 1], "/stage/perl-dap")
+            self.assertEqual(
+                arguments[arguments.index("--expected-version") + 1], "0.18.0"
+            )
 
-    def test_missing_required_option_fails_before_verifier(self) -> None:
+    def test_server_only_invocation_omits_dap_coupling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = root / "solo-args.json"
+            fake_python = root / "python3"
+            fake_python.write_text(
+                "#!/bin/sh\n"
+                "python_args=\"$*\"\n"
+                "printf '%s' \"$python_args\" | "
+                "python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))' "
+                f"> {capture!s}\n",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+            environment = os.environ.copy()
+            environment["PERL_LSP_PYTHON"] = str(fake_python)
+
+            completed = subprocess.run(
+                [
+                    "bash",
+                    str(WRAPPER),
+                    "--server",
+                    "/stage/perllsp",
+                    "--expected-version",
+                    "0.18.0",
+                    "--expected-target",
+                    "x86_64-unknown-linux-gnu",
+                    "--receipt",
+                    "/stage/identity.json",
+                ],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            arguments = json.loads(capture.read_text(encoding="utf-8"))
+            self.assertNotIn("--dap", arguments)
+            self.assertNotIn("--require-dap", arguments)
+
+    def test_missing_required_option_exits_with_usage_before_verifier(self) -> None:
         completed = subprocess.run(
             ["bash", str(WRAPPER), "--server", "/stage/perllsp"],
             stdout=subprocess.PIPE,

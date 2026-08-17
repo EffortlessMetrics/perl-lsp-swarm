@@ -113,7 +113,11 @@ def _kill_process_tree(process: subprocess.Popen[Any]) -> None:
             )
     except (ProcessLookupError, PermissionError, OSError):
         process.kill()
-    process.wait()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
 
 
 def _run_bounded(
@@ -169,13 +173,21 @@ def _run_bounded(
     except subprocess.TimeoutExpired as error:
         _kill_process_tree(process)
         raise VerificationError(f"identity query timed out for {name}") from error
-    for reader in readers:
-        reader.join(timeout=5)
-    if overflow.is_set():
-        raise VerificationError(
-            f"identity output exceeded its bounded pipe for {name}"
-        )
-    return returncode, bytes(stdout), bytes(stderr)
+    try:
+        for reader in readers:
+            reader.join(timeout=5)
+        if overflow.is_set():
+            raise VerificationError(
+                f"identity output exceeded its bounded pipe for {name}"
+            )
+        return returncode, bytes(stdout), bytes(stderr)
+    finally:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
 
 def _validate_packet(observed: ObservedBinary) -> list[str]:

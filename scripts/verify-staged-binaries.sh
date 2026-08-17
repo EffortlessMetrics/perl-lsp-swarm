@@ -25,6 +25,7 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --server|--dap|--expected-version|--expected-target|--expected-candidate|--receipt)
             [ "$#" -ge 2 ] || usage
+            case "$2" in --*) usage ;; esac
             case "$1" in
                 --server) SERVER="$2" ;;
                 --dap) DAP="$2" ;;
