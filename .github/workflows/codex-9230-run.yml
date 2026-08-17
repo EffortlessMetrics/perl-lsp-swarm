@@ -1,0 +1,40 @@
+name: codex-9230-run
+
+on:
+  push:
+    branches:
+      - "codex/9230-declaration-version-schema"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Build and verify declaration version schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='chore: run declaration version builder'
+          actual="$(git log -1 --pretty=%s)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Skipping builder for commit: $actual"
+            exit 0
+          fi
+
+          python3 .github/codex-9230.py
+          cargo fmt --all
+          cargo test -p perl-ast --all-targets --locked
+          cargo check --workspace --all-targets --locked
+          git diff --check
+
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git rm .github/codex-9230.py
+          git add crates
+          git commit -m 'schema(ast): retain package and class declaration versions (#9230)'
+          git push origin HEAD
