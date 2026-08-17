@@ -1,0 +1,82 @@
+name: codex-9230-rerun2
+
+on:
+  push:
+    branches:
+      - "codex/9230-declaration-version-schema"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Build and verify declaration version schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='chore: rerun declaration version builder after constructor fix'
+          actual="$(git log -1 --pretty=%s)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Skipping builder for commit: $actual"
+            exit 0
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/codex-9230.py')
+          text = path.read_text()
+
+          old_export = '"pub use perl_ast::{GotoTargetForm, Node, NodeKind, SourceLocation};\\n",'
+          new_export = '"pub use ast::{GotoTargetForm, Node, NodeKind, SourceLocation};\\n",'
+          if text.count(old_export) != 1:
+              raise SystemExit(
+                  f'expected one parser re-export marker, found {text.count(old_export)}'
+              )
+          text = text.replace(old_export, new_export, 1)
+
+          old_classifier = '''def looks_like_pattern(before: str, after: str) -> bool:
+              return (
+                  after.startswith(("=>", "=", "|", "if "))
+                  or bool(re.search(r"matches!\\s*\\([^;]{0,220}$", before, re.S))
+                  or bool(re.search(r"(?:if|while)\\s+let\\s+[^;]{0,180}$", before, re.S))
+                  or bool(re.search(r"\\blet\\s+NodeKind::[^;]{0,180}$", before, re.S))
+              )
+          '''
+          new_classifier = '''def looks_like_pattern(before: str, after: str) -> bool:
+              if after.startswith(("=>", "=", "|", "if ")):
+                  return True
+
+              statement_tail = before.rsplit(";", 1)[-1]
+              matches_pos = statement_tail.rfind("matches!(")
+              if matches_pos >= 0 and after.startswith((")", ",")):
+                  macro_tail = statement_tail[matches_pos:]
+                  if "Node::new(" not in macro_tail:
+                      return True
+
+              return False
+          '''
+          if text.count(old_classifier) != 1:
+              raise SystemExit(
+                  f'expected one classifier body, found {text.count(old_classifier)}'
+              )
+          path.write_text(text.replace(old_classifier, new_classifier, 1))
+          PY
+
+          python3 .github/codex-9230.py
+          cargo fmt --all
+          cargo test -p perl-ast --all-targets --locked
+          cargo check --workspace --all-targets --locked
+          git diff --check
+
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git rm .github/codex-9230.py
+          git add crates
+          git commit -m 'schema(ast): retain package and class declaration versions (#9230)'
+          git push origin HEAD
