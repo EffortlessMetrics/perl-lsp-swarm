@@ -191,7 +191,10 @@ fn test_range_formatting_uses_utf16_columns_for_non_bmp_text() {
     let code = "my$x=1; # 😀\n";
     let selected_line = "my$x=1; # 😀";
     let exact_end = selected_line.encode_utf16().count() as u32;
-    assert_eq!(exact_end, 12, "the emoji occupies two UTF-16 code units");
+    assert_eq!(
+        exact_end, 12,
+        "the emoji occupies two UTF-16 code units"
+    );
     assert_ne!(
         exact_end as usize,
         selected_line.len(),
