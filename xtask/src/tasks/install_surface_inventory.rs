@@ -4,7 +4,7 @@
 //! status, public guidance, release topology, or channel state.
 
 use clap::Parser;
-use color_eyre::eyre::{bail, eyre, Context, Result};
+use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -27,10 +27,7 @@ struct Cli {
     repo_root: PathBuf,
     #[arg(long, default_value = "policy/install-surface-registry.toml")]
     registry: PathBuf,
-    #[arg(
-        long,
-        default_value = "target/receipts/install-surface-inventory.json"
-    )]
+    #[arg(long, default_value = "target/receipts/install-surface-inventory.json")]
     output: PathBuf,
 }
 
@@ -177,11 +174,7 @@ pub fn run_cli() -> Result<()> {
 }
 
 fn under_root(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    }
+    if path.is_absolute() { path.to_path_buf() } else { root.join(path) }
 }
 
 fn relative_display(root: &Path, path: &Path) -> Result<String> {
@@ -220,25 +213,16 @@ fn validate_registry(registry: &Registry) -> Result<()> {
         match (&row.path, &row.external_identity) {
             (Some(path), None) => validate_path(path)?,
             (None, Some(identity)) if !identity.trim().is_empty() => {}
-            (Some(_), Some(_)) => bail!(
-                "surface {:?} must use path or external_identity, not both",
-                row.surface_id
-            ),
-            _ => bail!(
-                "surface {:?} must define path or external_identity",
-                row.surface_id
-            ),
+            (Some(_), Some(_)) => {
+                bail!("surface {:?} must use path or external_identity, not both", row.surface_id)
+            }
+            _ => bail!("surface {:?} must define path or external_identity", row.surface_id),
         }
         if row.owner.trim().is_empty() {
             bail!("surface {:?} has an empty owner", row.surface_id);
         }
-        if matches!(
-            row.disposition,
-            Disposition::DeferredScaffold | Disposition::NeedsDisposition
-        ) && row
-            .exit_condition
-            .as_deref()
-            .is_none_or(|value| value.trim().is_empty())
+        if matches!(row.disposition, Disposition::DeferredScaffold | Disposition::NeedsDisposition)
+            && row.exit_condition.as_deref().is_none_or(|value| value.trim().is_empty())
         {
             bail!("surface {:?} requires an exit_condition", row.surface_id);
         }
@@ -249,9 +233,7 @@ fn validate_registry(registry: &Registry) -> Result<()> {
 fn validate_id(id: &str) -> Result<()> {
     if id.is_empty()
         || !id.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'.' | b'_' | b'-')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
     {
         bail!("invalid install surface id {id:?}");
@@ -264,9 +246,7 @@ fn validate_path(path: &str) -> Result<()> {
     if path.is_empty()
         || path.contains('\\')
         || parsed.is_absolute()
-        || parsed
-            .components()
-            .any(|part| matches!(part, Component::ParentDir | Component::RootDir))
+        || parsed.components().any(|part| matches!(part, Component::ParentDir | Component::RootDir))
     {
         bail!("install surface path must be normalized and repository-relative: {path:?}");
     }
@@ -290,7 +270,8 @@ fn evaluate(root: &Path, registry: &Registry, registry_path: String) -> Result<R
                 code: FindingCode::UnregisteredSurface,
                 surface_id: None,
                 path: Some(path.clone()),
-                detail: "discovered install/package-looking surface has no registry row".to_string(),
+                detail: "discovered install/package-looking surface has no registry row"
+                    .to_string(),
             });
         }
         discovered_surfaces.push(DiscoveredSurface {
@@ -320,10 +301,7 @@ fn evaluate(root: &Path, registry: &Registry, registry_path: String) -> Result<R
             ));
         }
         if row.authority_refs.is_empty()
-            && !matches!(
-                row.disposition,
-                Disposition::HistoricalFixture | Disposition::Retired
-            )
+            && !matches!(row.disposition, Disposition::HistoricalFixture | Disposition::Retired)
         {
             findings.push(row_finding(
                 FindingCode::MissingAuthority,
@@ -383,10 +361,7 @@ fn duplicate_roles(registry: &Registry) -> Vec<Finding> {
             path: None,
             detail: format!(
                 "active rows claim channel {channel:?} and product unit {unit:?}: {}",
-                rows.iter()
-                    .map(|row| row.surface_id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                rows.iter().map(|row| row.surface_id.as_str()).collect::<Vec<_>>().join(", ")
             ),
         });
     }
@@ -415,8 +390,8 @@ fn discover(root: &Path) -> Result<BTreeMap<String, SurfaceKind>> {
     let mut discovered = BTreeMap::new();
     for path in tracked_paths(root)? {
         let absolute = root.join(&path);
-        let metadata = fs::metadata(&absolute)
-            .wrap_err_with(|| format!("stat tracked path {path}"))?;
+        let metadata =
+            fs::metadata(&absolute).wrap_err_with(|| format!("stat tracked path {path}"))?;
         if !metadata.is_file() {
             continue;
         }
@@ -435,12 +410,7 @@ fn discover(root: &Path) -> Result<BTreeMap<String, SurfaceKind>> {
 }
 
 fn tracked_paths(root: &Path) -> Result<Vec<String>> {
-    if let Ok(output) = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "-z"])
-        .output()
-    {
+    if let Ok(output) = Command::new("git").arg("-C").arg(root).args(["ls-files", "-z"]).output() {
         if output.status.success() {
             let mut paths = output
                 .stdout
@@ -458,11 +428,7 @@ fn tracked_paths(root: &Path) -> Result<Vec<String>> {
     }
 
     let mut paths = Vec::new();
-    for entry in WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(should_descend)
-    {
+    for entry in WalkDir::new(root).follow_links(false).into_iter().filter_entry(should_descend) {
         let entry = entry.wrap_err("walk repository for install surfaces")?;
         if entry.file_type().is_file() {
             paths.push(normalize(
@@ -552,9 +518,7 @@ fn classify_content(path: &str, content: &str) -> Option<SurfaceKind> {
         return Some(SurfaceKind::PackageMetadata);
     }
     if path.ends_with(".md")
-        && (path.starts_with("docs/")
-            || path.starts_with("book/")
-            || path.ends_with("readme.md"))
+        && (path.starts_with("docs/") || path.starts_with("book/") || path.ends_with("readme.md"))
         && INSTALL_COMMANDS.iter().any(|needle| content.contains(needle))
     {
         return Some(if path.starts_with("docs/specs/") {
@@ -563,9 +527,7 @@ fn classify_content(path: &str, content: &str) -> Option<SurfaceKind> {
             SurfaceKind::Documentation
         });
     }
-    if EXECUTABLE_EXTENSIONS
-        .iter()
-        .any(|extension| path.ends_with(extension))
+    if EXECUTABLE_EXTENSIONS.iter().any(|extension| path.ends_with(extension))
         && (content.contains("perllsp") || content.contains("perl-lsp"))
         && INSTALL_WORDS.iter().any(|needle| content.contains(needle))
     {
@@ -597,9 +559,8 @@ fn suggested_id(kind: SurfaceKind, path: &str) -> String {
 }
 
 fn write_report(path: &Path, report: &Report) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| eyre!("receipt path has no parent: {}", path.display()))?;
+    let parent =
+        path.parent().ok_or_else(|| eyre!("receipt path has no parent: {}", path.display()))?;
     fs::create_dir_all(parent)
         .wrap_err_with(|| format!("create receipt directory {}", parent.display()))?;
     fs::write(
@@ -610,27 +571,69 @@ fn write_report(path: &Path, report: &Report) -> Result<()> {
 }
 
 const WORKFLOW_TOKENS: &[&str] = &[
-    "artifact", "build-vsix", "checksum", "container", "docker", "extension", "formula",
-    "install", "package", "post-publish", "publish", "release", "sbom", "signed", "version",
+    "artifact",
+    "build-vsix",
+    "checksum",
+    "container",
+    "docker",
+    "extension",
+    "formula",
+    "install",
+    "package",
+    "post-publish",
+    "publish",
+    "release",
+    "sbom",
+    "signed",
+    "version",
 ];
 const PUBLISH_TOKENS: &[&str] = &["publish", "release", "signed", "container", "docker"];
 const ACTION_TOKENS: &[&str] = &["install", "package", "release", "setup", "publish"];
 const SCRIPT_TOKENS: &[&str] = &[
-    "artifact", "binstall", "checksum", "container", "crates-io", "homebrew", "install",
-    "package", "provenance", "publish", "release", "sbom", "scoop", "topology", "winget",
+    "artifact",
+    "binstall",
+    "checksum",
+    "container",
+    "crates-io",
+    "homebrew",
+    "install",
+    "package",
+    "provenance",
+    "publish",
+    "release",
+    "sbom",
+    "scoop",
+    "topology",
+    "winget",
 ];
 const GENERATOR_TOKENS: &[&str] = &["generate", "render", "prepare", "prep", "inject"];
 const VALIDATOR_TOKENS: &[&str] = &["check", "validate", "verify", "smoke", "audit"];
 const MANAGED_TOKENS: &[&str] = &["binary", "download", "install", "managed", "package", "release"];
 const EXECUTABLE_EXTENSIONS: &[&str] = &[".sh", ".ps1", ".py", ".js", ".ts", ".mjs", ".cjs", ".rb"];
 const INSTALL_WORDS: &[&str] = &[
-    " install", "download", "release", "publish", "package", "artifact", "homebrew", "scoop",
-    "chocolatey", "winget",
+    " install",
+    "download",
+    "release",
+    "publish",
+    "package",
+    "artifact",
+    "homebrew",
+    "scoop",
+    "chocolatey",
+    "winget",
 ];
 const INSTALL_COMMANDS: &[&str] = &[
-    "cargo install perllsp", "cargo binstall perllsp", "scripts/install.sh", "install.ps1",
-    "brew install", "scoop install", "choco install", "winget install", "setup-perl-lsp",
-    "marketplace.visualstudio.com", "open-vsx.org",
+    "cargo install perllsp",
+    "cargo binstall perllsp",
+    "scripts/install.sh",
+    "install.ps1",
+    "brew install",
+    "scoop install",
+    "choco install",
+    "winget install",
+    "setup-perl-lsp",
+    "marketplace.visualstudio.com",
+    "open-vsx.org",
 ];
 
 #[cfg(test)]
@@ -640,9 +643,7 @@ mod tests {
 
     fn write(root: &Path, path: &str, content: &str) -> Result<()> {
         let destination = root.join(path);
-        let parent = destination
-            .parent()
-            .ok_or_else(|| eyre!("test destination has no parent"))?;
+        let parent = destination.parent().ok_or_else(|| eyre!("test destination has no parent"))?;
         fs::create_dir_all(parent)?;
         fs::write(destination, content)?;
         Ok(())
@@ -701,20 +702,18 @@ mod tests {
     fn discovers_documented_install_command() -> Result<()> {
         let temp = TempDir::new()?;
         write(temp.path(), "install.sh", "#!/bin/sh\n")?;
-        write(
-            temp.path(),
-            "docs/how-to/install.md",
-            "Run `cargo binstall perllsp`.",
-        )?;
+        write(temp.path(), "docs/how-to/install.md", "Run `cargo binstall perllsp`.")?;
         let report = evaluate(
             temp.path(),
             &registry(&row("bootstrap.root", "install.sh"))?,
             "policy/registry.toml".to_string(),
         )?;
-        assert!(report
-            .discovered_surfaces
-            .iter()
-            .any(|surface| surface.path == "docs/how-to/install.md"));
+        assert!(
+            report
+                .discovered_surfaces
+                .iter()
+                .any(|surface| surface.path == "docs/how-to/install.md")
+        );
         Ok(())
     }
 
