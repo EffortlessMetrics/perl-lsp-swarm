@@ -11,6 +11,10 @@ use std::collections::BTreeSet;
 use std::fmt;
 use thiserror::Error;
 
+mod session_auth;
+
+pub use session_auth::SessionResolveAuthenticator;
+
 /// Current resolve-envelope wire version.
 pub const RESOLVE_ENVELOPE_VERSION: u16 = 1;
 
