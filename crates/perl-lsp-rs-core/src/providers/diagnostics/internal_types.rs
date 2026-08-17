@@ -111,7 +111,7 @@ impl TryFrom<Diagnostic> for perl_diagnostics::Diagnostic {
 fn parse_diagnostic_code(s: &str) -> Option<perl_diagnostics::codes::DiagnosticCode> {
     use perl_diagnostics::codes::DiagnosticCode;
 
-    DiagnosticCode::parse_code(s).or_else(|| match s {
+    DiagnosticCode::parse_code(s).or(match s {
         "parse_error" => Some(DiagnosticCode::ParseError),
         "syntax_error" => Some(DiagnosticCode::SyntaxError),
         "unexpected_eof" => Some(DiagnosticCode::UnexpectedEof),

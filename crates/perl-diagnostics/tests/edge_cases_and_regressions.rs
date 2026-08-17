@@ -339,7 +339,7 @@ fn regression_diagnostic_in_collections() {
     let mut second = Diagnostic::default();
     second.message = "Second".to_string();
 
-    let diagnostics = vec![first, second];
+    let diagnostics = [first, second];
     assert_eq!(diagnostics.len(), 2);
     assert_eq!(diagnostics[0].message, "First");
     assert_eq!(diagnostics[1].message, "Second");
