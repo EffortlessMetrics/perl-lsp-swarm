@@ -76,8 +76,7 @@ impl TotalStats {
         eprintln!("Total nodes: {}", self.total_nodes);
 
         if self.files_parsed > 0 {
-            let avg_speed =
-                self.total_bytes as f64 / self.total_time.as_secs_f64() / 1_000_000.0;
+            let avg_speed = self.total_bytes as f64 / self.total_time.as_secs_f64() / 1_000_000.0;
             eprintln!("Average speed: {:.2} MB/s", avg_speed);
             eprintln!("Average nodes per file: {}", self.total_nodes / self.files_parsed);
         }
@@ -185,14 +184,7 @@ impl Args {
             inputs.push(Input::Stdin);
         }
 
-        Ok(Args {
-            inputs,
-            output_format,
-            show_stats,
-            pretty,
-            quiet,
-            continue_on_error,
-        })
+        Ok(Args { inputs, output_format, show_stats, pretty, quiet, continue_on_error })
     }
 }
 
@@ -350,10 +342,7 @@ fn legacy_parse_summary(ast: &Node) -> LegacyParseSummary {
         schema: LEGACY_SUMMARY_SCHEMA,
         subject: LEGACY_SUMMARY_SUBJECT,
         native_root_kind: ast.kind.kind_name(),
-        root_byte_range: ByteRange {
-            start: ast.location.start,
-            end: ast.location.end,
-        },
+        root_byte_range: ByteRange { start: ast.location.start, end: ast.location.end },
         node_count: ast.count_nodes(),
         legacy_native_ast_sexp: ast.to_sexp(),
         limitations: LEGACY_SUMMARY_LIMITATIONS,
@@ -480,18 +469,9 @@ fn print_error(error: &ParseError, source: &str) {
     let mut stderr = io::stderr();
 
     match error {
-        ParseError::UnexpectedToken {
-            expected,
-            found,
-            location,
-        } => {
+        ParseError::UnexpectedToken { expected, found, location } => {
             let (line, col) = position_to_line_col(source, *location);
-            writeln!(
-                stderr,
-                "Parse error: Unexpected token at line {}, column {}",
-                line, col
-            )
-            .ok();
+            writeln!(stderr, "Parse error: Unexpected token at line {}, column {}", line, col).ok();
             writeln!(stderr, "  Expected: {}", expected).ok();
             writeln!(stderr, "  Found: {}", found).ok();
             print_error_context(source, *location, &mut stderr);
@@ -504,22 +484,12 @@ fn print_error(error: &ParseError, source: &str) {
         }
         ParseError::SyntaxError { message, location } => {
             let (line, col) = position_to_line_col(source, *location);
-            writeln!(
-                stderr,
-                "Parse error: {} at line {}, column {}",
-                message, line, col
-            )
-            .ok();
+            writeln!(stderr, "Parse error: {} at line {}, column {}", message, line, col).ok();
             print_error_context(source, *location, &mut stderr);
         }
         ParseError::Advisory { message, location } => {
             let (line, col) = position_to_line_col(source, *location);
-            writeln!(
-                stderr,
-                "Parse advisory: {} at line {}, column {}",
-                message, line, col
-            )
-            .ok();
+            writeln!(stderr, "Parse advisory: {} at line {}, column {}", message, line, col).ok();
             print_error_context(source, *location, &mut stderr);
         }
         ParseError::InvalidNumber { literal } => {
@@ -540,25 +510,13 @@ fn print_error(error: &ParseError, source: &str) {
         ParseError::RecursionLimit => {
             writeln!(stderr, "Parse error: Maximum recursion depth exceeded").ok();
         }
-        ParseError::NestingTooDeep {
-            depth,
-            max_depth,
-        } => {
-            writeln!(
-                stderr,
-                "Parse error: Nesting too deep ({} > {})",
-                depth, max_depth
-            )
-            .ok();
+        ParseError::NestingTooDeep { depth, max_depth } => {
+            writeln!(stderr, "Parse error: Nesting too deep ({} > {})", depth, max_depth).ok();
         }
         ParseError::Cancelled => {
             writeln!(stderr, "Parse error: Parsing cancelled").ok();
         }
-        ParseError::Recovered {
-            site,
-            kind,
-            location,
-        } => {
+        ParseError::Recovered { site, kind, location } => {
             let (line, col) = position_to_line_col(source, *location);
             writeln!(
                 stderr,
@@ -621,5 +579,5 @@ fn print_error_context(source: &str, position: usize, stderr: &mut io::Stderr) {
 }
 
 #[cfg(test)]
-#[path = "perl-parse-tests.rs"]
+#[path = "perl-parse/tests.rs"]
 mod tests;

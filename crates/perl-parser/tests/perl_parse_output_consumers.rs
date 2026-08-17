@@ -4,15 +4,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const ALLOWED_CURRENT_CONSUMERS: &[&str] = &["crates/perl-parser/src/bin/perl-parse.rs"];
-const SKIPPED_DIRECTORIES: &[&str] = &[
-    ".git",
-    "target",
-    "node_modules",
-    "archive",
-];
-const TEXT_EXTENSIONS: &[&str] = &[
-    "json", "md", "ps1", "rs", "sh", "toml", "ts", "txt", "yaml", "yml",
-];
+const SKIPPED_DIRECTORIES: &[&str] = &[".git", "target", "node_modules", "archive"];
+const TEXT_EXTENSIONS: &[&str] =
+    &["json", "md", "ps1", "rs", "sh", "toml", "ts", "txt", "yaml", "yml"];
 
 #[test]
 fn legacy_output_consumer_inventory_is_explicit() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,10 +54,8 @@ fn legacy_output_consumer_inventory_is_explicit() -> Result<(), Box<dyn std::err
         }
     }
 
-    let expected: BTreeSet<String> = ALLOWED_CURRENT_CONSUMERS
-        .iter()
-        .map(|path| (*path).to_string())
-        .collect();
+    let expected: BTreeSet<String> =
+        ALLOWED_CURRENT_CONSUMERS.iter().map(|path| (*path).to_string()).collect();
     assert_eq!(
         observed, expected,
         "a perl-parse legacy output consumer was added or removed; classify its subject, migration target, compatibility need, owner, and removal condition"
