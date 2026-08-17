@@ -873,14 +873,12 @@ fn has_route_label_prefix(prefix_before_opening: &str) -> bool {
     };
     let normalized = label.to_ascii_lowercase();
     ROUTE_BEARING_LABELS.iter().any(|&route_label| {
-        if normalized == route_label {
-            return true;
-        }
         // Suffix match: the route label appears at the end of a longer prefix.
         // Guard with a non-alphanumeric boundary so "xentry flow" doesn't
-        // spuriously match "entry flow".
+        // spuriously match "entry flow". An exact match yields an empty
+        // `before`, which also passes the guard.
         if let Some(before) = normalized.strip_suffix(route_label) {
-            before.is_empty() || !before.ends_with(|c: char| c.is_alphanumeric())
+            !before.ends_with(|c: char| c.is_alphanumeric())
         } else {
             false
         }
@@ -1081,7 +1079,9 @@ mod tests {
         // Prose occurrence: prefix is "- See " — no route-bearing label.
         let prose = observations
             .iter()
-            .find(|obs| &line[obs.column_start..obs.column_end] == "delver-pr" && obs.column_start < 10)
+            .find(|obs| {
+                &line[obs.column_start..obs.column_end] == "delver-pr" && obs.column_start < 10
+            })
             .expect("first (prose) occurrence is present");
         assert_eq!(
             prose.syntax,
@@ -1092,7 +1092,9 @@ mod tests {
         // Labeled occurrence: prefix ends with "Entry flow:" — must be an edge.
         let labeled = observations
             .iter()
-            .find(|obs| &line[obs.column_start..obs.column_end] == "delver-pr" && obs.column_start > 10)
+            .find(|obs| {
+                &line[obs.column_start..obs.column_end] == "delver-pr" && obs.column_start > 10
+            })
             .expect("second (labeled) occurrence is present");
         assert_eq!(
             resolve_route_syntax(labeled, &std::collections::BTreeSet::new()),
@@ -1115,8 +1117,7 @@ mod tests {
         // label "entry flow" because there is no word boundary before it.
         // (Using a realistic-looking scenario-prefix to avoid a trivially
         // empty-line test.)
-        let observations =
-            route_line_observations("- Reentry flow: `deliver-pr`", 1, true);
+        let observations = route_line_observations("- Reentry flow: `deliver-pr`", 1, true);
         assert_eq!(observations.len(), 1, "the single token is observed");
         assert!(
             edge_targets(&observations).is_empty(),
