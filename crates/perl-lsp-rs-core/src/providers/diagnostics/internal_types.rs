@@ -4,7 +4,10 @@
 //! The canonical public API types (`DiagnosticCode`, `DiagnosticSeverity`, `DiagnosticTag`)
 //! are re-exported from `perl-diagnostics::codes::`.
 
+use std::fmt;
+
 use perl_diagnostics::codes::DiagnosticSeverity;
+use perl_diagnostics::{ByteSpan, InvalidByteSpan};
 
 /// Tags for diagnostics (internal alias for the canonical type from codes::).
 pub use perl_diagnostics::codes::DiagnosticTag;
@@ -31,54 +34,95 @@ pub struct Diagnostic {
     pub suggestion: Option<String>,
 }
 
-/// Conversion from the internal working type to the canonical
-/// `perl_diagnostics::Diagnostic` (#4946).
-///
-/// This bridges the two coexisting Diagnostic domain models with a
-/// documented ownership contract: the internal type is the working type
-/// for linting machinery (string codes, always-present related_info/tags
-/// vectors, suggestion field); the canonical type is the public API type
-/// (typed DiagnosticCode enum, optional related_info/tags, no suggestion).
-///
-/// String codes that don't match a known `DiagnosticCode` variant map to
-/// `DiagnosticCode::ParseError` (the default), preserving the "fail safe"
-/// principle.
-impl From<Diagnostic> for perl_diagnostics::Diagnostic {
-    fn from(inner: Diagnostic) -> Self {
-        let code = inner.code.as_deref().and_then(parse_diagnostic_code).unwrap_or_default();
-        let mut diag =
-            perl_diagnostics::Diagnostic::new(code, inner.severity, inner.range, inner.message);
-        if !inner.related_information.is_empty() {
-            diag.related_information = Some(
-                inner
-                    .related_information
-                    .into_iter()
-                    .map(|ri| perl_diagnostics::RelatedInformation::new(ri.message, ri.location))
-                    .collect(),
-            );
+/// Failure converting the migration-only provider diagnostic into the canonical type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagnosticConversionError {
+    /// The provider diagnostic did not carry a code.
+    MissingCode,
+    /// The provider code is not a registered built-in code.
+    UnknownCode(String),
+    /// The primary byte range is reversed.
+    InvalidRange(InvalidByteSpan),
+    /// A related-information byte range is reversed.
+    InvalidRelatedRange {
+        /// Zero-based related-information entry index.
+        index: usize,
+        /// The rejected byte span.
+        source: InvalidByteSpan,
+    },
+}
+
+impl fmt::Display for DiagnosticConversionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingCode => formatter.write_str("diagnostic code is missing"),
+            Self::UnknownCode(code) => write!(formatter, "unknown diagnostic code `{code}`"),
+            Self::InvalidRange(source) => write!(formatter, "invalid diagnostic range: {source}"),
+            Self::InvalidRelatedRange { index, source } => {
+                write!(formatter, "invalid related-information range at index {index}: {source}")
+            }
         }
-        if !inner.tags.is_empty() {
-            diag.tags = Some(inner.tags);
+    }
+}
+
+impl std::error::Error for DiagnosticConversionError {}
+
+/// Fallible migration from the internal working type to the canonical
+/// `perl_diagnostics::Diagnostic` (#2213, #4946).
+///
+/// The migration validates every byte span and refuses to manufacture a
+/// plausible built-in code when the working diagnostic has no recognized
+/// identity. The broader lossless built-in/external identity model remains
+/// owned by #9931.
+impl TryFrom<Diagnostic> for perl_diagnostics::Diagnostic {
+    type Error = DiagnosticConversionError;
+
+    fn try_from(inner: Diagnostic) -> Result<Self, Self::Error> {
+        let Diagnostic { range, severity, code, message, related_information, tags, suggestion: _ } =
+            inner;
+
+        let code_text = code.ok_or(DiagnosticConversionError::MissingCode)?;
+        let code = parse_diagnostic_code(&code_text)
+            .ok_or_else(|| DiagnosticConversionError::UnknownCode(code_text.clone()))?;
+        let range = ByteSpan::try_from(range).map_err(DiagnosticConversionError::InvalidRange)?;
+        let related_information = related_information
+            .into_iter()
+            .enumerate()
+            .map(|(index, related)| {
+                let location = ByteSpan::try_from(related.location).map_err(|source| {
+                    DiagnosticConversionError::InvalidRelatedRange { index, source }
+                })?;
+                Ok(perl_diagnostics::RelatedInformation::new(related.message, location))
+            })
+            .collect::<Result<Vec<_>, DiagnosticConversionError>>()?;
+
+        let mut diagnostic = perl_diagnostics::Diagnostic::new(code, severity, range, message);
+        if !related_information.is_empty() {
+            diagnostic.related_information = Some(related_information);
         }
-        diag
+        if !tags.is_empty() {
+            diagnostic.tags = Some(tags);
+        }
+        Ok(diagnostic)
     }
 }
 
 /// Parse a diagnostic code string into the canonical `DiagnosticCode` enum.
 fn parse_diagnostic_code(s: &str) -> Option<perl_diagnostics::codes::DiagnosticCode> {
     use perl_diagnostics::codes::DiagnosticCode;
-    match s {
-        "PL001" | "parse_error" => Some(DiagnosticCode::ParseError),
-        "PL002" | "syntax_error" => Some(DiagnosticCode::SyntaxError),
-        "PL003" | "unexpected_eof" => Some(DiagnosticCode::UnexpectedEof),
-        "PL100" | "missing_strict" => Some(DiagnosticCode::MissingStrict),
-        "PL101" | "missing_warnings" => Some(DiagnosticCode::MissingWarnings),
-        "PL102" | "unused_variable" => Some(DiagnosticCode::UnusedVariable),
-        "PL103" | "undefined_variable" => Some(DiagnosticCode::UndefinedVariable),
-        "PL104" | "variable_shadowing" => Some(DiagnosticCode::VariableShadowing),
-        "PL105" | "variable_redeclared" => Some(DiagnosticCode::VariableRedeclaration),
+
+    DiagnosticCode::parse_code(s).or(match s {
+        "parse_error" => Some(DiagnosticCode::ParseError),
+        "syntax_error" => Some(DiagnosticCode::SyntaxError),
+        "unexpected_eof" => Some(DiagnosticCode::UnexpectedEof),
+        "missing_strict" => Some(DiagnosticCode::MissingStrict),
+        "missing_warnings" => Some(DiagnosticCode::MissingWarnings),
+        "unused_variable" => Some(DiagnosticCode::UnusedVariable),
+        "undefined_variable" => Some(DiagnosticCode::UndefinedVariable),
+        "variable_shadowing" => Some(DiagnosticCode::VariableShadowing),
+        "variable_redeclared" => Some(DiagnosticCode::VariableRedeclaration),
         _ => None,
-    }
+    })
 }
 
 impl Diagnostic {
@@ -142,7 +186,7 @@ impl RelatedInformation {
 
 #[cfg(test)]
 mod tests {
-    use super::{Diagnostic, RelatedInformation};
+    use super::{Diagnostic, DiagnosticConversionError, RelatedInformation};
     use perl_diagnostics::codes::{DiagnosticSeverity, DiagnosticTag};
 
     #[test]
@@ -180,5 +224,27 @@ mod tests {
 
         assert_eq!(related.location, (8, 12));
         assert_eq!(related.message, "hint");
+    }
+
+    #[test]
+    fn canonical_conversion_rejects_reversed_primary_range() {
+        let diagnostic =
+            Diagnostic::new((12, 8), DiagnosticSeverity::Error, "bad").with_code("PL001");
+
+        assert!(matches!(
+            perl_diagnostics::Diagnostic::try_from(diagnostic),
+            Err(DiagnosticConversionError::InvalidRange(_))
+        ));
+    }
+
+    #[test]
+    fn canonical_conversion_rejects_unknown_code_instead_of_defaulting() {
+        let diagnostic =
+            Diagnostic::new((8, 12), DiagnosticSeverity::Error, "bad").with_code("native.unknown");
+
+        assert!(matches!(
+            perl_diagnostics::Diagnostic::try_from(diagnostic),
+            Err(DiagnosticConversionError::UnknownCode(code)) if code == "native.unknown"
+        ));
     }
 }

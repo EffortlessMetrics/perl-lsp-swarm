@@ -12,6 +12,8 @@ use perl_lsp_rs_core::tooling::OsSubprocessRuntime;
 use perl_lsp_rs_core::tooling::perltidy::FormatterMode;
 pub use perl_lsp_rs_core::tooling::perltidy::native::FormatContext;
 
+const MAX_FORMATTER_TIMEOUT_SECS: u64 = 300;
+
 /// Code formatter using the OS subprocess runtime.
 pub struct CodeFormatter {
     inner: FormattingProvider<OsSubprocessRuntime>,
@@ -20,7 +22,12 @@ pub struct CodeFormatter {
 impl CodeFormatter {
     /// Create a native-default formatter with the standard interactive timeout.
     pub fn new() -> Self {
-        Self { inner: FormattingProvider::new(OsSubprocessRuntime::with_timeout(10)) }
+        Self {
+            inner: FormattingProvider::new(OsSubprocessRuntime::with_bounded_timeout(
+                10,
+                MAX_FORMATTER_TIMEOUT_SECS,
+            )),
+        }
     }
 
     /// Create a native formatter with perltidy-compatible style configuration.
@@ -32,9 +39,12 @@ impl CodeFormatter {
     pub fn with_config_and_mode(config: PerlTidyConfig, mode: FormatterMode) -> Self {
         let timeout = config.timeout_secs;
         Self {
-            inner: FormattingProvider::new(OsSubprocessRuntime::with_timeout(timeout))
-                .with_perltidy_config(config)
-                .with_formatter_mode(mode),
+            inner: FormattingProvider::new(OsSubprocessRuntime::with_bounded_timeout(
+                timeout,
+                MAX_FORMATTER_TIMEOUT_SECS,
+            ))
+            .with_perltidy_config(config)
+            .with_formatter_mode(mode),
         }
     }
 
