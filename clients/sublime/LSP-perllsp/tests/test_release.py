@@ -126,6 +126,7 @@ class ReleaseContractTests(unittest.TestCase):
             root = Path(directory)
             binary = root / "perllsp"
             binary.write_bytes(b"trusted")
+            binary.chmod(0o755)
             digest = hashlib.sha256(b"trusted").hexdigest()
             binary.with_name("install.json").write_text(
                 json.dumps({"archive_sha256": "a" * 64, "binary_sha256": digest}),
@@ -134,6 +135,11 @@ class ReleaseContractTests(unittest.TestCase):
             asset = {"sha256": "a" * 64}
             self.assertTrue(release.installed_binary_is_current(binary, asset))
             binary.write_bytes(b"tampered")
+            self.assertFalse(release.installed_binary_is_current(binary, asset))
+            # A binary whose execute permission was lost is not a usable
+            # install even when its content still matches.
+            binary.write_bytes(b"trusted")
+            binary.chmod(0o644)
             self.assertFalse(release.installed_binary_is_current(binary, asset))
 
     def test_settings_bind_perl_and_custom_tokens(self) -> None:
