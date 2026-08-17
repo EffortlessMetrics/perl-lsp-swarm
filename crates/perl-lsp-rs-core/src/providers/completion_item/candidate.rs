@@ -83,11 +83,7 @@ impl Default for CompletionCandidateEvidence {
 
 impl CompletionCandidateEvidence {
     fn strength(&self) -> (u8, CompletionCandidateProof, u8) {
-        (
-            freshness_strength(self.freshness),
-            self.proof,
-            confidence_strength(self.confidence),
-        )
+        (freshness_strength(self.freshness), self.proof, confidence_strength(self.confidence))
     }
 }
 
@@ -290,6 +286,25 @@ pub fn merge_and_sort_completion_candidates(
         if let Some(index) = compatible_index {
             let existing = merged.remove(index);
             merged.insert(index, merge_compatible_candidates(existing, candidate));
+            // Backfill during the merge can install field values (for example a
+            // receiver owner) that conflict with same-identity siblings the merged
+            // candidate was never checked against. Re-check those siblings so the
+            // recorded conflicts describe the retained set, not just push-time state.
+            let sibling_indexes = indexes.get(&identity).cloned().unwrap_or_default();
+            for sibling_index in sibling_indexes {
+                if sibling_index == index {
+                    continue;
+                }
+                let conflicts = candidate_conflicts(&merged[sibling_index], &merged[index]);
+                for conflict in conflicts {
+                    if !merged[sibling_index].conflicts.contains(&conflict) {
+                        merged[sibling_index].conflicts.push(conflict);
+                    }
+                    if !merged[index].conflicts.contains(&conflict) {
+                        merged[index].conflicts.push(conflict);
+                    }
+                }
+            }
             continue;
         }
 
@@ -451,6 +466,25 @@ mod tests {
     }
 
     #[test]
+    fn legacy_duplicate_labels_backfill_missing_presentation_fields() {
+        // Deliberate envelope behavior: the old label dedup dropped the losing
+        // duplicate whole, while the merge retains compatible presentation
+        // fields the winner lacks. Inclusion and ordering are unchanged.
+        let sparse = item("run", None, "100");
+        let mut documented = item("run", Some("Foo::run"), "100");
+        documented.documentation = Some(Cow::Owned("docs".to_string()));
+
+        let result = merge_and_sort_completion_candidates(vec![
+            CompletionCandidate::legacy(sparse),
+            CompletionCandidate::legacy(documented),
+        ]);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].item.detail.as_deref(), Some("Foo::run"));
+        assert_eq!(result[0].item.documentation.as_deref(), Some("docs"));
+    }
+
+    #[test]
     fn same_label_distinct_semantic_entities_remain_distinct() {
         let candidates = vec![
             CompletionCandidate::semantic(
@@ -467,8 +501,12 @@ mod tests {
 
         let result = merge_and_sort_completion_candidates(candidates);
         assert_eq!(result.len(), 2);
-        assert!(result.iter().any(|candidate| candidate.item.detail.as_deref() == Some("Foo::run")));
-        assert!(result.iter().any(|candidate| candidate.item.detail.as_deref() == Some("Bar::run")));
+        assert!(
+            result.iter().any(|candidate| candidate.item.detail.as_deref() == Some("Foo::run"))
+        );
+        assert!(
+            result.iter().any(|candidate| candidate.item.detail.as_deref() == Some("Bar::run"))
+        );
     }
 
     #[test]
@@ -503,16 +541,14 @@ mod tests {
 
     #[test]
     fn conflicting_insertion_plans_remain_separate() {
-        let first = CompletionCandidate::semantic(
-            EntityId(9),
-            "default_export",
-            item("run", None, "100"),
-        )
-        .with_insertion_plan_id("import:Foo");
+        let first =
+            CompletionCandidate::semantic(EntityId(9), "default_export", item("run", None, "100"))
+                .with_insertion_plan_id("import:Foo");
         let mut second_item = item("run", None, "100");
-        second_item
-            .additional_edits
-            .push((perl_parser_core::SourceLocation { start: 0, end: 0 }, "use Bar;\n".to_string()));
+        second_item.additional_edits.push((
+            perl_parser_core::SourceLocation { start: 0, end: 0 },
+            "use Bar;\n".to_string(),
+        ));
         let second = CompletionCandidate::semantic(EntityId(9), "default_export", second_item)
             .with_insertion_plan_id("import:Bar");
 
@@ -523,9 +559,7 @@ mod tests {
             candidate.conflicts.contains(&CompletionCandidateConflict::InsertionPlan)
         }));
         assert!(result.iter().any(|candidate| {
-            candidate
-                .conflicts
-                .contains(&CompletionCandidateConflict::InsertionPlanIdentity)
+            candidate.conflicts.contains(&CompletionCandidateConflict::InsertionPlanIdentity)
         }));
     }
 
@@ -546,5 +580,31 @@ mod tests {
 
         let result = merge_and_sort_completion_candidates(vec![first, second]);
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn merge_rechecks_sibling_conflicts_after_backfill() {
+        // A and B stay separate over incompatible insertion plans. C is
+        // insertion-compatible with B and merges in, backfilling its receiver
+        // owner onto the merged entry. That backfilled owner conflicts with A's,
+        // and both retained entries must record it.
+        let mut first_item = item("run", None, "100");
+        first_item.insert_text = Some(Cow::Owned("a()".to_string()));
+        let first = CompletionCandidate::semantic(EntityId(11), "method", first_item)
+            .with_owners(Some("R1".to_string()), None);
+        let mut second_item = item("run", None, "100");
+        second_item.insert_text = Some(Cow::Owned("b()".to_string()));
+        let second = CompletionCandidate::semantic(EntityId(11), "method", second_item);
+        let mut third_item = item("run", None, "100");
+        third_item.insert_text = Some(Cow::Owned("b()".to_string()));
+        let third = CompletionCandidate::semantic(EntityId(11), "method", third_item)
+            .with_owners(Some("R2".to_string()), None);
+
+        let result = merge_and_sort_completion_candidates(vec![first, second, third]);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|candidate| {
+            candidate.conflicts.contains(&CompletionCandidateConflict::ReceiverOwner)
+        }));
     }
 }

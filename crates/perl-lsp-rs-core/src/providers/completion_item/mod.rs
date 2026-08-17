@@ -118,10 +118,7 @@ pub fn merge_and_sort_completion_candidates(
 #[must_use]
 pub fn deduplicate_and_sort(completions: Vec<CompletionItem>) -> Vec<CompletionItem> {
     merge_and_sort_completion_candidates(
-        completions
-            .into_iter()
-            .map(CompletionCandidate::legacy)
-            .collect(),
+        completions.into_iter().map(CompletionCandidate::legacy).collect(),
     )
     .into_iter()
     .map(|candidate| candidate.item)
@@ -189,10 +186,7 @@ mod tests {
 
     fn sort_key(item: &CompletionItem) -> (String, CompletionItemKind, String) {
         (
-            item.sort_text
-                .as_deref()
-                .unwrap_or(item.label.as_ref())
-                .to_string(),
+            item.sort_text.as_deref().unwrap_or(item.label.as_ref()).to_string(),
             item.kind,
             item.label.to_string(),
         )
@@ -207,9 +201,7 @@ mod tests {
                 (
                     item.label.to_string(),
                     item.kind,
-                    item.sort_text
-                        .as_ref()
-                        .map(|s: &Cow<'static, str>| s.to_string()),
+                    item.sort_text.as_ref().map(|s: &Cow<'static, str>| s.to_string()),
                 )
             })
             .collect()

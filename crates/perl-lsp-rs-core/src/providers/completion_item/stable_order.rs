@@ -40,10 +40,7 @@ fn completion_item_order(left: &CompletionItem, right: &CompletionItem) -> Order
         .then_with(|| left.label.cmp(&right.label))
 }
 
-fn candidate_metadata_order(
-    left: &CompletionCandidate,
-    right: &CompletionCandidate,
-) -> Ordering {
+fn candidate_metadata_order(left: &CompletionCandidate, right: &CompletionCandidate) -> Ordering {
     left.source_anchor
         .cmp(&right.source_anchor)
         .then_with(|| left.receiver_package.cmp(&right.receiver_package))
@@ -55,8 +52,12 @@ fn candidate_metadata_order(
         .then_with(|| left.evidence.generation.cmp(&right.evidence.generation))
         .then_with(|| left.evidence.producer.cmp(&right.evidence.producer))
         .then_with(|| left.item.insert_text.cmp(&right.item.insert_text))
-        .then_with(|| insert_text_format_order(&left.item.insert_text_format, &right.item.insert_text_format))
-        .then_with(|| additional_edits_order(&left.item.additional_edits, &right.item.additional_edits))
+        .then_with(|| {
+            insert_text_format_order(&left.item.insert_text_format, &right.item.insert_text_format)
+        })
+        .then_with(|| {
+            additional_edits_order(&left.item.additional_edits, &right.item.additional_edits)
+        })
         .then_with(|| left.item.text_edit_range.cmp(&right.item.text_edit_range))
         .then_with(|| left.item.filter_text.cmp(&right.item.filter_text))
         .then_with(|| left.item.detail.cmp(&right.item.detail))
@@ -73,12 +74,8 @@ fn insert_text_format_order(left: &InsertTextFormat, right: &InsertTextFormat) -
         (InsertTextFormat::PlainText, InsertTextFormat::Snippet { .. }) => Ordering::Less,
         (InsertTextFormat::Snippet { .. }, InsertTextFormat::PlainText) => Ordering::Greater,
         (
-            InsertTextFormat::Snippet {
-                plain_fallback: left,
-            },
-            InsertTextFormat::Snippet {
-                plain_fallback: right,
-            },
+            InsertTextFormat::Snippet { plain_fallback: left },
+            InsertTextFormat::Snippet { plain_fallback: right },
         ) => left.cmp(right),
     }
 }
@@ -108,10 +105,9 @@ fn label_details_order(
         (None, None) => Ordering::Equal,
         (None, Some(_)) => Ordering::Less,
         (Some(_), None) => Ordering::Greater,
-        (Some(left), Some(right)) => left
-            .detail
-            .cmp(&right.detail)
-            .then_with(|| left.description.cmp(&right.description)),
+        (Some(left), Some(right)) => {
+            left.detail.cmp(&right.detail).then_with(|| left.description.cmp(&right.description))
+        }
     }
 }
 
@@ -171,14 +167,10 @@ mod tests {
 
         let forward = merge_and_sort_completion_candidates(vec![first.clone(), second.clone()]);
         let reverse = merge_and_sort_completion_candidates(vec![second, first]);
-        let forward_plans = forward
-            .iter()
-            .map(|candidate| candidate.insertion_plan_id.clone())
-            .collect::<Vec<_>>();
-        let reverse_plans = reverse
-            .iter()
-            .map(|candidate| candidate.insertion_plan_id.clone())
-            .collect::<Vec<_>>();
+        let forward_plans =
+            forward.iter().map(|candidate| candidate.insertion_plan_id.clone()).collect::<Vec<_>>();
+        let reverse_plans =
+            reverse.iter().map(|candidate| candidate.insertion_plan_id.clone()).collect::<Vec<_>>();
 
         assert_eq!(forward.len(), 2);
         assert_eq!(reverse.len(), 2);
