@@ -2,9 +2,8 @@
 //!
 //! Verifies that the unreachable_code lint correctly identifies statements
 //! that cannot execute due to unconditional control-flow exits inside
-//! `continue { }` blocks, and does NOT emit false positives for `next`/`redo`
-//! in continue blocks (which do not terminate the continue block's execution
-//! in the same way as `last`, `die`, `return`, etc.).
+//! `continue { }` blocks, including `next` and `redo`: their eventual loop
+//! destinations differ, but neither falls through to the following sibling.
 //!
 //! Extracted from PR #4488 (feat: unreachable code detection in continue blocks,
 //! issue #3374). The original test file targeted `perl-lsp-diagnostics` which
@@ -247,7 +246,7 @@ fn count_pl406(diagnostics: &[Diagnostic]) -> usize {
 }
 
 // ===========================================================================
-// Continue block tests (T-continue-1 through T-continue-10, N-continue-1, N-continue-2)
+// Continue block tests (T-continue-1 through T-continue-12)
 // ===========================================================================
 
 // --------------------------------------------------------------------------
@@ -398,15 +397,13 @@ fn t_continue_5_return_in_continue_block() -> Result<(), Box<dyn std::error::Err
 }
 
 // --------------------------------------------------------------------------
-// N-continue-1: next in continue block followed by statement — NO false positive
-// "while (1) { } continue { next; print 'reachable'; }"
-// expect: 0 PL406 diagnostics (next jumps to next iteration, continue block re-runs)
+// T-continue-6: next in continue block followed by statement
+// "while (1) { } continue { next; print 'dead'; }"
+// expect: 1 PL406 diagnostic (next transfers before the following sibling)
 // --------------------------------------------------------------------------
 
 #[test]
-fn n_continue_1_next_in_continue_block_no_false_positive() -> Result<(), Box<dyn std::error::Error>>
-{
-    // continue block: next; print "reachable";
+fn t_continue_6_next_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
     let continue_body = block(vec![next_stmt(20, 25), print_stmt(27, 47)]);
     let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
 
@@ -415,23 +412,21 @@ fn n_continue_1_next_in_continue_block_no_false_positive() -> Result<(), Box<dyn
 
     assert_eq!(
         count_pl406(&diagnostics),
-        0,
-        "N-continue-1: Expected 0 PL406 for next in continue block (next re-runs continue), got: {:?}",
+        1,
+        "T-continue-6: Expected one PL406 after next in continue block, got: {:?}",
         diagnostics
     );
     Ok(())
 }
 
 // --------------------------------------------------------------------------
-// N-continue-2: redo in continue block followed by statement — NO false positive
-// "while (1) { } continue { redo; print 'reachable'; }"
-// expect: 0 PL406 diagnostics (redo re-runs the continue block)
+// T-continue-7: redo in continue block followed by statement
+// "while (1) { } continue { redo; print 'dead'; }"
+// expect: 1 PL406 diagnostic (redo transfers before the following sibling)
 // --------------------------------------------------------------------------
 
 #[test]
-fn n_continue_2_redo_in_continue_block_no_false_positive() -> Result<(), Box<dyn std::error::Error>>
-{
-    // continue block: redo; print "reachable";
+fn t_continue_7_redo_in_continue_block() -> Result<(), Box<dyn std::error::Error>> {
     let continue_body = block(vec![redo_stmt(20, 25), print_stmt(27, 47)]);
     let ast = program(vec![while_loop_with_continue(block(vec![]), continue_body)]);
 
@@ -440,8 +435,8 @@ fn n_continue_2_redo_in_continue_block_no_false_positive() -> Result<(), Box<dyn
 
     assert_eq!(
         count_pl406(&diagnostics),
-        0,
-        "N-continue-2: Expected 0 PL406 for redo in continue block (redo re-runs continue), got: {:?}",
+        1,
+        "T-continue-7: Expected one PL406 after redo in continue block, got: {:?}",
         diagnostics
     );
     Ok(())

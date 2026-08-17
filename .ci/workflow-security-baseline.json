@@ -6,22 +6,6 @@
   },
   "findings": [
     {
-      "evidence": "taiki-e/install-action@67729d5c413db75907f0e39bb04b9c868ff60",
-      "fingerprint": "06e08638be6fd1b0c2642cd826831ef80a6a598dca766e131ddae0802acbc263",
-      "line": 83,
-      "message": "external action ref is not a full commit SHA",
-      "path": ".github/actions/setup-rust/action.yml",
-      "rule": "mutable_action_ref"
-    },
-    {
-      "evidence": "taiki-e/install-action@67729d5c413db75907f0e39bb04b9c868ff60",
-      "fingerprint": "36d3983dc6aefb46310d3c3bbf68f589773cd2eddb7f96905fbe1618065720a8",
-      "line": 89,
-      "message": "external action ref is not a full commit SHA",
-      "path": ".github/actions/setup-rust/action.yml",
-      "rule": "mutable_action_ref"
-    },
-    {
       "evidence": "GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}",
       "fingerprint": "e638e468a5d7fcd90b3bcddf0058dbee37a8f45f6796b78f68b6175616ed6905",
       "line": 64,
@@ -567,86 +551,6 @@
     },
     {
       "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "5b7ac523d285c9c7320d99441fed1e388c6e3a759c007744fc86a3c9ed251345",
-      "line": 65,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "248a95489f83a9f77b1e9cef8764dd54617cd482aa9fbbd6a41b7430b8d15988",
-      "line": 133,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "91bbeea00d09403ded50f64d7f3fa55d33a12077fa5c24facbbe56718a400376",
-      "line": 200,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "8dd84f5363caea78e912285dc875c037309973fe270c7bb8ab3572f4bf974566",
-      "line": 248,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "echo \"- **Version**: ${{ steps.version.outputs.version }}\" >> $GITHUB_STEP_SUMMARY",
-      "fingerprint": "04e266eb699e2a04ad540231e02baf12d03f83dfa7d85c952e28187ac3790d90",
-      "line": 305,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- \\`ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}\\`\" >> $GITHUB_STEP_SUMMARY",
-      "fingerprint": "6ab968297a577825fe33861703810fe4b1acba094298ec8c6fc543338d44092d",
-      "line": 309,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- \\`effortlessmetrics/perl-lsp:${{ steps.version.outputs.version }}\\`\" >> $GITHUB_STEP_SUMMARY",
-      "fingerprint": "b2f3599837a225c3d07da677900f75b9d82611c8a069f373077f44ff1911a51e",
-      "line": 310,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- \\`ghcr.io/${{ github.repository }}-perl:${{ steps.version.outputs.version }}\\`\" >> $GITHUB_STEP_SUMMARY",
-      "fingerprint": "613122b13f485d9270824309ebbd7d45e90e54be2fd975008696f8c7c4c9686c",
-      "line": 313,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"- \\`effortlessmetrics/perl-lsp:${{ steps.version.outputs.version }}-perl\\`\" >> $GITHUB_STEP_SUMMARY",
-      "fingerprint": "453cadb736e948c66ae0a96f2553551ce5cbdefd8c9d4b6f3a377f2e1a027c19",
-      "line": 314,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "echo \"docker run --rm -i -v \\\"\\${PWD}:/workspace\\\" effortlessmetrics/perl-lsp:${{ steps.version.outputs.version }}-perl\" >> $GITHUB_STEP_SUMMARY",
-      "fingerprint": "25a330c7243f5c4f657ee820ea2b52bd316b57318bd368c757428b3e770d5a3a",
-      "line": 319,
-      "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
-      "path": ".github/workflows/docker-publish.yml",
-      "rule": "expression_in_run_source"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
       "fingerprint": "759c2a659d54b6d2c60fb7f885653e06f9e19f052d8de992ebfe5bc508d7687b",
       "line": 36,
       "message": "write-capable workflow checkout must set persist-credentials: false",
@@ -822,49 +726,9 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "c724726b6db1402e8b54a4779e8868e3162e30123b11cb3e4f5b93343be239ac",
-      "line": 104,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-      "fingerprint": "e24093f74c8e07e025b899b44f4730eb5aeb953d705c5b6933ef00a8e88654e6",
-      "line": 222,
-      "message": "write-capable workflow checkout must set persist-credentials: false",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "checkout_persists_credentials_on_write_surface"
-    },
-    {
-      "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
-      "fingerprint": "a31b216d80b44d987ff38de481b3f6653a95300fbe930c175e8b4a8cdb39c67d",
-      "line": 106,
-      "message": "PR-triggered workflow references a secret",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "pr_secret_reference"
-    },
-    {
-      "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
-      "fingerprint": "4836fda7fe722dfdfe801363adcd80ae8d540527dffe8b8bba92ec36b1755dc7",
-      "line": 224,
-      "message": "PR-triggered workflow references a secret",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "pr_secret_reference"
-    },
-    {
-      "evidence": "token: ${{ secrets.GITHUB_TOKEN }}",
-      "fingerprint": "44111a484b30b6ada0f99cfe405ac5a517b7280d3d1becccf4d92b45e1529a7d",
-      "line": 344,
-      "message": "PR-triggered workflow references a secret",
-      "path": ".github/workflows/post-merge-corpus-ratchet.yml",
-      "rule": "pr_secret_reference"
-    },
-    {
       "evidence": "contents: write",
       "fingerprint": "dd0de7f961cec33288911a5fef396993d070e013d78a0f59f46104cf185b0e78",
-      "line": 211,
+      "line": 289,
       "message": "PR-triggered workflow grants write authority",
       "path": ".github/workflows/post-merge-corpus-ratchet.yml",
       "rule": "pr_write_permission"
@@ -872,7 +736,7 @@
     {
       "evidence": "pull-requests: write",
       "fingerprint": "2f47d57f61f1094322be03c35da25bd8c18ec08cfd6ad1075e7568a1e4570c8e",
-      "line": 212,
+      "line": 290,
       "message": "PR-triggered workflow grants write authority",
       "path": ".github/workflows/post-merge-corpus-ratchet.yml",
       "rule": "pr_write_permission"
