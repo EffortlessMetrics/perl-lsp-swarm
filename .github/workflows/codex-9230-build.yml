@@ -6,71 +6,431 @@ on:
       - "codex/9230-declaration-version-schema"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
+  build:
+    if: github.event.head_commit.message == 'chore: implement declaration version schema'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - name: Classify declaration variant sites
+      - name: Implement shared declaration version syntax
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          from __future__ import annotations
+
+          import re
           from pathlib import Path
+
+          AST = Path("crates/perl-ast/src/ast.rs")
+          LIB = Path("crates/perl-ast/src/lib.rs")
+          PARSER_LIB = Path("crates/perl-parser-core/src/lib.rs")
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement, found {count}: {old[:80]!r}")
+              path.write_text(text.replace(old, new, 1))
+
+          version_types = r'''
+          /// Source spelling category for an optional package or class declaration version.
+          ///
+          /// This records syntax only. It does not compare Perl versions or enable features.
+          #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+          #[non_exhaustive]
+          pub enum DeclarationVersionForm {
+              /// Decimal declaration version such as `1.23`.
+              Decimal,
+              /// V-string declaration version such as `v1.2.3`.
+              VString,
+              /// Present but malformed, recovered, or otherwise not safely classified.
+              RecoveredUnknown,
+          }
+
+          /// Completeness of a retained declaration-version source fact.
+          #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+          #[non_exhaustive]
+          pub enum DeclarationVersionCompleteness {
+              /// Raw spelling and range are complete for the accepted source.
+              Complete,
+              /// The parser recovered a partial or malformed source proposition.
+              Recovered,
+              /// A version proposition is known to exist but its source payload is unavailable.
+              Unavailable,
+          }
+
+          /// Source-backed optional version syntax on a package or class declaration.
+          ///
+          /// `normalized` is populated only when another source-level producer has already
+          /// established a normalized spelling. This type never performs semantic version
+          /// comparison or feature activation.
+          #[derive(Debug, Clone, PartialEq)]
+          #[non_exhaustive]
+          pub struct DeclarationVersionSyntax {
+              /// Decimal, v-string, or recovered/unknown source form.
+              pub form: DeclarationVersionForm,
+              /// Exact source spelling when available.
+              pub raw: Option<String>,
+              /// Exact source range when available.
+              pub range: Option<SourceLocation>,
+              /// Independently established normalized spelling, if any.
+              pub normalized: Option<String>,
+              /// Completeness and recovery disposition.
+              pub completeness: DeclarationVersionCompleteness,
+          }
+
+          impl DeclarationVersionSyntax {
+              /// Construct a complete source-backed declaration version without normalization.
+              pub fn complete(
+                  form: DeclarationVersionForm,
+                  raw: impl Into<String>,
+                  range: SourceLocation,
+              ) -> Self {
+                  Self {
+                      form,
+                      raw: Some(raw.into()),
+                      range: Some(range),
+                      normalized: None,
+                      completeness: DeclarationVersionCompleteness::Complete,
+                  }
+              }
+
+              /// Construct a complete source-backed declaration version with an independently
+              /// established normalized spelling.
+              pub fn complete_with_normalized(
+                  form: DeclarationVersionForm,
+                  raw: impl Into<String>,
+                  range: SourceLocation,
+                  normalized: impl Into<String>,
+              ) -> Self {
+                  Self {
+                      form,
+                      raw: Some(raw.into()),
+                      range: Some(range),
+                      normalized: Some(normalized.into()),
+                      completeness: DeclarationVersionCompleteness::Complete,
+                  }
+              }
+
+              /// Construct a recovered declaration-version source fact.
+              pub fn recovered(
+                  form: DeclarationVersionForm,
+                  raw: Option<String>,
+                  range: Option<SourceLocation>,
+              ) -> Self {
+                  Self {
+                      form,
+                      raw,
+                      range,
+                      normalized: None,
+                      completeness: DeclarationVersionCompleteness::Recovered,
+                  }
+              }
+
+              /// Construct a present-but-unavailable declaration-version fact.
+              pub const fn unavailable() -> Self {
+                  Self {
+                      form: DeclarationVersionForm::RecoveredUnknown,
+                      raw: None,
+                      range: None,
+                      normalized: None,
+                      completeness: DeclarationVersionCompleteness::Unavailable,
+                  }
+              }
+
+              /// Return the exact retained source spelling, if available.
+              pub fn raw_spelling(&self) -> Option<&str> {
+                  self.raw.as_deref()
+              }
+
+              /// Return whether this fact is complete for the accepted source.
+              pub const fn is_complete(&self) -> bool {
+                  matches!(self.completeness, DeclarationVersionCompleteness::Complete)
+              }
+          }
+
+          '''
+
+          replace_once(
+              AST,
+              "/// Stable identifier for a named child relationship in the syntax tree.\n",
+              version_types + "/// Stable identifier for a named child relationship in the syntax tree.\n",
+          )
+
+          replace_once(
+              AST,
+              """        name_span: SourceLocation,\n\n        /// Optional inline block for `package Foo { ... }` declarations.\n        block: Option<Box<Node>>,\n""",
+              """        name_span: SourceLocation,\n\n        /// Optional source-backed declaration version.\n        version: Option<DeclarationVersionSyntax>,\n\n        /// Optional inline block for `package Foo { ... }` declarations.\n        block: Option<Box<Node>>,\n""",
+          )
+
+          replace_once(
+              AST,
+              """        /// Source location span of the class name\n        name_span: Option<SourceLocation>,\n        /// Parent class names from `:isa(Parent)` attributes\n        parents: Vec<String>,\n""",
+              """        /// Source location span of the class name\n        name_span: Option<SourceLocation>,\n        /// Optional source-backed declaration version.\n        version: Option<DeclarationVersionSyntax>,\n        /// Parent class names from `:isa(Parent)` attributes\n        parents: Vec<String>,\n""",
+          )
+
+          replace_once(
+              AST,
+              """            NodeKind::Package { name, block, name_span: _ } => {\n                if let Some(blk) = block {\n                    format!(\"(package {} {})\", name, blk.to_sexp())\n                } else {\n                    format!(\"(package {})\", name)\n                }\n            }\n""",
+              """            NodeKind::Package { name, version, block, name_span: _ } => {\n                let version_text = version.as_ref().map_or_else(String::new, |version| {\n                    format!(\" {}\", version.raw_spelling().unwrap_or(\"<version-unavailable>\"))\n                });\n                if let Some(blk) = block {\n                    format!(\"(package {}{} {})\", name, version_text, blk.to_sexp())\n                } else {\n                    format!(\"(package {}{})\", name, version_text)\n                }\n            }\n""",
+          )
+
+          replace_once(
+              AST,
+              """            NodeKind::Class { name, name_span: _, parents, body } => {\n                if parents.is_empty() {\n                    format!(\"(class {} {})\", name, body.to_sexp())\n                } else {\n                    format!(\"(class {} :isa({}) {})\", name, parents.join(\",\"), body.to_sexp())\n                }\n            }\n""",
+              """            NodeKind::Class { name, name_span: _, version, parents, body } => {\n                let version_text = version.as_ref().map_or_else(String::new, |version| {\n                    format!(\" {}\", version.raw_spelling().unwrap_or(\"<version-unavailable>\"))\n                });\n                if parents.is_empty() {\n                    format!(\"(class {}{} {})\", name, version_text, body.to_sexp())\n                } else {\n                    format!(\n                        \"(class {}{} :isa({}) {})\",\n                        name,\n                        version_text,\n                        parents.join(\",\"),\n                        body.to_sexp()\n                    )\n                }\n            }\n""",
+          )
+
+          replace_once(
+              AST,
+              """impl NodeKind {\n    /// Get the name of this `NodeKind` as a static string.\n""",
+              """impl NodeKind {\n    /// Return the optional package/class declaration-version source fact.\n    pub fn declaration_version(&self) -> Option<&DeclarationVersionSyntax> {\n        match self {\n            NodeKind::Package { version, .. } | NodeKind::Class { version, .. } => {\n                version.as_ref()\n            }\n            _ => None,\n        }\n    }\n\n    /// Get the name of this `NodeKind` as a static string.\n""",
+          )
+
+          replace_once(
+              LIB,
+              "pub use ast::{FieldId, Node, NodeKind};\n",
+              "pub use ast::{\n    DeclarationVersionCompleteness, DeclarationVersionForm, DeclarationVersionSyntax, FieldId,\n    Node, NodeKind,\n};\n",
+          )
+
+          replace_once(
+              PARSER_LIB,
+              "pub use perl_ast::{GotoTargetForm, Node, NodeKind, SourceLocation};\n",
+              "pub use perl_ast::{\n    DeclarationVersionCompleteness, DeclarationVersionForm, DeclarationVersionSyntax,\n    GotoTargetForm, Node, NodeKind, SourceLocation,\n};\n",
+          )
 
           def balanced(text: str, open_pos: int) -> int:
               depth = 0
-              in_string = None
+              in_string: str | None = None
               escape = False
               i = open_pos
               while i < len(text):
-                  c = text[i]
-                  if in_string:
+                  char = text[i]
+                  if in_string is not None:
                       if escape:
                           escape = False
-                      elif c == '\\':
+                      elif char == "\\":
                           escape = True
-                      elif c == in_string:
+                      elif char == in_string:
                           in_string = None
                   else:
-                      if c in ('"', "'"):
-                          in_string = c
-                      elif c == '{':
+                      if char in ('"', "'"):
+                          in_string = char
+                      elif char == "{":
                           depth += 1
-                      elif c == '}':
+                      elif char == "}":
                           depth -= 1
                           if depth == 0:
                               return i
                   i += 1
-              raise RuntimeError(f'unbalanced brace at {open_pos}')
+              raise RuntimeError(f"unbalanced brace at {open_pos}")
 
-          for path in sorted(Path('crates').rglob('*.rs')):
+          def append_struct_tail(segment: str, tail: str) -> str:
+              body = segment[:-1].rstrip()
+              if not body.endswith(","):
+                  body += ","
+              if "\n" not in segment:
+                  return f"{body} {tail} }}"
+              line_start = segment.rfind("\n", 0, len(segment) - 1) + 1
+              close_indent = segment[line_start:-1]
+              return f"{body}\n{close_indent}    {tail}\n{close_indent}}}"
+
+          def migrate_variants(path: Path) -> None:
               text = path.read_text()
-              for variant in ('Package', 'Class'):
-                  needle = f'NodeKind::{variant} {{'
+              changed = False
+              for variant in ("Package", "Class"):
+                  needle = f"NodeKind::{variant} {{"
                   start = 0
                   while True:
                       pos = text.find(needle, start)
                       if pos < 0:
                           break
-                      brace = text.find('{', pos)
+                      brace = text.find("{", pos)
                       end = balanced(text, brace)
-                      segment = text[pos:end+1]
-                      before = text[max(0, pos-120):pos].replace('\n', ' ')
-                      after = text[end+1:end+80].replace('\n', ' ')
-                      line = text.count('\n', 0, pos) + 1
-                      if '..' in segment:
-                          kind = 'pattern-open'
-                      elif after.lstrip().startswith('=>') or 'match ' in before[-80:] or 'if let ' in before[-80:] or 'matches!' in before[-100:]:
-                          kind = 'pattern-exact'
-                      elif any(token in segment for token in ('Box::new(', 'block: None', 'block: Some(', 'parents: vec!', '.to_string()', 'String::from(')):
-                          kind = 'constructor'
-                      else:
-                          kind = 'unknown'
-                      print(f'{kind:13} {path}:{line} {variant} before={before[-60:]!r} after={after[:45]!r}')
+                      segment = text[pos : end + 1]
+                      if "version" in segment or ".." in segment:
+                          start = end + 1
+                          continue
+                      before = text[max(0, pos - 260) : pos]
+                      after = text[end + 1 : end + 120].lstrip()
+                      pattern = (
+                          after.startswith("=>")
+                          or after.startswith("=")
+                          or after.startswith("|")
+                          or after.startswith("if ")
+                          or bool(re.search(r"matches!\s*\([^;]{0,220}$", before, re.S))
+                          or bool(re.search(r"(?:if|while)\s+let\s+[^;]{0,180}$", before, re.S))
+                          or bool(re.search(r"\blet\s+NodeKind::[^;]{0,180}$", before, re.S))
+                      )
+                      replacement = append_struct_tail(segment, ".." if pattern else "version: None,")
+                      text = text[:pos] + replacement + text[end + 1 :]
+                      changed = True
+                      start = pos + len(replacement)
+              if changed:
+                  path.write_text(text)
+
+          for rust_path in sorted(Path("crates").rglob("*.rs")):
+              migrate_variants(rust_path)
+
+          tests = r'''use perl_ast::{
+              DeclarationVersionCompleteness, DeclarationVersionForm, DeclarationVersionSyntax,
+              Node, NodeKind, SourceLocation,
+          };
+
+          fn loc(start: usize, end: usize) -> SourceLocation {
+              SourceLocation { start, end }
+          }
+
+          #[test]
+          fn package_decimal_version_retains_source_identity() {
+              let version = DeclarationVersionSyntax::complete(
+                  DeclarationVersionForm::Decimal,
+                  "1.23",
+                  loc(12, 16),
+              );
+              let package = Node::new(
+                  NodeKind::Package {
+                      name: "Example".to_string(),
+                      name_span: loc(8, 15),
+                      version: Some(version.clone()),
+                      block: None,
+                  },
+                  loc(0, 17),
+              );
+
+              assert_eq!(package.kind.declaration_version(), Some(&version));
+              assert_eq!(package.to_sexp(), "(package Example 1.23)");
+          }
+
+          #[test]
+          fn class_vstring_version_retains_form_and_range() {
+              let version = DeclarationVersionSyntax::complete(
+                  DeclarationVersionForm::VString,
+                  "v1.2.3",
+                  loc(13, 19),
+              );
+              let class = Node::new(
+                  NodeKind::Class {
+                      name: "Widget".to_string(),
+                      name_span: Some(loc(6, 12)),
+                      version: Some(version.clone()),
+                      parents: vec![],
+                      body: Box::new(Node::new(
+                          NodeKind::Block { statements: vec![] },
+                          loc(20, 22),
+                      )),
+                  },
+                  loc(0, 22),
+              );
+
+              assert_eq!(class.kind.declaration_version(), Some(&version));
+              assert_eq!(class.to_sexp(), "(class Widget v1.2.3 (block ))");
+          }
+
+          #[test]
+          fn recovered_and_unavailable_versions_are_not_complete() {
+              let recovered = DeclarationVersionSyntax::recovered(
+                  DeclarationVersionForm::RecoveredUnknown,
+                  Some("v1.".to_string()),
+                  Some(loc(9, 12)),
+              );
+              let unavailable = DeclarationVersionSyntax::unavailable();
+
+              assert!(!recovered.is_complete());
+              assert_eq!(recovered.raw_spelling(), Some("v1."));
+              assert_eq!(recovered.completeness, DeclarationVersionCompleteness::Recovered);
+              assert!(!unavailable.is_complete());
+              assert_eq!(unavailable.raw_spelling(), None);
+              assert_eq!(
+                  unavailable.completeness,
+                  DeclarationVersionCompleteness::Unavailable
+              );
+          }
+
+          #[test]
+          fn absent_version_is_distinct_from_present_but_unavailable() {
+              let absent = NodeKind::Package {
+                  name: "Absent".to_string(),
+                  name_span: loc(0, 6),
+                  version: None,
+                  block: None,
+              };
+              let unavailable = NodeKind::Package {
+                  name: "Unavailable".to_string(),
+                  name_span: loc(0, 11),
+                  version: Some(DeclarationVersionSyntax::unavailable()),
+                  block: None,
+              };
+
+              assert!(absent.declaration_version().is_none());
+              assert!(unavailable.declaration_version().is_some());
+              assert_eq!(
+                  Node::new(unavailable, loc(0, 11)).to_sexp(),
+                  "(package Unavailable <version-unavailable>)"
+              );
+          }
+
+          #[test]
+          fn decimal_and_vstring_forms_remain_distinct() {
+              let decimal = DeclarationVersionSyntax::complete(
+                  DeclarationVersionForm::Decimal,
+                  "1.2",
+                  loc(0, 3),
+              );
+              let vstring = DeclarationVersionSyntax::complete(
+                  DeclarationVersionForm::VString,
+                  "v1.2",
+                  loc(0, 4),
+              );
+
+              assert_ne!(decimal.form, vstring.form);
+              assert_ne!(decimal.raw, vstring.raw);
+          }
+          '''
+          Path("crates/perl-ast/tests/declaration_version_schema.rs").write_text(tests)
+
+          # A constructor migration must never silently narrow an existing match to
+          # `version: None`. Catch load-bearing match syntax before compiling.
+          for rust_path in sorted(Path("crates").rglob("*.rs")):
+              text = rust_path.read_text()
+              for variant in ("Package", "Class"):
+                  needle = f"NodeKind::{variant} {{"
+                  start = 0
+                  while True:
+                      pos = text.find(needle, start)
+                      if pos < 0:
+                          break
+                      brace = text.find("{", pos)
+                      end = balanced(text, brace)
+                      segment = text[pos : end + 1]
+                      before = text[max(0, pos - 260) : pos]
+                      after = text[end + 1 : end + 120].lstrip()
+                      looks_like_pattern = (
+                          after.startswith(("=>", "=", "|", "if "))
+                          or bool(re.search(r"matches!\s*\([^;]{0,220}$", before, re.S))
+                          or bool(re.search(r"(?:if|while)\s+let\s+[^;]{0,180}$", before, re.S))
+                          or bool(re.search(r"\blet\s+NodeKind::[^;]{0,180}$", before, re.S))
+                      )
+                      if looks_like_pattern and "version: None" in segment:
+                          line = text.count("\n", 0, pos) + 1
+                          raise SystemExit(
+                              f"{rust_path}:{line}: declaration pattern narrowed to version None"
+                          )
                       start = end + 1
           PY
+
+          cargo fmt --all
+          cargo test -p perl-ast --all-targets --locked
+          cargo check --workspace --all-targets --locked
+          git diff --check
+
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add crates
+          git commit -m 'schema(ast): retain package and class declaration versions (#9230)'
+          git push origin HEAD
