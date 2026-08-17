@@ -1,0 +1,12 @@
+project: product
+component: Editor Integrations
+kind: Added
+body: >-
+  Add an exact-source Sublime Text LSP-perllsp helper package with pinned,
+  verified managed binaries, semantic-token mappings, and deterministic package
+  contracts.
+time: 2026-08-13T10:27:00Z
+custom:
+  PR: "7840"
+  Slug: sublime-helper-package
+  Breaking: "no"
