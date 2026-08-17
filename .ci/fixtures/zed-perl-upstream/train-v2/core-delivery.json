@@ -104,7 +104,7 @@
       "issue": 7912,
       "actor": "codex",
       "objective": "Execute the clean ordinary official-registry installation and exact public Zed host journey.",
-      "depends_on": ["P08", "P10", "P13", "P14", "I00", "C01", "U02"],
+      "depends_on": ["P08", "P10", "P12", "P13", "P14", "I00", "C01", "U02"],
       "evidence": "public_registry_host_evidence",
       "route": "official_registry",
       "blocks_core": true,
