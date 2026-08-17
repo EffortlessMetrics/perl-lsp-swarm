@@ -49,17 +49,11 @@ jobs:
 
           path = Path(".github/workflows/gate-enforcement-contract.yml")
           text = path.read_text(encoding="utf-8")
-          old = '''          python3 -m unittest \\
-            scripts/ci/test_validate_gate_enforcement_contract.py \\
-            scripts/ci/test_gate_enforcement_app_bindings.py
-          test_status=$?
-          '''
-          new = '''          python3 -m unittest \\
-            scripts/ci/test_validate_gate_enforcement_contract.py \\
-            scripts/ci/test_gate_enforcement_app_bindings.py \\
-            scripts/ci/test_reconcile_github_enforcement_snapshot.py
-          test_status=$?
-          '''
+          old = "            scripts/ci/test_gate_enforcement_app_bindings.py\n"
+          new = (
+              "            scripts/ci/test_gate_enforcement_app_bindings.py \\\n"
+              "            scripts/ci/test_reconcile_github_enforcement_snapshot.py\n"
+          )
           if text.count(old) != 1:
               raise SystemExit("gate-enforcement test wiring marker did not match exactly once")
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
