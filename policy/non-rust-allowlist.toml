@@ -1670,20 +1670,6 @@ created = "2026-08-16"
 review_after = "2026-09-16"
 
 [[allow]]
-id = "non-rust-sublime-helper"
-glob = "clients/sublime/**"
-kind = "editor_extension"
-language = "python"
-surface = "editor"
-classification = "production"
-owner = "editor/sublime"
-reason = "Sublime Text LSP helper package, deterministic export tooling, package settings, release manifest, and focused Python contract tests."
-covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
-broad_glob_reason = "The helper is a Package Control-style tree of Python, JSON settings/schema, messages, licenses, tests, and deterministic export tooling that must ship and be reviewed together."
-created = "2026-08-13"
-review_after = "2026-11-13"
-
-[[allow]]
 id = "non-rust-product-7821-changelog-fragment"
 path = ".changes/unreleased/product-7821-Changed-101512.yaml"
 kind = "release_metadata"
