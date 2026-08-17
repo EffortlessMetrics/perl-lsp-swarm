@@ -119,11 +119,12 @@ pub fn inspect_with_options(
         ));
     }
 
-    entries.sort_by(|left, right| {
-        normalized_path_key(&left.path)
-            .cmp(&normalized_path_key(&right.path))
-            .then_with(|| left.entry_id.cmp(&right.entry_id))
+    let mut keyed: Vec<_> =
+        entries.into_iter().map(|entry| (normalized_path_key(&entry.path), entry)).collect();
+    keyed.sort_by(|left, right| {
+        left.0.cmp(&right.0).then_with(|| left.1.entry_id.cmp(&right.1.entry_id))
     });
+    let entries: Vec<_> = keyed.into_iter().map(|(_, entry)| entry).collect();
 
     let subject = RepositorySubject { requested_root, repository_root, common_dir, source_head };
     let summary = PlanSummary::from_entries(&entries);
@@ -406,6 +407,35 @@ fn administrative_observation(
     }
 }
 
+/// Classify NUL-terminated porcelain=v1 status records.
+///
+/// Untracked files alone do not make a worktree dirty (the cleanup decision
+/// must not conflate ignorable leftovers with tracked modifications), and
+/// rename/copy records carry a second NUL-terminated path without a status
+/// prefix that must be skipped so the orphaned path cannot be misread as a
+/// status record.
+fn classify_status_records(stdout: &[u8]) -> (bool, bool) {
+    let mut dirty = false;
+    let mut untracked = false;
+    let mut records = stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty());
+    while let Some(record) = records.next() {
+        if record.starts_with(b"??") {
+            untracked = true;
+        } else {
+            dirty = true;
+            if record.len() >= 2
+                && (record[0] == b'R'
+                    || record[0] == b'C'
+                    || record[1] == b'R'
+                    || record[1] == b'C')
+            {
+                let _ = records.next();
+            }
+        }
+    }
+    (dirty, untracked)
+}
+
 fn observe_status(options: &InspectOptions, path: &Path) -> (Observation<bool>, Observation<bool>) {
     let output = run_read_only_git(
         options,
@@ -424,14 +454,7 @@ fn observe_status(options: &InspectOptions, path: &Path) -> (Observation<bool>, 
         }
     };
 
-    let mut dirty = false;
-    let mut untracked = false;
-    for record in output.stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
-        dirty = true;
-        if record.starts_with(b"??") {
-            untracked = true;
-        }
-    }
+    let (dirty, untracked) = classify_status_records(&output.stdout);
     (Observation::observed(dirty), Observation::observed(untracked))
 }
 
@@ -612,7 +635,10 @@ fn scan_administrative_records(common_dir: &Path) -> AdministrativeIndex {
             }
         }
     }
-    records.sort_by_key(|path| normalized_path_key(path));
+    let mut records: Vec<_> =
+        records.into_iter().map(|path| (normalized_path_key(&path), path)).collect();
+    records.sort_by_key(|(key, _)| key.clone());
+    let records: Vec<_> = records.into_iter().map(|(_, path)| path).collect();
 
     for record in records {
         let gitdir_path = record.join("gitdir");
@@ -917,6 +943,27 @@ mod tests {
             lock_reason: None,
             prunable_reason: None,
         }
+    }
+
+    /// Porcelain status records classify precisely: untracked-only trees are
+    /// not dirty, and rename/copy records consume their second NUL-terminated
+    /// path so the orphaned path cannot be misread as a status record.
+    #[test]
+    fn classifies_porcelain_status_records() {
+        let (dirty, untracked) = classify_status_records(b"?? leftover.txt ");
+        assert!(!dirty, "untracked-only is not dirty");
+        assert!(untracked);
+
+        let (dirty, untracked) = classify_status_records(b" M src/lib.rs ");
+        assert!(dirty, "tracked modification is dirty");
+        assert!(!untracked);
+
+        let (dirty, untracked) = classify_status_records(b"R  old_name.rs new_name.rs ?? extra ");
+        assert!(dirty, "rename is a tracked change");
+        assert!(untracked, "record after the rename's second path is parsed");
+
+        let (dirty, _) = classify_status_records(b"C  a.rs b.rs ");
+        assert!(dirty);
     }
 
     #[test]
