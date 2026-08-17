@@ -4,7 +4,7 @@
 //! #8285/#10245. It must remain the same operation as `perl.runFile`: the same
 //! arguments, validation, result, failures, and advertised command identity.
 
-use perl_lsp::execute_command::{ExecuteCommandProvider, get_supported_commands};
+use perl_lsp::execute_command::{ExecuteCommandProvider, command_exists, get_supported_commands};
 use perl_lsp_rs_core::config::WorkspaceConfig;
 use serde_json::Value;
 use std::error::Error;
@@ -23,6 +23,13 @@ fn provider_with_perl(root: &std::path::Path) -> ExecuteCommandProvider {
 
 #[test]
 fn run_script_is_an_exact_run_file_alias() -> TestResult {
+    // Requires a real Perl installation; skip when no `perl` is on PATH, matching
+    // the established pattern in execute_command_security_tests.rs.
+    if !command_exists("perl") {
+        eprintln!("skipping run_script_is_an_exact_run_file_alias (no perl on PATH)");
+        return Ok(());
+    }
+
     let workspace = tempdir()?;
     let script = workspace.path().join("run_script_alias_contract.pl");
     fs::write(&script, "print \"run-script-alias-contract\\n\";\n")?;
