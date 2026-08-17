@@ -986,7 +986,7 @@ fn os_runtime_with_timeout_zero_normalizes_to_one_second() -> Result<(), Box<dyn
     // so construction cannot panic and a fast command still completes.
     let runtime = OsSubprocessRuntime::with_timeout(0);
     let output = runtime.run_command("echo", &["normalized"], None)?;
-    assert!(output.success());
+    assert!(output.success(), "normalized zero-timeout command failed: {}", output.stderr_lossy());
     assert_eq!(output.stdout_lossy().trim(), "normalized");
     Ok(())
 }
