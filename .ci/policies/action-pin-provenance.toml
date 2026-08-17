@@ -323,3 +323,15 @@ action = 'taiki-e/install-action'
 sha = '82cd3e7658a6f96c86c0234aeeda1748937cb0a1'
 kind = 'release_tag'
 value = 'v2.85.13'
+
+[[pin]]
+action = 'SublimeText/UnitTesting/actions/setup'
+sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
+kind = 'legacy_debt'
+value = ''
+
+[[pin]]
+action = 'SublimeText/UnitTesting/actions/run-tests'
+sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
+kind = 'legacy_debt'
+value = ''
