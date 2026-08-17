@@ -1,0 +1,138 @@
+{
+  "schema_version": "zed_codex_implementation_train_fragment.v2",
+  "fragment": "core-delivery",
+  "stages": [
+    {
+      "id": "P16",
+      "lane": "core_lsp",
+      "issue": 10345,
+      "actor": "codex",
+      "objective": "Reconstruct the smallest accepted perllsp extension candidate on the exact current upstream source.",
+      "depends_on": ["P15", "P13", "I00"],
+      "evidence": "upstream_candidate_authority",
+      "route": "read_only_external_source",
+      "blocks_core": true,
+      "exit": "issue #10345 exact-current candidate acceptance"
+    },
+    {
+      "id": "P17",
+      "lane": "core_lsp",
+      "issue": 10347,
+      "actor": "codex",
+      "objective": "Freeze the evidence-bound, copy-ready upstream extension submission packet.",
+      "depends_on": ["P16", "P15", "P13", "P10", "I00"],
+      "evidence": "upstream_extension_packet",
+      "route": "internal_packet",
+      "blocks_core": true,
+      "exit": "issue #10347 packet acceptance and controller #7909 close boundary"
+    },
+    {
+      "id": "P18",
+      "lane": "core_lsp",
+      "issue": 7908,
+      "actor": "codex",
+      "objective": "Freeze the evidence-derived, exact-current Zed-core dormant-provider defaults packet.",
+      "depends_on": ["P13"],
+      "evidence": "zed_defaults_packet",
+      "route": "internal_packet",
+      "blocks_core": true,
+      "exit": "issue #7908 packet acceptance"
+    },
+    {
+      "id": "M01",
+      "lane": "core_lsp",
+      "issue": null,
+      "actor": "maintainer",
+      "objective": "Manually submit the extension and defaults packets in the evidence-derived order.",
+      "depends_on": ["P17", "P18"],
+      "evidence": "manual_checkpoint",
+      "route": "external_submission",
+      "blocks_core": true,
+      "exit": "maintainer records the actual external submissions without claiming acceptance"
+    },
+    {
+      "id": "U01",
+      "lane": "core_lsp",
+      "issue": 10350,
+      "actor": "read_only_acceptance",
+      "objective": "Bind and classify the actually merged upstream extension and defaults subjects.",
+      "depends_on": ["M01"],
+      "evidence": "merged_upstream_acceptance",
+      "route": "read_only_external_observation",
+      "blocks_core": true,
+      "exit": "issue #10350 merged-upstream acceptance record"
+    },
+    {
+      "id": "P19",
+      "lane": "core_lsp",
+      "issue": 7910,
+      "actor": "codex",
+      "objective": "Freeze the exact existing-perl official registry update packet from the accepted upstream subject.",
+      "depends_on": ["U01"],
+      "evidence": "official_registry_packet",
+      "route": "internal_packet",
+      "blocks_core": true,
+      "exit": "issue #7910 ready registry packet"
+    },
+    {
+      "id": "M02",
+      "lane": "core_lsp",
+      "issue": null,
+      "actor": "maintainer",
+      "objective": "Manually submit the official registry packet and record the external submission identity.",
+      "depends_on": ["P19"],
+      "evidence": "manual_checkpoint",
+      "route": "external_submission",
+      "blocks_core": true,
+      "exit": "maintainer records registry submission without claiming publication"
+    },
+    {
+      "id": "U02",
+      "lane": "core_lsp",
+      "issue": 10351,
+      "actor": "read_only_acceptance",
+      "objective": "Bind official registry publication and the released Zed defaults subject required for public execution.",
+      "depends_on": ["M02", "U01"],
+      "evidence": "public_availability_acceptance",
+      "route": "read_only_external_observation",
+      "blocks_core": true,
+      "exit": "issue #10351 public-availability acceptance record"
+    },
+    {
+      "id": "P20",
+      "lane": "core_lsp",
+      "issue": 7912,
+      "actor": "codex",
+      "objective": "Execute the clean ordinary official-registry installation and exact public Zed host journey.",
+      "depends_on": ["P08", "P10", "P13", "P14", "I00", "C01", "U02"],
+      "evidence": "public_registry_host_evidence",
+      "route": "official_registry",
+      "blocks_core": true,
+      "exit": "issue #7912 public_registry_install acceptance"
+    },
+    {
+      "id": "P21",
+      "lane": "core_lsp",
+      "issue": 8000,
+      "actor": "codex",
+      "objective": "Project only exact public Zed receipt cells into #7122 and deterministic generated documentation.",
+      "depends_on": ["P09", "P20", "C01"],
+      "evidence": "support_projection_application",
+      "route": "internal_repository",
+      "blocks_core": true,
+      "exit": "issue #8000 support projection acceptance"
+    },
+    {
+      "id": "P22",
+      "lane": "core_lsp",
+      "issue": 7759,
+      "actor": "codex",
+      "objective": "Reconcile the programme ledger, preserve limitations, and close only the proven Zed LSP programme.",
+      "depends_on": ["P21", "C02"],
+      "evidence": "programme_closeout",
+      "route": "internal_repository",
+      "blocks_core": true,
+      "exit": "programme #7759 closeout acceptance"
+    }
+  ]
+}
