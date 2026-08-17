@@ -4,6 +4,11 @@
 //! integration proof separately. It does not read GitHub, mutate branches, or
 //! authorize a merge.
 
+// Several items in this module are part of a planned API (#4556) that is
+// not yet wired into any xtask command. Suppressing dead_code preserves the
+// implementation and stable receipt schema without false-positive lint noise.
+#![allow(dead_code)]
+
 use color_eyre::eyre::{Context, Result, eyre};
 use serde::{Deserialize, Serialize};
 use std::io::Write;

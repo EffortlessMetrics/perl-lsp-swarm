@@ -192,9 +192,9 @@ fn markdown_inline_link_targets(line: &str) -> Result<Vec<String>> {
     let mut targets = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'[' && is_live_link_opener(bytes, i) {
-            if let Some(rest) = line.get(i..) {
-                if let Some(capture) = link_body.captures(rest) {
+        if bytes[i] == b'[' && is_live_link_opener(bytes, i)
+            && let Some(rest) = line.get(i..)
+                && let Some(capture) = link_body.captures(rest) {
                     if let Some(target) = capture.get(1) {
                         targets.push(target.as_str().to_owned());
                     }
@@ -203,8 +203,6 @@ fn markdown_inline_link_targets(line: &str) -> Result<Vec<String>> {
                         continue;
                     }
                 }
-            }
-        }
         i += 1;
     }
     Ok(targets)
@@ -219,10 +217,10 @@ fn markdown_reference_link_labels(line: &str) -> Result<Vec<String>> {
     let mut labels = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'[' && is_live_link_opener(bytes, i) {
-            if let Some(rest) = line.get(i..) {
-                if let Some(capture) = reference_link.captures(rest) {
-                    if capture.get(0).is_some_and(|full| full.start() == 0) {
+        if bytes[i] == b'[' && is_live_link_opener(bytes, i)
+            && let Some(rest) = line.get(i..)
+                && let Some(capture) = reference_link.captures(rest)
+                    && capture.get(0).is_some_and(|full| full.start() == 0) {
                         let text = capture.name("text").map(|m| m.as_str()).unwrap_or_default();
                         let label = capture.name("label").map(|m| m.as_str()).unwrap_or_default();
                         if label.is_empty() {
@@ -237,9 +235,6 @@ fn markdown_reference_link_labels(line: &str) -> Result<Vec<String>> {
                             continue;
                         }
                     }
-                }
-            }
-        }
         i += 1;
     }
     Ok(labels)

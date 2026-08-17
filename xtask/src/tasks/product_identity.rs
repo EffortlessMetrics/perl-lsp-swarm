@@ -81,14 +81,6 @@ pub fn check(repo_root: &Path) -> Result<()> {
     check_with_resolved_repository_context(repo_root, repository_context.as_ref())
 }
 
-fn check_with_repository_context(repo_root: &Path, repository_context: Option<&str>) -> Result<()> {
-    let repository_context = repository_context.map(|repository| RepositoryContext {
-        repository: repository.to_string(),
-        authoritative: true,
-    });
-    check_with_resolved_repository_context(repo_root, repository_context.as_ref())
-}
-
 fn check_with_resolved_repository_context(
     repo_root: &Path,
     resolved_context: Option<&RepositoryContext>,
@@ -533,11 +525,10 @@ pub(crate) fn cargo_binary_names(
                     if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
                         names.insert(stem.to_string());
                     }
-                } else if path.is_dir() && path.join("main.rs").is_file() {
-                    if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
+                } else if path.is_dir() && path.join("main.rs").is_file()
+                    && let Some(name) = path.file_name().and_then(|value| value.to_str()) {
                         names.insert(name.to_string());
                     }
-                }
             }
         }
     }

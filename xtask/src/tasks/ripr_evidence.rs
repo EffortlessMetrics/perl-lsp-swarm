@@ -1009,11 +1009,10 @@ impl HeadLineExtents {
             // phantom deletion and silently drop its findings — fail-open, the one
             // direction this filter must never take. `C` leaves its source in place;
             // only `D` and `R` remove one.
-            if entry.status.starts_with(['D', 'R']) {
-                if let Some(old_path) = entry.old_path.as_deref() {
+            if entry.status.starts_with(['D', 'R'])
+                && let Some(old_path) = entry.old_path.as_deref() {
                     removed.insert(normalize_repo_relative_path(old_path));
                 }
-            }
         }
         // A path some other entry adds back still exists at head and keeps its extent.
         removed.retain(|path| !present.contains_key(path));
@@ -1089,25 +1088,6 @@ fn normalize_suppression_match_path(path: &str) -> String {
         .filter_map(|anchor| normalized.find(anchor))
         .min()
         .map_or_else(|| normalized.to_string(), |index| normalized[index..].to_string())
-}
-
-fn pr_evidence_packet(
-    options: &PrEvidenceOptions,
-    changed_files: &[String],
-    check_value: &Value,
-    base_sha: &str,
-    head_sha: &str,
-    suppressions: &RiprSuppressionRules,
-) -> Value {
-    pr_evidence_packet_with_count(
-        options,
-        check_value,
-        base_sha,
-        head_sha,
-        suppressions,
-        changed_files.len(),
-        None,
-    )
 }
 
 fn pr_evidence_packet_with_count(
@@ -2325,10 +2305,6 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
         .with_context(|| format!("bad base/head revision {rev:?}"))
 }
 
-fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
-    Ok(resolve_committed_diff(repo, base, head)?.changed_paths)
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CommittedDiffEntry {
     status: String,
@@ -2827,15 +2803,13 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_files_rank_repo_seams_across_path_shapes() {
-        let seams = vec![
-            json!({"file": "crates/perl-parser/src/lib.rs"}),
+        let seams = [json!({"file": "crates/perl-parser/src/lib.rs"}),
             json!({"path": "crates/perl-lexer/src/lib.rs"}),
             json!({"location": {"path": r"crates\perl-parser\src\lib.rs"}}),
             json!({"placement": {"path": "crates/perl-workspace/src/index.rs"}}),
             json!({"evidence_record": {"path": "crates/perl-lexer/src/lib.rs"}}),
             json!({"file": ""}),
-            json!({}),
-        ];
+            json!({})];
 
         let rows = ripr_plus_top_files(seams.iter(), 2);
 
@@ -2850,16 +2824,14 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_gap_kinds_rank_repo_seams_across_kind_shapes() {
-        let seams = vec![
-            json!({"kind": "ReceiptParsing"}),
+        let seams = [json!({"kind": "ReceiptParsing"}),
             json!({"gap_kind": "BoundaryPredicate"}),
             json!({"classification": ["StaticUnknown", "NoStaticPath"]}),
             json!({"evidence_record": {"kind": "ReceiptParsing"}}),
             json!({"location": {"reason": "BoundaryPredicate"}}),
             json!({"kind": false}),
             json!({"kind": ""}),
-            json!({}),
-        ];
+            json!({})];
 
         let rows = ripr_plus_top_gap_kinds(seams.iter(), 3);
 
@@ -5048,7 +5020,7 @@ esac
     #[cfg(not(windows))]
     fn write_large_output_script(dir: &Path, byte_count: usize) -> Result<PathBuf> {
         // Round up to whole megabytes so dd's block arithmetic is exact.
-        let mb = (byte_count + 1_048_575) / 1_048_576;
+        let mb = byte_count.div_ceil(1_048_576);
         let path = dir.join("gen_large.sh");
         fs::write(
             &path,

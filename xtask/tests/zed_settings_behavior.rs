@@ -122,7 +122,7 @@ fn validator_cli_rejects_drifted_contract_digest() -> Result<(), Box<dyn Error>>
         .arg(&receipt_path)
         .output()
         .map_err(|error| io::Error::other(format!("failed to run validator CLI: {error}")))?;
-    let status = output.status;
+    let _status = output.status;
     let _ = fs::remove_file(&receipt_path);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

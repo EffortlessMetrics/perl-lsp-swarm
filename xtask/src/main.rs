@@ -18,20 +18,46 @@ mod tasks;
 mod test_support;
 mod types;
 mod utils;
-use tasks::check_test_wiring;
+use tasks::{
+    active_goal_manifest, agent_capability_policy, agent_flow, agent_lease, agent_receipt,
+    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
+    check, check_agent_context, check_lint_policy, check_test_wiring, check_toolchain,
+    check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene,
+    ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope, clean, command_evidence,
+    compare, corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene,
+    dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics,
+    gate_receipts, gates, generated_files, github, github_preflight, github_review, goals,
+    hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
+    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
+    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready,
+    methodology_gate, metrics, native_critic, native_format, native_product_surface,
+    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
+    parser_corpus_sweep, parser_matrix, perl_core_harness, perl_kwalitee, populate_book,
+    pre_push_plan, prep_crates_io_launch, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    parser_ratchet, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
+    release, release_artifact_check, release_evidence, release_notes, release_turnkey, repo_hygiene,
+    ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard, validate_workspace_exclusions,
+    workflow_policy_lint, workflow_trigger_lint, workspace_symbol_classes, worktree_allocator,
+    worktrees, writer_admission,
+};
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
 use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
 use tasks::issue_plan::IssuePlanOutputFormat;
 use tasks::methodology_gate::MethodologyOutputFormat;
-use tasks::metrics;
 use tasks::targeted_checks::CheckMode;
 use tasks::unwired_scan::UnwiredScanConfig;
 use tasks::ux_scorecard::UxScorecardFormat;
 use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
-use tasks::*;
 use types::TestSuite;
 #[cfg(any(feature = "legacy", feature = "parser-tasks"))]
 use types::*;

@@ -256,8 +256,8 @@ fn select_checks(
 
 fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
     let command = format_command(spec.program, &spec.args);
-    if spec.id == "repo_hygiene" {
-        if let Err(error) = clear_repo_hygiene_receipt(root, &spec.args) {
+    if spec.id == "repo_hygiene"
+        && let Err(error) = clear_repo_hygiene_receipt(root, &spec.args) {
             return ContractCheck {
                 id: spec.id.to_string(),
                 reason: spec.reason.clone(),
@@ -266,7 +266,6 @@ fn run_check(root: &Path, spec: &CheckSpec) -> ContractCheck {
                 detail: format!("could not prepare repo-hygiene receipt: {error}"),
             };
         }
-    }
     match execute_check(root, spec) {
         Ok(output) => {
             let (result, detail) = if spec.id == "repo_hygiene" {

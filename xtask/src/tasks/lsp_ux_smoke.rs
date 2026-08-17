@@ -839,11 +839,10 @@ fn resolve_smoke_binary(root: &Path, binary: Option<PathBuf>, no_build: bool) ->
         return resolve_binary_path(resolved, "explicit --binary");
     }
 
-    if let Ok(path) = std::env::var("PERL_LSP_BIN") {
-        if !path.trim().is_empty() {
+    if let Ok(path) = std::env::var("PERL_LSP_BIN")
+        && !path.trim().is_empty() {
             return resolve_binary_path(PathBuf::from(path), "PERL_LSP_BIN");
         }
-    }
 
     let candidate = binary_path_for_profile(root, DEFAULT_BINARY_PROFILE);
     if candidate.is_file() {

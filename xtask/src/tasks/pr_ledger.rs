@@ -242,14 +242,13 @@ fn infer_surface(title: &str, labels: &[String]) -> String {
 
     // Fall back to conventional-commit scope in the title.
     // Matches patterns like: `fix(parser): ...`, `feat(lsp): ...`, `xtask(agents): ...`
-    if let Some(scope_start) = title.find('(') {
-        if let Some(scope_end) = title[scope_start..].find(')') {
+    if let Some(scope_start) = title.find('(')
+        && let Some(scope_end) = title[scope_start..].find(')') {
             let scope = &title[scope_start + 1..scope_start + scope_end];
             if !scope.is_empty() {
                 return scope.to_string();
             }
         }
-    }
 
     "unknown".to_string()
 }

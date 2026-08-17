@@ -1577,13 +1577,11 @@ fn changed_crates(paths: &[String]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut crates = Vec::new();
     for path in paths {
-        if is_lcov_source_path(path) {
-            if let Some(name) = crate_name_from_source_path(path) {
-                if seen.insert(name.to_string()) {
+        if is_lcov_source_path(path)
+            && let Some(name) = crate_name_from_source_path(path)
+                && seen.insert(name.to_string()) {
                     crates.push(name.to_string());
                 }
-            }
-        }
     }
     crates
 }

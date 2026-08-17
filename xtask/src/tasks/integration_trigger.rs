@@ -6,6 +6,12 @@
 //! discover GitHub state, compare sibling lanes, or invent another command
 //! matrix.
 
+// The public API in this module is intentionally complete but not yet wired
+// into any xtask command; wiring is tracked in issue #4588. Suppressing
+// dead_code here preserves the implementation, tests, and stable schema
+// contract without false-positive lint noise.
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: &str = "integration-trigger.v1";

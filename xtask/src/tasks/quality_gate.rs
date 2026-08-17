@@ -125,8 +125,8 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
         if patch.is_none() {
             next_actions.push(patch_coverage_unknown_action(args));
         }
-        if let Some(patch) = patch {
-            if patch < PATCH_TARGET {
+        if let Some(patch) = patch
+            && patch < PATCH_TARGET {
                 next_actions.push(patch_coverage_below_target_action(
                     patch,
                     patch_source.unwrap_or("unknown"),
@@ -134,7 +134,6 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
                     args,
                 ));
             }
-        }
         match coverage.project {
             Some(project) if project < PROJECT_TARGET => {
                 next_actions.push(project_coverage_below_target_action(project, &coverage, args));
@@ -276,8 +275,8 @@ fn evaluate_patch_coverage(head: &str, args: &QualityGateArgs) -> Result<GateEva
         next_actions.push(patch_coverage_unknown_action(args));
     }
 
-    if let Some(patch) = patch {
-        if patch < PATCH_TARGET {
+    if let Some(patch) = patch
+        && patch < PATCH_TARGET {
             next_actions.push(patch_coverage_below_target_action(
                 patch,
                 patch_source.unwrap_or("unknown"),
@@ -285,7 +284,6 @@ fn evaluate_patch_coverage(head: &str, args: &QualityGateArgs) -> Result<GateEva
                 args,
             ));
         }
-    }
 
     if codecov_status != "present" {
         next_actions.push(codecov_policy_action(&codecov_status, args));
@@ -450,9 +448,7 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
 fn parse_changed_production_files(files: &[Value]) -> Option<Vec<String>> {
     let mut parsed = Vec::with_capacity(files.len());
     for file in files {
-        let Some(path) = file.as_str() else {
-            return None;
-        };
+        let path = file.as_str()?;
         parsed.push(path.to_owned());
     }
     Some(parsed)

@@ -7,6 +7,7 @@
 //!   `policy/non-rust-allowlist.toml`, and emits:
 //!   - `target/policy/non-rust-inventory.md` — human-readable markdown table.
 //!   - `target/policy/non-rust-inventory.json` — machine-readable JSON array.
+//!
 //!   (Does **not** modify `docs/policy/NON_RUST_INVENTORY.md`.)
 //!
 //! - `cargo xtask non-rust inventory --write` — runs the inventory scan and
@@ -661,20 +662,18 @@ fn validate_policy_table(
             .map(str::to_string)
             .unwrap_or_else(|| format!("<unnamed entry #{index}>"));
 
-        if let Some(id) = table.get("id").and_then(toml::Value::as_str) {
-            if let Some(previous) = seen_ids.insert(id.to_string(), index) {
+        if let Some(id) = table.get("id").and_then(toml::Value::as_str)
+            && let Some(previous) = seen_ids.insert(id.to_string(), index) {
                 errors.push(format!("{id}: duplicate id (also at index {previous})"));
             }
-        }
 
         let matcher = table.get("glob").or_else(|| table.get("path")).and_then(toml::Value::as_str);
-        if let Some(matcher) = matcher {
-            if let Some(previous_id) = seen_matchers.insert(matcher.to_string(), entry_id.clone()) {
+        if let Some(matcher) = matcher
+            && let Some(previous_id) = seen_matchers.insert(matcher.to_string(), entry_id.clone()) {
                 errors.push(format!(
                     "{entry_id}: duplicate matcher `{matcher}` (also used by id `{previous_id}`)"
                 ));
             }
-        }
     }
 
     entries.len()
@@ -727,23 +726,21 @@ fn validate_allow_schema_entry(
         }
     }
 
-    if let Some(classification) = entry.get("classification").and_then(toml::Value::as_str) {
-        if !KNOWN_CLASSIFICATIONS.contains(&classification) {
+    if let Some(classification) = entry.get("classification").and_then(toml::Value::as_str)
+        && !KNOWN_CLASSIFICATIONS.contains(&classification) {
             errors.push(format!(
                 "{entry_id}: classification `{classification}` not in {:?}",
                 KNOWN_CLASSIFICATIONS
             ));
         }
-    }
 
     validate_covered_by(entry_id, entry, errors);
     validate_policy_dates(entry_id, entry, errors);
 
-    if let Some(retired) = entry.get("retired") {
-        if retired.as_bool().is_none() {
+    if let Some(retired) = entry.get("retired")
+        && retired.as_bool().is_none() {
             errors.push(format!("{entry_id}: `retired` must be a boolean"));
         }
-    }
 }
 
 fn validate_repo_relative_matcher(entry_id: &str, matcher: &str, errors: &mut Vec<String>) {
@@ -799,16 +796,14 @@ fn validate_policy_dates(
         None
     };
 
-    if let (Some(created), Some(review_after)) = (created, review_after) {
-        if review_after <= created {
+    if let (Some(created), Some(review_after)) = (created, review_after)
+        && review_after <= created {
             errors.push(format!("{entry_id}: `review_after` must be after `created`"));
         }
-    }
-    if let (Some(created), Some(expires)) = (created, expires) {
-        if expires <= created {
+    if let (Some(created), Some(expires)) = (created, expires)
+        && expires <= created {
             errors.push(format!("{entry_id}: `expires` must be after `created`"));
         }
-    }
 }
 
 fn parse_policy_date(
@@ -1092,8 +1087,8 @@ fn check_allowlist_entries(
 
         // --- Blocking-allowlist+ entry validity checks ---
         if mode != CheckFilePolicyMode::Advisory {
-            if let Some(ref expires) = entry.expires {
-                if is_past_date(expires) {
+            if let Some(ref expires) = entry.expires
+                && is_past_date(expires) {
                     violations.push(PolicyViolation {
                         kind: "expired-entry".to_string(),
                         message: format!("Entry {:?} has expired (expires={})", entry.id, expires),
@@ -1101,7 +1096,6 @@ fn check_allowlist_entries(
                         entry_id: Some(entry.id.clone()),
                     });
                 }
-            }
 
             if !has_glob && !has_path {
                 violations.push(PolicyViolation {
@@ -1119,8 +1113,8 @@ fn check_allowlist_entries(
                     entry_id: Some(entry.id.clone()),
                 });
             }
-            if let Some(glob_str) = entry.glob.as_deref() {
-                if Pattern::new(glob_str).is_err() {
+            if let Some(glob_str) = entry.glob.as_deref()
+                && Pattern::new(glob_str).is_err() {
                     violations.push(PolicyViolation {
                         kind: "invalid-glob".to_string(),
                         message: format!("Entry {:?} has invalid glob {:?}", entry.id, glob_str),
@@ -1128,7 +1122,6 @@ fn check_allowlist_entries(
                         entry_id: Some(entry.id.clone()),
                     });
                 }
-            }
             if entry.kind.trim().is_empty() {
                 violations.push(PolicyViolation {
                     kind: "missing-kind".to_string(),
@@ -1241,8 +1234,8 @@ fn check_allowlist_entries(
         }
 
         // --- Broad glob without reason ---
-        if let Some(ref glob_str) = entry.glob {
-            if is_broad_glob(glob_str) && entry.broad_glob_reason.is_none() {
+        if let Some(ref glob_str) = entry.glob
+            && is_broad_glob(glob_str) && entry.broad_glob_reason.is_none() {
                 violations.push(PolicyViolation {
                     kind: "broad-glob-no-reason".to_string(),
                     message: format!(
@@ -1253,7 +1246,6 @@ fn check_allowlist_entries(
                     entry_id: Some(entry.id.clone()),
                 });
             }
-        }
     }
 
     violations
