@@ -174,6 +174,12 @@ kind = 'release_tag'
 value = 'v7.0.1'
 
 [[pin]]
+action = 'actions/checkout'
+sha = '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0'
+kind = 'release_tag'
+value = 'v7.0.0'
+
+[[pin]]
 action = 'actions/upload-pages-artifact'
 sha = 'fc324d3547104276b827a68afc52ff2a11cc49c9'
 kind = 'legacy_debt'
@@ -327,11 +333,6 @@ value = 'v2.85.13'
 [[pin]]
 action = 'SublimeText/UnitTesting/actions/setup'
 sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
-kind = 'legacy_debt'
-value = ''
+kind = 'branch_commit'
+value = 'master (sublime-real-host journey pin)'
 
-[[pin]]
-action = 'SublimeText/UnitTesting/actions/run-tests'
-sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
-kind = 'legacy_debt'
-value = ''
