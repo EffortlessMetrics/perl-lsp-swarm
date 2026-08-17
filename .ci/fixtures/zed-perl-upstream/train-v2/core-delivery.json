@@ -8,7 +8,7 @@
       "issue": 10345,
       "actor": "codex",
       "objective": "Reconstruct the smallest accepted perllsp extension candidate on the exact current upstream source.",
-      "depends_on": ["P15", "P13", "I00"],
+      "depends_on": ["P15", "P13", "K01", "I00", "S00", "R00"],
       "evidence": "upstream_candidate_authority",
       "route": "read_only_external_source",
       "blocks_core": true,
@@ -20,7 +20,7 @@
       "issue": 10347,
       "actor": "codex",
       "objective": "Freeze the evidence-bound, copy-ready upstream extension submission packet.",
-      "depends_on": ["P16", "P15", "P13", "P10", "I00"],
+      "depends_on": ["P16", "P15", "P13", "P10", "K01", "I00", "S00", "R00"],
       "evidence": "upstream_extension_packet",
       "route": "internal_packet",
       "blocks_core": true,
@@ -104,19 +104,31 @@
       "issue": 7912,
       "actor": "codex",
       "objective": "Execute the clean ordinary official-registry installation and exact public Zed host journey.",
-      "depends_on": ["P08", "P10", "P12", "P13", "P14", "I00", "C01", "U02"],
+      "depends_on": ["P08", "P10", "P12", "P13", "P14", "K01", "I00", "C01", "U02"],
       "evidence": "public_registry_host_evidence",
       "route": "official_registry",
       "blocks_core": true,
       "exit": "issue #7912 public_registry_install acceptance"
     },
     {
+      "id": "K02",
+      "lane": "core_compatibility",
+      "issue": 10402,
+      "actor": "codex",
+      "objective": "Project the validated official-registry receipt into exact public compatibility rows before support promotion.",
+      "depends_on": ["K00", "P20", "U02"],
+      "evidence": "public_compatibility_evidence",
+      "route": "official_registry",
+      "blocks_core": true,
+      "exit": "public compatibility issue acceptance: official registry, released Zed, extension package, perllsp, route, and platform are jointly bound"
+    },
+    {
       "id": "P21",
       "lane": "core_lsp",
       "issue": 8000,
       "actor": "codex",
-      "objective": "Project only exact public Zed receipt cells into #7122 and deterministic generated documentation.",
-      "depends_on": ["P09", "P20", "C01"],
+      "objective": "Project only exact public Zed receipt and compatibility cells into #7122 and deterministic generated documentation.",
+      "depends_on": ["P09", "P20", "K02", "C01"],
       "evidence": "support_projection_application",
       "route": "internal_repository",
       "blocks_core": true,
@@ -125,14 +137,14 @@
     {
       "id": "P22",
       "lane": "core_lsp",
-      "issue": 7759,
+      "issue": 10400,
       "actor": "codex",
-      "objective": "Reconcile the programme ledger, preserve limitations, and close only the proven Zed LSP programme.",
+      "objective": "Reconcile the programme ledger, preserve limitations, retire superseded operational state, and close only the proven Zed LSP programme.",
       "depends_on": ["P21", "C02"],
       "evidence": "programme_closeout",
       "route": "internal_repository",
       "blocks_core": true,
-      "exit": "programme #7759 closeout acceptance"
+      "exit": "issue #10400 acceptance and programme #7759 close boundary"
     }
   ]
 }
