@@ -1,0 +1,62 @@
+{
+  "schema_version": "zed_codex_implementation_train.v2",
+  "programme_issue": 7759,
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "purpose": "Stable PR-by-PR topology. Live GitHub state is a separate observation subject.",
+  "product_identities": {
+    "perlnavigator-server": "Perl Navigator",
+    "perl-lsp": "tree-sitter-perl/perl-tree-sitter-lsp",
+    "perllsp": "EffortlessMetrics/perl-lsp",
+    "perl-dap": "EffortlessMetrics/perl-lsp debugger executable"
+  },
+  "rules": {
+    "live_github_state_forbidden": true,
+    "one_canonical_unsuperseded_pr_per_codex_stage": true,
+    "historical_branches_are_mining_subjects_not_authority": true,
+    "templates_are_not_behavioral_evidence": true,
+    "manual_external_writes_are_maintainer_only": true,
+    "dap_sidecar_never_blocks_core_lsp": true
+  },
+  "actor_contracts": {
+    "codex": {
+      "canonical_pr_required": true,
+      "external_write": "forbidden",
+      "completion": "deliver-pr"
+    },
+    "read_only_acceptance": {
+      "canonical_pr_required": true,
+      "external_write": "forbidden",
+      "completion": "deliver-pr"
+    },
+    "maintainer": {
+      "canonical_pr_required": false,
+      "external_write": "maintainer_only",
+      "completion": "checkpoint-record"
+    }
+  },
+  "deliver_pr": {
+    "steps": [
+      "inspect current main, issue/comments, canonical PRs and branches, and named external read-only subjects",
+      "claim only the named stage",
+      "write falsifiers first",
+      "reconstruct the narrowest current-base increment",
+      "run focused and policy checks",
+      "commit and push intentionally",
+      "open one draft PR and update the handoff",
+      "stop before merge or external write unless separately instructed"
+    ],
+    "pr_language": "Use Advances until actual acceptance is earned."
+  },
+  "manual_stop_points": [
+    "M01",
+    "M02",
+    "DM01",
+    "DM02"
+  ],
+  "fragments": [
+    "core-authorities.json",
+    "core-evidence.json",
+    "core-delivery.json",
+    "dap-sidecar.json"
+  ]
+}
