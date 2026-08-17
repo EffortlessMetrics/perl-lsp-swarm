@@ -175,17 +175,16 @@ fn observe_entry(
 
         if observed_bool(&facts.dirty) == Some(false)
             && observed_bool(&facts.untracked) == Some(false)
+            && let Some(branch) = raw_entry.branch.as_deref()
         {
-            if let Some(branch) = raw_entry.branch.as_deref() {
-                facts.open_pr = observe_pr(options, repository_root, branch, "open");
-                if matches!(observed_pr(&facts.open_pr), Some(PrMatch::None)) {
-                    facts.merged_pr = observe_pr(options, repository_root, branch, "merged");
-                    if matches!(observed_pr(&facts.merged_pr), Some(PrMatch::None)) {
-                        let unpushed = observe_unpushed(options, &raw_entry.path);
-                        facts.unpushed_commits = unpushed.observation;
-                        facts.unpushed_comparison_ref = unpushed.comparison_ref;
-                        facts.unpushed_ahead_count = unpushed.ahead_count;
-                    }
+            facts.open_pr = observe_pr(options, repository_root, branch, "open");
+            if matches!(observed_pr(&facts.open_pr), Some(PrMatch::None)) {
+                facts.merged_pr = observe_pr(options, repository_root, branch, "merged");
+                if matches!(observed_pr(&facts.merged_pr), Some(PrMatch::None)) {
+                    let unpushed = observe_unpushed(options, &raw_entry.path);
+                    facts.unpushed_commits = unpushed.observation;
+                    facts.unpushed_comparison_ref = unpushed.comparison_ref;
+                    facts.unpushed_ahead_count = unpushed.ahead_count;
                 }
             }
         }
@@ -740,13 +739,7 @@ fn run_read_only_git(options: &InspectOptions, cwd: &Path, args: &[&str]) -> Res
 }
 
 fn is_read_only_git_command(args: &[&str]) -> bool {
-    match args {
-        ["worktree", "list", ..] => true,
-        ["rev-parse", ..] => true,
-        ["status", ..] => true,
-        ["rev-list", ..] => true,
-        _ => false,
-    }
+    matches!(args, ["worktree", "list", ..] | ["rev-parse", ..] | ["status", ..] | ["rev-list", ..])
 }
 
 fn command_failure_detail(command: &str, output: &Output) -> String {

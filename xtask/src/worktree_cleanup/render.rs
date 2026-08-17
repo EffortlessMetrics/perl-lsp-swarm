@@ -77,10 +77,10 @@ fn render_not_proven_details(output: &mut String, entry: &super::model::Worktree
     ];
 
     for (state, detail) in observations {
-        if *state == ObservationState::NotProven {
-            if let Some(detail) = detail {
-                push_line(output, format!("  not proven: {detail}"));
-            }
+        if *state == ObservationState::NotProven
+            && let Some(detail) = detail
+        {
+            push_line(output, format!("  not proven: {detail}"));
         }
     }
 }
