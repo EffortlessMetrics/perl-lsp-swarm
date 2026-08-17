@@ -33,6 +33,7 @@ pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
 mod refresh;
+mod resolve_session;
 /// Routing module for lifecycle-aware index access
 pub mod routing;
 pub(crate) mod scheduler;
@@ -242,6 +243,12 @@ pub struct LspServer {
     trace_level: Arc<Mutex<String>>,
     /// Stream session manager for progressive inline completion.
     stream_session_manager: stream_session::StreamSessionManager,
+    /// Session-keyed resolve-envelope authenticator owned by this connection
+    /// (#8342). Constructed at the connection boundary with fresh
+    /// process-random keys; taken and destroyed by the `shutdown` request so
+    /// every old envelope becomes unverifiable. `None` after teardown.
+    pub(crate) resolve_session_authenticator:
+        Mutex<Option<perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator>>,
     /// Runtime feature profile selected by launch arguments or compiled default.
     feature_profile: FeatureProfile,
     /// Runtime workload tuning (e2e mode, diagnostic scope, debounce, indexing gates).
