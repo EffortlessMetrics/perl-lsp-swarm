@@ -1,0 +1,59 @@
+name: 10256 Rustfmt Helper
+
+on:
+  push:
+    branches:
+      - agent/10256-rustfmt-helper
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Format exact #10256 candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout helper head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Install exact Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Format candidate and capture exact delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          mkdir -p target/10256-rustfmt/xtask/src/tasks
+          mkdir -p target/10256-rustfmt/xtask/src/worktree_cleanup
+          mkdir -p target/10256-rustfmt/xtask/tests
+          cp xtask/src/tasks/worktrees.rs target/10256-rustfmt/xtask/src/tasks/worktrees.rs
+          cp xtask/src/worktree_cleanup/model.rs target/10256-rustfmt/xtask/src/worktree_cleanup/model.rs
+          cp xtask/src/worktree_cleanup/observe.rs target/10256-rustfmt/xtask/src/worktree_cleanup/observe.rs
+          cp xtask/src/worktree_cleanup/render.rs target/10256-rustfmt/xtask/src/worktree_cleanup/render.rs
+          cp xtask/tests/worktree_cleanup_inspection.rs target/10256-rustfmt/xtask/tests/worktree_cleanup_inspection.rs
+          git diff --binary -- \
+            xtask/src/tasks/worktrees.rs \
+            xtask/src/worktree_cleanup/model.rs \
+            xtask/src/worktree_cleanup/observe.rs \
+            xtask/src/worktree_cleanup/render.rs \
+            xtask/tests/worktree_cleanup_inspection.rs \
+            > target/10256-rustfmt/rustfmt.patch
+          git diff --check
+          test -s target/10256-rustfmt/rustfmt.patch
+          sha256sum target/10256-rustfmt/rustfmt.patch > target/10256-rustfmt/SHA256SUMS
+
+      - name: Upload exact formatted files and patch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: 10256-rustfmt-${{ github.sha }}
+          path: target/10256-rustfmt
+          if-no-files-found: error
+          retention-days: 1
