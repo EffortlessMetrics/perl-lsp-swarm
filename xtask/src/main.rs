@@ -20,6 +20,7 @@ mod types;
 mod utils;
 use tasks::check_test_wiring;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
+use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
 use tasks::issue_plan::IssuePlanOutputFormat;
@@ -826,6 +827,22 @@ enum Commands {
         /// Strict mode: fail on any regression above baseline
         #[arg(long)]
         strict: bool,
+    },
+
+    /// Dependency hygiene: identify unused Cargo dependencies (authority: #9364).
+    ///
+    /// Uses cargo-machete as the V1 primary instrument. Produces typed
+    /// item-level findings with outcome vocabulary:
+    /// SUCCESS | POLICY_FINDING | NOT_PROVEN | NOT_APPLICABLE.
+    ///
+    /// Never installs tools as a side effect. cargo-udeps is removed from the
+    /// active hygiene path; see issue #9364 for re-introduction criteria.
+    #[command(name = "dependency-hygiene")]
+    DependencyHygiene {
+        /// Mode: check (default) fails closed on any finding; report writes JSON
+        /// and exits 0.
+        #[arg(value_enum, default_value = "check")]
+        mode: DependencyHygieneMode,
     },
 
     /// Run a developer environment smoke check.
@@ -2388,13 +2405,21 @@ enum CheckFilePolicyCliMode {
 #[derive(Subcommand)]
 enum NonRustCommand {
     /// Walk `git ls-files`, classify tracked files against the allowlist,
-    /// and emit `target/policy/non-rust-inventory.{md,json}` plus
+    /// and emit `target/policy/non-rust-inventory.{md,json}`.
+    ///
+    /// By default this is a read-only scan: no tracked file is modified.
+    /// Pass `--write` to also regenerate the committed snapshot at
     /// `docs/policy/NON_RUST_INVENTORY.md`.
     Inventory {
         /// Check classification and newly added files without rewriting outputs.
         /// The generated Markdown snapshot may be stale during concurrent merges.
         #[arg(long)]
         check: bool,
+
+        /// Also overwrite `docs/policy/NON_RUST_INVENTORY.md` with the
+        /// regenerated content.  Mutually exclusive with `--check`.
+        #[arg(long, conflicts_with = "check")]
+        write: bool,
     },
 
     /// Check non-Rust files against the allowlist and report violations.
@@ -4261,6 +4286,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Highlight { path, scanner } => highlight::run(path, scanner),
         Commands::Clean { all } => clean::run(all),
         Commands::DeadCode { mode, strict } => dead_code::run(DeadCodeConfig { mode, strict }),
+        Commands::DependencyHygiene { mode } => {
+            dependency_hygiene::run(DependencyHygieneConfig { mode })
+        }
         #[cfg(feature = "parser-tasks")]
         Commands::Bindings { header, output } => bindings::run(header, output),
         Commands::Dev { watch, port } => dev::run(watch, port),
@@ -5231,10 +5259,12 @@ fn run_cli(cli: Cli) -> Result<()> {
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
         Commands::NonRust { command } => match command {
-            NonRustCommand::Inventory { check } => {
+            NonRustCommand::Inventory { check, write } => {
                 let root = utils::project_root()?;
                 if check {
                     tasks::file_policy::non_rust_inventory_check(&root)
+                } else if write {
+                    tasks::file_policy::non_rust_inventory_write_docs(&root)
                 } else {
                     tasks::file_policy::non_rust_inventory(&root)
                 }
