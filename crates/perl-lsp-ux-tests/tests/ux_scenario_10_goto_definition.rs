@@ -85,6 +85,28 @@ fn entry_uri(entry: &Value) -> Option<&str> {
     entry.get("uri").or_else(|| entry.get("targetUri")).and_then(Value::as_str)
 }
 
+/// Start line of a definition result, for either `Location` or `LocationLink`.
+fn entry_start_line(entry: &Value) -> Option<u64> {
+    entry
+        .get("range")
+        .or_else(|| entry.get("targetRange"))
+        .and_then(|range| range.get("start"))
+        .and_then(|start| start.get("line"))
+        .and_then(Value::as_u64)
+}
+
+/// Zero-based line of `sub increment` within [`CROSS_FILE_MODULE`].
+///
+/// Derived from the fixture rather than hard-coded so the expectation cannot
+/// drift away from the source it describes.
+fn expected_increment_decl_line() -> u64 {
+    CROSS_FILE_MODULE
+        .lines()
+        .position(|line| line.trim_start().starts_with("sub increment"))
+        .map(|line| line as u64)
+        .expect("CROSS_FILE_MODULE fixture must declare `sub increment`")
+}
+
 #[test]
 fn scenario_10_definition_same_file_call_site_resolves() -> Result<()> {
     if !binary_available() {
@@ -137,16 +159,27 @@ fn scenario_10_definition_cross_file_module_symbol_points_to_module() -> Result<
 
     let scenario = DefinitionScenario::single_file()?;
 
-    // Given a module and script opened in the same workspace.
+    // Given a static workspace module and a script that consumes it.
+    //
+    // Note the fixture's `use lib 'lib'` is scene-setting, not the thing under
+    // test: resolution runs through the workspace symbol index keyed on
+    // `package Counter`, not through `use lib` filename lookup. Moving the same
+    // package into `lib/Other.pm` still resolves, so this journey must not be
+    // described as proving `use lib` path handling. See #6897 closeout.
     scenario.given_file_is_open("lib/Counter.pm", CROSS_FILE_MODULE)?;
     scenario.given_file_is_open("main.pl", CROSS_FILE_SCRIPT)?;
 
     // When go-to-definition is requested on `increment` in `Counter->increment`.
     let definitions = scenario.when_requesting_definition_with_retry("main.pl", 5, 23)?;
 
-    // Then results are shape-valid. Cross-file module resolution may degrade
-    // if `use lib` handling is incomplete; keep the empty path tolerated but
-    // log it so we notice when it happens in CI.
+    // Then bounded retry must produce a useful cross-file location. This fixture
+    // is static and checked in; a persistent empty response is a broken first-use
+    // navigation path rather than an accepted dynamic boundary.
+    assert!(
+        !definitions.is_empty(),
+        "expected a cross-file definition for static Counter->increment at \
+         main.pl:5:23, but the server returned an empty list after retries"
+    );
     for entry in &definitions {
         assert!(
             is_lsp_location_shape(entry),
@@ -154,32 +187,40 @@ fn scenario_10_definition_cross_file_module_symbol_points_to_module() -> Result<
         );
     }
 
-    if definitions.is_empty() {
-        eprintln!(
-            "INFO scenario_10: cross-file definition returned empty — tolerated \
-             degraded path (cross-file indexing may not have settled)"
-        );
-    } else {
-        let points_to_module = definitions
-            .iter()
-            .any(|entry| entry_uri(entry).map(|uri| uri.ends_with("Counter.pm")).unwrap_or(false));
-        assert!(
-            points_to_module,
-            "non-empty cross-file definition results must include Counter.pm but did not: \
-             {definitions:?}"
-        );
-        // And they must never resolve to an unrelated file (e.g. leaking the
-        // call-site file as the definition would be a real regression).
-        let resolves_outside_workspace = definitions.iter().any(|entry| {
-            entry_uri(entry)
-                .map(|uri| !uri.ends_with("Counter.pm") && !uri.ends_with("main.pl"))
-                .unwrap_or(false)
-        });
-        assert!(
-            !resolves_outside_workspace,
-            "cross-file definition resolved to an unrelated file: {definitions:?}"
-        );
-    }
+    let points_to_module = definitions
+        .iter()
+        .any(|entry| entry_uri(entry).map(|uri| uri.ends_with("Counter.pm")).unwrap_or(false));
+    assert!(
+        points_to_module,
+        "cross-file definition results must include Counter.pm: {definitions:?}"
+    );
+
+    // And it must land on the `sub increment` declaration, not merely somewhere
+    // in Counter.pm. Resolving `Counter->increment` to the top of the module is
+    // module resolution wearing method resolution's clothes: it satisfies a
+    // file-only assertion while giving the user the wrong destination.
+    let decl_line = expected_increment_decl_line();
+    let points_to_declaration = definitions.iter().any(|entry| {
+        entry_uri(entry).map(|uri| uri.ends_with("Counter.pm")).unwrap_or(false)
+            && entry_start_line(entry) == Some(decl_line)
+    });
+    assert!(
+        points_to_declaration,
+        "cross-file definition must target the `sub increment` declaration at \
+         Counter.pm line {decl_line}, but no result started there: {definitions:?}"
+    );
+
+    // The call-site file may appear in a LocationLink origin, but no returned
+    // target may escape the two-file fixture.
+    let resolves_outside_workspace = definitions.iter().any(|entry| {
+        entry_uri(entry)
+            .map(|uri| !uri.ends_with("Counter.pm") && !uri.ends_with("main.pl"))
+            .unwrap_or(false)
+    });
+    assert!(
+        !resolves_outside_workspace,
+        "cross-file definition resolved to an unrelated file: {definitions:?}"
+    );
 
     scenario.then_no_crash_signals_exist();
     Ok(())
