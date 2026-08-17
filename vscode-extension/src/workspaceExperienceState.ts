@@ -12,6 +12,7 @@
 
 /** User-visible workspace lifecycle states owned by the v0.18 experience contract. */
 export type WorkspaceLifecycleState =
+  | 'dormant'
   | 'starting'
   | 'resolving_environment'
   | 'indexing_active_context'
@@ -191,6 +192,19 @@ export function presentWorkspaceExperience(
   telemetry: WorkspaceExperienceTelemetry = {},
 ): WorkspaceExperiencePresentation {
   switch (snapshot.lifecycle) {
+    case 'dormant':
+      // Not an error and not a slow start: the server has simply not been
+      // asked for yet. Reporting this as `starting` (the pre-#8180 behaviour)
+      // is indistinguishable from a server that hung.
+      return {
+        mode: 'stopped',
+        text: '$(circle-outline) perl-lsp: not started',
+        tooltip: detailTooltip(
+          snapshot,
+          'Perl Language Server starts when you open a Perl file or run a server command',
+        ),
+        background: undefined,
+      };
     case 'starting':
       return {
         mode: 'starting',

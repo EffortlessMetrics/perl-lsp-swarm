@@ -17,7 +17,7 @@ impl DebugAdapter {
     ///
     /// A single output line from `perl -d` may contain multiple consecutive
     /// prompt tokens when the debugger processes several commands between stops
-    /// (e.g. `  DB<1>   DB<2> main::(/path/file.pl:5):`).  All prompts must
+    /// (e.g. `  DB<1>   DB<2> main::(/path/file.pl:5):`). All prompts must
     /// be stripped so that the context pattern can match the tail of the line.
     pub(super) fn normalize_debugger_output_line(line: &str) -> String {
         let mut normalized = if let Some(re) = ansi_escape_re() {
@@ -119,7 +119,7 @@ impl DebugAdapter {
         (frames, arguments)
     }
 
-    /// Filter out internal debugger and shim frames from user-visible stack traces.
+    /// Filter out internal debugger and historical shim frames from user-visible stack traces.
     pub(super) fn filter_user_visible_frames(frames: Vec<StackFrame>) -> Vec<StackFrame> {
         frames
             .into_iter()
@@ -177,10 +177,15 @@ impl DebugAdapter {
     }
 
     /// Parse evaluate output from debugger lines into a DAP result payload.
+    ///
+    /// `allow_correlated_literal` may be true only when `lines` came from the
+    /// begin/end markers for this exact evaluate request. The request frame is
+    /// also what makes a matching assignment current rather than merely similar
+    /// to an older debugger response.
     pub(super) fn parse_evaluate_result_from_lines(
         lines: &[String],
         expression: &str,
-        allow_fallback_line: bool,
+        allow_correlated_literal: bool,
     ) -> Option<(String, String)> {
         if lines.is_empty() {
             return None;
@@ -199,17 +204,13 @@ impl DebugAdapter {
             if let Ok((name, value)) = parser.parse_assignment(text) {
                 let rendered = renderer.render(&name, &value);
                 let type_name = rendered.type_name.unwrap_or_else(|| "string".to_string());
-                // Prefer direct matches for the evaluated expression, but allow fallback assignment.
-                if name == expression || text.starts_with(expression) || text.contains(expression) {
+                if name == expression {
                     return Some((rendered.value, type_name));
                 }
-                if !allow_fallback_line {
-                    continue;
-                }
-                return Some((rendered.value, type_name));
+                continue;
             }
 
-            if allow_fallback_line {
+            if allow_correlated_literal {
                 return Some((text.to_string(), Self::infer_debugger_value_type(text)));
             }
         }
@@ -237,57 +238,31 @@ impl DebugAdapter {
         None
     }
 
-    /// Parse evaluate output from recent debugger lines into a DAP result payload.
+    /// Refuse to derive an evaluate result from unframed debugger history.
+    ///
+    /// Recent output can contain an earlier response for the same expression,
+    /// so even a matching assignment is not evidence for the current request.
+    /// Only begin/end-framed output is accepted as an evaluate result.
     pub(super) fn parse_evaluate_result_from_output(
         &self,
-        expression: &str,
+        _expression: &str,
     ) -> Option<(String, String)> {
-        let lines = self.snapshot_recent_output_lines();
-        Self::parse_evaluate_result_from_lines(&lines, expression, true)
+        None
     }
 
-    /// Build deterministic placeholder variables used when debugger output is unavailable.
+    /// Return an honest empty scope when debugger inspection is unavailable.
     ///
-    /// Returns empty for `Locals` — when the B module is unavailable we have no reliable
-    /// way to enumerate lexical variables, so returning fake `$self`/`@_` placeholders
-    /// would be misleading (issue #1006).  Package and Globals scopes return a minimal
-    /// representative entry so the IDE's scope pane is not completely blank.
+    /// The adapter cannot infer current package/global/lexical values merely
+    /// from the requested scope kind. Returning representative `$VERSION` or
+    /// `$_` values would make placeholders indistinguishable from observed
+    /// debuggee state. Pagination arguments are intentionally ignored because
+    /// an unavailable scope has no known page or total.
     pub(super) fn fallback_scope_variables(
-        variables_ref: i32,
-        start: usize,
-        count: usize,
+        _variables_ref: i32,
+        _start: usize,
+        _count: usize,
     ) -> Vec<Variable> {
-        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
-        // Decode scope kind via codec; None/non-Scope → empty fallback (no crash).
-        let variables = match VariableReference::decode(variables_ref) {
-            Some(VariableReference::Scope { kind, .. }) => match kind {
-                // Locals: return empty.  We have no reliable way to enumerate `my` variables
-                // without the B module, so we return nothing rather than fake placeholders.
-                ScopeKind::Locals => vec![],
-                ScopeKind::Package => vec![Variable {
-                    name: "$VERSION".to_string(),
-                    value: "\"1.0.0\"".to_string(),
-                    type_: Some("scalar".to_string()),
-                    variables_reference: 0,
-                    named_variables: None,
-                    indexed_variables: None,
-                    evaluate_name: Some("$VERSION".to_string()),
-                }],
-                ScopeKind::Globals => vec![Variable {
-                    name: "$_".to_string(),
-                    value: "undef".to_string(),
-                    type_: Some("scalar".to_string()),
-                    variables_reference: 0,
-                    named_variables: None,
-                    indexed_variables: None,
-                    evaluate_name: Some("$_".to_string()),
-                }],
-                ScopeKind::Arguments => vec![],
-            },
-            _ => Vec::new(), // Invalid or non-Scope varref → honest empty fallback
-        };
-
-        variables.into_iter().skip(start).take(count).collect()
+        Vec::new()
     }
 
     /// Parse stack trace output from Perl debugger "T" command
@@ -316,32 +291,32 @@ impl DebugAdapter {
 
         for line in output.lines() {
             // Try to match stack frame format
-            if let Some(re) = stack_frame_re() {
-                if let Some(caps) = re.captures(line) {
-                    let func = caps.name("func").map(|m| m.as_str()).unwrap_or("main");
-                    let file = caps.name("file").map(|m| m.as_str()).unwrap_or("<unknown>");
-                    let line_num =
-                        caps.name("line").and_then(|m| m.as_str().parse::<i32>().ok()).unwrap_or(1);
+            if let Some(re) = stack_frame_re()
+                && let Some(caps) = re.captures(line)
+            {
+                let func = caps.name("func").map(|m| m.as_str()).unwrap_or("main");
+                let file = caps.name("file").map(|m| m.as_str()).unwrap_or("<unknown>");
+                let line_num =
+                    caps.name("line").and_then(|m| m.as_str().parse::<i32>().ok()).unwrap_or(1);
 
-                    // Extract file name from path for display
-                    let file_name = file.split(['/', '\\'].as_ref()).next_back().unwrap_or(file);
+                // Extract file name from path for display
+                let file_name = file.split(['/', '\\'].as_ref()).next_back().unwrap_or(file);
 
-                    frames.push(StackFrame {
-                        id: frame_id,
-                        name: func.to_string(),
-                        source: Source {
-                            name: Some(file_name.to_string()),
-                            path: file.to_string(),
-                            source_reference: None,
-                        },
-                        line: line_num,
-                        column: 1, // Perl debugger doesn't provide column info by default
-                        end_line: None,
-                        end_column: None,
-                    });
+                frames.push(StackFrame {
+                    id: frame_id,
+                    name: func.to_string(),
+                    source: Source {
+                        name: Some(file_name.to_string()),
+                        path: file.to_string(),
+                        source_reference: None,
+                    },
+                    line: line_num,
+                    column: 1, // Perl debugger doesn't provide column info by default
+                    end_line: None,
+                    end_column: None,
+                });
 
-                    frame_id += 1;
-                }
+                frame_id += 1;
             }
         }
 
@@ -408,14 +383,8 @@ mod tests {
             .ok_or("expected second page variable")?;
 
         assert_ne!(first_ref, second_ref, "paged variables must not reuse child references");
-        assert!(
-            page_one_children.contains_key(&first_ref),
-            "expected first page child cache for first reference"
-        );
-        assert!(
-            page_two_children.contains_key(&second_ref),
-            "expected second page child cache for second reference"
-        );
+        assert!(page_one_children.contains_key(&first_ref));
+        assert!(page_two_children.contains_key(&second_ref));
         Ok(())
     }
 
@@ -467,10 +436,7 @@ mod tests {
 
         let capture = adapter.capture_framed_debugger_output("DAP_BEGIN_400", "DAP_END_400", 200);
         assert!(capture.is_none(), "capture should stop when request is cancelled");
-        assert!(
-            !adapter.cancel_requested.load(Ordering::Acquire),
-            "cancellation flag should be reset after capture returns"
-        );
+        assert!(!adapter.cancel_requested.load(Ordering::Acquire));
     }
 
     #[test]
@@ -482,10 +448,7 @@ mod tests {
         let start = Instant::now();
         let capture = adapter.capture_framed_debugger_output("DAP_BEGIN_500", "DAP_END_500", 1);
         assert!(capture.is_none(), "capture should timeout without end marker");
-        assert!(
-            start.elapsed() >= Duration::from_millis(DEBUGGER_QUERY_WAIT_MS),
-            "timeout should honor minimum debugger query budget"
-        );
+        assert!(start.elapsed() >= Duration::from_millis(DEBUGGER_QUERY_WAIT_MS));
     }
 
     #[test]
@@ -554,19 +517,12 @@ mod tests {
         }
         let incremental_elapsed = incremental_start.elapsed();
 
-        assert!(
-            incremental_elapsed < full_scan_elapsed,
-            "expected incremental scan ({incremental_elapsed:?}) to be faster than full scan ({full_scan_elapsed:?})"
-        );
+        assert!(incremental_elapsed < full_scan_elapsed);
     }
 
     #[test]
     pub(super) fn test_stack_trace_returns_empty_without_live_session()
     -> Result<(), Box<dyn std::error::Error>> {
-        // After fix #933: the degraded-transport path no longer parses the snapshot
-        // buffer. When there is no live session, handle_stack_trace returns an empty
-        // frame list regardless of recent-output content (snapshot buffer is unreliable
-        // because it contains full session history in arrival order).
         let mut adapter = DebugAdapter::new();
         adapter.push_recent_output_line_for_test("# 0 main::compute at /tmp/script.pl line 20");
         adapter.push_recent_output_line_for_test("# 1 Foo::process called at /tmp/Foo.pm line 15");
@@ -580,14 +536,7 @@ mod tests {
                     .get("stackFrames")
                     .and_then(|v| v.as_array())
                     .ok_or("missing stackFrames")?;
-                // No live session → degraded path returns Vec::new() → session.stack_frames
-                // (also empty) → honest empty list per DAP spec.
-                assert_eq!(
-                    frames.len(),
-                    0,
-                    "without a live session, snapshot buffer must NOT be used; expected 0 frames, got {}",
-                    frames.len()
-                );
+                assert!(frames.is_empty());
             }
             _ => return Err("expected stackTrace response".into()),
         }
@@ -595,15 +544,82 @@ mod tests {
     }
 
     #[test]
-    pub(super) fn test_parse_evaluate_result_from_recent_output()
-    -> Result<(), Box<dyn std::error::Error>> {
+    pub(super) fn unframed_evaluate_does_not_reuse_matching_assignment() {
         let adapter = DebugAdapter::new();
         adapter.push_recent_output_line_for_test("$result = 123");
+        assert!(adapter.parse_evaluate_result_from_output("$result").is_none());
+    }
 
-        let parsed = adapter.parse_evaluate_result_from_output("$result");
-        let (value, ty) = parsed.ok_or("expected parsed evaluate result")?;
-        assert_eq!(value, "123");
-        assert_eq!(ty, "SCALAR");
+    #[test]
+    pub(super) fn unframed_evaluate_does_not_consume_unrelated_output() {
+        let adapter = DebugAdapter::new();
+        adapter.push_recent_output_line_for_test("debuggee says hello");
+        assert!(adapter.parse_evaluate_result_from_output("$result").is_none());
+    }
+
+    #[test]
+    pub(super) fn framed_evaluate_accepts_correlated_literal_output()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let lines = vec!["42".to_string()];
+        let (value, ty) = DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", true)
+            .ok_or("framed literal should be accepted")?;
+        assert_eq!(value, "42");
+        assert_eq!(ty, "integer");
+        Ok(())
+    }
+
+    #[test]
+    pub(super) fn framed_evaluate_requires_exact_assignment_name() {
+        let lines = vec!["$result_extra = 123".to_string()];
+        assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
+    }
+
+    /// `setVariable` / `setExpression` send `p {name} = {value}` then `p {name}` and read
+    /// the framed output back. They must correlate against the variable they set: an empty
+    /// subject matches no assignment, and the `continue` guarding the literal branch then
+    /// discards the result entirely, failing both operations outright (#7275).
+    #[test]
+    pub(super) fn framed_read_back_accepts_assignment_for_the_named_subject()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let lines = vec!["$x = 5".to_string()];
+
+        let (value, _) = DebugAdapter::parse_evaluate_result_from_lines(&lines, "$x", true)
+            .ok_or("read-back for the named subject should be accepted")?;
+        assert_eq!(value, "5");
+
+        // The regression this guards: an empty subject yields nothing for the same output.
+        assert!(
+            DebugAdapter::parse_evaluate_result_from_lines(&lines, "", true).is_none(),
+            "an empty subject must not be how set-variable read-back is correlated"
+        );
+        Ok(())
+    }
+
+    #[test]
+    pub(super) fn framed_evaluate_rejects_expression_only_in_assignment_value() {
+        let lines = vec![r#"$message = \"$result\""#.to_string()];
+        assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
+    }
+
+    #[test]
+    pub(super) fn unframed_evaluate_rejects_correlated_literal_without_request_frame() {
+        let lines = vec!["42".to_string()];
+        assert!(DebugAdapter::parse_evaluate_result_from_lines(&lines, "$result", false).is_none());
+    }
+
+    #[test]
+    pub(super) fn unavailable_scope_fallback_is_empty_for_every_scope_kind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+
+        for kind in
+            [ScopeKind::Locals, ScopeKind::Package, ScopeKind::Globals, ScopeKind::Arguments]
+        {
+            let wire = VariableReference::Scope { frame_id: 1, kind }
+                .encode()
+                .ok_or("scope should encode")?;
+            assert!(DebugAdapter::fallback_scope_variables(wire, 0, 10).is_empty());
+        }
         Ok(())
     }
 
@@ -631,15 +647,12 @@ mod tests {
 
     #[test]
     pub(super) fn test_stack_frame_filtering_removes_db_frames() {
-        // AC8.2.1: Filter internal frames from user-visible stack
         let frames = vec![
             make_test_frame(1, "main::hello", "/app/hello.pl", 10),
             make_test_frame(2, "DB::DB", "/usr/share/perl/5.34/perl5db.pl", 100),
             make_test_frame(3, "Foo::bar", "/app/lib/Foo.pm", 25),
         ];
-
         let filtered = filter_internal_frames(frames);
-
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].name, "main::hello");
         assert_eq!(filtered[1].name, "Foo::bar");
@@ -647,16 +660,13 @@ mod tests {
 
     #[test]
     pub(super) fn test_stack_frame_filtering_removes_shim_frames() {
-        // AC8.2.1: Filter Devel::TSPerlDAP:: shim infrastructure frames
         let frames = vec![
             make_test_frame(1, "Devel::TSPerlDAP::init", "/shim/TSPerlDAP.pm", 50),
             make_test_frame(2, "main::run", "/app/script.pl", 5),
             make_test_frame(3, "Devel::TSPerlDAP::handle_break", "/shim/TSPerlDAP.pm", 200),
             make_test_frame(4, "Utils::process", "/app/lib/Utils.pm", 42),
         ];
-
         let filtered = filter_internal_frames(frames);
-
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].name, "main::run");
         assert_eq!(filtered[1].name, "Utils::process");
@@ -664,15 +674,12 @@ mod tests {
 
     #[test]
     pub(super) fn test_stack_frame_filtering_removes_perl5db_source() {
-        // AC8.2.1: Filter frames from perl5db.pl even with different names
         let frames = vec![
             make_test_frame(1, "main::start", "/app/main.pl", 1),
             make_test_frame(2, "some_internal", "/usr/lib/perl5/perl5db.pl", 999),
             make_test_frame(3, "App::process", "/app/lib/App.pm", 100),
         ];
-
         let filtered = filter_internal_frames(frames);
-
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].name, "main::start");
         assert_eq!(filtered[1].name, "App::process");
@@ -680,28 +687,17 @@ mod tests {
 
     #[test]
     pub(super) fn test_stack_frame_filtering_mixed_internal_frames() {
-        // AC8.2.1: Comprehensive test with all types of internal frames mixed
         let frames = vec![
-            // User frame 1
             make_test_frame(1, "main::hello", "/app/hello.pl", 10),
-            // DB:: frame (internal)
             make_test_frame(2, "DB::sub", "/usr/share/perl/5.34/perl5db.pl", 2000),
-            // User frame 2
             make_test_frame(3, "Foo::bar", "/app/lib/Foo.pm", 25),
-            // Shim frame (internal)
             make_test_frame(4, "Devel::TSPerlDAP::step", "/shim/TSPerlDAP.pm", 150),
-            // DB:: frame without perl5db.pl path (still filtered)
             make_test_frame(5, "DB::breakpoint", "/some/other/path.pm", 50),
-            // User frame 3
             make_test_frame(6, "Baz::qux", "/app/lib/Baz.pm", 75),
-            // perl5db.pl source frame (internal)
             make_test_frame(7, "custom_handler", "/usr/lib/perl5/perl5db.pl", 1500),
         ];
-
         let filtered = filter_internal_frames(frames);
-
-        // Should only have user frames: main::hello, Foo::bar, Baz::qux
-        assert_eq!(filtered.len(), 3, "Expected 3 user frames, got {}", filtered.len());
+        assert_eq!(filtered.len(), 3);
         assert_eq!(filtered[0].name, "main::hello");
         assert_eq!(filtered[1].name, "Foo::bar");
         assert_eq!(filtered[2].name, "Baz::qux");
@@ -709,7 +705,6 @@ mod tests {
 
     #[test]
     pub(super) fn test_stack_frame_filtering_preserves_order() {
-        // Verify frame order is preserved after filtering
         let frames = vec![
             make_test_frame(1, "A::first", "/a.pm", 1),
             make_test_frame(2, "DB::internal", "/perl5db.pl", 100),
@@ -717,9 +712,7 @@ mod tests {
             make_test_frame(4, "Devel::TSPerlDAP::shim", "/shim.pm", 50),
             make_test_frame(5, "C::third", "/c.pm", 3),
         ];
-
         let filtered = filter_internal_frames(frames);
-
         assert_eq!(filtered.len(), 3);
         assert_eq!(filtered[0].name, "A::first");
         assert_eq!(filtered[1].name, "B::second");
@@ -728,29 +721,23 @@ mod tests {
 
     #[test]
     pub(super) fn test_stack_frame_filtering_all_internal() {
-        // Edge case: all frames are internal
         let frames = vec![
             make_test_frame(1, "DB::main", "/perl5db.pl", 1),
             make_test_frame(2, "Devel::TSPerlDAP::init", "/shim.pm", 10),
             make_test_frame(3, "DB::sub", "/perl5db.pl", 50),
         ];
-
         let filtered = filter_internal_frames(frames);
-
         assert!(filtered.is_empty(), "Expected empty stack after filtering all internal frames");
     }
 
     #[test]
     pub(super) fn test_stack_frame_filtering_no_internal() {
-        // Edge case: no internal frames to filter
         let frames = vec![
             make_test_frame(1, "main::start", "/app/main.pl", 1),
             make_test_frame(2, "Lib::helper", "/app/lib/Lib.pm", 50),
             make_test_frame(3, "Utils::format", "/app/lib/Utils.pm", 100),
         ];
-
         let filtered = filter_internal_frames(frames);
-
         assert_eq!(filtered.len(), 3);
         assert_eq!(filtered[0].name, "main::start");
         assert_eq!(filtered[1].name, "Lib::helper");
@@ -759,37 +746,27 @@ mod tests {
 
     #[test]
     pub(super) fn test_stack_frame_filtering_empty_input() {
-        // Edge case: empty frame list
-        let frames: Vec<StackFrame> = vec![];
+        let frames: Vec<StackFrame> = Vec::new();
         let filtered = filter_internal_frames(frames);
         assert!(filtered.is_empty());
     }
 
-    // AC8.2.4: Stack trace parsing tests for simple call chains (A → B → C)
     #[test]
     pub(super) fn test_parse_stack_trace_simple_call_chain() {
         let output = r#"# 0 main::compute_sum at /app/script.pl line 20
 # 1 Foo::process called at /app/lib/Foo.pm line 15
 # 2 main::start at /app/script.pl line 5"#;
-
         let frames = DebugAdapter::parse_stack_trace(output);
-
         assert_eq!(frames.len(), 3);
-
-        // Frame 0: main::compute_sum
         assert_eq!(frames[0].id, 1);
         assert_eq!(frames[0].name, "main::compute_sum");
         assert_eq!(frames[0].source.path, "/app/script.pl");
         assert_eq!(frames[0].line, 20);
         assert_eq!(frames[0].source.name, Some("script.pl".to_string()));
-
-        // Frame 1: Foo::process
         assert_eq!(frames[1].id, 2);
         assert_eq!(frames[1].name, "Foo::process");
         assert_eq!(frames[1].source.path, "/app/lib/Foo.pm");
         assert_eq!(frames[1].line, 15);
-
-        // Frame 2: main::start
         assert_eq!(frames[2].id, 3);
         assert_eq!(frames[2].name, "main::start");
         assert_eq!(frames[2].source.path, "/app/script.pl");
@@ -800,7 +777,6 @@ mod tests {
     pub(super) fn test_parse_verbose_stack_frame_returns_argument_map() {
         let output = "$ = main::run($value, [1, 2], \"a,b\") called from file `script.pl' line 7";
         let (frames, arguments) = DebugAdapter::parse_stack_frames_from_text(output);
-
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].id, 1);
         assert_eq!(frames[0].name, "main::run");
@@ -810,30 +786,24 @@ mod tests {
         );
     }
 
-    // AC8.2.4: Stack trace parsing for multi-file call stacks across packages
     #[test]
     pub(super) fn test_parse_stack_trace_multi_file_packages() {
         let output = r#"# 0 Utils::Helper::validate at /app/lib/Utils/Helper.pm line 42
 # 1 Data::Processor::transform called at /app/lib/Data/Processor.pm line 120
 # 2 Controller::API::handle_request at /app/controller/API.pm line 78
 # 3 main::dispatch called at /app/app.pl line 10"#;
-
         let frames = DebugAdapter::parse_stack_trace(output);
-
         assert_eq!(frames.len(), 4);
         assert_eq!(frames[0].name, "Utils::Helper::validate");
         assert_eq!(frames[1].name, "Data::Processor::transform");
         assert_eq!(frames[2].name, "Controller::API::handle_request");
         assert_eq!(frames[3].name, "main::dispatch");
-
-        // Verify cross-file navigation info is present
         assert!(frames[0].source.path.contains("Utils/Helper.pm"));
         assert!(frames[1].source.path.contains("Data/Processor.pm"));
         assert!(frames[2].source.path.contains("controller/API.pm"));
         assert!(frames[3].source.path.contains("app.pl"));
     }
 
-    // AC8.2.4: Stack trace parsing for recursive calls with depth
     #[test]
     pub(super) fn test_parse_stack_trace_recursive_calls() {
         let output = r#"# 0 main::factorial at /app/math.pl line 5
@@ -841,19 +811,13 @@ mod tests {
 # 2 main::factorial called at /app/math.pl line 6
 # 3 main::factorial called at /app/math.pl line 6
 # 4 main::compute at /app/math.pl line 10"#;
-
         let frames = DebugAdapter::parse_stack_trace(output);
-
         assert_eq!(frames.len(), 5);
-
-        // Verify recursive frames are all parsed correctly
         assert_eq!(frames[0].name, "main::factorial");
         assert_eq!(frames[1].name, "main::factorial");
         assert_eq!(frames[2].name, "main::factorial");
         assert_eq!(frames[3].name, "main::factorial");
         assert_eq!(frames[4].name, "main::compute");
-
-        // Verify frame IDs are sequential
         assert_eq!(frames[0].id, 1);
         assert_eq!(frames[1].id, 2);
         assert_eq!(frames[2].id, 3);
@@ -861,31 +825,23 @@ mod tests {
         assert_eq!(frames[4].id, 5);
     }
 
-    // AC8.2.4: Stack trace parsing for anonymous subroutines
     #[test]
     pub(super) fn test_parse_stack_trace_anonymous_subs() {
         let output = r#"# 0 main::__ANON__ at /app/callback.pl line 15
 # 1 Utils::map called at /app/lib/Utils.pm line 42
 # 2 main::process_items at /app/callback.pl line 10"#;
-
         let frames = DebugAdapter::parse_stack_trace(output);
-
         assert_eq!(frames.len(), 3);
-
-        // Verify anonymous sub is parsed (Perl uses __ANON__ for anonymous subs)
         assert_eq!(frames[0].name, "main::__ANON__");
         assert_eq!(frames[1].name, "Utils::map");
         assert_eq!(frames[2].name, "main::process_items");
     }
 
-    // AC8.2: Stack trace parsing with Windows paths
     #[test]
     pub(super) fn test_parse_stack_trace_windows_paths() {
         let output = r#"# 0 main::test at C:\workspace\script.pl line 10
 # 1 Foo::bar called at C:\workspace\lib\Foo.pm line 25"#;
-
         let frames = DebugAdapter::parse_stack_trace(output);
-
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].source.path, r"C:\workspace\script.pl");
         assert_eq!(frames[0].source.name, Some("script.pl".to_string()));
@@ -897,9 +853,7 @@ mod tests {
     pub(super) fn test_parse_stack_trace_with_space_in_paths() {
         let output = r#"# 0 main::test at /tmp/My Project/script.pl line 10
 # 1 Foo::bar called at C:\Work Files\lib\Foo.pm line 25"#;
-
         let frames = DebugAdapter::parse_stack_trace(output);
-
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].source.path, "/tmp/My Project/script.pl");
         assert_eq!(frames[0].source.name, Some("script.pl".to_string()));
@@ -907,26 +861,16 @@ mod tests {
         assert_eq!(frames[1].source.name, Some("Foo.pm".to_string()));
     }
 
-    // AC8.2: Stack trace parsing with empty output
     #[test]
     pub(super) fn test_parse_stack_trace_empty_output() {
-        let output = "";
-        let frames = DebugAdapter::parse_stack_trace(output);
-        assert!(frames.is_empty());
+        assert!(DebugAdapter::parse_stack_trace("").is_empty());
     }
 
-    // AC8.2: Stack trace parsing with malformed output
     #[test]
     pub(super) fn test_parse_stack_trace_malformed_output() {
-        let output = r#"Random output that doesn't match
-Some error message
-DB<1>"#;
-
-        let frames = DebugAdapter::parse_stack_trace(output);
-        assert!(frames.is_empty());
+        assert!(DebugAdapter::parse_stack_trace("Random output\nDB<1>").is_empty());
     }
 
-    // AC8.2.1: Integration test - parse and filter combined
     #[test]
     pub(super) fn test_parse_and_filter_stack_trace() {
         let output = r#"# 0 main::user_func at /app/script.pl line 10
@@ -934,113 +878,80 @@ DB<1>"#;
 # 2 Foo::process at /app/lib/Foo.pm line 25
 # 3 Devel::TSPerlDAP::handle_break called at /shim/TSPerlDAP.pm line 50
 # 4 main::start at /app/script.pl line 5"#;
-
         let frames = DebugAdapter::parse_stack_trace(output);
-        assert_eq!(frames.len(), 5);
-
-        // Apply filtering
+        assert_eq!(frames.len(), 5, "stack parsing must retain all frames before filtering");
         let filtered = filter_internal_frames(frames);
-
-        // Should only have user frames after filtering
         assert_eq!(filtered.len(), 3);
         assert_eq!(filtered[0].name, "main::user_func");
         assert_eq!(filtered[1].name, "Foo::process");
         assert_eq!(filtered[2].name, "main::start");
     }
 
-    // ── normalize_debugger_output_line unit tests ──────────────────────────────
-
     #[test]
     pub(super) fn test_normalize_strips_single_db_prompt() {
-        // Single prompt: "DB<1> main::(/path/file.pl:5):" -> "main::(/path/file.pl:5):"
-        let result = DebugAdapter::normalize_debugger_output_line("DB<1> main::(/path/file.pl:5):");
-        assert_eq!(result, "main::(/path/file.pl:5):");
+        assert_eq!(
+            DebugAdapter::normalize_debugger_output_line("DB<1> main::(/path/file.pl:5):"),
+            "main::(/path/file.pl:5):"
+        );
     }
 
     #[test]
     pub(super) fn test_normalize_strips_multiple_db_prompts() {
-        // Multiple prompts on one line — the while-let fix handles these.
-        let result = DebugAdapter::normalize_debugger_output_line(
-            "  DB<1>   DB<2> main::(/path/file.pl:5):",
+        assert_eq!(
+            DebugAdapter::normalize_debugger_output_line(
+                "  DB<1>   DB<2> main::(/path/file.pl:5):"
+            ),
+            "main::(/path/file.pl:5):"
         );
-        assert_eq!(result, "main::(/path/file.pl:5):");
     }
 
     #[test]
     pub(super) fn test_normalize_strips_high_prompt_number() {
-        // Prompt number > 99 — ensures '>' search is not length-limited.
-        let result = DebugAdapter::normalize_debugger_output_line("DB<100> $x = 42");
-        assert_eq!(result, "$x = 42");
+        assert_eq!(DebugAdapter::normalize_debugger_output_line("DB<100> $x = 42"), "$x = 42");
     }
 
     #[test]
     pub(super) fn test_normalize_no_prompt_passthrough() {
-        // Lines without a prompt must pass through unchanged (modulo trim).
-        let result = DebugAdapter::normalize_debugger_output_line("  main::(/path/file.pl:5):");
-        assert_eq!(result, "main::(/path/file.pl:5):");
+        assert_eq!(
+            DebugAdapter::normalize_debugger_output_line("  main::(/path/file.pl:5):"),
+            "main::(/path/file.pl:5):"
+        );
     }
 
     #[test]
     pub(super) fn test_normalize_unclosed_prompt_passthrough() {
-        // Malformed "DB<" without closing '>' must not loop forever and must not panic.
-        let result = DebugAdapter::normalize_debugger_output_line("DB<incomplete");
-        // The loop exits because find('>') returns None; the fragment remains.
-        assert_eq!(result, "DB<incomplete");
+        assert_eq!(DebugAdapter::normalize_debugger_output_line("DB<incomplete"), "DB<incomplete");
     }
 
     #[test]
     pub(super) fn test_normalize_three_prompts_in_sequence() {
-        // Three consecutive prompts — verifies loop handles arbitrary depth.
-        let result = DebugAdapter::normalize_debugger_output_line("DB<1> DB<2> DB<3> my $x = 10;");
-        assert_eq!(result, "my $x = 10;");
+        assert_eq!(
+            DebugAdapter::normalize_debugger_output_line("DB<1> DB<2> DB<3> my $x = 10;"),
+            "my $x = 10;"
+        );
     }
 
     #[test]
     fn test_stack_trace_does_not_use_snapshot_in_degraded_path()
     -> Result<(), Box<dyn std::error::Error>> {
-        // #933: When framed transport fails (degraded path), handle_stack_trace should return
-        // empty frames instead of trying to parse the snapshot buffer.
-        // The snapshot buffer contains the entire session history, so parsing it returns
-        // the stale initial-stop frame first, not the current-stop frame.
-        //
-        // This test verifies the fix: degraded path returns Vec::new() which falls through
-        // to session.stack_frames (populated by output reader).
-
         let adapter = DebugAdapter::new();
         adapter.seed_session_for_test()?;
 
-        // Inject stale frames (simulating a previous stop's state)
         let stale_frame =
             StackFrame::new(1, "old_func".to_string(), Source::new("/old/file.pl"), 5);
         adapter.inject_stack_frames_for_test(vec![stale_frame]);
+        adapter.push_recent_output_line_for_test("main::(/test/file1.pl:4):");
+        adapter.push_recent_output_line_for_test("main::(/test/file2.pl:5):");
 
-        // Simulate degraded transport: push old context line to snapshot buffer.
-        // When framed transport fails, the else branch (lines 66-74 in frames.rs) is reached.
-        // The snapshot buffer contains arrival-order history, so we push old + new in order.
-        adapter.push_recent_output_line_for_test("main::(/test/file1.pl:4):"); // old context line
-        adapter.push_recent_output_line_for_test("main::(/test/file2.pl:5):"); // current context line
-
-        // Call handle_stack_trace with no framed output (simulating transport failure).
-        // Note: we can't directly mock framed_output_lines=None without spawning a process,
-        // so we rely on the absence of a live session stdin to trigger the else branch.
-        // The adapter was seeded but with a mock session, so send_framed_debugger_commands
-        // will fail or be skipped, reaching the degraded path.
         let response = adapter.handle_stack_trace(1, 1, None);
-
-        // Extract the frames from response body
         match response {
             DapMessage::Response { body: Some(body), .. } => {
                 if let Ok(trace_response) =
-                    serde_json::from_value::<crate::protocol::StackTraceResponseBody>(body.clone())
+                    serde_json::from_value::<crate::protocol::StackTraceResponseBody>(body)
                 {
-                    // FAILS if degraded path returns snapshot-parsed frames instead of empty.
-                    // Before fix: frames.len() == 2 (old + new parsed from snapshot)
-                    // After fix: frames.len() == 0 (empty from degraded path) OR len() == 1 (from session.stack_frames)
                     assert!(
                         trace_response.stack_frames.is_empty()
-                            || trace_response.stack_frames.len() == 1,
-                        "degraded path must return empty or fall through to session.stack_frames, not snapshot-parsed frames; got {} frames",
-                        trace_response.stack_frames.len()
+                            || trace_response.stack_frames.len() == 1
                     );
                 }
             }
@@ -1049,43 +960,15 @@ DB<1>"#;
         Ok(())
     }
 
-    /// Regression guard: Locals fallback returns empty — no child refs can collide.
-    ///
-    /// Originally filed as #1445: the old fake `$self`/`@_` variables had child refs
-    /// computed with the formula `scope_wire * 100 + index`, which landed in the
-    /// EvalResult band for large frame_ids (e.g. frame_id=10_000 → scope_wire=100_001 →
-    /// child refs ~10_000_102, inside [1_000_000, 1_999_999_999]).
-    ///
-    /// Issue #1006 removes the fake variables entirely: Locals returns empty in fallback
-    /// mode (B module unavailable), so there are no child refs to collide.  Returning
-    /// fake placeholders that do not reflect the real program state is misleading and was
-    /// the root cause of the #1445 class of bugs.
-    ///
-    /// This test verifies:
-    /// 1. The scope-wire codec encodes correctly (frame_id=10_000 → wire=100_001).
-    /// 2. Locals fallback returns empty — no fake `$self`/`@_` that could produce
-    ///    colliding refs or mislead the IDE.
     #[test]
-    pub(super) fn test_fallback_scope_variables_deep_frame_child_refs_in_child_band()
+    pub(super) fn test_fallback_scope_variables_deep_frame_is_empty()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
 
-        // Verify the scope-wire codec is still correct.
-        // frame_id=10_000 was the bug-report input for #1445.
         let scope_ref = VariableReference::Scope { frame_id: 10_000, kind: ScopeKind::Locals };
         let scope_wire = scope_ref.encode().ok_or("Scope{frame_id:10_000} should encode")?;
-        assert_eq!(scope_wire, 100_001, "scope wire must be 100_001 (10_000*10+1)");
-
-        // Locals fallback must be empty — not fake $self/$@_ with colliding child refs.
-        let vars = DebugAdapter::fallback_scope_variables(scope_wire, 0, 10);
-        assert!(
-            vars.is_empty(),
-            "#1006/#1445 regression: Locals fallback must return empty when B module is \
-             unavailable; got {} fake variable(s): {:?}",
-            vars.len(),
-            vars.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
-        );
-
+        assert_eq!(scope_wire, 100_001);
+        assert!(DebugAdapter::fallback_scope_variables(scope_wire, 0, 10).is_empty());
         Ok(())
     }
 }

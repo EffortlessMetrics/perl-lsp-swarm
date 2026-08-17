@@ -1,0 +1,175 @@
+schema_version = 1
+owner = "perl-lsp maintainers"
+current_method = "docs/agents/DEVELOPMENT_METHOD.md"
+review_currentness = "docs/agents/REVIEW_CURRENTNESS.md"
+github_surfaces = "docs/agents/GITHUB_SURFACES.md"
+tracking_issue = 4555
+
+[[documents]]
+path = "AGENTS.md"
+status = "current"
+successor = ""
+notes = "Codex provider route map."
+
+[[documents]]
+path = "CLAUDE.md"
+status = "current"
+successor = ""
+notes = "Claude provider route map."
+
+[[documents]]
+path = "docs/agents/AUTHORITY_STATUS.md"
+status = "current"
+successor = ""
+notes = "Human-readable document-status authority delegated by both root provider routes."
+
+[[documents]]
+path = "docs/agents/authority_status.toml"
+status = "current"
+successor = ""
+notes = "Machine-readable document-status registry and migration inventory."
+
+[[documents]]
+path = "docs/agents/README.md"
+status = "current"
+successor = ""
+notes = "Front door for current cross-provider method and authority status."
+
+[[documents]]
+path = "docs/agents/DEVELOPMENT_METHOD.md"
+status = "current"
+successor = ""
+notes = "Shared provider-native development and orchestration method."
+
+[[documents]]
+path = "docs/agents/REVIEW_CURRENTNESS.md"
+status = "current"
+successor = ""
+notes = "Semantic review and proof currentness contract."
+
+[[documents]]
+path = "docs/agents/GITHUB_SURFACES.md"
+status = "current"
+successor = ""
+notes = "Durable GitHub surface and label-authority boundary."
+
+[[documents]]
+path = "docs/agents/SKILL_CONTRACT.md"
+status = "current"
+successor = ""
+notes = "Public-flow and skill composition contract."
+
+[[documents]]
+path = "docs/how-to/SESSION_OPERATIONS.md"
+status = "current"
+successor = ""
+notes = "Provider-native session resume and closeout runbook."
+
+[[documents]]
+path = "docs/how-to/AGENT_CONTRIBUTING.md"
+status = "current"
+successor = ""
+notes = "Short agent contribution route."
+
+[[documents]]
+path = "docs/specs/PLSP-SPEC-0006-pr-queue-disposition.md"
+status = "current"
+successor = ""
+notes = "PR #6863 landed on main as e9a698285f. The amended specification retired the mandatory-rebase contract itself and now declares that it is the current durable disposition contract; classifying it transitional would demote a current authority."
+
+[[documents]]
+path = "docs/reference/MAINTAINER_AGENT_DOCTRINE.md"
+status = "current"
+successor = ""
+notes = "PR #6868 landed on main as 709b4ca939. The rewritten contract declares itself the current maintainer authority and defines semantic review currentness, one candidate writer, and concrete-purpose integration; classifying it transitional would demote a current authority."
+
+[[documents]]
+path = "docs/reference/WORKTREE_PROTOCOL.md"
+status = "current"
+successor = ""
+notes = "PR #6868 landed on main as 709b4ca939. The rewritten protocol declares itself the current operational reference, scopes worktrees to genuine concurrent write claims, and requires one mutation owner before rewrite."
+
+[[documents]]
+path = "CONTRIBUTING.md"
+status = "current"
+successor = ""
+notes = "PR #6868 landed on main as 709b4ca939. The retired model/label review conveyor is gone, the crate map matches current workspace entrypoints, and the specialized contributor routes were retained."
+
+[[documents]]
+path = ".github/copilot-instructions.md"
+status = "current"
+successor = ""
+notes = "PR #6868 landed on main as 709b4ca939. The file is now a current route map that points at the root provider contracts and forbids reconstructing a fixed conveyor or lifecycle-label state machine."
+
+[[documents]]
+path = "scripts/ci/check-pr-claim-currentness"
+status = "historical"
+successor = "scripts/ci/check-pr-review-convergence"
+notes = "PR #6871 landed on main as c5c43757ed. The command now declares in its own docstring that it has no live review-convergence authority and reads historical receipts in fixture mode only; the retirement is complete, not pending."
+
+[[documents]]
+path = "scripts/reviews/claim-digest"
+status = "historical"
+successor = "scripts/reviews/claim_digest.py"
+notes = "PR #6871 landed on main as c5c43757ed. The CLI entry point now prints a RETIRED notice and exits; the compatibility module scripts/reviews/claim_digest.py remains readable for fixtures. The retirement is complete, not pending."
+
+[[documents]]
+path = "scripts/ci/check-pr-review-convergence-core"
+status = "transitional"
+successor = "scripts/ci/check-pr-review-convergence"
+stale_marker = "CANONICAL review-convergence authority"
+notes = "Compatibility collector that still calls itself the canonical authority and still carries exact-head receipt terminology; consume only through the public semantic wrapper. Containment is not finished: scripts/pre-merge-check.sh still invokes the core directly, bypassing the wrapper. Issue #5778 closed as completed on 2026-08-14 without landing that containment, so this row names the wrapper rather than a closed issue, and the remaining work is residual #4555 work."
+
+[[documents]]
+path = "docs/reference/ORCHESTRATION_DOCTRINE.md"
+status = "superseded"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Historical conveyor/reconciler design. Its internal north-star wording is part of the record, not current authority."
+
+[[documents]]
+path = "docs/reference/PIPELINE_GATES.md"
+status = "superseded"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Historical fixed seven-gate and named-agent model. Current flows are provider-native and state-driven."
+
+[[documents]]
+path = "docs/reference/OCTOPUS_CLUSTER.md"
+status = "historical"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Historical architecture and operating observations. Retained concepts do not restore receipt/reconciler authority."
+
+[[documents]]
+path = "docs/reference/GLOSSARY.md"
+status = "superseded"
+successor = "docs/agents/AUTHORITY_STATUS.md"
+notes = "Historical conveyor vocabulary and reading order; do not use it to select current routes."
+
+[[documents]]
+path = "docs/reference/LIVE_SIGNALS_VS_LABELS.md"
+status = "historical"
+successor = "docs/agents/GITHUB_SURFACES.md"
+notes = "The live-signal principle survives; the fixed label taxonomy and reconciler model do not."
+
+[[documents]]
+path = "docs/adr/0044-octopus-cluster-orchestration.md"
+status = "superseded"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Accepted historical architecture decision superseded by the provider-native method and #4191 lineage."
+
+[[documents]]
+path = "docs/articles/PIPELINE_STATE_MACHINE.md"
+status = "historical"
+successor = "docs/agents/GITHUB_SURFACES.md"
+notes = "Historical design article; labels are not current lifecycle authority."
+
+[[documents]]
+path = "docs/handoff/SWARM_DESIGN.md"
+status = "historical"
+successor = "docs/agents/DEVELOPMENT_METHOD.md"
+notes = "Historical design handoff; file non-overlap, permanent coordinators, and rebase-open are not current operating rules."
+
+[[documents]]
+path = ".spec/3988-merge-readiness/spec.md"
+status = "historical"
+successor = "docs/agents/REVIEW_CURRENTNESS.md"
+notes = "Completed mechanism snapshot. Exact-subject machine evidence survives; exact-head human-review ceremony does not."

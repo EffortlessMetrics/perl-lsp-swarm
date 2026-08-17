@@ -1,0 +1,222 @@
+name: Sublime real-host exact-source
+
+on:
+  pull_request:
+    paths:
+      - "clients/sublime/**"
+      - "crates/perl-lsp-rs/**"
+      - "crates/perllsp/**"
+      - "crates/perl-lsp-rs-core/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/sublime-real-host.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sublime-real-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  host-journey:
+    name: Sublime host / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      # The runner context is not available to a job-level env block. Naming it
+      # here is rejected during workflow validation: the run fails before any
+      # job starts and no receipt is ever produced. Per-host receipt paths are
+      # bound in the first step instead, where $RUNNER_OS is real.
+      PERLLSP_SUBLIME_FIXTURE: ${{ github.workspace }}/clients/sublime/host-fixture
+      PERLLSP_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # The UnitTesting setup action resolves `extra-packages` refs through
+      # `gitResolvePrefixToTag`, which matches only tags and branches and then
+      # clones with `git clone --branch`. A raw commit SHA can never resolve, so
+      # the package is installed by its tag and the tag is asserted to still
+      # point at the exact reviewed commit below.
+      PERLLSP_LSP_TAG: 4070-2.13.0
+      PERLLSP_LSP_REF: cc9f5201d9f053d9ab67aa0ea575b494fd133803
+      # UnitTesting declares sublime_aio as a Package Control dependency for
+      # ST4 (dependencies.json), but this workflow disables Package Control,
+      # so the dependency is installed explicitly and pinned the same way.
+      PERLLSP_AIO_TAG: v0.2.3
+      PERLLSP_AIO_REF: b3d1d559ec223f276c9693e17476768257951266
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Build the exact current-source server candidate
+        run: cargo build --locked --release -p perllsp
+
+      - name: Bind the current-source binary and receipt identity
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            printf 'PERLLSP_TEST_BINARY=%s\n' "$GITHUB_WORKSPACE/target/release/perllsp.exe" >> "$GITHUB_ENV"
+          else
+            printf 'PERLLSP_TEST_BINARY=%s\n' "$GITHUB_WORKSPACE/target/release/perllsp" >> "$GITHUB_ENV"
+          fi
+          printf 'PERLLSP_SUBLIME_RECEIPT=%s\n' \
+            "$GITHUB_WORKSPACE/target/sublime-host/$RUNNER_OS.json" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/target/sublime-host"
+
+      - name: Reject sublimelsp/LSP tag drift from the reviewed commit
+        shell: bash
+        run: |
+          resolved=$(git ls-remote https://github.com/sublimelsp/LSP \
+            "refs/tags/$PERLLSP_LSP_TAG^{}" | cut -f1)
+          if [[ "$resolved" != "$PERLLSP_LSP_REF" ]]; then
+            echo "sublimelsp/LSP tag $PERLLSP_LSP_TAG resolves to ${resolved:-<none>}," >&2
+            echo "but the reviewed exact-source commit is $PERLLSP_LSP_REF." >&2
+            exit 1
+          fi
+          echo "sublimelsp/LSP $PERLLSP_LSP_TAG is $PERLLSP_LSP_REF"
+
+      - name: Reject sublime_aio tag drift from the pinned commit
+        shell: bash
+        run: |
+          resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio             "refs/tags/$PERLLSP_AIO_TAG^{}" | cut -f1)
+          if [[ -z "$resolved" ]]; then
+            # Lightweight tags have no peeled ref; the tag ref is the commit.
+            resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio               "refs/tags/$PERLLSP_AIO_TAG" | cut -f1)
+          fi
+          if [[ "$resolved" != "$PERLLSP_AIO_REF" ]]; then
+            echo "packagecontrol/sublime_aio tag $PERLLSP_AIO_TAG resolves to ${resolved:-<none>}," >&2
+            echo "but the pinned commit is $PERLLSP_AIO_REF." >&2
+            exit 1
+          fi
+          echo "packagecontrol/sublime_aio $PERLLSP_AIO_TAG is $PERLLSP_AIO_REF"
+
+      - name: Stage the exact helper-package source
+        shell: bash
+        run: |
+          rm -rf target/LSP-perllsp-package
+          mkdir -p target/LSP-perllsp-package
+          cp -R clients/sublime/LSP-perllsp/. target/LSP-perllsp-package/
+          git -C target/LSP-perllsp-package init -q
+          git -C target/LSP-perllsp-package remote add origin \
+            https://github.com/EffortlessMetrics/perl-lsp-swarm.git
+
+      - name: Install Sublime Text, UnitTesting, and exact LSP 2.13.0 source
+        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164  # master (sublime-journey)
+        with:
+          package-name: LSP-perllsp
+          package-path: target/LSP-perllsp-package
+          sublime-text-version: 4
+          install-package-control: false
+          extra-packages: |
+            LSP:sublimelsp/LSP@${{ env.PERLLSP_LSP_TAG }}
+            sublime_aio:packagecontrol/sublime_aio@${{ env.PERLLSP_AIO_TAG }}
+
+      - name: Vendor the pinned typing_extensions dependency
+        # The pinned LSP 2.13.0 declares typing_extensions as a Package
+        # Control dependency; with Package Control disabled it never installs
+        # and LSP's plugin.core.typing fails to import. The plugin host
+        # imports bare dependency packages from Packages/<name>/__init__.py
+        # (the proven shape: the sublime_aio dependency installs the same
+        # way), so the official single module (4.7.1: the era whose typing
+        # internals match ST4's python 3.8 vendor build), pinned by tag and
+        # digest, is vendored in exactly that layout.
+        shell: bash
+        run: >
+          set -e
+          && vendor="$SUBLIME_TEXT_PACKAGES/typing_extensions"
+          && mkdir -p "$vendor"
+          && curl -fsSL
+          "https://raw.githubusercontent.com/python/typing_extensions/4.7.1/src/typing_extensions.py"
+          -o "$vendor/__init__.py"
+          && printf '%s  %s\n'
+          "ce42d78e130c4a62af2cbaa3f8c0ae9db49c18cbbb90f2d9614b0bba7dfc234d"
+          "$vendor/__init__.py" | sha256sum -c -
+
+      - name: Vendor the pinned wcmatch and bracex dependencies
+        # LSP 2.13.0's plugin.core.types imports wcmatch.glob at load, and
+        # wcmatch's brace expansion imports bracex. Both are pure-python
+        # facelessuser packages; the LSP-2.13.0-era tags are vendored in the
+        # bare dependency-package layout, with each tag asserted to its
+        # reviewed commit.
+        shell: bash
+        run: >
+          set -e
+          && staging="$(mktemp -d)"
+          && git clone --quiet --depth 1 --branch 8.5
+          https://github.com/facelessuser/wcmatch "$staging/wcmatch"
+          && git clone --quiet --depth 1 --branch 2.4
+          https://github.com/facelessuser/bracex "$staging/bracex"
+          && cp -R "$staging/wcmatch/wcmatch" "$SUBLIME_TEXT_PACKAGES/wcmatch"
+          && cp -R "$staging/bracex/bracex" "$SUBLIME_TEXT_PACKAGES/bracex"
+          && test "$(git -C "$staging/wcmatch" rev-parse HEAD)" = "ff57d25c4104bc6e7e8d9e962ffec88b293b9bdb"
+          && test "$(git -C "$staging/bracex" rev-parse HEAD)" = "9c9e5465f1a6d6e40763c9a2501b47a039909c30"
+
+      - name: Vendor the pinned mdpopups dependency
+        # LSP 2.13.0 imports mdpopups at plugin load. The upstream repo was
+        # renamed (facelessuser/mdpopups -> facelessuser/sublime-markdown-
+        # popups) and the PyPI package is gone, but the Package Control
+        # channel still resolves the ST4 python-3.8 line from this repo's
+        # st3- tag wheels; the 4.3.5 wheel vendors markdown/jinja2/coloraide
+        # internally, so it has no further pip dependencies. orjson, the one
+        # remaining declared dependency, is optional in LSP with a stdlib
+        # fallback. The wheel is pinned by its digest and unpacked into the
+        # bare dependency-package layout.
+        shell: bash
+        run: >
+          set -e
+          && staging="$(mktemp -d)"
+          && curl -fsSL
+          "https://github.com/facelessuser/sublime-markdown-popups/releases/download/st3-4.3.5/mdpopups-4.3.5-py3-none-any.whl"
+          -o "$staging/mdpopups.whl"
+          && printf '%s  %s\n'
+          "a28858842f758f1b83f519c589ee0d5d859581be4acc98317ad56610793ca927"
+          "$staging/mdpopups.whl" | sha256sum -c -
+          && python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])'
+          "$staging/mdpopups.whl" "$staging/unpacked"
+          && cp -R "$staging/unpacked/mdpopups" "$SUBLIME_TEXT_PACKAGES/mdpopups"
+          && test -f "$SUBLIME_TEXT_PACKAGES/mdpopups/__init__.py"
+
+      - name: Run the real Sublime interoperability journey
+        # The upstream run-tests action waits 30 s per attempt and restarts
+        # Sublime three times; this package's deferred host journey legitimately
+        # needs minutes (cold Sublime + pinned LSP load + current-source server
+        # spawn + LSP round trips, each condition bounded by condition_timeout
+        # in unittesting.json).  The self-owned runner keeps the upstream
+        # schedule mechanics but polls once with an honest wall and dumps the
+        # recorded Sublime log on failure.
+        run: python scripts/sublime/run_unit_tests.py LSP-perllsp
+        shell: bash
+
+      - name: Reject an orphaned perllsp process
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "perllsp remained alive after Sublime/UnitTesting shutdown" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
+      - name: Reject an orphaned perllsp process
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $processes = Get-Process perllsp -ErrorAction SilentlyContinue
+          if ($processes) {
+            $processes | Format-Table -AutoSize | Out-String | Write-Error
+            throw "perllsp remained alive after Sublime/UnitTesting shutdown"
+          }
+
+      - name: Validate the exact-source receipt
+        shell: bash
+        run: python clients/sublime/validate_sublime_host_receipt.py "$PERLLSP_SUBLIME_RECEIPT"
+
+      - name: Publish the host receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sublime-real-host-${{ runner.os }}
+          path: target/sublime-host/*.json
+          if-no-files-found: error
+          retention-days: 30

@@ -63,10 +63,15 @@ fn test_apply_edits_accepts_slice() -> Result<(), Box<dyn std::error::Error>> {
     let code = "my $x = 1;";
     let mut state = IncrementalState::new(code.to_string());
 
-    let edit = Edit { start_byte: 3, old_end_byte: 5, new_end_byte: 5, new_text: "y".to_string() };
+    // Replacing bytes 3..5 ("$x") with "y" ends the new text at 3 + "y".len() == 4.
+    // `validate_edits` rejects a `new_end_byte` that disagrees with the replacement
+    // length, so an inconsistent fixture would fail before reaching the slice call
+    // this guard exists to exercise.
+    let edit = Edit { start_byte: 3, old_end_byte: 5, new_end_byte: 4, new_text: "y".to_string() };
 
     // apply_edits must accept a slice, not a Vec
     let _result = apply_edits(&mut state, &[edit])?;
+    assert_eq!(state.source(), "my y = 1;", "edit must be applied to the committed generation");
 
     Ok(())
 }
