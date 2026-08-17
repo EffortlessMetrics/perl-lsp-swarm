@@ -56,9 +56,9 @@ impl AncestryDisposition {
         match self {
             Self::Ancestor | Self::Diverged => 0,
             Self::Unrelated => 2,
-            Self::NotProvenShallow
-            | Self::NotProvenPartialClone
-            | Self::NotProvenMissingObject => 3,
+            Self::NotProvenShallow | Self::NotProvenPartialClone | Self::NotProvenMissingObject => {
+                3
+            }
             Self::InvalidInput | Self::InstrumentFailure => 4,
         }
     }
@@ -135,11 +135,7 @@ impl AncestryReceipt {
         }
     }
 
-    fn finish(
-        mut self,
-        disposition: AncestryDisposition,
-        reason: impl Into<String>,
-    ) -> Self {
+    fn finish(mut self, disposition: AncestryDisposition, reason: impl Into<String>) -> Self {
         self.disposition = disposition;
         self.reason = reason.into();
         self
@@ -202,7 +198,8 @@ impl GitOutput {
 pub fn classify_ancestry(repository: &Path, base: &str, head: &str) -> AncestryReceipt {
     let mut receipt = AncestryReceipt::new(repository, base, head);
 
-    if let Some(problem) = invalid_revision(base, "base").or_else(|| invalid_revision(head, "head")) {
+    if let Some(problem) = invalid_revision(base, "base").or_else(|| invalid_revision(head, "head"))
+    {
         return receipt.finish(AncestryDisposition::InvalidInput, problem);
     }
 
@@ -358,28 +355,12 @@ pub fn classify_ancestry(repository: &Path, base: &str, head: &str) -> AncestryR
             "both commit objects are present in a non-shallow, non-partial graph and no merge base exists",
         );
     };
+    // A merge base equal to one of the requested commits means that commit is an
+    // ancestor of the other, so no extra `git merge-base --is-ancestor` process is
+    // needed to establish either direction of the relation.
+    let base_is_ancestor = merge_base == base_sha;
+    let head_is_ancestor = merge_base == head_sha;
     receipt.merge_base = Some(merge_base);
-
-    let base_is_ancestor = match is_ancestor(repository, &base_sha, &head_sha) {
-        Ok(value) => value,
-        Err(error) => {
-            receipt.limitations.push(error);
-            return receipt.finish(
-                AncestryDisposition::InstrumentFailure,
-                "Git could not test whether base is an ancestor of head",
-            );
-        }
-    };
-    let head_is_ancestor = match is_ancestor(repository, &head_sha, &base_sha) {
-        Ok(value) => value,
-        Err(error) => {
-            receipt.limitations.push(error);
-            return receipt.finish(
-                AncestryDisposition::InstrumentFailure,
-                "Git could not test whether head is an ancestor of base",
-            );
-        }
-    };
     receipt.base_is_ancestor_of_head = Some(base_is_ancestor);
     receipt.head_is_ancestor_of_base = Some(head_is_ancestor);
 
@@ -417,7 +398,9 @@ fn invalid_revision(value: &str, role: &str) -> Option<String> {
 
 fn git_path_observation(repository: &Path, flag: &str) -> Option<String> {
     match run_git(repository, &["rev-parse", flag]) {
-        Ok(output) if output.succeeded() => Some(normalize_git_path(repository, output.stdout.trim())),
+        Ok(output) if output.succeeded() => {
+            Some(normalize_git_path(repository, output.stdout.trim()))
+        }
         _ => None,
     }
 }
@@ -429,10 +412,10 @@ fn normalize_git_path(repository: &Path, value: &str) -> String {
 }
 
 fn partial_clone_observation(repository: &Path) -> Result<bool, String> {
-    let output = run_git(
-        repository,
-        &["config", "--local", "--get-regexp", r"^remote\..*\.promisor$"],
-    )?;
+    // No `--local`: promisor configuration can also live in worktree-specific
+    // config when `extensions.worktreeConfig` is enabled, and missing it would
+    // let a partial clone be misclassified as complete.
+    let output = run_git(repository, &["config", "--get-regexp", r"^remote\..*\.promisor$"])?;
     if output.succeeded() {
         return Ok(!output.stdout.trim().is_empty());
     }
@@ -444,27 +427,13 @@ fn partial_clone_observation(repository: &Path) -> Result<bool, String> {
 
 fn resolve_commit(repository: &Path, revision: &str) -> Option<String> {
     let specification = format!("{revision}^{{commit}}");
-    match run_git(
-        repository,
-        &["rev-parse", "--verify", "--end-of-options", &specification],
-    ) {
+    match run_git(repository, &["rev-parse", "--verify", "--end-of-options", &specification]) {
         Ok(output) if output.succeeded() => {
             let sha = output.stdout.trim();
             (!sha.is_empty()).then(|| sha.to_string())
         }
         _ => None,
     }
-}
-
-fn is_ancestor(repository: &Path, ancestor: &str, descendant: &str) -> Result<bool, String> {
-    let output = run_git(repository, &["merge-base", "--is-ancestor", ancestor, descendant])?;
-    if output.succeeded() {
-        return Ok(true);
-    }
-    if output.no_match() {
-        return Ok(false);
-    }
-    Err(format!("ancestor probe failed: {}", output.diagnostic()))
 }
 
 fn run_git(repository: &Path, arguments: &[&str]) -> Result<GitOutput, String> {
