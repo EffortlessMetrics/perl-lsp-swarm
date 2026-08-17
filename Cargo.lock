@@ -1534,8 +1534,10 @@ dependencies = [
  "proptest",
  "rand 0.10.2",
  "regex",
+ "same-file",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml",
  "tracing",
@@ -1714,6 +1716,7 @@ dependencies = [
  "perl-subprocess-runtime",
  "perl-symbol",
  "perl-tdd-support",
+ "perl-test-facts",
  "perl-workspace",
  "proptest",
  "regex",
@@ -1918,6 +1921,15 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "perl-source-identity"
+version = "0.17.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

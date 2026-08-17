@@ -264,44 +264,95 @@ fn parser_integration_gate_is_required_and_manifest_driven()
     Ok(())
 }
 
+/// (issue #6845) The former `inline_completion_contract` gate chained four
+/// Cargo commands with `&&`, masking which contract failed and preventing
+/// later contracts from running. It is now one ordered four-row family:
+/// every change to either owning package selects every child, and the family
+/// preserves the former 600-second timeout / 540-second budget envelope.
 #[test]
-fn inline_completion_contract_scope_stays_on_lsp_crates() -> Result<(), Box<dyn std::error::Error>>
-{
+fn inline_completion_gates_are_split_scoped_ordered_and_budgeted()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let policy_path = root.join(".ci/gate-policy.yaml");
     let content = fs::read_to_string(policy_path)?;
     let parsed: GatePolicyDoc = serde_yaml_ng::from_str(&content)?;
 
+    let ordered_names: Vec<String> = parsed.gates.iter().map(|gate| gate.name.clone()).collect();
     let gates: HashMap<_, _> =
         parsed.gates.into_iter().map(|gate| (gate.name.clone(), gate)).collect();
 
-    let contract =
-        gates.get("inline_completion_contract").ok_or("missing inline_completion_contract gate")?;
-    let contract_planning =
-        contract.planning.as_ref().ok_or("inline_completion_contract missing planning")?;
+    assert!(
+        !gates.contains_key("inline_completion_contract"),
+        "inline_completion_contract must be removed — the && composite masks children"
+    );
 
-    assert_eq!(contract.tier, "pr_fast");
-    assert!(contract.required, "inline_completion_contract must stay PR-blocking");
-    assert!(
-        contract.timeout_seconds.unwrap_or_default() >= 600,
-        "inline_completion_contract timeout must include cold CI compile headroom"
+    let expected: &[(&str, &str)] = &[
+        (
+            "inline_completion_registration",
+            "cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests",
+        ),
+        (
+            "lsp_registration_contract",
+            "cargo test -p perl-lsp-rs --locked --test lsp_registration_tests",
+        ),
+        ("lsp_capability_snapshots", "cargo test -p perl-lsp-rs --locked --test lsp_cap_snap"),
+        (
+            "inline_completion_core",
+            "cargo test -p perl-lsp-rs-core --locked --lib inline_completion",
+        ),
+    ];
+    let expected_names: Vec<_> = expected.iter().map(|(name, _)| *name).collect();
+    let family_start = ordered_names
+        .windows(expected_names.len())
+        .position(|window| window.iter().eq(expected_names.iter()))
+        .ok_or("inline-completion gate family must be contiguous and ordered")?;
+    assert_eq!(
+        ordered_names.get(family_start + expected_names.len()).map(String::as_str),
+        Some("inline_completion_quality_receipt"),
+        "quality receipt must remain the family boundary immediately after the four children"
     );
-    assert!(
-        contract.budgets.as_ref().and_then(|budget| budget.max_duration_ms).unwrap_or_default()
-            >= 540_000,
-        "inline_completion_contract duration budget must reflect observed cold PR-fast runtime"
-    );
-    assert_eq!(contract_planning.role, "rust_package_scoped");
-    assert_eq!(contract_planning.packages, vec!["perl-lsp-rs", "perl-lsp-rs-core"]);
+
+    let mut timeout_total = 0_u64;
+    let mut budget_total = 0_u64;
+    for &(gate_name, expected_command) in expected {
+        let gate = gates
+            .get(gate_name)
+            .ok_or_else(|| format!("gate '{gate_name}' not found in gate-policy.yaml"))?;
+        let planning = gate
+            .planning
+            .as_ref()
+            .ok_or_else(|| format!("gate '{gate_name}' missing planning field"))?;
+
+        assert_eq!(gate.tier, "pr_fast", "gate '{gate_name}' must remain in pr_fast");
+        assert!(
+            gate.required,
+            "gate '{gate_name}' must remain required within the pr_fast runner; this does not claim GitHub protection"
+        );
+        assert_eq!(planning.role, "rust_package_scoped");
+        assert_eq!(
+            planning.packages,
+            vec!["perl-lsp-rs", "perl-lsp-rs-core"],
+            "every child must be selected by a change to either formerly governed package"
+        );
+        assert_eq!(gate.command, expected_command);
+        assert!(!gate.command.contains("&&"));
+        timeout_total += gate.timeout_seconds.ok_or("child timeout must be explicit")?;
+        budget_total += gate
+            .budgets
+            .as_ref()
+            .and_then(|budget| budget.max_duration_ms)
+            .ok_or("child budget must be explicit")?;
+    }
+    assert_eq!(timeout_total, 600, "split family must preserve the old hard timeout");
+    assert_eq!(budget_total, 540_000, "split family must preserve the old duration budget");
 
     let quality = gates
         .get("inline_completion_quality_receipt")
         .ok_or("missing inline_completion_quality_receipt gate")?;
     let quality_planning =
         quality.planning.as_ref().ok_or("inline_completion_quality_receipt missing planning")?;
-
     assert_eq!(quality.tier, "pr_fast");
-    assert!(quality.required, "inline_completion_quality_receipt must stay PR-blocking");
+    assert!(quality.required, "quality receipt must remain required within pr_fast");
     assert_eq!(quality_planning.role, "rust_package_scoped");
     assert_eq!(quality_planning.packages, vec!["perl-lsp-rs-core", "xtask"]);
 

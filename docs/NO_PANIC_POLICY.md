@@ -6,9 +6,10 @@ reviewed test helpers instead of collapsing `Result` or `Option` values.
 
 ## Current rollout status
 
-The Rust 1.95 / 0.14.0 rollout targets an exact counted no-new-debt policy, but
-that target is not active in this documentation PR. The rollout map lives in
-[`docs/ci/perl-lsp-rust-1.95-rollout.md`](ci/perl-lsp-rust-1.95-rollout.md).
+The Rust 1.95 rollout established active panic-family lint bans and a governed
+path toward exact counted no-new-debt enforcement. The rollout map remains in
+[`docs/ci/perl-lsp-rust-1.95-rollout.md`](ci/perl-lsp-rust-1.95-rollout.md), but
+current source and policy files are authoritative for current-state claims.
 
 Current guardrails are split across:
 
@@ -17,8 +18,11 @@ Current guardrails are split across:
   `dbg_macro`;
 - the governed lint ledger in
   [`policy/clippy-lints.toml`](../policy/clippy-lints.toml);
-- the legacy Clippy test unwrap carveout in [`clippy.toml`](../clippy.toml),
-  which is intentionally left for a dedicated follow-up PR.
+- shared Clippy configuration in [`clippy.toml`](../clippy.toml), which no
+  longer contains an `allow-unwrap-in-tests` exception.
+
+The removed test unwrap carveout may still appear in historical rollout records.
+It is not a current permission and must not be used to justify new test debt.
 
 ## Target posture
 
@@ -36,7 +40,20 @@ without an explicit reset.
 
 ## Test guidance
 
-Tests should return `Result` or use repository helpers such as
-`perl_tdd_support::must` and `perl_tdd_support::must_some`. The planned fallible
-helper lane will add helper APIs for cases that need to convert `Option` or
-`Result` values into `anyhow::Result` with context.
+For fallible setup or helper work whose error should propagate, return `Result`
+and use `?`. Do not replace propagation with a panic merely to satisfy a lint.
+
+When the test scenario asserts that a `Result` or `Option` branch is impossible,
+use the helpers owned by `perl-test-must`, such as:
+
+```rust
+use perl_test_must::{must, must_err, must_some};
+```
+
+Existing `perl_tdd_support::must*` imports are compatibility and workspace
+migration state governed by #8605 and #8436. New code should not depend on the
+broader `perl-tdd-support` package solely to obtain these helpers.
+
+Intentional assertion panics and explicit panic-injection tests require narrow,
+reviewed exceptions at the actual panic owner. They do not make accidental panic
+paths acceptable in the rest of a test target.
