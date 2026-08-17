@@ -13,6 +13,7 @@ function makeDependencies(results: HealthCheckResult[] = []): ServerCommandConte
   reinstallServerBinary: jest.Mock;
   restartServer: jest.Mock;
   runHealthCheck: jest.Mock;
+  showBinaryIdentity: jest.Mock;
 } {
   return {
     outputChannel,
@@ -26,6 +27,7 @@ function makeDependencies(results: HealthCheckResult[] = []): ServerCommandConte
     })),
     restartServer: jest.fn(async () => undefined),
     runHealthCheck: jest.fn(async () => results),
+    showBinaryIdentity: jest.fn(async () => ({ state: 'ready_exact' })),
   };
 }
 
@@ -38,14 +40,32 @@ describe('registerServerCommandGroup', () => {
     const dependencies = makeDependencies();
     const disposables = registerServerCommandGroup(dependencies);
 
-    expect(disposables).toHaveLength(4);
+    expect(disposables).toHaveLength(5);
     await vscode.commands.executeCommand('perl-lsp.showOutput');
     await vscode.commands.executeCommand('perl-lsp.reinstall');
     await vscode.commands.executeCommand('perl-lsp.restart');
+    await vscode.commands.executeCommand('perl-lsp.showBinaryIdentity');
 
     expect(outputChannel.show).toHaveBeenCalledTimes(1);
     expect(dependencies.reinstallServerBinary).toHaveBeenCalledTimes(1);
     expect(dependencies.restartServer).toHaveBeenCalledTimes(1);
+    expect(dependencies.showBinaryIdentity).toHaveBeenCalledTimes(1);
+  });
+
+  test('binary identity command has an honest unsupported result before composition', async () => {
+    const { showBinaryIdentity, ...dependencies } = makeDependencies();
+    void showBinaryIdentity;
+    const disposables = registerServerCommandGroup(dependencies);
+
+    const result = await vscode.commands.executeCommand('perl-lsp.showBinaryIdentity');
+
+    expect(result).toEqual({ status: 'unsupported' });
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      'Binary identity is unavailable until the running server negotiates the identity feature.',
+    );
+    for (const disposable of disposables) {
+      disposable.dispose();
+    }
   });
 
   test('resolves the managed path by default and returns structured health results', async () => {
