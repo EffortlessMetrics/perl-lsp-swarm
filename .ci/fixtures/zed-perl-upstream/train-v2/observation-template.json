@@ -1,0 +1,37 @@
+{
+  "schema_version": "zed_codex_train_observation.v2",
+  "result": "not_run",
+  "observed_at": null,
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "main": {
+    "commit": null,
+    "tree": null
+  },
+  "observer": {
+    "issue": 10479,
+    "tool_version": null,
+    "source_sha256": null,
+    "mode": null
+  },
+  "stages": {},
+  "manual_checkpoints": {},
+  "external_acceptance": {},
+  "frontier": {
+    "ready": [],
+    "in_progress": [],
+    "blocked_internal": [],
+    "blocked_external": [],
+    "manual_checkpoint_pending": [],
+    "external_acceptance_pending": [],
+    "evidence_pending": [],
+    "superseded": [],
+    "not_proven": [],
+    "instrument_failed": []
+  },
+  "limitations": [
+    "Template only; no live repository or external observation has been performed.",
+    "Observation state cannot satisfy product, behavioral, distribution, compatibility, or public-support evidence.",
+    "The stable train topology is authoritative for dependencies; this object records only one bounded read of mutable state.",
+    "No manual checkpoint or external acceptance may be inferred from elapsed time or issue state."
+  ]
+}
