@@ -1,0 +1,33 @@
+{
+  "schema_version": "zed_train_authority.v1",
+  "programme_issue": 7759,
+  "activation_issue": 10338,
+  "active": {
+    "manifest": ".ci/fixtures/zed-perl-upstream/train-v2/manifest.json",
+    "human_guide": "docs/integrations/ZED_CODEX_IMPLEMENTATION_TRAIN_V2.md",
+    "observation_schema": "zed_codex_train_observation.v1",
+    "observation_template": ".ci/fixtures/zed-perl-upstream/train-v2/observation-template.json",
+    "frontier_source": "stable_manifest_plus_typed_observation"
+  },
+  "historical": [
+    {
+      "path": ".ci/fixtures/zed-perl-upstream/codex-train.v1.json",
+      "disposition": "superseded_migration_subject",
+      "reason": "Version 1 combined stable programme topology with mutable issue, pull-request, and frontier state. It remains historical evidence only."
+    },
+    {
+      "path": "docs/integrations/ZED_CODEX_IMPLEMENTATION_TRAIN.md",
+      "disposition": "superseded_human_projection",
+      "reason": "The version-1 document describes the retired live-state-bearing train and cannot route current Codex work."
+    }
+  ],
+  "rules": {
+    "one_active_train": true,
+    "frontier_is_generated": true,
+    "live_github_state_is_observation_only": true,
+    "issue_or_pr_state_is_not_product_evidence": true,
+    "historical_train_cannot_route_codex": true,
+    "external_write_is_maintainer_only": true
+  },
+  "claim_boundary": "This authority selects the repository's implementation control plane. It does not establish Zed behavior, external acceptance, distribution, compatibility, or public support."
+}
