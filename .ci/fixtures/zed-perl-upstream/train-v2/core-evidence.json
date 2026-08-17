@@ -1,0 +1,78 @@
+{
+  "schema_version": "zed_codex_implementation_train_fragment.v2",
+  "fragment": "core-evidence",
+  "stages": [
+    {
+      "id": "P10",
+      "lane": "core_lsp",
+      "issue": 8678,
+      "actor": "codex",
+      "objective": "Execute, validate, and freeze current public perllsp asset receipts and their aggregate.",
+      "depends_on": ["P01", "P06", "I00", "C01"],
+      "evidence": "public_asset_evidence",
+      "route": "matching_host_and_cross_build",
+      "blocks_core": true,
+      "exit": "issue #8678 executable public-asset acceptance"
+    },
+    {
+      "id": "P11",
+      "lane": "core_lsp",
+      "issue": 8695,
+      "actor": "codex",
+      "objective": "Execute and freeze one exact-source development-extension Zed core receipt.",
+      "depends_on": ["P02", "P03", "I00", "C01"],
+      "evidence": "exact_source_host_evidence",
+      "route": "development_extension",
+      "blocks_core": true,
+      "exit": "issue #8695 exact-source host acceptance"
+    },
+    {
+      "id": "P12",
+      "lane": "core_lsp",
+      "issue": 8714,
+      "actor": "codex",
+      "objective": "Execute and freeze the settings precedence, typed-consumption, and live/restart receipts.",
+      "depends_on": ["P04", "P11"],
+      "evidence": "settings_evidence",
+      "route": "exact_source_experiment",
+      "blocks_core": true,
+      "exit": "issue #8714 settings behavior acceptance"
+    },
+    {
+      "id": "P13",
+      "lane": "core_lsp",
+      "issue": 8733,
+      "actor": "codex",
+      "objective": "Execute and freeze provider/default compatibility receipts and derive the safe publication order.",
+      "depends_on": ["P05", "P11"],
+      "evidence": "default_order_evidence",
+      "route": "exact_source_experiment",
+      "blocks_core": true,
+      "exit": "issue #8733 publication-order acceptance"
+    },
+    {
+      "id": "P14",
+      "lane": "core_lsp",
+      "issue": 8772,
+      "actor": "codex",
+      "objective": "Execute and freeze the real-Zed managed first-mile, reuse, disable, and recovery receipts.",
+      "depends_on": ["P07", "P10", "P11", "I00", "C01"],
+      "evidence": "managed_route_evidence",
+      "route": "development_extension_managed",
+      "blocks_core": true,
+      "exit": "issue #8772 managed-route acceptance"
+    },
+    {
+      "id": "P15",
+      "lane": "core_lsp",
+      "issue": 10343,
+      "actor": "codex",
+      "objective": "Aggregate all exact-source child receipts into one current submission authority and claim set.",
+      "depends_on": ["P10", "P11", "P12", "P13", "P14", "I00", "C01"],
+      "evidence": "exact_source_submission_authority",
+      "route": "internal_aggregation",
+      "blocks_core": true,
+      "exit": "issue #10343 acceptance and exact-source controller #7907 closure boundary"
+    }
+  ]
+}
