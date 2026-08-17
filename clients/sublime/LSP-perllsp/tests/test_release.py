@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import tarfile
 import tempfile
 import unittest
@@ -137,10 +138,12 @@ class ReleaseContractTests(unittest.TestCase):
             binary.write_bytes(b"tampered")
             self.assertFalse(release.installed_binary_is_current(binary, asset))
             # A binary whose execute permission was lost is not a usable
-            # install even when its content still matches.
-            binary.write_bytes(b"trusted")
-            binary.chmod(0o644)
-            self.assertFalse(release.installed_binary_is_current(binary, asset))
+            # install even when its content still matches. The check is
+            # POSIX-gated in production; Windows ACLs do not model the bit.
+            if os.name == "posix":
+                binary.write_bytes(b"trusted")
+                binary.chmod(0o644)
+                self.assertFalse(release.installed_binary_is_current(binary, asset))
 
     def test_settings_bind_perl_and_custom_tokens(self) -> None:
         settings = json.loads((PACKAGE / "LSP-perllsp.sublime-settings").read_text(encoding="utf-8"))
