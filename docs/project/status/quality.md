@@ -19,37 +19,36 @@
 <!-- BEGIN: QUALITY_CRATE_TABLE -->
 | Crate | Mutants listed | Tests (lib) |
 |-------|---------------|-------------|
-| perl-ast | — | 36 |
+| perl-ast | — | 38 |
 | perl-ast-v2 | — | 10 |
-| perl-ci-hygiene | — | 88 |
-| perl-core-harness | — | 45 |
-| perl-core-harness-types | — | 4 |
-| perl-corpus | — | 208 |
-| perl-dap | — | 586 |
-| perl-dead-code | — | 52 |
-| perl-diagnostics | — | 12 |
+| perl-ci-hygiene | — | 93 |
+| perl-core-harness | — | 145 |
+| perl-core-harness-types | — | 6 |
+| perl-corpus | — | 197 |
+| perl-dap | — | 683 |
+| perl-diagnostics | — | 13 |
 | perl-incremental-parsing | — | 13 |
-| perl-kwalitee | — | 72 |
-| perl-lexer | — | 195 |
-| perl-line-index | — | 33 |
-| perl-lsp | — | 1277 |
-| perl-lsp-perltidy | — | 27 |
-| perl-lsp-rs-core | — | 2652 |
-| perl-lsp-ux-tests | — | 77 |
-| perl-module | — | 17 |
-| perl-parser | — | 286 |
-| perl-parser-core | — | 815 |
+| perl-kwalitee | — | 82 |
+| perl-lexer | — | 232 |
+| perl-line-index | — | 40 |
+| perl-lsp | — | 1540 |
+| perl-lsp-perltidy | — | 31 |
+| perl-lsp-rs-core | — | 3111 |
+| perl-lsp-ux-tests | — | 78 |
+| perl-module | — | 20 |
+| perl-parser | — | 338 |
+| perl-parser-core | — | 1012 |
 | perl-parser-pest | — | 13 |
-| perl-pod | — | 24 |
-| perl-position-tracking | — | 58 |
+| perl-pod | — | 28 |
+| perl-position-tracking | — | 73 |
 | perl-pragma | — | 1 |
-| perl-refactoring | — | 175 |
-| perl-regex | — | 39 |
-| perl-ripr-facts | — | 146 |
-| perl-semantic-analyzer | — | 363 |
-| perl-semantic-facts | — | 53 |
-| perl-subprocess-runtime | — | 42 |
-| perl-symbol | — | 74 |
+| perl-regex | — | 80 |
+| perl-ripr-facts | — | 149 |
+| perl-semantic-analyzer | — | 406 |
+| perl-semantic-facts | — | 69 |
+| perl-source-identity | — | 63 |
+| perl-subprocess-runtime | — | 36 |
+| perl-symbol | — | 77 |
 | perl-tdd-support | — | 54 |
 | perl-test-facts | — | 25 |
 | perl-test-generators | — | 40 |
@@ -57,10 +56,11 @@
 | perl-token | — | 55 |
 | perl-tree-sitter-compat | — | 12 |
 | perl-uri | — | 60 |
-| perl-workspace | — | 702 |
-| perl-workspace-core | — | 86 |
+| perl-workspace | — | 750 |
+| perl-workspace-core | — | 122 |
 | tree-sitter-perl-c | — | 13 |
 | tree-sitter-perl-rs | — | 47 |
+| xtask | — | 41 |
 <!-- END: QUALITY_CRATE_TABLE -->
 
 ## Flaky Test Registry

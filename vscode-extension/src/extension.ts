@@ -51,6 +51,12 @@ import {
 } from './testCommands';
 import { registerMcpSupport } from './mcpSupport';
 import { registerServerCommandGroup } from './serverCommandGroup';
+import {
+  showBinaryIdentityStatus,
+  type BinaryIdentityCommandHost,
+  type BinaryIdentityRequestClient,
+} from './binaryIdentityCommand';
+import type { SelectedBinaryRole } from './binaryIdentityStatus';
 import { registerCriticCommandGroup } from './criticCommandGroup';
 import { registerTestCommandGroup } from './testCommandGroup';
 import { registerOnboardingCommandGroup } from './onboardingCommandGroup';
@@ -144,6 +150,33 @@ let streamingController: StreamingCompletionController | undefined;
 let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
   | undefined;
+
+export function createBinaryIdentityCommand(
+  getClient: () => BinaryIdentityRequestClient | undefined,
+  extensionVersion: string,
+  selectedRole: SelectedBinaryRole,
+  host: BinaryIdentityCommandHost,
+  reportError: (message: string) => void = () => undefined,
+): () => Promise<unknown> {
+  return async () => {
+    const activeClient = getClient();
+    if (!activeClient) {
+      return { status: 'unavailable' as const };
+    }
+
+    try {
+      return await showBinaryIdentityStatus(activeClient, host, {
+        extensionVersion,
+        selectedRole,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      reportError(message);
+      return { status: 'error' as const, message };
+    }
+  };
+}
+
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
 const activeDocumentReadiness = new ActiveDocumentReadiness();
 let latestLanguageClientGeneration = 0;
@@ -508,7 +541,9 @@ export async function activate(context: vscode.ExtensionContext) {
   // traceOutputChannel. Messages are routed through level-aware methods
   // (debug/info/warn/error) so the VS Code Output panel level filter works.
   outputChannel = vscode.window.createOutputChannel('Perl Language Server', { log: true });
-  const mcpDisposable = featureActivationMetrics.measure('mcp', true, () =>
+  // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
+  // longer activation-critical: it registers nothing and returns no disposable.
+  const mcpDisposable = featureActivationMetrics.measure('mcp', false, () =>
     registerMcpSupport(outputChannel),
   );
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -558,6 +593,29 @@ export async function activate(context: vscode.ExtensionContext) {
     },
     reinstallServerBinary: () => reinstallServerBinary(context),
     restartServer: () => restartServer(context),
+    showBinaryIdentity: createBinaryIdentityCommand(
+      () => client ?? languageClientLifecycle?.client,
+      (context.extension.packageJSON.version as string) ?? 'unknown',
+      'managed',
+      {
+        show: async (presentation) => {
+          await vscode.window.showInformationMessage(
+            `${presentation.label}\n${presentation.detail}`,
+          );
+          return undefined;
+        },
+        refreshIdentity: async () => undefined,
+        repairManagedPair: async () => undefined,
+        inspectConfiguredBinary: async () => undefined,
+        copySupportPacket: async (packet) => {
+          await vscode.env.clipboard.writeText(packet);
+        },
+      },
+      (message) => {
+        outputChannel.error(`[binary-identity] ${message}`);
+        void vscode.window.showErrorMessage(`Failed to read Perl LSP binary identity: ${message}`);
+      },
+    ),
     runHealthCheck: async (serverPath) => {
       const onboarding = new OnboardingManager(context, outputChannel);
       return onboarding.runSetupHealthCheck(serverPath);

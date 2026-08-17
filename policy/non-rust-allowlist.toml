@@ -30,6 +30,23 @@ coverage_required_for_production_surfaces = true
 # =============================================================================
 
 [[allow]]
+id = "non-rust-changelog-fragments"
+glob = ".changes/unreleased/*.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie release-note fragments staged for the next release. Each fragment is generated into a fixed naming convention and its content is validated by the changelog gate, so per-fragment allowlist rows added no review value and instead blocked every PR that produced one."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "The fragment directory is a generated, uniformly shaped staging area drained on release. `cargo xtask changelog check` owns fragment schema and content; the file gate only needs to know the directory is accounted for."
+created = "2026-08-15"
+review_after = "2026-11-15"
+
+[[allow]]
 id = "non-rust-generated-badge-endpoints"
 glob = "badges/*.json"
 kind = "generated_badge_endpoint"
@@ -77,100 +94,37 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
-id = "non-rust-product-7821-changelog-fragment"
-path = ".changes/unreleased/product-7821-Changed-101512.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
+id = "non-rust-lsp4ij-template"
+glob = "integrations/lsp4ij/perl-lsp/**"
+kind = "editor_integration_template"
+language = "json"
+surface = "editor"
+classification = "config"
+owner = "editor/lsp4ij"
+reason = "LSP4IJ consumes an importable template directory of JSON descriptors; the format is defined by the LSP4IJ host, so it cannot be expressed in Rust."
 covered_by = [
-  "cargo xtask changelog check",
+  "cargo test -p perl-lsp-rs --test lsp4ij_template_projection_tests",
   "cargo xtask check-file-policy",
 ]
-created = "2026-08-14"
-review_after = "2026-09-14"
+broad_glob_reason = "One LSP4IJ template is a fixed directory of sibling descriptors (template, settings, settings schema, initialization options) plus its maintainer README; the host requires them to live together."
+created = "2026-08-15"
+review_after = "2026-11-15"
 
 [[allow]]
-id = "non-rust-product-7902-changelog-fragment"
-path = ".changes/unreleased/product-7902-Added-115000.yaml"
+id = "non-rust-product-7782-changelog-fragment"
+path = ".changes/unreleased/product-7782-Fixed-095500.yaml"
 kind = "release_metadata"
 language = "yaml"
 surface = "release"
 classification = "documentation"
 owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
+reason = "Changie product release-note fragment recording Sublime Text LSP 2.13 file-operation and inline-completion capability negotiation (#7782)."
 covered_by = [
   "cargo xtask changelog check",
   "cargo xtask check-file-policy",
 ]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7903-changelog-fragment"
-path = ".changes/unreleased/product-7903-Added-114500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7909-changelog-fragment"
-path = ".changes/unreleased/product-7909-Added-120500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7975-changelog-fragment"
-path = ".changes/unreleased/product-7975-Changed-213500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7980-changelog-fragment"
-path = ".changes/unreleased/product-7980-Added-220800.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
+created = "2026-08-15"
+review_after = "2026-09-15"
 
 [[allow]]
 id = "non-rust-license-files"
@@ -280,6 +234,26 @@ covered_by = [
 broad_glob_reason = "Policy ledgers are intentionally a tree of TOML files; broad coverage is the policy stack itself."
 created = "2026-05-07"
 review_after = "2026-08-07"
+
+# =============================================================================
+# Control-plane authority contract
+# =============================================================================
+
+[[allow]]
+id = "non-rust-active-authority-contract-test"
+path = "tests/test_active_authority_contract.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Source-aware ratchet for the four highest-retrieval maintainer and contributor entrypoints. Standard-library `unittest` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_active_authority_contract.py",
+  ".github/workflows/active-authority-contract.yml",
+]
+created = "2026-08-15"
+review_after = "2026-11-15"
 
 # =============================================================================
 # Perl fixtures (the corpus the LSP parses)
@@ -698,6 +672,23 @@ covered_by = [
 broad_glob_reason = "proptest writes regression files alongside the failing test, always under crate `proptest-regressions/`."
 created = "2026-05-07"
 review_after = "2026-08-07"
+
+[[allow]]
+id = "non-rust-lsp4ij-released-evidence"
+glob = "integrations/lsp4ij/upstream/0.20.1/**"
+kind = "upstream_evidence_snapshot"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "integrations/lsp4ij"
+reason = "Byte-exact snapshot of the released LSP4IJ 0.20.1 Perl LSP/DAP template subject, pinned as upstream evidence for compatibility and drift checks (#8565). These files are copied verbatim from redhat-developer/lsp4ij and must never be edited toward perl-lsp's desired state; each is addressed by its upstream Git blob identity in the sibling manifest.json."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_released_fixture_tests",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "One upstream release directory is one indivisible evidence subject. Its exact membership is already pinned by `evidence_namespace_holds_exactly_the_manifest_inventory`, which fails on any file absent from manifest.json, so per-file rows would duplicate that test without adding review value."
+created = "2026-08-16"
+review_after = "2026-11-16"
 
 # =============================================================================
 # CI / release scripts
@@ -1194,6 +1185,92 @@ created = "2026-08-14"
 review_after = "2026-11-14"
 
 # =============================================================================
+# Compiler proof policy (perl_compiler_proof_policy.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-compiler-proof-policy-contract"
+path = "contracts/compiler/perl_compiler_proof_policy.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Closed proof-class, composition-dimension, and campaign vocabulary for the compiler concept programme (#6689); validated by cargo run -p xtask --bin compiler-proof-policy -- --check in the policy merge-gate shard."
+covered_by = [
+  "cargo run -p xtask --bin compiler-proof-policy -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-compiler-proof-policy-schema"
+path = "schemas/perl_compiler_proof_policy.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the perl_compiler_proof_policy.v1 contract; the executable closure check is the proof-policy validator itself."
+covered_by = [
+  "cargo run -p xtask --bin compiler-proof-policy -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+# =============================================================================
+# Compiler concept proof obligations (perl_compiler_concept_proof.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-compiler-concept-proof-contract"
+path = "contracts/compiler/perl_compiler_concept_proof.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "One-to-one proof-obligation matrix binding every #6657 concept row to the #6689 proof classes; validated by cargo run -p xtask --bin compiler-concept-proof -- --check in the policy merge-gate shard."
+covered_by = [
+  "cargo run -p xtask --bin compiler-concept-proof -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-compiler-concept-proof-schema"
+path = "schemas/perl_compiler_concept_proof.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the perl_compiler_concept_proof.v1 contract; the executable closure check is the obligation-matrix validator itself."
+covered_by = [
+  "cargo run -p xtask --bin compiler-concept-proof -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+# =============================================================================
+# Binary identity protocol (perl_lsp.binary_identity.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-binary-identity-schema"
+path = "schemas/binary_identity_protocol.v1.schema.json"
+kind = "protocol_contract"
+language = "json"
+surface = "lsp"
+classification = "config"
+owner = "identity"
+reason = "JSON Schema for the perl_lsp.binary_identity.v1 wire contract (#6852); schema-leg parity is ratcheted by the binary identity protocol contract test."
+covered_by = [
+  "cargo test -p perl-lsp-rs-core --test ripr_seam_proof_binary_identity --locked",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
+
 # Editor-intelligence gap-matrix fixture tree
 # =============================================================================
 
@@ -1243,6 +1320,280 @@ covered_by = [
 ]
 created = "2026-08-14"
 review_after = "2026-11-14"
+
+[[allow]]
+id = "non-rust-zed-settings-behavior-fixtures"
+glob = ".ci/fixtures/zed-perl-upstream/**"
+kind = "test_fixture"
+language = "json"
+surface = "zed-integration"
+classification = "test"
+owner = "zed-integration"
+reason = "Zed integration contract and receipt fixtures for the exact-source host and settings-behavior programmes."
+covered_by = [
+  "cargo test -p xtask --test zed_settings_behavior",
+]
+broad_glob_reason = "The zed-perl-upstream fixture tree holds versioned contract/receipt JSON pairs consumed by name from the xtask zed contract tests; a missing or malformed fixture fails those tests by name."
+created = "2026-08-15"
+review_after = "2026-11-15"
+
+[[allow]]
+id = "non-rust-helix-initialize-profiles"
+glob = "crates/perllsp/tests/fixtures/helix/*.initialize.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "lsp/capability-negotiation"
+reason = "Provenance-bound Helix `InitializeParams` capability profiles, replayed through the shipped server process to pin the released-stable and current-master negotiation boundary (#7701)."
+covered_by = [
+  "cargo test -p perllsp --test helix_capability_profiles --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-helix-fixture-readme"
+path = "crates/perllsp/tests/fixtures/helix/README.md"
+kind = "documentation"
+language = "markdown"
+surface = "fixtures"
+classification = "documentation"
+owner = "lsp/capability-negotiation"
+reason = "Provenance, refresh procedure, and actual-host claim boundary for the Helix initialize profiles (#7701)."
+covered_by = [
+  "cargo test -p perllsp --test helix_capability_profiles --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-installer-policy"
+path = "integrations/lsp4ij/installer-policy.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Partitions every canonical release target into managed LSP4IJ installation or an explicit external/manual disposition, and records the checksum limitation (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-perl-lsp-installer"
+path = "integrations/lsp4ij/perl-lsp/installer.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Desired LSP4IJ managed installer for perllsp; selects the native release archive per platform and fails closed instead of falling back to a static URL (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-perl-dap-installer"
+path = "integrations/lsp4ij/perl-dap/installer.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Desired LSP4IJ managed installer for perl-dap; extracts the debugger member from the same shared release archive as the LSP installer (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-product-9677-changelog-fragment"
+path = ".changes/unreleased/product-9677-Fixed-195900.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-dependency-hygiene-machete-fixtures"
+glob = "xtask/tests/fixtures/dependency-hygiene/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "devex/dependency-hygiene"
+reason = "Documented cargo-machete `--json` result shapes — one finding case and three malformed/incomplete cases — that pin the fail-closed parser boundary so unrecognized exit-0 output cannot become SUCCESS with zero findings (#9364)."
+covered_by = [
+  "cargo test -p xtask --locked --bins dependency_hygiene",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-product-7310-changelog-fragment"
+path = ".changes/unreleased/product-7310-Changed-051500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-publication-runtime-identity-schema"
+path = "schemas/publication_runtime_identity.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned bundle schema for staged-executable runtime identity evidence — host-side digests, path roles, and self-reported packets — projected into the publication-drift classifier input (#6856)."
+covered_by = [
+  "python3 -m unittest scripts.release.test_publication_runtime_identity",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-product-7810-changelog-fragment"
+path = ".changes/unreleased/product-7810-Added-100438.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing the fail-closed real Vim + vim-lsp interoperability journey for the canonical perllsp client path (#7810)."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-product-6991-changelog-fragment"
+path = ".changes/unreleased/product-6991-Changed-031000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-install-identity-verification-schema"
+path = "schemas/install_identity_verification.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "JSON Schema for the staged binary identity verification receipt (#6853); validated by the staged-identity verifier contract tests in crates/perllsp."
+covered_by = ["cargo test -p perllsp --all-targets --locked"]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-product-7821-changelog-fragment"
+path = ".changes/unreleased/product-7821-Changed-101512.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7902-changelog-fragment"
+path = ".changes/unreleased/product-7902-Added-115000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7903-changelog-fragment"
+path = ".changes/unreleased/product-7903-Added-114500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7909-changelog-fragment"
+path = ".changes/unreleased/product-7909-Added-120500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7975-changelog-fragment"
+path = ".changes/unreleased/product-7975-Changed-213500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7980-changelog-fragment"
+path = ".changes/unreleased/product-7980-Added-220800.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
 
 [[allow]]
 id = "non-rust-sublime-unittesting-runner"

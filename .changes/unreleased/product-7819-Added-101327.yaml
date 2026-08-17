@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Added
+body: Added a fail-closed actual Coc-on-Vim interoperability journey for the perllsp client path.
+time: 2026-08-13T10:13:27Z
+custom:
+  PR: "7819"
+  Slug: vim-coc-actual-client
+  Breaking: "no"
