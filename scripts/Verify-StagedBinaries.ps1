@@ -18,6 +18,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# A stale receipt from an earlier run must never survive as this run's result.
+if (Test-Path -LiteralPath $Receipt) {
+    Remove-Item -LiteralPath $Receipt -Force
+}
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $verifier = Join-Path $scriptDir 'verify_binary_identity.py'
 

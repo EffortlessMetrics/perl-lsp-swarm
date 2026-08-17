@@ -23,6 +23,7 @@ VerificationError = verify_binary_identity.VerificationError
 observe = verify_binary_identity.observe
 verify = verify_binary_identity.verify
 main = verify_binary_identity.main
+SCHEMA_VERSION = verify_binary_identity.SCHEMA_VERSION
 
 
 def packet(
@@ -306,6 +307,39 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
                 "--server", "perllsp",
                 "--expected-version", "0.18.0",
             ])
+
+    def test_receipts_validate_against_the_published_schema(self) -> None:
+        jsonschema = importlib.import_module("jsonschema")
+        schema_path = Path(__file__).resolve().parent.parent / "schemas" / "install_identity_verification.v1.schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        verified = verify(
+            self._observed(),
+            None,
+            expected_version=packet()["binary"]["version"],
+            expected_target=packet()["build"]["target"],
+            expected_candidate=None,
+            require_dap=False,
+        )
+        jsonschema.validate(instance=verified, schema=schema)
+        mismatched = verify(
+            self._observed(raw={"unexpected": True} if False else packet()),
+            None,
+            expected_version="0.0.0-not-the-version",
+            expected_target=packet()["build"]["target"],
+            expected_candidate=None,
+            require_dap=False,
+        )
+        jsonschema.validate(instance=mismatched, schema=schema)
+        not_proven = {
+            "schema_version": SCHEMA_VERSION,
+            "verdict": "not_proven",
+            "reasons": ["staged executable is missing: perllsp"],
+        }
+        jsonschema.validate(instance=not_proven, schema=schema)
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(instance={"schema_version": SCHEMA_VERSION, "verdict": "verified", "reasons": []}, schema=schema)
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(instance={"schema_version": SCHEMA_VERSION, "verdict": "mismatch", "reasons": []}, schema=schema)
 
     def test_malformed_packet_is_not_proven(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

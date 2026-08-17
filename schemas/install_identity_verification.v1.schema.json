@@ -21,7 +21,8 @@
         "version",
         "target",
         "candidate_identity",
-        "dap_required"
+        "dap_required",
+        "source_revision"
       ],
       "properties": {
         "product": {
@@ -52,6 +53,17 @@
         },
         "dap_required": {
           "type": "boolean"
+        },
+        "source_revision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/identity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Externally trusted source revision both binaries must report, when supplied."
         }
       }
     },
@@ -249,5 +261,41 @@
       "maxLength": 512,
       "pattern": "^[A-Za-z0-9._:@/+\\-]+$"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "verified"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "binaries",
+          "expected"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "enum": [
+              "mismatch",
+              "not_proven"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reasons": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
 }

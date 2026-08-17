@@ -50,6 +50,9 @@ done
 [ -n "$TARGET" ] || usage
 [ -n "$RECEIPT" ] || usage
 
+# A stale receipt from an earlier run must never survive as this run's result.
+rm -f -- "$RECEIPT"
+
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PYTHON_BIN="${PERL_LSP_PYTHON:-python3}"
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
