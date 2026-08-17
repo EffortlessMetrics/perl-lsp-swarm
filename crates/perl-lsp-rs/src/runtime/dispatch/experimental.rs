@@ -156,4 +156,49 @@ mod slow_operation_timeout_tests {
 
         assert_eq!(result, completed());
     }
+
+    /// Exact error-variant grip for the `Err(server_cancelled_error())` seam.
+    ///
+    /// `serverTimeoutMs: 0` makes the boundary `start.elapsed() >= to`
+    /// statically determinable (`elapsed >= Duration::ZERO` is always true),
+    /// so the static analyzer can confirm the test reaches the error path —
+    /// the `serverTimeoutMs: 1` form above depends on wall-clock sleep timing
+    /// the analyzer cannot model, leaving the seam only weakly gripped.
+    #[test]
+    fn handle_slow_operation_dispatch_exact_error_variant() {
+        let server = LspServer::new();
+
+        let err = server
+            .handle_slow_operation_dispatch(&Some(json!(1)), Some(json!({"serverTimeoutMs": 0})))
+            .expect_err("a zero server timeout must abort the slow operation");
+
+        assert!(
+            matches!(err, JsonRpcError { code: SERVER_CANCELLED, .. }),
+            "timeout must return the exact SERVER_CANCELLED error variant, got code {}",
+            err.code
+        );
+        assert_eq!(err.message, "Server cancelled the request");
+        assert!(err.data.is_none(), "the timeout error carries no data payload");
+    }
+
+    /// Boundary discriminator for `start.elapsed() >= to`.
+    ///
+    /// `serverTimeoutMs: 0` forces `to = Duration::ZERO`, so
+    /// `start.elapsed() >= to` is true on the first iteration regardless of
+    /// wall-clock timing — the boundary is hit in a statically determinable
+    /// way. Paired with `timeout_not_yet_reached_runs_to_completion` (boundary
+    /// false), this pins both sides of the predicate without relying on
+    /// sleep timing.
+    #[test]
+    fn handle_slow_operation_dispatch_boundary_discriminator() {
+        let server = LspServer::new();
+
+        // Boundary true: a zero budget is always expired, so the dispatch
+        // must abort with SERVER_CANCELLED rather than complete.
+        let err = server
+            .handle_slow_operation_dispatch(&Some(json!(1)), Some(json!({"serverTimeoutMs": 0})))
+            .expect_err("a zero server timeout must hit the elapsed >= to boundary");
+
+        assert_eq!(err.code, SERVER_CANCELLED, "boundary hit must surface the timeout error");
+    }
 }
