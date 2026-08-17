@@ -7,7 +7,12 @@
 //!   `policy/non-rust-allowlist.toml`, and emits:
 //!   - `target/policy/non-rust-inventory.md` — human-readable markdown table.
 //!   - `target/policy/non-rust-inventory.json` — machine-readable JSON array.
-//!   - `docs/policy/NON_RUST_INVENTORY.md` — regenerated from the same data.
+//!   (Does **not** modify `docs/policy/NON_RUST_INVENTORY.md`.)
+//!
+//! - `cargo xtask non-rust inventory --write` — runs the inventory scan and
+//!   additionally overwrites `docs/policy/NON_RUST_INVENTORY.md` with the
+//!   regenerated content. This is the deliberate write path; use it when the
+//!   committed snapshot needs to be refreshed.
 //!
 //! - `cargo xtask non-rust check [--mode <mode>] [--json <path>] [--allowlist <path>]` —
 //!   classify tracked files against the allowlist and report violations.
@@ -322,12 +327,17 @@ pub fn render_markdown(records: &[FileRecord]) -> String {
 // ---------------------------------------------------------------------------
 
 /// Entry point for `cargo xtask non-rust inventory`.
+///
+/// Writes only to `target/policy/` — this is a read-only observation that does
+/// not modify any tracked file.  To also refresh the committed snapshot at
+/// `docs/policy/NON_RUST_INVENTORY.md`, use
+/// [`non_rust_inventory_write_docs`] (exposed via `--write`).
 pub fn non_rust_inventory(root: &Path) -> Result<()> {
     println!("Building non-Rust file inventory...");
 
     let records = build_inventory(root)?;
 
-    // Write outputs under target/policy/.
+    // Write outputs under target/policy/ only — never touch tracked docs here.
     let target_dir = root.join("target/policy");
     fs::create_dir_all(&target_dir)
         .with_context(|| format!("creating {}", target_dir.display()))?;
@@ -344,14 +354,6 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
     fs::write(&json_path, &json).with_context(|| format!("writing {}", json_path.display()))?;
     println!("  wrote {}", json_path.display());
 
-    // Regenerate docs/policy/NON_RUST_INVENTORY.md.
-    let docs_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
-    if let Some(parent) = docs_path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    fs::write(&docs_path, &markdown).with_context(|| format!("writing {}", docs_path.display()))?;
-    println!("  wrote {}", docs_path.display());
-
     // Print a brief summary.
     let total = records.len();
     let rust_count = records.iter().filter(|r| r.category == "rust").count();
@@ -366,6 +368,30 @@ pub fn non_rust_inventory(root: &Path) -> Result<()> {
          - Allowlisted:   {allowlisted}\n\
          - Unclassified:  {unclassified}"
     );
+
+    Ok(())
+}
+
+/// Regenerate `docs/policy/NON_RUST_INVENTORY.md` from the current tree.
+///
+/// This is the deliberate write path, exposed via `cargo xtask non-rust
+/// inventory --write`.  It first runs the normal inventory scan (writing
+/// `target/policy/`), then also copies the result to the committed snapshot.
+/// No test target should call this function — tests that need a rendered
+/// artifact should read from `target/policy/non-rust-inventory.md` instead.
+pub fn non_rust_inventory_write_docs(root: &Path) -> Result<()> {
+    non_rust_inventory(root)?;
+
+    let target_md = root.join("target/policy/non-rust-inventory.md");
+    let markdown = fs::read_to_string(&target_md)
+        .with_context(|| format!("reading generated inventory from {}", target_md.display()))?;
+
+    let docs_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
+    if let Some(parent) = docs_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(&docs_path, &markdown).with_context(|| format!("writing {}", docs_path.display()))?;
+    println!("  wrote {}", docs_path.display());
 
     Ok(())
 }
@@ -432,7 +458,7 @@ fn non_rust_inventory_check_with_baseline(root: &Path, baseline: Option<&str>) -
         .with_context(|| format!("reading committed inventory {}", docs_path.display()))?;
     if normalize_line_endings(&actual) != normalize_line_endings(&expected) {
         eprintln!(
-            "warning: non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory` to regenerate it",
+            "warning: non-Rust inventory documentation is stale at {}; run `cargo xtask non-rust inventory --write` to regenerate it",
             docs_path.display()
         );
     }
@@ -2392,7 +2418,7 @@ mod tests {
     }
 
     #[test]
-    fn non_rust_inventory_writes_json_markdown_and_docs_outputs() -> Result<()> {
+    fn non_rust_inventory_writes_target_outputs_and_write_docs_updates_snapshot() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let tracked = init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         assert_eq!(tracked, vec!["README.md".to_string()]);
@@ -2408,11 +2434,20 @@ mod tests {
             .with_context(|| format!("reading {}", target_markdown.display()))?;
         let json = fs::read_to_string(&target_json)
             .with_context(|| format!("reading {}", target_json.display()))?;
-        let docs = fs::read_to_string(&docs_markdown)
-            .with_context(|| format!("reading {}", docs_markdown.display()))?;
 
         assert!(markdown.contains("# Non-Rust File Inventory"));
         assert!(json.contains("\"path\": \"README.md\""));
+        // The plain scan is read-only w.r.t. tracked files: the committed
+        // snapshot is written only by the explicit write-docs path.
+        assert!(
+            !docs_markdown.exists(),
+            "default inventory must not create {}",
+            docs_markdown.display()
+        );
+
+        non_rust_inventory_write_docs(temp.path())?;
+        let docs = fs::read_to_string(&docs_markdown)
+            .with_context(|| format!("reading {}", docs_markdown.display()))?;
         assert_eq!(markdown, docs);
         Ok(())
     }
@@ -2423,7 +2458,7 @@ mod tests {
         init_tracked_fixture(temp.path(), &[("README.md", "# Fixture\n")])?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
 
-        non_rust_inventory(temp.path())?;
+        non_rust_inventory_write_docs(temp.path())?;
         non_rust_inventory_check(temp.path())?;
 
         let docs_path = temp.path().join("docs/policy/NON_RUST_INVENTORY.md");
@@ -2444,7 +2479,7 @@ mod tests {
             &[("README.md", "# Fixture\n"), ("scripts/tool.py", "print('fixture')\n")],
         )?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
-        non_rust_inventory(temp.path())?;
+        non_rust_inventory_write_docs(temp.path())?;
 
         non_rust_inventory_check(temp.path())?;
         Ok(())
@@ -2458,7 +2493,7 @@ mod tests {
             &[("README.md", "# Fixture\n"), ("scripts/existing.py", "print('fixture')\n")],
         )?;
         write_readme_allowlist(temp.path(), "policy/non-rust-allowlist.toml")?;
-        non_rust_inventory(temp.path())?;
+        non_rust_inventory_write_docs(temp.path())?;
         run_git(temp.path(), &["add", "."])?;
         run_git(
             temp.path(),
