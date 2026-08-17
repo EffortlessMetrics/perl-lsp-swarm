@@ -850,6 +850,26 @@ gates:
     planning:
       role: always_on
 
+  - name: parser_behavior_proof
+    tier: merge_gate
+    description: "Parser behavior-proof admission: registry validity and validator falsifiers (#6908)"
+    required: true
+    command: >-
+      cargo test -p xtask --bin parser-behavior-proof --locked &&
+      cargo run -p xtask --bin parser-behavior-proof --locked --
+      --receipt target/receipts/parser-behavior-proof.json
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 480000
+    quarantine: false
+    tags:
+      - test
+      - parser
+      - policy
+    planning:
+      role: always_on
+
   - name: unit_analysis_full
     tier: merge_gate
     description: "Semantic analysis, workspace, diagnostics, and refactoring library tests"
