@@ -99,12 +99,24 @@
       "exit": "maintainer records DAP registry submission"
     },
     {
+      "id": "DU02",
+      "lane": "dap_sidecar",
+      "issue": 10366,
+      "actor": "read_only_acceptance",
+      "objective": "Bind official registry publication of the exact DAP-capable Perl extension subject.",
+      "depends_on": ["DM02", "DU01"],
+      "evidence": "dap_public_availability_acceptance",
+      "route": "read_only_external_observation",
+      "blocks_core": false,
+      "exit": "issue #10366 DAP registry-publication acceptance"
+    },
+    {
       "id": "D05",
       "lane": "dap_sidecar",
       "issue": 9487,
       "actor": "codex",
       "objective": "Execute the clean official-registry managed perl-dap journey in real Zed.",
-      "depends_on": ["DA01", "D02", "DM02", "C01"],
+      "depends_on": ["DA01", "D02", "DU02", "C01"],
       "evidence": "dap_public_registry_host_evidence",
       "route": "official_registry_managed",
       "blocks_core": false,
