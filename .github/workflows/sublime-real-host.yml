@@ -48,7 +48,7 @@ jobs:
       PERLLSP_AIO_TAG: v0.2.3
       PERLLSP_AIO_REF: b3d1d559ec223f276c9693e17476768257951266
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Build the exact current-source server candidate
         run: cargo build --locked --release -p perllsp
@@ -214,7 +214,7 @@ jobs:
         run: python clients/sublime/validate_sublime_host_receipt.py "$PERLLSP_SUBLIME_RECEIPT"
 
       - name: Publish the host receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: sublime-real-host-${{ runner.os }}
           path: target/sublime-host/*.json
