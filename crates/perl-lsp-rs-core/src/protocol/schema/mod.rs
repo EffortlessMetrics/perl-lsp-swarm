@@ -1,10 +1,11 @@
 //! Versioned, bounded validation for JSON-RPC and LSP method payloads.
 //!
-//! This slice proves the reusable envelope, input bounds, source pin, and a
-//! small lifecycle registry (`initialize` / `initialized` / `shutdown` /
-//! `exit` / `$/cancelRequest`). Remaining method payload validators are a
-//! follow-up so review-comments can finish within the RIPR budget. Exact-process
-//! coverage is wired separately by #7116.
+//! This module proves the reusable envelope, input bounds, source pin, the
+//! lifecycle registry (`initialize` / `initialized` / `shutdown` / `exit` /
+//! `$/cancelRequest`), and the window-message family (`window/showMessage`,
+//! `window/logMessage`, `window/showMessageRequest`). Remaining method payload
+//! validators stay on #10477 so each family stays within RIPR's review budget.
+//! Exact-process coverage is wired separately by #7116.
 
 mod methods;
 mod payloads;
@@ -21,7 +22,7 @@ pub const SCHEMA_SOURCE_JSON: &str = include_str!("../../../protocol_schema_sour
 pub const UPSTREAM_PROTOCOL_COMMIT: &str = "8d5153933153aed3a488b9b8f46b22ed0f90f552";
 /// SHA-256 of the reviewed, checked-in source manifest bytes.
 pub const SCHEMA_SOURCE_MANIFEST_SHA256: &str =
-    "cb8558037963bc8d32a7f45ee1b537cc349ef9061e99fd84cd1ecb39766dd999";
+    "9dd85708629d5b1a8ec6b32f260e14e79b7d1ede7be1beb11bf258f569049899";
 
 /// Direction of a protocol message on the LSP connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
