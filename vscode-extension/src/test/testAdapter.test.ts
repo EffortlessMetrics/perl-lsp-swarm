@@ -336,6 +336,14 @@ describe('file-level failure explanation', () => {
     );
   });
 
+  test('reports a bare bail out as a bail out', () => {
+    // parseTapOutput yields bailOut: '' for `Bail out!` with no reason; a
+    // truthiness test would misreport that as an unexplained process failure.
+    expect(describeFileFailure(1, { total: 0, failed: 0, bailOut: '' })).toBe(
+      'Test run bailed out',
+    );
+  });
+
   test('reports a non-zero exit with no failing assertion as a process failure', () => {
     expect(describeFileFailure(9, { total: 3, failed: 0, bailOut: null })).toBe(
       'No assertion failed, but the test process exited with 9.',

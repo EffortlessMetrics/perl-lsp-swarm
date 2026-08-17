@@ -373,41 +373,119 @@ function renderBlocks(blocks: Block[]): string {
 // Inline formatting: B<>, I<>, C<>, L<>, E<>, S<>, X<>
 // ---------------------------------------------------------------------------
 
+/** Letters that introduce a POD formatting code. */
+const INLINE_CODE_LETTERS = 'BICLESFZX';
+
+/** One located formatting code: `C<…>`, `C<< … >>`, `C<<< … >>>`, … */
+interface InlineSequence {
+  /** The code letter, e.g. `B`. */
+  code: string;
+  /** Content between the delimiters, with the required padding removed. */
+  inner: string;
+  /** Index just past the closing delimiter. */
+  end: number;
+}
+
 /**
- * One POD inline sequence: extended `B<< … >>` delimiters are matched before
- * the common single-delimiter `B<…>` form so the longer delimiter wins.
+ * Find the `>` that closes a single-angle code, skipping nested codes.
+ *
+ * `B<C<fetch>>` closes at the second `>`, not the first: the first belongs to
+ * the nested `C<…>`. Stopping at the first `>` splits the sequence and leaves
+ * the remainder as prose.
  */
-const INLINE_SEQUENCE = /([BICLESFZX])(?:<<\s+([\s\S]*?)\s+>>|<([^>]*)>)/g;
+function findSingleAngleEnd(text: string, from: number): number {
+  let depth = 1;
+  for (let i = from; i < text.length; i += 1) {
+    const ch = text[i] ?? '';
+    if (INLINE_CODE_LETTERS.includes(ch) && text[i + 1] === '<') {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (ch === '>') {
+      depth -= 1;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+/**
+ * Match a formatting code starting at `at`, or return undefined.
+ *
+ * perlpodspec allows any number of angle brackets so long as the counts match,
+ * and requires whitespace just inside both delimiters once there are two or
+ * more. That whitespace is padding, not content, so it is stripped here.
+ */
+function matchInlineSequence(text: string, at: number): InlineSequence | undefined {
+  const code = text[at] ?? '';
+  if (!INLINE_CODE_LETTERS.includes(code) || text[at + 1] !== '<') {
+    return undefined;
+  }
+
+  let opening = 0;
+  while (text[at + 1 + opening] === '<') {
+    opening += 1;
+  }
+  const contentStart = at + 1 + opening;
+
+  if (opening === 1) {
+    const close = findSingleAngleEnd(text, contentStart);
+    return close === -1
+      ? undefined
+      : { code, inner: text.slice(contentStart, close), end: close + 1 };
+  }
+
+  // Two or more angles: padding whitespace is mandatory on both sides.
+  if (!/\s/.test(text[contentStart] ?? '')) {
+    return undefined;
+  }
+  const closer = '>'.repeat(opening);
+  for (let i = contentStart + 1; i + opening <= text.length; i += 1) {
+    if (text.startsWith(closer, i) && /\s/.test(text[i - 1] ?? '')) {
+      return { code, inner: text.slice(contentStart, i).trim(), end: i + opening };
+    }
+  }
+  return undefined;
+}
 
 /**
  * Render POD inline formatting codes and escape everything else.
  *
- * Literal text between sequences is escaped before it reaches the webview.
- * Escaping cannot run over the finished output instead: the rendered codes are
- * real HTML by then, so any pattern that spares them also spares prose that
- * happens to look like a tag — `Use <angle> markers` would reach the webview as
- * markup and its text would silently vanish from the preview.
+ * Literal text between sequences is escaped as it is scanned. Escaping cannot
+ * run over the finished output instead: the rendered codes are real HTML by
+ * then, so any pattern that spares them also spares prose that happens to look
+ * like a tag — `Use <angle> markers` would reach the webview as markup and its
+ * text would silently vanish from the preview.
  */
 function renderInline(text: string): string {
   let out = '';
-  let cursor = 0;
+  let i = 0;
 
-  INLINE_SEQUENCE.lastIndex = 0;
-  for (let match = INLINE_SEQUENCE.exec(text); match !== null; match = INLINE_SEQUENCE.exec(text)) {
-    out += escapeHtml(text.slice(cursor, match.index));
-    out += renderInlineCode(match[1] ?? '', match[2] ?? match[3] ?? '');
-    cursor = match.index + match[0].length;
+  while (i < text.length) {
+    const sequence = matchInlineSequence(text, i);
+    if (sequence === undefined) {
+      out += escapeHtml(text[i] ?? '');
+      i += 1;
+      continue;
+    }
+    out += renderInlineCode(sequence.code, sequence.inner);
+    i = sequence.end;
   }
 
-  return out + escapeHtml(text.slice(cursor));
+  return out;
 }
 
 function renderInlineCode(code: string, inner: string): string {
   switch (code) {
+    // B, I and S may contain further formatting codes, so their content is
+    // rendered rather than escaped. C and F are literal text by definition.
     case 'B':
-      return `<strong>${escapeHtml(inner)}</strong>`;
+      return `<strong>${renderInline(inner)}</strong>`;
     case 'I':
-      return `<em>${escapeHtml(inner)}</em>`;
+      return `<em>${renderInline(inner)}</em>`;
     case 'C':
       return `<code>${escapeHtml(inner)}</code>`;
     case 'F':
@@ -417,7 +495,7 @@ function renderInlineCode(code: string, inner: string): string {
     case 'E':
       return renderEscapeCode(inner);
     case 'S':
-      return `<span class="no-break">${escapeHtml(inner)}</span>`;
+      return `<span class="no-break">${renderInline(inner)}</span>`;
     case 'Z':
       return ''; // zero-width
     case 'X':
@@ -434,9 +512,9 @@ function renderLinkCode(inner: string): string {
     const label = inner.slice(0, pipeIdx).trim();
     const target = inner.slice(pipeIdx + 1).trim();
     if (/^https?:\/\//.test(target)) {
-      return `<a href="${escapeAttr(target)}">${escapeHtml(label)}</a>`;
+      return `<a href="${escapeAttr(target)}">${renderInline(label)}</a>`;
     }
-    return `<a href="#${escapeAttr(target.replace(/\s+/g, '-').toLowerCase())}">${escapeHtml(label)}</a>`;
+    return `<a href="#${escapeAttr(target.replace(/\s+/g, '-').toLowerCase())}">${renderInline(label)}</a>`;
   }
 
   if (/^https?:\/\//.test(inner)) {
