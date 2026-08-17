@@ -22,6 +22,41 @@ class ReleaseContractTests(unittest.TestCase):
         manifest = release.load_manifest(PACKAGE / "server-manifest.json")
         self.assertEqual(manifest["version"], "0.17.0")
         self.assertEqual(manifest["tested_lsp_package"], "2.13.0")
+        # Each reviewed asset record is locked to its exact expected values:
+        # a changed target, filename, digest, or binary name must fail here,
+        # not merely a changed version substring in the filename.
+        expected_assets = {
+            "osx-x64": (
+                "x86_64-apple-darwin",
+                "perllsp-0.17.0-x86_64-apple-darwin.tar.gz",
+                "b117abfe29bb9840f21433d5ffff8c47a2fda1f6815cf477230d3f3b3ec22e74",
+                "perllsp",
+            ),
+            "osx-arm64": (
+                "aarch64-apple-darwin",
+                "perllsp-0.17.0-aarch64-apple-darwin.tar.gz",
+                "cb00d92395e94caee6e565b2e74f18cbbcd2b9366ddd1e13a6b5df7660f77ffd",
+                "perllsp",
+            ),
+            "windows-x64": (
+                "x86_64-pc-windows-msvc",
+                "perllsp-0.17.0-x86_64-pc-windows-msvc.zip",
+                "679cd43780d36cb2a980a42804905d24d2c76b0a3e2deaa3cd344daece87f7dd",
+                "perllsp.exe",
+            ),
+            "linux-x64": (
+                "x86_64-unknown-linux-gnu",
+                "perllsp-0.17.0-x86_64-unknown-linux-gnu.tar.gz",
+                "23e742925e8d517230c93ca0674772c6dfa480ad6a571c9b1fb2ab031bb97d88",
+                "perllsp",
+            ),
+            "linux-arm64": (
+                "aarch64-unknown-linux-gnu",
+                "perllsp-0.17.0-aarch64-unknown-linux-gnu.tar.gz",
+                "a83e085590e1cf071a5c2ae6e8bea28e491d767d108ea2464bab6c653dc4acca",
+                "perllsp",
+            ),
+        }
         for platform, arch in [
             ("osx", "x64"),
             ("osx", "arm64"),
@@ -34,6 +69,12 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertTrue(release.release_url(manifest, asset).startswith(
                 "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.17.0/"
             ))
+            key = f"{platform}-{arch}"
+            target, filename, digest, binary = expected_assets[key]
+            self.assertEqual(asset["target"], target, key)
+            self.assertEqual(asset["asset"], filename, key)
+            self.assertEqual(asset["sha256"], digest, key)
+            self.assertEqual(asset["binary"], binary, key)
 
     def test_unknown_platform_fails_closed(self) -> None:
         manifest = release.load_manifest(PACKAGE / "server-manifest.json")

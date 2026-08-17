@@ -14,6 +14,7 @@
               "properties": {
                 "server_path": {
                   "type": "string",
+                  "minLength": 1,
                   "default": "auto",
                   "markdownDescription": "Use `auto` for the package's pinned, verified perllsp build, or set an explicit user-owned executable path for development. Project settings cannot replace the launch executable."
                 },
