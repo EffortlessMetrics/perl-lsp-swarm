@@ -159,6 +159,135 @@ fn incomplete_instrument_cannot_carry_decisive_score() -> Result<(), Box<dyn Err
 }
 
 #[test]
+fn limited_observation_cannot_carry_decisive_score() -> Result<(), Box<dyn Error>> {
+    let execution = SubjectExecution::completed(
+        SubjectRole::NativeRecursiveDescent,
+        SubjectDisposition::AcceptedClean,
+        DiagnosticSummary::default(),
+        BTreeMap::from([(
+            ObservationPlane::Structure,
+            ObservationDisposition::ObservedWithLimitations,
+        )]),
+        None,
+        InstrumentState::Complete,
+    )?;
+
+    let comparison = ScoredComparison::matches_expected(
+        &execution,
+        observer_id()?,
+        expectation_id()?,
+        ObservationPlane::Structure,
+        fingerprint("assignment(variable,integer)")?,
+        fingerprint("assignment(variable,integer)")?,
+    );
+    assert_eq!(comparison, Err(ComparisonModelError::ScoringRequiresObservedPlane));
+    Ok(())
+}
+
+#[test]
+fn unobserved_planes_cannot_carry_decisive_score() -> Result<(), Box<dyn Error>> {
+    let execution = execute_v3("my $x = 42;")?;
+    assert_eq!(
+        execution.observation(&ObservationPlane::SourceGeometry),
+        Some(ObservationDisposition::NotProven)
+    );
+    assert_eq!(
+        execution.observation(&ObservationPlane::QueryOrHighlight),
+        Some(ObservationDisposition::Unsupported)
+    );
+
+    for plane in [
+        ObservationPlane::SourceGeometry,
+        ObservationPlane::QueryOrHighlight,
+        ObservationPlane::BodyOwnership,
+    ] {
+        let comparison = ScoredComparison::mismatch(
+            &execution,
+            observer_id()?,
+            expectation_id()?,
+            plane,
+            fingerprint("expected")?,
+            fingerprint("actual")?,
+            wrong_child_order()?,
+        );
+        assert_eq!(comparison, Err(ComparisonModelError::ScoringRequiresObservedPlane));
+    }
+    Ok(())
+}
+
+#[test]
+fn mismatch_scoring_also_requires_completed_harness() -> Result<(), Box<dyn Error>> {
+    let execution = SubjectExecution::failed(
+        SubjectRole::HistoricalTreeSitterC,
+        HarnessFailure::SetupFailed,
+        DiagnosticSummary::default(),
+        BTreeMap::from([(ObservationPlane::Structure, ObservationDisposition::NotProven)]),
+        None,
+        InstrumentState::Unavailable,
+        None,
+    )?;
+
+    let comparison = ScoredComparison::mismatch(
+        &execution,
+        observer_id()?,
+        expectation_id()?,
+        ObservationPlane::Structure,
+        fingerprint("expected")?,
+        fingerprint("actual")?,
+        wrong_child_order()?,
+    );
+    assert_eq!(comparison, Err(ComparisonModelError::ScoringRequiresCompletedHarness));
+    Ok(())
+}
+
+#[test]
+fn failed_harness_rejects_observed_plane_and_complete_instrument() {
+    let observed_plane = SubjectExecution::failed(
+        SubjectRole::NativeRecursiveDescent,
+        HarnessFailure::CrashedOrSignalled,
+        DiagnosticSummary::default(),
+        BTreeMap::from([(ObservationPlane::Structure, ObservationDisposition::Observed)]),
+        None,
+        InstrumentState::Failed,
+        None,
+    );
+    assert_eq!(observed_plane, Err(ComparisonModelError::ObservationFromFailedHarness));
+
+    let complete_instrument = SubjectExecution::failed(
+        SubjectRole::NativeRecursiveDescent,
+        HarnessFailure::TimedOut,
+        DiagnosticSummary::default(),
+        BTreeMap::from([(ObservationPlane::Structure, ObservationDisposition::NotProven)]),
+        None,
+        InstrumentState::Complete,
+        None,
+    );
+    assert_eq!(complete_instrument, Err(ComparisonModelError::CompleteInstrumentFromFailedHarness));
+}
+
+#[test]
+fn stable_ids_reject_empty_leading_separator_non_ascii_and_overlong_values() {
+    assert!(StableId::new("").is_err());
+    assert!(StableId::new(".leading-dot").is_err());
+    assert!(StableId::new("-leading-dash").is_err());
+    assert!(StableId::new("_leading_underscore").is_err());
+    assert!(StableId::new("café").is_err());
+    assert!(StableId::new("a".repeat(129)).is_err());
+    assert!(StableId::new("9lives").is_ok());
+}
+
+#[test]
+fn bounded_text_rejects_zero_limit_and_keeps_short_input_intact() -> Result<(), Box<dyn Error>> {
+    assert!(BoundedText::new("anything", 0).is_err());
+
+    let bounded = BoundedText::new("short", 1_024)?;
+    assert_eq!(bounded.as_str(), "short");
+    assert!(!bounded.is_truncated());
+    assert_eq!(bounded.omitted_bytes(), 0);
+    Ok(())
+}
+
+#[test]
 fn complete_observation_requires_complete_instrument() {
     let execution = SubjectExecution::completed(
         SubjectRole::NativeRecursiveDescent,
