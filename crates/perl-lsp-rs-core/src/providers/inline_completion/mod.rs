@@ -555,7 +555,12 @@ impl InlineCompletionEvidence {
         AutomaticEligibility::Eligible
     }
 
-    /// Lexicographic rank used as the final deterministic ordering tiebreak.
+    /// Lexicographic rank used to order candidates the score left tied.
+    ///
+    /// This is compared before producer sequence, so a stronger source, reason,
+    /// confidence or shape wins regardless of which producer happened to run
+    /// first. Sequence is only the final deterministic tie among candidates
+    /// this cannot separate either.
     fn stable_tiebreak(self) -> (u8, u8, u8, u8) {
         (
             self.source.stable_rank(),
@@ -663,22 +668,63 @@ impl InlineCompletionShape {
 /// Whether the text names a variable that is not visible at the cursor.
 ///
 /// A completion that inserts `$got` where no `$got` exists is a literal
-/// stand-in, not a continuation. Declarations are exempt: a candidate that
-/// introduces its own binding legitimately names a variable that is not yet in
-/// scope.
+/// stand-in, not a continuation. The exemption is per binding, not per
+/// candidate: `my $line (@lines) {` introduces `$line`, so only `$line` is
+/// excused, and `@lines` must still be visible. A candidate that declares one
+/// variable does not get to name arbitrary undeclared others.
 fn mentions_variable_outside_scope(text: &str, semantic_context: &SemanticInlineContext) -> bool {
-    if text_declares_variable(text) {
-        return false;
-    }
+    let declared = collect_declared_variables(text);
 
     collect_variable_mentions(text).into_iter().any(|mention| {
+        if declared.iter().any(|binding| binding == &mention) {
+            return false;
+        }
+
         VariableFact::from_perl_variable(mention.as_str())
             .is_some_and(|mentioned| !semantic_context.visible_variables.contains(&mentioned))
     })
 }
 
-fn text_declares_variable(text: &str) -> bool {
-    ["my ", "our ", "local ", "state "].iter().any(|keyword| contains_keyword(text, keyword))
+/// The exact variables this candidate binds itself.
+fn collect_declared_variables(text: &str) -> Vec<String> {
+    const DECLARATION_KEYWORDS: [&str; 4] = ["my", "our", "local", "state"];
+
+    let mut declared = Vec::new();
+    for keyword in DECLARATION_KEYWORDS {
+        let mut search_from = 0;
+        while let Some(relative) = text[search_from..].find(keyword) {
+            let start = search_from + relative;
+            let after = start + keyword.len();
+            search_from = after;
+
+            let opens = text[..start].chars().next_back().is_none_or(is_keyword_boundary);
+            let closes = text[after..].chars().next().is_some_and(char::is_whitespace);
+            if opens && closes {
+                declared.extend(declaration_targets(&text[after..]));
+            }
+        }
+    }
+
+    declared
+}
+
+/// The variables bound by one declaration: every variable of a parenthesized
+/// list, or the single variable that immediately follows the keyword.
+fn declaration_targets(after_keyword: &str) -> Vec<String> {
+    let trimmed = after_keyword.trim_start();
+
+    if let Some(list) = trimmed.strip_prefix('(') {
+        let end = list.find(')').unwrap_or(list.len());
+        return collect_variable_mentions(&list[..end]);
+    }
+
+    // Anything else in that position — `my sub helper`, say — binds no
+    // variable here, and must not excuse a mention further along the text.
+    if !trimmed.starts_with(['$', '@', '%']) {
+        return Vec::new();
+    }
+
+    collect_variable_mentions(trimmed).into_iter().take(1).collect()
 }
 
 /// The specific fact an inline completion candidate rests on.
@@ -1291,10 +1337,14 @@ impl InlineCompletionProvider {
             return InlineCompletionList { items: vec![] };
         };
 
-        if let Some(runner_up) = eligible.next()
-            && runner_up.rank == best.rank
-            && runner_up.item.insert_text != best.item.insert_text
-        {
+        // Every candidate sharing the best rank is a rival, not just the next
+        // one: a lower-ranked candidate can sit between two members of the
+        // best-rank cohort, so stopping at the runner-up would miss the tie.
+        let contested = eligible
+            .filter(|candidate| candidate.rank == best.rank)
+            .any(|candidate| candidate.item.insert_text != best.item.insert_text);
+
+        if contested {
             return InlineCompletionList { items: vec![] };
         }
 
@@ -2065,15 +2115,27 @@ impl InlineCompletionProvider {
         &self,
         mut items: Vec<RankedCompletionItem>,
     ) -> Vec<EvaluatedInlineCompletionItem> {
+        // Evidence outranks producer sequence. `order` is unique and
+        // monotonic, so comparing it before the evidence tiebreak would let
+        // whichever producer ran first win every equal-score contest and make
+        // the tiebreak unreachable. Sequence stays last, as the deterministic
+        // tie among candidates neither score nor evidence separates.
         items.sort_by(|left, right| {
-            right.score.0.cmp(&left.score.0).then_with(|| left.order.cmp(&right.order)).then_with(
-                || left.metadata.stable_tiebreak().cmp(&right.metadata.stable_tiebreak()),
-            )
+            right
+                .score
+                .0
+                .cmp(&left.score.0)
+                .then_with(|| {
+                    left.metadata.stable_tiebreak().cmp(&right.metadata.stable_tiebreak())
+                })
+                .then_with(|| left.order.cmp(&right.order))
         });
 
         let mut deduped = Vec::new();
         let mut seen = Vec::<String>::new();
         for candidate in items.into_iter() {
+            // The strongest evidence for a given text now sorts first, so
+            // keeping the first occurrence keeps the best-supported one.
             if seen.iter().any(|existing| existing == &candidate.item.insert_text) {
                 continue;
             }
@@ -6878,6 +6940,27 @@ mod tests {
         Ok(())
     }
 
+    /// A ranked candidate with explicit evidence and producer sequence, for
+    /// tests that need the two to disagree.
+    fn ranked_fixture(
+        insert_text: &str,
+        metadata: InlineCandidateMetadata,
+        priority: u8,
+        order: usize,
+    ) -> RankedCompletionItem {
+        RankedCompletionItem {
+            score: InlineCandidateScore::from_legacy_priority(priority),
+            order,
+            metadata,
+            item: InlineCompletionItem {
+                insert_text: insert_text.to_string(),
+                filter_text: None,
+                range: None,
+                command: None,
+            },
+        }
+    }
+
     fn ranked_candidate(
         source: InlineCandidateSourceKind,
         priority: u8,
@@ -7475,6 +7558,154 @@ mod tests {
         assert_eq!(
             InlineCompletionShape::for_candidate(&declaration, &semantic_context),
             InlineCompletionShape::Complete
+        );
+    }
+
+    /// The exemption covers the binding the candidate introduces, not every
+    /// other variable it happens to name. One declared and one undeclared
+    /// variable is still a placeholder.
+    #[test]
+    fn shape_exempts_only_the_declared_binding() {
+        let semantic_context = SemanticInlineContext {
+            visible_variables: vec![VariableFact {
+                sigil: VariableSigil::Array,
+                name: "lines".to_string(),
+            }],
+            ..unknown_semantic_context()
+        };
+
+        for text in ["my $line (@missing) {", "my $value = $missing;", "my ($head, $tail) = @gone;"]
+        {
+            let candidate = InlineCompletionItem {
+                insert_text: text.to_string(),
+                filter_text: None,
+                range: None,
+                command: None,
+            };
+
+            assert_eq!(
+                InlineCompletionShape::for_candidate(&candidate, &semantic_context),
+                InlineCompletionShape::Placeholder,
+                "declaring one variable must not excuse an invisible one: {text}"
+            );
+        }
+    }
+
+    /// A declaration keyword that binds nothing at that position cannot excuse
+    /// a variable further along the text.
+    #[test]
+    fn shape_ignores_declaration_keywords_that_bind_no_variable() {
+        let candidate = InlineCompletionItem {
+            insert_text: "my sub helper { $missing }".to_string(),
+            filter_text: None,
+            range: None,
+            command: None,
+        };
+
+        assert_eq!(
+            InlineCompletionShape::for_candidate(&candidate, &unknown_semantic_context()),
+            InlineCompletionShape::Placeholder
+        );
+    }
+
+    /// Evidence, not producer sequence, decides an equal-score contest.
+    ///
+    /// `order` is unique and monotonic, so comparing it before the evidence
+    /// tiebreak would let whichever producer ran first win every tie. Feeding
+    /// the weaker candidate in first must not put it ahead.
+    #[test]
+    fn ranking_prefers_stronger_evidence_over_producer_order() {
+        let provider = InlineCompletionProvider::new();
+        let weaker = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::ContextualFallback,
+            reason: InlineCandidateReason::SourceContextualFallback,
+            confidence: InlineCandidateConfidence::Low,
+            shape: InlineCompletionShape::Complete,
+        };
+        let stronger = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        let normalized = provider.normalize_items(vec![
+            ranked_fixture("guess()", weaker, 0, 0),
+            ranked_fixture("save()", stronger, 0, 1),
+        ]);
+
+        assert_eq!(
+            normalized.iter().map(|item| item.item.insert_text.as_str()).collect::<Vec<_>>(),
+            vec!["save()", "guess()"],
+            "the later-produced but better-supported candidate must rank first"
+        );
+
+        assert_eq!(
+            provider.select_automatic_item(normalized).items[0].insert_text,
+            "save()",
+            "automatic display must follow the evidence, not the producer sequence"
+        );
+    }
+
+    /// Deduplication keeps the strongest evidence for a repeated text, not
+    /// whichever producer emitted it first.
+    #[test]
+    fn ranking_keeps_the_best_supported_copy_of_repeated_text() {
+        let provider = InlineCompletionProvider::new();
+        let weaker = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::ContextualFallback,
+            reason: InlineCandidateReason::SourceContextualFallback,
+            confidence: InlineCandidateConfidence::Low,
+            shape: InlineCompletionShape::Complete,
+        };
+        let stronger = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        let normalized = provider.normalize_items(vec![
+            ranked_fixture("save()", weaker, 0, 0),
+            ranked_fixture("save()", stronger, 0, 1),
+        ]);
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].evidence, stronger);
+        assert_eq!(
+            normalized[0].evidence.automatic_eligibility(),
+            AutomaticEligibility::Eligible,
+            "the surviving copy must carry the evidence that actually supports it"
+        );
+    }
+
+    /// A tie can be separated by a lower-ranked candidate, so ambiguity is
+    /// measured against the whole best-rank cohort rather than the runner-up.
+    #[test]
+    fn automatic_detects_ambiguity_beyond_the_immediate_runner_up() {
+        let provider = InlineCompletionProvider::new();
+        let leader = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+            shape: InlineCompletionShape::Complete,
+        };
+        let between = InlineCompletionEvidence {
+            source: InlineCandidateSourceKind::Syntax,
+            reason: InlineCandidateReason::SourceSyntax,
+            confidence: InlineCandidateConfidence::Medium,
+            shape: InlineCompletionShape::Complete,
+        };
+
+        let selected = provider.select_automatic_item(vec![
+            evaluated_fixture("save()", leader, 0),
+            evaluated_fixture("pragma;", between, 0),
+            evaluated_fixture("load()", leader, 0),
+        ]);
+
+        assert!(
+            selected.items.is_empty(),
+            "a same-rank rival past the runner-up is still a coin flip"
         );
     }
 
