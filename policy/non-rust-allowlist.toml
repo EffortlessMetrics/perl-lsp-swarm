@@ -1130,28 +1130,180 @@ review_after = "2026-08-07"
 
 # =============================================================================
 # Sublime Text helper package
-# =============================================================================
+# Narrow per-file entries for the Sublime helper package: every current
+# file is classified individually, so a new file below clients/sublime
+# fails the inventory check until it is reviewed and classified (#7840
+# review).
 
 [[allow]]
-id = "non-rust-sublime-helper"
-glob = "clients/sublime/**"
+id = "non-rust-sublime-plugin"
+path = "clients/sublime/LSP-perllsp/plugin.py"
 kind = "editor_extension"
 language = "python"
 surface = "editor"
 classification = "production"
 owner = "editor/sublime"
-reason = "Sublime Text LSP helper package, deterministic export tooling, package settings, release manifest, and focused Python contract tests."
-covered_by = [
-  "Sublime package contract",
-  "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py",
-  "cargo xtask check-file-policy",
-]
-broad_glob_reason = "The helper is a Package Control-style tree of Python, JSON settings/schema, messages, licenses, tests, and deterministic export tooling that must ship and be reviewed together."
-created = "2026-08-13"
-review_after = "2026-11-13"
+reason = "The Sublime Text LSP client plugin that launches and configures the managed perllsp server."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
 
-# =============================================================================
-# Compiler concept ledger (perl_compiler_concepts.v1)
+[[allow]]
+id = "non-rust-sublime-release-installer"
+path = "clients/sublime/LSP-perllsp/release.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Deterministic managed-server download, digest verification, and install metadata for the Sublime helper."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-export-tool"
+path = "clients/sublime/export_lsp_perllsp.py"
+kind = "build_tooling"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Deterministic export tooling that stages the helper package for packaging."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-settings"
+path = "clients/sublime/LSP-perllsp/LSP-perllsp.sublime-settings"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Package default settings including the semantic-token scope map for the Perl server."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-package-manifest"
+path = "clients/sublime/LSP-perllsp/sublime-package.json"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Sublime package manifest with the settings schema for server_path and env."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-server-manifest"
+path = "clients/sublime/LSP-perllsp/server-manifest.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Pinned release manifest of reviewed perllsp assets with exact digests per platform."
+covered_by = ["Sublime package contract", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-release-tests"
+path = "clients/sublime/LSP-perllsp/tests/test_release.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Focused Python contract tests for the release installer and manifest ratchets."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-messages-index"
+path = "clients/sublime/LSP-perllsp/messages.json"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Package message index for upgrade messaging."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-install-message"
+path = "clients/sublime/LSP-perllsp/messages/install.txt"
+kind = "editor_extension"
+language = "text"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Install-time message shown by Package Control."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-readme"
+path = "clients/sublime/LSP-perllsp/README.md"
+kind = "editor_extension"
+language = "markdown"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "User-facing documentation for the Sublime helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-license-apache"
+path = "clients/sublime/LSP-perllsp/LICENSE-APACHE"
+kind = "license"
+language = "text"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Apache-2.0 license text shipped with the helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-license-mit"
+path = "clients/sublime/LSP-perllsp/LICENSE-MIT"
+kind = "license"
+language = "text"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "MIT license text shipped with the helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-python-version"
+path = "clients/sublime/LSP-perllsp/.python-version"
+kind = "editor_extension"
+language = "text"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Selects the python 3.8 plugin host for the helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
 # =============================================================================
 
 [[allow]]
@@ -1516,6 +1668,20 @@ reason = "JSON Schema for the staged binary identity verification receipt (#6853
 covered_by = ["cargo test -p perllsp --all-targets --locked"]
 created = "2026-08-16"
 review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-sublime-helper"
+glob = "clients/sublime/**"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Sublime Text LSP helper package, deterministic export tooling, package settings, release manifest, and focused Python contract tests."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+broad_glob_reason = "The helper is a Package Control-style tree of Python, JSON settings/schema, messages, licenses, tests, and deterministic export tooling that must ship and be reviewed together."
+created = "2026-08-13"
+review_after = "2026-11-13"
 
 [[allow]]
 id = "non-rust-product-7821-changelog-fragment"

@@ -160,6 +160,10 @@ def installed_binary_is_current(binary_path: Path, asset: Dict[str, str]) -> boo
     metadata_path = _metadata_path(binary_path)
     if not binary_path.is_file() or not metadata_path.is_file():
         return False
+    # Content may match while the execute bit was lost (a 0644 binary is not
+    # a usable install); such an install must be replaced, not reused.
+    if os.name == "posix" and not os.access(binary_path, os.X_OK):
+        return False
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
