@@ -38,7 +38,7 @@ fn collect_construction_sites(
             collect_construction_sites(root, &path, offenders)?;
             continue;
         }
-        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        if path.extension() != Some(std::ffi::OsStr::new("rs")) {
             continue;
         }
         let relative = path.strip_prefix(root).map_err(|err| err.to_string())?;
