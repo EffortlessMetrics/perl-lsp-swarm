@@ -66,12 +66,15 @@ class ReleaseContractTests(unittest.TestCase):
             ("linux", "arm64"),
         ]:
             asset = release.select_asset(manifest, platform, arch)
-            self.assertIn(manifest["version"], asset["asset"])
-            self.assertTrue(release.release_url(manifest, asset).startswith(
-                "https://github.com/EffortlessMetrics/perl-lsp/releases/download/v0.17.0/"
-            ))
             key = f"{platform}-{arch}"
             target, filename, digest, binary = expected_assets[key]
+            # The complete URL, not a prefix: a drifted filename or a
+            # release_url implementation that ignores the asset name fails.
+            self.assertEqual(
+                release.release_url(manifest, asset),
+                "https://github.com/EffortlessMetrics/perl-lsp/releases/download/"
+                f"v0.17.0/{filename}",
+            )
             self.assertEqual(asset["target"], target, key)
             self.assertEqual(asset["asset"], filename, key)
             self.assertEqual(asset["sha256"], digest, key)
