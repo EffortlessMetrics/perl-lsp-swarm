@@ -289,8 +289,17 @@ class SublimePerllspHostJourney(DeferrableTestCase):
                             "active_region_keys": sorted(self.buffer.semantic_tokens.active_region_keys),
                         }
                     ),
-                    "scope-diagnostic scope-at-output=" + _json.dumps(
-                        self.view.scope_name(self.view.text_point(6, 7))
+                    "scope-diagnostic region-scopes=" + _json.dumps(
+                        {str(k): v for k, v in self.buffer._semantic_region_keys.items()}
+                    ),
+                    "scope-diagnostic lsp-selector=" + _json.dumps(
+                        [str(r) for r in self.view.find_by_selector("variable.other.lsp")]
+                    ),
+                    "scope-diagnostic custom-selector=" + _json.dumps(
+                        [str(r) for r in self.view.find_by_selector("variable.other.scalar.perl")]
+                    ),
+                    "scope-diagnostic session-view-ids=" + _json.dumps(
+                        [sv.view.id() for sv in self.buffer.session_views] + [self.view.id()]
                     ),
                 )
             except Exception as error:  # noqa: BLE001 - diagnostics must never mask
