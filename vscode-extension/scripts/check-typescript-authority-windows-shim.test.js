@@ -27,7 +27,14 @@ void test('npm Windows %~dp0% wrapper target stays relative to node_modules/.bin
 
 void test('POSIX generated wrapper target remains relative to node_modules/.bin', () => {
   const binDir = '/work/vscode-extension/node_modules/.bin';
-  const wrapper = '#!/bin/sh\nexec node "$basedir/../typescript/bin/tsc" "$@"\n';
+  const wrapper =
+    '#!/bin/sh\n' +
+    'basedir=$(dirname "$(echo "$0" | sed -e \'s,\\\\,/,g\')")\n' +
+    'if [ -x "$basedir/node" ]; then\n' +
+    '  exec "$basedir/node"  "$basedir/../typescript/bin/tsc" "$@"\n' +
+    'else\n' +
+    '  exec node  "$basedir/../typescript/bin/tsc" "$@"\n' +
+    'fi\n';
   assertTarget(
     resolveGeneratedShimTarget(wrapper, binDir, path.posix),
     '/work/vscode-extension/node_modules/typescript/bin/tsc',

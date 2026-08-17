@@ -411,6 +411,12 @@ function declaredTscBin(typescriptDir) {
  * rooted target remains rooted and is rejected rather than normalized into an
  * apparently safe relative path.
  *
+ * npm's POSIX wrapper prefixes its target with `$basedir/`, and the regex
+ * captures the variable name (`$` is not a path character), so the match sees
+ * `basedir/../typescript/bin/tsc`. `$basedir` is the `.bin` directory itself,
+ * so the leaked `basedir` segment is dropped before resolving; leaving it in
+ * place would resolve under `.bin/typescript` instead of the package root.
+ *
  * @param {string} script
  * @param {string} binDir
  * @param {typeof path} [pathApi]
@@ -422,7 +428,9 @@ function resolveGeneratedShimTarget(script, binDir, pathApi = path) {
     return { reason: 'the generated shim names no typescript/bin/tsc target' };
   }
 
-  const wrapperRelative = match[0].replace(/^[\\/]+(?=\.\.[\\/])/, '');
+  const wrapperRelative = match[0]
+    .replace(/^[\\/]+(?=\.\.[\\/])/, '')
+    .replace(/^basedir[\\/]/i, '');
   const normalized = wrapperRelative.replace(/[\\/]/g, pathApi.sep);
   if (pathApi.isAbsolute(normalized)) {
     return {
