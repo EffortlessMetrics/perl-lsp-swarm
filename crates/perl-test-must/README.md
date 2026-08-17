@@ -14,17 +14,22 @@ without violating the workspace lint policy.
 - `must` extracts the value from a `Result`
 - `must_some` extracts the value from an `Option`
 - `must_err` extracts the error from a `Result`
+- `must_with`, `must_some_with`, and `must_err_with` preserve a scenario-specific
+  explanation in the panic diagnostic
 
 ## Example
 
 ```rust
-use perl_test_must::{must, must_err, must_some};
+use perl_test_must::{must, must_err, must_some_with};
 
 let value: Result<i32, &str> = Ok(42);
 assert_eq!(must(value), 42);
 
 let item = Some("ok");
-assert_eq!(must_some(item), "ok");
+assert_eq!(
+    must_some_with(item, "the fixture declares the expected item"),
+    "ok"
+);
 
 let err: Result<i32, &str> = Err("boom");
 assert_eq!(must_err(err), "boom");
@@ -33,7 +38,8 @@ assert_eq!(must_err(err), "boom");
 ## Workspace role
 
 Used in tests across the workspace as the policy-compliant replacement for
-`unwrap`, `unwrap_err`, and `expect`.
+`unwrap`, `unwrap_err`, and `expect`. Fallible setup that should propagate an
+error should still return `Result` and use `?`.
 
 ## License
 

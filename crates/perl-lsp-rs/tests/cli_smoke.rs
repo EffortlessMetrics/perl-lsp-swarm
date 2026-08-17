@@ -6,6 +6,23 @@ fn product_command() -> assert_cmd::Command {
     assert_cmd::Command::new(perl_tdd_support::must(support::product_binary_path()))
 }
 
+/// The file stem of the binary these tests actually spawn.
+///
+/// `--version` names the command as it was invoked rather than a fixed product
+/// string, so the expected name has to come from the same place the invocation
+/// does. Spelling it as a literal is what silently desynchronized this test
+/// when the product binary was renamed to `perllsp`: the assertion kept
+/// passing against a name nothing spawned anymore, then failed outright once
+/// the harness resolved the real binary.
+fn product_binary_name() -> Result<String, Box<dyn std::error::Error>> {
+    let path = support::product_binary_path()?;
+    Ok(std::path::Path::new(&path)
+        .file_stem()
+        .ok_or("product binary path has no file stem")?
+        .to_string_lossy()
+        .into_owned())
+}
+
 #[test]
 fn health_prints_ok() {
     let mut cmd = product_command();
@@ -24,7 +41,18 @@ fn version_shows_source_revision() -> Result<(), Box<dyn std::error::Error>> {
     let stdout = String::from_utf8(output.stdout)?;
 
     assert_eq!(output.status.code(), Some(0));
-    assert!(stdout.contains("perl-lsp"), "version should name the binary: {stdout:?}");
+
+    // The banner opens with "<command> <version>". Compare the command token
+    // against the binary that was actually spawned rather than a literal, so a
+    // rename moves both sides together instead of quietly stranding the oracle.
+    let expected_name = product_binary_name()?;
+    let name_line = stdout.lines().next().ok_or("version output is empty")?;
+    let printed_name =
+        name_line.split_whitespace().next().ok_or("version output has no command token")?;
+    assert_eq!(
+        printed_name, expected_name,
+        "version should name the binary it was invoked as: {stdout:?}"
+    );
 
     let revision_line = stdout
         .lines()
