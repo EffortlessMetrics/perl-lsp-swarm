@@ -52,6 +52,7 @@ pub mod count_ratchet;
 pub mod cpan_corpus;
 pub mod dead_code;
 pub mod debt_report;
+pub mod dependency_hygiene;
 pub mod dev;
 pub mod devex_docs;
 pub mod devex_doctor;

@@ -15,6 +15,17 @@ const PROVIDER_SKILL_ROOTS: &[(&str, &str)] =
     &[("codex", ".agents/skills"), ("claude", ".claude/skills")];
 
 const FORBIDDEN_SHARED_REVIEW_AUTHORITY: &str = "PR_REVIEW_STANDARD.md";
+const METASYNTACTIC_PLACEHOLDERS: &[&str] = &["skill", "skill_name", "skill-name"];
+const ROUTE_BEARING_LABELS: &[&str] = &[
+    "entry flow",
+    "entry route",
+    "next flow",
+    "next route",
+    "return flow",
+    "return route",
+    "fallback flow",
+    "fallback route",
+];
 
 const REVIEW_SKILL_MARKERS: &[(&str, &[&str])] = &[
     (
@@ -102,7 +113,20 @@ struct ProviderReport {
     skill_count: usize,
     checked_skills: Vec<String>,
     route_count: usize,
+    route_observations: Vec<RouteObservationReport>,
     metadata_chars: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct RouteObservationReport {
+    source: String,
+    path: String,
+    line: usize,
+    column_start: usize,
+    column_end: usize,
+    target: String,
+    syntax: RouteSyntax,
+    executable_edge: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,7 +151,46 @@ struct Skill {
     path: PathBuf,
     text: String,
     route_targets: Vec<String>,
+    route_observations: Vec<RouteObservation>,
     metadata_chars: usize,
+}
+
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RouteSyntax {
+    ExplicitSigil,
+    ArrowTarget,
+    ListTarget,
+    BareTarget,
+    ImperativeInvocation,
+    LabeledTarget,
+    ProseMention,
+    CodeIdentifier,
+    InlineCode,
+    Placeholder,
+}
+
+impl RouteSyntax {
+    const fn is_edge(self) -> bool {
+        matches!(
+            self,
+            Self::ExplicitSigil
+                | Self::ArrowTarget
+                | Self::ListTarget
+                | Self::BareTarget
+                | Self::ImperativeInvocation
+                | Self::LabeledTarget
+        )
+    }
+}
+
+#[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct RouteObservation {
+    target: String,
+    line: usize,
+    column_start: usize,
+    column_end: usize,
+    syntax: RouteSyntax,
 }
 
 #[derive(Debug)]
@@ -343,6 +406,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
             .collect::<BTreeMap<_, _>>();
         provider_skills.insert((*provider).to_string(), (known_names.clone(), route_map));
         let mut route_count = 0;
+        let mut route_reports = Vec::new();
         let mut metadata_chars = 0;
         let mut checked_skills = Vec::new();
 
@@ -352,12 +416,36 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
         {
             selected_matches += 1;
             metadata_chars += skill.metadata_chars;
-            route_count += skill.route_targets.len();
             checked_skills.push(skill.name.clone());
-            for target in &skill.route_targets {
-                if !known_names.contains(target) {
-                    errors.push(missing_route_target_message(&skill.path, &skill.name, target));
+            let relative_path = skill
+                .path
+                .strip_prefix(root)
+                .unwrap_or(&skill.path)
+                .to_string_lossy()
+                .replace('\\', "/");
+
+            for observation in &skill.route_observations {
+                let syntax = resolve_route_syntax(observation, &known_names);
+                if syntax.is_edge() {
+                    route_count += 1;
+                    if !known_names.contains(&observation.target) {
+                        errors.push(missing_route_target_message(
+                            &skill.path,
+                            &skill.name,
+                            observation,
+                        ));
+                    }
                 }
+                route_reports.push(RouteObservationReport {
+                    source: skill.name.clone(),
+                    path: relative_path.clone(),
+                    line: observation.line,
+                    column_start: observation.column_start,
+                    column_end: observation.column_end,
+                    target: observation.target.clone(),
+                    syntax,
+                    executable_edge: syntax.is_edge(),
+                });
             }
         }
 
@@ -374,6 +462,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
                 skill_count: checked_skills.len(),
                 checked_skills,
                 route_count,
+                route_observations: route_reports,
                 metadata_chars,
             },
         );
@@ -397,7 +486,7 @@ fn check_repository(root: &Path, selected_skill: Option<&str>) -> Result<CheckRe
 
     let result = if errors.is_empty() { "PASS" } else { "FAIL" };
     Ok(CheckReport {
-        schema: "agent-flow-check.v1",
+        schema: "agent-flow-check.v2",
         result,
         providers,
         scenarios,
@@ -522,12 +611,14 @@ fn collect_skills(skill_root: &Path, errors: &mut Vec<String>) -> Result<Vec<Ski
             )),
             None => errors.push(format!("{}: missing frontmatter name", skill_path.display())),
         }
-        let route_targets = route_targets(&text);
+        let route_observations = route_observations(&text);
+        let route_targets = edge_targets(&route_observations);
         skills.push(Skill {
             name: directory_name,
             path: skill_path,
             text,
             route_targets,
+            route_observations,
             metadata_chars,
         });
     }
@@ -573,17 +664,44 @@ fn frontmatter_metadata_chars(text: &str) -> usize {
 }
 
 fn route_targets(text: &str) -> Vec<String> {
+    edge_targets(&route_observations(text))
+}
+
+fn edge_targets(observations: &[RouteObservation]) -> Vec<String> {
+    observations
+        .iter()
+        .filter(|observation| observation.syntax.is_edge())
+        .map(|observation| observation.target.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn resolve_route_syntax(
+    observation: &RouteObservation,
+    known_names: &BTreeSet<String>,
+) -> RouteSyntax {
+    match observation.syntax {
+        RouteSyntax::InlineCode if known_names.contains(observation.target.as_str()) => {
+            RouteSyntax::ProseMention
+        }
+        RouteSyntax::InlineCode => RouteSyntax::CodeIdentifier,
+        syntax => syntax,
+    }
+}
+
+fn route_observations(text: &str) -> Vec<RouteObservation> {
     let mut in_route_section = false;
-    let mut targets = BTreeSet::new();
-    for line in text.lines() {
+    let mut observations = BTreeSet::new();
+    for (line_index, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.starts_with("## ") {
             in_route_section = is_route_heading(trimmed);
             continue;
         }
-        targets.extend(route_tokens(trimmed, in_route_section));
+        observations.extend(route_line_observations(line, line_index + 1, in_route_section));
     }
-    targets.into_iter().collect()
+    observations.into_iter().collect()
 }
 
 fn is_route_heading(heading: &str) -> bool {
@@ -598,71 +716,197 @@ fn is_route_heading(heading: &str) -> bool {
         || normalized == "procedure"
 }
 
-fn missing_route_target_message(path: &Path, source: &str, target: &str) -> String {
+fn missing_route_target_message(
+    path: &Path,
+    source: &str,
+    observation: &RouteObservation,
+) -> String {
     format!(
-        "{}: route from '{}' points to missing provider-local skill '{}' (if this is prose or a code identifier, remove its backticks; route references should use an explicit route form)",
+        "{}:{}:{}: route from '{}' points to missing provider-local skill '{}' via {:?} (if this is prose or a code identifier, remove its route syntax; route references should use an explicit route form)",
         path.display(),
+        observation.line,
+        observation.column_start + 1,
         source,
-        target
+        observation.target,
+        observation.syntax
     )
 }
 
 fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
-    // Metasyntactic `$placeholders` that appear in prose inside route/orchestration
-    // sections but are NOT actual skill route targets (#5930).
-    const METASYNTACTIC_PLACEHOLDERS: &[&str] = &["skill", "skill_name", "skill-name"];
+    edge_targets(&route_line_observations(line, 1, in_route_section))
+}
 
-    let mut tokens = Vec::new();
-    let chars = line.chars().collect::<Vec<_>>();
-    let mut index = 0;
-    while index < chars.len() {
-        if in_route_section && chars[index] == '$' {
-            let start = index + 1;
-            let mut end = start;
-            while end < chars.len()
-                && (chars[end].is_ascii_lowercase()
-                    || chars[end].is_ascii_digit()
-                    || chars[end] == '-')
-            {
-                end += 1;
+fn route_line_observations(
+    line: &str,
+    line_number: usize,
+    in_route_section: bool,
+) -> Vec<RouteObservation> {
+    if !in_route_section {
+        return Vec::new();
+    }
+
+    let mut observations = BTreeSet::new();
+    scan_backticked_tokens(line, line_number, &mut observations);
+    observations.into_iter().collect()
+}
+
+fn scan_backticked_tokens(
+    line: &str,
+    line_number: usize,
+    observations: &mut BTreeSet<RouteObservation>,
+) {
+    let mut cursor = 0;
+    // Text since the previous token's closing backtick. Arrow detection reads
+    // only this segment: a `->` belongs to the token it points at, not to every
+    // later token on the same line.
+    let mut segment_start = 0;
+    while let Some(relative_start) = line[cursor..].find('`') {
+        let opening = cursor + relative_start;
+        let content_start = opening + 1;
+        let Some(relative_end) = line[content_start..].find('`') else {
+            break;
+        };
+        let closing = content_start + relative_end;
+        let token = &line[content_start..closing];
+
+        if let Some(target) = token.strip_prefix('$') {
+            if is_route_name(target) {
+                observations.insert(RouteObservation {
+                    target: target.to_string(),
+                    line: line_number,
+                    column_start: content_start + 1,
+                    column_end: closing,
+                    syntax: if METASYNTACTIC_PLACEHOLDERS.contains(&target) {
+                        RouteSyntax::Placeholder
+                    } else {
+                        RouteSyntax::ExplicitSigil
+                    },
+                });
             }
-            if end > start {
-                let token: String = chars[start..end].iter().collect();
-                // Skip metasyntactic placeholders that are prose, not route targets.
-                if !METASYNTACTIC_PLACEHOLDERS.contains(&token.as_str()) {
-                    tokens.push(token);
-                }
-            }
-            index = end;
-        } else if in_route_section && chars[index] == '`' {
-            let start = index + 1;
-            if let Some(relative_end) =
-                chars[start..].iter().position(|character| *character == '`')
-            {
-                let end = start + relative_end;
-                let token = chars[start..end].iter().collect::<String>();
-                let token = token.strip_prefix('$').unwrap_or(&token);
-                if token.chars().next().is_some_and(|character| character.is_ascii_lowercase())
-                    && token.chars().all(|character| {
-                        character.is_ascii_lowercase()
-                            || character.is_ascii_digit()
-                            || character == '-'
-                    })
-                    // Skip metasyntactic placeholders that are prose, not route
-                    // targets — mirrors the bare-$ branch (#5930).
-                    && !METASYNTACTIC_PLACEHOLDERS.contains(&token)
-                {
-                    tokens.push(token.to_owned());
-                }
-                index = end + 1;
+            cursor = closing + 1;
+            segment_start = cursor;
+            continue;
+        }
+
+        if is_route_name(token) {
+            let code_span = &line[opening..=closing];
+            let segment = &line[segment_start..opening];
+            let syntax = if METASYNTACTIC_PLACEHOLDERS.contains(&token) {
+                RouteSyntax::Placeholder
+            } else if segment.contains("->") || segment.contains('→') {
+                RouteSyntax::ArrowTarget
             } else {
-                index += 1;
-            }
-        } else {
-            index += 1;
+                classify_arrowless_code_span(line, code_span)
+            };
+            observations.insert(RouteObservation {
+                target: token.to_string(),
+                line: line_number,
+                column_start: content_start,
+                column_end: closing,
+                syntax,
+            });
+        }
+        cursor = closing + 1;
+        segment_start = cursor;
+    }
+}
+
+fn classify_arrowless_code_span(line: &str, code_span: &str) -> RouteSyntax {
+    let trimmed = line.trim();
+    let candidate = strip_markdown_list_marker(trimmed);
+    if candidate == code_span {
+        return RouteSyntax::BareTarget;
+    }
+    if let Some(rest) = candidate.strip_prefix(code_span) {
+        let rest = rest.trim_start();
+        if rest.starts_with(':') || rest.starts_with('—') {
+            return RouteSyntax::ListTarget;
         }
     }
-    tokens
+    // A labeled route is defined by its label, not by its bullet: the bare and
+    // list forms above carry no list requirement either, and
+    // `has_route_label_prefix` already restricts the match to
+    // `ROUTE_BEARING_LABELS`.
+    if has_route_label_prefix(candidate, code_span) {
+        return RouteSyntax::LabeledTarget;
+    }
+    if is_markdown_list_item(trimmed) && has_imperative_route_prefix(candidate, code_span) {
+        return RouteSyntax::ImperativeInvocation;
+    }
+    RouteSyntax::InlineCode
+}
+
+fn has_route_label_prefix(candidate: &str, code_span: &str) -> bool {
+    let Some(index) = candidate.find(code_span) else {
+        return false;
+    };
+    let prefix = candidate[..index].trim();
+    let label = if let Some(without_colon) = prefix.strip_suffix(':') {
+        strip_strong_emphasis(without_colon).trim()
+    } else {
+        let without_emphasis = strip_strong_emphasis(prefix);
+        let Some(without_colon) = without_emphasis.strip_suffix(':') else {
+            return false;
+        };
+        without_colon.trim()
+    };
+    let normalized = label.to_ascii_lowercase();
+    ROUTE_BEARING_LABELS.contains(&normalized.as_str())
+}
+
+fn strip_strong_emphasis(text: &str) -> &str {
+    text.strip_prefix("**").and_then(|inner| inner.strip_suffix("**")).unwrap_or(text)
+}
+
+fn has_imperative_route_prefix(candidate: &str, code_span: &str) -> bool {
+    let Some(index) = candidate.find(code_span) else {
+        return false;
+    };
+    let prefix = candidate[..index].trim().to_ascii_lowercase();
+    matches!(
+        prefix.as_str(),
+        "invoke"
+            | "route to"
+            | "continue with"
+            | "proceed through"
+            | "enter through"
+            | "call"
+            | "hand off to"
+            | "return to"
+    )
+}
+
+fn is_markdown_list_item(line: &str) -> bool {
+    if ["- ", "* ", "+ "].iter().any(|marker| line.starts_with(marker)) {
+        return true;
+    }
+    line.split_once(". ").is_some_and(|(prefix, _)| {
+        !prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn strip_markdown_list_marker(line: &str) -> &str {
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = line.strip_prefix(marker) {
+            return rest.trim_start();
+        }
+    }
+    if let Some((prefix, rest)) = line.split_once(". ")
+        && !prefix.is_empty()
+        && prefix.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return rest.trim_start();
+    }
+    line
+}
+
+fn is_route_name(token: &str) -> bool {
+    token.bytes().next().is_some_and(|byte| byte.is_ascii_lowercase())
+        && token.bytes().all(is_route_name_byte)
+}
+
+const fn is_route_name_byte(byte: u8) -> bool {
+    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
 }
 
 fn print_human(report: &CheckReport) {
@@ -694,8 +938,10 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        SCENARIO_FIXTURES, check_scenarios, frontmatter_metadata_chars, frontmatter_value,
-        missing_markers, missing_route_target_message, route_targets, route_tokens,
+        RouteObservation, RouteSyntax, SCENARIO_FIXTURES, check_scenarios, edge_targets,
+        frontmatter_metadata_chars, frontmatter_value, missing_markers,
+        missing_route_target_message, resolve_route_syntax, route_line_observations,
+        route_observations, route_targets, route_tokens,
     };
 
     #[test]
@@ -729,6 +975,212 @@ mod tests {
     }
 
     #[test]
+    fn preserves_arrow_list_bare_and_imperative_routes() {
+        let text = "## Routes\n- ready -> `deliver-pr`\n- `review-pr`: submit review\n`verify-live-ci`\n2. Invoke `build-from-proof` where implementation is missing.\n";
+        assert_eq!(
+            route_targets(text),
+            vec!["build-from-proof", "deliver-pr", "review-pr", "verify-live-ci"]
+        );
+        let syntaxes = route_observations(text)
+            .into_iter()
+            .filter(|observation| observation.syntax.is_edge())
+            .map(|observation| observation.syntax)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            syntaxes,
+            BTreeSet::from([
+                RouteSyntax::ArrowTarget,
+                RouteSyntax::ListTarget,
+                RouteSyntax::BareTarget,
+                RouteSyntax::ImperativeInvocation,
+            ])
+        );
+    }
+
+    #[test]
+    fn preserves_labeled_route_fields_as_edges() {
+        let text = "## Routes\n- Entry flow: `deliver-pr`\n- **Next route:** `finish-pr`\n";
+        let observations = route_observations(text);
+        assert_eq!(observations.len(), 2, "both labeled route fields are observed");
+        assert_eq!(edge_targets(&observations), vec!["deliver-pr", "finish-pr"]);
+        assert!(
+            observations.iter().all(|observation| observation.syntax == RouteSyntax::LabeledTarget),
+            "both labeled route fields classify as LabeledTarget"
+        );
+    }
+
+    #[test]
+    fn labeled_route_typos_remain_load_bearing() {
+        let observations = route_line_observations("- Entry flow: `delver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "labeled route yields exactly one observation");
+        assert_eq!(edge_targets(&observations), vec!["delver-pr"]);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &BTreeSet::new()),
+            RouteSyntax::LabeledTarget,
+            "a misspelled labeled route stays an edge so it fails closed"
+        );
+    }
+
+    #[test]
+    fn trailing_inline_code_after_an_arrow_route_is_not_an_edge() {
+        let observations = route_line_observations(
+            "- ready -> `deliver-pr` (compare `candidate-sha` first)",
+            1,
+            true,
+        );
+        assert_eq!(observations.len(), 2, "both backticked tokens are observed");
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["deliver-pr"],
+            "only the arrow target is an edge; a later token must not inherit the arrow"
+        );
+
+        let trailing =
+            observations.iter().find(|observation| observation.target == "candidate-sha");
+        assert!(trailing.is_some(), "the trailing token is observed");
+        let Some(trailing) = trailing else { return };
+        assert_eq!(
+            trailing.syntax,
+            RouteSyntax::InlineCode,
+            "a token after the arrow target stays inline code"
+        );
+    }
+
+    #[test]
+    fn every_target_in_an_arrow_chain_remains_an_edge() {
+        // Scoping the arrow prefix must not break a chain: each *target* still
+        // has an arrow in its own segment. The leading token is the chain's
+        // source rather than a target, and carries no arrow before it, so it
+        // stays inline code — unchanged by the scoping fix.
+        let observations =
+            route_line_observations("- `deliver-pr` -> `build-candidate` -> `finish-pr`", 1, true);
+        assert_eq!(observations.len(), 3, "every chained token is observed");
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["build-candidate", "finish-pr"],
+            "both arrow targets stay edges after the first link"
+        );
+
+        let head = observations.iter().find(|observation| observation.target == "deliver-pr");
+        assert!(head.is_some(), "the chain source is observed");
+        let Some(head) = head else { return };
+        assert_eq!(
+            head.syntax,
+            RouteSyntax::InlineCode,
+            "the chain source is not itself an arrow target"
+        );
+    }
+
+    #[test]
+    fn labeled_route_outside_a_list_is_still_an_edge() {
+        let observations = route_line_observations("Entry flow: `deliver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "the labeled route yields one observation");
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["deliver-pr"],
+            "a labeled route written as a paragraph is still executable"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::LabeledTarget,
+            "the list marker is presentation, not route semantics"
+        );
+    }
+
+    #[test]
+    fn unrelated_labeled_code_remains_non_executable() {
+        let observations = route_line_observations("- Cache key: `deliver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "the labeled code yields one observation");
+        assert!(
+            edge_targets(&observations).is_empty(),
+            "a label outside ROUTE_BEARING_LABELS creates no edge"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::InlineCode,
+            "an unrelated label leaves the token as inline code"
+        );
+    }
+
+    #[test]
+    fn existing_skill_name_in_prose_is_a_prose_mention() {
+        let text =
+            "## Procedure\nTake issue #123 through `deliver-pr` after the candidate is coherent.\n";
+        assert!(route_targets(text).is_empty(), "prose creates no route target");
+        let observations = route_observations(text);
+        assert_eq!(observations.len(), 1, "the prose token is observed once");
+        assert_eq!(observations[0].target, "deliver-pr");
+        assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &BTreeSet::from(["deliver-pr".to_string()])),
+            RouteSyntax::ProseMention,
+            "a real skill named in prose resolves to a prose mention"
+        );
+    }
+
+    #[test]
+    fn unknown_inline_code_is_a_code_identifier() {
+        let text = "## Procedure\nCompare `candidate_sha` before selecting a route.\n";
+        let observations = route_observations(text);
+        assert_eq!(observations.len(), 1, "the inline code token is observed once");
+        assert_eq!(observations[0].target, "candidate_sha");
+        assert_eq!(observations[0].syntax, RouteSyntax::InlineCode);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &BTreeSet::from(["deliver-pr".to_string()])),
+            RouteSyntax::CodeIdentifier,
+            "a token naming no provider-local skill resolves to a code identifier"
+        );
+        assert!(
+            !resolve_route_syntax(&observations[0], &BTreeSet::new()).is_edge(),
+            "a code identifier is never an executable edge"
+        );
+    }
+
+    #[test]
+    fn backtick_formatting_cannot_mutate_prose_into_a_route() {
+        let plain = "## Procedure\nTake issue #123 through deliver-pr after review.\n";
+        let formatted = "## Procedure\nTake issue #123 through `deliver-pr` after review.\n";
+        assert_eq!(
+            route_targets(plain),
+            route_targets(formatted),
+            "backticks alone must not change the route set"
+        );
+        assert!(route_targets(formatted).is_empty(), "neither form creates a route");
+    }
+
+    #[test]
+    fn explicit_sigil_remains_a_route_inside_prose() {
+        assert_eq!(route_tokens("Invoke `$deliver-pr` after review.", true), vec!["deliver-pr"]);
+    }
+
+    #[test]
+    fn unquoted_shell_or_prose_variables_are_not_routes() {
+        assert!(route_tokens("Export $path before continuing.", true).is_empty());
+        assert!(route_tokens("Read $status and report it.", true).is_empty());
+    }
+
+    #[test]
+    fn near_miss_explicit_route_remains_load_bearing() {
+        let observations = route_line_observations("- ready -> `delver-pr`", 1, true);
+        assert_eq!(edge_targets(&observations), vec!["delver-pr"]);
+        assert_eq!(
+            resolve_route_syntax(&observations[0], &BTreeSet::new()),
+            RouteSyntax::ArrowTarget
+        );
+    }
+
+    #[test]
+    fn route_observations_retain_source_line_and_indentation_range() {
+        let line = "    - ready -> `deliver-pr`";
+        let observations = route_line_observations(line, 9, true);
+        assert_eq!(observations.len(), 1);
+        let observation = &observations[0];
+        assert_eq!(observation.line, 9);
+        assert_eq!(observation.syntax, RouteSyntax::ArrowTarget);
+        assert_eq!(&line[observation.column_start..observation.column_end], "deliver-pr");
+    }
+
+    #[test]
     fn ignores_uppercase_status_tokens() {
         assert_eq!(
             route_tokens("- `REVIEW_CURRENT` -> `$verify-live-ci`", true),
@@ -738,25 +1190,35 @@ mod tests {
 
     #[test]
     fn ignores_metasyntactic_placeholders_in_backticks() {
-        // A `$skill` placeholder in prose under a route-bearing heading must
-        // not be treated as a route target — even inside backticks (#5930).
         assert_eq!(
             route_tokens("which `$skill` to consume. Do not ask agents.", true),
             Vec::<String>::new()
         );
-        // The real skill names are still extracted.
         assert_eq!(route_tokens("- `$deliver-pr` then `$skill`", true), vec!["deliver-pr"]);
+        assert!(
+            route_observations("## Routes\n- `$skill`\n")
+                .iter()
+                .any(|observation| observation.syntax == RouteSyntax::Placeholder)
+        );
     }
 
     #[test]
-    fn missing_route_diagnostic_explains_backticked_prose() {
+    fn missing_route_diagnostic_explains_source_syntax() {
+        let observation = RouteObservation {
+            target: "clear".into(),
+            line: 12,
+            column_start: 7,
+            column_end: 12,
+            syntax: RouteSyntax::ArrowTarget,
+        };
         let message = missing_route_target_message(
             Path::new(".agents/skills/review-tests/SKILL.md"),
             "review-tests",
-            "clear",
+            &observation,
         );
+        assert!(message.contains("SKILL.md:12:8"));
         assert!(message.contains("missing provider-local skill 'clear'"));
-        assert!(message.contains("if this is prose or a code identifier, remove its backticks"));
+        assert!(message.contains("ArrowTarget"));
     }
 
     #[test]
@@ -833,7 +1295,7 @@ mod tests {
     #[test]
     fn scenario_output_ignores_unrelated_inventory_errors() {
         let output = super::scenario_output(super::CheckReport {
-            schema: "agent-flow-check.v1",
+            schema: "agent-flow-check.v2",
             result: "FAIL",
             providers: BTreeMap::new(),
             scenarios: super::ScenarioReport {
