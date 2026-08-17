@@ -1,0 +1,16 @@
+{
+  "schema_version": "zed_codex_train_observation.v1",
+  "result": "not_run",
+  "observed_at": null,
+  "repository": "EffortlessMetrics/perl-lsp-swarm",
+  "main_sha": null,
+  "observer": {
+    "tool_version": null,
+    "source_sha256": null
+  },
+  "stages": {},
+  "limitations": [
+    "Template only; no live GitHub observation has been performed.",
+    "Observation state cannot satisfy product, behavioral, distribution, or public-support evidence."
+  ]
+}
