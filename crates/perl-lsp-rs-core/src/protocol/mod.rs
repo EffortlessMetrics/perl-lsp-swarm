@@ -23,6 +23,7 @@ pub mod error_inventory;
 mod errors;
 mod jsonrpc;
 pub mod methods;
+pub mod resolve_envelope;
 pub mod schema;
 
 pub use document_version::{
