@@ -172,13 +172,6 @@ action = 'actions/upload-artifact'
 sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
 kind = 'release_tag'
 value = 'v7.0.1'
-
-[[pin]]
-action = 'actions/checkout'
-sha = '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0'
-kind = 'release_tag'
-value = 'v7.0.0'
-
 [[pin]]
 action = 'actions/upload-pages-artifact'
 sha = 'fc324d3547104276b827a68afc52ff2a11cc49c9'
