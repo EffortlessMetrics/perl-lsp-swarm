@@ -1,0 +1,28 @@
+name: codex-10337-bootstrap
+
+on:
+  push:
+    branches:
+      - codex/10337-class-ast-schema
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.event.head_commit.message == 'chore: inspect class AST migration surface'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inventory class AST references
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== NodeKind::Class references ==='
+          rg -n -C 3 'NodeKind::Class' crates --glob '*.rs' || true
+          echo '=== direct Class constructors ==='
+          rg -n -C 3 'Class \{' crates --glob '*.rs' || true
+          echo '=== parser class context ==='
+          rg -n -C 3 'in_class_body|parse_class' crates/perl-parser-core --glob '*.rs' || true
