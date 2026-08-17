@@ -1662,15 +1662,22 @@ fn fallback_suggested_test(classification: &str) -> &'static str {
 
 /// Build named seam comments from the completed diff-scoped raw check when the
 /// review-comments pass itself did not finish (#10054). Returns `None` when the
-/// raw check is unavailable or no unsuppressed actionable seam remains, so the
-/// caller can fall back to the plain error receipt.
-fn fallback_guidance_comments(repo: &Path) -> Result<Option<(Vec<Value>, usize)>> {
+/// raw check is unavailable, stale against the requested base, or has no
+/// unsuppressed actionable seam at the head revision, so the caller can fall
+/// back to the plain error receipt.
+fn fallback_guidance_comments(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+) -> Result<Option<(Vec<Value>, usize)>> {
     let Ok(text) = fs::read_to_string(repo.join(PR_RAW_CHECK_JSON)) else {
         return Ok(None);
     };
     let Ok(packet) = serde_json::from_str::<Value>(&text) else {
         return Ok(None);
     };
+    if packet.get("base").and_then(Value::as_str) != Some(options.base.as_str()) {
+        return Ok(None);
+    }
     let Some(findings) = packet.get("findings").and_then(Value::as_array) else {
         return Ok(None);
     };
@@ -1678,37 +1685,62 @@ fn fallback_guidance_comments(repo: &Path) -> Result<Option<(Vec<Value>, usize)>
     else {
         return Ok(None);
     };
+    // Best-effort head-revision filter, matching the producer's counted set
+    // (#6260). If the diff cannot be resolved, name without it — the direction
+    // is names ⊇ counted, which stays fail-closed.
+    let head_extents = resolve_committed_diff(repo, &options.base, &options.head)
+        .map(|diff| HeadLineExtents::from_committed_diff(repo, &diff))
+        .ok();
 
     let mut suppressed = 0usize;
     let mut seams: Vec<(String, u64, String, Value)> = Vec::new();
     for finding in findings {
-        let Some(classification) = finding.get("classification").and_then(Value::as_str) else {
-            continue;
+        // ripr 0.5.x: "classification"; ripr 0.9.x may emit "grip_class" with
+        // "weakly_gripped" folded into the counted reachable_unrevealed bucket
+        // (see ripr_pr_summary_counts). Accept both and name the counted class.
+        let raw_class = finding
+            .get("classification")
+            .and_then(Value::as_str)
+            .or_else(|| finding.get("grip_class").and_then(Value::as_str));
+        let canonical = match raw_class {
+            Some("weakly_gripped") => "reachable_unrevealed",
+            Some(other) => other,
+            None => continue,
         };
-        if !gate_actionable_classification(classification) {
+        if !gate_actionable_classification(canonical) {
             continue;
         }
-        let probe = finding.get("probe").unwrap_or(&Value::Null);
-        let Some(file) = probe.get("file").and_then(Value::as_str) else { continue };
-        let path = normalize_suppression_match_path(file);
-        if path.trim().is_empty() {
-            continue;
-        }
-        if suppression_matches_seam(&suppressions, &json!({ "path": path })) {
+        if suppression_matches_finding(&suppressions, finding) {
             suppressed += 1;
             continue;
         }
-        let Some(line) = probe.get("line").and_then(Value::as_u64) else { continue };
-        if line == 0 {
+        if head_extents.as_ref().is_some_and(|extents| extents.finding_is_outside_head(finding)) {
             continue;
         }
+        let Some(file) = ripr_finding_path(finding) else { continue };
+        let path = normalize_suppression_match_path(&file);
+        // Without a known anchor the normalized value is still an absolute host
+        // path; never emit CI-runner paths into receipts.
+        if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
+            continue;
+        }
+        let Some(line) = ripr_finding_line(finding) else { continue };
         let id = finding
             .get("id")
             .and_then(Value::as_str)
-            .or_else(|| probe.get("id").and_then(Value::as_str))
+            .or_else(|| finding.pointer("/probe/id").and_then(Value::as_str))
+            .or_else(|| finding.pointer("/seam/id").and_then(Value::as_str))
             .unwrap_or("unknown-seam");
-        let family = probe.get("family").and_then(Value::as_str).unwrap_or("unknown");
-        let expression = probe.get("expression").and_then(Value::as_str).unwrap_or("");
+        let family = finding
+            .pointer("/probe/family")
+            .and_then(Value::as_str)
+            .or_else(|| finding.pointer("/seam/family").and_then(Value::as_str))
+            .unwrap_or(canonical);
+        let expression = finding
+            .pointer("/probe/expression")
+            .and_then(Value::as_str)
+            .or_else(|| finding.pointer("/seam/expression").and_then(Value::as_str))
+            .unwrap_or("");
         let reach_summary = finding
             .pointer("/ripr/reach/summary")
             .and_then(Value::as_str)
@@ -1718,8 +1750,8 @@ fn fallback_guidance_comments(repo: &Path) -> Result<Option<(Vec<Value>, usize)>
             "path": path,
             "line": line,
             "seam": format!("{family}: {}", first_line(expression)),
-            "reason": format!("{classification}: {reach_summary}"),
-            "suggested_test": fallback_suggested_test(classification),
+            "reason": format!("{canonical}: {reach_summary}"),
+            "suggested_test": fallback_suggested_test(canonical),
         });
         seams.push((path.clone(), line, id.to_string(), comment));
     }
@@ -1795,7 +1827,7 @@ fn write_degraded_review_comments(
     root: &str,
     error: &str,
 ) -> Result<()> {
-    match fallback_guidance_comments(repo)? {
+    match fallback_guidance_comments(repo, options)? {
         Some((comments, suppressed)) => {
             write_fallback_review_comments(repo, options, root, error, &comments, suppressed)
         }
@@ -4289,12 +4321,26 @@ paths = ["archive/["]
         fs::write(
             &raw_check,
             json!({
+                "base": "HEAD",
                 "findings": [
                     raw_check_finding("probe:b20", "reachable_unrevealed", "/abs/repo/crates/foo/src/b.rs", 20),
                     raw_check_finding("probe:a10b", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
                     raw_check_finding("probe:a10a", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
                     raw_check_finding("probe:c30", "exposed", "/abs/repo/crates/foo/src/c.rs", 30),
-                    raw_check_finding("probe:d40", "no_static_path", "/abs/repo/crates/suppressed/src/d.rs", 40)
+                    raw_check_finding("probe:d40", "no_static_path", "/abs/repo/crates/suppressed/src/d.rs", 40),
+                    // ripr 0.9.x shape: grip_class + seam.file (no probe node).
+                    {
+                        "id": "probe:e50",
+                        "grip_class": "no_static_path",
+                        "seam": {
+                            "id": "probe:e50",
+                            "family": "match_arm",
+                            "file": "/abs/repo/crates/foo/src/e.rs",
+                            "line": 50,
+                            "expression": "Self::Fallback => write!(f, \"fallback\")"
+                        },
+                        "ripr": { "reach": { "state": "no", "summary": "No static test path found" } }
+                    }
                 ]
             })
             .to_string(),
@@ -4314,7 +4360,7 @@ paths = ["archive/["]
         let packet: Value =
             serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
         assert_eq!(packet["status"], json!("incomplete"));
-        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(3)));
         assert_eq!(packet.pointer("/summary/suppressed"), Some(&json!(1)));
         assert_eq!(packet.pointer("/warnings/0/kind"), Some(&json!("tool_error")), "{packet}");
         assert_eq!(packet.pointer("/warnings/1/kind"), Some(&json!("guidance_fallback")));
@@ -4323,6 +4369,8 @@ paths = ["archive/["]
         assert_eq!(items[0]["path"], json!("crates/foo/src/a.rs"));
         assert_eq!(items[0]["line"], json!(10));
         assert_eq!(items[1]["path"], json!("crates/foo/src/b.rs"));
+        assert_eq!(items[2]["path"], json!("crates/foo/src/e.rs"));
+        assert_eq!(items[2]["line"], json!(50));
         for item in items {
             for key in ["id", "path", "seam", "reason", "suggested_test"] {
                 assert!(
