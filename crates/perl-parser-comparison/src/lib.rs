@@ -14,8 +14,14 @@
 //!     --no-default-features --features current-upstream
 //! ```
 //!
-//! Enabling both grammar features is rejected at compile time. This keeps the
-//! current and historical subjects distinct before worker-process migration.
+//! Grammar exclusivity is enforced by per-binary feature selection: every
+//! linking build (tests, bins, CI lanes) enables exactly one grammar feature,
+//! and the historical-only targets are gated with `required-features`. The
+//! workspace `--all-features` pass is check-only (no linking), so both modules
+//! may type-check together there; any attempt to *link* both grammars into one
+//! binary still fails loudly with a duplicate native symbol. The
+//! current-upstream adapter never falls back to the historical grammar
+//! regardless of feature combination.
 
 #![deny(unreachable_pub)]
 #![warn(rust_2018_idioms)]
@@ -29,11 +35,6 @@
 )]
 // Tests in this crate use assertion macros to preserve compact verdict receipts.
 #![cfg_attr(test, allow(clippy::panic))]
-
-#[cfg(all(feature = "historical", feature = "current-upstream"))]
-compile_error!(
-    "historical and current-upstream Tree-sitter Perl subjects export the same native symbol; build exactly one grammar feature per binary"
-);
 
 #[cfg(feature = "historical")]
 pub mod corpus_walker;
