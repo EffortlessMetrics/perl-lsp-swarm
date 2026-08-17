@@ -172,7 +172,6 @@ action = 'actions/upload-artifact'
 sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
 kind = 'release_tag'
 value = 'v7.0.1'
-
 [[pin]]
 action = 'actions/upload-pages-artifact'
 sha = 'fc324d3547104276b827a68afc52ff2a11cc49c9'
@@ -327,11 +326,5 @@ value = 'v2.85.13'
 [[pin]]
 action = 'SublimeText/UnitTesting/actions/setup'
 sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
-kind = 'legacy_debt'
-value = ''
-
-[[pin]]
-action = 'SublimeText/UnitTesting/actions/run-tests'
-sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
-kind = 'legacy_debt'
-value = ''
+kind = 'branch_commit'
+value = 'master (sublime-journey)'
