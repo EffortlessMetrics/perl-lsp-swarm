@@ -26,10 +26,7 @@ impl Default for InspectOptions {
         let gh_program = std::env::var_os("XTASK_WORKTREE_CLEANUP_GH_BIN")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("gh"));
-        Self {
-            git_program: PathBuf::from("git"),
-            gh_program,
-        }
+        Self { git_program: PathBuf::from("git"), gh_program }
     }
 }
 
@@ -95,12 +92,9 @@ pub fn inspect_with_options(
     )?;
     let source_head = observe_git_stdout(options, &requested_root, &["rev-parse", "HEAD"]);
 
-    let list = required_git_output(
-        options,
-        &requested_root,
-        &["worktree", "list", "--porcelain", "-z"],
-    )
-    .wrap_err("listing registered worktrees")?;
+    let list =
+        required_git_output(options, &requested_root, &["worktree", "list", "--porcelain", "-z"])
+            .wrap_err("listing registered worktrees")?;
     let raw_entries = parse_worktree_list(&list.stdout)?;
     if raw_entries.is_empty() {
         bail!("git worktree list returned no registered worktrees");
@@ -131,12 +125,7 @@ pub fn inspect_with_options(
             .then_with(|| left.entry_id.cmp(&right.entry_id))
     });
 
-    let subject = RepositorySubject {
-        requested_root,
-        repository_root,
-        common_dir,
-        source_head,
-    };
+    let subject = RepositorySubject { requested_root, repository_root, common_dir, source_head };
     let summary = PlanSummary::from_entries(&entries);
     let aggregate_classification = WorktreeCleanupPlan::aggregate(&entries);
     let plan_digest = plan_digest(&subject, &entries, &summary, aggregate_classification)?;
@@ -235,18 +224,12 @@ fn decide_entry(
 
     match observed_bool(&facts.path_exists) {
         None if facts.path_exists.state == ObservationState::NotProven => {
-            return decision(
-                WorktreeClassification::NotProven,
-                "path_existence_not_proven",
-            );
+            return decision(WorktreeClassification::NotProven, "path_existence_not_proven");
         }
         Some(false) => return missing_path_decision(facts),
         Some(true) => {}
         None => {
-            return decision(
-                WorktreeClassification::NotProven,
-                "path_existence_not_proven",
-            );
+            return decision(WorktreeClassification::NotProven, "path_existence_not_proven");
         }
     }
 
@@ -254,10 +237,7 @@ fn decide_entry(
         return decision(WorktreeClassification::Keep, "worktree_locked");
     }
     if facts.prunable_reason.is_some() {
-        return decision(
-            WorktreeClassification::Review,
-            "prunable_while_path_exists",
-        );
+        return decision(WorktreeClassification::Review, "prunable_while_path_exists");
     }
     if facts.dirty.state == ObservationState::NotProven
         || facts.untracked.state == ObservationState::NotProven
@@ -267,9 +247,7 @@ fn decide_entry(
     if observed_bool(&facts.dirty) == Some(true) || observed_bool(&facts.untracked) == Some(true) {
         let mut result = decision(WorktreeClassification::Salvage, "worktree_dirty");
         if observed_bool(&facts.untracked) == Some(true) {
-            result
-                .reason_tokens
-                .push("untracked_work_present".to_string());
+            result.reason_tokens.push("untracked_work_present".to_string());
         }
         return result;
     }
@@ -278,19 +256,13 @@ fn decide_entry(
     }
 
     if facts.open_pr.state == ObservationState::NotProven {
-        return decision(
-            WorktreeClassification::NotProven,
-            "open_pr_not_proven",
-        );
+        return decision(WorktreeClassification::NotProven, "open_pr_not_proven");
     }
     if matches!(observed_pr(&facts.open_pr), Some(PrMatch::Match { .. })) {
         return decision(WorktreeClassification::Keep, "open_pr_present");
     }
     if facts.merged_pr.state == ObservationState::NotProven {
-        return decision(
-            WorktreeClassification::NotProven,
-            "merged_pr_not_proven",
-        );
+        return decision(WorktreeClassification::NotProven, "merged_pr_not_proven");
     }
 
     if let Some(PrMatch::Match { head_oid, .. }) = observed_pr(&facts.merged_pr) {
@@ -301,29 +273,17 @@ fn decide_entry(
             (Some(_), Some(_)) => {
                 decision(WorktreeClassification::Keep, "head_moved_after_merged_pr")
             }
-            _ => decision(
-                WorktreeClassification::NotProven,
-                "merged_head_not_proven",
-            ),
+            _ => decision(WorktreeClassification::NotProven, "merged_head_not_proven"),
         };
     }
 
     if facts.unpushed_commits.state == ObservationState::NotProven {
-        return decision(
-            WorktreeClassification::NotProven,
-            "unpushed_state_not_proven",
-        );
+        return decision(WorktreeClassification::NotProven, "unpushed_state_not_proven");
     }
     match observed_bool(&facts.unpushed_commits) {
-        Some(true) => decision(
-            WorktreeClassification::Salvage,
-            "unpushed_commits_present",
-        ),
+        Some(true) => decision(WorktreeClassification::Salvage, "unpushed_commits_present"),
         Some(false) => cache_only_decision(raw_entry, facts, "pushed_clean_worktree"),
-        None => decision(
-            WorktreeClassification::NotProven,
-            "unpushed_state_not_proven",
-        ),
+        None => decision(WorktreeClassification::NotProven, "unpushed_state_not_proven"),
     }
 }
 
@@ -355,25 +315,17 @@ fn missing_path_decision(facts: &WorktreeFacts) -> Decision {
                 ],
             }
         }
-        ObservationState::NotProven | ObservationState::NotApplicable => decision(
-            WorktreeClassification::NotProven,
-            "administrative_record_not_proven",
-        ),
+        ObservationState::NotProven | ObservationState::NotApplicable => {
+            decision(WorktreeClassification::NotProven, "administrative_record_not_proven")
+        }
     }
 }
 
-fn cache_only_decision(
-    raw_entry: &RawWorktree,
-    facts: &WorktreeFacts,
-    reason: &str,
-) -> Decision {
+fn cache_only_decision(raw_entry: &RawWorktree, facts: &WorktreeFacts, reason: &str) -> Decision {
     if facts.administrative_path.state != ObservationState::Observed
         || facts.administrative_path.value.is_none()
     {
-        return decision(
-            WorktreeClassification::NotProven,
-            "administrative_record_not_proven",
-        );
+        return decision(WorktreeClassification::NotProven, "administrative_record_not_proven");
     }
 
     Decision {
@@ -410,27 +362,17 @@ fn decision(classification: WorktreeClassification, reason: &str) -> Decision {
 }
 
 fn observed_bool(observation: &Observation<bool>) -> Option<bool> {
-    if observation.state == ObservationState::Observed {
-        observation.value
-    } else {
-        None
-    }
+    if observation.state == ObservationState::Observed { observation.value } else { None }
 }
 
 fn observed_pr(observation: &Observation<PrMatch>) -> Option<&PrMatch> {
-    if observation.state == ObservationState::Observed {
-        observation.value.as_ref()
-    } else {
-        None
-    }
+    if observation.state == ObservationState::Observed { observation.value.as_ref() } else { None }
 }
 
 fn observe_path_exists(path: &Path) -> Observation<bool> {
     match fs::symlink_metadata(path) {
         Ok(_) => Observation::observed(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Observation::observed(false)
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Observation::observed(false),
         Err(error) => Observation::not_proven(format!(
             "could not inspect worktree path {}: {error}",
             path.display()
@@ -465,10 +407,7 @@ fn administrative_observation(
     }
 }
 
-fn observe_status(
-    options: &InspectOptions,
-    path: &Path,
-) -> (Observation<bool>, Observation<bool>) {
+fn observe_status(options: &InspectOptions, path: &Path) -> (Observation<bool>, Observation<bool>) {
     let output = run_read_only_git(
         options,
         path,
@@ -478,36 +417,23 @@ fn observe_status(
         Ok(output) if output.status.success() => output,
         Ok(output) => {
             let detail = command_failure_detail("git status", &output);
-            return (
-                Observation::not_proven(detail.clone()),
-                Observation::not_proven(detail),
-            );
+            return (Observation::not_proven(detail.clone()), Observation::not_proven(detail));
         }
         Err(error) => {
             let detail = format!("git status instrument failed: {error}");
-            return (
-                Observation::not_proven(detail.clone()),
-                Observation::not_proven(detail),
-            );
+            return (Observation::not_proven(detail.clone()), Observation::not_proven(detail));
         }
     };
 
     let mut dirty = false;
     let mut untracked = false;
-    for record in output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|record| !record.is_empty())
-    {
+    for record in output.stdout.split(|byte| *byte == 0).filter(|record| !record.is_empty()) {
         dirty = true;
         if record.starts_with(b"??") {
             untracked = true;
         }
     }
-    (
-        Observation::observed(dirty),
-        Observation::observed(untracked),
-    )
+    (Observation::observed(dirty), Observation::observed(untracked))
 }
 
 fn observe_pr(
@@ -624,9 +550,7 @@ fn observe_unpushed(options: &InspectOptions, path: &Path) -> UnpushedObservatio
         }
     };
 
-    let text = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     match text.parse::<u64>() {
         Ok(count) => UnpushedObservation {
             observation: Observation::observed(count > 0),
@@ -647,34 +571,20 @@ fn resolve_upstream(options: &InspectOptions, path: &Path) -> Result<Option<Stri
     let output = run_read_only_git(
         options,
         path,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{u}",
-        ],
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
     )?;
     if !output.status.success() {
         return Ok(None);
     }
-    let value = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() { Ok(None) } else { Ok(Some(value)) }
 }
 
 fn resolve_default_remote_ref(options: &InspectOptions, path: &Path) -> Result<Option<String>> {
     for candidate in ["origin/main", "origin/master"] {
         let full_ref = format!("refs/remotes/{candidate}");
-        let output = run_read_only_git(
-            options,
-            path,
-            &["rev-parse", "--verify", "--quiet", &full_ref],
-        )?;
+        let output =
+            run_read_only_git(options, path, &["rev-parse", "--verify", "--quiet", &full_ref])?;
         if output.status.success() {
             return Ok(Some(candidate.to_string()));
         }
@@ -689,10 +599,7 @@ fn scan_administrative_records(common_dir: &Path) -> AdministrativeIndex {
         Ok(read_dir) => read_dir,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return index,
         Err(error) => {
-            index.errors.push(format!(
-                "could not read {}: {error}",
-                worktrees_dir.display()
-            ));
+            index.errors.push(format!("could not read {}: {error}", worktrees_dir.display()));
             return index;
         }
     };
@@ -701,9 +608,9 @@ fn scan_administrative_records(common_dir: &Path) -> AdministrativeIndex {
     for entry in read_dir {
         match entry {
             Ok(entry) => records.push(entry.path()),
-            Err(error) => index
-                .errors
-                .push(format!("could not enumerate administrative record: {error}")),
+            Err(error) => {
+                index.errors.push(format!("could not enumerate administrative record: {error}"))
+            }
         }
     }
     records.sort_by_key(|path| normalized_path_key(path));
@@ -713,32 +620,24 @@ fn scan_administrative_records(common_dir: &Path) -> AdministrativeIndex {
         let raw = match fs::read_to_string(&gitdir_path) {
             Ok(raw) => raw,
             Err(error) => {
-                index.errors.push(format!(
-                    "could not read {}: {error}",
-                    gitdir_path.display()
-                ));
+                index.errors.push(format!("could not read {}: {error}", gitdir_path.display()));
                 continue;
             }
         };
         let value = raw.trim();
         if value.is_empty() {
-            index
-                .errors
-                .push(format!("{} was empty", gitdir_path.display()));
+            index.errors.push(format!("{} was empty", gitdir_path.display()));
             continue;
         }
         let linked_gitdir = resolve_reported_path(&record, value);
         let worktree_path = linked_gitdir.parent().map(Path::to_path_buf);
         match worktree_path {
             Some(worktree_path) => {
-                index
-                    .by_worktree_path
-                    .insert(normalized_path_key(&worktree_path), record.clone());
+                index.by_worktree_path.insert(normalized_path_key(&worktree_path), record.clone());
             }
-            None => index.errors.push(format!(
-                "{} did not identify a worktree path",
-                gitdir_path.display()
-            )),
+            None => index
+                .errors
+                .push(format!("{} did not identify a worktree path", gitdir_path.display())),
         }
     }
 
@@ -757,10 +656,7 @@ fn parse_worktree_list(raw: &[u8]) -> Result<Vec<RawWorktree>> {
         let text = str::from_utf8(field).wrap_err("worktree porcelain was not valid UTF-8")?;
         if let Some(value) = text.strip_prefix("worktree ") {
             flush_raw_entry(&mut current, &mut entries);
-            current = Some(RawWorktree {
-                path: PathBuf::from(value),
-                ..RawWorktree::default()
-            });
+            current = Some(RawWorktree { path: PathBuf::from(value), ..RawWorktree::default() });
             continue;
         }
 
@@ -770,12 +666,7 @@ fn parse_worktree_list(raw: &[u8]) -> Result<Vec<RawWorktree>> {
         if let Some(value) = text.strip_prefix("HEAD ") {
             entry.head = Some(value.to_string());
         } else if let Some(value) = text.strip_prefix("branch ") {
-            entry.branch = Some(
-                value
-                    .strip_prefix("refs/heads/")
-                    .unwrap_or(value)
-                    .to_string(),
-            );
+            entry.branch = Some(value.strip_prefix("refs/heads/").unwrap_or(value).to_string());
         } else if text == "detached" || text == "bare" {
             entry.branch = None;
         } else if let Some(value) = text.strip_prefix("locked") {
@@ -799,42 +690,25 @@ fn flush_raw_entry(current: &mut Option<RawWorktree>, entries: &mut Vec<RawWorkt
     }
 }
 
-fn required_git_stdout(
-    options: &InspectOptions,
-    cwd: &Path,
-    args: &[&str],
-) -> Result<String> {
+fn required_git_stdout(options: &InspectOptions, cwd: &Path, args: &[&str]) -> Result<String> {
     let output = required_git_output(options, cwd, args)?;
     let value = str::from_utf8(&output.stdout)
         .wrap_err_with(|| format!("git {} returned non-UTF-8 output", args.join(" ")))?;
     Ok(value.trim().to_string())
 }
 
-fn required_git_output(
-    options: &InspectOptions,
-    cwd: &Path,
-    args: &[&str],
-) -> Result<Output> {
+fn required_git_output(options: &InspectOptions, cwd: &Path, args: &[&str]) -> Result<Output> {
     let output = run_read_only_git(options, cwd, args)?;
     if !output.status.success() {
-        bail!(
-            "{}",
-            command_failure_detail(&format!("git {}", args.join(" ")), &output)
-        );
+        bail!("{}", command_failure_detail(&format!("git {}", args.join(" ")), &output));
     }
     Ok(output)
 }
 
-fn observe_git_stdout(
-    options: &InspectOptions,
-    cwd: &Path,
-    args: &[&str],
-) -> Observation<String> {
+fn observe_git_stdout(options: &InspectOptions, cwd: &Path, args: &[&str]) -> Observation<String> {
     match run_read_only_git(options, cwd, args) {
         Ok(output) if output.status.success() => {
-            let value = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string();
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if value.is_empty() {
                 Observation::not_proven(format!("git {} returned no value", args.join(" ")))
             } else {
@@ -845,23 +719,15 @@ fn observe_git_stdout(
             &format!("git {}", args.join(" ")),
             &output,
         )),
-        Err(error) => Observation::not_proven(format!(
-            "git {} instrument failed: {error}",
-            args.join(" ")
-        )),
+        Err(error) => {
+            Observation::not_proven(format!("git {} instrument failed: {error}", args.join(" ")))
+        }
     }
 }
 
-fn run_read_only_git(
-    options: &InspectOptions,
-    cwd: &Path,
-    args: &[&str],
-) -> Result<Output> {
+fn run_read_only_git(options: &InspectOptions, cwd: &Path, args: &[&str]) -> Result<Output> {
     if !is_read_only_git_command(args) {
-        bail!(
-            "refusing mutating or unknown git command in inspection: git {}",
-            args.join(" ")
-        );
+        bail!("refusing mutating or unknown git command in inspection: git {}", args.join(" "));
     }
     Command::new(&options.git_program)
         .current_dir(cwd)
@@ -955,9 +821,7 @@ fn path_starts_with(path: &Path, root: &Path) -> bool {
 }
 
 fn normalized_path_key(path: &Path) -> String {
-    normalize_lexically(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+    normalize_lexically(path).to_string_lossy().replace('\\', "/")
 }
 
 fn entry_id(
@@ -1037,9 +901,7 @@ mod tests {
     fn observed_facts() -> WorktreeFacts {
         WorktreeFacts {
             path_exists: Observation::observed(true),
-            administrative_path: Observation::observed(PathBuf::from(
-                "/repo/.git/worktrees/a",
-            )),
+            administrative_path: Observation::observed(PathBuf::from("/repo/.git/worktrees/a")),
             locked: false,
             lock_reason: None,
             prunable_reason: None,
@@ -1074,45 +936,21 @@ mod tests {
         assert_eq!(entries[1].branch.as_deref(), Some("impl/a"));
         assert!(entries[1].locked);
         assert_eq!(entries[1].lock_reason.as_deref(), Some("active writer"));
-        assert_eq!(
-            entries[1].prunable_reason.as_deref(),
-            Some("gitdir missing")
-        );
+        assert_eq!(entries[1].prunable_reason.as_deref(), Some("gitdir missing"));
         Ok(())
     }
 
     #[test]
     fn inspection_git_allowlist_rejects_mutation() {
-        assert!(is_read_only_git_command(&[
-            "worktree",
-            "list",
-            "--porcelain",
-            "-z"
-        ]));
+        assert!(is_read_only_git_command(&["worktree", "list", "--porcelain", "-z"]));
         assert!(is_read_only_git_command(&["status", "--porcelain=v1"]));
         assert!(is_read_only_git_command(&["rev-parse", "HEAD"]));
-        assert!(is_read_only_git_command(&[
-            "rev-list",
-            "--count",
-            "main..HEAD"
-        ]));
+        assert!(is_read_only_git_command(&["rev-list", "--count", "main..HEAD"]));
         assert!(!is_read_only_git_command(&["worktree", "prune"]));
-        assert!(!is_read_only_git_command(&[
-            "worktree",
-            "remove",
-            "/tmp/a"
-        ]));
+        assert!(!is_read_only_git_command(&["worktree", "remove", "/tmp/a"]));
         assert!(!is_read_only_git_command(&["branch", "-D", "impl/a"]));
-        assert!(!is_read_only_git_command(&[
-            "update-ref",
-            "-d",
-            "refs/heads/a"
-        ]));
-        assert!(!is_read_only_git_command(&[
-            "config",
-            "core.bare",
-            "false"
-        ]));
+        assert!(!is_read_only_git_command(&["update-ref", "-d", "refs/heads/a"]));
+        assert!(!is_read_only_git_command(&["config", "core.bare", "false"]));
     }
 
     #[test]
@@ -1140,12 +978,7 @@ mod tests {
 
         let cache = decide_entry(&entry, false, true, &facts);
         assert_eq!(cache.classification, WorktreeClassification::CacheOnly);
-        assert!(
-            cache
-                .proposed_action
-                .as_ref()
-                .is_some_and(|action| action.targetable)
-        );
+        assert!(cache.proposed_action.as_ref().is_some_and(|action| action.targetable));
 
         let mut unknown = facts;
         unknown.open_pr = Observation::not_proven("gh unavailable");

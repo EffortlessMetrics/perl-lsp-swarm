@@ -10,9 +10,7 @@ use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use xtask::worktree_cleanup::{
-    WorktreeActionKind, inspect as inspect_worktrees, render_human,
-};
+use xtask::worktree_cleanup::{WorktreeActionKind, inspect as inspect_worktrees, render_human};
 
 /// Inspect registered worktrees, or run the legacy explicit mutation path.
 ///
@@ -71,10 +69,7 @@ fn run_legacy_force(root: &Path) -> Result<()> {
             .stderr(Stdio::piped())
             .output()
             .wrap_err_with(|| {
-                format!(
-                    "running git worktree remove for {}",
-                    action.target.display()
-                )
+                format!("running git worktree remove for {}", action.target.display())
             })?;
         if output.status.success() {
             removed += 1;
@@ -85,19 +80,13 @@ fn run_legacy_force(root: &Path) -> Result<()> {
             eprintln!(
                 "WARNING: git refused to remove {}; keeping it{}",
                 action.target.display(),
-                if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {detail}")
-                }
+                if detail.is_empty() { String::new() } else { format!(": {detail}") }
             );
         }
     }
 
     run_prune(root, "after legacy cleanup")?;
-    println!(
-        "Legacy cleanup complete: selected={selected} removed={removed} refused={refused}"
-    );
+    println!("Legacy cleanup complete: selected={selected} removed={removed} refused={refused}");
     Ok(())
 }
 

@@ -23,27 +23,15 @@ pub struct Observation<T> {
 
 impl<T> Observation<T> {
     pub fn observed(value: T) -> Self {
-        Self {
-            state: ObservationState::Observed,
-            value: Some(value),
-            detail: None,
-        }
+        Self { state: ObservationState::Observed, value: Some(value), detail: None }
     }
 
     pub fn not_applicable(detail: impl Into<String>) -> Self {
-        Self {
-            state: ObservationState::NotApplicable,
-            value: None,
-            detail: Some(detail.into()),
-        }
+        Self { state: ObservationState::NotApplicable, value: None, detail: Some(detail.into()) }
     }
 
     pub fn not_proven(detail: impl Into<String>) -> Self {
-        Self {
-            state: ObservationState::NotProven,
-            value: None,
-            detail: Some(detail.into()),
-        }
+        Self { state: ObservationState::NotProven, value: None, detail: Some(detail.into()) }
     }
 }
 
@@ -182,11 +170,7 @@ impl PlanSummary {
                 WorktreeClassification::Review => summary.review += 1,
                 WorktreeClassification::NotProven => summary.not_proven += 1,
             }
-            if entry
-                .proposed_action
-                .as_ref()
-                .is_some_and(|action| action.targetable)
-            {
+            if entry.proposed_action.as_ref().is_some_and(|action| action.targetable) {
                 summary.targetable_actions += 1;
             }
         }

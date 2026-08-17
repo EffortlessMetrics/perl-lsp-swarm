@@ -7,8 +7,7 @@ use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 use walkdir::WalkDir;
 use xtask::worktree_cleanup::{
-    InspectOptions, WorktreeActionKind, WorktreeClassification, inspect_with_options,
-    render_human,
+    InspectOptions, WorktreeActionKind, WorktreeClassification, inspect_with_options, render_human,
 };
 
 #[derive(Debug)]
@@ -33,15 +32,9 @@ impl FixtureRepository {
     fn create() -> Result<Self> {
         let temporary = TempDir::new()?;
         let root = temporary.path().join("repo");
-        run_git(
-            temporary.path(),
-            &["init", "-b", "main", path_text(&root)?],
-        )?;
+        run_git(temporary.path(), &["init", "-b", "main", path_text(&root)?])?;
         run_git(&root, &["config", "user.name", "EffortlessSteven"])?;
-        run_git(
-            &root,
-            &["config", "user.email", "git@effortlesssteven.com"],
-        )?;
+        run_git(&root, &["config", "user.email", "git@effortlesssteven.com"])?;
         fs::write(root.join("seed.pl"), "use strict;\n")?;
         run_git(&root, &["add", "seed.pl"])?;
         run_git(&root, &["commit", "-m", "seed"])?;
@@ -58,13 +51,7 @@ impl FixtureRepository {
         fs::write(dirty_worktree.join("untracked.txt"), "preserve me\n")?;
         fs::remove_dir_all(&missing_worktree)?;
 
-        Ok(Self {
-            _temporary: temporary,
-            root,
-            dirty_worktree,
-            missing_worktree,
-            clean_worktree,
-        })
+        Ok(Self { _temporary: temporary, root, dirty_worktree, missing_worktree, clean_worktree })
     }
 
     fn snapshot(&self) -> Result<RepositorySnapshot> {
@@ -93,12 +80,7 @@ fn inspection_is_read_only_and_preserves_typed_uncertainty() -> Result<()> {
 
     let dirty = entry_for(&first, &fixture.dirty_worktree)?;
     assert_eq!(dirty.classification, WorktreeClassification::Salvage);
-    assert!(
-        dirty
-            .reason_tokens
-            .iter()
-            .any(|reason| reason == "untracked_work_present")
-    );
+    assert!(dirty.reason_tokens.iter().any(|reason| reason == "untracked_work_present"));
 
     let missing = entry_for(&first, &fixture.missing_worktree)?;
     assert_eq!(missing.classification, WorktreeClassification::Review);
@@ -109,12 +91,7 @@ fn inspection_is_read_only_and_preserves_typed_uncertainty() -> Result<()> {
 
     let clean = entry_for(&first, &fixture.clean_worktree)?;
     assert_eq!(clean.classification, WorktreeClassification::NotProven);
-    assert!(
-        clean
-            .reason_tokens
-            .iter()
-            .any(|reason| reason == "open_pr_not_proven")
-    );
+    assert!(clean.reason_tokens.iter().any(|reason| reason == "open_pr_not_proven"));
 
     let second = inspect_with_options(&fixture.root, "2026-08-16T21:00:00Z", &options)?;
     assert_eq!(first.plan_digest, second.plan_digest);
@@ -149,15 +126,11 @@ fn entry_for<'a>(
 }
 
 fn add_worktree(root: &Path, path: &Path, branch: &str) -> Result<()> {
-    run_git(
-        root,
-        &["worktree", "add", "-b", branch, path_text(path)?],
-    )
+    run_git(root, &["worktree", "add", "-b", branch, path_text(path)?])
 }
 
 fn path_text(path: &Path) -> Result<&str> {
-    path.to_str()
-        .ok_or_else(|| eyre!("fixture path was not UTF-8: {}", path.display()))
+    path.to_str().ok_or_else(|| eyre!("fixture path was not UTF-8: {}", path.display()))
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<()> {
@@ -222,19 +195,14 @@ fn snapshot_working_files(roots: &[&Path]) -> Result<BTreeMap<String, String>> {
                 .path()
                 .strip_prefix(root)
                 .map_err(|error| eyre!("working snapshot path error: {error}"))?;
-            if relative
-                .components()
-                .next()
-                .is_some_and(|component| component.as_os_str() == ".git")
+            if relative.components().next().is_some_and(|component| component.as_os_str() == ".git")
             {
                 continue;
             }
             if entry.file_type().is_file() {
                 let key = format!(
                     "{}:{}",
-                    root.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("root"),
+                    root.file_name().and_then(|name| name.to_str()).unwrap_or("root"),
                     relative.to_string_lossy().replace('\\', "/")
                 );
                 snapshot.insert(key, digest_file(entry.path())?);
