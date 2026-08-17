@@ -250,10 +250,38 @@ class SublimePerllspHostJourney(DeferrableTestCase):
         # decodes and adds the semantic regions on the UI thread afterwards,
         # so the custom-scope assertion waits for the regions like every
         # other observation in this journey.
-        yield {
-            "condition": lambda: bool(self.view.find_by_selector("variable.other.scalar.perl")),
-            "timeout": TIMEOUT_MS,
-        }
+        try:
+            yield {
+                "condition": lambda: bool(self.view.find_by_selector("variable.other.scalar.perl")),
+                "timeout": TIMEOUT_MS,
+            }
+        except Exception:
+            # Diagnostic evidence for the scope-mapping chain: what the client
+            # decoded and which scopes the view actually carries.
+            try:
+                import json as _json
+
+                tokens = []
+                for token in self.buffer.semantic_tokens:
+                    tokens.append(
+                        {
+                            "type": token.type,
+                            "modifiers": token.modifiers,
+                            "range": "{a}:{b}".format(a=token.range.begin.pt, b=token.range.end.pt),
+                        }
+                    )
+                print(
+                    "scope-diagnostic tokens=" + _json.dumps(tokens[:24]),
+                    "scope-diagnostic view-sample=" + _json.dumps(
+                        self.view.substr(sublime.Region(0, min(80, self.view.size())))
+                    ),
+                    "scope-diagnostic regions=" + _json.dumps(
+                        [k for k in self.view.regions() if "lsp" in k.lower() or "semantic" in k.lower()]
+                    ),
+                )
+            except Exception as error:  # noqa: BLE001 - diagnostics must never mask
+                print("scope-diagnostic failed: " + repr(error))
+            raise
         self.assertTrue(
             self.view.find_by_selector("variable.other.scalar.perl"),
             "custom scalar-variable semantic scope was not applied",
