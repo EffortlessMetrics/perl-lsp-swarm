@@ -26,6 +26,8 @@ pub mod config;
 pub(crate) mod configuration_authority;
 /// Parser for Perl::Critic output emitted by external lint runs.
 pub mod critic_parser;
+/// Canonical policy roles and native replacements for external Perl tooling.
+pub mod external_tools;
 /// Feature catalog parsing and generation utilities shared by build/runtime code.
 pub mod feature_catalog;
 /// Feature model, identifiers, and registry plumbing for capability gating.
