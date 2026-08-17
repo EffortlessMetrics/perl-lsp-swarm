@@ -5,8 +5,9 @@
 mod support;
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use support::contributor_topology::{
-    ObservationStatus, PublicationStage, build_projection, validate_projection,
+    ObservationStatus, Projection, PublicationStage, build_projection, validate_projection,
 };
 use support::{captured_observation, fixture_root, write_observation};
 
@@ -104,6 +105,23 @@ fn unknown_channel_fails_closed() {
 }
 
 #[test]
+fn unknown_channel_is_rejected_even_when_known_channels_are_complete() {
+    let temp = fixture_root();
+    let value = captured_observation(&[(
+        "channels",
+        json!({
+            "github_release": "NOT_PROVEN",
+            "crates_io": "NOT_PROVEN",
+            "vscode_marketplace": "NOT_PROVEN",
+            "open_vsx": "NOT_PROVEN",
+            "future_channel": "NOT_PROVEN"
+        }),
+    )]);
+    let path = write_observation(temp.path(), "unknown-complete-channel.json", &value);
+    assert!(build_projection(temp.path(), Some(&path)).is_err());
+}
+
+#[test]
 fn omitted_channels_become_explicit_not_proven() {
     let temp = fixture_root();
     let path = write_observation(temp.path(), "channels.json", &captured_observation(&[]));
@@ -124,6 +142,7 @@ fn empty_not_proven_provenance_is_rejected_by_check_validation() {
     let mut projection = build_projection(temp.path(), None).expect("build projection");
     projection.observation.source = Some(String::new());
     projection.observation.observed_at = Some(String::new());
+    refresh_digest(&mut projection);
     assert!(validate_projection(temp.path(), &projection).is_err());
 }
 
@@ -132,6 +151,7 @@ fn missing_channel_is_rejected_by_check_validation() {
     let temp = fixture_root();
     let mut projection = build_projection(temp.path(), None).expect("build projection");
     projection.observation.channels.remove("open_vsx");
+    refresh_digest(&mut projection);
     assert!(validate_projection(temp.path(), &projection).is_err());
 }
 
@@ -140,6 +160,7 @@ fn tampered_stage_is_rejected_by_check_validation() {
     let temp = fixture_root();
     let mut projection = build_projection(temp.path(), None).expect("build projection");
     projection.observation.stage = PublicationStage::DevelopmentOnly;
+    refresh_digest(&mut projection);
     assert!(validate_projection(temp.path(), &projection).is_err());
 }
 
@@ -157,4 +178,18 @@ fn proven_observation_cannot_carry_a_limitation() {
     let value = captured_observation(&[("limitation", json!("not actually proven"))]);
     let path = write_observation(temp.path(), "bad-limitation.json", &value);
     assert!(build_projection(temp.path(), Some(&path)).is_err());
+}
+
+fn refresh_digest(projection: &mut Projection) {
+    let body = json!({
+        "schema": projection.schema,
+        "static": projection.static_topology,
+        "observation": projection.observation,
+        "sources": projection.sources,
+    });
+    projection.projection_digest =
+        Sha256::digest(serde_json::to_vec(&body).expect("serialize body"))
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
 }

@@ -226,6 +226,17 @@ fn source_digest_changes_when_authority_changes() {
 }
 
 #[test]
+fn schema_change_makes_checked_projection_stale() {
+    let temp = fixture_root();
+    let projection = build_projection(temp.path(), None).expect("build projection");
+    let path = temp.path().join(RELEASE_SCHEMA);
+    let mut text = fs::read_to_string(&path).expect("read release schema");
+    text.push_str("\n");
+    fs::write(path, text).expect("write release schema mutation");
+    assert!(validate_projection(temp.path(), &projection).is_err());
+}
+
+#[test]
 fn cli_check_rejects_stale_output() {
     let temp = fixture_root();
     let output = temp.path().join("projection.json");
@@ -239,6 +250,19 @@ fn cli_check_rejects_stale_output() {
         ])
         .assert()
         .success();
+
+    Command::cargo_bin("contributor-topology")
+        .expect("find contributor-topology binary")
+        .args([
+            "--root",
+            temp.path().to_str().expect("fixture root is UTF-8"),
+            "--check",
+            "--output",
+            output.to_str().expect("output path is UTF-8"),
+        ])
+        .assert()
+        .success()
+        .stdout("contributor-topology: OK\n");
 
     let protocol = temp.path().join(PROTOCOL);
     let mut text = fs::read_to_string(&protocol).expect("read protocol");

@@ -189,7 +189,11 @@ fn complete_channels(
     mut channels: BTreeMap<String, ChannelState>,
     primary_channels: &[String],
 ) -> Result<BTreeMap<String, ChannelState>> {
-    validate_channels(&channels, primary_channels)?;
+    if let Some(unknown) =
+        channels.keys().find(|channel| !primary_channels.iter().any(|known| known == *channel))
+    {
+        bail!("unknown primary release channel {unknown:?}");
+    }
     for channel in primary_channels {
         channels.entry(channel.clone()).or_insert(ChannelState::NotProven);
     }
