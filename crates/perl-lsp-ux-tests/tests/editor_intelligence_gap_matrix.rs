@@ -121,9 +121,13 @@ fn editor_intelligence_gap_matrix_is_owned_and_discriminating() -> Result<()> {
         .as_object()
         .context("superseded_owners must be an object")?;
     for (legacy, successor) in superseded_owners {
-        let legacy = legacy.parse::<u64>().context("superseded owner key is not an issue number")?;
+        let legacy =
+            legacy.parse::<u64>().context("superseded owner key is not an issue number")?;
         let successor = successor.as_u64().context("superseded owner successor is not an issue")?;
-        anyhow::ensure!(!active_owners.contains(&legacy), "superseded owner #{legacy} is still active");
+        anyhow::ensure!(
+            !active_owners.contains(&legacy),
+            "superseded owner #{legacy} is still active"
+        );
         anyhow::ensure!(
             active_owners.contains(&successor),
             "successor #{successor} for superseded owner #{legacy} is not active"
