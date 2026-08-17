@@ -61,10 +61,18 @@ sha = '3d3c42e5aac5ba805825da76410c181273ba90b1'
 kind = 'legacy_debt'
 value = 'v7.0.0'
 
+# Verified against upstream on 2026-08-17:
+#   git ls-remote --tags https://github.com/actions/checkout v7.0.1
+#   3d3c42e5aac5ba805825da76410c181273ba90b1  refs/tags/v7.0.1
+# Promoted from legacy debt: the v7.0.1 projection is correct, so the prior
+# legacy_debt 'v7.0.1' entry is removed (the debt is resolved). The sibling
+# 'v7' and 'v7.0.0' entries for this same SHA stay legacy debt: 'v7' is a
+# floating major projection and 'v7.0.0' is a wrong projection (this commit
+# is v7.0.1), and neither was verified here.
 [[pin]]
 action = 'actions/checkout'
 sha = '3d3c42e5aac5ba805825da76410c181273ba90b1'
-kind = 'legacy_debt'
+kind = 'release_tag'
 value = 'v7.0.1'
 
 [[pin]]
