@@ -24,9 +24,7 @@ fn read_json(root: &Path, relative: &str) -> TestResult<Value> {
 }
 
 fn as_object<'a>(value: &'a Value, context: &str) -> TestResult<&'a Map<String, Value>> {
-    value
-        .as_object()
-        .ok_or_else(|| io::Error::other(format!("{context} is not an object")).into())
+    value.as_object().ok_or_else(|| io::Error::other(format!("{context} is not an object")).into())
 }
 
 fn as_array<'a>(value: &'a Value, context: &str) -> TestResult<&'a [Value]> {
@@ -37,9 +35,7 @@ fn as_array<'a>(value: &'a Value, context: &str) -> TestResult<&'a [Value]> {
 }
 
 fn as_str<'a>(value: &'a Value, context: &str) -> TestResult<&'a str> {
-    value
-        .as_str()
-        .ok_or_else(|| io::Error::other(format!("{context} is not a string")).into())
+    value.as_str().ok_or_else(|| io::Error::other(format!("{context} is not a string")).into())
 }
 
 fn manifest(root: &Path) -> TestResult<Value> {
@@ -47,9 +43,8 @@ fn manifest(root: &Path) -> TestResult<Value> {
 }
 
 fn fragments(root: &Path, train: &Value) -> TestResult<Vec<Value>> {
-    let entries = train
-        .get("fragments")
-        .ok_or_else(|| io::Error::other("manifest lacks fragments"))?;
+    let entries =
+        train.get("fragments").ok_or_else(|| io::Error::other("manifest lacks fragments"))?;
     let mut result = Vec::new();
     for entry in as_array(entries, "manifest.fragments")? {
         let filename = as_str(entry, "fragment filename")?;
@@ -61,10 +56,7 @@ fn fragments(root: &Path, train: &Value) -> TestResult<Vec<Value>> {
 fn stages(source: &[Value]) -> TestResult<Vec<&Map<String, Value>>> {
     let mut result = Vec::new();
     for fragment in source {
-        let name = fragment
-            .get("fragment")
-            .and_then(Value::as_str)
-            .unwrap_or("<unknown>");
+        let name = fragment.get("fragment").and_then(Value::as_str).unwrap_or("<unknown>");
         let entries = fragment
             .get("stages")
             .ok_or_else(|| io::Error::other(format!("{name} lacks stages")))?;
@@ -76,9 +68,7 @@ fn stages(source: &[Value]) -> TestResult<Vec<&Map<String, Value>>> {
 }
 
 fn stage_id(stage: &Map<String, Value>) -> TestResult<&str> {
-    let value = stage
-        .get("id")
-        .ok_or_else(|| io::Error::other("stage lacks id"))?;
+    let value = stage.get("id").ok_or_else(|| io::Error::other("stage lacks id"))?;
     as_str(value, "stage.id")
 }
 
@@ -93,7 +83,9 @@ fn dependencies(stage: &Map<String, Value>) -> TestResult<Vec<&str>> {
         .collect()
 }
 
-fn stage_map<'a>(all: &'a [&Map<String, Value>]) -> TestResult<BTreeMap<&'a str, &'a Map<String, Value>>> {
+fn stage_map<'a>(
+    all: &'a [&Map<String, Value>],
+) -> TestResult<BTreeMap<&'a str, &'a Map<String, Value>>> {
     let mut result = BTreeMap::new();
     for stage in all {
         let id = stage_id(stage)?;
@@ -149,9 +141,8 @@ fn assert_dependency(
     stage: &str,
     dependency: &str,
 ) -> TestResult<()> {
-    let subject = by_id
-        .get(stage)
-        .ok_or_else(|| io::Error::other(format!("missing stage `{stage}`")))?;
+    let subject =
+        by_id.get(stage).ok_or_else(|| io::Error::other(format!("missing stage `{stage}`")))?;
     assert!(
         dependencies(subject)?.contains(&dependency),
         "stage `{stage}` lost dependency `{dependency}`"
@@ -169,9 +160,7 @@ fn stable_train_excludes_live_repository_and_external_state() -> TestResult<()> 
         Some("zed_codex_implementation_train.v2")
     );
     assert_eq!(
-        train
-            .get("public_state_until_final_projection")
-            .and_then(Value::as_str),
+        train.get("public_state_until_final_projection").and_then(Value::as_str),
         Some("planned_not_proven")
     );
     reject_mutable_keys(&train, "manifest").map_err(io::Error::other)?;
@@ -187,15 +176,11 @@ fn stable_train_excludes_live_repository_and_external_state() -> TestResult<()> 
     }
 
     assert_eq!(
-        train
-            .pointer("/rules/live_github_state_forbidden")
-            .and_then(Value::as_bool),
+        train.pointer("/rules/live_github_state_forbidden").and_then(Value::as_bool),
         Some(true)
     );
     assert_eq!(
-        train
-            .pointer("/current_frontier_source/live_observation_issue")
-            .and_then(Value::as_u64),
+        train.pointer("/current_frontier_source/live_observation_issue").and_then(Value::as_u64),
         Some(10479)
     );
     assert_eq!(
@@ -222,9 +207,7 @@ fn stage_graph_is_unique_topological_and_actor_bounded() -> TestResult<()> {
         let id = stage_id(stage)?;
         assert!(index.insert(id, position).is_none(), "duplicate stage `{id}`");
         let stage_lane = as_str(
-            stage
-                .get("lane")
-                .ok_or_else(|| io::Error::other(format!("{id} lacks lane")))?,
+            stage.get("lane").ok_or_else(|| io::Error::other(format!("{id} lacks lane")))?,
             &format!("{id}.lane"),
         )?;
         lane.insert(id, stage_lane);
@@ -233,9 +216,7 @@ fn stage_graph_is_unique_topological_and_actor_bounded() -> TestResult<()> {
     for (position, stage) in all.iter().enumerate() {
         let id = stage_id(stage)?;
         let actor = as_str(
-            stage
-                .get("actor")
-                .ok_or_else(|| io::Error::other(format!("{id} lacks actor")))?,
+            stage.get("actor").ok_or_else(|| io::Error::other(format!("{id} lacks actor")))?,
             &format!("{id}.actor"),
         )?;
         let external_write = as_str(
@@ -244,26 +225,25 @@ fn stage_graph_is_unique_topological_and_actor_bounded() -> TestResult<()> {
                 .ok_or_else(|| io::Error::other(format!("{id} lacks external_write")))?,
             &format!("{id}.external_write"),
         )?;
-        let issue = stage
-            .get("issue")
-            .ok_or_else(|| io::Error::other(format!("{id} lacks issue")))?;
+        let issue =
+            stage.get("issue").ok_or_else(|| io::Error::other(format!("{id} lacks issue")))?;
         let closure = stage
             .get("closure_authority")
             .ok_or_else(|| io::Error::other(format!("{id} lacks closure_authority")))?;
 
-        match actor {
-            "maintainer" => {
-                assert!(issue.is_null(), "manual stage `{id}` must not invent an issue");
-                assert!(closure.is_null(), "manual stage `{id}` must not invent closure authority");
-                assert_eq!(external_write, "maintainer_only");
-                manual.insert(id);
-            }
-            "codex" | "read_only_acceptance" => {
-                assert!(issue.as_u64().is_some(), "stage `{id}` needs an issue");
-                assert!(closure.as_u64().is_some(), "stage `{id}` needs closure authority");
-                assert_eq!(external_write, "forbidden");
-            }
-            other => panic!("stage `{id}` has unsupported actor `{other}`"),
+        if actor == "maintainer" {
+            assert!(issue.is_null(), "manual stage `{id}` must not invent an issue");
+            assert!(closure.is_null(), "manual stage `{id}` must not invent closure authority");
+            assert_eq!(external_write, "maintainer_only");
+            manual.insert(id);
+        } else {
+            assert!(
+                matches!(actor, "codex" | "read_only_acceptance"),
+                "stage `{id}` has unsupported actor `{actor}`"
+            );
+            assert!(issue.as_u64().is_some(), "stage `{id}` needs an issue");
+            assert!(closure.as_u64().is_some(), "stage `{id}` needs closure authority");
+            assert_eq!(external_write, "forbidden");
         }
 
         for dependency in dependencies(stage)? {
@@ -334,10 +314,7 @@ fn newly_discovered_authorities_have_exact_stage_owners() -> TestResult<()> {
         ("QI01", 10485),
     ] {
         assert_eq!(
-            by_id
-                .get(id)
-                .and_then(|stage| stage.get("issue"))
-                .and_then(Value::as_u64),
+            by_id.get(id).and_then(|stage| stage.get("issue")).and_then(Value::as_u64),
             Some(issue),
             "stage `{id}` owner drifted"
         );
@@ -348,15 +325,11 @@ fn newly_discovered_authorities_have_exact_stage_owners() -> TestResult<()> {
         "programme controller 7759 must not masquerade as another PR stage"
     );
     assert_eq!(
-        train
-            .pointer("/closeout/implementation_issue")
-            .and_then(Value::as_u64),
+        train.pointer("/closeout/implementation_issue").and_then(Value::as_u64),
         Some(10400)
     );
     assert_eq!(
-        train
-            .pointer("/closeout/controller_closed_on_success")
-            .and_then(Value::as_u64),
+        train.pointer("/closeout/controller_closed_on_success").and_then(Value::as_u64),
         Some(7759)
     );
     Ok(())
@@ -453,28 +426,18 @@ fn observation_template_is_empty_and_non_evidentiary() -> TestResult<()> {
         observation.get("schema_version").and_then(Value::as_str),
         Some("zed_codex_train_observation.v2")
     );
-    assert_eq!(
-        observation.get("result").and_then(Value::as_str),
-        Some("not_run")
-    );
+    assert_eq!(observation.get("result").and_then(Value::as_str), Some("not_run"));
     assert!(observation.get("observed_at").is_some_and(Value::is_null));
     assert!(observation.pointer("/main/commit").is_some_and(Value::is_null));
     assert!(observation.pointer("/main/tree").is_some_and(Value::is_null));
-    assert!(
-        observation
-            .get("stages")
-            .and_then(Value::as_object)
-            .is_some_and(Map::is_empty)
-    );
+    assert!(observation.get("stages").and_then(Value::as_object).is_some_and(Map::is_empty));
 
     let frontier = observation
         .get("frontier")
         .and_then(Value::as_object)
         .ok_or_else(|| io::Error::other("observation lacks frontier"))?;
     assert!(
-        frontier
-            .values()
-            .all(|value| value.as_array().is_some_and(Vec::is_empty)),
+        frontier.values().all(|value| value.as_array().is_some_and(Vec::is_empty)),
         "checked observation template must not invent a current frontier"
     );
 
@@ -485,9 +448,7 @@ fn observation_template_is_empty_and_non_evidentiary() -> TestResult<()> {
         "observation.limitations",
     )?;
     assert!(limitations.iter().any(|value| {
-        value
-            .as_str()
-            .is_some_and(|text| text.contains("cannot satisfy product"))
+        value.as_str().is_some_and(|text| text.contains("cannot satisfy product"))
     }));
     Ok(())
 }
@@ -521,9 +482,6 @@ fn human_train_preserves_delivery_and_evidence_boundaries() -> TestResult<()> {
     ] {
         assert!(doc.contains(needle), "human train lacks `{needle}`");
     }
-    assert!(
-        !doc.contains("Codex may submit upstream"),
-        "human train authorizes an external write"
-    );
+    assert!(!doc.contains("Codex may submit upstream"), "human train authorizes an external write");
     Ok(())
 }
