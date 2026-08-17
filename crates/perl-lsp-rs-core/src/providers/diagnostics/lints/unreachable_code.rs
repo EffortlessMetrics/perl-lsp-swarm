@@ -82,15 +82,13 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             FlowSummary::falls_through()
         }
 
-        NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-            summarize_if(
-                condition,
-                then_branch,
-                elsif_branches,
-                else_branch.as_deref(),
-                diagnostics,
-            )
-        }
+        NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => summarize_if(
+            condition,
+            then_branch,
+            elsif_branches,
+            else_branch.as_deref(),
+            diagnostics,
+        ),
 
         // Loops are independent local scopes. Transfers inside their body or
         // continue block do not make the statement after the loop unreachable.
@@ -185,7 +183,9 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
         NodeKind::LoopControl { op, label } => summarize_loop_control(op, label),
         NodeKind::Goto { target, form } => summarize_goto(target, form),
 
-        NodeKind::ExpressionStatement { expression } => summarize_expression(expression, diagnostics),
+        NodeKind::ExpressionStatement { expression } => {
+            summarize_expression(expression, diagnostics)
+        }
         NodeKind::VariableDeclaration { initializer, .. }
         | NodeKind::VariableListDeclaration { initializer, .. } => {
             if let Some(initializer) = initializer {
@@ -208,8 +208,7 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             analyze_expression_list(args, diagnostics);
             FlowSummary::falls_through()
         }
-        NodeKind::MethodCall { object, args, .. }
-        | NodeKind::IndirectCall { object, args, .. } => {
+        NodeKind::MethodCall { object, args, .. } | NodeKind::IndirectCall { object, args, .. } => {
             let _ = summarize_expression(object, diagnostics);
             analyze_expression_list(args, diagnostics);
             // Method/function spelling alone is not non-returning authority.
@@ -223,7 +222,7 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
 fn summarize_if(
     condition: &Node,
     then_branch: &Node,
-    elsif_branches: &[(Node, Node)],
+    elsif_branches: &[(Box<Node>, Box<Node>)],
     else_branch: Option<&Node>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> FlowSummary {
@@ -246,7 +245,7 @@ fn summarize_if(
 fn summarize_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) -> FlowSummary {
     let mut can_fall_through = true;
     let mut terminal_summary = FlowSummary::falls_through();
-    let mut pending_goto_labels = Vec::new();
+    let mut pending_goto_labels: Vec<String> = Vec::new();
 
     for stmt in stmts {
         if !can_fall_through {
@@ -257,7 +256,6 @@ fn summarize_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) -
             if restores_fallthrough {
                 can_fall_through = true;
                 pending_goto_labels.clear();
-                terminal_summary = FlowSummary::falls_through();
             } else {
                 emit_unreachable(stmt, diagnostics);
                 // Nested callables and blocks still deserve their own local
@@ -287,8 +285,7 @@ fn summarize_expression(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowS
             analyze_expression_list(args, diagnostics);
             FlowSummary::falls_through()
         }
-        NodeKind::MethodCall { object, args, .. }
-        | NodeKind::IndirectCall { object, args, .. } => {
+        NodeKind::MethodCall { object, args, .. } | NodeKind::IndirectCall { object, args, .. } => {
             let _ = summarize_expression(object, diagnostics);
             analyze_expression_list(args, diagnostics);
             FlowSummary::falls_through()
@@ -426,10 +423,7 @@ mod tests {
     }
 
     fn count_pl406(diags: &[Diagnostic]) -> usize {
-        diags
-            .iter()
-            .filter(|diagnostic| diagnostic.code.as_deref() == Some("PL406"))
-            .count()
+        diags.iter().filter(|diagnostic| diagnostic.code.as_deref() == Some("PL406")).count()
     }
 
     #[test]
@@ -449,7 +443,11 @@ mod tests {
         let diags = unreachable_diags(
             r#"sub f { if ($x) { return 1; } else { die "stop"; } print "dead"; }"#,
         );
-        assert_eq!(count_pl406(&diags), 1, "complete transferring branches should close fallthrough: {diags:?}");
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "complete transferring branches should close fallthrough: {diags:?}"
+        );
     }
 
     #[test]
@@ -457,13 +455,19 @@ mod tests {
         let diags = unreachable_diags(
             r#"sub f { if ($x) { return 1; } else { print "live"; } print "also live"; }"#,
         );
-        assert!(!has_pl406(&diags), "one fallthrough branch must keep the parent reachable: {diags:?}");
+        assert!(
+            !has_pl406(&diags),
+            "one fallthrough branch must keep the parent reachable: {diags:?}"
+        );
     }
 
     #[test]
     fn conditional_without_else_keeps_following_sibling_reachable() {
         let diags = unreachable_diags("sub f { if ($x) { return 1; } print 'live'; }");
-        assert!(!has_pl406(&diags), "a missing else leaves an uncovered fallthrough path: {diags:?}");
+        assert!(
+            !has_pl406(&diags),
+            "a missing else leaves an uncovered fallthrough path: {diags:?}"
+        );
     }
 
     #[test]
@@ -508,7 +512,10 @@ mod tests {
             "sub f { CORE::exit(0); print 'dead'; }",
         ] {
             let diags = unreachable_diags(source);
-            assert!(has_pl406(&diags), "exact process transfer should close fallthrough: {diags:?}");
+            assert!(
+                has_pl406(&diags),
+                "exact process transfer should close fallthrough: {diags:?}"
+            );
         }
     }
 
@@ -528,7 +535,10 @@ mod tests {
     #[test]
     fn binary_short_circuit_does_not_promote_child_transfer() {
         let diags = unreachable_diags(r#"exec("perl", "-e", "1") or die; my $x = 1;"#);
-        assert!(!has_pl406(&diags), "binary expression keeps a conservative fallthrough path: {diags:?}");
+        assert!(
+            !has_pl406(&diags),
+            "binary expression keeps a conservative fallthrough path: {diags:?}"
+        );
     }
 
     #[test]
@@ -539,7 +549,10 @@ mod tests {
             "while ($ready) { redo; print $ready; }",
         ] {
             let diags = unreachable_diags(source);
-            assert!(has_pl406(&diags), "unconditional loop control closes local fallthrough: {diags:?}");
+            assert!(
+                has_pl406(&diags),
+                "unconditional loop control closes local fallthrough: {diags:?}"
+            );
         }
     }
 
@@ -551,7 +564,10 @@ mod tests {
             "while ($ready) { work(); } continue { redo; print $ready; }",
         ] {
             let diags = unreachable_diags(source);
-            assert!(has_pl406(&diags), "continue-block loop control closes sibling fallthrough: {diags:?}");
+            assert!(
+                has_pl406(&diags),
+                "continue-block loop control closes sibling fallthrough: {diags:?}"
+            );
         }
     }
 
@@ -575,20 +591,31 @@ mod tests {
             "while ($ready) { last; } print 'after';",
         ] {
             let diags = unreachable_diags(source);
-            assert!(!has_pl406(&diags), "loop transfer remains inside the loop statement: {diags:?}");
+            assert!(
+                !has_pl406(&diags),
+                "loop transfer remains inside the loop statement: {diags:?}"
+            );
         }
     }
 
     #[test]
     fn goto_forward_label_restores_reachability() {
         let diags = unreachable_diags("goto DONE; print 'dead'; DONE: print 'alive';");
-        assert_eq!(count_pl406(&diags), 1, "only code before the target label is unreachable: {diags:?}");
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "only code before the target label is unreachable: {diags:?}"
+        );
     }
 
     #[test]
     fn dynamic_goto_does_not_fall_through() {
         let diags = unreachable_diags("goto $target; print 'dead';");
-        assert_eq!(count_pl406(&diags), 1, "dynamic goto transfers without sibling fallthrough: {diags:?}");
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "dynamic goto transfers without sibling fallthrough: {diags:?}"
+        );
     }
 
     #[test]
@@ -600,9 +627,8 @@ mod tests {
     #[test]
     fn pl406_keeps_canonical_tag_and_suggestion() {
         let diags = unreachable_diags("sub f { return; my $x = 1; }");
-        let diagnostic = must_some(
-            diags.iter().find(|diagnostic| diagnostic.code.as_deref() == Some("PL406")),
-        );
+        let diagnostic =
+            must_some(diags.iter().find(|diagnostic| diagnostic.code.as_deref() == Some("PL406")));
         assert!(diagnostic.tags.contains(&DiagnosticTag::Unnecessary));
         assert!(diagnostic.suggestion.is_some());
     }

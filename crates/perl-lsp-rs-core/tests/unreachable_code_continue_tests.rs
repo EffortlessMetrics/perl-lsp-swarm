@@ -17,10 +17,7 @@ fn diagnostics(source: &str) -> Result<Vec<Diagnostic>, Box<dyn std::error::Erro
 }
 
 fn count_pl406(diagnostics: &[Diagnostic]) -> usize {
-    diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code.as_deref() == Some("PL406"))
-        .count()
+    diagnostics.iter().filter(|diagnostic| diagnostic.code.as_deref() == Some("PL406")).count()
 }
 
 fn assert_pl406_count(
@@ -37,30 +34,15 @@ fn assert_pl406_count(
 fn exact_transfers_in_continue_blocks_close_sibling_fallthrough()
 -> Result<(), Box<dyn std::error::Error>> {
     for (source, context) in [
-        (
-            r#"while (1) { work(); } continue { die "err"; print "dead"; }"#,
-            "die in continue",
-        ),
-        (
-            r#"while (1) { work(); } continue { exit 0; print "dead"; }"#,
-            "exit in continue",
-        ),
+        (r#"while (1) { work(); } continue { die "err"; print "dead"; }"#, "die in continue"),
+        (r#"while (1) { work(); } continue { exit 0; print "dead"; }"#, "exit in continue"),
         (
             r#"sub f { while (1) { work(); } continue { return; print "dead"; } }"#,
             "return in continue",
         ),
-        (
-            r#"while (1) { work(); } continue { last; print "dead"; }"#,
-            "last in continue",
-        ),
-        (
-            r#"while (1) { work(); } continue { next; print "dead"; }"#,
-            "next in continue",
-        ),
-        (
-            r#"while (1) { work(); } continue { redo; print "dead"; }"#,
-            "redo in continue",
-        ),
+        (r#"while (1) { work(); } continue { last; print "dead"; }"#, "last in continue"),
+        (r#"while (1) { work(); } continue { next; print "dead"; }"#, "next in continue"),
+        (r#"while (1) { work(); } continue { redo; print "dead"; }"#, "redo in continue"),
     ] {
         assert_pl406_count(source, 1, context)?;
     }
@@ -89,10 +71,7 @@ fn for_and_foreach_continue_blocks_use_the_same_local_flow_contract()
 fn call_spelling_alone_does_not_close_continue_fallthrough()
 -> Result<(), Box<dyn std::error::Error>> {
     for (source, context) in [
-        (
-            r#"while (1) { work(); } continue { croak "err"; print "reachable"; }"#,
-            "croak spelling",
-        ),
+        (r#"while (1) { work(); } continue { croak "err"; print "reachable"; }"#, "croak spelling"),
         (
             r#"while (1) { work(); } continue { Carp::confess "err"; print "reachable"; }"#,
             "qualified confess spelling",
@@ -126,8 +105,7 @@ fn ordinary_loop_body_detection_remains_local() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn conditional_loop_controls_keep_a_fallthrough_path()
--> Result<(), Box<dyn std::error::Error>> {
+fn conditional_loop_controls_keep_a_fallthrough_path() -> Result<(), Box<dyn std::error::Error>> {
     for (source, context) in [
         (
             r#"while (1) { work(); } continue { next if $skip; print "reachable"; }"#,
@@ -148,8 +126,7 @@ fn conditional_loop_controls_keep_a_fallthrough_path()
 }
 
 #[test]
-fn loop_transfer_does_not_poison_code_after_the_loop()
--> Result<(), Box<dyn std::error::Error>> {
+fn loop_transfer_does_not_poison_code_after_the_loop() -> Result<(), Box<dyn std::error::Error>> {
     for (source, context) in [
         (r#"while ($ready) { next; } print "after";"#, "next loop exit"),
         (r#"while ($ready) { redo; } print "after";"#, "redo loop exit"),
@@ -164,17 +141,9 @@ fn loop_transfer_does_not_poison_code_after_the_loop()
 fn goto_forms_transfer_without_falling_through() -> Result<(), Box<dyn std::error::Error>> {
     for (source, expected, context) in [
         (r#"goto DONE; print "dead";"#, 1, "unresolved forward label"),
-        (
-            r#"goto DONE; print "dead"; DONE: print "alive";"#,
-            1,
-            "resolved forward label",
-        ),
+        (r#"goto DONE; print "dead"; DONE: print "alive";"#, 1, "resolved forward label"),
         (r#"goto &handler; print "dead";"#, 1, "goto sub"),
-        (
-            r#"while (1) { } continue { goto &handler; print "dead"; }"#,
-            1,
-            "goto sub in continue",
-        ),
+        (r#"while (1) { } continue { goto &handler; print "dead"; }"#, 1, "goto sub in continue"),
         (
             r#"while (1) { } continue { goto DONE; print "dead"; DONE: print "alive"; }"#,
             1,
