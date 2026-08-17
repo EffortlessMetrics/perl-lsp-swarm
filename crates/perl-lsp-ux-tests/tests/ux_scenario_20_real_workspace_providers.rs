@@ -114,14 +114,8 @@ enum Scenario20Role {
 }
 
 const CASE_DISPOSITIONS: &[(&str, Scenario20Role)] = &[
-    (
-        "scenario_20_fixture_exists_on_disk",
-        Scenario20Role::InfrastructureControl,
-    ),
-    (
-        "scenario_20_completion_items_valid_shape_in_base_pm",
-        Scenario20Role::InfrastructureControl,
-    ),
+    ("scenario_20_fixture_exists_on_disk", Scenario20Role::InfrastructureControl),
+    ("scenario_20_completion_items_valid_shape_in_base_pm", Scenario20Role::InfrastructureControl),
     (
         "scenario_20_completion_module_prefix_surfaces_real_baseline_app_hard_assert",
         Scenario20Role::RequiredKnownAnswer,
@@ -150,26 +144,11 @@ const CASE_DISPOSITIONS: &[(&str, Scenario20Role)] = &[
         "scenario_20_goto_definition_typeglob_alias_dynamic_boundary",
         Scenario20Role::ExpectedBoundary,
     ),
-    (
-        "scenario_20_hover_sub_shared_in_base_pm_hard_assert",
-        Scenario20Role::RequiredKnownAnswer,
-    ),
-    (
-        "scenario_20_hover_module_import_in_app_pm_hard_assert",
-        Scenario20Role::RequiredKnownAnswer,
-    ),
-    (
-        "scenario_20_hover_inherited_method_call_hard_assert",
-        Scenario20Role::RequiredKnownAnswer,
-    ),
-    (
-        "scenario_20_hover_sub_helper_valid_shape_hard_assert",
-        Scenario20Role::RequiredKnownAnswer,
-    ),
-    (
-        "scenario_20_diagnostics_no_false_pl701_hard_assert",
-        Scenario20Role::RequiredKnownAnswer,
-    ),
+    ("scenario_20_hover_sub_shared_in_base_pm_hard_assert", Scenario20Role::RequiredKnownAnswer),
+    ("scenario_20_hover_module_import_in_app_pm_hard_assert", Scenario20Role::RequiredKnownAnswer),
+    ("scenario_20_hover_inherited_method_call_hard_assert", Scenario20Role::RequiredKnownAnswer),
+    ("scenario_20_hover_sub_helper_valid_shape_hard_assert", Scenario20Role::RequiredKnownAnswer),
+    ("scenario_20_diagnostics_no_false_pl701_hard_assert", Scenario20Role::RequiredKnownAnswer),
     (
         "scenario_20_diagnostics_missing_module_fires_pl701_hard_assert",
         Scenario20Role::RequiredKnownAnswer,
@@ -402,9 +381,7 @@ fn diagnostic_code(diag: &Value) -> Option<String> {
 }
 
 fn has_pl701(diags: &[Value]) -> bool {
-    diags.iter().any(|diag| {
-        matches!(diagnostic_code(diag).as_deref(), Some("PL701") | Some("701"))
-    })
+    diags.iter().any(|diag| matches!(diagnostic_code(diag).as_deref(), Some("PL701") | Some("701")))
 }
 
 fn validate_diagnostics(diags: &[Value]) -> anyhow::Result<()> {
@@ -501,8 +478,9 @@ fn scenario_20_fixture_exists_on_disk() {
         ("script/real-baseline.pl", SCRIPT_PL),
     ] {
         let path = root.join(relative);
-        let actual = fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("fixture file must be readable at {}: {error}", path.display()));
+        let actual = fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("fixture file must be readable at {}: {error}", path.display())
+        });
         assert_eq!(
             actual.replace("\r\n", "\n"),
             expected,
@@ -550,13 +528,10 @@ fn scenario_20_completion_module_prefix_surfaces_real_baseline_app_hard_assert()
 
     let harness = create_harness()?;
     harness.open_file("script/real-baseline.pl", SCRIPT_PL)?;
-    let labels = completion_labels_with_retry(
-        &harness,
-        "script/real-baseline.pl",
-        3,
-        18,
-        |label| label == "App" || label.contains("RealBaseline::App"),
-    )?;
+    let labels =
+        completion_labels_with_retry(&harness, "script/real-baseline.pl", 3, 18, |label| {
+            label == "App" || label.contains("RealBaseline::App")
+        })?;
 
     assert!(
         labels.iter().any(|label| label == "App" || label.contains("RealBaseline::App")),
@@ -576,13 +551,10 @@ fn scenario_20_completion_imported_symbol_helper_hard_assert() -> anyhow::Result
     let harness = create_harness()?;
     harness.open_file("lib/RealBaseline/App.pm", APP_PM)?;
     harness.open_file("lib/RealBaseline/Util.pm", UTIL_PM)?;
-    let labels = completion_labels_with_retry(
-        &harness,
-        "lib/RealBaseline/App.pm",
-        13,
-        7,
-        |label| label.contains("helper"),
-    )?;
+    let labels =
+        completion_labels_with_retry(&harness, "lib/RealBaseline/App.pm", 13, 7, |label| {
+            label.contains("helper")
+        })?;
 
     assert!(
         labels.iter().any(|label| label.contains("helper")),
@@ -593,8 +565,8 @@ fn scenario_20_completion_imported_symbol_helper_hard_assert() -> anyhow::Result
 }
 
 #[test]
-fn scenario_20_goto_definition_parent_class_resolves_to_base_pm_hard_assert()
--> anyhow::Result<()> {
+fn scenario_20_goto_definition_parent_class_resolves_to_base_pm_hard_assert() -> anyhow::Result<()>
+{
     if !binary_available() {
         eprintln!("SKIP scenario_20: perl-lsp binary not found");
         return Ok(());
@@ -623,8 +595,7 @@ fn scenario_20_goto_definition_parent_class_resolves_to_base_pm_hard_assert()
 }
 
 #[test]
-fn scenario_20_goto_definition_inherited_method_shared_base_pm_hard_assert()
--> anyhow::Result<()> {
+fn scenario_20_goto_definition_inherited_method_shared_base_pm_hard_assert() -> anyhow::Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_20: perl-lsp binary not found");
         return Ok(());
@@ -653,8 +624,7 @@ fn scenario_20_goto_definition_inherited_method_shared_base_pm_hard_assert()
 }
 
 #[test]
-fn scenario_20_goto_definition_imported_helper_to_util_pm_hard_assert()
--> anyhow::Result<()> {
+fn scenario_20_goto_definition_imported_helper_to_util_pm_hard_assert() -> anyhow::Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_20: perl-lsp binary not found");
         return Ok(());
@@ -720,13 +690,8 @@ fn scenario_20_goto_definition_typeglob_alias_dynamic_boundary() -> anyhow::Resu
 
     let harness = create_harness()?;
     harness.open_file("lib/RealBaseline/Util.pm", UTIL_PM)?;
-    let definitions = harness.definition_with_retry(
-        "lib/RealBaseline/Util.pm",
-        11,
-        1,
-        3,
-        SETTLEMENT_DELAY,
-    )?;
+    let definitions =
+        harness.definition_with_retry("lib/RealBaseline/Util.pm", 11, 1, 3, SETTLEMENT_DELAY)?;
 
     let expected_uri = harness.workspace.uri("lib/RealBaseline/Util.pm");
     let expected_path = harness.workspace.path("lib/RealBaseline/Util.pm");
@@ -757,13 +722,9 @@ fn scenario_20_hover_sub_shared_in_base_pm_hard_assert() -> anyhow::Result<()> {
 
     let harness = create_harness()?;
     harness.open_file("lib/RealBaseline/Base.pm", BASE_PM)?;
-    let hover = hover_with_retry(
-        &harness,
-        "lib/RealBaseline/Base.pm",
-        4,
-        4,
-        |text| text.contains("shared"),
-    )?;
+    let hover = hover_with_retry(&harness, "lib/RealBaseline/Base.pm", 4, 4, |text| {
+        text.contains("shared")
+    })?;
 
     assert!(hover_text(&hover)?.contains("shared"));
     harness.assert_no_crash();
@@ -780,13 +741,9 @@ fn scenario_20_hover_module_import_in_app_pm_hard_assert() -> anyhow::Result<()>
     let harness = create_harness()?;
     harness.open_file("lib/RealBaseline/App.pm", APP_PM)?;
     harness.open_file("lib/RealBaseline/Util.pm", UTIL_PM)?;
-    let hover = hover_with_retry(
-        &harness,
-        "lib/RealBaseline/App.pm",
-        4,
-        4,
-        |text| text.contains("RealBaseline::Util") || text.contains("Util"),
-    )?;
+    let hover = hover_with_retry(&harness, "lib/RealBaseline/App.pm", 4, 4, |text| {
+        text.contains("RealBaseline::Util") || text.contains("Util")
+    })?;
 
     let text = hover_text(&hover)?;
     assert!(text.contains("RealBaseline::Util") || text.contains("Util"));
@@ -804,13 +761,9 @@ fn scenario_20_hover_inherited_method_call_hard_assert() -> anyhow::Result<()> {
     let harness = create_harness()?;
     harness.open_file("lib/RealBaseline/App.pm", APP_PM)?;
     harness.open_file("lib/RealBaseline/Base.pm", BASE_PM)?;
-    let hover = hover_with_retry(
-        &harness,
-        "lib/RealBaseline/App.pm",
-        15,
-        18,
-        |text| text.contains("shared") || text.contains("Base"),
-    )?;
+    let hover = hover_with_retry(&harness, "lib/RealBaseline/App.pm", 15, 18, |text| {
+        text.contains("shared") || text.contains("Base")
+    })?;
 
     let text = hover_text(&hover)?;
     assert!(text.contains("shared") || text.contains("Base"));
@@ -827,13 +780,9 @@ fn scenario_20_hover_sub_helper_valid_shape_hard_assert() -> anyhow::Result<()> 
 
     let harness = create_harness()?;
     harness.open_file("lib/RealBaseline/Util.pm", UTIL_PM)?;
-    let hover = hover_with_retry(
-        &harness,
-        "lib/RealBaseline/Util.pm",
-        7,
-        4,
-        |text| text.contains("helper"),
-    )?;
+    let hover = hover_with_retry(&harness, "lib/RealBaseline/Util.pm", 7, 4, |text| {
+        text.contains("helper")
+    })?;
 
     assert!(hover_text(&hover)?.contains("helper"));
     harness.assert_no_crash();
@@ -886,8 +835,7 @@ fn scenario_20_diagnostics_missing_module_fires_pl701_hard_assert() -> anyhow::R
 }
 
 #[test]
-fn scenario_20_diagnostics_typeglob_alias_no_false_positive_hard_assert()
--> anyhow::Result<()> {
+fn scenario_20_diagnostics_typeglob_alias_no_false_positive_hard_assert() -> anyhow::Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_20: perl-lsp binary not found");
         return Ok(());
@@ -915,8 +863,7 @@ fn scenario_20_diagnostics_typeglob_alias_no_false_positive_hard_assert()
 }
 
 #[test]
-fn scenario_20_diagnostics_notification_received_for_all_files_hard_assert()
--> anyhow::Result<()> {
+fn scenario_20_diagnostics_notification_received_for_all_files_hard_assert() -> anyhow::Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_20: perl-lsp binary not found");
         return Ok(());
