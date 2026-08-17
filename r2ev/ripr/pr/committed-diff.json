@@ -1,0 +1,72 @@
+{
+  "base": "origin/main",
+  "base_sha": "e144ebd36794845290e1663c057b3a6bc4b1d6a9",
+  "changed_paths": [
+    ".changes/unreleased/product-7782-Fixed-095500.yaml",
+    "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs",
+    "crates/perl-lsp-rs/tests/lsp_cap_snap.rs",
+    "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+    "crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_full_client.snap",
+    "crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_minimal_client.snap",
+    "crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__workspace_file_operation_filters.snap",
+    "crates/perllsp/tests/lsp_capability_negotiation_process.rs",
+    "crates/perllsp/tests/sublime_lsp_2_13_profile_contract.rs",
+    "policy/non-rust-allowlist.toml"
+  ],
+  "diff_digest": "d447bf0465160041ae338eda71e9d2f6993c9774e3255fecc9583ec5b8d1f263",
+  "entries": [
+    {
+      "new_path": ".changes/unreleased/product-7782-Fixed-095500.yaml",
+      "old_path": null,
+      "status": "A"
+    },
+    {
+      "new_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs",
+      "old_path": "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs",
+      "status": "M"
+    },
+    {
+      "new_path": "crates/perl-lsp-rs/tests/lsp_cap_snap.rs",
+      "old_path": "crates/perl-lsp-rs/tests/lsp_cap_snap.rs",
+      "status": "M"
+    },
+    {
+      "new_path": "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+      "old_path": "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+      "status": "M"
+    },
+    {
+      "new_path": "crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_full_client.snap",
+      "old_path": "crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_full_client.snap",
+      "status": "M"
+    },
+    {
+      "new_path": "crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_minimal_client.snap",
+      "old_path": "crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_minimal_client.snap",
+      "status": "M"
+    },
+    {
+      "new_path": "crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__workspace_file_operation_filters.snap",
+      "old_path": "crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__workspace_file_operation_filters.snap",
+      "status": "M"
+    },
+    {
+      "new_path": "crates/perllsp/tests/lsp_capability_negotiation_process.rs",
+      "old_path": "crates/perllsp/tests/lsp_capability_negotiation_process.rs",
+      "status": "M"
+    },
+    {
+      "new_path": "crates/perllsp/tests/sublime_lsp_2_13_profile_contract.rs",
+      "old_path": null,
+      "status": "A"
+    },
+    {
+      "new_path": "policy/non-rust-allowlist.toml",
+      "old_path": "policy/non-rust-allowlist.toml",
+      "status": "M"
+    }
+  ],
+  "head": "HEAD",
+  "head_sha": "a5637d68632607d1ef18cf9e533a2591e648031b",
+  "schema_version": "ripr_committed_diff.v1"
+}

@@ -1,0 +1,772 @@
+diff --git a/.changes/unreleased/product-7782-Fixed-095500.yaml b/.changes/unreleased/product-7782-Fixed-095500.yaml
+new file mode 100644
+index 000000000..a5ef76552
+--- /dev/null
++++ b/.changes/unreleased/product-7782-Fixed-095500.yaml
+@@ -0,0 +1,12 @@
++project: product
++component: Compatibility
++kind: Fixed
++body: >-
++  Negotiate Sublime Text file-operation and inline-completion capabilities from
++  the client's declared LSP 2.13 surface instead of advertising unsupported
++  operations.
++time: 2026-08-13T09:55:00Z
++custom:
++  PR: "7782"
++  Slug: sublime-capability-profile
++  Breaking: "no"
+diff --git a/crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs b/crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs
+index 2f740584a..3d1bf6398 100644
+--- a/crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs
++++ b/crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs
+@@ -40,30 +40,78 @@ impl TextDocumentSyncOptions {
+     }
+ }
+ 
+-/// Build the workspace capabilities with file operation filters for Perl
+-/// extensions (#4995).
+-fn workspace_capabilities(workspace_folders_support: bool) -> Value {
++/// File-operation requests the client explicitly declared it can send.
++///
++/// LSP file-operation support is negotiated per operation. A server that
++/// advertises an operation the client omitted creates a false capability
++/// surface even when the client never happens to invoke it.
++#[derive(Debug, Clone, Copy, Default)]
++struct FileOperationSupport {
++    will_create: bool,
++    did_create: bool,
++    will_rename: bool,
++    did_rename: bool,
++    will_delete: bool,
++    did_delete: bool,
++}
++
++impl FileOperationSupport {
++    fn from_initialize_params(params: Option<&Value>) -> Self {
++        let supported = |path: &str| {
++            params.and_then(|params| params.pointer(path)).and_then(Value::as_bool).unwrap_or(false)
++        };
++
++        Self {
++            will_create: supported("/capabilities/workspace/fileOperations/willCreate"),
++            did_create: supported("/capabilities/workspace/fileOperations/didCreate"),
++            will_rename: supported("/capabilities/workspace/fileOperations/willRename"),
++            did_rename: supported("/capabilities/workspace/fileOperations/didRename"),
++            will_delete: supported("/capabilities/workspace/fileOperations/willDelete"),
++            did_delete: supported("/capabilities/workspace/fileOperations/didDelete"),
++        }
++    }
++
++    fn insert_capabilities(self, target: &mut serde_json::Map<String, Value>, filters: &[Value]) {
++        for (name, supported) in [
++            ("willCreate", self.will_create),
++            ("didCreate", self.did_create),
++            ("willRename", self.will_rename),
++            ("didRename", self.did_rename),
++            ("willDelete", self.will_delete),
++            ("didDelete", self.did_delete),
++        ] {
++            if supported {
++                target.insert(name.to_string(), json!({ "filters": filters }));
++            }
++        }
++    }
++}
++
++/// Build workspace capabilities, intersecting file operations with the exact
++/// operations the client declared during initialize.
++fn workspace_capabilities(
++    workspace_folders_support: bool,
++    file_operations: FileOperationSupport,
++) -> Value {
+     let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
+     let filters: Vec<Value> =
+         perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
++    let mut file_operation_capabilities = serde_json::Map::new();
++    file_operations.insert_capabilities(&mut file_operation_capabilities, &filters);
+ 
+-    json!({
++    let mut workspace = json!({
+         "workspaceFolders": {
+             "supported": workspace_folders_support,
+             "changeNotifications": true
+         },
+-        "fileOperations": {
+-            "willCreate": { "filters": filters.clone() },
+-            "didCreate": { "filters": filters.clone() },
+-            "willRename": { "filters": filters.clone() },
+-            "didRename": { "filters": filters.clone() },
+-            "willDelete": { "filters": filters.clone() },
+-            "didDelete": { "filters": filters }
+-        },
+         "textDocumentContent": {
+             "schemes": ["perldoc"]
+         }
+-    })
++    });
++    if !file_operation_capabilities.is_empty() {
++        workspace["fileOperations"] = Value::Object(file_operation_capabilities);
++    }
++    workspace
+ }
+ 
+ /// The LSP protocol version this server implements.
+@@ -734,18 +782,27 @@ impl LspServer {
+         // dynamic registration for the same selector.
+         let mut capabilities =
+             crate::protocol::capabilities::capabilities_json(build_flags.clone());
+-        let inline_completion_dynamic_registration_support =
+-            self.client_capabilities.lock().inline_completion_dynamic_registration_support;
++        let (inline_completion_support, inline_completion_dynamic_registration_support) = {
++            let client_capabilities = self.client_capabilities.lock();
++            (
++                client_capabilities.inline_completion_support,
++                client_capabilities.inline_completion_dynamic_registration_support,
++            )
++        };
+ 
+-        match (features.inline_completion, inline_completion_dynamic_registration_support) {
++        match (
++            features.inline_completion,
++            inline_completion_support,
++            inline_completion_dynamic_registration_support,
++        ) {
+             // LSP 3.18 dynamic registration is an alternate registration mode,
+             // not an addition to static registration for the same selector.
+-            (true, true) => {
++            (true, true, true) => {
+                 if let Some(capabilities) = capabilities.as_object_mut() {
+                     capabilities.remove("inlineCompletionProvider");
+                 }
+             }
+-            (true, false) => {
++            (true, true, false) => {
+                 if let Some(capabilities) = capabilities.as_object_mut() {
+                     capabilities.insert(
+                         "inlineCompletionProvider".to_string(),
+@@ -753,7 +810,7 @@ impl LspServer {
+                     );
+                 }
+             }
+-            (false, _) => {
++            _ => {
+                 if let Some(capabilities) = capabilities.as_object_mut() {
+                     capabilities.remove("inlineCompletionProvider");
+                 }
+@@ -796,12 +853,16 @@ impl LspServer {
+             serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
+                 .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
+ 
+-        // Workspace capabilities: typed helper for file operations (#4995)
++        // Workspace capabilities: intersect client-dependent file-operation
++        // participation with the exact initialize declaration (#7682).
+         let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;
+-        capabilities["workspace"] = workspace_capabilities(workspace_folders_support);
++        let file_operations = FileOperationSupport::from_initialize_params(params.as_ref());
++        capabilities["workspace"] =
++            workspace_capabilities(workspace_folders_support, file_operations);
+ 
+-        // Advertise experimental custom requests
+-        if features.inline_completion {
++        // Advertise experimental custom requests only to clients that declared
++        // the corresponding standard inline-completion capability.
++        if features.inline_completion && inline_completion_support {
+             merge_experimental_capability(
+                 &mut capabilities,
+                 "perlInlineCompletionStream",
+diff --git a/crates/perl-lsp-rs/tests/lsp_cap_snap.rs b/crates/perl-lsp-rs/tests/lsp_cap_snap.rs
+index 98a90f39e..8cf0aa8b4 100644
+--- a/crates/perl-lsp-rs/tests/lsp_cap_snap.rs
++++ b/crates/perl-lsp-rs/tests/lsp_cap_snap.rs
+@@ -17,8 +17,9 @@ use support::lsp_harness::LspHarness;
+ // Capability profile: minimal client (no optional features declared)
+ //
+ // Most returned capabilities are driven by build flags and the active feature
+-// profile. Inline completion is static for this minimal client and dynamically
+-// registered for the full client fixture below.
++// profile. This fixture declares no client capabilities at all, so per #7682 the
++// server advertises neither inline completion nor any workspace.fileOperations:
++// both are negotiated from the client's declaration.
+ // ---------------------------------------------------------------------------
+ 
+ #[test]
+diff --git a/crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs b/crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs
+index 85bbdf0fd..89843c391 100644
+--- a/crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs
++++ b/crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs
+@@ -7,13 +7,14 @@ use support::lsp_harness::LspHarness;
+ type TestResult = Result<(), Box<dyn std::error::Error>>;
+ 
+ #[test]
+-fn initialize_static_advertises_inline_completion_when_dynamic_not_supported() -> TestResult {
++fn initialize_omits_inline_completion_when_client_does_not_declare_support() -> TestResult {
+     let mut harness = LspHarness::new();
+     let init = harness.initialize(Some(json!({
+         "textDocument": {}
+     })))?;
+ 
+-    assert_eq!(init.pointer("/capabilities/inlineCompletionProvider"), Some(&json!({})));
++    assert!(init.pointer("/capabilities/inlineCompletionProvider").is_none());
++    assert!(init.pointer("/capabilities/experimental/perlInlineCompletionStream").is_none());
+     assert_no_inline_completion_registration(harness.drain_server_requests(200));
+     Ok(())
+ }
+diff --git a/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_full_client.snap b/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_full_client.snap
+index 72d17ed2d..bf39923f7 100644
+--- a/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_full_client.snap
++++ b/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_full_client.snap
+@@ -158,26 +158,6 @@ typeHierarchyProvider:
+   workDoneProgressOptions: {}
+ workspace:
+   fileOperations:
+-    didCreate:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+-    didDelete:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+     didRename:
+       filters:
+         - pattern:
+@@ -188,26 +168,6 @@ workspace:
+             glob: "**/*.t"
+         - pattern:
+             glob: "**/*.psgi"
+-    willCreate:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+-    willDelete:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+     willRename:
+       filters:
+         - pattern:
+diff --git a/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_minimal_client.snap b/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_minimal_client.snap
+index 35d624ba2..be7521c5f 100644
+--- a/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_minimal_client.snap
++++ b/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__server_capabilities_minimal_client.snap
+@@ -77,14 +77,12 @@ executeCommandProvider:
+     - perl.previewPackageRename
+     - perl.explainMissingModuleLookup
+ experimental:
+-  perlInlineCompletionStream: true
+   typeHierarchyProvider: true
+ foldingRangeProvider: true
+ hoverProvider: true
+ implementationProvider: true
+ inlayHintProvider:
+   resolveProvider: true
+-inlineCompletionProvider: {}
+ inlineValueProvider: true
+ linkedEditingRangeProvider: true
+ monikerProvider: true
+@@ -158,67 +156,6 @@ typeDefinitionProvider: true
+ typeHierarchyProvider:
+   workDoneProgressOptions: {}
+ workspace:
+-  fileOperations:
+-    didCreate:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+-    didDelete:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+-    didRename:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+-    willCreate:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+-    willDelete:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+-    willRename:
+-      filters:
+-        - pattern:
+-            glob: "**/*.pl"
+-        - pattern:
+-            glob: "**/*.pm"
+-        - pattern:
+-            glob: "**/*.t"
+-        - pattern:
+-            glob: "**/*.psgi"
+   textDocumentContent:
+     schemes:
+       - perldoc
+diff --git a/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__workspace_file_operation_filters.snap b/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__workspace_file_operation_filters.snap
+index 007741a9c..ec840f361 100644
+--- a/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__workspace_file_operation_filters.snap
++++ b/crates/perl-lsp-rs/tests/snapshots/lsp_cap_snap__workspace_file_operation_filters.snap
+@@ -2,26 +2,6 @@
+ source: crates/perl-lsp-rs/tests/lsp_cap_snap.rs
+ expression: "&file_operations"
+ ---
+-didCreate:
+-  filters:
+-    - pattern:
+-        glob: "**/*.pl"
+-    - pattern:
+-        glob: "**/*.pm"
+-    - pattern:
+-        glob: "**/*.t"
+-    - pattern:
+-        glob: "**/*.psgi"
+-didDelete:
+-  filters:
+-    - pattern:
+-        glob: "**/*.pl"
+-    - pattern:
+-        glob: "**/*.pm"
+-    - pattern:
+-        glob: "**/*.t"
+-    - pattern:
+-        glob: "**/*.psgi"
+ didRename:
+   filters:
+     - pattern:
+@@ -32,26 +12,6 @@ didRename:
+         glob: "**/*.t"
+     - pattern:
+         glob: "**/*.psgi"
+-willCreate:
+-  filters:
+-    - pattern:
+-        glob: "**/*.pl"
+-    - pattern:
+-        glob: "**/*.pm"
+-    - pattern:
+-        glob: "**/*.t"
+-    - pattern:
+-        glob: "**/*.psgi"
+-willDelete:
+-  filters:
+-    - pattern:
+-        glob: "**/*.pl"
+-    - pattern:
+-        glob: "**/*.pm"
+-    - pattern:
+-        glob: "**/*.t"
+-    - pattern:
+-        glob: "**/*.psgi"
+ willRename:
+   filters:
+     - pattern:
+diff --git a/crates/perllsp/tests/lsp_capability_negotiation_process.rs b/crates/perllsp/tests/lsp_capability_negotiation_process.rs
+index edc47590e..ff107a44d 100644
+--- a/crates/perllsp/tests/lsp_capability_negotiation_process.rs
++++ b/crates/perllsp/tests/lsp_capability_negotiation_process.rs
+@@ -118,8 +118,12 @@ fn inline_completion_initialize_shape_selects_static_or_dynamic_mode() -> Result
+     // success reply below exists only to leave the process terminally clean;
+     // #6724 owns whether success activates durable registration state and how
+     // failure, timeout, retry, or unregistration changes that state.
++    // A client that never declares `textDocument.inlineCompletion` cannot
++    // consume either the standard provider or the custom stream, so the
++    // initialize result must omit both rather than advertise a surface the
++    // negotiated client has no way to use (#7682).
+     let cases = [
+-        (json!({}), true, false, "absent inline-completion declaration"),
++        (json!({}), false, false, "absent inline-completion declaration"),
+         (
+             json!({
+                 "textDocument": {
+@@ -164,7 +168,24 @@ fn inline_completion_initialize_shape_selects_static_or_dynamic_mode() -> Result
+         } else {
+             ensure!(
+                 static_provider.is_none(),
+-                "dynamic clients must not receive a static inline-completion provider for {label}: {response}"
++                "clients that negotiate dynamic registration or declare no inline-completion support must not receive a static inline-completion provider for {label}: {response}"
++            );
++        }
++
++        // The custom stream extension is only consumable alongside the standard
++        // capability, so it must track the client's declaration rather than the
++        // build feature alone.
++        let stream_provider =
++            response.pointer("/result/capabilities/experimental/perlInlineCompletionStream");
++        if expect_static || expect_dynamic_request {
++            ensure!(
++                stream_provider.is_some(),
++                "custom inline-completion stream must be advertised to declaring clients for {label}: {response}"
++            );
++        } else {
++            ensure!(
++                stream_provider.is_none(),
++                "custom inline-completion stream must not be advertised to clients that omit textDocument.inlineCompletion for {label}: {response}"
+             );
+         }
+ 
+diff --git a/crates/perllsp/tests/sublime_lsp_2_13_profile_contract.rs b/crates/perllsp/tests/sublime_lsp_2_13_profile_contract.rs
+new file mode 100644
+index 000000000..66c2b5e6d
+--- /dev/null
++++ b/crates/perllsp/tests/sublime_lsp_2_13_profile_contract.rs
+@@ -0,0 +1,278 @@
++//! Real-process compatibility contract for Sublime Text's LSP 2.13 client profile.
++//!
++//! This is intentionally a `*-shaped` protocol receipt. It launches the exact
++//! public `perllsp` Cargo binary but does not claim that Sublime Text itself was
++//! launched; the actual-host receipt remains owned by #7694.
++
++#[path = "support/real_process.rs"]
++mod real_process;
++
++use anyhow::{Result, ensure};
++use real_process::RealProcessClient;
++use serde_json::{Value, json};
++use std::time::Duration;
++
++fn timeout() -> Duration {
++    Duration::from_secs(10)
++}
++
++fn sublime_lsp_2_13_capabilities() -> Value {
++    json!({
++        "general": {
++            "positionEncodings": ["utf-16"],
++            "markdown": { "parser": "marko" }
++        },
++        "textDocument": {
++            "synchronization": {
++                "dynamicRegistration": true,
++                "willSave": true,
++                "willSaveWaitUntil": true,
++                "didSave": true
++            },
++            "completion": {
++                "dynamicRegistration": true,
++                "completionItem": {
++                    "snippetSupport": true,
++                    "documentationFormat": ["markdown", "plaintext"],
++                    "deprecatedSupport": true,
++                    "insertReplaceSupport": true,
++                    "resolveSupport": {
++                        "properties": ["detail", "documentation", "additionalTextEdits"]
++                    },
++                    "labelDetailsSupport": true
++                },
++                "completionList": {
++                    "itemDefaults": ["editRange", "insertTextFormat", "data"]
++                }
++            },
++            "hover": {
++                "dynamicRegistration": true,
++                "contentFormat": ["markdown", "plaintext"]
++            },
++            "signatureHelp": {
++                "dynamicRegistration": true,
++                "signatureInformation": {
++                    "documentationFormat": ["markdown", "plaintext"],
++                    "parameterInformation": { "labelOffsetSupport": true },
++                    "activeParameterSupport": true,
++                    "noActiveParameterSupport": true
++                },
++                "contextSupport": true
++            },
++            "declaration": { "dynamicRegistration": true, "linkSupport": true },
++            "definition": { "dynamicRegistration": true, "linkSupport": true },
++            "typeDefinition": { "dynamicRegistration": true, "linkSupport": true },
++            "implementation": { "dynamicRegistration": true, "linkSupport": true },
++            "rename": {
++                "dynamicRegistration": true,
++                "prepareSupport": true,
++                "prepareSupportDefaultBehavior": 1,
++                "honorsChangeAnnotations": true
++            },
++            "codeAction": {
++                "dynamicRegistration": true,
++                "dataSupport": true,
++                "resolveSupport": { "properties": ["edit"] }
++            },
++            "semanticTokens": {
++                "dynamicRegistration": true,
++                "requests": { "range": true, "full": { "delta": true } },
++                "tokenTypes": [
++                    "namespace", "type", "class", "enum", "interface", "struct",
++                    "typeParameter", "parameter", "variable", "property", "enumMember",
++                    "event", "function", "method", "macro", "keyword", "modifier",
++                    "comment", "string", "number", "regexp", "operator", "decorator"
++                ],
++                "tokenModifiers": [
++                    "declaration", "definition", "readonly", "static", "deprecated",
++                    "abstract", "async", "modification", "documentation", "defaultLibrary"
++                ],
++                "formats": ["relative"],
++                "overlappingTokenSupport": false,
++                "multilineTokenSupport": true,
++                "augmentsSyntaxTokens": true
++            },
++            "inlayHint": {
++                "dynamicRegistration": true,
++                "resolveSupport": { "properties": ["textEdits", "label.command"] }
++            },
++            "diagnostic": {
++                "dynamicRegistration": true,
++                "relatedDocumentSupport": true,
++                "relatedInformation": true,
++                "codeDescriptionSupport": true,
++                "markupMessageSupport": true,
++                "dataSupport": true
++            }
++        },
++        "workspace": {
++            "applyEdit": true,
++            "workspaceEdit": {
++                "documentChanges": true,
++                "resourceOperations": ["create", "rename", "delete"],
++                "failureHandling": "abort",
++                "normalizesLineEndings": true,
++                "metadataSupport": true,
++                "snippetEditSupport": true
++            },
++            "didChangeConfiguration": { "dynamicRegistration": true },
++            "workspaceFolders": true,
++            "configuration": true,
++            "semanticTokens": { "refreshSupport": true },
++            "codeLens": { "refreshSupport": true },
++            "inlayHint": { "refreshSupport": true },
++            "diagnostics": { "refreshSupport": true },
++            "didChangeWatchedFiles": {
++                "dynamicRegistration": true,
++                "relativePatternSupport": true
++            },
++            "fileOperations": {
++                "dynamicRegistration": true,
++                "willRename": true,
++                "didRename": true
++            },
++            "textDocumentContent": { "dynamicRegistration": true }
++        },
++        "window": {
++            "workDoneProgress": true,
++            "showDocument": { "support": true }
++        }
++    })
++}
++
++fn initialize(client: &mut RealProcessClient, capabilities: Value) -> Result<Value> {
++    client.request(
++        json!("sublime-initialize"),
++        "initialize",
++        json!({
++            "processId": null,
++            "clientInfo": {
++                "name": "Sublime Text LSP",
++                "version": "2.13.0"
++            },
++            "rootUri": null,
++            "workspaceFolders": null,
++            "capabilities": capabilities
++        }),
++        timeout(),
++    )
++}
++
++/// Answer the server requests the profile actually negotiated.
++///
++/// A declaration such as `workspace.configuration` or
++/// `workspace.didChangeWatchedFiles.dynamicRegistration` obliges the client to
++/// answer the matching server request, so a profile receipt that never replies
++/// is not the client it claims to model. Each named method must arrive; any
++/// request the profile did not negotiate stays unanswered and still fails
++/// `assert_transport_clean` below.
++fn answer_negotiated_server_requests(
++    client: &mut RealProcessClient,
++    negotiated_requests: &[&str],
++) -> Result<()> {
++    for method in negotiated_requests {
++        let request = client.receive_server_request(method, timeout())?;
++        let id = request
++            .get("id")
++            .cloned()
++            .ok_or_else(|| anyhow::anyhow!("{method} request omitted id: {request}"))?;
++        let result = if *method == "workspace/configuration" {
++            let items = request
++                .pointer("/params/items")
++                .and_then(Value::as_array)
++                .ok_or_else(|| anyhow::anyhow!("{method} request omitted items: {request}"))?
++                .len();
++            Value::Array(vec![Value::Null; items])
++        } else {
++            Value::Null
++        };
++        client.respond(id, result)?;
++    }
++    Ok(())
++}
++
++fn shutdown_and_exit(client: &mut RealProcessClient, negotiated_requests: &[&str]) -> Result<()> {
++    client.notify("initialized", json!({}))?;
++    answer_negotiated_server_requests(client, negotiated_requests)?;
++    let shutdown = client.request(json!("sublime-shutdown"), "shutdown", Value::Null, timeout())?;
++    ensure!(shutdown.get("result").is_some_and(Value::is_null), "shutdown failed: {shutdown}");
++    client.notify("exit", Value::Null)?;
++    let status = client.wait_for_exit(timeout())?;
++    ensure!(
++        status.success(),
++        "Sublime-shaped lifecycle exited with {status}; stderr={}",
++        client.stderr_tail()
++    );
++    client.assert_transport_clean()
++}
++
++#[test]
++fn sublime_lsp_2_13_receives_only_declared_file_operations() -> Result<()> {
++    let mut client = RealProcessClient::spawn_exact()?;
++    let response = initialize(&mut client, sublime_lsp_2_13_capabilities())?;
++    let capabilities = response
++        .pointer("/result/capabilities")
++        .ok_or_else(|| anyhow::anyhow!("initialize omitted capabilities: {response}"))?;
++
++    ensure!(capabilities.get("positionEncoding") == Some(&json!("utf-16")));
++    ensure!(capabilities.pointer("/workspace/fileOperations/willRename").is_some());
++    ensure!(capabilities.pointer("/workspace/fileOperations/didRename").is_some());
++    for unsupported in ["willCreate", "didCreate", "willDelete", "didDelete"] {
++        ensure!(
++            capabilities.pointer(&format!("/workspace/fileOperations/{unsupported}")).is_none(),
++            "Sublime profile received unsupported {unsupported}: {capabilities}"
++        );
++    }
++    ensure!(
++        capabilities.get("inlineCompletionProvider").is_none(),
++        "Sublime LSP 2.13 does not declare textDocument.inlineCompletion"
++    );
++    ensure!(
++        capabilities.pointer("/experimental/perlInlineCompletionStream").is_none(),
++        "custom inline stream must follow standard client capability consent"
++    );
++    ensure!(capabilities.pointer("/semanticTokensProvider/full/delta") == Some(&json!(true)));
++    ensure!(capabilities.pointer("/semanticTokensProvider/range") == Some(&json!(true)));
++    ensure!(capabilities.pointer("/diagnosticProvider").is_some());
++    ensure!(
++        capabilities.pointer("/workspace/textDocumentContent/schemes/0") == Some(&json!("perldoc"))
++    );
++
++    shutdown_and_exit(
++        &mut client,
++        &["workspace/configuration", "client/registerCapability", "window/workDoneProgress/create"],
++    )
++}
++
++#[test]
++fn malformed_file_operation_declarations_do_not_create_consent() -> Result<()> {
++    let mut client = RealProcessClient::spawn_exact()?;
++    let response = initialize(
++        &mut client,
++        json!({
++            "general": { "positionEncodings": ["utf-16"] },
++            "workspace": {
++                "workspaceFolders": true,
++                "fileOperations": {
++                    "willRename": "true",
++                    "didRename": 1,
++                    "willCreate": null
++                }
++            }
++        }),
++    )?;
++    let capabilities = response
++        .pointer("/result/capabilities")
++        .ok_or_else(|| anyhow::anyhow!("initialize omitted capabilities: {response}"))?;
++
++    ensure!(
++        capabilities.pointer("/workspace/fileOperations").is_none(),
++        "non-boolean file-operation values must not be treated as support: {capabilities}"
++    );
++    ensure!(capabilities.get("inlineCompletionProvider").is_none());
++
++    // This profile declares neither workspace configuration, dynamic
++    // watched-file registration, nor work-done progress, so the server must not
++    // issue any request for it to answer.
++    shutdown_and_exit(&mut client, &[])
++}
+diff --git a/policy/non-rust-allowlist.toml b/policy/non-rust-allowlist.toml
+index a13196bbc..4b779bb07 100644
+--- a/policy/non-rust-allowlist.toml
++++ b/policy/non-rust-allowlist.toml
+@@ -110,6 +110,22 @@ broad_glob_reason = "One LSP4IJ template is a fixed directory of sibling descrip
+ created = "2026-08-15"
+ review_after = "2026-11-15"
+ 
++[[allow]]
++id = "non-rust-product-7782-changelog-fragment"
++path = ".changes/unreleased/product-7782-Fixed-095500.yaml"
++kind = "release_metadata"
++language = "yaml"
++surface = "release"
++classification = "documentation"
++owner = "release/ci"
++reason = "Changie product release-note fragment recording Sublime Text LSP 2.13 file-operation and inline-completion capability negotiation (#7782)."
++covered_by = [
++  "cargo xtask changelog check",
++  "cargo xtask check-file-policy",
++]
++created = "2026-08-15"
++review_after = "2026-09-15"
++
+ [[allow]]
+ id = "non-rust-license-files"
+ glob = "**/LICENSE-*"
