@@ -20,6 +20,7 @@
     "unit_foundation_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "unit_parser_stack_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "parser_integration": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+    "parser_behavior_proof": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "unit_analysis_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "unit_lsp_core_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "unit_lsp_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},

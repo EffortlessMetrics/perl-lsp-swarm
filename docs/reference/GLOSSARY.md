@@ -1,5 +1,9 @@
 # Orchestration Glossary
 
+<!-- authority-status:v1 -->
+> **Status: superseded.** Current authority: [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
 This document is an **index**, not the source of truth. Each entry points to the reference
 doc that defines the term in full. When definitions here conflict with a reference doc,
 the reference doc wins.
