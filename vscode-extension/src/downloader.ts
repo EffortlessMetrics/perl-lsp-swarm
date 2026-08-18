@@ -10,6 +10,13 @@ import * as child_process from 'child_process';
 import * as tar from 'tar';
 import AdmZip from 'adm-zip';
 import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
+import { buildManagedReleaseExpectation, toManagedReleaseRecords } from './managedReleaseAdapter';
+import {
+  selectManagedRelease,
+  type ManagedReleaseChannel,
+  type ManagedReleaseExpectation,
+  type RefusedManagedRelease,
+} from './managedReleaseSelector';
 import {
   admissibleManagedCompatibilityKeys,
   buildManagedCompatibilityKey,
@@ -32,6 +39,7 @@ interface ReleaseAsset {
 interface Release {
   tag_name: string;
   prerelease?: boolean;
+  draft?: boolean;
   /** Synthetic metadata produced for an internal download mirror. */
   internal?: boolean;
   assets: ReleaseAsset[];
@@ -304,6 +312,31 @@ export function findReleaseAssetName(
   }
 
   return undefined;
+}
+
+/**
+ * Map a managed-release-selector refusal to the established user-facing error
+ * messages (#9925). The stable-channel `no_compatible_release` message is
+ * pinned by existing behavior; every other refusal surfaces the selector's
+ * typed detail instead of a route-local guess.
+ */
+function describeManagedReleaseRefusal(
+  refusal: RefusedManagedRelease,
+  channel: ManagedReleaseChannel,
+): string {
+  if (refusal.reason === 'no_compatible_release' && channel === 'stable') {
+    return 'No stable release found';
+  }
+  switch (refusal.reason) {
+    case 'no_compatible_release':
+      return `No compatible managed release found: ${refusal.detail}`;
+    case 'release_metadata_not_proven':
+      return `Managed release metadata is not proven: ${refusal.detail}`;
+    case 'configured_incompatible':
+      return `Configured release is not compatible: ${refusal.detail}`;
+    case 'invalid_policy':
+      return `Invalid managed release policy: ${refusal.detail}`;
+  }
 }
 
 /**
@@ -991,12 +1024,24 @@ export class BinaryDownloader {
     );
   }
 
+  /**
+   * Select the managed release to download (#9925).
+   *
+   * Every managed route (first-use, repair, explicit and silent update
+   * checks) funnels through here, and this method funnels every selection
+   * through the one `selectManagedRelease` implementation (#9924). Transport
+   * stays bounded (`fetchBoundedJson`); the GitHub `/releases/latest`
+   * convenience endpoint and route-local first-element picks are gone — the
+   * list endpoint feeds the selector for both `stable` and `latest`, and the
+   * tag route's exact-tag response is validated by the selector instead of
+   * being trusted blindly.
+   */
   private async getLatestRelease(
     timeoutMs = 30000,
     cancellationToken?: vscode.CancellationToken,
   ): Promise<Release> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
-    const channel = config.get<string>('channel', 'latest');
+    const channelSetting = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
     const downloadBaseUrl = config.get<string>('downloadBaseUrl', '');
 
@@ -1005,19 +1050,122 @@ export class BinaryDownloader {
       return this.getInternalRelease(downloadBaseUrl, versionTag || 'latest');
     }
 
-    let url: string;
-    if (channel === 'tag' && versionTag) {
-      // Get specific release by tag. The tag is user configuration, so it is
-      // encoded before it reaches the API path.
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/tags/${encodeURIComponent(versionTag)}`;
-    } else if (channel === 'stable') {
-      // Get latest non-prerelease
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
+    if (channelSetting !== 'stable' && channelSetting !== 'latest' && channelSetting !== 'tag') {
+      throw new Error(
+        `Unknown perl-lsp.channel ${JSON.stringify(channelSetting)}; expected stable, latest, or tag.`,
+      );
+    }
+    const channel: ManagedReleaseChannel = channelSetting;
+
+    const expectation = this.managedReleaseExpectation();
+    const isWindowsArm64 = process.platform === 'win32' && process.arch === 'arm64';
+    // On Windows ARM64 a release can serve this host natively or through the
+    // documented x64 emulation asset; the per-release choice stays with
+    // selectWindowsArm64Target after selection (#9844 boundary).
+    const assetTargetCandidates = isWindowsArm64
+      ? [WINDOWS_ARM64_TARGET, WINDOWS_X64_TARGET]
+      : [expectation.target];
+    const archiveExtension = process.platform === 'win32' ? '.zip' : '.tar.gz';
+
+    let url = '';
+    if (channel === 'tag') {
+      if (versionTag) {
+        // Get specific release by tag. The tag is user configuration, so it is
+        // encoded before it reaches the API path.
+        url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/tags/${encodeURIComponent(versionTag)}`;
+      }
+      // A tag channel without versionTag performs no fetch: the selector's
+      // closed policy owns that refusal instead of a silent channel fallback.
     } else {
-      // Get latest release (including prereleases)
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/latest`;
+      // One list endpoint feeds the selector for both stable and latest.
+      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
     }
 
+    let releases: Release[] = [];
+    if (url) {
+      const parsed = await this.fetchReleaseMetadata(url, timeoutMs, cancellationToken);
+      if (channel === 'tag') {
+        if (!isReleaseShape(parsed)) {
+          throw new Error('Release metadata response has an invalid schema');
+        }
+        releases = [parsed];
+      } else {
+        if (!Array.isArray(parsed)) {
+          throw new Error('Release metadata response has an invalid schema');
+        }
+        // One malformed legacy entry must not abort every managed route:
+        // entries without a trustworthy tag/asset shape are quarantined out
+        // of the candidate set and logged, matching the adapter's treatment
+        // of unparseable tags.
+        const malformed = parsed.filter((entry) => !isReleaseShape(entry)).length;
+        if (malformed > 0) {
+          this.outputChannel.appendLine(
+            `Managed release metadata: quarantined ${malformed} malformed list entr${malformed === 1 ? 'y' : 'ies'}.`,
+          );
+        }
+        releases = parsed.filter(isReleaseShape);
+      }
+    }
+
+    const conversion = toManagedReleaseRecords(
+      releases,
+      expectation,
+      assetTargetCandidates,
+      archiveExtension,
+      findReleaseAssetName,
+      channel,
+    );
+    if (conversion.droppedTags.length > 0) {
+      this.outputChannel.appendLine(
+        `Managed release metadata: quarantined unparseable tag(s): ${conversion.droppedTags.join(', ')}`,
+      );
+    }
+    const selection = selectManagedRelease({
+      expectation,
+      channel,
+      explicitTag: channel === 'tag' && versionTag ? versionTag : undefined,
+      releases: conversion.records,
+    });
+    if (selection.kind === 'refused') {
+      throw new Error(describeManagedReleaseRefusal(selection, channel));
+    }
+
+    const selected = releases.find((release) => release.tag_name === selection.release.tagName);
+    if (!selected) {
+      throw new Error('Release metadata response has an invalid schema');
+    }
+    this.outputChannel.appendLine(
+      `Managed release selected: ${selected.tag_name} (reason: ${selection.reason})`,
+    );
+    return selected;
+  }
+
+  /** Extension identity facts for the managed-release expectation. */
+  private managedReleaseExpectation(): ManagedReleaseExpectation {
+    const packageJSON = (this.context.extension?.packageJSON ?? {}) as {
+      publisher?: string;
+      name?: string;
+      version?: string;
+    };
+    const extensionId =
+      packageJSON.publisher && packageJSON.name
+        ? `${packageJSON.publisher}.${packageJSON.name}`
+        : 'unknown';
+    return buildManagedReleaseExpectation({
+      extensionId,
+      extensionVersion: packageJSON.version ?? 'unknown',
+      hostTarget:
+        process.platform === 'win32' && process.arch === 'arm64'
+          ? WINDOWS_ARM64_TARGET
+          : this.getPlatformTarget(),
+    });
+  }
+
+  private async fetchReleaseMetadata(
+    url: string,
+    timeoutMs: number,
+    cancellationToken?: vscode.CancellationToken,
+  ): Promise<unknown> {
     const isHttps = url.startsWith('https:');
     const httpConfig = vscode.workspace.getConfiguration('http');
     const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
@@ -1051,25 +1199,6 @@ export class BinaryDownloader {
         }
         throw new Error(`GitHub API error: ${message}`);
       }
-    }
-
-    if (Array.isArray(parsed)) {
-      // The array response is only requested for the `stable` channel, so
-      // selection is fail-closed: a release qualifies only when it explicitly
-      // declares `prerelease: false`. A missing or non-boolean field is not
-      // evidence of a stable release, and falling back to the newest entry
-      // would silently install a prerelease for a user who asked for stable.
-      const selected = parsed
-        .filter(isReleaseShape)
-        .find((release) => release.prerelease === false);
-      if (!selected) {
-        throw new Error('No stable release found');
-      }
-      return selected;
-    }
-
-    if (!isReleaseShape(parsed)) {
-      throw new Error('Release metadata response has an invalid schema');
     }
     return parsed;
   }
