@@ -47,12 +47,7 @@ impl CallBoundValue {
         source_anchor: Option<SourceAnchor>,
         generation: SourceGeneration,
     ) -> Self {
-        Self {
-            value,
-            source_anchor,
-            generation,
-            freshness: SemanticFreshness::Fresh,
-        }
+        Self { value, source_anchor, generation, freshness: SemanticFreshness::Fresh }
     }
 }
 
@@ -99,10 +94,7 @@ pub struct CallResultMaterializationBudget {
 
 impl Default for CallResultMaterializationBudget {
     fn default() -> Self {
-        Self {
-            max_relation_nodes: 64,
-            max_values: 16,
-        }
+        Self { max_relation_nodes: 64, max_values: 16 }
     }
 }
 
@@ -268,10 +260,9 @@ impl<'a> MaterializationState<'a> {
                 };
                 self.consume_bound_value(receiver);
             }
-            CallableResultRelation::Argument {
-                parameter_entity_id,
-                position,
-            } => self.materialize_argument(*parameter_entity_id, *position),
+            CallableResultRelation::Argument { parameter_entity_id, position } => {
+                self.materialize_argument(*parameter_entity_id, *position)
+            }
             CallableResultRelation::BareReturn => {
                 self.bare_return = true;
                 if !matches!(self.input.value_context, CallValueContext::Void) {
@@ -414,10 +405,7 @@ fn value_shape_sort_key(shape: &ValueShape) -> String {
         ValueShape::HashRef => "2:hash-ref".to_string(),
         ValueShape::CodeRef => "3:code-ref".to_string(),
         ValueShape::PackageName { package } => format!("4:package:{package}"),
-        ValueShape::Object {
-            package,
-            confidence,
-        } => format!("5:object:{package}:{confidence:?}"),
+        ValueShape::Object { package, confidence } => format!("5:object:{package}:{confidence:?}"),
         _ => "8:future-shape".to_string(),
     }
 }
@@ -472,10 +460,7 @@ mod tests {
     }
 
     fn object(package: &str) -> ValueShape {
-        ValueShape::Object {
-            package: package.to_string(),
-            confidence: Confidence::High,
-        }
+        ValueShape::Object { package: package.to_string(), confidence: Confidence::High }
     }
 
     #[test]
@@ -579,10 +564,7 @@ mod tests {
         );
 
         assert_eq!(result.status(), SemanticFactStatus::Exact);
-        assert_eq!(
-            result.possible_values,
-            vec![object("App::A"), object("App::B")]
-        );
+        assert_eq!(result.possible_values, vec![object("App::A"), object("App::B")]);
     }
 
     #[test]
@@ -594,11 +576,7 @@ mod tests {
         );
 
         assert_eq!(result.status(), SemanticFactStatus::Degraded);
-        assert!(
-            result
-                .limitations
-                .contains(&CallResultMaterializationLimitation::MissingReceiver)
-        );
+        assert!(result.limitations.contains(&CallResultMaterializationLimitation::MissingReceiver));
     }
 
     #[test]
@@ -635,14 +613,9 @@ mod tests {
         );
 
         assert_eq!(result.status(), SemanticFactStatus::Degraded);
-        assert_eq!(
-            result.possible_values,
-            vec![object("App::A"), object("App::B")]
-        );
+        assert_eq!(result.possible_values, vec![object("App::A"), object("App::B")]);
         assert!(
-            result
-                .limitations
-                .contains(&CallResultMaterializationLimitation::AmbiguousArgument)
+            result.limitations.contains(&CallResultMaterializationLimitation::AmbiguousArgument)
         );
     }
 
@@ -665,9 +638,7 @@ mod tests {
             CallResultMaterializationBudget::default(),
         );
         assert!(
-            unknown_value
-                .limitations
-                .contains(&CallResultMaterializationLimitation::UnknownValue)
+            unknown_value.limitations.contains(&CallResultMaterializationLimitation::UnknownValue)
         );
     }
 
@@ -708,11 +679,7 @@ mod tests {
             &call,
             CallResultMaterializationBudget::default(),
         );
-        assert!(
-            result
-                .limitations
-                .contains(&CallResultMaterializationLimitation::InputNotCurrent)
-        );
+        assert!(result.limitations.contains(&CallResultMaterializationLimitation::InputNotCurrent));
     }
 
     #[test]
@@ -724,18 +691,11 @@ mod tests {
         let result = materialize_call_result(
             &exact_fact(relation),
             &input(),
-            CallResultMaterializationBudget {
-                max_relation_nodes: 8,
-                max_values: 1,
-            },
+            CallResultMaterializationBudget { max_relation_nodes: 8, max_values: 1 },
         );
 
         assert_eq!(result.status(), SemanticFactStatus::Degraded);
         assert_eq!(result.possible_values.len(), 1);
-        assert!(
-            result
-                .limitations
-                .contains(&CallResultMaterializationLimitation::BudgetExhausted)
-        );
+        assert!(result.limitations.contains(&CallResultMaterializationLimitation::BudgetExhausted));
     }
 }
