@@ -299,8 +299,13 @@ def _kill_sublime_text() -> None:
             check=False,
         )
     else:
+        # Match process NAMES, never full command lines: the runner's own
+        # invocation carries "sublime" in its path, so a -f pattern like
+        # '[Ss]ubl' signals the runner itself during cleanup (observed as the
+        # T+8s exit-143 on the Linux DAP leg after a green journey).
         subprocess.run(
-            "pkill -f '[Ss]ubl' || true; pkill plugin_host || true",
+            "pkill -x sublime_text || true; pkill -x 'plugin_host-3.3'"
+            " || true; pkill -x 'plugin_host-3.8' || true",
             shell=True,
             check=False,
         )

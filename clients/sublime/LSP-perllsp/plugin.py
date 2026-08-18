@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import sublime
+import sublime_plugin
 from LSP.plugin import LspPlugin, OnPreStartContext, PluginStartError
 from LSP.plugin.core.open import open_file
 from LSP.plugin.core.protocol import Error
@@ -22,6 +23,8 @@ from .command_surface import (
     navigation_target,
     prepare_invocation,
 )
+from .compatibility import CompatibilityError, assert_managed_install_allowed
+from .debugger_adapter import register_debugger_adapter
 from .release import install_server
 
 _SETTINGS_FILE = "LSP-perllsp.sublime-settings"
@@ -236,8 +239,18 @@ class PerllspExecuteCommand(LspTextCommand):
             sublime.status_message(message)
 
 
+class PerllspDebuggerRegistrationListener(sublime_plugin.EventListener):
+    """Register after Debugger loads, including when it is installed later."""
+
+    def on_activated_async(self, view: sublime.View) -> None:
+        del view
+        register_debugger_adapter()
+
+
 def plugin_loaded() -> None:
     PerllspPlugin.register()
+    register_debugger_adapter()
+    sublime.set_timeout_async(register_debugger_adapter, 1000)
 
 
 def plugin_unloaded() -> None:

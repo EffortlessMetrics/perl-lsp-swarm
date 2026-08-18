@@ -2111,3 +2111,276 @@ reason = "Validates a produced command receipt against the v1 schema in CI."
 covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
 created = "2026-08-17"
 review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-dap-workflow"
+path = ".github/workflows/sublime-dap-real-host.yml"
+kind = "editor_extension"
+language = "yaml"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Workflow binding the real Sublime Debugger adapter journey to the exact-source perl-dap candidate."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-compatibility"
+path = "clients/sublime/LSP-perllsp/compatibility.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Managed-install compatibility gate with the versioned compatibility registry."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-compatibility-registry"
+path = "clients/sublime/LSP-perllsp/compatibility.v1.json"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Versioned compatibility registry consumed by the managed-install gate."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-support"
+path = "clients/sublime/LSP-perllsp/dap_support.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "DAP session support for the native debugger adapter registration."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-debugger-adapter"
+path = "clients/sublime/LSP-perllsp/debugger_adapter.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Registers the native perl-dap adapter with the Sublime Debugger package."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-debugger-journey-test"
+path = "clients/sublime/LSP-perllsp/host_tests/test_sublime_debugger_adapter.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Real-Sublime Debugger adapter journey against the exact-source perl-dap candidate."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-integration-commands"
+path = "clients/sublime/LSP-perllsp/integration_commands.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Curated integration command surface for the palette."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-integration-status"
+path = "clients/sublime/LSP-perllsp/integration_status.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Read-only integration status reporting with bounded output."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-project-example"
+path = "clients/sublime/LSP-perllsp/Perl.sublime-project.example"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Example Sublime project settings for the helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-package-source"
+path = "clients/sublime/package_source.py"
+kind = "build_tooling"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Deterministic package source authority tooling."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-package-source-registry"
+path = "clients/sublime/package-source.v1.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Package source authority registry."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-source-authority-doc"
+path = "clients/sublime/SOURCE_AUTHORITY.md"
+kind = "editor_extension"
+language = "markdown"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Documented package source authority model."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-package-source-test"
+path = "clients/sublime/LSP-perllsp/tests/test_package_source.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Contract tests for the deterministic package source authority."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-fixture"
+path = "clients/sublime/dap-fixture/debug_current.pl"
+kind = "test"
+language = "perl"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Debug-current fixture driving the real adapter journey."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-unittesting-config"
+path = "clients/sublime/dap-unittesting.json"
+kind = "test"
+language = "json"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "UnitTesting configuration binding the deferred DAP journey."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-runtime-receipt-writer"
+path = "clients/sublime/write_sublime_dap_runtime_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Records the exact-source perl-dap runtime receipt after the runtime journeys."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-receipt-validator"
+path = "clients/sublime/validate_sublime_dap_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Validates the bound runtime and host DAP receipts against the schema."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-compatibility-test"
+path = "clients/sublime/LSP-perllsp/tests/test_compatibility.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Contract tests for the managed-install compatibility gate."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-receipt-test"
+path = "clients/sublime/LSP-perllsp/tests/test_dap_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Receipt-shape tests for the DAP runtime and host journeys."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-support-test"
+path = "clients/sublime/LSP-perllsp/tests/test_dap_support.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Contract tests for the DAP session support module."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-integration-status-test"
+path = "clients/sublime/LSP-perllsp/tests/test_integration_status.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Contract tests for the bounded read-only integration status."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
