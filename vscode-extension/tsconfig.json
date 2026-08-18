@@ -5,6 +5,7 @@
     "lib": ["ES2022"],
     "outDir": "./out",
     "rootDir": "./src",
+    "noEmit": true,
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
