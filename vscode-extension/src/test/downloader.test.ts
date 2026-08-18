@@ -25,8 +25,25 @@ import {
   WINDOWS_X64_TARGET,
   isTransientManagedInstallError,
   parseLocalVersion,
+  hostManagedCompatibilityKeys,
   __resetManagedInstallSingleflightForTesting,
 } from '../downloader';
+import {
+  legacyManagedBaseDir,
+  managedNamespaceDir,
+  managedUpdateCheckStateKey,
+} from '../managedStorageIdentity';
+
+/**
+ * The compatibility key this test host resolves to. Managed state is namespaced
+ * by it rather than by `process.platform`/`process.arch` (#9847), so tests must
+ * ask for it rather than reconstruct a path shape.
+ */
+const HOST_COMPATIBILITY_KEY = hostManagedCompatibilityKeys()[0]!;
+
+function hostNamespaceDir(storageRoot: string): string {
+  return managedNamespaceDir(storageRoot, HOST_COMPATIBILITY_KEY)!;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers: build a minimal mock ExtensionContext
@@ -107,11 +124,22 @@ describe('BinaryDownloader.getPlatformTarget', () => {
   });
 
   afterEach(() => {
-    process.env.ANDROID_ROOT = androidRootBackup;
-    process.env.ANDROID_DATA = androidDataBackup;
-    process.env.TERMUX_VERSION = termuxVersionBackup;
+    // Assigning `undefined` to a process.env key stores the *string*
+    // "undefined", which is truthy — that leaked a permanent Termux/Android
+    // host into every later test in this file. Unset instead.
+    restoreEnv('ANDROID_ROOT', androidRootBackup);
+    restoreEnv('ANDROID_DATA', androidDataBackup);
+    restoreEnv('TERMUX_VERSION', termuxVersionBackup);
     jest.restoreAllMocks();
   });
+
+  function restoreEnv(name: string, value: string | undefined): void {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
 
   function getPlatformTarget(dl: TestDownloader): string {
     return dl.getPlatformTarget();
@@ -392,13 +420,17 @@ describe('BinaryDownloader internal ARM64 mirror compatibility', () => {
 // Local binary path construction
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader.getLocalBinaryPath', () => {
-  test('binary path includes platform and arch subdirectory', () => {
+  test('binary path is namespaced by the host compatibility key, not platform/arch', () => {
     const ctx = makeContext('/tmp/test-storage');
     const downloader = new BinaryDownloader(ctx, makeOutputChannel()) as unknown as TestDownloader;
     const binaryPath: string = downloader.getLocalBinaryPath();
 
-    expect(binaryPath).toContain(process.platform);
-    expect(binaryPath).toContain(process.arch);
+    expect(binaryPath.startsWith(hostNamespaceDir('/tmp/test-storage'))).toBe(true);
+    // The pre-#9847 key must not be what selects the directory: on Linux it
+    // cannot distinguish GNU from musl.
+    expect(binaryPath).not.toContain(
+      legacyManagedBaseDir('/tmp/test-storage', process.platform, process.arch),
+    );
   });
 
   test('binary name is perllsp (or perllsp.exe on win32)', () => {
@@ -596,7 +628,7 @@ describe('Versioned managed install layout', () => {
     storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-install-test-'));
     const ctx = makeContext(storageRoot);
     downloader = new BinaryDownloader(ctx, makeOutputChannel()) as unknown as TestDownloader;
-    baseDir = path.join(storageRoot, 'bin', `${process.platform}-${process.arch}`);
+    baseDir = hostNamespaceDir(storageRoot);
     fs.mkdirSync(baseDir, { recursive: true });
   });
 
@@ -606,7 +638,7 @@ describe('Versioned managed install layout', () => {
     }
   });
 
-  test('getLocalBinaryPath falls back to flat layout when no pointer exists (legacy users)', () => {
+  test('getLocalBinaryPath falls back to the flat layout when no pointer exists', () => {
     const flat = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flat, 'fake binary');
 
@@ -740,7 +772,7 @@ describe('Versioned managed install layout', () => {
     expect(fs.existsSync(flatBin)).toBe(true);
   });
 
-  test('legacy migration: install side-by-side with flat layout, pointer activates versioned', () => {
+  test('install lands side-by-side with a flat layout and the pointer activates it', () => {
     // Seed a legacy 0.13.2-style flat binary that a long-running user would have.
     const flatBin = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flatBin, 'legacy 0.13.2 bytes');
@@ -1332,6 +1364,11 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       makeContext(),
       makeOutputChannel(),
     ) as unknown as TestDownloader;
+    // Fixtures name x86_64-unknown-linux-gnu assets; pin the host target so
+    // these controls are independent of the machine running the suite.
+    jest
+      .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
     const vscode = require('vscode');
     vscode.workspace.getConfiguration.mockReturnValue({
       get: jest.fn((key: string, defaultValue?: unknown) => {
@@ -1365,14 +1402,25 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
   test('resolves a successful release response and clears the pending timer', async () => {
     const seams = downloader as unknown as DownloaderSeams;
-    const release = { tag_name: 'v1.2.3', assets: [] };
+    const release = {
+      tag_name: 'v1.2.3',
+      prerelease: false,
+      assets: [
+        {
+          name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+          browser_download_url:
+            'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+        },
+      ],
+    };
     const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify(release));
+        // The latest channel now fetches the release list; the selector picks.
+        response.emit('data', JSON.stringify([release]));
         response.emit('end');
       });
       return request;
@@ -1421,10 +1469,92 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     stableChannelConfig();
     respondWithReleaseList(seams, [
       { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
-      { tag_name: 'v1.9.0', prerelease: false, assets: [] },
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
     ]);
 
     await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+  });
+
+  test('a historical mistagged release cannot poison the stable route (hosted-smoke regression)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    // Mirrors the live EffortlessMetrics/perl-lsp release history: v0.13.1
+    // carries prerelease:true on a stable-semver tag.
+    respondWithReleaseList(seams, [
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+      { tag_name: 'v0.13.1', prerelease: true, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+  });
+
+  test('an explicit tag pin of a mistagged historical release still installs (smoke shape)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    // The hosted managed-binary smoke pins channel=tag, versionTag=v0.13.1.
+    // The mistag quarantine protects recency channels; an exact pin chooses
+    // one specific artifact and must keep working.
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return 'v0.13.1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify({
+            tag_name: 'v0.13.1',
+            prerelease: true,
+            assets: [
+              {
+                name: 'perllsp-0.13.1-x86_64-unknown-linux-gnu.tar.gz',
+                browser_download_url:
+                  'https://example.invalid/perllsp-0.13.1-x86_64-unknown-linux-gnu.tar.gz',
+              },
+            ],
+          }),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v0.13.1' });
   });
 
   test('refuses to install a prerelease when the stable channel has no stable release', async () => {
@@ -1443,7 +1573,12 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     stableChannelConfig();
     respondWithReleaseList(seams, [{ tag_name: 'v1.9.0', assets: [] }]);
 
-    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No stable release found');
+    // The omitted prerelease flag is unresolved metadata: the adapter maps it
+    // fail-closed, the record then disagrees with its parsed semver, and the
+    // selector refuses the whole input rather than guessing.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'Managed release metadata is not proven',
+    );
   });
 
   test('reports a missing release when GitHub answers 404', async () => {
@@ -1541,13 +1676,20 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       capturedUrl = url as string;
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: [] }));
+        response.emit(
+          'data',
+          JSON.stringify({ tag_name: 'v1.2.3', prerelease: false, assets: [] }),
+        );
         response.emit('end');
       });
       return request;
     });
 
-    await seams.getLatestRelease(1000);
+    // The selector enforces the exact configured tag: a 200 echo whose
+    // tag_name does not match the configuration is refused, not normalized.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'No compatible managed release found',
+    );
 
     expect(capturedUrl).toBe(
       'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases/tags/' +
@@ -1642,7 +1784,22 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       capturedOptions = options as { headers?: Record<string, string> };
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: [] }));
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
         response.emit('end');
       });
       return request;
@@ -1876,11 +2033,7 @@ describe('checkForUpdateSilent', () => {
     // Place a stub binary in the expected auto-download location so
     // fs.existsSync passes.
     const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
-    const binDir = path.join(
-      ctx.globalStorageUri.fsPath,
-      'bin',
-      `${process.platform}-${process.arch}`,
-    );
+    const binDir = hostNamespaceDir(ctx.globalStorageUri.fsPath);
     fs.mkdirSync(binDir, { recursive: true });
     tmpBinary = path.join(binDir, binaryName);
     fs.writeFileSync(tmpBinary, '#!/bin/sh\necho "perllsp 0.12.0"');
@@ -2082,7 +2235,7 @@ describe('checkForUpdateSilent', () => {
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
-  test('records lastUpdateCheck timestamp when check runs', async () => {
+  test("records the update-check timestamp under this target's scoped key", async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
@@ -2090,17 +2243,51 @@ describe('checkForUpdateSilent', () => {
       assets: [],
     });
 
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
     const before = Date.now();
     await downloader.checkForUpdateSilent();
     const after = Date.now();
 
-    expect(ctx.globalState.update).toHaveBeenCalledWith(
-      'perl-lsp.lastUpdateCheck',
-      expect.any(Number),
-    );
-    const recorded = ctx.globalState._store.get('perl-lsp.lastUpdateCheck') as number;
+    expect(ctx.globalState.update).toHaveBeenCalledWith(scopedKey, expect.any(Number));
+    const recorded = ctx.globalState._store.get(scopedKey) as number;
     expect(recorded).toBeGreaterThanOrEqual(before);
     expect(recorded).toBeLessThanOrEqual(after);
+    // The unscoped pre-#9847 key must not be advanced: it is shared by every
+    // compatibility target sitting in one global state object.
+    expect(ctx.globalState._store.get('perl-lsp.lastUpdateCheck')).toBeUndefined();
+  });
+
+  test("a foreign target's recent check does not suppress this target's check", async () => {
+    // A sibling host — same global state, different compatibility key — checked
+    // for updates a moment ago. That must not silence this host (#9847).
+    const foreignKey = managedUpdateCheckStateKey(
+      HOST_COMPATIBILITY_KEY.endsWith('-musl')
+        ? 'x86_64-unknown-linux-gnu'
+        : 'x86_64-unknown-linux-musl',
+    )!;
+    ctx.globalState._store.set(foreignKey, Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.12.0',
+      assets: [],
+    });
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).toHaveBeenCalled();
+  });
+
+  test('the unscoped pre-#9847 timestamp still suppresses an immediate check', async () => {
+    // Upgrading the extension must not force every installed host to check at
+    // once; the legacy value seeds this target's first scoped decision.
+    ctx.globalState._store.set('perl-lsp.lastUpdateCheck', Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).not.toHaveBeenCalled();
   });
 
   test('strips "v" prefix from remote tag_name before comparison', async () => {

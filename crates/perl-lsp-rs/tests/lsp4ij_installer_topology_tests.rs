@@ -1,3 +1,7 @@
+// Integration test: `expect()`/`panic!` carry the assertion message when a
+// checked-in fixture is malformed. The workspace-wide deny is a
+// production-code rule.
+#![allow(clippy::expect_used, clippy::panic)]
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -11,7 +15,7 @@ fn parse(input: &str) -> Value {
     serde_json::from_str(input).expect("checked JSON fixture must parse")
 }
 
-fn download<'a>(installer: &'a Value) -> &'a Value {
+fn download(installer: &Value) -> &Value {
     installer.pointer("/run/download").expect("installer run.download")
 }
 
