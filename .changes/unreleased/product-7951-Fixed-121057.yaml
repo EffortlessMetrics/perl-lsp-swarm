@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: "Make IntelliJ/LSP4IJ setup documentation distinguish template, binary-install, configuration, feature, file-family, and evidence stages instead of presenting broad JetBrains support from setup prose or server capabilities."
+time: 2026-08-13T12:10:57Z
+custom:
+  PR: "7951"
+  Slug: lsp4ij-docs-evidence-boundary
+  Breaking: "no"

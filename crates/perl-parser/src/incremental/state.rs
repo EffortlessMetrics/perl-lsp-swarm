@@ -1,7 +1,7 @@
 use crate::incremental::checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
-use crate::incremental::lex::create_lex_checkpoints;
+use crate::incremental::lex::lex_source_with_checkpoints;
 use crate::incremental::snapshot::{ParseGeneration, ParseSnapshot, ParseSnapshotStrategy};
-use perl_lexer::{PerlLexer, Token, TokenType};
+use perl_lexer::Token;
 use perl_line_index::LineIndex;
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_parser_core::error::ParseOutput;
@@ -53,7 +53,6 @@ pub struct IncrementalStateReadView {
 /// assert_eq!(state.source.len(), state.source().len());
 /// assert_eq!(state.tokens.len(), state.tokens().len());
 /// assert_eq!(state.lex_checkpoints.len(), state.lex_checkpoints().len());
-/// assert_eq!(state.generation(), state.snapshot().generation());
 /// ```
 ///
 /// The view does not grant mutation authority:
@@ -99,26 +98,18 @@ impl IncrementalState {
             ParseSnapshotStrategy::Fresh,
             parse_output,
         );
+        let lexed = lex_source_with_checkpoints(&source, &line_index);
         let parse_checkpoints = Self::create_parse_checkpoints(&snapshot.parse_output().ast);
-        let mut lexer = PerlLexer::new(&source);
-        let mut tokens = Vec::new();
-        while let Some(token) = lexer.next_token() {
-            if token.token_type == TokenType::EOF {
-                break;
-            }
-            tokens.push(token);
-        }
-        let lex_checkpoints = create_lex_checkpoints(&tokens, &line_index);
 
         Self {
             read_view: IncrementalStateReadView {
                 source,
                 rope,
                 line_index,
-                lex_checkpoints,
+                lex_checkpoints: lexed.checkpoints,
                 parse_checkpoints,
                 snapshot,
-                tokens,
+                tokens: lexed.tokens,
             },
         }
     }
@@ -141,12 +132,6 @@ impl IncrementalState {
         &self.read_view.line_index
     }
 
-    /// Monotonic identity for the committed source generation.
-    #[must_use]
-    pub fn generation(&self) -> ParseGeneration {
-        self.read_view.snapshot.generation()
-    }
-
     /// Lexer restart summaries for the current committed token stream.
     #[must_use]
     pub fn lex_checkpoints(&self) -> &[LexCheckpoint] {
@@ -159,13 +144,20 @@ impl IncrementalState {
         &self.read_view.parse_checkpoints
     }
 
+    /// Monotonic identity for the committed source generation.
+    #[must_use]
+    pub fn generation(&self) -> ParseGeneration {
+        self.read_view.snapshot.generation()
+    }
+
     /// Generation-bound authoritative parser snapshot.
     #[must_use]
     pub fn snapshot(&self) -> &ParseSnapshot {
         &self.read_view.snapshot
     }
 
-    /// Authoritative recovery-aware parser output for this generation.
+    /// Authoritative recovery-aware parser output for this generation,
+    /// projected from the generation-bound snapshot.
     #[must_use]
     pub fn parse_output(&self) -> &ParseOutput {
         self.read_view.snapshot.parse_output()
@@ -209,22 +201,14 @@ impl IncrementalState {
         self.read_view.source = source;
     }
 
-    /// Replace the staged token stream and rebuild its lexer checkpoints.
-    pub(super) fn replace_tokens(&mut self, tokens: Vec<Token>) {
+    /// Replace the staged lexer output and its restart summaries together.
+    pub(super) fn replace_lex_state(
+        &mut self,
+        tokens: Vec<Token>,
+        lex_checkpoints: Vec<LexCheckpoint>,
+    ) {
         self.read_view.tokens = tokens;
-        self.refresh_lex_checkpoints();
-    }
-
-    /// Replace the suffix of the staged token stream.
-    pub(super) fn splice_tokens(&mut self, start: usize, tokens: Vec<Token>) {
-        self.read_view.tokens.splice(start.., tokens);
-        self.refresh_lex_checkpoints();
-    }
-
-    /// Rebuild lexer checkpoints from the staged token stream and line index.
-    fn refresh_lex_checkpoints(&mut self) {
-        self.read_view.lex_checkpoints =
-            create_lex_checkpoints(&self.read_view.tokens, &self.read_view.line_index);
+        self.read_view.lex_checkpoints = lex_checkpoints;
     }
 
     /// Refresh the authoritative parser output from the current source.

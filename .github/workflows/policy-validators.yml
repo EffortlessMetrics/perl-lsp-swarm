@@ -1,9 +1,9 @@
 # Policy Validators
 #
-# Runs the CI economics policy validators on PRs that touch policy/, the
-# gate-policy YAML, or any of the validator scripts themselves. Catches drift
-# automatically instead of relying on contributors to remember to run the
-# scripts locally.
+# Runs the CI economics and architecture policy validators on PRs that touch
+# their ledgers, governed source, generated projections, or validator scripts.
+# Catches drift automatically instead of relying on contributors to remember
+# to run the scripts locally.
 #
 # See policy/ci-lane-whitelist.toml entry `policy_validators`.
 
@@ -14,9 +14,24 @@ on:
     paths:
       - 'policy/**'
       - '.ci/gate-policy.yaml'
+      - '.ci/parser-facade/**'
       - '.github/workflows/**'
+      - 'crates/perl-parser/Cargo.toml'
+      - 'crates/perl-parser/src/lib.rs'
+      - 'crates/perl-parser/src/incremental/mod.rs'
+      - 'crates/perl-parser-core/Cargo.toml'
+      - 'crates/**/Cargo.toml'
+      - 'docs/project/PARSER_FACADE_AUTHORITY.md'
+      - 'scripts/ci/parser_facade_authority.py'
+      - 'scripts/ci/parser_facade_inventory.py'
+      - 'scripts/ci/check_parser_facade_authority.py'
+      - 'scripts/ci/test_parser_facade_authority.py'
       - 'scripts/ci/validate_risk_packs.py'
       - 'scripts/ci/validate_gate_lane_mapping.py'
+      - '.ci/policy-checks-inventory.json'
+      - 'scripts/ci/validate_policy_checks_inventory.py'
+      - 'scripts/ci/test_validate_policy_checks_inventory.py'
+      - 'docs/ci/policy-checks-inventory.md'
       # validate_gate_lane_mapping.py --strict also checks this doc's lane
       # enumeration against the mapping, so a docs-only edit must trigger the
       # workflow -- otherwise the drift check is not load-bearing on its own
@@ -24,6 +39,8 @@ on:
       - 'docs/ci/gate-policy-economics.md'
       - 'scripts/ci/validate_trust_lanes.py'
       - 'scripts/ci/check_bounded_result_overflow.py'
+      - 'scripts/ci/verify_homebrew_formula_digests.py'
+      - 'scripts/ci/test_verify_homebrew_formula_digests.py'
       - 'docs/agents/bounded-subagent-result-v1.schema.json'
       - 'docs/agents/bounded-subagent-result-v1.fixtures.json'
       - '.github/workflows/policy-validators.yml'
@@ -47,7 +64,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 1
 
@@ -70,6 +87,11 @@ jobs:
           done
           python3 scripts/ci/validate_gate_lane_mapping.py --strict "${workflow_args[@]}"
 
+      - name: Validate policy_checks inventory
+        run: |
+          python3 scripts/ci/test_validate_policy_checks_inventory.py
+          python3 scripts/ci/validate_policy_checks_inventory.py --check
+
       - name: Validate policy TOML parses
         run: |
           python3 - <<'EOF'
@@ -89,3 +111,15 @@ jobs:
       - name: Validate bounded-result overflow invariants
         run: |
           python3 scripts/ci/check_bounded_result_overflow.py
+
+      - name: Validate parser facade authority
+        run: |
+          python3 scripts/ci/test_parser_facade_authority.py
+          python3 scripts/ci/check_parser_facade_authority.py --check-doc
+
+      # brew-bump.yml only runs on release/dispatch, so its own workflow never
+      # gates a PR. Without this step the digest-to-stanza binding would have a
+      # swapped-digest negative control that never runs (#6013).
+      - name: Validate Homebrew formula digest binding
+        run: |
+          python3 scripts/ci/test_verify_homebrew_formula_digests.py

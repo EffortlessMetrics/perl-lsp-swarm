@@ -258,14 +258,14 @@ fn check_perl(failures: &mut usize) {
 }
 
 fn check_binary(root: &Path, warnings: &mut usize) {
-    let binary = if cfg!(windows) { "perl-lsp.exe" } else { "perl-lsp" };
+    let binary = if cfg!(windows) { "perllsp.exe" } else { "perllsp" };
     let binary_path = root.join("target").join("release").join(binary);
 
     if binary_path.is_file() {
         pass(&format!("release binary present: {}", binary_path.display()));
     } else {
         warn(&format!(
-            "release binary missing: {} — build with: cargo build -p perl-lsp-rs --release",
+            "release binary missing: {} — build with: cargo build -p perllsp --bin perllsp --release",
             binary_path.display()
         ));
         *warnings += 1;
@@ -406,11 +406,11 @@ mod tests {
     #[test]
     fn ci_doctor_git_porcelain_untracked_only_detection() {
         // When all lines start with '??' it's untracked-only
-        let lines = vec!["?? foo.rs", "?? bar.rs"];
+        let lines = ["?? foo.rs", "?? bar.rs"];
         let all_untracked = lines.iter().all(|l| l.starts_with("??"));
         assert!(all_untracked);
 
-        let mixed = vec!["M  foo.rs", "?? bar.rs"];
+        let mixed = ["M  foo.rs", "?? bar.rs"];
         let mixed_untracked = mixed.iter().all(|l| l.starts_with("??"));
         assert!(!mixed_untracked);
     }

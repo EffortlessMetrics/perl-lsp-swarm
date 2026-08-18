@@ -29,33 +29,19 @@ struct TestContext {
     notifications: Vec<Value>,
 }
 
-/// Compile-time path to the perl-lsp binary, set by Cargo when building integration tests.
-const CARGO_BIN_EXE: Option<&str> = option_env!("CARGO_BIN_EXE_perl-lsp");
 static REQUEST_ID: AtomicI32 = AtomicI32::new(1);
 
 impl TestContext {
     /// Find the perl-lsp binary using multiple resolution strategies
     fn find_perl_lsp_binary() -> std::process::Command {
         // Resolution order:
-        // 1. Compile-time CARGO_BIN_EXE (most reliable for `cargo test`)
-        // 2. Runtime CARGO_BIN_EXE_perl-lsp env var
-        // 3. Workspace target/debug/perl-lsp
-        // 4. Fallback to cargo run (slow but always works)
-
-        if let Some(bin_path) = CARGO_BIN_EXE {
-            if std::path::Path::new(bin_path).exists() {
-                let mut cmd = std::process::Command::new(bin_path);
-                cmd.arg("--stdio");
-                return cmd;
-            }
-        }
-
-        if let Ok(bin_path) = std::env::var("CARGO_BIN_EXE_perl-lsp") {
-            if std::path::Path::new(&bin_path).exists() {
-                let mut cmd = std::process::Command::new(bin_path);
-                cmd.arg("--stdio");
-                return cmd;
-            }
+        // Prefer an explicit candidate, then the canonical workspace product.
+        if let Ok(bin_path) = std::env::var("PERL_LSP_BIN")
+            && std::path::Path::new(&bin_path).exists()
+        {
+            let mut cmd = std::process::Command::new(bin_path);
+            cmd.arg("--stdio");
+            return cmd;
         }
 
         // Try workspace target directory
@@ -64,7 +50,7 @@ impl TestContext {
             if let Some(workspace_root) =
                 crate_dir.ancestors().find(|p| p.join("Cargo.lock").exists())
             {
-                let debug_binary = workspace_root.join("target/debug/perl-lsp");
+                let debug_binary = workspace_root.join("target/debug/perllsp");
                 if debug_binary.exists() {
                     let mut cmd = std::process::Command::new(&debug_binary);
                     cmd.arg("--stdio");
@@ -75,7 +61,7 @@ impl TestContext {
 
         // Fallback to cargo run (slow)
         let mut cmd = std::process::Command::new("cargo");
-        cmd.args(["run", "-q", "-p", "perl-lsp", "--", "--stdio"]);
+        cmd.args(["run", "-q", "-p", "perllsp", "--", "--stdio"]);
         cmd
     }
 
