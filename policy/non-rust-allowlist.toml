@@ -2006,6 +2006,21 @@ created = "2026-08-16"
 review_after = "2026-09-16"
 
 [[allow]]
+id = "non-rust-behavior-disposition-ledger"
+path = "crates/perl-incremental-parsing/behavior_disposition.json"
+kind = "config"
+language = "json"
+surface = "source"
+classification = "tooling"
+owner = "parser/incremental"
+reason = "Versioned evidence-convergence ledger classifying every compatibility test, source-test module, benchmark, and governed document in the perl-incremental-parsing adapter with owner, plane, disposition, and claim boundary (#6971)."
+covered_by = [
+  "cargo test -p perl-incremental-parsing --locked --test authority_disposition_contract",
+]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
 id = "non-rust-current-upstream-subject-manifest"
 path = "crates/perl-parser-comparison/upstream/ts-parser-perl-1.2.1.toml"
 kind = "config"
