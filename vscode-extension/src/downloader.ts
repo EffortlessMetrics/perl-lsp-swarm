@@ -1093,12 +1093,17 @@ export class BinaryDownloader {
         if (!Array.isArray(parsed)) {
           throw new Error('Release metadata response has an invalid schema');
         }
-        for (const entry of parsed) {
-          if (!isReleaseShape(entry)) {
-            throw new Error('Release metadata response has an invalid schema');
-          }
+        // One malformed legacy entry must not abort every managed route:
+        // entries without a trustworthy tag/asset shape are quarantined out
+        // of the candidate set and logged, matching the adapter's treatment
+        // of unparseable tags.
+        const malformed = parsed.filter((entry) => !isReleaseShape(entry)).length;
+        if (malformed > 0) {
+          this.outputChannel.appendLine(
+            `Managed release metadata: quarantined ${malformed} malformed list entr${malformed === 1 ? 'y' : 'ies'}.`,
+          );
         }
-        releases = parsed;
+        releases = parsed.filter(isReleaseShape);
       }
     }
 

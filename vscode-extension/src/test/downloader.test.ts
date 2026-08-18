@@ -1364,6 +1364,11 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       makeContext(),
       makeOutputChannel(),
     ) as unknown as TestDownloader;
+    // Fixtures name x86_64-unknown-linux-gnu assets; pin the host target so
+    // these controls are independent of the machine running the suite.
+    jest
+      .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
     const vscode = require('vscode');
     vscode.workspace.getConfiguration.mockReturnValue({
       get: jest.fn((key: string, defaultValue?: unknown) => {

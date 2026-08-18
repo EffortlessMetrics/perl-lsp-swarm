@@ -103,12 +103,60 @@ test('the latest channel admits an explicit prerelease; stable excludes it', () 
 });
 
 test('an omitted prerelease flag is fail-closed, not stable evidence', () => {
-  const result = select({}, [{ tag_name: 'v0.18.0', assets: [] }]);
+  // The fixture carries a matching asset, so targetState is available and the
+  // refusal can only come from the omitted prerelease flag — an adapter that
+  // wrongly mapped it to false would select this record instead.
+  const result = select({}, [
+    {
+      tag_name: 'v0.18.0',
+      assets: [{ name: `perllsp-0.18.0-${HOST_TARGET}.tar.gz` }],
+    },
+  ]);
   expect(result).toMatchObject({
     kind: 'refused',
     reason: 'release_metadata_not_proven',
     blockingReleaseId: 'release:v0.18.0',
   });
+});
+
+test('a release servable through any candidate target is available', () => {
+  // Windows ARM64 production path: native asset absent, x64 emulation asset
+  // present — the second candidate target must satisfy availability.
+  const conversion = toManagedReleaseRecords(
+    [release('v0.18.0', { assets: [{ name: 'perllsp-0.18.0-x86_64-pc-windows-msvc.zip' }] })],
+    buildManagedReleaseExpectation({
+      extensionId: 'ext',
+      extensionVersion: '0.18.0',
+      hostTarget: 'aarch64-pc-windows-msvc',
+    }),
+    ['aarch64-pc-windows-msvc', 'x86_64-pc-windows-msvc'],
+    '.zip',
+    findAsset,
+  );
+  expect(conversion.records[0]).toMatchObject({
+    target: 'aarch64-pc-windows-msvc',
+    targetState: 'available',
+  });
+  const nativeOnly = toManagedReleaseRecords(
+    [release('v0.18.0', { assets: [{ name: 'perllsp-0.18.0-aarch64-pc-windows-msvc.zip' }] })],
+    buildManagedReleaseExpectation({
+      extensionId: 'ext',
+      extensionVersion: '0.18.0',
+      hostTarget: 'aarch64-pc-windows-msvc',
+    }),
+    ['aarch64-pc-windows-msvc', 'x86_64-pc-windows-msvc'],
+    '.zip',
+    findAsset,
+  );
+  expect(nativeOnly.records[0]).toMatchObject({ targetState: 'available' });
+  const unservable = toManagedReleaseRecords(
+    [release('v0.18.0', { assets: [] })],
+    expectation,
+    [HOST_TARGET, 'x86_64-unknown-linux-musl'],
+    '.tar.gz',
+    findAsset,
+  );
+  expect(unservable.records[0]).toMatchObject({ targetState: 'unavailable' });
 });
 
 test('draft releases never satisfy any channel', () => {
