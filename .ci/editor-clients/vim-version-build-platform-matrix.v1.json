@@ -66,5 +66,9 @@
     "platform_rows_do_not_inherit": true,
     "public_artifact_does_not_inherit_exact_source": true,
     "optional_ui_features_do_not_define_baseline_support": true
+  },
+  "states": {
+    "not_proven_until_direct_receipt": "No direct receipt exists for this row; nothing is claimed either way.",
+    "harness_execution_failed": "The harness could not execute on this platform (missing/wrong executables, harness defect). This is an instrument failure and is never evidence about product support or non-support."
   }
 }

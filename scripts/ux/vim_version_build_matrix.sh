@@ -39,24 +39,49 @@ hash_file() {
   fi
 }
 
+# A row whose harness cannot execute (missing/wrong executables, harness
+# defects like the case-insensitive-filesystem fixture failure fixed in #7799)
+# is an instrument failure, never evidence about product support.
+record_harness_failure() {
+  local row=$1
+  local stage=$2
+  local meta_file=$3
+  local reason=$4
+
+  cat >"${meta_file}" <<EOF
+schema_version=1
+row=${row}
+evidence_stage=${stage}
+platform=$(uname -s 2>/dev/null || echo unknown)
+architecture=$(uname -m 2>/dev/null || echo unknown)
+state=harness_execution_failed
+reason=${reason}
+EOF
+}
+
 run_row() {
   local row=$1
   local vim_bin=$2
   local perllsp_bin=$3
   local stage=$4
 
+  local meta_file="${out}/${row}.meta"
+
+  # Instrument failure (the harness cannot execute here) is a different event
+  # from product non-support and must never be reported as one (#7766 review).
   if [[ ! -x "${vim_bin}" ]] && ! command -v "${vim_bin}" >/dev/null 2>&1; then
+    record_harness_failure "${row}" "${stage}" "${meta_file}" "vim_executable_missing"
     echo "vim matrix FAILED: ${row}: Vim executable missing: ${vim_bin}" >&2
     return 1
   fi
   if [[ ! -x "${perllsp_bin}" ]]; then
+    record_harness_failure "${row}" "${stage}" "${meta_file}" "perllsp_executable_missing"
     echo "vim matrix FAILED: ${row}: perllsp executable missing: ${perllsp_bin}" >&2
     return 1
   fi
 
   local version_file="${out}/${row}.vim-version.txt"
   local receipt_file="${out}/${row}.journey.json"
-  local meta_file="${out}/${row}.meta"
 
   "${vim_bin}" --version >"${version_file}"
   local vim_digest
@@ -65,8 +90,9 @@ run_row() {
   perllsp_digest=$(hash_file "${perllsp_bin}")
 
   if [[ ${row} == linux-current-9.2* ]] && ! grep -Eq 'Vi IMproved 9\.2|VIM - Vi IMproved 9\.2' "${version_file}"; then
+    record_harness_failure "${row}" "${stage}" "${meta_file}" "vim_current_is_not_9.2"
     echo "vim matrix FAILED: ${row}: VIM_CURRENT is not a Vim 9.2 build" >&2
-    head -5 "${version_file}" >&2
+    head -n 5 "${version_file}" >&2
     return 1
   fi
 
@@ -110,12 +136,17 @@ reason=PUBLIC_PERLLSP_not_supplied
 EOF
 fi
 
+public_artifact_status=not_proven
+if [[ -n ${PUBLIC_PERLLSP:-} ]]; then
+  public_artifact_status=proven_by_run
+fi
+
 cat >"${out}/matrix-summary.txt" <<EOF
 schema_version=1
 contract=.ci/editor-clients/vim-version-build-platform-matrix.v1.json
 support_floor=linux-support-floor
 current=linux-current-9.2
-public_artifact=$(if [[ -n ${PUBLIC_PERLLSP:-} ]]; then echo proven_by_run; else echo not_proven; fi)
+public_artifact=${public_artifact_status}
 windows=not_proven_until_direct_receipt
 macos=not_proven_until_direct_receipt
 EOF
