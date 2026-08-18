@@ -18,6 +18,8 @@ mod tasks;
 mod test_support;
 mod types;
 mod utils;
+#[cfg(feature = "legacy")]
+use tasks::corpus;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
 use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::gate_policy::GatePolicyProfile;
@@ -57,6 +59,8 @@ use tasks::{
     validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
     workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
 };
+#[cfg(feature = "parser-tasks")]
+use tasks::{bindings, compare_parsers, highlight};
 use types::TestSuite;
 #[cfg(any(feature = "legacy", feature = "parser-tasks"))]
 use types::*;
