@@ -1,9 +1,9 @@
-//! Transport-neutral completion candidate identity and merge policy.
+//! Transport-neutral completion candidate identity, merge, and finalization policy.
 //!
 //! Providers do not all have canonical semantic identity yet. The candidate
 //! envelope therefore keeps an explicit legacy-label identity for compatibility
 //! while allowing migrated providers to attach semantic or source-anchored
-//! identity before LSP presentation.
+//! identity and typed rank dimensions before LSP presentation.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
@@ -107,6 +107,69 @@ fn confidence_strength(confidence: SemanticConfidence) -> u8 {
     }
 }
 
+/// Ordered rank class used for one completion relevance dimension.
+///
+/// Variants are declared from best to worst so normal `Ord` comparison yields
+/// the final completion order directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CompletionRankClass {
+    /// Exact semantic fit for the request context.
+    Exact,
+    /// Strong but not exact fit.
+    Strong,
+    /// Neutral compatibility value when no typed rank is supplied yet.
+    Neutral,
+    /// Useful qualified result with explicit limitations.
+    Qualified,
+    /// Bounded fallback result.
+    Fallback,
+    /// Legacy compatibility result awaiting provider migration.
+    Legacy,
+}
+
+/// Typed completion rank dimensions evaluated at the final assembly boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionRankKey {
+    /// Semantic fit to the expected value, name, call, or key context.
+    pub semantic_fit: CompletionRankClass,
+    /// Visibility or import status at the request position.
+    pub visibility: CompletionRankClass,
+    /// Fit between the candidate and the resolved receiver.
+    pub receiver_fit: CompletionRankClass,
+    /// Lexical or scope distance; lower values rank first.
+    pub scope_distance: u32,
+    /// Relative authority of the candidate's source tier.
+    pub source_tier: CompletionRankClass,
+    /// Exact, qualified, fallback, or legacy disposition.
+    pub fallback: CompletionRankClass,
+    /// Prefix or match quality for this request.
+    pub match_quality: CompletionRankClass,
+    /// Existing provider sort key retained during staged migration.
+    pub compatibility_sort: String,
+}
+
+impl CompletionRankKey {
+    /// Preserve the current provider-defined order while typed rank dimensions
+    /// are introduced one candidate family at a time.
+    #[must_use]
+    pub fn compatibility(item: &CompletionItem) -> Self {
+        Self {
+            semantic_fit: CompletionRankClass::Neutral,
+            visibility: CompletionRankClass::Neutral,
+            receiver_fit: CompletionRankClass::Neutral,
+            scope_distance: 0,
+            source_tier: CompletionRankClass::Neutral,
+            fallback: CompletionRankClass::Neutral,
+            match_quality: CompletionRankClass::Neutral,
+            compatibility_sort: item
+                .sort_text
+                .as_deref()
+                .unwrap_or(item.label.as_ref())
+                .to_string(),
+        }
+    }
+}
+
 /// Conflict that prevents two candidates with one identity from being merged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CompletionCandidateConflict {
@@ -133,6 +196,8 @@ pub struct CompletionCandidate {
     pub item: CompletionItem,
     /// Proof, confidence, freshness, and generation evidence.
     pub evidence: CompletionCandidateEvidence,
+    /// Typed rank dimensions used at the final assembly boundary.
+    pub rank: CompletionRankKey,
     /// Exact source or generator anchor when available.
     pub source_anchor: Option<SourceAnchor>,
     /// Receiver package identity when the candidate is receiver-dependent.
@@ -149,14 +214,16 @@ pub struct CompletionCandidate {
 
 impl CompletionCandidate {
     /// Wrap an unmigrated provider item while preserving current label-based
-    /// deduplication behavior.
+    /// deduplication and ordering behavior.
     #[must_use]
     pub fn legacy(item: CompletionItem) -> Self {
         let identity = CompletionCandidateIdentity::LegacyLabel(item.label.to_string());
+        let rank = CompletionRankKey::compatibility(&item);
         Self {
             identity,
             item,
             evidence: CompletionCandidateEvidence::default(),
+            rank,
             source_anchor: None,
             receiver_package: None,
             defining_package: None,
@@ -173,6 +240,7 @@ impl CompletionCandidate {
         projection: impl Into<String>,
         item: CompletionItem,
     ) -> Self {
+        let rank = CompletionRankKey::compatibility(&item);
         Self {
             identity: CompletionCandidateIdentity::Semantic {
                 entity_id,
@@ -180,6 +248,7 @@ impl CompletionCandidate {
             },
             item,
             evidence: CompletionCandidateEvidence::default(),
+            rank,
             source_anchor: None,
             receiver_package: None,
             defining_package: None,
@@ -197,6 +266,7 @@ impl CompletionCandidate {
         projection: impl Into<String>,
         item: CompletionItem,
     ) -> Self {
+        let rank = CompletionRankKey::compatibility(&item);
         Self {
             identity: CompletionCandidateIdentity::SourceAnchored {
                 owner: owner.into(),
@@ -205,6 +275,7 @@ impl CompletionCandidate {
             },
             item,
             evidence: CompletionCandidateEvidence::default(),
+            rank,
             source_anchor: Some(anchor),
             receiver_package: None,
             defining_package: None,
@@ -218,6 +289,13 @@ impl CompletionCandidate {
     #[must_use]
     pub fn with_evidence(mut self, evidence: CompletionCandidateEvidence) -> Self {
         self.evidence = evidence;
+        self
+    }
+
+    /// Attach typed rank dimensions for final assembly.
+    #[must_use]
+    pub fn with_rank(mut self, rank: CompletionRankKey) -> Self {
+        self.rank = rank;
         self
     }
 
@@ -241,17 +319,42 @@ impl CompletionCandidate {
     }
 }
 
-/// Merge identity-bearing completion candidates, then apply the existing stable
-/// presentation ordering.
+/// Result of the single completion merge, rank, and cap boundary.
+#[derive(Debug, Clone)]
+pub struct CompletionFinalization {
+    /// Final identity-merged and ranked candidates after the result cap.
+    pub candidates: Vec<CompletionCandidate>,
+    /// Whether additional admitted candidates existed beyond the result cap.
+    pub is_incomplete: bool,
+}
+
+/// Merge identity-bearing candidates, rank the complete admitted set once, and
+/// then apply the result cap.
 ///
-/// Legacy candidates preserve the previous label-based behavior. Explicit
-/// identities merge only when their insertion, anchor, generation, and owner
-/// evidence is compatible. Conflicting candidates remain separate and carry a
-/// typed conflict instead of silently selecting provider order.
+/// No provider may append candidates after this boundary. A later runtime PR
+/// can move the LSP request cap onto this API without changing candidate merge
+/// or ranking semantics.
 #[must_use]
-pub fn merge_and_sort_completion_candidates(
+pub fn finalize_completion_candidates(
+    candidates: Vec<CompletionCandidate>,
+    cap: usize,
+) -> CompletionFinalization {
+    let mut candidates = merge_completion_candidates(candidates);
+    candidates.sort_by(completion_candidate_order);
+    let is_incomplete = candidates.len() > cap;
+    candidates.truncate(cap);
+    CompletionFinalization { candidates, is_incomplete }
+}
+
+/// Test-only shorthand for the uncapped finalization path.
+#[cfg(test)]
+fn merge_and_sort_completion_candidates(
     candidates: Vec<CompletionCandidate>,
 ) -> Vec<CompletionCandidate> {
+    finalize_completion_candidates(candidates, usize::MAX).candidates
+}
+
+fn merge_completion_candidates(candidates: Vec<CompletionCandidate>) -> Vec<CompletionCandidate> {
     if candidates.is_empty() {
         return candidates;
     }
@@ -314,10 +417,6 @@ pub fn merge_and_sort_completion_candidates(
         indexes.entry(identity).or_default().push(index);
     }
 
-    merged.sort_by(|left, right| {
-        completion_item_order(&left.item, &right.item)
-            .then_with(|| left.identity.cmp(&right.identity))
-    });
     merged
 }
 
@@ -411,20 +510,59 @@ fn candidate_preference(left: &CompletionCandidate, right: &CompletionCandidate)
     left.evidence
         .strength()
         .cmp(&right.evidence.strength())
-        .then_with(|| reverse_item_order(&left.item, &right.item))
+        .then_with(|| completion_candidate_order(right, left))
 }
 
-fn reverse_item_order(left: &CompletionItem, right: &CompletionItem) -> Ordering {
-    completion_item_order(right, left)
+fn completion_candidate_order(left: &CompletionCandidate, right: &CompletionCandidate) -> Ordering {
+    evidence_order(left)
+        .cmp(&evidence_order(right))
+        .then_with(|| left.rank.semantic_fit.cmp(&right.rank.semantic_fit))
+        .then_with(|| left.rank.visibility.cmp(&right.rank.visibility))
+        .then_with(|| left.rank.receiver_fit.cmp(&right.rank.receiver_fit))
+        .then_with(|| left.rank.scope_distance.cmp(&right.rank.scope_distance))
+        .then_with(|| left.rank.source_tier.cmp(&right.rank.source_tier))
+        .then_with(|| left.rank.fallback.cmp(&right.rank.fallback))
+        .then_with(|| left.rank.match_quality.cmp(&right.rank.match_quality))
+        .then_with(|| left.rank.compatibility_sort.cmp(&right.rank.compatibility_sort))
+        .then_with(|| left.item.kind.cmp(&right.item.kind))
+        .then_with(|| left.item.label.cmp(&right.item.label))
+        .then_with(|| left.identity.cmp(&right.identity))
 }
 
-fn completion_item_order(left: &CompletionItem, right: &CompletionItem) -> Ordering {
-    let left_sort = left.sort_text.as_deref().unwrap_or(left.label.as_ref());
-    let right_sort = right.sort_text.as_deref().unwrap_or(right.label.as_ref());
-    left_sort
-        .cmp(right_sort)
-        .then_with(|| left.kind.cmp(&right.kind))
-        .then_with(|| left.label.cmp(&right.label))
+fn evidence_order(candidate: &CompletionCandidate) -> (u8, u8, u8) {
+    (
+        freshness_order(candidate.evidence.freshness),
+        proof_order(candidate.evidence.proof),
+        confidence_order(candidate.evidence.confidence),
+    )
+}
+
+fn freshness_order(freshness: SemanticFreshness) -> u8 {
+    match freshness {
+        SemanticFreshness::Fresh => 0,
+        SemanticFreshness::NotApplicable => 1,
+        SemanticFreshness::Unknown => 2,
+        SemanticFreshness::Stale => 3,
+        _ => 4,
+    }
+}
+
+fn proof_order(proof: CompletionCandidateProof) -> u8 {
+    match proof {
+        CompletionCandidateProof::Exact => 0,
+        CompletionCandidateProof::Qualified => 1,
+        CompletionCandidateProof::LegacyFallback => 2,
+    }
+}
+
+fn confidence_order(confidence: SemanticConfidence) -> u8 {
+    match confidence {
+        SemanticConfidence::Known(Confidence::High) => 0,
+        SemanticConfidence::Known(Confidence::Medium) => 1,
+        SemanticConfidence::Known(Confidence::Low) => 2,
+        SemanticConfidence::Unknown => 3,
+        _ => 4,
+    }
 }
 
 #[cfg(test)]
@@ -451,6 +589,15 @@ mod tests {
             commit_characters: None,
             label_details: None,
         }
+    }
+
+    fn rank(
+        candidate: &CompletionCandidate,
+        semantic_fit: CompletionRankClass,
+    ) -> CompletionRankKey {
+        let mut rank = CompletionRankKey::compatibility(&candidate.item);
+        rank.semantic_fit = semantic_fit;
+        rank
     }
 
     #[test]
@@ -606,5 +753,122 @@ mod tests {
         assert!(result.iter().all(|candidate| {
             candidate.conflicts.contains(&CompletionCandidateConflict::ReceiverOwner)
         }));
+    }
+
+    #[test]
+    fn typed_rank_beats_compatibility_sort() {
+        let exact =
+            CompletionCandidate::semantic(EntityId(11), "method", item("exact", None, "900"));
+        let exact_rank = rank(&exact, CompletionRankClass::Exact);
+        let exact = exact.with_rank(exact_rank);
+
+        let fallback =
+            CompletionCandidate::semantic(EntityId(12), "method", item("fallback", None, "001"));
+        let fallback_rank = rank(&fallback, CompletionRankClass::Fallback);
+        let fallback = fallback.with_rank(fallback_rank);
+
+        let result = merge_and_sort_completion_candidates(vec![fallback, exact]);
+        assert_eq!(result[0].item.label, "exact");
+        assert_eq!(result[1].item.label, "fallback");
+    }
+
+    #[test]
+    fn current_evidence_precedes_stale_semantic_fit() {
+        let stale = CompletionCandidate::semantic(
+            EntityId(13),
+            "method",
+            item("stale_exact_fit", None, "001"),
+        )
+        .with_evidence(CompletionCandidateEvidence {
+            producer: SemanticProducer::SemanticAnalyzer,
+            proof: CompletionCandidateProof::Exact,
+            confidence: SemanticConfidence::Known(Confidence::High),
+            freshness: SemanticFreshness::Stale,
+            generation: SourceGeneration::known("generation-1"),
+        });
+        let stale_rank = rank(&stale, CompletionRankClass::Exact);
+        let stale = stale.with_rank(stale_rank);
+
+        let current = CompletionCandidate::semantic(
+            EntityId(14),
+            "method",
+            item("current_fallback", None, "999"),
+        )
+        .with_evidence(CompletionCandidateEvidence {
+            producer: SemanticProducer::WorkspaceIndex,
+            proof: CompletionCandidateProof::LegacyFallback,
+            confidence: SemanticConfidence::Known(Confidence::Low),
+            freshness: SemanticFreshness::Fresh,
+            generation: SourceGeneration::known("generation-2"),
+        });
+        let current_rank = rank(&current, CompletionRankClass::Fallback);
+        let current = current.with_rank(current_rank);
+
+        let result = merge_and_sort_completion_candidates(vec![stale, current]);
+        assert_eq!(result[0].item.label, "current_fallback");
+        assert_eq!(result[1].item.label, "stale_exact_fit");
+    }
+
+    #[test]
+    fn cap_is_applied_after_typed_rank() {
+        let first =
+            CompletionCandidate::semantic(EntityId(21), "method", item("fallback_a", None, "001"));
+        let first_rank = rank(&first, CompletionRankClass::Fallback);
+        let first = first.with_rank(first_rank);
+
+        let second =
+            CompletionCandidate::semantic(EntityId(22), "method", item("fallback_b", None, "002"));
+        let second_rank = rank(&second, CompletionRankClass::Fallback);
+        let second = second.with_rank(second_rank);
+
+        let exact =
+            CompletionCandidate::semantic(EntityId(23), "method", item("exact", None, "999"));
+        let exact_rank = rank(&exact, CompletionRankClass::Exact);
+        let exact = exact.with_rank(exact_rank);
+
+        let result = finalize_completion_candidates(vec![first, second, exact], 1);
+        assert!(result.is_incomplete);
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].item.label, "exact");
+    }
+
+    #[test]
+    fn finalization_reports_cap_boundaries() {
+        let make = |id, label: &str| {
+            CompletionCandidate::semantic(EntityId(id), "method", item(label, None, label))
+        };
+
+        let below = finalize_completion_candidates(vec![make(31, "a")], 2);
+        assert!(!below.is_incomplete);
+        assert_eq!(below.candidates.len(), 1);
+
+        let equal = finalize_completion_candidates(vec![make(32, "a"), make(33, "b")], 2);
+        assert!(!equal.is_incomplete);
+        assert_eq!(equal.candidates.len(), 2);
+
+        let above =
+            finalize_completion_candidates(vec![make(34, "a"), make(35, "b"), make(36, "c")], 2);
+        assert!(above.is_incomplete);
+        assert_eq!(above.candidates.len(), 2);
+    }
+
+    #[test]
+    fn finalization_is_stable_across_input_order() {
+        let candidates = vec![
+            CompletionCandidate::semantic(EntityId(41), "method", item("b", None, "200")),
+            CompletionCandidate::semantic(EntityId(42), "method", item("a", None, "100")),
+            CompletionCandidate::semantic(EntityId(43), "method", item("c", None, "300")),
+        ];
+        let mut reversed = candidates.clone();
+        reversed.reverse();
+
+        let first = finalize_completion_candidates(candidates, usize::MAX);
+        let second = finalize_completion_candidates(reversed, usize::MAX);
+        let first_ids: Vec<_> =
+            first.candidates.iter().map(|candidate| candidate.identity.clone()).collect();
+        let second_ids: Vec<_> =
+            second.candidates.iter().map(|candidate| candidate.identity.clone()).collect();
+
+        assert_eq!(first_ids, second_ids);
     }
 }

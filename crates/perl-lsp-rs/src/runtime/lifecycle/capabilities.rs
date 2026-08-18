@@ -2084,9 +2084,8 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        assert_eq!(
+        assert!(
             server.client_capabilities.lock().diagnostic_refresh_support,
-            true,
             "spec-conformant `workspace.diagnostics.refreshSupport` must enable refresh"
         );
     }
@@ -2105,9 +2104,8 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        assert_eq!(
+        assert!(
             server.client_capabilities.lock().diagnostic_refresh_support,
-            true,
             "`lsp-types`-style `workspace.diagnostic.refreshSupport` must still enable refresh"
         );
     }
@@ -2123,9 +2121,8 @@ mod tests {
         });
 
         let _ = server.handle_initialize(Some(params));
-        assert_eq!(
-            server.client_capabilities.lock().diagnostic_refresh_support,
-            false,
+        assert!(
+            !server.client_capabilities.lock().diagnostic_refresh_support,
             "neither workspace diagnostic-refresh spelling advertised: must stay false"
         );
     }
