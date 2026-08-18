@@ -77,7 +77,10 @@ void test('managed-binary smoke proves TypeScript authority before compilation o
   }
 
   assert.ok(setupIndex < shimTestIndex, 'shim tests require the installed repository toolchain');
-  assert.ok(shimTestIndex < authorityIndex, 'shim parser tests must precede the real authority probe');
+  assert.ok(
+    shimTestIndex < authorityIndex,
+    'shim parser tests must precede the real authority probe',
+  );
   assert.ok(setupIndex < authorityIndex, 'authority must run after repository toolchain setup');
   assert.ok(authorityIndex < compileIndex, 'authority must run before compilation');
   assert.ok(authorityIndex < integrationIndex, 'authority must run before integration smoke');
@@ -87,8 +90,11 @@ void test('managed-binary smoke proves TypeScript authority before compilation o
     'the shared authority step must cover Windows, Ubuntu, and macOS',
   );
   assert.equal(
-    (source.match(/run: node --test scripts\/check-typescript-authority-windows-shim\.test\.js/g) ?? [])
-      .length,
+    (
+      source.match(
+        /run: node --test scripts\/check-typescript-authority-windows-shim\.test\.js/g,
+      ) ?? []
+    ).length,
     1,
     'the shared matrix job should run the shim parser fixtures exactly once',
   );
