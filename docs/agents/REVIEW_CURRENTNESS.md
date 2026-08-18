@@ -1,36 +1,270 @@
+# Review and proof currentness
+
+This document defines when later changes can alter an existing review judgment. It is
+not the operational review procedure.
+
+```text
+Claude Code review operation
+→ CLAUDE.md and .claude/skills/*
+
+Codex review operation
+→ AGENTS.md and .agents/skills/*
+
+shared currentness semantics
+→ this document
+```
+
+Live integration posture remains a separate GitHub fact.
+
+## Three evidence subjects
+
+Keep three questions distinct:
+
+1. **Candidate evidence:** what the pull request's cumulative change establishes.
+2. **Integration evidence:** whether that candidate combines safely with the current
+   base or merge group.
+3. **Landed evidence:** what the final squash result establishes on `main`.
+
+Movement in one does not automatically invalidate the others.
+
+## Four identities
+
+Do not collapse these identities into one freshness rule.
+
+| Subject | Identity | What can invalidate it |
+| --- | --- | --- |
+| semantic candidate and proof | the cumulative PR change and the named claim/proof subjects | a later PR commit that can change the claim, implementation, production route, or tested seam |
+| base integration | the candidate combined with the current base | an actual conflict or demonstrated combined-tree interaction |
+| live integration status | the current PR head SHA, as the commit GitHub attaches status contexts to | any branch push; required contexts are recorded against a SHA, so a new head has no statuses until runs report against it |
+| merge race | the current PR head SHA | any branch push; this identity is used only for compare-and-swap protection at merge |
+
+`main` advancing without a conflict or concrete combined-tree interaction changes none
+of the candidate's semantic evidence. A new PR head does not erase completed proof for
+subjects the new commit cannot affect. The merge-race SHA is not a review freshness
+policy.
+
+The third and fourth rows share a SHA but are not the same claim, and the difference
+decides real cases. **Required live statuses remain head-bound integration facts.**
+GitHub records a required context against the commit it ran on, so a successful run on
+an earlier head does not satisfy that context on the current head — not as a matter of
+this contract's preference, but because branch protection reads the current head's
+statuses and finds nothing there.
+
+That is not a licence to churn, and the distinction is exactly where the two rules meet:
+
+- semantic proof from an earlier head stays usable when the later commits cannot affect
+  its subject. Do not re-review or re-run it to manufacture a receipt;
+- a *required* status that has not reported on the current head is **pending**, not
+  green-by-inheritance and not stale. The resolution is to let the run report, which
+  yields `PR_IN_FLIGHT` — never a rebase, an empty commit, or a push to retrigger.
+
+Reading an older green as satisfying a live required check is the failure this row
+exists to prevent. It looks like the no-churn rule and is its opposite: the no-churn
+rule declines to *invalidate* evidence a later commit cannot affect, while this would
+*fabricate* an integration fact GitHub never recorded.
+
+## Review is semantic, not exact-head
+
+A review is a judgment about a claim, implementation, proof, production path, risk,
+and current substantive review result. The PR head SHA identifies the code currently
+visible on GitHub, but it is not a review-validity token.
+
+Do not require:
+
+- a review submitted on the latest commit solely because the SHA changed;
+- a material-claim digest;
+- `review-start` / `review-done` receipt comments;
+- a full deep review after every repair push.
+
+The durable review record is the useful GitHub review itself:
+
+- submitted review conclusions and substantive result;
+- inline findings;
+- replies and evidence-backed dispositions;
+- follow-up review of the seams changed by later repairs.
+
+A clean review is valid and should state concisely what was checked and what remains
+unproved.
+
+## Semantic invalidation
+
+Later work changes review currentness only where it can change the conclusion.
+
+| Later change | Review response |
+| --- | --- |
+| formatting or editorial cleanup | no review refresh unless meaning changed |
+| generated receipt or inventory refresh | verify the generator/input relation; no full review |
+| stronger or additional tests with unchanged production behavior | review proof implications only |
+| fix for one review finding | verify that finding, its proof, and the changed seam |
+| local implementation repair | focused behavior and changed-seam review |
+| material claim or non-goal change | review the changed claim boundary |
+| production route or consumer change | review reachability and dependent conclusions |
+| authority, compatibility, security, packaging, migration, support, or rollback change | review the affected risk dimensions |
+| actual conflict resolution | review the conflict-affected seam and proof |
+| combined-tree failure and repair | review the concrete interaction and repair |
+
+A SHA change by itself appears nowhere in this table.
+
+## Review-forward repair
+
+Review is cumulative. Earlier findings and clean conclusions remain useful unless
+later work materially changes their subject.
+
+After a repair:
+
+```text
+identify changed semantic subjects
+→ rerun affected proof
+→ verify addressed findings
+→ review newly changed risk/claim dimensions through the provider-native flow
+→ update the substantive review result
+→ continue
+```
+
+Do not restart the entire review sequence merely to manufacture a new current-head
+receipt. A result may remain `REVIEW_CURRENT` after a non-semantic edit, become
+`CHANGES_REQUIRED` after a substantive regression, or become `NOT_PROVEN` when the
+repair invalidates evidence and reliable replacement proof is missing.
+
+## Durable semantic review record
+
+A GitHub `COMMENTED` review is evidence that somebody submitted text. It does not prove
+that the cumulative claim received a substantive review, and zero unresolved threads
+does not supply the missing judgment.
+
+A `REVIEW_CURRENT` review therefore carries one machine-readable marker in the same
+submitted review body:
+
+```text
+<!-- semantic-review:v1 {"head":"<reviewed-head>","merge_base":"<merge-base>","pr":<number>,"result":"REVIEW_CURRENT","subject_sha256":"<cumulative-diff-digest>"} -->
+```
+
+Generate it only after the useful review record is complete:
+
+```bash
+python3 scripts/ci/check-pr-semantic-review-currentness.py   <pr> <owner/repo> --emit-marker
+```
+
+The digest covers `git diff --binary --full-index <merge-base> <reviewed-head>`. The
+marker is not a requirement to re-review merely because a SHA changed. It makes the
+reviewed subject falsifiable and lets the pre-merge guard distinguish a real cumulative
+judgment from an empty comment.
+
+Automation carries the marker forward only through an intentionally narrow neutral
+class: no candidate change, or whitespace-only edits in already-reviewed `.md`/`.txt`
+files. It never treats whitespace changes in code or configuration as neutral because
+indentation and spacing can be semantic. A prose extension does not buy the whole file
+that exemption. Skill trees, runbooks, and this contract all publish executable
+commands inside fenced blocks, where inserting one space changes what runs, so fenced
+content is compared byte-for-byte and any change inside a fence yields `NOT_PROVEN`.
+Any other later change yields `NOT_PROVEN` until focused review publishes a new
+marker. Human review can determine that a broader
+change preserves the conclusion; the mechanical checker does not invent that judgment.
+
+## GitHub-native merge blockers
+
+Substantive review and live integration remain separate. A useful current review must
+reach `REVIEW_CURRENT` before checks and mergeability can establish
+`INTEGRATION_READY`.
+
+The live merge decision then remains governed by current GitHub facts:
+
+- draft state;
+- unresolved review threads;
+- current `CHANGES_REQUESTED` reviews;
+- deliberately requested reviewers still pending where their review is part of the
+  claim;
+- required checks;
+- actual conflicts and mergeability;
+- rulesets, merge queue, and applicable release/changelog policy.
+
+Pending GitHub-owned transitions yield `PR_IN_FLIGHT`; concrete integration blockers
+yield `MERGE_BLOCKED`; missing reliable integration data yields `NOT_PROVEN`. None of
+those states automatically changes a still-current substantive review.
+
+Green checks or textual mergeability cannot create `REVIEW_CURRENT`. Stale bot or
+human review timestamps may be reported as context. They do not block by themselves.
+
+## Squash-merge currentness
+
+This repository squash-merges.
+
+```text
+candidate remains conflict-free
++ unrelated main work lands
+→ do nothing
+```
+
+Do not rebase, update the branch, create empty commits, replay full CI, or rerun review
+merely because `main` advanced.
+
 If Git reports a real conflict, the later lane resolves it and refreshes only the
 affected proof/review. If an explicit stack or combined-tree check exposes a real
 interaction, repair that interaction rather than predicting overlap in advance.
 
+### Rebase as integration work
+
+Rebase is an ordinary integration tool, not a freshness ceremony. Its main accepted
+use is while resolving an actual merge conflict. The candidate lane rebases, resolves
+the conflict, and refreshes the proof and review subjects affected by the new combined
+tree and the resolution.
+
+The lane owner may also rebase when refreshing the base materially simplifies active
+work or reduces a concrete integration risk. It does not need to be the final action,
+and there is no mechanical one-rebase limit. Commit distance can inform that judgment,
+but it is not an acceptance condition.
+
+Behind-only movement still requires no action. Do not rebase after every unrelated
+`main` commit, push empty commits, or keep a PR at exact head merely to retrigger CI.
+Repeated rebases are churn when they have no conflict, interaction, or active-work
+reason; distinct integration work may justify more than one.
+
 ## Check attribution
 
 A failing check is evidence about a candidate only if it ran on that candidate and
-does not fail without it. Two questions come before recording one as a finding:
+does not fail without it. Neither half is settled by reading the red badge, and both
+answers can be wrong in opposite directions.
 
-1. **Did it run on the live head?** A check anchored to a superseded SHA describes a
-   commit that no longer exists in the branch. Cancelled lanes are the common case —
-   a newer push supersedes an in-flight run, and the cancellation surfaces as a
-   failure. Read the run: lanes that know they were cancelled usually say so.
-2. **Does it reproduce on the base?** Run the same command on a clean base checkout.
-   A gate already red on `main` is a repository condition — name it, file it, and
-   record it as not attributable. It is not a defect in a candidate that never
-   touched the failing crate.
+1. **Did the run reach a verdict, and does that verdict still apply?** A superseded
+   SHA does not by itself refute a failure. Two outcomes surface identically:
 
-A failure that appears on both trees is not automatically the same failure. Before
-classifying it as a base condition, compare the command, relevant environment, exit
-status, and failure signature at the PR merge base (or the nearest equivalent
-candidate/base pair). If the base fails a different test, error, or path, the
-candidate still owns its own failure; preserve both findings instead of cancelling
-one as a reproduction.
+   - *cancelled or never completed* — a newer push aborted an in-flight run. This
+     carries no verdict either way. Discard it as evidence; the run at the current
+     head answers. Lanes that know they were cancelled usually say so in their logs;
+   - *genuinely failed* — the run reached a real assertion, compile error, or command
+     failure. Its SHA is superseded, but the finding stands until the seam it names
+     actually changed. Carry it forward and revalidate it at the current head, or show
+     that the later commits touched the failing seam. A documentation-only push does
+     not refute a test failure.
 
-Likewise, an unrelated later commit does not erase a genuine candidate failure.
-Carry that failure forward until a later head changes the affected seam, removes the
-failure, or supplies discriminating proof that the failure was an attribution
-artifact. Review currentness is about the claim and its evidence, not merely whether
-the branch received another commit.
+   Read the run, not the badge. Only the first outcome makes the result stale.
 
-Both checks are cheap and both failures are expensive in the same way: they send an
-author to repair code that is not broken, and the real defect stays unfiled.
+2. **Does it reproduce without the candidate?** The comparison tree is the pull
+   request's **merge base**, not current `main`: a candidate inherits what was broken
+   where it branched, and `main` may have been repaired since. Two failures on two
+   trees are not automatically the same failure, so assigning this one to the base
+   requires all three:
+
+   - the same check identity — that gate and job, not a locally approximated command;
+   - the same failure signature — the same failing test, assertion, diagnostic, or
+     path, since a command can exit nonzero on two trees for unrelated reasons;
+   - that signature observed at the merge base.
+
+   If the base fails a *different* test or error, the candidate still owns its own
+   failure: preserve both findings rather than cancelling one as a reproduction. With
+   any of the three missing the failure is `NOT_PROVEN`, which is not the same as
+   base-owned. "It also fails on main" names the wrong tree, and on its own it can
+   retire a regression the candidate introduced.
+
+Each provider's `verify-live-ci` owns the integration-side procedure and its cheap
+discriminators — merge-base ancestry
+(`git merge-base --is-ancestor <repair> <pr-merge-base>`) and by-construction reasoning
+over the full changed-path set. This section defines only what the two answers mean for
+review currentness.
+
+Both questions are cheap; both wrong answers are expensive. A false attribution to the
+candidate sends an author to repair code that is not broken. A false attribution to the
+base retires a real regression as somebody else's problem and leaves it unfiled.
 
 A gate that fails on `main`, blocks nothing, and is labelled flaky at a 100% failure
 rate is worse than a missing gate. A missing gate is visibly absent; this one looks
@@ -48,7 +282,7 @@ gh pr merge <n> --squash --match-head-commit <current-head-sha>
 ```
 
 This is merge race protection. It is not review currentness and does not justify
-exact-head review comments.
+exact-head review comments, branch refreshes, or CI replay.
 
 ## Landed reconciliation
 

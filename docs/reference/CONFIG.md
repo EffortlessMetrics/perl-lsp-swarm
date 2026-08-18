@@ -1353,21 +1353,36 @@ Helix has built-in Perl language support, but its default Perl language server i
 language:
 
 ```toml
-[language-server.perl-lsp]
+[language-server.perllsp]
 command = "perllsp"
 args = ["--stdio"]
 
 [[language]]
 name = "perl"
-language-servers = ["perl-lsp"]
+language-servers = ["perllsp"]
+roots = [".perl-lsp.toml", "Makefile.PL", "Build.PL", "cpanfile", "dist.ini"]
+file-types = [
+  "pl",
+  "pm",
+  "t",
+  "psgi",
+  { glob = "latexmkrc" },
+  { glob = ".latexmkrc" },
+]
+shebangs = ["perl"]
 
-[language-server.perl-lsp.config.perl.workspace]
+[language-server.perllsp.config.perl.workspace]
 includePaths = ["lib", ".", "local/lib/perl5"]
 useSystemInc = false
 
-[language-server.perl-lsp.config.perl.inlayHints]
+[language-server.perllsp.config.perl.inlayHints]
 enabled = true
 ```
+
+Helix's built-in `perl` entry also owns Raku/NQP/P6 file extensions, so the
+`file-types` narrowing above keeps the Perl 5 server off Raku-family files. The
+checked base registration is
+[`docs/examples/helix/languages.toml`](../examples/helix/languages.toml).
 
 #### Zed (`settings.json`)
 
