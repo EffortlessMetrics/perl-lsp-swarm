@@ -1,5 +1,6 @@
 //! Pure, serial pre-push proof planning for #5446.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use color_eyre::eyre::{ContextCompat, Result, bail};
@@ -25,11 +26,28 @@ pub struct PrePushProofPlan {
     pub head_sha: String,
     pub change_set_digest: String,
     pub changed_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extension_change_classes: Vec<ExtensionChangeClass>,
     pub affected_packages: Vec<String>,
     pub reverse_dependents: Vec<String>,
     pub selected: Vec<ProofStep>,
     pub deferred: Vec<ProofStep>,
     pub posture: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionChangeClass {
+    Source,
+    Tests,
+    Scripts,
+    Dependency,
+    Tsconfig,
+    BundlePackage,
+    Authoring,
+    WorkflowAction,
+    DocsOnly,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -105,11 +123,12 @@ fn build_plan(input: PlannerInput) -> PrePushProofPlan {
         risk_tags,
     } = input;
     let change_set_digest = digest(&base_sha, &head_sha, &changed_paths);
+    let extension_change_classes = classify_extension_paths(&changed_paths);
     let mut selected = Vec::new();
     let mut deferred = Vec::new();
     let mut posture = "PROCEED";
 
-    if is_typescript_only(&changed_paths) {
+    if is_extension_typescript_only(&changed_paths, &extension_change_classes) {
         selected.extend([
             ProofStep {
                 class: "extension_format".to_string(),
@@ -255,6 +274,7 @@ fn build_plan(input: PlannerInput) -> PrePushProofPlan {
         head_sha,
         change_set_digest,
         changed_paths,
+        extension_change_classes,
         affected_packages,
         reverse_dependents,
         selected,
@@ -263,11 +283,99 @@ fn build_plan(input: PlannerInput) -> PrePushProofPlan {
     }
 }
 
-fn is_typescript_only(paths: &[String]) -> bool {
+fn classify_extension_paths(paths: &[String]) -> Vec<ExtensionChangeClass> {
+    paths
+        .iter()
+        .filter_map(|path| classify_extension_path(path))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn classify_extension_path(path: &str) -> Option<ExtensionChangeClass> {
+    let is_typescript = path.ends_with(".ts") || path.ends_with(".tsx");
+    if path.starts_with("vscode-extension/src/test/") && is_typescript {
+        return Some(ExtensionChangeClass::Tests);
+    }
+    if path.starts_with("vscode-extension/src/") && is_typescript {
+        return Some(ExtensionChangeClass::Source);
+    }
+    if path.starts_with("vscode-extension/test/") {
+        return Some(ExtensionChangeClass::Tests);
+    }
+    if path.starts_with("vscode-extension/scripts/")
+        && (path.ends_with(".js") || path.ends_with(".cjs") || path.ends_with(".mjs"))
+    {
+        return Some(ExtensionChangeClass::Scripts);
+    }
+    if matches!(
+        path,
+        "vscode-extension/package.json"
+            | "vscode-extension/package-lock.json"
+            | "vscode-extension/npm-shrinkwrap.json"
+    ) {
+        return Some(ExtensionChangeClass::Dependency);
+    }
+    if path.starts_with("vscode-extension/tsconfig") && path.ends_with(".json") {
+        return Some(ExtensionChangeClass::Tsconfig);
+    }
+    if path.starts_with("vscode-extension/.vscode/") {
+        return Some(ExtensionChangeClass::Authoring);
+    }
+    if path.starts_with(".github/actions/setup-vscode-toolchain/") || is_extension_workflow(path) {
+        return Some(ExtensionChangeClass::WorkflowAction);
+    }
+    if path.starts_with("vscode-extension/docs/")
+        || (path.starts_with("vscode-extension/") && path.ends_with(".md"))
+    {
+        return Some(ExtensionChangeClass::DocsOnly);
+    }
+    if is_extension_bundle_or_package_path(path) {
+        return Some(ExtensionChangeClass::BundlePackage);
+    }
+    if path.starts_with("vscode-extension/") && looks_like_extension_tooling(path) {
+        return Some(ExtensionChangeClass::Unknown);
+    }
+    None
+}
+
+fn is_extension_workflow(path: &str) -> bool {
+    path.starts_with(".github/workflows/vscode-")
+        || matches!(
+            path,
+            ".github/workflows/ux-regression-gate.yml" | ".github/workflows/publish-extension.yml"
+        )
+}
+
+fn is_extension_bundle_or_package_path(path: &str) -> bool {
+    path.starts_with("vscode-extension/media/")
+        || path.starts_with("vscode-extension/syntaxes/")
+        || matches!(
+            path,
+            "vscode-extension/.vscodeignore"
+                | "vscode-extension/rolldown.config.mjs"
+                | "vscode-extension/language-configuration.json"
+                | "vscode-extension/gherkin-language-configuration.json"
+                | "vscode-extension/scripts/vsix-inventory-baseline.json"
+                | "vscode-extension/scripts/check-vsix-inventory.js"
+                | "vscode-extension/scripts/check-source-map.js"
+        )
+}
+
+fn looks_like_extension_tooling(path: &str) -> bool {
+    [".js", ".cjs", ".mjs", ".json", ".yml", ".yaml", ".toml"]
+        .iter()
+        .any(|suffix| path.ends_with(suffix))
+}
+
+fn is_extension_typescript_only(paths: &[String], classes: &[ExtensionChangeClass]) -> bool {
     !paths.is_empty()
         && paths.iter().all(|path| {
             path.starts_with("vscode-extension/")
                 && (path.ends_with(".ts") || path.ends_with(".tsx"))
+        })
+        && classes.iter().all(|class| {
+            matches!(class, ExtensionChangeClass::Source | ExtensionChangeClass::Tests)
         })
 }
 
@@ -293,6 +401,9 @@ fn print_human(plan: &PrePushProofPlan) {
     println!("head: {} ({})", plan.head, plan.head_sha);
     println!("change-set digest: {}", plan.change_set_digest);
     println!("posture: {}", plan.posture);
+    if !plan.extension_change_classes.is_empty() {
+        println!("extension change classes: {:?}", plan.extension_change_classes);
+    }
     println!("selected:");
     for step in &plan.selected {
         println!("  - {}: {} ({})", step.class, step.command, step.reason);
@@ -344,6 +455,7 @@ mod tests {
         });
         assert_eq!(plan.posture, "BROAD_FALLBACK");
         assert_eq!(plan.selected[0].class, "broad_fallback");
+        assert!(plan.extension_change_classes.is_empty());
     }
 
     #[test]
@@ -360,6 +472,7 @@ mod tests {
             risk_tags: Vec::new(),
         });
         assert_eq!(plan.posture, "PROCEED");
+        assert_eq!(plan.extension_change_classes, vec![ExtensionChangeClass::Source]);
         for expected in ["extension_format", "extension_lint", "extension_typecheck"] {
             assert!(
                 plan.selected.iter().any(|step| step.class == expected),
@@ -371,6 +484,51 @@ mod tests {
             !plan.selected.iter().any(|step| step.class == "rust_check"),
             "TypeScript-only plan must not select a Rust compile floor"
         );
+    }
+
+    #[test]
+    fn extension_paths_are_classified_semantically_and_deterministically() {
+        let paths = vec![
+            "vscode-extension/tooling/new.config.cjs".to_string(),
+            ".github/actions/setup-vscode-toolchain/action.yml".to_string(),
+            "vscode-extension/tsconfig.scripts.json".to_string(),
+            "vscode-extension/scripts/check-typescript-authority.js".to_string(),
+            "vscode-extension/package-lock.json".to_string(),
+            "vscode-extension/src/test/smoke.test.ts".to_string(),
+            "vscode-extension/src/extension.ts".to_string(),
+        ];
+        assert_eq!(
+            classify_extension_paths(&paths),
+            vec![
+                ExtensionChangeClass::Source,
+                ExtensionChangeClass::Tests,
+                ExtensionChangeClass::Scripts,
+                ExtensionChangeClass::Dependency,
+                ExtensionChangeClass::Tsconfig,
+                ExtensionChangeClass::WorkflowAction,
+                ExtensionChangeClass::Unknown,
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_rust_and_extension_changes_preserve_extension_responsibility() {
+        let plan = build_plan(PlannerInput {
+            base: "main".to_string(),
+            head: "head".to_string(),
+            base_sha: "base-sha".to_string(),
+            head_sha: "head-sha".to_string(),
+            changed_paths: vec![
+                "crates/perl-lsp-rs/src/lib.rs".to_string(),
+                "vscode-extension/package-lock.json".to_string(),
+            ],
+            diff_class: "mixed".to_string(),
+            affected_packages: vec!["perl-lsp-rs".to_string()],
+            reverse_dependents: Vec::new(),
+            risk_tags: Vec::new(),
+        });
+        assert_eq!(plan.posture, "BROAD_FALLBACK");
+        assert_eq!(plan.extension_change_classes, vec![ExtensionChangeClass::Dependency]);
     }
 
     #[test]

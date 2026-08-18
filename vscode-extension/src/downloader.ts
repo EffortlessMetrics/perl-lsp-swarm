@@ -10,6 +10,17 @@ import * as child_process from 'child_process';
 import * as tar from 'tar';
 import AdmZip from 'adm-zip';
 import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
+import {
+  admissibleManagedCompatibilityKeys,
+  buildManagedCompatibilityKey,
+  classifyLegacyManagedCandidate,
+  legacyManagedBaseDir,
+  managedNamespaceDir,
+  managedUpdateCheckStateKey,
+  probeBinaryIdentity,
+  LEGACY_UPDATE_CHECK_STATE_KEY,
+  type ManagedEmulation,
+} from './managedStorageIdentity';
 
 const execFile = promisify(child_process.execFile);
 
@@ -338,6 +349,217 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   return 0;
 }
 
+export function isTermuxEnvironment(): boolean {
+  return Boolean(
+    process.env.TERMUX_VERSION ||
+    process.env.PREFIX?.includes('/com.termux/') ||
+    fs.existsSync('/data/data/com.termux/files/usr'),
+  );
+}
+
+export function isAndroidEnvironment(): boolean {
+  if (process.platform !== 'linux') {
+    return false;
+  }
+
+  return (
+    typeof process.env.ANDROID_ROOT === 'string' ||
+    typeof process.env.ANDROID_DATA === 'string' ||
+    typeof process.env.TERMUX_VERSION === 'string' ||
+    os.release().toLowerCase().includes('android')
+  );
+}
+
+export function detectMusl(): boolean {
+  const ldd = child_process.spawnSync('ldd', ['--version'], {
+    encoding: 'utf8',
+    timeout: 1000,
+  });
+  const lddOutput = `${ldd.stdout ?? ''}${ldd.stderr ?? ''}`.toLowerCase();
+  if (lddOutput.includes('musl')) {
+    return true;
+  }
+  if (lddOutput.includes('glibc') || lddOutput.includes('gnu libc')) {
+    return false;
+  }
+
+  const getconf = child_process.spawnSync('getconf', ['GNU_LIBC_VERSION'], {
+    encoding: 'utf8',
+    timeout: 1000,
+  });
+  if (getconf.status === 0) {
+    return false;
+  }
+
+  // Check for Alpine or musl when active-libc probes are unavailable.
+  if (fs.existsSync('/etc/alpine-release')) {
+    return true;
+  }
+
+  // Check for musl libc
+  const muslLibs = [
+    '/lib/libc.musl-x86_64.so.1',
+    '/lib/libc.musl-aarch64.so.1',
+    '/lib/ld-musl-x86_64.so.1',
+    '/lib/ld-musl-aarch64.so.1',
+  ];
+
+  return muslLibs.some((lib) => fs.existsSync(lib));
+}
+
+type TargetLog = (message: string) => void;
+
+/**
+ * Environment probes used by target resolution.
+ *
+ * Kept injectable because target resolution is the one place where a test must
+ * be able to describe a host it is not running on — a GNU host proving musl
+ * behavior, for instance.
+ */
+export interface PlatformDetectionSeams {
+  isTermux(): boolean;
+  isAndroid(): boolean;
+  detectMusl(): boolean;
+}
+
+const DEFAULT_PLATFORM_DETECTION: PlatformDetectionSeams = {
+  isTermux: isTermuxEnvironment,
+  isAndroid: isAndroidEnvironment,
+  detectMusl,
+};
+
+export function resolveLinuxLibcTarget(
+  log: TargetLog,
+  seams: PlatformDetectionSeams = DEFAULT_PLATFORM_DETECTION,
+): 'gnu' | 'musl' {
+  const config = vscode.workspace.getConfiguration('perl-lsp');
+  const rawValue = config.get<string>('linuxLibc', 'auto');
+  const value = rawValue.trim().toLowerCase();
+
+  if (value === 'gnu' || value === 'glibc') {
+    return 'gnu';
+  }
+
+  if (value === 'musl') {
+    return 'musl';
+  }
+
+  if (value !== 'auto') {
+    log(`Unknown perl-lsp.linuxLibc value "${rawValue}", falling back to auto`);
+  }
+
+  return seams.detectMusl() ? 'musl' : 'gnu';
+}
+
+/**
+ * The target triple this host prefers, independent of any release's asset list.
+ *
+ * Module-level because managed-state resolution needs it from static call
+ * sites that have no downloader instance: the storage namespace is a property
+ * of the host's compatibility identity, not of who happens to be asking.
+ */
+export function resolvePlatformTarget(
+  log: TargetLog,
+  seams: PlatformDetectionSeams = DEFAULT_PLATFORM_DETECTION,
+): string {
+  const platform = process.platform;
+  const arch = process.arch;
+
+  // Map Node.js platform/arch to exact cargo-dist target triples
+  if (platform === 'darwin') {
+    return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+  } else if (platform === 'linux') {
+    // Check Termux first: isTermuxEnvironment() is the authoritative Termux
+    // detector.  isAndroidEnvironment() also matches TERMUX_VERSION and would
+    // shadow this branch if checked first, routing to the old arch-map path
+    // instead of the uniform `${archPrefix}-linux-android` form.
+    const archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
+    if (seams.isTermux()) {
+      return `${archPrefix}-linux-android`;
+    }
+    if (seams.isAndroid()) {
+      const androidArchMap: Record<string, string> = {
+        arm64: 'aarch64-linux-android',
+        x64: 'x86_64-linux-android',
+        ia32: 'i686-linux-android',
+        arm: 'armv7-linux-androideabi',
+      };
+      return androidArchMap[arch] ?? `${arch}-linux-android`;
+    }
+    const libc = resolveLinuxLibcTarget(log, seams);
+    log(`Linux binary target libc: ${libc}`);
+    return `${archPrefix}-unknown-linux-${libc}`;
+  } else if (platform === 'win32') {
+    // The *preferred* target, which is not necessarily the one downloaded.
+    // Windows builds both x86_64-pc-windows-msvc and, since #5208, a native
+    // aarch64-pc-windows-msvc, so ARM64 prefers the native build here.
+    //
+    // Whether that asset exists in a given release is decided later by
+    // selectWindowsArm64Target, against that release's actual asset list.
+    // This function has no asset list, so it must not reject anything: the
+    // Windows 10 ARM64 rejection belongs on the emulation fallback path
+    // only, and applying it here refused installs that work (#6196).
+    if (arch === 'arm64') {
+      return WINDOWS_ARM64_TARGET;
+    }
+    return WINDOWS_X64_TARGET;
+  }
+
+  // Fallback to the old logic
+  const platformMap: Record<string, string> = {
+    darwin: 'apple-darwin',
+    linux: 'unknown-linux-gnu',
+    win32: 'pc-windows-msvc',
+  };
+
+  const archMap: Record<string, string> = {
+    x64: 'x86_64',
+    arm64: 'aarch64',
+  };
+
+  const rustPlatform = platformMap[platform] || platform;
+  const rustArch = archMap[arch] || arch;
+
+  return `${rustArch}-${rustPlatform}`;
+}
+
+/**
+ * Compatibility keys this host may consume, most preferred first.
+ *
+ * Resolution walks this list; installation writes into exactly one of its
+ * entries. A host with more than one admissible key (Windows ARM64) can hold a
+ * native and an emulated candidate side by side without either overwriting the
+ * other's `current` pointer.
+ */
+export function hostManagedCompatibilityKeys(
+  log: TargetLog = () => {},
+  seams: PlatformDetectionSeams = DEFAULT_PLATFORM_DETECTION,
+): string[] {
+  return admissibleManagedCompatibilityKeys(
+    process.platform,
+    process.arch,
+    resolvePlatformTarget(log, seams),
+  );
+}
+
+/** Schema for the per-install record binding bytes to the namespace holding them. */
+export interface ManagedInstallTargetRecord {
+  schema_version: 'managed_install_target.v1';
+  compatibility_key: string;
+  target: string;
+  emulation: ManagedEmulation | null;
+}
+
+export const MANAGED_INSTALL_TARGET_FILE = 'target.json';
+
+/**
+ * Namespace for a host whose target triple is not canonical.
+ *
+ * Such a host cannot share bytes with anything, so it gets its own quarantined
+ * namespace rather than being folded into a neighbour's.
+ */
+export const UNSUPPORTED_COMPATIBILITY_KEY = 'unsupported-host-target';
+
 export class BinaryDownloader {
   private static readonly REPO_OWNER = 'EffortlessMetrics';
   private static readonly REPO_NAME = 'perl-lsp';
@@ -546,6 +768,10 @@ export class BinaryDownloader {
 
         // Determine platform and architecture
         let target = this.getPlatformTarget();
+        // Non-null only when the selected target needs a host compatibility
+        // shim to run. It is part of the candidate's storage identity, because
+        // an emulated candidate is not interchangeable with a native one.
+        let emulation: ManagedEmulation | null = null;
 
         // Try multiple naming patterns for our release format
         const ext = process.platform === 'win32' ? '.zip' : '.tar.gz';
@@ -560,6 +786,7 @@ export class BinaryDownloader {
           // exist, so do not let the native preference turn a working mirror
           // into an unverified ARM64 URL.
           target = WINDOWS_X64_TARGET;
+          emulation = 'windows-arm64-emulation';
         } else if (process.platform === 'win32' && process.arch === 'arm64') {
           const selection = selectWindowsArm64Target(release.assets, release.tag_name, ext);
           this.outputChannel.appendLine(`Windows ARM64: ${selection.reason}`);
@@ -567,6 +794,15 @@ export class BinaryDownloader {
             throw new Error(selection.error);
           }
           target = selection.target;
+          emulation = selection.emulated ? 'windows-arm64-emulation' : null;
+        }
+
+        const compatibilityKey = buildManagedCompatibilityKey({ target, emulation });
+        if (compatibilityKey === null) {
+          throw new Error(
+            `Refusing to install: "${target}" is not a canonical compatibility target, ` +
+              'so managed state cannot be namespaced safely.',
+          );
         }
 
         const assetName = findReleaseAssetName(release.assets, release.tag_name, target, ext);
@@ -692,13 +928,14 @@ export class BinaryDownloader {
           // active install is selected by an atomically-committed
           // pointer file at the base dir.
           progress.report({ increment: 15, message: 'Installing binary...' });
-          const baseDir = this.getManagedBaseDir();
+          const baseDir = this.getManagedBaseDirForKey(compatibilityKey);
           if (!fs.existsSync(baseDir)) {
             fs.mkdirSync(baseDir, { recursive: true });
           }
           const installDirName = this.buildVersionedInstallDirName(release.tag_name);
           const installDir = path.join(baseDir, installDirName);
           fs.mkdirSync(installDir, { recursive: true });
+          this.writeInstallTargetRecord(installDir, compatibilityKey, target, emulation);
 
           const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
           const finalPath = path.join(installDir, binaryName);
@@ -732,7 +969,9 @@ export class BinaryDownloader {
 
           // Atomically activate the new install. Old install dirs stay
           // on disk for one generation as a fallback, then get pruned.
-          this.commitVersionedInstall(installDirName);
+          // Both the pointer and the prune are scoped to this compatibility
+          // key, so rollback and GC can only ever touch this target's row.
+          this.commitVersionedInstall(installDirName, compatibilityKey);
           this.outputChannel.appendLine(`Active managed install: ${installDirName}`);
           this.pruneOldVersionedInstalls(baseDir, installDirName);
 
@@ -1047,169 +1286,106 @@ export class BinaryDownloader {
   // build. The Windows 11 floor moved to selectWindowsArm64Target, where it
   // gates only the x64 emulation fallback (#6196).
   private getPlatformTarget(): string {
-    const platform = process.platform;
-    const arch = process.arch;
-
-    // Map Node.js platform/arch to exact cargo-dist target triples
-    if (platform === 'darwin') {
-      return arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
-    } else if (platform === 'linux') {
-      // Check Termux first: isTermuxEnvironment() is the authoritative Termux
-      // detector.  isAndroidEnvironment() also matches TERMUX_VERSION and would
-      // shadow this branch if checked first, routing to the old arch-map path
-      // instead of the uniform `${archPrefix}-linux-android` form.
-      const archPrefix = arch === 'arm64' ? 'aarch64' : 'x86_64';
-      if (this.isTermuxEnvironment()) {
-        return `${archPrefix}-linux-android`;
-      }
-      if (this.isAndroidEnvironment()) {
-        const androidArchMap: Record<string, string> = {
-          arm64: 'aarch64-linux-android',
-          x64: 'x86_64-linux-android',
-          ia32: 'i686-linux-android',
-          arm: 'armv7-linux-androideabi',
-        };
-        return androidArchMap[arch] ?? `${arch}-linux-android`;
-      }
-      const libc = this.getLinuxLibcTarget();
-      this.outputChannel.appendLine(`Linux binary target libc: ${libc}`);
-      return `${archPrefix}-unknown-linux-${libc}`;
-    } else if (platform === 'win32') {
-      // The *preferred* target, which is not necessarily the one downloaded.
-      // Windows builds both x86_64-pc-windows-msvc and, since #5208, a native
-      // aarch64-pc-windows-msvc, so ARM64 prefers the native build here.
-      //
-      // Whether that asset exists in a given release is decided later by
-      // selectWindowsArm64Target, against that release's actual asset list.
-      // This function has no asset list, so it must not reject anything: the
-      // Windows 10 ARM64 rejection belongs on the emulation fallback path
-      // only, and applying it here refused installs that work (#6196).
-      if (arch === 'arm64') {
-        return WINDOWS_ARM64_TARGET;
-      }
-      return WINDOWS_X64_TARGET;
-    }
-
-    // Fallback to the old logic
-    const platformMap: Record<string, string> = {
-      darwin: 'apple-darwin',
-      linux: 'unknown-linux-gnu',
-      win32: 'pc-windows-msvc',
-    };
-
-    const archMap: Record<string, string> = {
-      x64: 'x86_64',
-      arm64: 'aarch64',
-    };
-
-    const rustPlatform = platformMap[platform] || platform;
-    const rustArch = archMap[arch] || arch;
-
-    return `${rustArch}-${rustPlatform}`;
+    return resolvePlatformTarget(
+      (message) => this.outputChannel.appendLine(message),
+      this.platformDetectionSeams(),
+    );
   }
 
   private getLinuxLibcTarget(): 'gnu' | 'musl' {
-    const config = vscode.workspace.getConfiguration('perl-lsp');
-    const rawValue = config.get<string>('linuxLibc', 'auto');
-    const value = rawValue.trim().toLowerCase();
+    return resolveLinuxLibcTarget(
+      (message) => this.outputChannel.appendLine(message),
+      this.platformDetectionSeams(),
+    );
+  }
 
-    if (value === 'gnu' || value === 'glibc') {
-      return 'gnu';
-    }
-
-    if (value === 'musl') {
-      return 'musl';
-    }
-
-    if (value !== 'auto') {
-      this.outputChannel.appendLine(
-        `Unknown perl-lsp.linuxLibc value "${rawValue}", falling back to auto`,
-      );
-    }
-
-    return this.detectMusl() ? 'musl' : 'gnu';
+  /**
+   * Routes module-level target resolution back through this instance's own
+   * probe methods, so overriding a probe overrides every decision that
+   * consumes it.
+   */
+  private platformDetectionSeams(): PlatformDetectionSeams {
+    return {
+      isTermux: () => this.isTermuxEnvironment(),
+      isAndroid: () => this.isAndroidEnvironment(),
+      detectMusl: () => this.detectMusl(),
+    };
   }
 
   private isAndroidEnvironment(): boolean {
-    if (process.platform !== 'linux') {
-      return false;
-    }
-
-    return (
-      typeof process.env.ANDROID_ROOT === 'string' ||
-      typeof process.env.ANDROID_DATA === 'string' ||
-      typeof process.env.TERMUX_VERSION === 'string' ||
-      os.release().toLowerCase().includes('android')
-    );
+    return isAndroidEnvironment();
   }
 
   private detectMusl(): boolean {
-    const ldd = child_process.spawnSync('ldd', ['--version'], {
-      encoding: 'utf8',
-      timeout: 1000,
-    });
-    const lddOutput = `${ldd.stdout ?? ''}${ldd.stderr ?? ''}`.toLowerCase();
-    if (lddOutput.includes('musl')) {
-      return true;
-    }
-    if (lddOutput.includes('glibc') || lddOutput.includes('gnu libc')) {
-      return false;
-    }
-
-    const getconf = child_process.spawnSync('getconf', ['GNU_LIBC_VERSION'], {
-      encoding: 'utf8',
-      timeout: 1000,
-    });
-    if (getconf.status === 0) {
-      return false;
-    }
-
-    // Check for Alpine or musl when active-libc probes are unavailable.
-    if (fs.existsSync('/etc/alpine-release')) {
-      return true;
-    }
-
-    // Check for musl libc
-    const muslLibs = [
-      '/lib/libc.musl-x86_64.so.1',
-      '/lib/libc.musl-aarch64.so.1',
-      '/lib/ld-musl-x86_64.so.1',
-      '/lib/ld-musl-aarch64.so.1',
-    ];
-
-    return muslLibs.some((lib) => fs.existsSync(lib));
+    return detectMusl();
   }
 
   private isTermuxEnvironment(): boolean {
-    return Boolean(
-      process.env.TERMUX_VERSION ||
-      process.env.PREFIX?.includes('/com.termux/') ||
-      fs.existsSync('/data/data/com.termux/files/usr'),
+    return isTermuxEnvironment();
+  }
+
+  /**
+   * Root for managed installs owned by this host's preferred compatibility key:
+   * `globalStorage/.../managed/<compatibility-key>/`. Inside it, the active
+   * install is selected by the `current` pointer file.
+   *
+   * This is the *write* root. Resolution walks every admissible key, because a
+   * Windows ARM64 host may legitimately hold a native or an emulated candidate.
+   */
+  private getManagedBaseDir(): string {
+    return this.getManagedBaseDirForKey(this.getHostCompatibilityKey());
+  }
+
+  private getHostCompatibilityKey(): string {
+    const keys = hostManagedCompatibilityKeys(
+      (message) => this.outputChannel.appendLine(message),
+      this.platformDetectionSeams(),
+    );
+    // resolvePlatformTarget always yields a canonical triple, so the preferred
+    // key is present for every host the extension supports. The fallback keeps
+    // an exotic platform string out of the shared namespace root rather than
+    // silently writing managed state somewhere unnamed.
+    return keys[0] ?? UNSUPPORTED_COMPATIBILITY_KEY;
+  }
+
+  private getManagedBaseDirForKey(key: string): string {
+    return (
+      managedNamespaceDir(this.context.globalStorageUri.fsPath, key) ??
+      path.join(this.context.globalStorageUri.fsPath, 'managed', UNSUPPORTED_COMPATIBILITY_KEY)
     );
   }
 
   /**
-   * Root for managed installs: globalStorage/.../bin/<platform>-<arch>/.
-   * Inside this directory, the active install is selected by the `current`
-   * pointer file, falling back to a legacy flat layout (perllsp.exe at the
-   * top level) when the pointer is absent.
+   * Resolves the active managed install directory for this host.
+   *
+   * Admissible keys are walked in preference order and the first namespace
+   * with a valid, self-consistent `current` pointer wins. When no
+   * compatibility-scoped namespace is populated, a pre-#9847 install may be
+   * adopted, but only after its own bytes are revalidated against the key —
+   * path shape alone never promotes legacy bytes (#9847).
    */
-  private getManagedBaseDir(): string {
-    return BinaryDownloader.computeManagedBaseDir(this.context);
-  }
-
-  private static computeManagedBaseDir(context: vscode.ExtensionContext): string {
-    return path.join(context.globalStorageUri.fsPath, 'bin', `${process.platform}-${process.arch}`);
+  private static readActiveManagedInstallDir(context: vscode.ExtensionContext): string | null {
+    const keys = hostManagedCompatibilityKeys();
+    for (const key of keys) {
+      const baseDir = managedNamespaceDir(context.globalStorageUri.fsPath, key);
+      if (baseDir === null) {
+        continue;
+      }
+      const active = BinaryDownloader.readPointedInstallDir(baseDir);
+      if (active !== null && BinaryDownloader.installMatchesKey(active, key)) {
+        return active;
+      }
+    }
+    return BinaryDownloader.adoptLegacyManagedInstallDir(context, keys);
   }
 
   /**
-   * Reads the `current` pointer file at the managed base dir and returns the
-   * absolute path of the active install dir, or null if no pointer exists or
-   * the named subdir is missing or invalid. Pointer content is restricted to
-   * a single dir name with no separators or '..' components.
+   * Reads a `current` pointer and returns the directory it names.
+   *
+   * Pointer content is restricted to a single dir name with no separators or
+   * '..' components.
    */
-  private static readActiveManagedInstallDir(context: vscode.ExtensionContext): string | null {
-    const baseDir = BinaryDownloader.computeManagedBaseDir(context);
+  private static readPointedInstallDir(baseDir: string): string | null {
     const pointerPath = path.join(baseDir, 'current');
     if (!fs.existsSync(pointerPath)) {
       return null;
@@ -1234,6 +1410,68 @@ export class BinaryDownloader {
   }
 
   /**
+   * Rejects an install whose own record disagrees with the namespace holding
+   * it. A namespace is only meaningful if nothing inside it can claim to be a
+   * different target; an install written before this record existed carries no
+   * claim and is accepted on the strength of its namespace.
+   */
+  private static installMatchesKey(installDir: string, key: string): boolean {
+    const recordPath = path.join(installDir, MANAGED_INSTALL_TARGET_FILE);
+    if (!fs.existsSync(recordPath)) {
+      return true;
+    }
+    try {
+      const record = JSON.parse(fs.readFileSync(recordPath, 'utf8')) as ManagedInstallTargetRecord;
+      return record.compatibility_key === key;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Revalidates a pre-#9847 `bin/<platform>-<arch>` install and returns it only
+   * when its bytes prove it is interchangeable with a candidate this host would
+   * install today.
+   *
+   * The legacy directory is never moved or deleted: a host that cannot prove
+   * compatibility simply downloads its own candidate, leaving the only
+   * known-good install intact for whichever host it actually belongs to.
+   */
+  private static adoptLegacyManagedInstallDir(
+    context: vscode.ExtensionContext,
+    keys: readonly string[],
+  ): string | null {
+    const legacyBase = legacyManagedBaseDir(
+      context.globalStorageUri.fsPath,
+      process.platform,
+      process.arch,
+    );
+    if (!fs.existsSync(legacyBase)) {
+      return null;
+    }
+    const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
+    const pointed = BinaryDownloader.readPointedInstallDir(legacyBase);
+    const legacyDirs = pointed === null ? [legacyBase] : [pointed, legacyBase];
+    for (const legacyDir of legacyDirs) {
+      const binaryPath = path.join(legacyDir, binaryName);
+      if (!fs.existsSync(binaryPath)) {
+        continue;
+      }
+      const observed = probeBinaryIdentity(binaryPath);
+      for (const key of keys) {
+        if (classifyLegacyManagedCandidate(observed, key) === 'adopt') {
+          return legacyDir;
+        }
+      }
+      // The first readable candidate decides: a second directory under the same
+      // legacy root holds the same host's bytes, so re-probing cannot change
+      // the verdict.
+      return null;
+    }
+    return null;
+  }
+
+  /**
    * Builds a unique install dir name from a release tag plus an ISO timestamp.
    * Uniqueness lets a forced reinstall of the same version land in a fresh
    * directory instead of overwriting the running binary on Windows.
@@ -1245,12 +1483,49 @@ export class BinaryDownloader {
   }
 
   /**
+   * Records which compatibility key owns this install.
+   *
+   * The namespace already encodes the key; this record is the cross-check that
+   * makes a namespace/candidate disagreement detectable instead of silent.
+   * Failure to write it is not fatal — an absent record simply leaves the
+   * namespace as the only claim.
+   */
+  private writeInstallTargetRecord(
+    installDir: string,
+    compatibilityKey: string,
+    target: string,
+    emulation: ManagedEmulation | null,
+  ): void {
+    const record: ManagedInstallTargetRecord = {
+      schema_version: 'managed_install_target.v1',
+      compatibility_key: compatibilityKey,
+      target,
+      emulation,
+    };
+    try {
+      fs.writeFileSync(
+        path.join(installDir, MANAGED_INSTALL_TARGET_FILE),
+        `${JSON.stringify(record, null, 2)}\n`,
+        { encoding: 'utf8' },
+      );
+    } catch (e) {
+      this.outputChannel.appendLine(`Note: could not record managed install target: ${e}`);
+    }
+  }
+
+  /**
    * Atomically updates the `current` pointer to a freshly populated install
    * dir. The temp + rename pattern is the strongest form of "commit on
    * success" we can use with no extra dependencies.
+   *
+   * The pointer lives inside the compatibility namespace, so committing here
+   * cannot move another target's selection.
    */
-  private commitVersionedInstall(installDirName: string): void {
-    const baseDir = this.getManagedBaseDir();
+  private commitVersionedInstall(installDirName: string, compatibilityKey?: string): void {
+    const baseDir =
+      compatibilityKey === undefined
+        ? this.getManagedBaseDir()
+        : this.getManagedBaseDirForKey(compatibilityKey);
     const pointerPath = path.join(baseDir, 'current');
     const tmpPath = `${pointerPath}.tmp`;
     fs.writeFileSync(tmpPath, `${installDirName}\n`, { encoding: 'utf8' });
@@ -1318,7 +1593,16 @@ export class BinaryDownloader {
     if (activeDir) {
       return path.join(activeDir, dapName);
     }
-    return path.join(BinaryDownloader.computeManagedBaseDir(context), dapName);
+    return path.join(BinaryDownloader.hostManagedBaseDir(context), dapName);
+  }
+
+  /** The write root for this host, usable from static call sites. */
+  private static hostManagedBaseDir(context: vscode.ExtensionContext): string {
+    const key = hostManagedCompatibilityKeys()[0] ?? UNSUPPORTED_COMPATIBILITY_KEY;
+    return (
+      managedNamespaceDir(context.globalStorageUri.fsPath, key) ??
+      path.join(context.globalStorageUri.fsPath, 'managed', UNSUPPORTED_COMPATIBILITY_KEY)
+    );
   }
 
   /**
@@ -1364,14 +1648,24 @@ export class BinaryDownloader {
     if (intervalHours <= 0) {
       return;
     }
-    const lastCheck = this.context.globalState.get<number>('perl-lsp.lastUpdateCheck', 0);
+    // The check interval is a property of one target's managed row. A GNU host
+    // must not suppress a musl host's check merely because both hosts share
+    // one extension global state object (#9847). The unscoped pre-#9847 value
+    // is read once as a seed so upgrading does not force an immediate check.
+    const stateKey =
+      managedUpdateCheckStateKey(this.getHostCompatibilityKey()) ?? LEGACY_UPDATE_CHECK_STATE_KEY;
+    const scopedCheck = this.context.globalState.get<number>(stateKey, 0);
+    const lastCheck =
+      scopedCheck > 0
+        ? scopedCheck
+        : this.context.globalState.get<number>(LEGACY_UPDATE_CHECK_STATE_KEY, 0);
     const elapsedHours = (Date.now() - lastCheck) / (1000 * 60 * 60);
     if (elapsedHours < intervalHours) {
       return;
     }
 
     // Record that we checked (even if the check fails) to avoid hammering
-    await this.context.globalState.update('perl-lsp.lastUpdateCheck', Date.now());
+    await this.context.globalState.update(stateKey, Date.now());
 
     try {
       const localVersion = await this.getLocalVersion(binaryPath);

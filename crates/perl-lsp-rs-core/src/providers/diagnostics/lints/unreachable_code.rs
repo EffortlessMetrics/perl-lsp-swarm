@@ -1,342 +1,436 @@
 //! Unreachable code detection (PL406)
 //!
-//! Identifies statements that cannot execute because they follow an unconditional
-//! control-flow exit (`return`, `die`, `exit`, `croak`, `confess`, `last`,
-//! `next`, `redo`, `goto`).
+//! PL406 is a local control-flow diagnostic. It proves whether control can
+//! reach the next sibling statement inside one execution unit; it does not
+//! make workspace-wide symbol-liveness claims.
 //!
-//! # Algorithm
-//!
-//! The lint uses **recursive statement-slice analysis** rather than a flat
-//! pre-order AST walk. This is the only correct approach: a pre-order visitor
-//! with a `reachable: bool` flag cannot distinguish "visiting a child of this
-//! node" from "visiting the next sibling", so a `return` inside a nested
-//! subroutine body would incorrectly poison sibling statements in the outer
-//! scope.
-//!
-//! The correct algorithm:
-//! 1. `check_unreachable_code` dispatches on the root, then calls `visit_node`
-//!    for each statement in top-level lists.
-//! 2. `check_statement_list` iterates a `&[Node]` linearly. When an
-//!    unconditional exit is found, all subsequent siblings get a PL406
-//!    diagnostic. Nested blocks are recursed into freshly.
-//! 3. Subroutine and method bodies (`Subroutine`, `Method`) trigger a fresh
-//!    call to `visit_node`, so a `return` in an inner sub never affects the
-//!    outer statement list.
-//! 4. `eval { }` blocks are intentionally **not** recursed into: `die` inside
-//!    `eval { }` is caught and does not exit the outer scope.
-//!
-//! # Scope of detection
-//!
-//! | Unconditional exit | Detected? |
-//! |--------------------|-----------|
-//! | `return`           | Yes |
-//! | `die "msg"`        | Yes (direct FunctionCall at statement level) |
-//! | `exit $code`       | Yes |
-//! | `croak "msg"`      | Yes |
-//! | `Carp::croak "msg"` | Yes |
-//! | `confess "msg"`    | Yes |
-//! | `Carp::confess "msg"` | Yes |
-//! | `last` in loop body | Yes |
-//! | `next` in loop body | Yes |
-//! | `redo` in loop body | Yes |
-//! | `return if $cond`  | No (conditional via StatementModifier) |
-//! | `die` inside `or`  | No (right operand of Binary, not a direct statement) |
-//! | `die` inside `eval { }` | No (caught by eval) |
+//! The implementation uses typed flow summaries rather than a flat
+//! `reachable: bool` walk. Each statement reports whether any path falls
+//! through and, when it does not, which control-transfer classes were observed.
+//! Complete `if`/`elsif`/`else` branches can therefore propagate
+//! non-fallthrough to their parent statement list without allowing a transfer
+//! inside a nested callable or evaluation scope to poison the outer list.
 
 use super::super::internal_types::{Diagnostic, DiagnosticTag};
 use perl_diagnostics::codes::DiagnosticCode;
 use perl_diagnostics::codes::DiagnosticSeverity;
 use perl_parser_core::ast::{GotoTargetForm, Node, NodeKind};
 
-/// Entry point for unreachable code detection.
-///
-/// Walk the AST and emit `PL406` diagnostics for any statements that cannot
-/// be reached due to a preceding unconditional control-flow exit.
+/// One exact local transfer observed by the PL406 flow summarizer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ControlTransfer {
+    Return,
+    Raise,
+    ProcessTransfer,
+    GotoLabel(String),
+    DynamicGoto,
+    ContinueLoop { _label: Option<String> },
+    BreakLoop { _label: Option<String> },
+    RedoLoop { _label: Option<String> },
+}
+
+/// Whether a statement or block can reach its next sibling, plus the terminal
+/// transfers observed when it cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FlowSummary {
+    can_fall_through: bool,
+    transfers: Vec<ControlTransfer>,
+}
+
+impl FlowSummary {
+    fn falls_through() -> Self {
+        Self { can_fall_through: true, transfers: Vec::new() }
+    }
+
+    fn transfer(transfer: ControlTransfer) -> Self {
+        Self { can_fall_through: false, transfers: vec![transfer] }
+    }
+
+    fn alternatives(branches: Vec<Self>, exhaustive: bool) -> Self {
+        let can_fall_through = !exhaustive || branches.iter().any(|branch| branch.can_fall_through);
+        let transfers = branches.into_iter().flat_map(|branch| branch.transfers).collect();
+        Self { can_fall_through, transfers }
+    }
+
+    /// Demote loop-control transfers at a bare-block boundary. A bare BLOCK
+    /// is semantically a one-shot loop (perlsyn), so `last`/`next`/`redo`
+    /// terminate or restart the block itself: the parent statement list keeps
+    /// a reachable path even when the block's own summary does not fall
+    /// through. Non-loop transfers (`die`, `return`, `goto`) still promote.
+    fn without_loop_transfers(mut self) -> Self {
+        let is_loop_transfer = |transfer: &ControlTransfer| {
+            matches!(
+                transfer,
+                ControlTransfer::ContinueLoop { .. }
+                    | ControlTransfer::BreakLoop { .. }
+                    | ControlTransfer::RedoLoop { .. }
+            )
+        };
+        if self.transfers.iter().any(&is_loop_transfer) {
+            self.transfers.retain(|transfer| !is_loop_transfer(transfer));
+            self.can_fall_through = true;
+        }
+        self
+    }
+
+    fn goto_labels(&self) -> Vec<String> {
+        self.transfers
+            .iter()
+            .filter_map(|transfer| match transfer {
+                ControlTransfer::GotoLabel(label) => Some(label.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// Walk the AST and emit PL406 diagnostics for statements that cannot be
+/// reached from the preceding sibling in the same local statement list.
 pub fn check_unreachable_code(root: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    visit_node(root, diagnostics);
+    let _ = summarize_node(root, diagnostics);
 }
 
-/// Dispatch on a single node: recurse into any block-like children using fresh
-/// reachability state, and process statement lists as slices.
-fn visit_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary {
     match &node.kind {
-        // Top-level program: walk all top-level statements as a slice
-        NodeKind::Program { statements } => {
-            check_statement_list(statements, diagnostics);
+        NodeKind::Program { statements } | NodeKind::Block { statements } => {
+            summarize_statement_list(statements, diagnostics)
         }
 
-        // Subroutine body: fresh reachability scope — return here does not
-        // affect the outer statement list
+        // Callable declarations introduce a fresh execution unit. Analyze the
+        // body, but the declaration itself falls through in its parent list.
         NodeKind::Subroutine { body, .. } | NodeKind::Method { body, .. } => {
-            visit_node(body, diagnostics);
+            let _ = summarize_node(body, diagnostics);
+            FlowSummary::falls_through()
         }
 
-        // Plain block: walk its statements as a slice
-        NodeKind::Block { statements } => {
-            check_statement_list(statements, diagnostics);
-        }
+        NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => summarize_if(
+            condition,
+            then_branch,
+            elsif_branches,
+            else_branch.as_deref(),
+            diagnostics,
+        ),
 
-        // If/unless: each branch is an independent scope
-        NodeKind::If { then_branch, elsif_branches, else_branch, .. } => {
-            visit_node(then_branch, diagnostics);
-            for (_, branch_body) in elsif_branches {
-                visit_node(branch_body, diagnostics);
+        // Loops are independent local scopes. Transfers inside their body or
+        // continue block do not make the statement after the loop unreachable.
+        NodeKind::While { condition, body, continue_block, .. } => {
+            let _ = summarize_expression(condition, diagnostics);
+            let _ = summarize_node(body, diagnostics);
+            if let Some(continue_block) = continue_block {
+                let _ = summarize_node(continue_block, diagnostics);
             }
-            if let Some(else_body) = else_branch {
-                visit_node(else_body, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::For { init, condition, update, body, continue_block, .. } => {
+            if let Some(init) = init {
+                let _ = summarize_expression(init, diagnostics);
             }
-        }
-
-        // Loop bodies: each body is an independent scope.
-        // For `While`, also check the `continue { }` block independently.
-        // Loop-control statements in a continue block still terminate
-        // fallthrough to later siblings in that continue statement list.
-        NodeKind::While { body, continue_block, .. } => {
-            visit_node(body, diagnostics);
-            if let Some(cb) = continue_block {
-                visit_continue_block(cb, diagnostics);
+            if let Some(condition) = condition {
+                let _ = summarize_expression(condition, diagnostics);
             }
-        }
-        NodeKind::For { body, continue_block, .. }
-        | NodeKind::Foreach { body, continue_block, .. } => {
-            visit_node(body, diagnostics);
-            if let Some(cb) = continue_block {
-                visit_continue_block(cb, diagnostics);
+            if let Some(update) = update {
+                let _ = summarize_expression(update, diagnostics);
             }
+            let _ = summarize_node(body, diagnostics);
+            if let Some(continue_block) = continue_block {
+                let _ = summarize_node(continue_block, diagnostics);
+            }
+            FlowSummary::falls_through()
+        }
+        NodeKind::Foreach { variable, list, body, continue_block } => {
+            let _ = summarize_expression(variable, diagnostics);
+            let _ = summarize_expression(list, diagnostics);
+            let _ = summarize_node(body, diagnostics);
+            if let Some(continue_block) = continue_block {
+                let _ = summarize_node(continue_block, diagnostics);
+            }
+            FlowSummary::falls_through()
         }
 
-        // Given/when/default
-        NodeKind::Given { body, .. } | NodeKind::When { body, .. } | NodeKind::Default { body } => {
-            visit_node(body, diagnostics);
+        // These constructs are analyzed locally, but their transfer summaries
+        // are deliberately not promoted into the containing execution unit.
+        NodeKind::Given { expr, body } => {
+            let _ = summarize_expression(expr, diagnostics);
+            let _ = summarize_node(body, diagnostics);
+            FlowSummary::falls_through()
         }
-
-        // PhaseBlock (BEGIN, END, etc.): walk its block
-        NodeKind::PhaseBlock { block, .. } => {
-            visit_node(block, diagnostics);
+        NodeKind::When { condition, body } => {
+            let _ = summarize_expression(condition, diagnostics);
+            let _ = summarize_node(body, diagnostics);
+            FlowSummary::falls_through()
         }
-
-        // Class body
-        NodeKind::Class { body, .. } => {
-            visit_node(body, diagnostics);
+        NodeKind::Default { body }
+        | NodeKind::PhaseBlock { block: body, .. }
+        | NodeKind::Class { body, .. } => {
+            let _ = summarize_node(body, diagnostics);
+            FlowSummary::falls_through()
         }
-
-        // Do block: fresh scope (do { ... })
-        NodeKind::Do { block } | NodeKind::Defer { block } => {
-            visit_node(block, diagnostics);
+        NodeKind::Package { block, .. } => {
+            if let Some(block) = block {
+                let _ = summarize_node(block, diagnostics);
+            }
+            FlowSummary::falls_through()
         }
-
-        // Try body and catch blocks: each is an independent scope
+        NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
+            let _ = summarize_node(block, diagnostics);
+            FlowSummary::falls_through()
+        }
         NodeKind::Try { body, catch_blocks, finally_block } => {
-            visit_node(body, diagnostics);
+            let _ = summarize_node(body, diagnostics);
             for (_, catch_body) in catch_blocks {
-                visit_node(catch_body, diagnostics);
+                let _ = summarize_node(catch_body, diagnostics);
             }
-            if let Some(finally) = finally_block {
-                visit_node(finally, diagnostics);
+            if let Some(finally_block) = finally_block {
+                let _ = summarize_node(finally_block, diagnostics);
             }
+            FlowSummary::falls_through()
         }
 
-        // ExpressionStatement: recurse into the expression to catch nested
-        // subroutine literals (e.g., `my $f = sub { return 1; };`)
-        NodeKind::ExpressionStatement { expression } => {
-            visit_expr(expression, diagnostics);
+        NodeKind::StatementModifier { statement, condition, .. } => {
+            let _ = summarize_node(statement, diagnostics);
+            let _ = summarize_expression(condition, diagnostics);
+            // Without an accepted constant-value fact, a statement modifier
+            // always retains a path that skips the controlled statement.
+            FlowSummary::falls_through()
         }
-
-        // Variable declarations with initializers may contain anonymous subs
-        NodeKind::VariableDeclaration { initializer: Some(init), .. }
-        | NodeKind::VariableListDeclaration { initializer: Some(init), .. } => {
-            visit_expr(init, diagnostics);
-        }
-
-        // Eval: intentionally NOT recursed into.
-        // die inside eval { } is caught — the outer scope continues normally.
-        NodeKind::Eval { .. } => {}
-
-        // LabeledStatement: recurse into the inner statement
         NodeKind::LabeledStatement { statement, .. } => {
-            visit_node(statement, diagnostics);
+            let summary = summarize_node(statement, diagnostics);
+            // A labeled bare block is still a one-shot loop, so `last LABEL`
+            // targets the block itself rather than the enclosing loop.
+            if matches!(&statement.kind, NodeKind::Block { .. }) {
+                summary.without_loop_transfers()
+            } else {
+                summary
+            }
         }
 
-        // All other nodes have no statement-list children
-        _ => {}
+        NodeKind::Return { value } => {
+            if let Some(value) = value {
+                let _ = summarize_expression(value, diagnostics);
+            }
+            FlowSummary::transfer(ControlTransfer::Return)
+        }
+        NodeKind::LoopControl { op, label } => summarize_loop_control(op, label),
+        NodeKind::Goto { target, form } => summarize_goto(target, form),
+
+        NodeKind::ExpressionStatement { expression } => {
+            summarize_expression(expression, diagnostics)
+        }
+        NodeKind::VariableDeclaration { initializer, .. }
+        | NodeKind::VariableListDeclaration { initializer, .. } => {
+            if let Some(initializer) = initializer {
+                let _ = summarize_expression(initializer, diagnostics);
+            }
+            FlowSummary::falls_through()
+        }
+
+        // Recovered syntax is useful for nested diagnostics but cannot provide
+        // exact parent non-fallthrough authority.
+        NodeKind::Error { partial, .. } => {
+            if let Some(partial) = partial {
+                let _ = summarize_node(partial, diagnostics);
+            }
+            FlowSummary::falls_through()
+        }
+
+        NodeKind::FunctionCall { name, args } => summarize_function_call(name, args, diagnostics),
+        NodeKind::AmperCall { args, .. } => {
+            analyze_expression_list(args, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::MethodCall { object, args, .. } | NodeKind::IndirectCall { object, args, .. } => {
+            let _ = summarize_expression(object, diagnostics);
+            analyze_expression_list(args, diagnostics);
+            // Method/function spelling alone is not non-returning authority.
+            FlowSummary::falls_through()
+        }
+
+        _ => summarize_expression(node, diagnostics),
     }
 }
 
-/// Recursively visit expression nodes looking for anonymous subroutine literals
-/// (so that `return` inside an anonymous sub does not appear to be a direct
-/// child of the outer statement list).
-fn visit_expr(expr: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    match &expr.kind {
-        // Anonymous sub literal: fresh reachability scope
-        NodeKind::Subroutine { body, .. } => {
-            visit_node(body, diagnostics);
-        }
+fn summarize_if(
+    condition: &Node,
+    then_branch: &Node,
+    elsif_branches: &[(Box<Node>, Box<Node>)],
+    else_branch: Option<&Node>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> FlowSummary {
+    let _ = summarize_expression(condition, diagnostics);
 
-        // Walk children of common expression forms
-        NodeKind::Assignment { lhs, rhs, .. } => {
-            visit_expr(lhs, diagnostics);
-            visit_expr(rhs, diagnostics);
-        }
-        NodeKind::Binary { left, right, .. } => {
-            visit_expr(left, diagnostics);
-            visit_expr(right, diagnostics);
-        }
-        NodeKind::Unary { operand, .. } => {
-            visit_expr(operand, diagnostics);
-        }
-        NodeKind::Ternary { condition, then_expr, else_expr } => {
-            visit_expr(condition, diagnostics);
-            visit_expr(then_expr, diagnostics);
-            visit_expr(else_expr, diagnostics);
-        }
-        NodeKind::FunctionCall { args, .. } | NodeKind::MethodCall { args, .. } => {
-            for arg in args {
-                visit_expr(arg, diagnostics);
-            }
-        }
-        NodeKind::ArrayLiteral { elements } => {
-            for elem in elements {
-                visit_expr(elem, diagnostics);
-            }
-        }
-        NodeKind::HashLiteral { pairs } => {
-            for (key, val) in pairs {
-                visit_expr(key, diagnostics);
-                visit_expr(val, diagnostics);
-            }
-        }
-        // Other expression forms don't contain sub literals; stop recursing
-        _ => {}
+    let mut branches = vec![summarize_node(then_branch, diagnostics)];
+    for (elsif_condition, elsif_body) in elsif_branches {
+        let _ = summarize_expression(elsif_condition, diagnostics);
+        branches.push(summarize_node(elsif_body, diagnostics));
     }
+
+    let exhaustive = else_branch.is_some();
+    if let Some(else_branch) = else_branch {
+        branches.push(summarize_node(else_branch, diagnostics));
+    }
+
+    FlowSummary::alternatives(branches, exhaustive)
 }
 
-/// Walk a statement slice linearly. When an unconditional exit is found, emit
-/// PL406 for all remaining siblings in the same slice.
-///
-/// The key correctness property: after calling `check_statement_list`, nested
-/// blocks are always entered with a *fresh* call to `visit_node`, which starts
-/// with `found_exit = false`. This prevents a `return` in an inner sub from
-/// poisoning the outer statement list.
-fn check_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) {
-    let mut found_exit = false;
-    let mut pending_goto_label = None;
+fn summarize_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) -> FlowSummary {
+    let mut can_fall_through = true;
+    let mut terminal_summary = FlowSummary::falls_through();
+    let mut pending_goto_labels: Vec<String> = Vec::new();
 
     for stmt in stmts {
-        if found_exit {
-            if pending_goto_label.is_some_and(|label| labeled_statement_name(stmt) == Some(label)) {
-                // `goto LABEL` can resume at a later label in this same list.
-                // That label and its following statements are reachable again.
-                found_exit = false;
-                pending_goto_label = None;
+        if !can_fall_through {
+            let restores_fallthrough = labeled_statement_name(stmt).is_some_and(|label| {
+                pending_goto_labels.iter().any(|target| target.as_str() == label)
+            });
+
+            if restores_fallthrough {
+                can_fall_through = true;
+                pending_goto_labels.clear();
             } else {
-                // Emit PL406 for this unreachable statement
-                diagnostics.push(Diagnostic {
-                    range: (stmt.location.start, stmt.location.end),
-                    severity: DiagnosticSeverity::Hint,
-                    code: Some(DiagnosticCode::UnreachableCode.as_str().to_string()),
-                    message: "Unreachable code: this statement cannot be executed".to_string(),
-                    related_information: vec![],
-                    tags: vec![DiagnosticTag::Unnecessary],
-                    suggestion: Some("Remove unreachable code".to_string()),
-                });
-                // Still recurse into the unreachable node: nested subs deserve
-                // independent analysis even if their containing block is dead.
-                visit_node(stmt, diagnostics);
+                emit_unreachable(stmt, diagnostics);
+                // Nested callables and blocks still deserve their own local
+                // analysis even when the containing statement is unreachable.
+                let _ = summarize_node(stmt, diagnostics);
                 continue;
             }
         }
 
-        // Recurse first (to handle nested subs), then check for exit.
-        visit_node(stmt, diagnostics);
-        if is_unconditional_exit(stmt) {
-            found_exit = true;
-            pending_goto_label = goto_label_target(stmt);
+        let summary = summarize_node(stmt, diagnostics);
+        // A bare BLOCK statement is a one-shot loop (perlsyn): loop-control
+        // transfers target the block itself and must not close fallthrough in
+        // this list. Branch/body blocks of `if`, loops, and callables are not
+        // loop targets and keep their verbatim summary.
+        let summary = if matches!(&stmt.kind, NodeKind::Block { .. }) {
+            summary.without_loop_transfers()
+        } else {
+            summary
+        };
+        if summary.can_fall_through {
+            terminal_summary = FlowSummary::falls_through();
+        } else {
+            pending_goto_labels = summary.goto_labels();
+            can_fall_through = false;
+            terminal_summary = summary;
         }
     }
+
+    if can_fall_through { FlowSummary::falls_through() } else { terminal_summary }
 }
 
-/// Returns true if this AST node represents an unconditional control-flow exit.
-///
-/// Only nodes that **directly exit** at the statement level qualify. The key
-/// restriction is that `die` inside `or` (a binary expression) does NOT count
-/// because the `or` branch is only taken when the left side is falsy — the
-/// overall statement does not always exit.
-///
-/// `StatementModifier` is explicitly `false`: `return if $cond` is conditional.
-fn is_unconditional_exit(node: &Node) -> bool {
+fn summarize_expression(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary {
     match &node.kind {
-        // `return;` or `return $value;`
-        NodeKind::Return { .. } => true,
-
-        // Direct function call at statement level (not wrapped in ExpressionStatement)
-        NodeKind::FunctionCall { name, .. } => is_exit_function(name),
-
-        // Method calls that are known unconditional exits (#5062):
-        // `$obj->throw`, `$obj->abort`, `$obj->die` — common in Exception::Class,
-        // Throwable::Error, etc. These conventionally never return.
-        NodeKind::MethodCall { method, .. } => is_exit_method(method),
-
-        // `die "msg";` — the parser wraps bare function calls in ExpressionStatement
-        NodeKind::ExpressionStatement { expression } => is_unconditional_exit(expression),
-
-        // `last`, `next`, `redo` — exit the current loop iteration/block
-        NodeKind::LoopControl { op, .. } => matches!(op.as_str(), "last" | "next" | "redo"),
-
-        // All goto forms transfer control without returning to the next sibling.
-        // `goto LABEL` may resume at a later labeled statement in this same
-        // list; check_statement_list handles that target separately.
-        NodeKind::Goto { .. } => true,
-
-        // `return if $cond` is CONDITIONAL — StatementModifier is never an unconditional exit
-        NodeKind::StatementModifier { .. } => false,
-
-        _ => false,
+        NodeKind::FunctionCall { name, args } => summarize_function_call(name, args, diagnostics),
+        NodeKind::AmperCall { args, .. } => {
+            analyze_expression_list(args, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::MethodCall { object, args, .. } | NodeKind::IndirectCall { object, args, .. } => {
+            let _ = summarize_expression(object, diagnostics);
+            analyze_expression_list(args, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::Subroutine { body, .. } | NodeKind::Method { body, .. } => {
+            let _ = summarize_node(body, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::Ternary { condition, then_expr, else_expr } => {
+            let _ = summarize_expression(condition, diagnostics);
+            FlowSummary::alternatives(
+                vec![
+                    summarize_expression(then_expr, diagnostics),
+                    summarize_expression(else_expr, diagnostics),
+                ],
+                true,
+            )
+        }
+        NodeKind::Assignment { lhs, rhs, .. } => {
+            // Perl evaluates the rhs before the lhs. Visit both sides so a
+            // transferring lhs cannot skip diagnostics nested in the rhs,
+            // then select the terminal summary in evaluation order.
+            let rhs_summary = summarize_expression(rhs, diagnostics);
+            let lhs_summary = summarize_expression(lhs, diagnostics);
+            if !rhs_summary.can_fall_through { rhs_summary } else { lhs_summary }
+        }
+        NodeKind::Unary { operand, .. } => summarize_expression(operand, diagnostics),
+        NodeKind::Binary { left, right, .. } => {
+            let _ = summarize_expression(left, diagnostics);
+            let _ = summarize_expression(right, diagnostics);
+            // Perl's short-circuit and overloaded binary operators require
+            // stronger semantic facts before a child transfer can be promoted.
+            FlowSummary::falls_through()
+        }
+        NodeKind::ArrayLiteral { elements } => {
+            analyze_expression_list(elements, diagnostics);
+            FlowSummary::falls_through()
+        }
+        NodeKind::HashLiteral { pairs } => {
+            for (key, value) in pairs {
+                let _ = summarize_expression(key, diagnostics);
+                let _ = summarize_expression(value, diagnostics);
+            }
+            FlowSummary::falls_through()
+        }
+        NodeKind::Eval { block } | NodeKind::Do { block } | NodeKind::Defer { block } => {
+            let _ = summarize_node(block, diagnostics);
+            FlowSummary::falls_through()
+        }
+        _ => FlowSummary::falls_through(),
     }
 }
 
-/// Returns true if the method name is conventionally a non-returning exit.
-/// These are common in exception libraries (Exception::Class, Throwable,
-/// Catalyst::Exception, Ouch, etc.) where the method throws and never returns. (#5062)
-fn is_exit_method(method: &str) -> bool {
-    matches!(method, "throw" | "abort" | "rethrow" | "fatal")
-}
-
-/// Returns true if the function name is one of the known unconditional-exit functions.
-fn is_exit_function(name: &str) -> bool {
-    // Strip CORE:: prefix for uniform coverage — handles CORE::die, CORE::exit,
-    // CORE::exec, CORE::croak, CORE::confess without a parallel list.
-    let bare = name.strip_prefix("CORE::").unwrap_or(name);
-    matches!(bare, "die" | "exit" | "exec" | "croak" | "Carp::croak" | "confess" | "Carp::confess")
-}
-
-/// Visit a `continue { }` block.
-///
-/// Fallthrough inside a `continue { }` block is decided by the same
-/// statement-list-local rule as any other statement list: a statement that
-/// transfers control away is followed by unreachable siblings. `next`, `last`,
-/// and `redo` have distinct destinations, but none of them resumes at the next
-/// statement in this list, so no continue-specific exit predicate is needed.
-fn visit_continue_block(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
-    match &node.kind {
-        NodeKind::Block { statements } => {
-            check_statement_list(statements, diagnostics);
+fn summarize_function_call(
+    name: &str,
+    args: &[Node],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> FlowSummary {
+    analyze_expression_list(args, diagnostics);
+    match name {
+        "die" | "CORE::die" => FlowSummary::transfer(ControlTransfer::Raise),
+        "exit" | "CORE::exit" | "exec" | "CORE::exec" => {
+            FlowSummary::transfer(ControlTransfer::ProcessTransfer)
         }
-        _ => {
-            // Non-block continue node: fall back to standard visit
-            visit_node(node, diagnostics);
+        // `croak`/`confess` are Carp's documented non-returning API and were
+        // accepted PL406 terminators under closed issue #5062 ("verified
+        // correct — do not regress", fixed by #5151). Framework spellings
+        // such as `fatal` or `$object->throw()` remain conservative: without
+        // a canonical semantic fact they are not non-returning authority.
+        "croak" | "Carp::croak" | "confess" | "Carp::confess" => {
+            FlowSummary::transfer(ControlTransfer::Raise)
         }
+        _ => FlowSummary::falls_through(),
     }
 }
 
-fn goto_label_target(node: &Node) -> Option<&str> {
-    let NodeKind::Goto { target, form: GotoTargetForm::Label } = &node.kind else {
-        return None;
-    };
+fn analyze_expression_list(nodes: &[Node], diagnostics: &mut Vec<Diagnostic>) {
+    for node in nodes {
+        let _ = summarize_expression(node, diagnostics);
+    }
+}
 
-    let NodeKind::Identifier { name } = &target.kind else {
-        return None;
+fn summarize_loop_control(op: &str, label: &Option<String>) -> FlowSummary {
+    let transfer = match op {
+        "next" => ControlTransfer::ContinueLoop { _label: label.clone() },
+        "last" => ControlTransfer::BreakLoop { _label: label.clone() },
+        "redo" => ControlTransfer::RedoLoop { _label: label.clone() },
+        _ => return FlowSummary::falls_through(),
     };
-    Some(name.as_str())
+    FlowSummary::transfer(transfer)
+}
+
+fn summarize_goto(target: &Node, form: &GotoTargetForm) -> FlowSummary {
+    match form {
+        GotoTargetForm::Label => {
+            if let NodeKind::Identifier { name } = &target.kind {
+                FlowSummary::transfer(ControlTransfer::GotoLabel(name.clone()))
+            } else {
+                FlowSummary::transfer(ControlTransfer::DynamicGoto)
+            }
+        }
+        GotoTargetForm::Sub | GotoTargetForm::Expr => {
+            FlowSummary::transfer(ControlTransfer::DynamicGoto)
+        }
+        _ => FlowSummary::transfer(ControlTransfer::DynamicGoto),
+    }
 }
 
 fn labeled_statement_name(node: &Node) -> Option<&str> {
@@ -346,6 +440,18 @@ fn labeled_statement_name(node: &Node) -> Option<&str> {
     Some(label.as_str())
 }
 
+fn emit_unreachable(stmt: &Node, diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.push(Diagnostic {
+        range: (stmt.location.start, stmt.location.end),
+        severity: DiagnosticSeverity::Hint,
+        code: Some(DiagnosticCode::UnreachableCode.as_str().to_string()),
+        message: "Unreachable code: this statement cannot be executed".to_string(),
+        related_information: vec![],
+        tags: vec![DiagnosticTag::Unnecessary],
+        suggestion: Some("Remove unreachable code".to_string()),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,200 +459,289 @@ mod tests {
     use perl_tdd_support::{must, must_some};
 
     fn unreachable_diags(source: &str) -> Vec<Diagnostic> {
-        let ast = must(Parser::new(source).parse());
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        assert!(
+            parser.errors().is_empty(),
+            "test source must parse cleanly; a recovered Error node falls through and \
+             would make absence assertions vacuous: {:?}",
+            parser.errors()
+        );
         let mut diags = Vec::new();
         check_unreachable_code(&ast, &mut diags);
         diags
     }
 
     fn has_pl406(diags: &[Diagnostic]) -> bool {
-        diags.iter().any(|d| d.code.as_deref() == Some("PL406"))
+        diags.iter().any(|diagnostic| diagnostic.code.as_deref() == Some("PL406"))
     }
 
     fn count_pl406(diags: &[Diagnostic]) -> usize {
-        diags.iter().filter(|d| d.code.as_deref() == Some("PL406")).count()
+        diags.iter().filter(|diagnostic| diagnostic.code.as_deref() == Some("PL406")).count()
     }
-
-    // --- return as exit ---
 
     #[test]
     fn return_then_statement_is_flagged() {
-        let diags = unreachable_diags("sub f { return 1; my $x = 2; }");
-        assert!(has_pl406(&diags), "statement after return should be flagged as PL406: {diags:?}");
+        let source = "sub f { return 1; my $x = 2; }";
+        let diags = unreachable_diags(source);
+        assert!(has_pl406(&diags), "statement after return should be PL406: {diags:?}");
+        let anchor = "my $x = 2";
+        let start = must_some(source.find(anchor));
+        let pl406 = must_some(diags.iter().find(|d| d.code.as_deref() == Some("PL406")));
+        assert_eq!(
+            pl406.range,
+            (start, start + anchor.len()),
+            "PL406 must identify the unreachable statement itself, not just exist: {diags:?}"
+        );
     }
 
     #[test]
-    fn return_at_end_no_flag() {
-        let diags = unreachable_diags("sub f { my $x = 1; return $x; }");
-        assert!(!has_pl406(&diags), "return at end of sub should not flag anything: {diags:?}");
+    fn elsif_body_fallthrough_keeps_following_sibling_reachable() {
+        let diags = unreachable_diags(
+            r#"sub f { if ($x) { return 1; } elsif ($y) { print "live"; } else { exit 0; } print "also live"; }"#,
+        );
+        assert!(
+            !has_pl406(&diags),
+            "a fallthrough elsif body must keep the parent reachable even when \
+             then and else both transfer: {diags:?}"
+        );
     }
 
     #[test]
-    fn conditional_return_does_not_flag_subsequent_code() {
+    fn conditional_return_keeps_fallthrough() {
         let diags = unreachable_diags("sub f { return if $cond; my $x = 1; }");
-        assert!(!has_pl406(&diags), "return if cond should not flag subsequent code: {diags:?}");
+        assert!(!has_pl406(&diags), "conditional return must preserve fallthrough: {diags:?}");
     }
 
-    // --- die as exit ---
+    #[test]
+    fn complete_if_else_transfers_make_following_sibling_unreachable() {
+        let diags = unreachable_diags(
+            r#"sub f { if ($x) { return 1; } else { die "stop"; } print "dead"; }"#,
+        );
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "complete transferring branches should close fallthrough: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn one_fallthrough_branch_keeps_following_sibling_reachable() {
+        let diags = unreachable_diags(
+            r#"sub f { if ($x) { return 1; } else { print "live"; } print "also live"; }"#,
+        );
+        assert!(
+            !has_pl406(&diags),
+            "one fallthrough branch must keep the parent reachable: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn conditional_without_else_keeps_following_sibling_reachable() {
+        let diags = unreachable_diags("sub f { if ($x) { return 1; } print 'live'; }");
+        assert!(
+            !has_pl406(&diags),
+            "a missing else leaves an uncovered fallthrough path: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn complete_elsif_chain_transfers() {
+        let diags = unreachable_diags(
+            r#"sub f { if ($x) { return 1; } elsif ($y) { die "y"; } else { exit 2; } print "dead"; }"#,
+        );
+        assert_eq!(count_pl406(&diags), 1, "all complete branches transfer: {diags:?}");
+    }
+
+    #[test]
+    fn nested_sub_transfer_does_not_poison_outer_scope() {
+        let diags = unreachable_diags("sub outer { my $f = sub { return 1; }; my $x = 2; }");
+        assert!(!has_pl406(&diags), "nested callable transfer must remain local: {diags:?}");
+    }
+
+    #[test]
+    fn nested_sub_still_reports_its_own_unreachable_sibling() {
+        let diags = unreachable_diags("sub outer { my $f = sub { return 1; my $dead = 99; }; }");
+        assert_eq!(count_pl406(&diags), 1, "nested callable should retain local PL406: {diags:?}");
+    }
+
+    #[test]
+    fn eval_reports_local_unreachable_but_outer_scope_falls_through() {
+        let diags = unreachable_diags(
+            r#"sub f { eval { die "inner"; print "dead"; }; print "outer live"; }"#,
+        );
+        assert_eq!(count_pl406(&diags), 1, "only the inner eval sibling is unreachable: {diags:?}");
+    }
 
     #[test]
     fn die_then_statement_is_flagged() {
         let diags = unreachable_diags(r#"sub f { die "error"; print "never"; }"#);
-        assert!(has_pl406(&diags), "statement after die should be flagged as PL406: {diags:?}");
+        assert!(has_pl406(&diags), "statement after die should be PL406: {diags:?}");
     }
 
     #[test]
-    fn croak_then_statement_is_flagged() {
-        let diags = unreachable_diags(r#"sub f { croak "err"; print "never"; }"#);
-        assert!(has_pl406(&diags), "statement after croak should be flagged as PL406: {diags:?}");
+    fn exit_and_exec_are_process_transfers() {
+        for source in [
+            "sub f { exit 0; print 'dead'; }",
+            r#"sub f { exec("perl", "-e", "1"); print "dead"; }"#,
+            "sub f { CORE::exit(0); print 'dead'; }",
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                has_pl406(&diags),
+                "exact process transfer should close fallthrough: {diags:?}"
+            );
+        }
     }
 
     #[test]
-    fn qualified_croak_then_statement_is_flagged() {
-        let diags = unreachable_diags(r#"sub f { Carp::croak "err"; print "never"; }"#);
-        assert!(
-            has_pl406(&diags),
-            "statement after Carp::croak should be flagged as PL406: {diags:?}"
-        );
+    fn carp_nonreturning_functions_close_fallthrough() {
+        // Accepted PL406 terminator authority under closed issue #5062.
+        for source in [
+            r#"sub f { croak "stop"; print "dead"; }"#,
+            r#"sub f { Carp::croak "stop"; print "dead"; }"#,
+            r#"sub f { confess "stop"; print "dead"; }"#,
+            r#"sub f { Carp::confess "stop"; print "dead"; }"#,
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                has_pl406(&diags),
+                "Carp's documented non-returning API must close fallthrough: {diags:?}"
+            );
+        }
     }
 
     #[test]
-    fn exit_then_statement_is_flagged() {
-        let diags = unreachable_diags("exit 0; my $x = 1;");
-        assert!(has_pl406(&diags), "statement after exit should be flagged as PL406: {diags:?}");
+    fn framework_call_spelling_alone_is_not_nonreturning_authority() {
+        for source in [
+            r#"sub f { fatal(); print "reachable"; }"#,
+            r#"sub f { $object->throw(); print "reachable"; }"#,
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                !has_pl406(&diags),
+                "framework spelling without a semantic fact cannot prove non-return: {diags:?}"
+            );
+        }
     }
 
-    // --- multiple unreachable statements ---
-
     #[test]
-    fn two_statements_after_return_both_flagged() {
-        let diags = unreachable_diags("sub f { return; my $a = 1; my $b = 2; }");
-        assert_eq!(
-            count_pl406(&diags),
-            2,
-            "both statements after return should be PL406: {diags:?}"
-        );
+    fn bare_block_loop_control_exits_only_the_block() {
+        // A bare BLOCK is a one-shot loop (perlsyn): last/next/redo leave or
+        // restart the block, so the following sibling stays reachable.
+        for source in [
+            r#"sub f { { last; } print "after"; }"#,
+            r#"{ next; } print "after";"#,
+            r#"while ($c) { { last; } print "still-in-body"; last; }"#,
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                !has_pl406(&diags),
+                "loop control inside a bare block must not close parent fallthrough: {diags:?}"
+            );
+        }
     }
 
-    // --- nested sub reachability isolation ---
-
     #[test]
-    fn return_in_inner_sub_does_not_poison_outer() {
-        let diags = unreachable_diags("sub outer { my $f = sub { return 1; }; my $x = 2; }");
+    fn labeled_bare_block_last_exits_only_the_block() {
+        let diags = unreachable_diags("DONE: { do_it(); last DONE; } print 'after';");
         assert!(
             !has_pl406(&diags),
-            "return inside anonymous sub should not flag outer code: {diags:?}"
+            "last LABEL targeting a labeled bare block must keep the sibling reachable: {diags:?}"
         );
     }
 
     #[test]
-    fn return_in_inner_sub_flags_inner_unreachable() {
-        let diags = unreachable_diags("sub outer { my $f = sub { return 1; my $dead = 99; }; }");
-        assert!(
-            has_pl406(&diags),
-            "unreachable code inside anonymous sub should be flagged: {diags:?}"
-        );
-    }
-
-    // --- loop control exits ---
-
-    #[test]
-    fn last_in_loop_body_flags_subsequent() {
-        let diags = unreachable_diags("for my $i (1..5) { last; print $i; }");
-        assert!(has_pl406(&diags), "code after 'last' should be flagged: {diags:?}");
-    }
-
-    #[test]
-    fn next_in_loop_body_flags_subsequent() {
-        let diags = unreachable_diags("for my $i (1..5) { next; print $i; }");
-        assert!(has_pl406(&diags), "code after 'next' should be flagged: {diags:?}");
-    }
-
-    #[test]
-    fn redo_in_loop_body_flags_subsequent() {
-        let diags = unreachable_diags("while ($ready) { redo; print $ready; }");
-        assert!(has_pl406(&diags), "code after 'redo' should be flagged: {diags:?}");
-    }
-
-    #[test]
-    fn next_in_continue_block_flags_subsequent() {
-        let diags =
-            unreachable_diags("while ($ready) { work(); } continue { next; print $ready; }");
-        assert!(has_pl406(&diags), "code after 'next' in continue should be flagged: {diags:?}");
-    }
-
-    #[test]
-    fn last_in_continue_block_flags_subsequent() {
-        let diags =
-            unreachable_diags("while ($ready) { work(); } continue { last; print $ready; }");
-        assert!(has_pl406(&diags), "code after 'last' in continue should be flagged: {diags:?}");
-    }
-
-    #[test]
-    fn redo_in_continue_block_flags_subsequent() {
-        let diags =
-            unreachable_diags("while ($ready) { work(); } continue { redo; print $ready; }");
-        assert!(has_pl406(&diags), "code after 'redo' in continue should be flagged: {diags:?}");
-    }
-
-    #[test]
-    fn labelled_next_in_continue_block_flags_subsequent() {
-        let diags = unreachable_diags(
-            "OUTER: while ($ready) { work(); } continue { next OUTER; print $ready; }",
-        );
-        assert!(
-            has_pl406(&diags),
-            "code after labelled next in continue should be flagged: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn two_statements_after_next_in_continue_are_flagged() {
-        let diags =
-            unreachable_diags("while ($ready) { work(); } continue { next; print 1; print 2; }");
+    fn bare_block_raise_still_closes_fallthrough() {
+        let diags = unreachable_diags(r#"{ die "stop"; } print "dead";"#);
         assert_eq!(
             count_pl406(&diags),
-            2,
-            "all later continue-block siblings should be flagged: {diags:?}"
+            1,
+            "non-loop transfers still promote out of a bare block: {diags:?}"
         );
     }
 
     #[test]
-    fn postfix_loop_control_in_continue_keeps_fallthrough() {
+    fn assignment_visits_rhs_even_when_lhs_transfers() {
+        // Perl evaluates the rhs of an assignment before the lhs. A lhs that
+        // provably transfers must not skip rhs traversal: unreachable
+        // statements nested in the rhs would otherwise go unreported.
+        let diags =
+            unreachable_diags(r#"sub f { ($c ? exit : die) = do { die "x"; print "dead"; }; }"#);
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "rhs do-block must still report its unreachable statement: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn loop_control_in_if_branches_still_targets_the_enclosing_loop() {
+        // if/else branch blocks are NOT loop blocks (perlsyn): a `last` in
+        // every complete branch exits the enclosing while, so the sibling
+        // after the if inside the loop body is genuinely unreachable.
+        let diags =
+            unreachable_diags("while (1) { if ($c) { last; } else { last; } print 'dead'; }");
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "complete if/else last branches must still close loop-body fallthrough: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn binary_short_circuit_does_not_promote_child_transfer() {
+        let diags = unreachable_diags(r#"exec("perl", "-e", "1") or die; my $x = 1;"#);
+        assert!(
+            !has_pl406(&diags),
+            "binary expression keeps a conservative fallthrough path: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn loop_controls_flag_later_siblings_inside_loop_body() {
+        for source in [
+            "for my $i (1..5) { next; print $i; }",
+            "for my $i (1..5) { last; print $i; }",
+            "while ($ready) { redo; print $ready; }",
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                has_pl406(&diags),
+                "unconditional loop control closes local fallthrough: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn loop_controls_flag_later_siblings_inside_continue_block() {
+        for source in [
+            "while ($ready) { work(); } continue { next; print $ready; }",
+            "while ($ready) { work(); } continue { last; print $ready; }",
+            "while ($ready) { work(); } continue { redo; print $ready; }",
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                has_pl406(&diags),
+                "continue-block loop control closes sibling fallthrough: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn postfix_loop_control_keeps_fallthrough() {
         for source in [
             "while ($ready) { work(); } continue { next if $skip; print $ready; }",
             "while ($ready) { work(); } continue { last unless $ready; print $ready; }",
             "while ($ready) { work(); } continue { redo while $retry; print $ready; }",
         ] {
             let diags = unreachable_diags(source);
-            assert!(
-                !has_pl406(&diags),
-                "conditional loop control should preserve continue-block fallthrough: {diags:?}"
-            );
+            assert!(!has_pl406(&diags), "conditional loop control retains fallthrough: {diags:?}");
         }
     }
 
     #[test]
-    fn exit_method_in_continue_block_flags_subsequent() {
-        // A throwing method call terminates fallthrough in an ordinary
-        // statement list; a `continue { }` block is not a special case.
-        let diags =
-            unreachable_diags("while ($ready) { work(); } continue { $err->throw; print $ready; }");
-        assert!(
-            has_pl406(&diags),
-            "code after a throwing method call in continue should be flagged: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn exit_function_in_continue_block_flags_subsequent() {
-        let diags =
-            unreachable_diags("while ($ready) { work(); } continue { die 'stop'; print $ready; }");
-        assert!(has_pl406(&diags), "code after 'die' in continue should be flagged: {diags:?}");
-    }
-
-    #[test]
-    fn loop_control_does_not_poison_code_after_loop() {
+    fn loop_transfer_does_not_poison_code_after_loop() {
         for source in [
             "while ($ready) { next; } print 'after';",
             "while ($ready) { redo; } print 'after';",
@@ -555,108 +750,49 @@ mod tests {
             let diags = unreachable_diags(source);
             assert!(
                 !has_pl406(&diags),
-                "loop control should not make code after the loop unreachable: {diags:?}"
+                "loop transfer remains inside the loop statement: {diags:?}"
             );
         }
     }
 
-    // --- eval block: die is caught, outer code is reachable ---
-
     #[test]
-    fn die_inside_eval_does_not_flag_after_eval() {
-        let diags = unreachable_diags(r#"eval { die "oops"; }; my $x = 1;"#);
-        assert!(
-            !has_pl406(&diags),
-            "die inside eval should not flag code after the eval block: {diags:?}"
+    fn goto_forward_label_restores_reachability() {
+        let diags = unreachable_diags("goto DONE; print 'dead'; DONE: print 'alive';");
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "only code before the target label is unreachable: {diags:?}"
         );
     }
 
-    // --- confess ---
-
     #[test]
-    fn confess_then_statement_is_flagged() {
-        let diags = unreachable_diags(r#"sub f { confess "msg"; print "dead"; }"#);
-        assert!(has_pl406(&diags), "statement after confess should be flagged as PL406: {diags:?}");
-    }
-
-    #[test]
-    fn qualified_confess_then_statement_is_flagged() {
-        let diags = unreachable_diags(r#"sub f { Carp::confess "msg"; print "dead"; }"#);
-        assert!(
-            has_pl406(&diags),
-            "statement after Carp::confess should be flagged as PL406: {diags:?}"
+    fn dynamic_goto_does_not_fall_through() {
+        let diags = unreachable_diags("goto $target; print 'dead';");
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "dynamic goto transfers without sibling fallthrough: {diags:?}"
         );
     }
 
-    // --- diagnostic quality ---
+    #[test]
+    fn multiple_statements_after_transfer_are_flagged() {
+        let diags = unreachable_diags("sub f { return; my $a = 1; my $b = 2; }");
+        assert_eq!(count_pl406(&diags), 2, "all later siblings should be PL406: {diags:?}");
+    }
 
     #[test]
-    fn pl406_has_unnecessary_tag() {
+    fn pl406_keeps_canonical_tag_and_suggestion() {
         let diags = unreachable_diags("sub f { return; my $x = 1; }");
-        let diag = must_some(diags.iter().find(|d| d.code.as_deref() == Some("PL406")));
-        assert!(
-            diag.tags.contains(&DiagnosticTag::Unnecessary),
-            "PL406 should carry the Unnecessary tag"
-        );
+        let diagnostic =
+            must_some(diags.iter().find(|diagnostic| diagnostic.code.as_deref() == Some("PL406")));
+        assert!(diagnostic.tags.contains(&DiagnosticTag::Unnecessary));
+        assert!(diagnostic.suggestion.is_some());
     }
 
     #[test]
-    fn pl406_has_suggestion() {
-        let diags = unreachable_diags("sub f { return; my $x = 1; }");
-        let diag = must_some(diags.iter().find(|d| d.code.as_deref() == Some("PL406")));
-        assert!(diag.suggestion.is_some(), "PL406 should carry a suggestion");
-    }
-
-    #[test]
-    fn clean_sub_no_pl406() {
+    fn clean_sub_has_no_pl406() {
         let diags = unreachable_diags("sub f { my $x = 1; my $y = 2; return $x + $y; }");
-        assert!(!has_pl406(&diags), "clean sub should not trigger PL406: {diags:?}");
-    }
-
-    // --- exec / CORE::exit terminators (#5063) ---
-
-    #[test]
-    fn exec_then_statement_is_flagged() {
-        let diags = unreachable_diags(r#"exec("perl", "-e", "1"); my $x = 1;"#);
-        assert!(
-            has_pl406(&diags),
-            "statement after exec should be flagged as PL406 (exec never returns): {diags:?}"
-        );
-    }
-
-    #[test]
-    fn exec_paren_less_then_statement_is_flagged() {
-        let diags = unreachable_diags(r#"exec "perl", "-e", "1"; my $x = 1;"#);
-        assert!(
-            has_pl406(&diags),
-            "statement after paren-less exec should be flagged as PL406: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn core_exit_then_statement_is_flagged() {
-        let diags = unreachable_diags("CORE::exit(0); my $x = 1;");
-        assert!(
-            has_pl406(&diags),
-            "statement after CORE::exit should be flagged as PL406: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn core_exec_then_statement_is_flagged() {
-        let diags = unreachable_diags(r#"CORE::exec("perl", "-e", "1"); my $x = 1;"#);
-        assert!(
-            has_pl406(&diags),
-            "statement after CORE::exec should be flagged as PL406: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn exec_or_die_does_not_flag_subsequent() {
-        let diags = unreachable_diags(r#"exec("perl", "-e", "1") or die; my $x = 1;"#);
-        assert!(
-            !has_pl406(&diags),
-            "exec() or die should NOT flag subsequent code (Binary or is not a terminator): {diags:?}"
-        );
+        assert!(!has_pl406(&diags), "ordinary reachable code should remain clean: {diags:?}");
     }
 }
