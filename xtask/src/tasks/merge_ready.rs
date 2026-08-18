@@ -192,10 +192,11 @@ pub fn evaluate_snapshot_file(snapshot_path: &Path, output_path: Option<&Path>) 
 
     if let Some(path) = output_path {
         if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("failed to create directory: {}", parent.display()))?;
-            }
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+        }
         fs::write(path, json)
             .with_context(|| format!("failed to write evaluation: {}", path.display()))?;
         println!("wrote {}", path.display());

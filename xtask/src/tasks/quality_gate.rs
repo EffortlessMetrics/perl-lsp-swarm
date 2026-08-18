@@ -126,14 +126,15 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
             next_actions.push(patch_coverage_unknown_action(args));
         }
         if let Some(patch) = patch
-            && patch < PATCH_TARGET {
-                next_actions.push(patch_coverage_below_target_action(
-                    patch,
-                    patch_source.unwrap_or("unknown"),
-                    &coverage,
-                    args,
-                ));
-            }
+            && patch < PATCH_TARGET
+        {
+            next_actions.push(patch_coverage_below_target_action(
+                patch,
+                patch_source.unwrap_or("unknown"),
+                &coverage,
+                args,
+            ));
+        }
         match coverage.project {
             Some(project) if project < PROJECT_TARGET => {
                 next_actions.push(project_coverage_below_target_action(project, &coverage, args));
@@ -276,14 +277,15 @@ fn evaluate_patch_coverage(head: &str, args: &QualityGateArgs) -> Result<GateEva
     }
 
     if let Some(patch) = patch
-        && patch < PATCH_TARGET {
-            next_actions.push(patch_coverage_below_target_action(
-                patch,
-                patch_source.unwrap_or("unknown"),
-                &coverage,
-                args,
-            ));
-        }
+        && patch < PATCH_TARGET
+    {
+        next_actions.push(patch_coverage_below_target_action(
+            patch,
+            patch_source.unwrap_or("unknown"),
+            &coverage,
+            args,
+        ));
+    }
 
     if codecov_status != "present" {
         next_actions.push(codecov_policy_action(&codecov_status, args));

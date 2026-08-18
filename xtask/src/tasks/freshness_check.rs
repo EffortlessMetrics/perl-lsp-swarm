@@ -213,12 +213,13 @@ pub fn run(config: FreshnessCheckConfig) -> Result<()> {
 
     // Binary-staleness exit: always blocks when --binaries is active.
     if config.check_binaries
-        && let Some(false) = receipt.binary_freshness_safe {
-            eprintln!(
-                "freshness-check: stale binary detected — rebuild with `cargo build` or `cargo build --release`"
-            );
-            std::process::exit(1);
-        }
+        && let Some(false) = receipt.binary_freshness_safe
+    {
+        eprintln!(
+            "freshness-check: stale binary detected — rebuild with `cargo build` or `cargo build --release`"
+        );
+        std::process::exit(1);
+    }
 
     Ok(())
 }

@@ -273,13 +273,10 @@ fn validate_clippy_config(path: PathBuf, ledger: &LintLedger) -> Result<()> {
     let config: Value = toml::from_str(&content)
         .map_err(|err| eyre!("failed to parse {}: {err}", path.display()))?;
     if let Some(msrv) = config.get("msrv").and_then(Value::as_str)
-        && msrv != ledger.msrv {
-            bail!(
-                "{} msrv ({msrv}) must match {LINT_LEDGER} msrv ({})",
-                path.display(),
-                ledger.msrv
-            );
-        }
+        && msrv != ledger.msrv
+    {
+        bail!("{} msrv ({msrv}) must match {LINT_LEDGER} msrv ({})", path.display(), ledger.msrv);
+    }
     Ok(())
 }
 

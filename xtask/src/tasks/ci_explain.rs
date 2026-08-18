@@ -218,9 +218,10 @@ fn load_receipt(path: &Path) -> std::result::Result<Receipt, ReceiptLoadError> {
     // Validate schema version when present; an absent field is treated as compatible
     // (older receipts without the field are still readable).
     if let Some(ref ver) = receipt.schema_version
-        && ver != SUPPORTED_SCHEMA_VERSION {
-            return Err(ReceiptLoadError::UnsupportedSchema(ver.clone()));
-        }
+        && ver != SUPPORTED_SCHEMA_VERSION
+    {
+        return Err(ReceiptLoadError::UnsupportedSchema(ver.clone()));
+    }
     Ok(receipt)
 }
 
@@ -282,9 +283,10 @@ fn extract_source_file_line(gate: &GateResult) -> Option<String> {
 
     // Fall back: scan output_summary for a `src/...rs:N` pattern.
     if let Some(ref summary) = gate.output_summary
-        && let Some(site) = extract_site_from_text(summary) {
-            return Some(site);
-        }
+        && let Some(site) = extract_site_from_text(summary)
+    {
+        return Some(site);
+    }
 
     None
 }

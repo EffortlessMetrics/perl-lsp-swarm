@@ -105,9 +105,10 @@ fn validate_shields_badge(
     }
 
     if let Some(expected_label) = expected_label
-        && badge.label != expected_label {
-            bail!("badge label drifted: got `{}`, expected `{expected_label}`", badge.label);
-        }
+        && badge.label != expected_label
+    {
+        bail!("badge label drifted: got `{}`, expected `{expected_label}`", badge.label);
+    }
 
     if badge.message.trim().is_empty() {
         bail!("badge `{}` has empty message", badge.label);

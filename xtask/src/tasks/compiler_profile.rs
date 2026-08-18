@@ -284,9 +284,10 @@ fn validate_owned_entry(
         }
     }
     if let Some(stop_condition) = stop_condition
-        && stop_condition.trim().is_empty() {
-            bail!("{kind} {id:?} must have a stop_condition");
-        }
+        && stop_condition.trim().is_empty()
+    {
+        bail!("{kind} {id:?} must have a stop_condition");
+    }
     Ok(())
 }
 

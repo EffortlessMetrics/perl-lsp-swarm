@@ -75,11 +75,12 @@ pub(super) fn code_only(line: &str) -> String {
         // Char literal vs lifetime/label. A char literal is `'x'`, `'\n'`, `'\''`,
         // `'\u{7b}'`; a lifetime is `'static` (no closing quote soon after).
         if c == '\''
-            && let Some(next) = skip_char_literal(&chars, i) {
-                i = next; // literal dropped
-                continue;
-            }
-            // Lifetime/label: keep the quote and continue (harmless — no delimiters).
+            && let Some(next) = skip_char_literal(&chars, i)
+        {
+            i = next; // literal dropped
+            continue;
+        }
+        // Lifetime/label: keep the quote and continue (harmless — no delimiters).
 
         out.push(c);
         i += 1;

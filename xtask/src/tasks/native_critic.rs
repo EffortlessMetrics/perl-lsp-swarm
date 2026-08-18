@@ -232,9 +232,10 @@ fn suppressed_rule_counts(
     let mut counts = BTreeMap::new();
     let rules = findings.iter().map(|finding| finding.rule_id.clone()).collect::<BTreeSet<_>>();
     if rules.len() == 1
-        && let Some(rule_id) = rules.into_iter().next() {
-            counts.insert(rule_id, suppressed_findings_count);
-        }
+        && let Some(rule_id) = rules.into_iter().next()
+    {
+        counts.insert(rule_id, suppressed_findings_count);
+    }
     counts
 }
 

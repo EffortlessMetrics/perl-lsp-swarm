@@ -1010,9 +1010,10 @@ impl HeadLineExtents {
             // direction this filter must never take. `C` leaves its source in place;
             // only `D` and `R` remove one.
             if entry.status.starts_with(['D', 'R'])
-                && let Some(old_path) = entry.old_path.as_deref() {
-                    removed.insert(normalize_repo_relative_path(old_path));
-                }
+                && let Some(old_path) = entry.old_path.as_deref()
+            {
+                removed.insert(normalize_repo_relative_path(old_path));
+            }
         }
         // A path some other entry adds back still exists at head and keeps its extent.
         removed.retain(|path| !present.contains_key(path));
@@ -2803,13 +2804,15 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_files_rank_repo_seams_across_path_shapes() {
-        let seams = [json!({"file": "crates/perl-parser/src/lib.rs"}),
+        let seams = [
+            json!({"file": "crates/perl-parser/src/lib.rs"}),
             json!({"path": "crates/perl-lexer/src/lib.rs"}),
             json!({"location": {"path": r"crates\perl-parser\src\lib.rs"}}),
             json!({"placement": {"path": "crates/perl-workspace/src/index.rs"}}),
             json!({"evidence_record": {"path": "crates/perl-lexer/src/lib.rs"}}),
             json!({"file": ""}),
-            json!({})];
+            json!({}),
+        ];
 
         let rows = ripr_plus_top_files(seams.iter(), 2);
 
@@ -2824,14 +2827,16 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_gap_kinds_rank_repo_seams_across_kind_shapes() {
-        let seams = [json!({"kind": "ReceiptParsing"}),
+        let seams = [
+            json!({"kind": "ReceiptParsing"}),
             json!({"gap_kind": "BoundaryPredicate"}),
             json!({"classification": ["StaticUnknown", "NoStaticPath"]}),
             json!({"evidence_record": {"kind": "ReceiptParsing"}}),
             json!({"location": {"reason": "BoundaryPredicate"}}),
             json!({"kind": false}),
             json!({"kind": ""}),
-            json!({})];
+            json!({}),
+        ];
 
         let rows = ripr_plus_top_gap_kinds(seams.iter(), 3);
 

@@ -1100,9 +1100,10 @@ fn measured_memory_mb(
     fallback_mb: f64,
 ) -> Option<f64> {
     if let (Some(before), Some(after)) = (rss_before, rss_after)
-        && after > before {
-            return Some(after - before);
-        }
+        && after > before
+    {
+        return Some(after - before);
+    }
     (fallback_mb > 0.0).then_some(fallback_mb)
 }
 
@@ -5840,18 +5841,20 @@ fn sync_runtime_metric_rows(artifact: &mut ParserAccuracyArtifact, cadence: Cade
 
 fn sync_allocation_metric_rows(artifact: &mut ParserAccuracyArtifact, cadence: Cadence) {
     if let Some(peak_rss_mb) = artifact.metric_runtime.peak_rss_mb
-        && let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "peak_rss_mb") {
-            *row = measured_value("peak_rss_mb", peak_rss_mb, 1, cadence);
-        }
+        && let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "peak_rss_mb")
+    {
+        *row = measured_value("peak_rss_mb", peak_rss_mb, 1, cadence);
+    }
     if let Some(allocated_bytes) = artifact.metric_runtime.allocated_bytes
-        && let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "allocated_bytes") {
-            *row = measured_count("allocated_bytes", allocated_bytes, 1, cadence);
-        }
+        && let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "allocated_bytes")
+    {
+        *row = measured_count("allocated_bytes", allocated_bytes, 1, cadence);
+    }
     if let Some(allocation_count) = artifact.metric_runtime.allocation_count
         && let Some(row) = artifact.metrics.iter_mut().find(|row| row.name() == "allocation_count")
-        {
-            *row = measured_count("allocation_count", allocation_count, 1, cadence);
-        }
+    {
+        *row = measured_count("allocation_count", allocation_count, 1, cadence);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
