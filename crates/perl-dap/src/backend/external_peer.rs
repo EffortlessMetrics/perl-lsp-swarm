@@ -34,6 +34,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+mod event_buffer;
+use event_buffer::{PeerEventBuffer, PushOutcome};
+
 use super::capabilities::{ControlMode, DebugBackendCapabilities};
 use super::{
     AttachBackendParams, AttachResult, BackendError, BackendResult, ContinueResult, DebugBackend,
@@ -157,12 +160,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct Shared {
     write: Mutex<TcpStream>,
     pending: Mutex<HashMap<i64, Sender<PeerResponse>>>,
-    events: Mutex<Vec<DebugEvent>>,
+    events: Mutex<PeerEventBuffer>,
     peer_caps: Mutex<Option<PeerReportedCapabilities>>,
     handshake_done: Mutex<bool>,
     /// Set when the handshake is rejected (e.g. protocol-version mismatch), so
     /// `initialize()` returns a clear error instead of an opaque timeout.
     handshake_error: Mutex<Option<String>>,
+    /// Typed terminal cause retained after the reader closes the socket.
+    terminal_error: Mutex<Option<BackendError>>,
     handshake_cv: Condvar,
     host_seq: AtomicI64,
     closed: AtomicBool,
@@ -200,6 +205,36 @@ impl Shared {
             self.mark_closed();
         }
         result
+    }
+
+    fn closed_error(&self) -> BackendError {
+        lock(&self.terminal_error).clone().unwrap_or(BackendError::NotConnected)
+    }
+
+    fn mark_closed_with_error(&self, error: BackendError) {
+        {
+            let mut terminal_error = lock(&self.terminal_error);
+            if terminal_error.is_none() {
+                *terminal_error = Some(error);
+            }
+        }
+        self.mark_closed();
+    }
+
+    fn queue_event(&self, event: DebugEvent) {
+        let resource_limit = {
+            let mut events = lock(&self.events);
+            match events.push(event) {
+                PushOutcome::Buffered | PushOutcome::Degraded => None,
+                PushOutcome::ResourceLimit(reason) => {
+                    events.force_resource_limit(&reason);
+                    Some(reason)
+                }
+            }
+        };
+        if let Some(reason) = resource_limit {
+            self.mark_closed_with_error(BackendError::ResourceLimit(reason));
+        }
     }
 
     fn mark_closed(&self) {
@@ -254,10 +289,11 @@ impl ExternalDebuggerPeerBackend {
         let shared = Arc::new(Shared {
             write: Mutex::new(write),
             pending: Mutex::new(HashMap::new()),
-            events: Mutex::new(Vec::new()),
+            events: Mutex::new(PeerEventBuffer::default()),
             peer_caps: Mutex::new(None),
             handshake_done: Mutex::new(false),
             handshake_error: Mutex::new(None),
+            terminal_error: Mutex::new(None),
             handshake_cv: Condvar::new(),
             host_seq: AtomicI64::new(0),
             closed: AtomicBool::new(false),
@@ -360,7 +396,7 @@ impl ExternalDebuggerPeerBackend {
                 return Err(BackendError::Protocol(reason));
             }
             if self.shared.closed.load(Ordering::SeqCst) {
-                return Err(BackendError::NotConnected);
+                return Err(self.shared.closed_error());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -382,7 +418,7 @@ impl ExternalDebuggerPeerBackend {
     /// Send a host→peer request and block for its response.
     fn request(&self, command: &str, arguments: Option<Value>) -> BackendResult<PeerResponse> {
         if self.shared.closed.load(Ordering::SeqCst) {
-            return Err(BackendError::NotConnected);
+            return Err(self.shared.closed_error());
         }
         let seq = self.shared.next_host_seq();
         let (tx, rx): (Sender<PeerResponse>, Receiver<PeerResponse>) = channel();
@@ -409,7 +445,7 @@ impl ExternalDebuggerPeerBackend {
                 lock(&self.shared.pending).remove(&seq);
                 Err(BackendError::Timeout(command.to_string()))
             }
-            Err(RecvTimeoutError::Disconnected) => Err(BackendError::NotConnected),
+            Err(RecvTimeoutError::Disconnected) => Err(self.shared.closed_error()),
         }
     }
 
@@ -613,7 +649,7 @@ impl DebugBackend for ExternalDebuggerPeerBackend {
     }
 
     fn drain_events(&mut self) -> Vec<DebugEvent> {
-        std::mem::take(&mut *lock(&self.shared.events))
+        lock(&self.shared.events).drain()
     }
 
     fn is_closed(&self) -> bool {
@@ -658,7 +694,12 @@ fn reader_loop(mut stream: TcpStream, shared: Arc<Shared>) {
                 decoder.push(&buf[..n]);
                 loop {
                     match decoder.try_next() {
-                        Ok(Some(msg)) => handle_incoming(&shared, msg),
+                        Ok(Some(msg)) => {
+                            handle_incoming(&shared, msg);
+                            if shared.closed.load(Ordering::SeqCst) {
+                                return;
+                            }
+                        }
                         Ok(None) => break,
                         Err(PeerFrameError::Framing(_)) => {
                             // Genuinely broken wire format (unparseable header, bad
@@ -713,7 +754,7 @@ fn handle_incoming(shared: &Arc<Shared>, msg: PeerMessage) {
         }
         PeerMessage::Event(ev) => {
             if let Some(model_ev) = translate_event(&ev) {
-                lock(&shared.events).push(model_ev);
+                shared.queue_event(model_ev);
             }
         }
         PeerMessage::Request(req) => handle_peer_request(shared, req),

@@ -142,12 +142,12 @@ fn execute_verifier(run: &str, root: &Path) -> Result<Output> {
     let run = format!("python3() {{ command python \"$@\"; }}\n{run}");
     #[cfg(not(windows))]
     let run = run.to_owned();
-    Ok(Command::new(bash_executable())
+    Command::new(bash_executable())
         .args(["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", &run])
         .env("TESTED_SHA", FIXED_SHA)
         .current_dir(root)
         .output()
-        .context("executing exact-subject verifier with Actions bash semantics")?)
+        .context("executing exact-subject verifier with Actions bash semantics")
 }
 
 #[test]

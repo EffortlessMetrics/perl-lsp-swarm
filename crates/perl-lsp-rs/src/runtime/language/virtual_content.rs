@@ -260,6 +260,9 @@ fn fetch_perldoc(_module: &str, _config: &WorkspaceConfig) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    // Test assertions favor `expect_err()` with a descriptive message over
+    // silent unwraps; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used)]
     use super::*;
     use perl_tdd_support::must;
     use std::fs;

@@ -34,10 +34,10 @@ impl OutputCapture {
                 if let Ok(msg) = serde_json::from_str::<Value>(json_str) {
                     messages.push(msg);
                 }
-            } else if !chunk.starts_with("Content-Length") {
-                if let Ok(msg) = serde_json::from_str::<Value>(chunk) {
-                    messages.push(msg);
-                }
+            } else if !chunk.starts_with("Content-Length")
+                && let Ok(msg) = serde_json::from_str::<Value>(chunk)
+            {
+                messages.push(msg);
             }
         }
 

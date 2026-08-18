@@ -1,11 +1,9 @@
 //! Public contract tests for `perl-test-must`.
 
 use std::fmt;
-use std::panic::{catch_unwind, UnwindSafe};
+use std::panic::{UnwindSafe, catch_unwind};
 
-use perl_test_must::{
-    must, must_err, must_err_with, must_some, must_some_with, must_with,
-};
+use perl_test_must::{must, must_err, must_err_with, must_some, must_some_with, must_with};
 
 struct DiagnosticError;
 
@@ -44,10 +42,7 @@ fn non_copy_and_borrowed_values_preserve_the_generic_contract() {
     assert_eq!(must_some(Some(borrowed)), borrowed);
     assert_eq!(must_some_with(Some(borrowed), context), borrowed);
     assert_eq!(must_err::<&str, &str>(Err(borrowed)), borrowed);
-    assert_eq!(
-        must_err_with::<&str, &str>(Err(borrowed), context),
-        borrowed
-    );
+    assert_eq!(must_err_with::<&str, &str>(Err(borrowed), context), borrowed);
 }
 
 #[test]
@@ -69,53 +64,22 @@ fn must_failure_reports_semantic_clauses_once() -> Result<(), String> {
     })?;
 
     assert_eq!(occurrences(&message, "must:"), 1, "message was: {message}");
-    assert_eq!(
-        occurrences(&message, "unexpected Err<"),
-        1,
-        "message was: {message}"
-    );
-    assert_eq!(
-        occurrences(&message, "DiagnosticError"),
-        1,
-        "message was: {message}"
-    );
-    assert_eq!(
-        occurrences(&message, "diagnostic-error"),
-        1,
-        "message was: {message}"
-    );
+    assert_eq!(occurrences(&message, "unexpected Err<"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "DiagnosticError"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "diagnostic-error"), 1, "message was: {message}");
     Ok(())
 }
 
 #[test]
 fn must_some_with_failure_reports_context_and_type_once() -> Result<(), String> {
     let message = panic_text(|| {
-        let _ = must_some_with(
-            Option::<MissingItem>::None,
-            "indexed symbol must exist",
-        );
+        let _ = must_some_with(Option::<MissingItem>::None, "indexed symbol must exist");
     })?;
 
-    assert_eq!(
-        occurrences(&message, "must_some:"),
-        1,
-        "message was: {message}"
-    );
-    assert_eq!(
-        occurrences(&message, "indexed symbol must exist"),
-        1,
-        "message was: {message}"
-    );
-    assert_eq!(
-        occurrences(&message, "unexpected None<"),
-        1,
-        "message was: {message}"
-    );
-    assert_eq!(
-        occurrences(&message, "MissingItem"),
-        1,
-        "message was: {message}"
-    );
+    assert_eq!(occurrences(&message, "must_some:"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "indexed symbol must exist"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "unexpected None<"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "MissingItem"), 1, "message was: {message}");
     Ok(())
 }
 
@@ -128,41 +92,17 @@ fn must_err_with_failure_reports_context_types_and_value_once() -> Result<(), St
         );
     })?;
 
-    assert_eq!(
-        occurrences(&message, "must_err:"),
-        1,
-        "message was: {message}"
-    );
+    assert_eq!(occurrences(&message, "must_err:"), 1, "message was: {message}");
     assert_eq!(
         occurrences(&message, "invalid fixture must be rejected"),
         1,
         "message was: {message}"
     );
-    assert_eq!(
-        occurrences(&message, "expected Err<"),
-        1,
-        "message was: {message}"
-    );
-    assert_eq!(
-        occurrences(&message, "ExpectedError"),
-        1,
-        "message was: {message}"
-    );
-    assert_eq!(
-        occurrences(&message, "got Ok<"),
-        1,
-        "message was: {message}"
-    );
-    assert_eq!(
-        occurrences(&message, "UnexpectedOk"),
-        1,
-        "message was: {message}"
-    );
-    assert_eq!(
-        occurrences(&message, "unexpected-ok-value"),
-        1,
-        "message was: {message}"
-    );
+    assert_eq!(occurrences(&message, "expected Err<"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "ExpectedError"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "got Ok<"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "UnexpectedOk"), 1, "message was: {message}");
+    assert_eq!(occurrences(&message, "unexpected-ok-value"), 1, "message was: {message}");
     Ok(())
 }
 
@@ -171,10 +111,7 @@ fn context_accepts_format_arguments_without_new_bounds() {
     let subject = String::from("fixture");
     let value: Result<&str, &str> = Ok("ready");
 
-    assert_eq!(
-        must_with(value, format_args!("{subject} must load")),
-        "ready"
-    );
+    assert_eq!(must_with(value, format_args!("{subject} must load")), "ready");
 }
 
 fn occurrences(message: &str, needle: &str) -> usize {
@@ -182,9 +119,8 @@ fn occurrences(message: &str, needle: &str) -> usize {
 }
 
 fn panic_text(operation: impl FnOnce() + UnwindSafe) -> Result<String, String> {
-    let payload = catch_unwind(operation)
-        .err()
-        .ok_or_else(|| String::from("expected operation to panic"))?;
+    let payload =
+        catch_unwind(operation).err().ok_or_else(|| String::from("expected operation to panic"))?;
 
     if let Some(message) = payload.downcast_ref::<String>() {
         return Ok(message.clone());

@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust toolchain
         run: |
@@ -145,6 +145,17 @@ jobs:
               print()
           PY
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The upload below is `if: always()`, so failing this job is not enough to
+      # keep a leaking receipt private. `--quarantine` deletes the rejected
+      # files, so a receipt this gate rejects cannot reach the artifact.
+      - name: Reject embedded host paths in public receipts
+        if: always()
+        run: |
+          cargo run --locked -p perl-core-harness \
+            --bin perl-core-harness-public-evidence -- \
+            --evidence-dir target/perl-core \
+            --quarantine
 
       - name: Upload Perl core harness receipts
         if: always()

@@ -6,20 +6,12 @@ use std::io::{self, Write};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use perl_test_must::{
-    must, must_err, must_err_with, must_some, must_some_with, must_with,
-};
+use perl_test_must::{must, must_err, must_err_with, must_some, must_some_with, must_with};
 
 const CHILD_ENV: &str = "PERL_TEST_MUST_TRACK_CALLER_CHILD";
 const MARKER_PREFIX: &str = "PERL_TEST_MUST_TRACK_CALLER|";
-const HELPERS: [&str; 6] = [
-    "must",
-    "must_with",
-    "must_some",
-    "must_some_with",
-    "must_err",
-    "must_err_with",
-];
+const HELPERS: [&str; 6] =
+    ["must", "must_with", "must_some", "must_some_with", "must_err", "must_err_with"];
 
 static EXPECTED_LINE: AtomicU32 = AtomicU32::new(0);
 
@@ -35,10 +27,7 @@ fn every_helper_reports_the_integration_test_invocation() -> Result<(), String> 
             .map_err(|error| error.to_string())?;
         let stderr = String::from_utf8(output.stderr).map_err(|error| error.to_string())?;
 
-        assert!(
-            !output.status.success(),
-            "{helper} child unexpectedly succeeded:\n{stderr}"
-        );
+        assert!(!output.status.success(), "{helper} child unexpectedly succeeded:\n{stderr}");
 
         let marker = parse_marker(&stderr)?;
         let normalized_file = marker.file.replace('\\', "/");
@@ -159,11 +148,7 @@ fn parse_marker(stderr: &str) -> Result<CallerMarker, String> {
         return Err(String::from("caller-location marker had extra fields"));
     }
 
-    Ok(CallerMarker {
-        file,
-        actual_line,
-        expected_line,
-    })
+    Ok(CallerMarker { file, actual_line, expected_line })
 }
 
 fn write_stderr(arguments: fmt::Arguments<'_>) {

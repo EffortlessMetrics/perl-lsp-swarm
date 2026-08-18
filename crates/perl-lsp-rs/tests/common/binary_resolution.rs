@@ -64,12 +64,12 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         // these tests live, so `cargo test -p perl-lsp-rs` never builds it. If nothing
         // above resolved, build it ONCE here rather than leaving the `cargo run`
         // fallback to compile inside a per-request timeout it cannot possibly meet.
-        if v.is_empty() {
-            if let Some(built) = ensure_perllsp_built(workspace_root) {
-                let mut c = Command::new(built);
-                c.arg("--stdio");
-                v.push(c);
-            }
+        if v.is_empty()
+            && let Some(built) = ensure_perllsp_built(workspace_root)
+        {
+            let mut c = Command::new(built);
+            c.arg("--stdio");
+            v.push(c);
         }
     }
 

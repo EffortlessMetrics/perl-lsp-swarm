@@ -83,11 +83,9 @@ pub fn must_with<T, E: Debug>(result: Result<T, E>, context: impl Display) -> T 
 pub fn must_some<T>(option: Option<T>) -> T {
     match option {
         Some(value) => value,
-        None => panic_failure(
-            "must_some",
-            None,
-            format_args!("unexpected None<{}>", type_name::<T>()),
-        ),
+        None => {
+            panic_failure("must_some", None, format_args!("unexpected None<{}>", type_name::<T>()))
+        }
     }
 }
 

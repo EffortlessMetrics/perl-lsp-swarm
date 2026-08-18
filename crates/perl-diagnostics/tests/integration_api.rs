@@ -1,24 +1,20 @@
-//! Integration tests for perl-diagnostics crate Wave E consolidation (#4429).
+//! Integration tests for the public `perl-diagnostics` API.
 //!
-//! These tests verify:
-//! - Module structure and public API
-//! - Type unification (DiagnosticSeverity, DiagnosticTag)
-//! - Re-export pattern (explicit, no wildcards)
-//! - Consumer compilation paths
-//! - Workspace and publish allowlist counts
+//! These tests verify module structure, type unification, explicit re-exports,
+//! consumer compilation paths, and the validated byte-span contract.
 
 #![allow(dead_code)]
 
-// Test 1: Core module imports resolve
+use perl_test_must::must;
+
+// Test 1: Core module imports resolve.
 #[test]
 fn test_codes_module_imports() {
-    // Must be able to import from codes module
     use perl_diagnostics::codes::DiagnosticCategory;
     use perl_diagnostics::codes::DiagnosticCode;
     use perl_diagnostics::codes::DiagnosticSeverity;
     use perl_diagnostics::codes::DiagnosticTag;
 
-    // If this test compiles, the codes module exists and exports these types
     let _ = (
         DiagnosticCode::ParseError,
         DiagnosticSeverity::Error,
@@ -27,31 +23,26 @@ fn test_codes_module_imports() {
     );
 }
 
-// Test 2: Types module imports resolve
+// Test 2: Types module imports resolve.
 #[test]
 fn test_types_module_imports() {
-    // Must be able to import from types module
-    use perl_diagnostics::types::Diagnostic;
-    use perl_diagnostics::types::RelatedInformation;
+    use perl_diagnostics::types::{ByteSpan, Diagnostic, RelatedInformation};
 
-    // If this test compiles, the types module exists and exports these types
-    let _ = (Diagnostic::default(), RelatedInformation::default());
+    let _ = (ByteSpan::EMPTY, Diagnostic::default(), RelatedInformation::default());
 }
 
-// Test 3: Types module re-exports unified severity and tag
+// Test 3: Types module re-exports unified severity and tag.
 #[test]
 fn test_types_module_reexports_unified_types() {
-    // After type unification, types module must re-export severity and tag from codes
     use perl_diagnostics::types::DiagnosticSeverity;
     use perl_diagnostics::types::DiagnosticTag;
 
     let _ = (DiagnosticSeverity::Error, DiagnosticTag::Unnecessary);
 }
 
-// Test 4: Catalog module imports resolve
+// Test 4: Catalog module imports resolve.
 #[test]
 fn test_catalog_module_imports() {
-    // Must be able to import from catalog module
     use perl_diagnostics::catalog::DiagnosticMeta;
     use perl_diagnostics::catalog::diagnostic_meta;
     use perl_diagnostics::catalog::parse_error;
@@ -59,117 +50,110 @@ fn test_catalog_module_imports() {
     let _ = (DiagnosticMeta::default(), diagnostic_meta, parse_error);
 }
 
-// Test 5: API re-exports are available at crate root
+// Test 5: API re-exports are available at crate root.
 #[test]
 fn test_api_root_reexports_codes_types() {
-    // All critical types should be re-exported at crate root via api.rs
-    use perl_diagnostics::DiagnosticCategory;
-    use perl_diagnostics::DiagnosticCode;
-    use perl_diagnostics::DiagnosticSeverity;
+    use perl_diagnostics::{ByteSpan, DiagnosticCategory, DiagnosticCode, DiagnosticSeverity};
 
-    let _ = (DiagnosticCode::ParseError, DiagnosticSeverity::Error, DiagnosticCategory::Parser);
+    let _ = (
+        ByteSpan::EMPTY,
+        DiagnosticCode::ParseError,
+        DiagnosticSeverity::Error,
+        DiagnosticCategory::Parser,
+    );
 }
 
-// Test 6: API re-exports catalog functions
+// Test 6: API re-exports catalog functions.
 #[test]
 fn test_api_root_reexports_catalog() {
-    // Core catalog functions should be re-exported at crate root
     use perl_diagnostics::diagnostic_meta;
     use perl_diagnostics::parse_error;
 
     let _ = (diagnostic_meta, parse_error);
 }
 
-// Test 7: Type unification — codes and types severity are the same type
+// Test 7: codes and types severity are the same type.
 #[test]
 fn test_severity_type_unification_cross_path_assignment() {
     use perl_diagnostics::codes::DiagnosticSeverity as CodesSeverity;
     use perl_diagnostics::types::DiagnosticSeverity as TypesSeverity;
 
     let from_codes: CodesSeverity = CodesSeverity::Error;
-    // This assignment must compile, proving they are the same type
     let _as_types: TypesSeverity = from_codes;
 
-    // Verify LSP spec value
-    assert_eq!(from_codes as u8, 1); // Error = 1 in LSP spec
+    assert_eq!(from_codes as u8, 1);
 }
 
-// Test 8: Type unification — codes and types tag are the same type
+// Test 8: codes and types tag are the same type.
 #[test]
 fn test_tag_type_unification_cross_path_assignment() {
     use perl_diagnostics::codes::DiagnosticTag as CodesTag;
     use perl_diagnostics::types::DiagnosticTag as TypesTag;
 
     let from_codes: CodesTag = CodesTag::Unnecessary;
-    // This assignment must compile, proving they are the same type
     let _as_types: TypesTag = from_codes;
 }
 
-// Test 9: Type identity verification (orchestrator-locked)
+// Test 9: Severity type identity is exact.
 #[test]
 fn test_severity_type_identity_same_underlying_type() {
     use perl_diagnostics::codes::DiagnosticSeverity as CodesSeverity;
     use perl_diagnostics::types::DiagnosticSeverity as TypesSeverity;
 
-    // TypeId must be identical, proving they are literally the same type
-    let codes_type_id = std::any::TypeId::of::<CodesSeverity>();
-    let types_type_id = std::any::TypeId::of::<TypesSeverity>();
-
     assert_eq!(
-        codes_type_id, types_type_id,
-        "DiagnosticSeverity must be a single unified type, not two separate enums"
+        std::any::TypeId::of::<CodesSeverity>(),
+        std::any::TypeId::of::<TypesSeverity>(),
+        "DiagnosticSeverity must be one type"
     );
 }
 
-// Test 10: Type identity verification for tag
+// Test 10: Tag type identity is exact.
 #[test]
 fn test_tag_type_identity_same_underlying_type() {
     use perl_diagnostics::codes::DiagnosticTag as CodesTag;
     use perl_diagnostics::types::DiagnosticTag as TypesTag;
 
-    // TypeId must be identical, proving they are literally the same type
-    let codes_type_id = std::any::TypeId::of::<CodesTag>();
-    let types_type_id = std::any::TypeId::of::<TypesTag>();
-
     assert_eq!(
-        codes_type_id, types_type_id,
-        "DiagnosticTag must be a single unified type, not two separate enums"
+        std::any::TypeId::of::<CodesTag>(),
+        std::any::TypeId::of::<TypesTag>(),
+        "DiagnosticTag must be one type"
     );
 }
 
-// Test 11: Diagnostic struct uses unified severity type
+// Test 11: Diagnostic uses unified severity and ByteSpan.
 #[test]
-fn test_diagnostic_struct_uses_unified_severity() {
+fn test_diagnostic_struct_uses_unified_severity_and_span() {
     use perl_diagnostics::codes::DiagnosticCode;
-    use perl_diagnostics::types::Diagnostic;
-    use perl_diagnostics::types::DiagnosticSeverity;
+    use perl_diagnostics::types::{ByteSpan, Diagnostic, DiagnosticSeverity};
 
-    let diag = Diagnostic::new(DiagnosticCode::default(), DiagnosticSeverity::Error, (0, 0), "");
+    let span = must(ByteSpan::new(0, 0));
+    let diagnostic =
+        Diagnostic::new(DiagnosticCode::default(), DiagnosticSeverity::Error, span, "");
 
-    // The field should bind to the unified type
-    let _severity = diag.severity;
+    let _severity = diagnostic.severity;
+    assert_eq!(diagnostic.range, span);
 }
 
-// Test 12: Explicit re-exports include DiagnosticCategory (locked pattern)
+// Test 12: Explicit re-exports include DiagnosticCategory.
 #[test]
 fn test_api_includes_diagnostic_category_reexport() {
-    // DiagnosticCategory must be explicitly re-exported (not via wildcard)
     use perl_diagnostics::DiagnosticCategory;
 
     let _ = DiagnosticCategory::Parser;
 }
 
-// Test 13: No wildcard re-exports in api.rs (explicit lists only)
+// Test 13: Explicit root re-exports include every core public type.
 #[test]
 fn test_api_reexports_explicit_not_wildcards() {
-    // This test documents the locked pattern: explicit per-symbol, no wildcards
-    // If the crate compiles, api.rs uses explicit lists
     use perl_diagnostics::{
-        Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticSeverity, DiagnosticTag,
-        RelatedInformation, diagnostic_meta, parse_error, syntax_error,
+        ByteSpan, Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticSeverity,
+        DiagnosticTag, InvalidByteSpan, RelatedInformation, diagnostic_meta, parse_error,
+        syntax_error,
     };
 
+    let _: Option<InvalidByteSpan> = None;
     let _ = (
+        ByteSpan::EMPTY,
         DiagnosticCode::ParseError,
         DiagnosticSeverity::Error,
         DiagnosticTag::Unnecessary,
@@ -182,132 +166,106 @@ fn test_api_reexports_explicit_not_wildcards() {
     );
 }
 
-// Test 14: Consumer path: perl-lsp-code-actions compiles with new imports
+// Test 14: Consumer path for code actions compiles.
 #[test]
 fn test_consumer_perl_lsp_code_actions_path() {
-    // Document the expected import path for consumers
     use perl_diagnostics::codes::DiagnosticCode;
-    use perl_diagnostics::types::Diagnostic;
+    use perl_diagnostics::types::{ByteSpan, Diagnostic};
 
-    let _ = (DiagnosticCode::ParseError, Diagnostic::default());
+    let _ = (DiagnosticCode::ParseError, ByteSpan::EMPTY, Diagnostic::default());
 }
 
-// Test 15: Consumer path: perl-lsp-diagnostics compiles with new imports
+// Test 15: Consumer path for diagnostics compiles.
 #[test]
 fn test_consumer_perl_lsp_diagnostics_path() {
-    // Document the expected import path for consumers
     use perl_diagnostics::codes::DiagnosticSeverity;
     use perl_diagnostics::types::Diagnostic;
     use perl_diagnostics::types::DiagnosticSeverity as TypesSeverity;
 
-    // Cross-module assignment from codes to types path must compile
     let from_codes = DiagnosticSeverity::Warning;
     let _as_types: TypesSeverity = from_codes;
-
     let _ = Diagnostic::default();
 }
 
-// Test 16: Consumer path: perl-lsp server compiles with new imports
+// Test 16: Consumer path for the LSP server compiles.
 #[test]
 fn test_consumer_perl_lsp_server_path() {
-    // Document the expected import path for the LSP server
     use perl_diagnostics::catalog::diagnostic_meta;
     use perl_diagnostics::codes::DiagnosticCode;
 
     let _ = (DiagnosticCode::ParseError, diagnostic_meta);
 }
 
-// Test 17: Severity enum values match LSP spec
+// Test 17: Severity enum values match the LSP values used by adapters.
 #[test]
 fn test_severity_lsp_values() {
     use perl_diagnostics::codes::DiagnosticSeverity;
 
-    // LSP spec: Error=1, Warning=2, Information=3, Hint=4
     assert_eq!(DiagnosticSeverity::Error as u8, 1);
     assert_eq!(DiagnosticSeverity::Warning as u8, 2);
     assert_eq!(DiagnosticSeverity::Information as u8, 3);
     assert_eq!(DiagnosticSeverity::Hint as u8, 4);
 }
 
-// Test 18: Tag enum values match LSP spec
+// Test 18: Tag enum values match the LSP values used by adapters.
 #[test]
 fn test_tag_lsp_values() {
     use perl_diagnostics::codes::DiagnosticTag;
 
-    // LSP spec: Unnecessary=1, Deprecated=2
     assert_eq!(DiagnosticTag::Unnecessary as u8, 1);
     assert_eq!(DiagnosticTag::Deprecated as u8, 2);
 }
 
-// Test 19: Workspace count verification (edge case: structural integrity)
+// Test 19: Workspace count documentation.
 #[test]
-#[ignore = "This test requires external verification (workspace inspection); tracking #4912"]
-fn test_workspace_member_count_should_be_121() {
-    // After Wave E: 123 - 3 (removed) + 1 (added) = 121
-    // This test documents the expected final count
-    // Verification: `cargo metadata --no-deps | jq '.workspace_members | length'`
+#[ignore = "This test requires external workspace inspection; tracking #4912"]
+fn test_workspace_member_count_should_be_121() {}
 
-    // Marker: this test is a specification of the final state
-    // Builder will verify via cargo metadata
-}
-
-// Test 20: Publish allowlist count verification (edge case: structural integrity)
+// Test 20: Publish allowlist count documentation.
 #[test]
-#[ignore = "This test requires external verification (Cargo.toml inspection); tracking #4912"]
-fn test_publish_allowlist_count_should_be_118() {
-    // After Wave E: 120 - 3 (removed) + 1 (added) = 118
-    // This test documents the expected final count
-    // Verification: builder manually counts [workspace.metadata.publish] allow entries
+#[ignore = "This test requires Cargo.toml inspection; tracking #4912"]
+fn test_publish_allowlist_count_should_be_118() {}
 
-    // Marker: this test is a specification of the final state
-}
-
-// Test 21: Edge case — no circular dependency between codes and types modules
+// Test 21: codes and types maintain the intended dependency direction.
 #[test]
 fn test_no_circular_dependency_codes_types() {
     use perl_diagnostics::codes::DiagnosticCode;
-    use perl_diagnostics::types::{Diagnostic, DiagnosticSeverity};
+    use perl_diagnostics::types::{ByteSpan, Diagnostic, DiagnosticSeverity};
 
-    // codes module exports DiagnosticCode (used by types)
-    // types module re-exports from codes
-    // This assignment demonstrates the dependency direction is correct
-    let diag =
-        Diagnostic::new(DiagnosticCode::ParseError, DiagnosticSeverity::default(), (0, 0), "");
+    let diagnostic = Diagnostic::new(
+        DiagnosticCode::ParseError,
+        DiagnosticSeverity::default(),
+        ByteSpan::EMPTY,
+        "",
+    );
 
-    let _ = diag;
+    let _ = diagnostic;
 }
 
-// Test 22: Edge case — Diagnostic struct fields are still accessible
+// Test 22: Diagnostic fields remain accessible with a validated range type.
 #[test]
 fn test_diagnostic_struct_fields_accessible() {
-    use perl_diagnostics::types::{Diagnostic, DiagnosticSeverity};
+    use perl_diagnostics::types::{ByteSpan, Diagnostic, DiagnosticSeverity};
 
-    let mut diag = Diagnostic::new(
+    let diagnostic = Diagnostic::new(
         perl_diagnostics::codes::DiagnosticCode::ParseError,
         DiagnosticSeverity::Error,
-        Default::default(),
+        ByteSpan::EMPTY,
         "test",
     );
 
-    // All fields must be accessible (struct not broken by unification)
-    assert_eq!(diag.message, "test");
+    assert_eq!(diagnostic.message, "test");
+    assert_eq!(diagnostic.range, ByteSpan::EMPTY);
 }
 
-// Test 23: Layer constraint verification (edge case: architectural integrity)
+// Test 23: Layer constraint documentation.
 #[test]
-#[ignore = "This test requires external verification (xtask layer-check); tracking #4912"]
-fn test_perl_diagnostics_no_perl_lsp_dependencies() {
-    // perl-diagnostics must NOT depend on any perl-lsp-* crate
-    // This is enforced by xtask layer-check rule
-    // Verification: `cargo xtask layer-check` and manual Cargo.toml inspection
+#[ignore = "This test requires the repository architecture checker; tracking #4912"]
+fn test_perl_diagnostics_no_perl_lsp_dependencies() {}
 
-    // Marker: this test documents the locked constraint
-}
-
-// Test 24: Re-export functions from catalog module
+// Test 24: Catalog functions remain available at crate root.
 #[test]
 fn test_catalog_function_reexports() {
-    // All catalog functions must be available at crate root
     use perl_diagnostics::{
         bareword_filehandle, duplicate_package, duplicate_sub, eval_error_flow, from_message,
         implicit_return, missing_package_declaration, missing_return, missing_strict,
@@ -315,7 +273,6 @@ fn test_catalog_function_reexports() {
         unused_var,
     };
 
-    // If these imports resolve, the re-exports are in place
     let _ = (
         parse_error,
         syntax_error,
@@ -336,7 +293,7 @@ fn test_catalog_function_reexports() {
     );
 }
 
-// Test 25: DiagnosticMeta type is available (catalog typedef)
+// Test 25: DiagnosticMeta is available at crate root.
 #[test]
 fn test_diagnostic_meta_reexport() {
     use perl_diagnostics::DiagnosticMeta;
@@ -344,12 +301,21 @@ fn test_diagnostic_meta_reexport() {
     let _ = DiagnosticMeta::default();
 }
 
-// Test 26: Edge case — RelatedInformation struct is accessible
+// Test 26: RelatedInformation uses ByteSpan.
 #[test]
 fn test_related_information_struct_accessible() {
-    use perl_diagnostics::types::RelatedInformation;
+    use perl_diagnostics::types::{ByteSpan, RelatedInformation};
 
-    let info = RelatedInformation::new("test", Default::default());
+    let information = RelatedInformation::new("test", ByteSpan::EMPTY);
 
-    assert_eq!(info.message, "test");
+    assert_eq!(information.message, "test");
+    assert_eq!(information.location, ByteSpan::EMPTY);
+}
+
+// Test 27: ByteSpan rejects reversal through the public API.
+#[test]
+fn test_byte_span_rejects_reversal() {
+    use perl_diagnostics::ByteSpan;
+
+    assert!(ByteSpan::new(20, 10).is_err());
 }
