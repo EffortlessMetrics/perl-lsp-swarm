@@ -33,6 +33,12 @@ on:
       - 'scripts/ci/test_validate_policy_checks_inventory.py'
       - 'docs/ci/policy-checks-inventory.md'
       - 'scripts/ci/validate_provider_fact_reads.py'
+      # The fact-read inventory anchors to provider SOURCES: editing a governed
+      # provider source without touching the catalog is the primary drift class,
+      # so these paths (the exact roots of every catalog-anchored source) must
+      # execute the validator too (#6815).
+      - 'crates/perl-lsp-rs/src/runtime/**'
+      - 'crates/perl-lsp-rs-core/src/providers/**'
       # validate_gate_lane_mapping.py --strict also checks this doc's lane
       # enumeration against the mapping, so a docs-only edit must trigger the
       # workflow -- otherwise the drift check is not load-bearing on its own
