@@ -8,8 +8,13 @@ from pathlib import Path
 from typing import Any, Generator
 
 import sublime
-from Debugger.modules import dap
+import unittest
 from unittesting import DeferrableTestCase
+
+try:
+    from Debugger.modules import dap
+except ImportError:  # The host journey runs without the Debugger package.
+    dap = None
 
 # The pinned UnitTesting runner allows ~30s per Sublime launch for the whole
 # deferred journey to finish and write its result file; keep every internal
@@ -56,6 +61,7 @@ def _complete_immediate(coroutine: Any) -> Any:
     raise AssertionError("adapter coroutine unexpectedly suspended")
 
 
+@unittest.skipUnless(dap is not None, "the Sublime Debugger package is not installed")
 class SublimePerlDapAdapterJourney(DeferrableTestCase):
     @classmethod
     def setUpClass(cls) -> Generator[Any, None, None]:
