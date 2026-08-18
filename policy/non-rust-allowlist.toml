@@ -721,6 +721,22 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
+id = "non-rust-corpus-loading-fixtures"
+glob = "crates/perl-corpus/tests/fixtures/loading/*.txt"
+kind = "test_fixture"
+language = "text"
+surface = "fixtures"
+classification = "test"
+owner = "parser/lsp-fixtures"
+reason = "Checked-in sectioned corpus documents proving the strict sectioned-loading contract; the format is deliberately not inferred from the extension."
+covered_by = [
+  "cargo test -p perl-corpus --test typed_loading_contract",
+  "cargo test -p perl-corpus --test typed_loading_identity",
+]
+created = "2026-08-15"
+review_after = "2026-11-15"
+
+[[allow]]
 id = "non-rust-lsp4ij-released-evidence"
 glob = "integrations/lsp4ij/upstream/0.20.1/**"
 kind = "upstream_evidence_snapshot"
