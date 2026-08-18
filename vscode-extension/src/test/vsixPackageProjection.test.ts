@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import Ajv2020 from 'ajv/dist/2020';
 import { expect, test } from '@jest/globals';
 import {
   buildVsixCandidatePayloadManifest,
@@ -6,6 +9,7 @@ import {
   type ReleaseTopologyTargetRow,
   type VsixCandidatePayloadManifestInput,
 } from '../vsixPackageProjection';
+import { RELEASE_TOPOLOGY_MANAGED_TARGETS } from '../releaseTopologyTargets';
 
 const digest = 'a'.repeat(64);
 const sourceSha = 'b'.repeat(40);
@@ -35,16 +39,54 @@ function topologyRow(
   };
 }
 
-const topology = [
-  topologyRow('x86_64-unknown-linux-gnu', 'linux', 'x86_64', 'gnu'),
-  topologyRow('aarch64-unknown-linux-gnu', 'linux', 'aarch64', 'gnu'),
-  topologyRow('x86_64-unknown-linux-musl', 'linux', 'x86_64', 'musl'),
-  topologyRow('aarch64-unknown-linux-musl', 'linux', 'aarch64', 'musl'),
-  topologyRow('x86_64-apple-darwin', 'macos', 'x86_64', null),
-  topologyRow('aarch64-apple-darwin', 'macos', 'aarch64', null),
-  topologyRow('x86_64-pc-windows-msvc', 'windows', 'x86_64', null),
-  topologyRow('aarch64-pc-windows-msvc', 'windows', 'aarch64', null),
-] as const;
+/**
+ * Per-target fixture facts keyed by the canonical managed-target list from
+ * releaseTopologyTargets (itself drift-pinned to release.yml). The binding test
+ * below rejects any decay between this record and the watched list, so this
+ * file never maintains an unobserved second target matrix.
+ */
+const TOPOLOGY_TARGET_FACTS: Record<
+  string,
+  {
+    os: ReleaseTopologyTargetRow['os'];
+    architecture: ReleaseTopologyTargetRow['architecture'];
+    libc: ReleaseTopologyTargetRow['libc'];
+  }
+> = {
+  'x86_64-unknown-linux-gnu': { os: 'linux', architecture: 'x86_64', libc: 'gnu' },
+  'aarch64-unknown-linux-gnu': { os: 'linux', architecture: 'aarch64', libc: 'gnu' },
+  'x86_64-unknown-linux-musl': { os: 'linux', architecture: 'x86_64', libc: 'musl' },
+  'aarch64-unknown-linux-musl': { os: 'linux', architecture: 'aarch64', libc: 'musl' },
+  'x86_64-apple-darwin': { os: 'macos', architecture: 'x86_64', libc: null },
+  'aarch64-apple-darwin': { os: 'macos', architecture: 'aarch64', libc: null },
+  'x86_64-pc-windows-msvc': { os: 'windows', architecture: 'x86_64', libc: null },
+  'aarch64-pc-windows-msvc': { os: 'windows', architecture: 'aarch64', libc: null },
+};
+
+const topology: readonly ReleaseTopologyTargetRow[] = RELEASE_TOPOLOGY_MANAGED_TARGETS.map(
+  (target) => {
+    const facts = TOPOLOGY_TARGET_FACTS[target];
+    if (!facts) {
+      throw new Error(`No fixture facts recorded for canonical target ${target}.`);
+    }
+    return topologyRow(target, facts.os, facts.architecture, facts.libc);
+  },
+);
+
+function rowFor(target: string): ReleaseTopologyTargetRow {
+  const row = topology.find((candidate) => candidate.target === target);
+  if (!row) {
+    throw new Error(`Fixture topology is missing ${target}.`);
+  }
+  return row;
+}
+
+test('fixture topology stays bound to the canonical release topology list', () => {
+  expect(Object.keys(TOPOLOGY_TARGET_FACTS).sort()).toEqual(
+    [...RELEASE_TOPOLOGY_MANAGED_TARGETS].sort(),
+  );
+  expect(topology.map((row) => row.target)).toEqual([...RELEASE_TOPOLOGY_MANAGED_TARGETS]);
+});
 
 function rows(includeUniversalManaged = true) {
   return deriveVsixTargetProjection({
@@ -141,19 +183,19 @@ test('duplicate target, archive, and VS Code target identities fail', () => {
   expect(() =>
     deriveVsixTargetProjection({
       releaseTopologySha256: digest,
-      targets: [topology[0], topology[0]],
+      targets: [rowFor('x86_64-unknown-linux-gnu'), rowFor('x86_64-unknown-linux-gnu')],
       includeUniversalManaged: false,
     }),
   ).toThrow(/Duplicate release topology target/);
 
   const sameArchive = {
-    ...topology[1],
-    archiveName: topology[0].archiveName,
+    ...rowFor('aarch64-unknown-linux-gnu'),
+    archiveName: rowFor('x86_64-unknown-linux-gnu').archiveName,
   };
   expect(() =>
     deriveVsixTargetProjection({
       releaseTopologySha256: digest,
-      targets: [topology[0], sameArchive],
+      targets: [rowFor('x86_64-unknown-linux-gnu'), sameArchive],
       includeUniversalManaged: false,
     }),
   ).toThrow(/Duplicate release topology archive/);
@@ -189,6 +231,12 @@ test('mixed candidate and mixed target payloads fail', () => {
       server: base.server ? { ...base.server, target: 'aarch64-unknown-linux-gnu' } : undefined,
     }),
   ).toThrow(/another target/);
+});
+
+test('missing required server cannot produce a target-specific manifest', () => {
+  expect(() =>
+    buildVsixCandidatePayloadManifest({ ...manifestInput(), server: undefined }),
+  ).toThrow(/missing its required server payload/);
 });
 
 test('missing required DAP cannot produce a target-specific manifest', () => {
@@ -245,6 +293,38 @@ test('source and topology identity changes alter canonical manifest bytes', () =
 });
 
 test('fixed structured input produces byte-equivalent canonical JSON', () => {
-  const manifest = buildVsixCandidatePayloadManifest(manifestInput());
-  expect(canonicalVsixPayloadJson(manifest)).toBe(canonicalVsixPayloadJson(manifest));
+  const first = buildVsixCandidatePayloadManifest(manifestInput());
+  const second = buildVsixCandidatePayloadManifest(manifestInput());
+  expect(canonicalVsixPayloadJson(first)).toBe(canonicalVsixPayloadJson(second));
+});
+
+test('emitted manifests conform to the checked-in candidate payload schema', () => {
+  const root = path.resolve(__dirname, '../../..');
+  const schema = JSON.parse(
+    fs.readFileSync(path.join(root, 'schemas/vsix_candidate_payload.v1.schema.json'), 'utf8'),
+  ) as object;
+  // strict:false silences ajv's strictTypes warnings: the schema's if/then
+  // applicator blocks intentionally omit redundant `type: "object"` declarations,
+  // which strict mode rejects even though the top-level object contract holds.
+  const validate = new Ajv2020({ strict: false }).compile(schema);
+
+  const targetSpecific = JSON.parse(
+    canonicalVsixPayloadJson(buildVsixCandidatePayloadManifest(manifestInput())),
+  ) as Record<string, unknown>;
+  expect(validate(targetSpecific)).toBe(true);
+
+  const universal = rows().find((row) => row.packageMode === 'universal_managed');
+  if (!universal) {
+    throw new Error('universal fixture is missing');
+  }
+  const universalManifest = JSON.parse(
+    canonicalVsixPayloadJson(
+      buildVsixCandidatePayloadManifest(
+        manifestInput({ projection: universal, server: undefined, dap: undefined }),
+      ),
+    ),
+  ) as Record<string, unknown>;
+  expect(validate(universalManifest)).toBe(true);
+
+  expect(validate({ ...targetSpecific, server: null })).toBe(false);
 });
