@@ -82,7 +82,7 @@ fn unexpected_eof_yields_end_of_input_anchor() {
 #[test]
 fn eof_is_not_aliased_to_byte_zero() {
     // Resolved against a non-empty source, EndOfInput must not look like Exact(0).
-    let resolved = ParseError::UnexpectedEof.resolved_diagnostic_anchor(100);
+    let resolved = ParseError::UnexpectedEof.resolved_diagnostic_anchor(&"x".repeat(100));
     assert_eq!(resolved, ResolvedParseDiagnosticAnchor::EndOfInput(100));
     assert_ne!(resolved, ResolvedParseDiagnosticAnchor::Exact(0));
 }
@@ -90,7 +90,7 @@ fn eof_is_not_aliased_to_byte_zero() {
 #[test]
 fn eof_resolved_against_empty_source_is_end_of_input_zero() {
     // Empty source is a legitimate case: EndOfInput(0) is correct, not NoSource.
-    let resolved = ParseError::UnexpectedEof.resolved_diagnostic_anchor(0);
+    let resolved = ParseError::UnexpectedEof.resolved_diagnostic_anchor("");
     assert_eq!(resolved, ResolvedParseDiagnosticAnchor::EndOfInput(0));
 }
 
@@ -112,7 +112,7 @@ fn no_source_variants_yield_no_source_anchor() {
 #[test]
 fn no_source_resolved_is_no_source_not_exact_zero() {
     for e in no_source_variants() {
-        let resolved = e.resolved_diagnostic_anchor(100);
+        let resolved = e.resolved_diagnostic_anchor(&"x".repeat(100));
         assert_eq!(
             resolved,
             ResolvedParseDiagnosticAnchor::NoSource,
@@ -133,22 +133,54 @@ fn no_source_resolved_is_no_source_not_exact_zero() {
 #[test]
 fn in_bounds_exact_offset_resolves_to_exact() {
     let e = ParseError::syntax("msg", 42);
-    assert_eq!(e.resolved_diagnostic_anchor(100), ResolvedParseDiagnosticAnchor::Exact(42));
+    assert_eq!(
+        e.resolved_diagnostic_anchor(&"x".repeat(100)),
+        ResolvedParseDiagnosticAnchor::Exact(42)
+    );
 }
 
 #[test]
 fn exact_offset_at_source_boundary_is_valid() {
     // offset == source_len is the one-past-end position and is considered valid.
     let e = ParseError::syntax("msg", 42);
-    assert_eq!(e.resolved_diagnostic_anchor(42), ResolvedParseDiagnosticAnchor::Exact(42));
+    assert_eq!(
+        e.resolved_diagnostic_anchor(&"x".repeat(42)),
+        ResolvedParseDiagnosticAnchor::Exact(42)
+    );
 }
 
 #[test]
 fn out_of_bounds_exact_offset_is_invalid_not_clamped() {
     let e = ParseError::syntax("outside", 43);
     assert_eq!(
-        e.resolved_diagnostic_anchor(42),
+        e.resolved_diagnostic_anchor(&"x".repeat(42)),
         ResolvedParseDiagnosticAnchor::InvalidOffset { reported: 43, source_len: 42 }
+    );
+}
+
+#[test]
+fn utf8_interior_offset_is_invalid_not_rounded() {
+    // "💖" is one 4-byte scalar: offsets 1–3 are in range but are not valid
+    // source positions, and must stay distinct from both Exact and
+    // InvalidOffset. Offsets 0 and 4 are genuine boundaries.
+    let source = "💖";
+    for interior in 1..=3 {
+        let e = ParseError::syntax("interior", interior);
+        assert_eq!(
+            e.resolved_diagnostic_anchor(source),
+            ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary {
+                reported: interior,
+                source_len: 4
+            }
+        );
+    }
+    assert_eq!(
+        ParseError::syntax("start", 0).resolved_diagnostic_anchor(source),
+        ResolvedParseDiagnosticAnchor::Exact(0)
+    );
+    assert_eq!(
+        ParseError::syntax("end", 4).resolved_diagnostic_anchor(source),
+        ResolvedParseDiagnosticAnchor::Exact(4)
     );
 }
 

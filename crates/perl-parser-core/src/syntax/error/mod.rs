@@ -740,13 +740,13 @@ pub enum ParseDiagnosticAnchor {
     NoSource,
 }
 
-/// A [`ParseDiagnosticAnchor`] resolved against one concrete source length.
+/// A [`ParseDiagnosticAnchor`] resolved against concrete source text.
 ///
 /// Construct via [`ParseDiagnosticAnchor::resolve`] or
 /// [`ParseError::resolved_diagnostic_anchor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolvedParseDiagnosticAnchor {
-    /// Exact in-bounds byte offset.
+    /// Exact in-bounds byte offset on a UTF-8 scalar boundary.
     Exact(usize),
     /// End-of-input anchor, resolved to the supplied source length.
     EndOfInput(usize),
@@ -761,27 +761,44 @@ pub enum ResolvedParseDiagnosticAnchor {
         /// Concrete source length used for the bounds check.
         source_len: usize,
     },
+    /// The parser reported an in-range offset that lands inside a multibyte
+    /// UTF-8 scalar — not a valid source position. Kept distinct from
+    /// [`Self::InvalidOffset`] because the parser did not overshoot the source;
+    /// it produced a corrupted interior offset, which must never be rounded to
+    /// a plausible position.
+    InvalidUtf8Boundary {
+        /// Parser-reported byte offset.
+        reported: usize,
+        /// Concrete source length used for validation.
+        source_len: usize,
+    },
 }
 
 impl ParseDiagnosticAnchor {
-    /// Resolve this semantic anchor against a concrete source length.
+    /// Resolve this semantic anchor against concrete source text.
     ///
-    /// Exact offsets are never silently clamped: an out-of-range offset yields
-    /// [`ResolvedParseDiagnosticAnchor::InvalidOffset`] rather than a plausible
-    /// but wrong byte position.
+    /// Exact offsets are never silently clamped or rounded: an out-of-range
+    /// offset yields [`ResolvedParseDiagnosticAnchor::InvalidOffset`], and an
+    /// in-range offset inside a multibyte UTF-8 scalar yields
+    /// [`ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary`] — an in-range byte
+    /// offset is not necessarily a valid source position.
     ///
-    /// An offset equal to `source_len` (just past the last byte) is valid — it
+    /// An offset equal to `source.len()` (just past the last byte) is valid — it
     /// represents an end-of-source position for an `Exact` anchor.
     #[must_use]
-    pub fn resolve(self, source_len: usize) -> ResolvedParseDiagnosticAnchor {
+    pub fn resolve(self, source: &str) -> ResolvedParseDiagnosticAnchor {
         match self {
-            Self::Exact(offset) if offset <= source_len => {
-                ResolvedParseDiagnosticAnchor::Exact(offset)
+            Self::Exact(reported) if reported > source.len() => {
+                ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len: source.len() }
             }
-            Self::Exact(reported) => {
-                ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len }
+            Self::Exact(reported) if !source.is_char_boundary(reported) => {
+                ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary {
+                    reported,
+                    source_len: source.len(),
+                }
             }
-            Self::EndOfInput => ResolvedParseDiagnosticAnchor::EndOfInput(source_len),
+            Self::Exact(offset) => ResolvedParseDiagnosticAnchor::Exact(offset),
+            Self::EndOfInput => ResolvedParseDiagnosticAnchor::EndOfInput(source.len()),
             Self::NoSource => ResolvedParseDiagnosticAnchor::NoSource,
         }
     }
@@ -985,12 +1002,12 @@ impl ParseError {
 
     /// Resolve the parser-owned diagnostic anchor for one concrete source.
     ///
-    /// Convenience wrapper around `self.diagnostic_anchor().resolve(source_len)`.
+    /// Convenience wrapper around `self.diagnostic_anchor().resolve(source)`.
     /// Prefer the two-step form when you need to inspect the anchor kind before
     /// converting to a byte offset.
     #[must_use]
-    pub fn resolved_diagnostic_anchor(&self, source_len: usize) -> ResolvedParseDiagnosticAnchor {
-        self.diagnostic_anchor().resolve(source_len)
+    pub fn resolved_diagnostic_anchor(&self, source: &str) -> ResolvedParseDiagnosticAnchor {
+        self.diagnostic_anchor().resolve(source)
     }
 }
 

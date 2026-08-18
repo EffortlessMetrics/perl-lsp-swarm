@@ -1221,12 +1221,8 @@ fn lsp_range_from_offsets(text: &str, start: usize, end: usize) -> Range {
 }
 
 fn resolved_parse_diagnostic_offset(error: &ParseError, text: &str) -> usize {
-    match error.resolved_diagnostic_anchor(text.len()) {
-        ResolvedParseDiagnosticAnchor::Exact(offset) if text.is_char_boundary(offset) => offset,
-        ResolvedParseDiagnosticAnchor::Exact(offset) => {
-            tracing::error!(offset, "parser returned a UTF-8 interior diagnostic anchor");
-            text.len()
-        }
+    match error.resolved_diagnostic_anchor(text) {
+        ResolvedParseDiagnosticAnchor::Exact(offset) => offset,
         ResolvedParseDiagnosticAnchor::EndOfInput(offset) => offset,
         ResolvedParseDiagnosticAnchor::NoSource => 0,
         ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len } => {
@@ -1234,6 +1230,14 @@ fn resolved_parse_diagnostic_offset(error: &ParseError, text: &str) -> usize {
                 reported,
                 source_len,
                 "parser returned an out-of-range diagnostic anchor"
+            );
+            source_len
+        }
+        ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary { reported, source_len } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned a UTF-8 interior diagnostic anchor"
             );
             source_len
         }

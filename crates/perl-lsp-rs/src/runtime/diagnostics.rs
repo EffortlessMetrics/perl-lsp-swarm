@@ -163,16 +163,8 @@ fn parse_error_base_message(error: &crate::error::ParseError) -> String {
 }
 
 fn resolved_parse_diagnostic_offset(error: &crate::error::ParseError, text: &str) -> usize {
-    match error.resolved_diagnostic_anchor(text.len()) {
-        perl_parser::error::ResolvedParseDiagnosticAnchor::Exact(offset)
-            if text.is_char_boundary(offset) =>
-        {
-            offset
-        }
-        perl_parser::error::ResolvedParseDiagnosticAnchor::Exact(offset) => {
-            tracing::error!(offset, "parser returned a UTF-8 interior diagnostic anchor");
-            text.len()
-        }
+    match error.resolved_diagnostic_anchor(text) {
+        perl_parser::error::ResolvedParseDiagnosticAnchor::Exact(offset) => offset,
         perl_parser::error::ResolvedParseDiagnosticAnchor::EndOfInput(offset) => offset,
         perl_parser::error::ResolvedParseDiagnosticAnchor::NoSource => 0,
         perl_parser::error::ResolvedParseDiagnosticAnchor::InvalidOffset {
@@ -183,6 +175,17 @@ fn resolved_parse_diagnostic_offset(error: &crate::error::ParseError, text: &str
                 reported,
                 source_len,
                 "parser returned an out-of-range diagnostic anchor"
+            );
+            source_len
+        }
+        perl_parser::error::ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary {
+            reported,
+            source_len,
+        } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned a UTF-8 interior diagnostic anchor"
             );
             source_len
         }
