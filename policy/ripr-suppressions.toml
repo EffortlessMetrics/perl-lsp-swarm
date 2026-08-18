@@ -157,6 +157,22 @@ review_after = "2026-07-10"
 expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
+# Emacs project fixture matrix: diff-scoped RIPR sees temp-tree construction
+# and match-arm plumbing as production seams.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-emacs-project-fixture-support"
+kind = "test_receipt_surface"
+paths = ["crates/perl-lsp-rs/tests/support/emacs_projects.rs"]
+classification = ["weakly_exposed", "no_static_path"]
+owner = "editor-trust"
+issue = "#7763"
+reason = "The Emacs project-root fixture matrix is test-only support that builds temporary Perl project layouts for the eight focused fixture tests in emacs_project_root_fixture_tests.rs. RIPR 0.9.x classifies its fixture construction, case dispatch, and fallible setup as production seams. The suppression covers only this support file's receipt-surface plumbing; it does not claim the focused tests provide product root-detection coverage -- they validate fixture shapes and probe-source correctness against the support matrix, not the editor client's runtime root detection. Remove when RIPR distinguishes fixture plumbing from production behavior."
+created = "2026-08-17"
+review_after = "2026-09-17"
+expires = "2026-09-30"
+
+# -----------------------------------------------------------------------------
 # Agent capability workflow contract test: diff-scoped RIPR currently treats
 # fallible YAML contract-test plumbing as a production seam.
 # -----------------------------------------------------------------------------
