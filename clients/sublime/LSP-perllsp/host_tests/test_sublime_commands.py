@@ -74,8 +74,23 @@ class SublimePerllspCommandJourney(DeferrableTestCase):
         }
         rendered = panel_text()
         self.assertIn(spec.caption, rendered)
+
+        # `format_error` renders the same caption this condition waited for, so
+        # the caption alone cannot distinguish a served report from a JSON-RPC
+        # or application failure. Reject both failure renderings explicitly
+        # before any receipt is written.
+        self.assertNotIn("Status: failed", rendered)
+        self.assertNotIn("Server command: {}".format(spec.command_id), rendered)
+
+        # Command-specific success data: only a served workspace-trust report
+        # carries the echoed command id and the workspace folder census.
+        self.assertIn("Command: {}".format(spec.command_id), rendered)
+        self.assertIn("Workspace folder count:", rendered)
+        self.assertIn("Claim boundary:", rendered)
+
         self.assertFalse(rendered.lstrip().startswith("{"), "raw protocol JSON became the normal UX")
-        self.assertLessEqual(len(rendered), 64 * 1024 + 256)
+        bounded = len(rendered) <= 64 * 1024 + 256
+        self.assertTrue(bounded)
 
         receipt = {
             "schema_version": 1,
@@ -98,12 +113,18 @@ class SublimePerllspCommandJourney(DeferrableTestCase):
                 "session": self.session.config.name,
                 "result_surface": "output.perllsp",
             },
+            # Observed, not asserted-then-asserted-again: each flag is the
+            # value the journey actually measured, so a receipt can never
+            # claim a success the panel did not show.
             "assertions": {
-                "active_view_session_selection": True,
-                "advertised_command_gate": True,
-                "workspace_execute_command": True,
-                "bounded_structured_result": True,
-                "no_destructive_binding": True,
+                "active_view_session_selection": self.session is not None,
+                "advertised_command_gate": spec.command_id in advertised,
+                "workspace_execute_command": "Command: {}".format(spec.command_id) in rendered,
+                "command_reported_success": "Status: failed" not in rendered,
+                "bounded_structured_result": bounded,
+                "no_destructive_binding": {
+                    item.command_id for item in COMMAND_SPECS.values()
+                }.isdisjoint(DESTRUCTIVE_COMMAND_IDS),
             },
         }
         self.receipt_path.parent.mkdir(parents=True, exist_ok=True)

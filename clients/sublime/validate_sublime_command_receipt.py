@@ -11,6 +11,10 @@ REQUIRED_ASSERTIONS = {
     "active_view_session_selection",
     "advertised_command_gate",
     "workspace_execute_command",
+    # The panel renders the same caption for a served report and for a JSON-RPC
+    # or application failure, so the journey must record that it saw neither
+    # failure rendering before this receipt can validate.
+    "command_reported_success",
     "bounded_structured_result",
     "no_destructive_binding",
 }

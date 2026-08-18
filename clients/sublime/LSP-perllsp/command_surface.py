@@ -20,6 +20,11 @@ class CommandSpec:
     command_id: str
     argument_kind: str
     result_kind: str
+    # True when the server implementation reads or executes the file from disk.
+    # Those commands would silently act on the last saved bytes rather than the
+    # text the user is looking at, so the palette refuses them on a dirty buffer
+    # instead of reporting a result for source that is not on screen.
+    reads_saved_file: bool
 
 
 @dataclass(frozen=True)
@@ -36,13 +41,19 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         "perl.runFile",
         "file",
         "output",
+        True,
     ),
+    # `perl.runTestFile` is not routed through the path-resolving execute-command
+    # provider: the live handler looks the argument up directly in the open-document
+    # map, which is keyed by document URI. A filesystem path can never match, so
+    # this command takes the `file://` URI instead.
     "run_current_test": CommandSpec(
         "run_current_test",
         "Perl: Run Current Test File",
         "perl.runTestFile",
-        "file",
+        "document_uri",
         "output",
+        True,
     ),
     "run_workspace_tests": CommandSpec(
         "run_workspace_tests",
@@ -50,6 +61,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         "perl.runTests",
         "workspace",
         "output",
+        True,
     ),
     "run_critic_compatibility": CommandSpec(
         "run_critic_compatibility",
@@ -57,6 +69,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         "perl.runCritic",
         "file",
         "output",
+        True,
     ),
     "go_to_test": CommandSpec(
         "go_to_test",
@@ -64,6 +77,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         "perl.goToTest",
         "file",
         "navigation",
+        True,
     ),
     "go_to_implementation": CommandSpec(
         "go_to_implementation",
@@ -71,6 +85,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         "perl.goToImplementation",
         "file",
         "navigation",
+        True,
     ),
     "workspace_trust_report": CommandSpec(
         "workspace_trust_report",
@@ -78,6 +93,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         "perl.workspaceTrustReport",
         "none",
         "report",
+        False,
     ),
     "preview_safe_delete": CommandSpec(
         "preview_safe_delete",
@@ -85,6 +101,9 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         "perl.previewSafeDelete",
         "position",
         "preview",
+        # The safe-delete preview resolves against the live workspace index,
+        # which tracks unsaved edits through didChange.
+        False,
     ),
 }
 
@@ -135,10 +154,16 @@ def prepare_invocation(
     workspace_folders: Sequence[str],
     line: int,
     character: int,
+    is_dirty: bool = False,
 ) -> CommandInvocation:
     spec = COMMAND_SPECS.get(action)
     if spec is None:
         raise CommandSurfaceError(f"Unknown Perl command-palette action: {action}")
+    if spec.reads_saved_file and is_dirty:
+        raise CommandSurfaceError(
+            f"Save the active Perl buffer before running {spec.caption}; "
+            "the server reads the file from disk, not the unsaved buffer."
+        )
     if spec.command_id in DESTRUCTIVE_COMMAND_IDS:
         raise CommandSurfaceError("Destructive commands cannot be bound directly to the palette.")
     if spec.command_id not in advertised_commands:
@@ -153,6 +178,8 @@ def prepare_invocation(
         normalized_file = _normalized_file_path(file_path)
         if spec.argument_kind == "file":
             arguments = [normalized_file]
+        elif spec.argument_kind == "document_uri":
+            arguments = [Path(normalized_file).as_uri()]
         elif spec.argument_kind == "workspace":
             workspace_path = owning_workspace(normalized_file, workspace_folders)
             arguments = [workspace_path]

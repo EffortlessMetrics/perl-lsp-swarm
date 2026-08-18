@@ -191,11 +191,11 @@ pub fn evaluate_snapshot_file(snapshot_path: &Path, output_path: Option<&Path>) 
         serde_json::to_string_pretty(&evaluation).context("failed to serialize evaluation")?;
 
     if let Some(path) = output_path {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("failed to create directory: {}", parent.display()))?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory: {}", parent.display()))?;
         }
         fs::write(path, json)
             .with_context(|| format!("failed to write evaluation: {}", path.display()))?;

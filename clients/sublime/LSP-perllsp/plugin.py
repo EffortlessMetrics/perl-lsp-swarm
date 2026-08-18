@@ -56,6 +56,22 @@ def _advertised_commands(session: Any) -> set[str]:
     return {command for command in value if isinstance(command, str)}
 
 
+def _utf16_rowcol(view: sublime.View, point: int) -> tuple[int, int]:
+    """Return the LSP position for a Sublime point.
+
+    The server pins LSP positions to UTF-16 code units, while `View.rowcol`
+    counts characters. Any astral character earlier on the line (an emoji, for
+    example) makes the two disagree, which shifts the request onto a different
+    symbol. Sublime 4132 added `rowcol_utf16`; older builds fall back to the
+    character column, which is exact for the BMP-only lines they can report.
+    """
+    rowcol_utf16 = getattr(view, "rowcol_utf16", None)
+    if callable(rowcol_utf16):
+        row, column = rowcol_utf16(point)
+        return row, column
+    return view.rowcol(point)
+
+
 def _write_output_panel(window: sublime.Window, text: str) -> None:
     panel = window.create_output_panel(_OUTPUT_PANEL)
     panel.set_read_only(False)
@@ -78,10 +94,6 @@ class PerllspPlugin(LspPlugin):
             raise PluginStartError("LSP-perllsp server_path must be a non-empty string")
 
         if configured_path == "auto":
-            try:
-                assert_managed_install_allowed()
-            except CompatibilityError as error:
-                raise PluginStartError(str(error)) from error
             with _INSTALL_LOCK:
                 server_path = install_server(
                     cls.plugin_storage_path,
@@ -115,7 +127,8 @@ class PerllspExecuteCommand(LspTextCommand):
         del event, point
         if action not in COMMAND_SPECS:
             return False
-        return self.view.match_selector(0, "source.perl")
+        selector_point = min(max(self.view.size() - 1, 0), 0)
+        return self.view.match_selector(selector_point, "source.perl")
 
     def is_enabled(
         self,
@@ -161,7 +174,7 @@ class PerllspExecuteCommand(LspTextCommand):
     def _prepare(self, action: str, session: Any) -> CommandInvocation:
         selection = self.view.sel()
         point = selection[0].b if selection else 0
-        line, character = self.view.rowcol(point)
+        line, character = _utf16_rowcol(self.view, point)
         folders = [folder.path for folder in session.get_workspace_folders()]
         return prepare_invocation(
             action,
@@ -170,6 +183,7 @@ class PerllspExecuteCommand(LspTextCommand):
             workspace_folders=folders,
             line=line,
             character=character,
+            is_dirty=self.view.is_dirty(),
         )
 
     def _show_success(self, invocation: CommandInvocation, result: Any) -> None:

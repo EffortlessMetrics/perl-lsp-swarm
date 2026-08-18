@@ -40,7 +40,12 @@ use crate::commands::todos::{
 #[cfg(test)]
 use crate::git_hooks::pre_push_hook_script;
 use crate::git_hooks::{check_githooks, cmd_install_githooks};
-use crate::process::*;
+use crate::process::{
+    command_exists, command_output_lines, command_output_with_status, command_status,
+    command_status_strict, command_timed_status, command_with_input_with_status,
+    command_with_output, command_with_output_all, command_with_output_allow_empty_match,
+    command_with_output_allow_failure,
+};
 
 const RED: &str = "\x1b[0;31m";
 const GREEN: &str = "\x1b[0;32m";

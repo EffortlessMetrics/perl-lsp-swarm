@@ -9,6 +9,7 @@
         "active_view_session_selection": { "const": true },
         "advertised_command_gate": { "const": true },
         "bounded_structured_result": { "const": true },
+        "command_reported_success": { "const": true },
         "no_destructive_binding": { "const": true },
         "workspace_execute_command": { "const": true }
       },
@@ -16,6 +17,7 @@
         "active_view_session_selection",
         "advertised_command_gate",
         "workspace_execute_command",
+        "command_reported_success",
         "bounded_structured_result",
         "no_destructive_binding"
       ],

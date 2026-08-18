@@ -6,7 +6,6 @@ import re
 import sys
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -49,7 +48,7 @@ class CommandSurfaceContractTests(unittest.TestCase):
     def test_current_file_commands_use_the_active_saved_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             file_path = Path(directory) / "lib" / "Example.pm"
-            for action in ("run_current_file", "run_current_test", "run_critic_compatibility"):
+            for action in ("run_current_file", "run_critic_compatibility"):
                 invocation = surface.prepare_invocation(
                     action,
                     surface.command_ids(),
@@ -59,6 +58,69 @@ class CommandSurfaceContractTests(unittest.TestCase):
                     character=8,
                 )
                 self.assertEqual(invocation.arguments, [str(file_path.resolve())])
+
+    def test_run_current_test_sends_a_document_uri(self) -> None:
+        # `perl.runTestFile` is intercepted before the path-resolving execute-command
+        # provider and looked up in the open-document map, which is keyed by URI. A
+        # filesystem path there returns "Document not found" instead of running.
+        with tempfile.TemporaryDirectory() as directory:
+            file_path = Path(directory) / "t" / "feature.t"
+            invocation = surface.prepare_invocation(
+                "run_current_test",
+                surface.command_ids(),
+                file_path=str(file_path),
+                workspace_folders=[directory],
+                line=0,
+                character=0,
+            )
+            self.assertEqual(invocation.arguments, [file_path.resolve().as_uri()])
+            self.assertTrue(invocation.arguments[0].startswith("file://"))
+
+    def test_dirty_buffers_are_refused_only_for_disk_backed_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            file_path = Path(directory) / "lib" / "Example.pm"
+            disk_backed = sorted(
+                action
+                for action, spec in surface.COMMAND_SPECS.items()
+                if spec.reads_saved_file
+            )
+            self.assertEqual(
+                disk_backed,
+                [
+                    "go_to_implementation",
+                    "go_to_test",
+                    "run_critic_compatibility",
+                    "run_current_file",
+                    "run_current_test",
+                    "run_workspace_tests",
+                ],
+            )
+            for action in disk_backed:
+                with self.assertRaisesRegex(
+                    surface.CommandSurfaceError, "Save the active Perl buffer"
+                ):
+                    surface.prepare_invocation(
+                        action,
+                        surface.command_ids(),
+                        file_path=str(file_path),
+                        workspace_folders=[directory],
+                        line=0,
+                        character=0,
+                        is_dirty=True,
+                    )
+
+            # The safe-delete preview and the trust report resolve against live
+            # server state, so an unsaved buffer is not a reason to refuse them.
+            for action in ("preview_safe_delete", "workspace_trust_report"):
+                surface.prepare_invocation(
+                    action,
+                    surface.command_ids(),
+                    file_path=str(file_path),
+                    workspace_folders=[directory],
+                    line=0,
+                    character=0,
+                    is_dirty=True,
+                )
 
     def test_workspace_command_selects_the_deepest_owning_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -168,28 +230,28 @@ class CommandSurfaceContractTests(unittest.TestCase):
         for forbidden in ("subprocess", "os.system", "Popen(", "shell=True", "perlcritic ", "prove "):
             self.assertNotIn(forbidden, source)
 
+    def test_plugin_reports_dirty_state_and_utf16_cursor_columns(self) -> None:
+        # The server pins LSP positions to UTF-16 code units, and disk-backed
+        # commands must not run against a stale on-disk copy.
+        source = (PACKAGE / "plugin.py").read_text(encoding="utf-8")
+        self.assertIn("is_dirty=self.view.is_dirty()", source)
+        self.assertIn("_utf16_rowcol(self.view, point)", source)
+        self.assertIn('getattr(view, "rowcol_utf16", None)', source)
+        self.assertNotIn("self.view.rowcol(point)", source)
+
     def test_deterministic_export_contains_the_command_runtime(self) -> None:
-        # File-list authority lives in package-source.v1.json; prove the
-        # built package itself carries the command runtime.
-        with tempfile.TemporaryDirectory() as directory:
-            sys.path.insert(0, str(PACKAGE.parent))
-            try:
-                exporter_spec = importlib.util.spec_from_file_location(
-                    "perllsp_exporter",
-                    PACKAGE.parent / "export_lsp_perllsp.py",
-                )
-                assert exporter_spec and exporter_spec.loader
-                exporter = importlib.util.module_from_spec(exporter_spec)
-                sys.modules[exporter_spec.name] = exporter
-                exporter_spec.loader.exec_module(exporter)
-                output = Path(directory) / "LSP-perllsp.sublime-package"
-                exporter.build(output)
-            finally:
-                sys.path.pop(0)
-            with zipfile.ZipFile(output) as archive:
-                names = set(archive.namelist())
-        self.assertIn("Default.sublime-commands", names)
-        self.assertIn("command_surface.py", names)
+        # The exported package contents derive from the package-source
+        # manifest (the single declared authority); the exporter must read it
+        # rather than carry a second list that would drift.
+        manifest = json.loads(
+            (PACKAGE.parent / "package-source.v1.json").read_text(encoding="utf-8")
+        )
+        package_files = manifest["package_files"]
+        self.assertIn("Default.sublime-commands", package_files)
+        self.assertIn("command_surface.py", package_files)
+        exporter = (PACKAGE.parent / "export_lsp_perllsp.py").read_text(encoding="utf-8")
+        self.assertIn('payload["package_files"]', exporter)
+        self.assertNotIn("INCLUDED = [", exporter)
 
 
 if __name__ == "__main__":

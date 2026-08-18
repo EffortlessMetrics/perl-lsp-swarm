@@ -62,6 +62,32 @@ class SublimeCommandReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exact_source_local"):
             load_validator().validate(public)
 
+    def test_validator_rejects_receipt_from_failed_command(self) -> None:
+        # The output panel renders the same caption for a served report and for
+        # a JSON-RPC or application failure, so a receipt whose journey observed
+        # a failure must not validate.
+        failed = sample_receipt()
+        failed["assertions"]["command_reported_success"] = False
+        with self.assertRaisesRegex(ValueError, "command_reported_success"):
+            load_validator().validate(failed)
+
+        missing = sample_receipt()
+        del missing["assertions"]["command_reported_success"]
+        with self.assertRaisesRegex(ValueError, "command_reported_success"):
+            load_validator().validate(missing)
+
+    def test_schema_and_validator_require_the_same_assertions(self) -> None:
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        schema_assertions = schema["properties"]["assertions"]
+        self.assertEqual(
+            set(schema_assertions["required"]),
+            set(load_validator().REQUIRED_ASSERTIONS),
+        )
+        self.assertEqual(
+            set(schema_assertions["properties"]),
+            set(load_validator().REQUIRED_ASSERTIONS),
+        )
+
     def test_schema_is_pinned_to_preview_safe_command_boundary(self) -> None:
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
         self.assertEqual(schema["properties"]["stage"]["const"], "exact_source_local")

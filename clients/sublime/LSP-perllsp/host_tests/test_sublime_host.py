@@ -246,9 +246,26 @@ class SublimePerllspHostJourney(DeferrableTestCase):
             "condition": lambda: bool(self.buffer.semantic_tokens.data),
             "timeout": TIMEOUT_MS,
         }
+        # The client decodes and draws the semantic regions after the data
+        # lands. LSP 2.13 composes each region's scope as the mapped custom
+        # scope plus its own meta scope ("variable.other.scalar.perl
+        # meta.semantic-token.variable.scalarvariable.lsp"), and Sublime's
+        # find_by_selector does not match a plain selector against that
+        # composite string -- so the observation asserts on the drawn region
+        # scopes themselves, which is the mapping contract this journey pins.
+        yield {
+            "condition": lambda: any(
+                scope.startswith("variable.other.scalar.perl")
+                for scope in self.buffer._semantic_region_keys
+            ),
+            "timeout": TIMEOUT_MS,
+        }
         self.assertTrue(
-            self.view.find_by_selector("variable.other.scalar.perl"),
-            "custom scalar-variable semantic scope was not applied",
+            any(
+                scope.startswith("variable.other.scalar.perl")
+                for scope in self.buffer._semantic_region_keys
+            ),
+            "custom scalar-variable semantic scope was not applied to any drawn region",
         )
         observed["semantic_tokens"] = True
         observed["custom_semantic_mapping"] = True

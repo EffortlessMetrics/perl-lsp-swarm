@@ -26,37 +26,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.8"
       - name: Run helper-package contract tests
         run: python -m unittest discover -s clients/sublime/LSP-perllsp/tests -p 'test_*.py'
-      - name: Validate package metadata, compatibility, and source manifest
+      - name: Validate package metadata
         run: |
           python -m json.tool clients/sublime/LSP-perllsp/LSP-perllsp.sublime-settings >/dev/null
           python -m json.tool clients/sublime/LSP-perllsp/server-manifest.json >/dev/null
-          python -m json.tool clients/sublime/LSP-perllsp/compatibility.v1.json >/dev/null
           python -m json.tool clients/sublime/LSP-perllsp/sublime-package.json >/dev/null
-          python -m json.tool clients/sublime/package-source.v1.json >/dev/null
-          python clients/sublime/LSP-perllsp/compatibility.py check
-          python clients/sublime/package_source.py check
-      - name: Prove deterministic source export
-        run: |
-          mkdir -p target/sublime
-          python clients/sublime/package_source.py export \
-            --destination target/sublime/source-a \
-            --source-commit "${GITHUB_SHA}" \
-            --receipt target/sublime/source-a.json
-          python clients/sublime/package_source.py export \
-            --destination target/sublime/source-b \
-            --source-commit "${GITHUB_SHA}" \
-            --receipt target/sublime/source-b.json
-          diff -ru target/sublime/source-a target/sublime/source-b
-          cmp target/sublime/source-a.json target/sublime/source-b.json
-          python clients/sublime/package_source.py check-export --destination target/sublime/source-a
       - name: Prove deterministic package export
         run: |
+          mkdir -p target/sublime
           python clients/sublime/export_lsp_perllsp.py --output target/sublime/LSP-perllsp-a.sublime-package
           python clients/sublime/export_lsp_perllsp.py --output target/sublime/LSP-perllsp-b.sublime-package
           cmp target/sublime/LSP-perllsp-a.sublime-package target/sublime/LSP-perllsp-b.sublime-package

@@ -11,7 +11,7 @@ mod dap_phase2_tests {
     use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
     use perl_dap::platform::normalize_path;
     use perl_dap::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
-    use perl_dap::{BridgeAdapter, create_attach_json_snippet, create_launch_json_snippet};
+    use perl_dap::{create_attach_json_snippet, create_launch_json_snippet};
     use serde_json::{Value, json};
     use std::io::Write;
     use std::path::PathBuf;
@@ -91,20 +91,16 @@ mod dap_phase2_tests {
         Ok(())
     }
 
-    /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac6-perl-shim-integration
-    #[tokio::test]
+    /// Tests the native attach configuration surface without activating a legacy bridge.
+    #[test]
     // AC:6
-    async fn test_perl_shim_integration() -> Result<()> {
-        // Bridge adapter remains available for Perl::LanguageServer-based workflows.
-        let _bridge = BridgeAdapter::new();
-
+    fn test_native_attach_configuration_integration() -> Result<()> {
         let attach_snippet = create_attach_json_snippet();
         let attach: Value = serde_json::from_str(&attach_snippet)?;
         assert_eq!(attach["request"], "attach");
         assert_eq!(attach["type"], "perl");
         assert!(attach.get("host").is_some());
         assert!(attach.get("port").is_some());
-
         Ok(())
     }
 
@@ -213,17 +209,17 @@ mod dap_phase2_tests {
 
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac8-lazy-variable-expansion
     ///
-    /// Uses variablesReference=13 (Globals scope, frame_id=1) which always returns at
-    /// least one variable in fallback mode (`$_`).  Locals scope (ref=11) now returns
-    /// empty in fallback mode when the B module is unavailable (issue #1006 — honest
-    /// empty rather than fake `$self`/`@_` placeholders), so this test uses Globals to
-    /// verify the expansion round-trip shape.
+    /// Uses variablesReference=13 (Globals scope, frame_id=1) with no live debugger
+    /// session, and proves the paginated request path answers successfully with an
+    /// honest empty scope. Extends issue #1006 — which established that fabricating
+    /// `$self`/`@_` for Locals is misleading — to Package and Globals, whose
+    /// representative `$VERSION`/`$_` entries were equally indistinguishable from
+    /// observed debuggee state.
     #[tokio::test]
     // AC:8
     async fn test_lazy_variable_expansion() -> Result<()> {
         let mut adapter = DebugAdapter::new();
         // ref=13: frame_id=1, Globals scope (frame_id*10+3 = 13).
-        // Globals fallback returns `$_` = "undef" with variables_reference=0.
         let root = adapter.handle_request(
             1,
             "variables",
@@ -239,30 +235,14 @@ mod dap_phase2_tests {
             .get("variables")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("variables array missing"))?;
-        // Globals fallback always returns at least `$_`.
+
+        // The request must still succeed and carry a well-formed (empty) array rather
+        // than failing or omitting the field.
         assert!(
-            !vars.is_empty(),
-            "Globals scope fallback must return at least one variable ($_ = undef)"
+            vars.is_empty(),
+            "Globals scope without a live session must expand to nothing, not to \
+             placeholders indistinguishable from observed state; got: {vars:?}"
         );
-
-        let child_ref = vars
-            .iter()
-            .find_map(|v| v.get("variablesReference").and_then(Value::as_i64))
-            .unwrap_or(0);
-        assert!(child_ref >= 0);
-
-        if child_ref > 0 {
-            let child = adapter.handle_request(
-                2,
-                "variables",
-                Some(json!({
-                    "variablesReference": child_ref,
-                    "start": 0,
-                    "count": 20
-                })),
-            );
-            let _ = expect_response(child, "variables", true)?;
-        }
 
         Ok(())
     }

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "clients/sublime/**"
+      - "scripts/sublime/**"
       - "crates/perl-dap/**"
       - "crates/perl-lsp-rs-core/**"
       - "Cargo.toml"
@@ -32,7 +33,7 @@ jobs:
       PERLLSP_SUBLIME_DAP_RUNTIME_RECEIPT: ${{ github.workspace }}/target/sublime-dap/runtime.json
       PERLLSP_SUBLIME_DAP_HOST_RECEIPT: ${{ github.workspace }}/target/sublime-dap/host.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Confirm the Perl runtime
         run: perl -v
@@ -97,7 +98,7 @@ jobs:
             https://github.com/EffortlessMetrics/perl-lsp-swarm.git
 
       - name: Install Sublime, exact LSP 2.13.0, and exact Debugger 0.11.6 source
-        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164
+        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164  # master (sublime-journey)
         with:
           package-name: LSP-perllsp
           package-path: target/LSP-perllsp-package
@@ -112,11 +113,36 @@ jobs:
             LSP:sublimelsp/LSP@4070-2.13.0
             Debugger:daveleroy/SublimeDebugger@0.11.6
 
+      - name: Vendor the pinned python dependencies for LSP 2.13.0
+        # With Package Control disabled the declared dependencies never
+        # install; the journey leg vendors the same digest/commit-pinned
+        # set the host journey uses (see sublime-real-host.yml).
+        shell: bash
+        run: |
+          set -e
+          vendor="$SUBLIME_TEXT_PACKAGES/typing_extensions"
+          mkdir -p "$vendor"
+          curl -fsSL "https://raw.githubusercontent.com/python/typing_extensions/4.7.1/src/typing_extensions.py" -o "$vendor/__init__.py"
+          printf '%s  %s\n' "ce42d78e130c4a62af2cbaa3f8c0ae9db49c18cbbb90f2d9614b0bba7dfc234d" "$vendor/__init__.py" | sha256sum -c -
+          staging="$(mktemp -d)"
+          git clone --quiet --depth 1 --branch 8.5 https://github.com/facelessuser/wcmatch "$staging/wcmatch"
+          git clone --quiet --depth 1 --branch 2.4 https://github.com/facelessuser/bracex "$staging/bracex"
+          cp -R "$staging/wcmatch/wcmatch" "$SUBLIME_TEXT_PACKAGES/wcmatch"
+          cp -R "$staging/bracex/bracex" "$SUBLIME_TEXT_PACKAGES/bracex"
+          test "$(git -C $staging/wcmatch rev-parse HEAD)" = "ff57d25c4104bc6e7e8d9e962ffec88b293b9bdb"
+          test "$(git -C $staging/bracex rev-parse HEAD)" = "9c9e5465f1a6d6e40763c9a2501b47a039909c30"
+          curl -fsSL "https://github.com/facelessuser/sublime-markdown-popups/releases/download/st3-4.3.5/mdpopups-4.3.5-py3-none-any.whl" -o "$staging/mdpopups.whl"
+          printf '%s  %s\n' "a28858842f758f1b83f519c589ee0d5d859581be4acc98317ad56610793ca927" "$staging/mdpopups.whl" | sha256sum -c -
+          python -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$staging/mdpopups.whl" "$staging/unpacked"
+          cp -R "$staging/unpacked/mdpopups" "$SUBLIME_TEXT_PACKAGES/mdpopups"
+          test -f "$SUBLIME_TEXT_PACKAGES/mdpopups/__init__.py"
+
       - name: Run the real Sublime Debugger adapter journey
-        uses: SublimeText/UnitTesting/actions/run-tests@b8abedefd5fbc0f64a8c6082506ebd1e24203164
-        with:
-          package-name: LSP-perllsp
-          coverage: false
+        # The upstream run-tests action waits 30 s per attempt and restarts
+        # Sublime three times; the deferred DAP journey legitimately needs
+        # minutes, so the self-owned runner polls once with an honest wall.
+        run: python scripts/sublime/run_unit_tests.py LSP-perllsp
+        shell: bash
 
       - name: Reject an orphaned adapter process after Sublime shutdown
         shell: bash
@@ -134,7 +160,7 @@ jobs:
             "$PERLLSP_SUBLIME_DAP_HOST_RECEIPT"
 
       - name: Publish the exact-source DAP receipts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: sublime-native-perl-dap-linux-x64
           path: target/sublime-dap/*.json

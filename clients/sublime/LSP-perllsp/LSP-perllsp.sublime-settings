@@ -1,7 +1,13 @@
 {
   "selector": "source.perl",
-  "schemes": ["file", "buffer"],
-  "command": ["${server_path}", "--stdio"],
+  "schemes": [
+    "file",
+    "buffer"
+  ],
+  "command": [
+    "${server_path}",
+    "--stdio"
+  ],
   "server_path": "auto",
   "dap_path": "auto",
   "env": {},
