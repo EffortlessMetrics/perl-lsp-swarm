@@ -180,28 +180,28 @@ fn test_enhanced_cancel_request_with_provider_context_ac1() -> Result<(), Box<dy
     let response =
         read_response_matching_i64(&fixture.server, completion_id, Duration::from_millis(500));
 
-    if let Some(resp) = response {
-        if let Some(error) = resp.get("error") {
-            assert_eq!(
-                error["code"].as_i64(),
-                Some(-32800),
-                "Should return RequestCancelled error code"
-            );
-            let message = error["message"].as_str().ok_or("Error message should be a string")?;
-            assert!(
-                message.contains("completion"),
-                "Error message should reference completion provider"
-            );
+    if let Some(resp) = response
+        && let Some(error) = resp.get("error")
+    {
+        assert_eq!(
+            error["code"].as_i64(),
+            Some(-32800),
+            "Should return RequestCancelled error code"
+        );
+        let message = error["message"].as_str().ok_or("Error message should be a string")?;
+        assert!(
+            message.contains("completion"),
+            "Error message should reference completion provider"
+        );
 
-            // Validate enhanced error data
-            if let Some(data) = error.get("data") {
-                assert!(
-                    data.get("provider").is_some(),
-                    "Enhanced error should include provider context"
-                );
-                // latency_ms is an optional enhanced field — presence is a bonus
-                let _ = data.get("latency_ms");
-            }
+        // Validate enhanced error data
+        if let Some(data) = error.get("data") {
+            assert!(
+                data.get("provider").is_some(),
+                "Enhanced error should include provider context"
+            );
+            // latency_ms is an optional enhanced field — presence is a bonus
+            let _ = data.get("latency_ms");
         }
     }
 
@@ -295,28 +295,27 @@ fn test_multiple_provider_cancellation_with_context_ac1() -> Result<(), Box<dyn 
     for (id, method, _params, _provider_type) in &provider_scenarios {
         let response = read_response_matching_i64(&fixture.server, *id, Duration::from_secs(1));
 
-        if let Some(resp) = response {
-            if let Some(error) = resp.get("error") {
-                assert_eq!(error["code"].as_i64(), Some(-32800));
-                let message =
-                    error["message"].as_str().ok_or("Error message should be a string")?;
-                let method_name =
-                    method.split('/').next_back().ok_or("Invalid method format")?.to_string();
-                assert!(
-                    message.to_lowercase().contains(&method_name.to_lowercase()),
-                    "Error message should reference specific provider: {}",
-                    method_name
-                );
+        // Note: Some fast operations might complete before cancellation
+        if let Some(resp) = response
+            && let Some(error) = resp.get("error")
+        {
+            assert_eq!(error["code"].as_i64(), Some(-32800));
+            let message = error["message"].as_str().ok_or("Error message should be a string")?;
+            let method_name =
+                method.split('/').next_back().ok_or("Invalid method format")?.to_string();
+            assert!(
+                message.to_lowercase().contains(&method_name.to_lowercase()),
+                "Error message should reference specific provider: {}",
+                method_name
+            );
 
-                // Validate enhanced error data structure
-                if let Some(data) = error.get("data") {
-                    assert!(
-                        data.get("provider").is_some(),
-                        "Enhanced cancellation should include provider information"
-                    );
-                }
+            // Validate enhanced error data structure
+            if let Some(data) = error.get("data") {
+                assert!(
+                    data.get("provider").is_some(),
+                    "Enhanced cancellation should include provider information"
+                );
             }
-            // Note: Some fast operations might complete before cancellation
         }
     }
 

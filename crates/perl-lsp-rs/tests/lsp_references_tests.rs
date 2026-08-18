@@ -194,15 +194,13 @@ my $lonely = 42;
         .unwrap_or(json!(null));
 
     // Should return null or empty array for non-symbol positions
-    if !result.is_null() {
-        if result.is_array() {
-            let references = result.as_array().ok_or("Expected array result")?;
-            assert!(
-                references.is_empty(),
-                "References on comment should return empty array, got {} references",
-                references.len()
-            );
-        }
+    if !result.is_null() && result.is_array() {
+        let references = result.as_array().ok_or("Expected array result")?;
+        assert!(
+            references.is_empty(),
+            "References on comment should return empty array, got {} references",
+            references.len()
+        );
     }
 
     Ok(())
@@ -287,11 +285,9 @@ fn test_references_on_empty_file() -> TestResult {
         .unwrap_or(json!(null));
 
     // Empty file should return null or empty array
-    if !result.is_null() {
-        if result.is_array() {
-            let references = result.as_array().ok_or("Expected array result")?;
-            assert!(references.is_empty(), "References on empty file should return empty array");
-        }
+    if !result.is_null() && result.is_array() {
+        let references = result.as_array().ok_or("Expected array result")?;
+        assert!(references.is_empty(), "References on empty file should return empty array");
     }
 
     Ok(())

@@ -112,6 +112,24 @@
       "production_eligible": false
     },
     {
+      "name": "diagnostics::LexRestartReport",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain as the diagnostics component of the canonical ReparseResult contract.",
+      "production_eligible": true
+    },
+    {
+      "name": "diagnostics::LexRestartStrategy",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain as the strategy component of the canonical ReparseResult contract.",
+      "production_eligible": true
+    },
+    {
       "name": "diagnostics::ReparseResult",
       "classification": "incremental_parser",
       "disposition": "retain",

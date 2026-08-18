@@ -113,9 +113,10 @@ Use the manual archive with independently reviewed checksum or attestation
 evidence for release-sensitive installation until those remaining boundaries
 land.
 
-`BUILD_FROM_SOURCE=1` installs **`perllsp` only**, not `perl-dap`. That mode
-runs `cargo install perllsp`, and the `perllsp` package declares just the one
-binary, so the debug adapter is skipped without an error. If you need the
+`BUILD_FROM_SOURCE=1` installs **`perllsp` only**, not `perl-dap`. That mode runs
+`cargo install perllsp`. The crates.io package `perl-lsp` is a different project,
+not this language server. The `perllsp` package declares just the one binary, so
+the debug adapter is skipped without an error. If you need the
 debugger, use a release archive instead — the archives ship both binaries — or
 build `perl-dap` yourself from a clone with
 `cargo build -p perl-dap --release`.
@@ -255,6 +256,7 @@ Cargo's bin directory instead:
 ```bash
 cargo install perllsp
 ```
+> The crates.io package `perl-lsp` is a different project, not this language server.
 
 ## Prebuilt Releases
 

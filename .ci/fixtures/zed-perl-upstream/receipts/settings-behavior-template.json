@@ -1,0 +1,111 @@
+{
+  "schema_version": "zed_settings_behavior_receipt.v1",
+  "result": "not_run",
+  "observed_at": null,
+  "contract": {
+    "relative_path": ".ci/fixtures/zed-perl-upstream/settings-behavior.v1.json",
+    "sha256": null
+  },
+  "host_receipts": [],
+  "process_settings": {
+    "binary_path_forwarded_to_server": false,
+    "binary_arguments_forwarded_to_server": false,
+    "binary_environment_forwarded_to_server": false
+  },
+  "probes": [
+    {
+      "id": "boolean_inlay_hints",
+      "key": "perl.inlayHints.enabled",
+      "result": "not_proven",
+      "project_observed": null,
+      "zed_override_observed": null,
+      "restored_observed": null,
+      "effect_before": null,
+      "effect_override": null,
+      "effect_restored": null,
+      "evidence": null
+    },
+    {
+      "id": "enum_critic_profile",
+      "key": "perl.critic.profile",
+      "result": "not_proven",
+      "project_observed": null,
+      "zed_override_observed": null,
+      "restored_observed": null,
+      "effect_before": null,
+      "effect_override": null,
+      "effect_restored": null,
+      "evidence": null
+    },
+    {
+      "id": "integer_format_width",
+      "key": "perl.formatting.maximumLineLength",
+      "result": "not_proven",
+      "project_observed": null,
+      "zed_override_observed": null,
+      "restored_observed": null,
+      "effect_before": null,
+      "effect_override": null,
+      "effect_restored": null,
+      "evidence": null
+    },
+    {
+      "id": "path_list_include_paths",
+      "key": "perl.workspace.includePaths",
+      "result": "not_proven",
+      "project_observed": null,
+      "zed_override_observed": null,
+      "restored_observed": null,
+      "effect_before": null,
+      "effect_override": null,
+      "effect_restored": null,
+      "evidence": null
+    },
+    {
+      "id": "nested_streaming_setting",
+      "key": "perl.aiCompletion.streaming.enabled",
+      "result": "not_proven",
+      "project_observed": null,
+      "zed_override_observed": null,
+      "restored_observed": null,
+      "effect_before": null,
+      "effect_override": null,
+      "effect_restored": null,
+      "evidence": null
+    }
+  ],
+  "precedence": {
+    "result": "not_proven",
+    "sequence": [
+      "project_only",
+      "zed_override",
+      "zed_override_removed"
+    ],
+    "project_only_effect": null,
+    "zed_override_effect": null,
+    "restored_project_effect": null,
+    "evidence": null
+  },
+  "restart": {
+    "result": "not_proven",
+    "setting": "perl.inlayHints.enabled",
+    "from": true,
+    "to": false,
+    "disposition": null,
+    "configuration_notification_observed": null,
+    "server_pid_before": null,
+    "server_pid_after": null,
+    "effect_before": null,
+    "effect_after": null,
+    "evidence": null
+  },
+  "limitations": [
+    "Template only. No Zed settings experiment has run.",
+    "Settings behavior does not promote the complete Zed support row."
+  ],
+  "claim_boundary": {
+    "settings_behavior": "not_run",
+    "full_zed_support": "not_proven",
+    "public_registry": "not_proven"
+  }
+}

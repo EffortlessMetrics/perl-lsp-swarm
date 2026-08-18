@@ -22,7 +22,7 @@
   },
   "filetypes": [
     {"case": "pl", "path": "sample.pl", "expect": "perl", "source": "native_vim"},
-    {"case": "PL", "path": "sample.PL", "expect": "perl", "source": "native_vim_case_sensitive"},
+    {"case": "PL", "path": "legacy.PL", "expect": "perl", "source": "native_vim_uppercase_extension"},
     {"case": "pm_perl", "path": "Sample.pm", "expect": "perl", "source": "native_vim_discriminator"},
     {"case": "pm_xpm", "path": "Image.pm", "expect": "xpm", "source": "native_vim_discriminator", "negative_control": true},
     {"case": "t_perl", "path": "sample.t", "expect": "perl", "source": "native_vim_discriminator"},

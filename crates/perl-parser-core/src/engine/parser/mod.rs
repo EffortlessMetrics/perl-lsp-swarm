@@ -80,6 +80,25 @@ fn strip_qw_comments(content: &str) -> String {
         .join("\n")
 }
 
+/// Upper bound on retained test-only decision events, so a large source cannot
+/// grow the trace without bound.
+#[cfg(test)]
+pub(crate) const MAX_DECISION_TRACE: usize = 256;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParserDecision {
+    UnknownLowercaseBarewordCall,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ParserDecisionTrace {
+    pub(crate) decision: ParserDecision,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
 /// Parser state for a single Perl source input.
 ///
 /// Construct with [`Parser::new`] and call [`Parser::parse`] to obtain an AST.
@@ -120,6 +139,13 @@ pub struct Parser<'a> {
     cancellation_flag: Option<Arc<AtomicBool>>,
     /// Counter to amortize cancellation checks (only check every 64 statements)
     cancellation_check_counter: usize,
+    /// Semantic decision events emitted by the actual production route in unit tests,
+    /// capped at [`MAX_DECISION_TRACE`] entries.
+    #[cfg(test)]
+    decision_trace: Vec<ParserDecisionTrace>,
+    /// Test-only mutation control that preserves the AST while bypassing route evidence.
+    #[cfg(test)]
+    bypass_unknown_lowercase_bareword_decision: bool,
 }
 
 // Recursion limit is set conservatively to prevent stack overflow
@@ -169,6 +195,10 @@ impl<'a> Parser<'a> {
             errors: Vec::new(),
             cancellation_flag: None,
             cancellation_check_counter: 0,
+            #[cfg(test)]
+            decision_trace: Vec::new(),
+            #[cfg(test)]
+            bypass_unknown_lowercase_bareword_decision: false,
         }
     }
 
@@ -305,7 +335,38 @@ impl<'a> Parser<'a> {
             errors: Vec::new(),
             cancellation_flag: None,
             cancellation_check_counter: 0,
+            #[cfg(test)]
+            decision_trace: Vec::new(),
+            #[cfg(test)]
+            bypass_unknown_lowercase_bareword_decision: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decision_trace(&self) -> &[ParserDecisionTrace] {
+        &self.decision_trace
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_unknown_lowercase_bareword_decision_bypass_for_test(&mut self, bypass: bool) {
+        self.bypass_unknown_lowercase_bareword_decision = bypass;
+    }
+
+    #[cfg(test)]
+    fn unknown_lowercase_bareword_decision_is_bypassed(&self) -> bool {
+        self.bypass_unknown_lowercase_bareword_decision
+    }
+
+    #[cfg(test)]
+    fn record_unknown_lowercase_bareword_call_decision(&mut self, start: usize, end: usize) {
+        if self.decision_trace.len() >= MAX_DECISION_TRACE {
+            return;
+        }
+        self.decision_trace.push(ParserDecisionTrace {
+            decision: ParserDecision::UnknownLowercaseBarewordCall,
+            start,
+            end,
+        });
     }
 
     /// Check for cooperative cancellation, amortised over every 64 calls.
