@@ -95,13 +95,13 @@ fn trigger_must_with() {
 #[inline(never)]
 fn trigger_must_some() {
     EXPECTED_LINE.store(line!() + 1, Ordering::Relaxed);
-    let _ = must_some::<()>(None);
+    let () = must_some::<()>(None);
 }
 
 #[inline(never)]
 fn trigger_must_some_with() {
     EXPECTED_LINE.store(line!() + 1, Ordering::Relaxed);
-    let _ = must_some_with::<()>(None, "context");
+    let () = must_some_with::<()>(None, "context");
 }
 
 #[inline(never)]
