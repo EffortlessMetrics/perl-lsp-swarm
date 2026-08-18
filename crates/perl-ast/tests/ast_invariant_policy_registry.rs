@@ -131,28 +131,70 @@ fn every_kind_reconciles_observed_structure_with_its_policy_row()
         let policy = ast_node_policy(kind_name)
             .ok_or_else(|| format!("{kind_name} has a fixture but no policy row"))?;
 
-        // Observe the fully populated sample through the canonical traversal.
-        let mut observed: Vec<Option<&str>> = Vec::new();
+        // Observe the fully populated sample through the canonical traversal,
+        // keeping per-field occurrence counts: collection-backed fixture fields
+        // carry two children, so repetition is observable rather than declared.
+        let mut observed_counts: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        let mut lost_field_identity = false;
         let _ = fixture.sample.try_for_each_child_with_field(|field, _child| {
-            observed.push(field.map(|field| field.name()));
+            match field {
+                Some(field) => *observed_counts.entry(field.name()).or_insert(0) += 1,
+                None => lost_field_identity = true,
+            }
             ControlFlow::<()>::Continue(())
         });
-        let mut observed = observed
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| format!("{kind_name} child emission lost its field identity"))?;
-        observed.sort_unstable();
-        observed.dedup();
+        assert!(!lost_field_identity, "{kind_name}: a child emission lost its field identity");
 
-        let mut declared =
-            fixture.child_fields.iter().map(|(name, _repeating)| *name).collect::<Vec<_>>();
-        declared.sort_unstable();
-        declared.dedup();
+        let mut expected_counts: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for (name, _repeating) in fixture.child_fields {
+            assert!(
+                expected_counts.insert(*name, 0).is_none(),
+                "{kind_name}: fixture declares child field {name} twice"
+            );
+        }
+        let observed_names: Vec<&str> = observed_counts.keys().copied().collect();
+        let expected_names: Vec<&str> = expected_counts.keys().copied().collect();
         assert_eq!(
-            observed, declared,
-            "{kind_name}: canonical traversal observed child fields {observed:?} but the \
-             fixture declares {declared:?}; the field-aware traversal remains the authority"
+            observed_names, expected_names,
+            "{kind_name}: canonical traversal observed child fields {observed_names:?} but the \
+             fixture declares {expected_names:?}; the field-aware traversal remains the authority"
         );
+        for (name, repeating) in fixture.child_fields {
+            let count = observed_counts.get(name).copied().unwrap_or(0);
+            if *repeating {
+                assert!(
+                    count >= 2,
+                    "{kind_name}: field {name} is declared repeating but the fully populated \
+                     sample observed it {count} time(s)"
+                );
+            } else {
+                assert_eq!(
+                    count, 1,
+                    "{kind_name}: field {name} is declared single-occurrence but the sample \
+                     observed it {count} times"
+                );
+            }
+        }
+
+        // Every declared field lives in exactly one governance bucket.
+        let mut bucket_owner: std::collections::BTreeMap<&str, &str> =
+            std::collections::BTreeMap::new();
+        for (bucket, fields) in [
+            ("child_fields", fixture.child_fields.iter().map(|(name, _)| *name).collect()),
+            ("payload_fields", fixture.payload_fields.to_vec()),
+            ("untracked_fields", fixture.untracked_fields.to_vec()),
+        ] {
+            for name in fields {
+                assert!(
+                    bucket_owner.insert(name, bucket).is_none(),
+                    "{kind_name}: field {name} appears in more than one governance bucket"
+                );
+            }
+        }
+
+        let observed: Vec<&str> = observed_counts.keys().copied().collect();
 
         assert!(
             policy_accepts_observed_children(policy, !observed.is_empty()),
@@ -273,6 +315,24 @@ fn misclassifying_an_observed_child_is_a_load_bearing_failure()
         "a ChildBearing policy must accept an observed child"
     );
     Ok(())
+}
+
+#[test]
+fn typed_lookup_derives_the_canonical_token_from_the_enum() {
+    use perl_ast::{Node, SourceLocation, ast_node_policy_of};
+
+    let loc = SourceLocation { start: 0, end: 1 };
+    let number = Node::new(NodeKind::Number { value: "1".to_string() }, loc);
+    let typed = ast_node_policy_of(&number.kind);
+    let named = ast_node_policy("Number");
+    assert_eq!(
+        typed, named,
+        "the NodeKind-typed lookup must resolve the same row as the canonical token"
+    );
+    assert!(
+        typed.is_some(),
+        "every current NodeKind must resolve a policy row through the typed lookup"
+    );
 }
 
 #[test]

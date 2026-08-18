@@ -241,6 +241,13 @@ pub fn ast_node_policy(kind_name: &str) -> Option<&'static AstNodePolicy> {
     AST_NODE_POLICIES.iter().find(|policy| policy.kind_name == kind_name)
 }
 
+/// Return the registered policy for a `NodeKind`, deriving the token from the
+/// enum itself so a stale or misspelled string cannot silently disable policy.
+#[must_use]
+pub fn ast_node_policy_of(kind: &crate::NodeKind) -> Option<&'static AstNodePolicy> {
+    ast_node_policy(kind.kind_name())
+}
+
 /// Return all registered policies in canonical declaration order.
 #[must_use]
 pub const fn all_ast_node_policies() -> &'static [AstNodePolicy] {
@@ -275,9 +282,12 @@ pub const fn policy_accepts_observed_children(
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct NodeKindFixture {
-    /// Fully populated sample node; every child field carries one dummy child.
+    /// Fully populated sample node; every child field is populated, and every
+    /// collection-backed child field carries two dummy children so repetition is
+    /// observable through the canonical traversal.
     pub sample: crate::Node,
-    /// `(canonical field name, repeating)` per child-bearing field.
+    /// `(canonical field name, repeating)` per child-bearing field; a repeating
+    /// field must observe more than one child in the sample.
     pub child_fields: &'static [(&'static str, bool)],
     /// Source-derived payload fields requiring a registered payload policy.
     pub payload_fields: &'static [&'static str],
@@ -312,7 +322,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
 
     vec![
         fixture!(
-            NodeKind::Program { statements: vec![dummy()] },
+            NodeKind::Program { statements: vec![dummy(), dummy()] },
             &[("statements", true)],
             &[],
             &[]
@@ -337,7 +347,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
         fixture!(
             NodeKind::VariableListDeclaration {
                 declarator: text(),
-                variables: vec![dummy()],
+                variables: vec![dummy(), dummy()],
                 attributes: vec![text()],
                 initializer: Some(boxed()),
             },
@@ -346,7 +356,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
             &["attributes"]
         ),
         fixture!(
-            NodeKind::NestedVariableList { items: vec![dummy()] },
+            NodeKind::NestedVariableList { items: vec![dummy(), dummy()] },
             &[("items", true)],
             &[],
             &[]
@@ -389,7 +399,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
             &[]
         ),
         fixture!(
-            NodeKind::ChainedComparison { operands: vec![dummy()], ops: vec![text()] },
+            NodeKind::ChainedComparison { operands: vec![dummy(), dummy()], ops: vec![text()] },
             &[("elements", true)],
             &["ops"],
             &[]
@@ -434,25 +444,30 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
             &["interpolated", "indented", "command", "body_span"]
         ),
         fixture!(
-            NodeKind::ArrayLiteral { elements: vec![dummy()] },
+            NodeKind::ArrayLiteral { elements: vec![dummy(), dummy()] },
             &[("elements", true)],
             &[],
             &[]
         ),
         fixture!(
-            NodeKind::HashLiteral { pairs: vec![(dummy(), dummy())] },
+            NodeKind::HashLiteral { pairs: vec![(dummy(), dummy()), (dummy(), dummy())] },
             &[("key", true), ("value", true)],
             &[],
             &[]
         ),
-        fixture!(NodeKind::Block { statements: vec![dummy()] }, &[("statements", true)], &[], &[]),
+        fixture!(
+            NodeKind::Block { statements: vec![dummy(), dummy()] },
+            &[("statements", true)],
+            &[],
+            &[]
+        ),
         fixture!(NodeKind::Eval { block: boxed() }, &[("block", false)], &[], &[]),
         fixture!(NodeKind::Do { block: boxed() }, &[("block", false)], &[], &[]),
         fixture!(NodeKind::Defer { block: boxed() }, &[("block", false)], &[], &[]),
         fixture!(
             NodeKind::Try {
                 body: boxed(),
-                catch_blocks: vec![(Some((text(), loc)), boxed())],
+                catch_blocks: vec![(Some((text(), loc)), boxed()), (Some((text(), loc)), boxed())],
                 finally_block: Some(boxed()),
             },
             &[("body", false), ("catch", true), ("finally", false)],
@@ -463,7 +478,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
             NodeKind::If {
                 condition: boxed(),
                 then_branch: boxed(),
-                elsif_branches: vec![(boxed(), boxed())],
+                elsif_branches: vec![(boxed(), boxed()), (boxed(), boxed())],
                 else_branch: Some(boxed()),
                 keyword: Some(text()),
             },
@@ -489,7 +504,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
             &[]
         ),
         fixture!(
-            NodeKind::Tie { variable: boxed(), package: boxed(), args: vec![dummy()] },
+            NodeKind::Tie { variable: boxed(), package: boxed(), args: vec![dummy(), dummy()] },
             &[("variable", false), ("package", false), ("args", true)],
             &[],
             &[]
@@ -563,7 +578,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
         ),
         fixture!(NodeKind::Prototype { content: text() }, &[], &["content"], &[]),
         fixture!(
-            NodeKind::Signature { parameters: vec![dummy()] },
+            NodeKind::Signature { parameters: vec![dummy(), dummy()] },
             &[("parameters", true)],
             &[],
             &[]
@@ -619,25 +634,29 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
             &[]
         ),
         fixture!(
-            NodeKind::MethodCall { object: boxed(), method: text(), args: vec![dummy()] },
+            NodeKind::MethodCall { object: boxed(), method: text(), args: vec![dummy(), dummy()] },
             &[("object", false), ("args", true)],
             &["method"],
             &[]
         ),
         fixture!(
-            NodeKind::FunctionCall { name: text(), args: vec![dummy()] },
+            NodeKind::FunctionCall { name: text(), args: vec![dummy(), dummy()] },
             &[("args", true)],
             &["name"],
             &[]
         ),
         fixture!(
-            NodeKind::AmperCall { name: text(), args: vec![dummy()] },
+            NodeKind::AmperCall { name: text(), args: vec![dummy(), dummy()] },
             &[("args", true)],
             &["name"],
             &[]
         ),
         fixture!(
-            NodeKind::IndirectCall { method: text(), object: boxed(), args: vec![dummy()] },
+            NodeKind::IndirectCall {
+                method: text(),
+                object: boxed(),
+                args: vec![dummy(), dummy()]
+            },
             &[("object", false), ("args", true)],
             &["method"],
             &[]
