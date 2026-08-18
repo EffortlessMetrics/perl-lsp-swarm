@@ -6,6 +6,12 @@
 //! `apply_single_edit` updates `tokens` but leaves `source` or another field
 //! stale (e.g. #5036).
 
+// This whole file is an integration test; the failure-path `panic!` below
+// turns an unexpected `apply_edits` error into a descriptive test failure,
+// which is the sanctioned test-code use of `panic!` — the workspace-wide
+// deny is a production-code rule.
+#![allow(clippy::panic)]
+
 use perl_incremental_parsing::{Edit, IncrementalState, Parser, apply_edits};
 
 /// Apply an edit to source text manually (no incremental machinery).
@@ -24,7 +30,7 @@ fn assert_equiv_after_edit(source: &str, edit: Edit) {
     let mut state = IncrementalState::new(source.to_string());
     let original_token_count = state.tokens.len();
 
-    let _result = apply_edits(&mut state, &[edit.clone()]).unwrap_or_else(|e| {
+    let _result = apply_edits(&mut state, std::slice::from_ref(&edit)).unwrap_or_else(|e| {
         // Large edits fall back to full_reparse, which is fine — we only need
         // to verify equivalence when the incremental path succeeds.
         panic!("apply_edits failed for source {:?} edit {:?}: {:?}", source, edit, e);

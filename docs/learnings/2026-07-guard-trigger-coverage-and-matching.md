@@ -49,7 +49,7 @@ The scanner logic lives in `xtask/src/tasks/native_product_surface.rs`; the alwa
 
 Follow-up tracked (not yet written — this PR only touched `docs/learnings/`):
 
-- Add an acceptance criterion to [docs/agents/SPEC_UPDATE_CHECKLIST.md](../../agents/SPEC_UPDATE_CHECKLIST.md): "Enforcement guards: the trigger condition must cover the exact change-shape the guard exists to police; a guard's enforcing test must run unconditionally, not only under a diff-scoped/crate-scoped selection."
+- Add an acceptance criterion to [docs/agents/SPEC_UPDATE_CHECKLIST.md](../agents/SPEC_UPDATE_CHECKLIST.md): "Enforcement guards: the trigger condition must cover the exact change-shape the guard exists to police; a guard's enforcing test must run unconditionally, not only under a diff-scoped/crate-scoped selection."
 - Add a row to [docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md](../reference/SUBSYSTEM_HAZARD_DEFAULTS.md): "Text-scanner guards: whole-word matching on qualifiers/markers, explicit allow/deny lists, and an always-on trigger across all PRs."
 
 ## Portable lesson

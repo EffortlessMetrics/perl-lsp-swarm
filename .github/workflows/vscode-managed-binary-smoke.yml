@@ -45,6 +45,12 @@ jobs:
       - name: Setup VS Code toolchain
         uses: ./.github/actions/setup-vscode-toolchain
 
+      - name: Test TypeScript authority shim parsing
+        run: node --test scripts/check-typescript-authority-windows-shim.test.js
+
+      - name: Verify TypeScript 7 compiler authority
+        run: npm run typecheck:authority
+
       - name: Compile extension
         run: npm run compile
 
