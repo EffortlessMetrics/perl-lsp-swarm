@@ -402,6 +402,59 @@ function declaredTscBin(typescriptDir) {
 }
 
 /**
+ * Extracts the relative TypeScript entry point from an npm-generated text shim.
+ *
+ * npm's Windows wrapper prefixes its relative target with `%dp0%\\`, so the
+ * regex sees `\\..\\typescript\\bin\\tsc`. Passing that directly to
+ * `path.win32.resolve()` resets to the drive root. Strip only the generated
+ * wrapper separator when it is immediately followed by `..`; a genuinely
+ * rooted target remains rooted and is rejected rather than normalized into an
+ * apparently safe relative path. Legacy cmd-shim 2.x wrappers (yarn 1,
+ * npm <= 6) use `%~dp0\\..` without the trailing `%`, so the capture starts
+ * at the leaked `dp0\\` segment; npm's POSIX wrapper prefixes its target with
+ * `$basedir/`, whose variable name is captured the same way (`$` is not a
+ * path character). Both leaked generator segments are dropped before
+ * resolving, because each names the `.bin` directory itself.
+ *
+ * Every `typescript/bin/tsc` mention must resolve to the same target: a
+ * boundary check keeps `tsc.bak` from matching as a truncated `tsc`, and
+ * conflicting mentions are refused rather than letting an inert first
+ * mention (for example a comment) vouch for a different executed target.
+ *
+ * @param {string} script
+ * @param {string} binDir
+ * @param {typeof path} [pathApi]
+ * @returns {{target: string} | {reason: string}}
+ */
+function resolveGeneratedShimTarget(script, binDir, pathApi = path) {
+  const mentions =
+    script.match(/[\w.\\/-]*typescript[\\/]bin[\\/]tsc(?![\w.])/gi) ?? [];
+  if (mentions.length === 0) {
+    return { reason: 'the generated shim names no typescript/bin/tsc target' };
+  }
+
+  const targets = new Set();
+  for (const mention of mentions) {
+    const wrapperRelative = mention
+      .replace(/^[\\/]+(?=\.\.[\\/])/, '')
+      .replace(/^(?:basedir|dp0)[\\/]/i, '');
+    const normalized = wrapperRelative.replace(/[\\/]/g, pathApi.sep);
+    if (pathApi.isAbsolute(normalized)) {
+      return {
+        reason: `the generated shim target ${JSON.stringify(mention)} is rooted rather than relative to node_modules/.bin`,
+      };
+    }
+    targets.add(pathApi.resolve(binDir, normalized));
+  }
+  if (targets.size > 1) {
+    return {
+      reason: `the generated shim names conflicting typescript/bin/tsc targets: ${JSON.stringify([...targets])}`,
+    };
+  }
+  return { target: [...targets][0] };
+}
+
+/**
  * Resolves `node_modules/.bin/tsc` to the file it actually executes.
  *
  * Two shim shapes exist and neither reads the same way:
@@ -481,19 +534,16 @@ function resolveBinShim(extensionRoot, typescriptDir) {
   }
 
   {
-    // The generated wrapper references its target as a relative path; take the
-    // first typescript/bin/tsc mention and resolve it against .bin.
     try {
       const script = fs.readFileSync(shim, 'utf8');
-      const match = /[\w.\\/-]*typescript[\\/]bin[\\/]tsc/i.exec(script);
-      if (!match) {
+      const target = resolveGeneratedShimTarget(script, binDir);
+      if ('reason' in target) {
         return {
           expected,
-          error: `the generated shim ${path.basename(shim)} names no typescript/bin/tsc target`,
+          error: `${path.basename(shim)}: ${target.reason}`,
         };
       }
-      const target = path.resolve(binDir, match[0].replace(/\\/g, path.sep));
-      return { resolved: fs.realpathSync(target), expected };
+      return { resolved: fs.realpathSync(target.target), expected };
     } catch (error) {
       return { expected, error: error instanceof Error ? error.message : String(error) };
     }
@@ -623,5 +673,6 @@ module.exports = {
   TYPESCRIPT_AUTHORITY_MAJOR,
   TSCONFIG_FILES,
   evaluateTypeScriptAuthority,
+  resolveGeneratedShimTarget,
   checkTypeScriptAuthority,
 };
