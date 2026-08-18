@@ -37,7 +37,7 @@ jobs:
       # default `pull_request` checkout is the merge revision, which differs from
       # the head whenever `main` has moved, and would bind the receipts to a
       # commit that was never built.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -186,7 +186,7 @@ jobs:
             "$PERLLSP_SUBLIME_DAP_HOST_RECEIPT"
 
       - name: Publish the exact-source DAP receipts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sublime-native-perl-dap-linux-x64
           path: target/sublime-dap/*.json
