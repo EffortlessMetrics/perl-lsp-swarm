@@ -138,7 +138,9 @@ fn source_files_with_tests(
             continue;
         }
         let source = fs::read_to_string(&path)?;
-        if source.contains("#[test]") || source.contains("#[cfg(test)]") {
+        // Whitespace-tolerant: Rust accepts `#[ test ]` and `#[ cfg(test) ]`.
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.contains("#[test]") || compact.contains("#[cfg(test)]") {
             let relative = prefix.join(entry_file_name(&path)?);
             result.insert(relative.to_string_lossy().replace('\\', "/"));
         }
@@ -212,6 +214,18 @@ fn compatibility_package_is_explicitly_non_authoritative() -> Result<(), Box<dyn
     }
     assert_eq!(inventory.get("schema_version").and_then(Value::as_u64), Some(1));
     assert_eq!(inventory.get("owner_issue").and_then(Value::as_u64), Some(6971));
+    assert_eq!(
+        inventory.get("package").and_then(Value::as_str),
+        Some(env!("CARGO_PKG_NAME")),
+        "inventory must remain bound to this package"
+    );
+    assert!(
+        inventory
+            .get("classification_rule")
+            .and_then(Value::as_str)
+            .is_some_and(|rule| !rule.is_empty()),
+        "inventory is missing a classification rule"
+    );
     assert_eq!(inventory.get("behavior_authority").and_then(Value::as_bool), Some(false));
     assert_eq!(inventory.get("canonical_owner").and_then(Value::as_str), Some("perl-parser"));
     Ok(())
