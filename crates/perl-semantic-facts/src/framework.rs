@@ -10,7 +10,7 @@
 //! Rust source-compatibility tool, not an unknown-variant wire fallback.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     AnchorId, Confidence, FileId, InvalidationDependency, Provenance, SemanticConfidence,
@@ -935,8 +935,16 @@ fn dependencies_are_coherent(dependencies: &[InvalidationDependency]) -> bool {
     }) {
         return false;
     }
-    dependencies.windows(2).all(|pair| {
-        pair[0].dependency_key != pair[1].dependency_key || pair[0].generation == pair[1].generation
+    // Adjacency is not the invariant. `dependencies_match` happens to sort before
+    // calling this, but the envelope path in `EmittedFact::is_coherent` validates
+    // dependencies in stored order, where `[a@g1, b@g1, a@g2]` has no adjacent pair
+    // that can observe `a` carrying two generations. Compare every occurrence of a
+    // key instead, so the result does not depend on the caller having sorted.
+    let mut generations: BTreeMap<&str, &SourceGeneration> = BTreeMap::new();
+    dependencies.iter().all(|dependency| {
+        generations
+            .insert(dependency.dependency_key.as_str(), &dependency.generation)
+            .is_none_or(|previous| previous == &dependency.generation)
     })
 }
 
@@ -995,6 +1003,44 @@ mod tests {
                 SemanticReasonCode::GeneratedFromSource
             },
         )
+    }
+
+    fn dependency(key: &str, generation: &str) -> InvalidationDependency {
+        InvalidationDependency::new(key, SourceGeneration::known(generation))
+    }
+
+    #[test]
+    fn dependency_coherence_rejects_non_adjacent_contradictions() {
+        // Adjacent contradiction: caught by an adjacency scan as well.
+        assert!(
+            !dependencies_are_coherent(&[
+                dependency("module:A", "generation-1"),
+                dependency("module:A", "generation-2"),
+            ]),
+            "one key carrying two generations is never coherent"
+        );
+
+        // The same contradiction with an unrelated key between the occurrences. No
+        // adjacent pair shares a key, so an adjacency scan accepts it.
+        assert!(
+            !dependencies_are_coherent(&[
+                dependency("module:A", "generation-1"),
+                dependency("module:B", "generation-1"),
+                dependency("module:A", "generation-2"),
+            ]),
+            "a contradiction separated by another key must still be rejected"
+        );
+
+        // Positive control: repetition that agrees stays coherent at any distance,
+        // so the check rejects contradiction rather than repetition.
+        assert!(
+            dependencies_are_coherent(&[
+                dependency("module:A", "generation-1"),
+                dependency("module:B", "generation-1"),
+                dependency("module:A", "generation-1"),
+            ]),
+            "agreeing duplicates remain coherent"
+        );
     }
 
     fn applied(disposition: AdapterDisposition, fact: EmittedFact) -> AdapterResult {
