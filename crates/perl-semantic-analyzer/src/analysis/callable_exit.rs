@@ -338,7 +338,7 @@ impl ExitAnalyzer {
 
     fn record_boundary(&mut self, node: &Node) {
         let boundary = match node.kind.kind_name() {
-            "If" | "Unless" | "ConditionalExpression" | "StatementModifier" => {
+            "If" | "Unless" | "Ternary" | "Given" | "When" | "Default" | "StatementModifier" => {
                 Some(CallableExitBoundary::ConditionalControl)
             }
             "While" | "Until" | "For" | "Foreach" | "CStyleFor" | "Continue" => {
@@ -468,6 +468,35 @@ mod tests {
         assert_eq!(summary.completeness, CallableExitCompleteness::Partial);
         assert!(summary.boundaries.contains(&CallableExitBoundary::TraversalBudget));
         assert!(summary.exits.iter().any(|exit| exit.kind == CallableExitKind::ImplicitUnknown));
+        Ok(())
+    }
+
+    #[test]
+    fn ternary_return_is_partial_conditional_control() -> TestResult {
+        let summary = summarize("sub pick { $flag ? return 1 : 2; }")?;
+
+        assert_eq!(summary.completeness, CallableExitCompleteness::Partial);
+        assert!(summary.boundaries.contains(&CallableExitBoundary::ConditionalControl));
+        assert!(summary.exits.iter().any(|exit| exit.kind == CallableExitKind::ExplicitValue));
+        Ok(())
+    }
+
+    #[test]
+    fn given_when_returns_are_partial_conditional_control() -> TestResult {
+        let summary = summarize(
+            "sub pick { given ($topic) { when (1) { return 1; } default { return 2; } } }",
+        )?;
+
+        assert_eq!(summary.completeness, CallableExitCompleteness::Partial);
+        assert!(summary.boundaries.contains(&CallableExitBoundary::ConditionalControl));
+        assert_eq!(
+            summary
+                .exits
+                .iter()
+                .filter(|exit| exit.kind == CallableExitKind::ExplicitValue)
+                .count(),
+            2
+        );
         Ok(())
     }
 }
