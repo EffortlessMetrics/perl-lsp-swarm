@@ -29,7 +29,10 @@ jobs:
         shell: bash
         run: |
           set +e
-          python3 -m unittest scripts/ci/test_validate_gate_enforcement_contract.py
+          python3 -m unittest \
+            scripts/ci/test_validate_gate_enforcement_contract.py \
+            scripts/ci/test_gate_enforcement_app_bindings.py \
+            scripts/ci/test_reconcile_github_enforcement_snapshot.py
           test_status=$?
           python3 scripts/ci/validate_gate_enforcement_contract.py \
             --root . \

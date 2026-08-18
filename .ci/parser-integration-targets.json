@@ -156,6 +156,23 @@
       "reason": "Prove recovery-aware ParseOutput is retained across incremental edits; previously run by a hardcoded command in run_parser_integration.py.",
       "disposition": "execute",
       "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.lexer_restart",
+      "package": "perl-parser",
+      "target": "incremental_lexer_restart",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6704",
+      "reason": "Prove live lexer checkpoint restart preserves token and span parity across stateful edits.",
+      "disposition": "execute",
+      "boundedness": "focused"
     }
   ]
 }

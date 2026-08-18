@@ -2427,3 +2427,63 @@ created = "2026-08-17"
 review_after = "2026-09-17"
 expires = "2026-10-31"
 removal_criteria = "EffortlessMetrics/ripr#1429 lets RIPR trace equality-guard activation from JSON-RPC test inputs through the diagnostic-list find closure, or targeted mutation replaces this advisory path; then delete this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# Generic comparison evidence model (PR #9964, closes #8127): ripr reports
+# no_static_path for changed seams in the new evidence model whose
+# discriminating tests already exist in
+# crates/perl-parser-comparison/tests/generic_result_model.rs but that the
+# static tracer cannot connect:
+#   (a) non-executable declarations — private const limits, tuple-struct
+#       declarations, struct field declarations, and enum variant
+#       declarations (e.g. evidence.rs:12-14, 34, 192-194, 353-355,
+#       388-395, 597-603; harness.rs:17-18, 78-82);
+#   (b) Display/Error trait-impl bodies reached only through
+#       ToString::to_string / Error::source dispatch, asserted exactly by
+#       checked_id_and_fingerprint_display_surface_is_stable,
+#       model_error_display_and_source_are_stable, and
+#       legacy_label_and_verdict_display_is_unchanged;
+#   (c) private helpers (can_score, validate_observation_states,
+#       validate_nonempty_bounded, validate_no_control_characters,
+#       subject_execution, *_observations, failed_observations,
+#       bounded_optional_text) reached only through the public constructors
+#       that call them — exercised with exact error-variant and exact-value
+#       oracles by failed_harness_cannot_carry_subject_disposition_or_decisive_score,
+#       incomplete_instrument_cannot_carry_decisive_score,
+#       limited_observation_cannot_carry_decisive_score,
+#       failed_harness_rejects_observed_plane_and_complete_instrument,
+#       complete_observation_requires_complete_instrument,
+#       limited_observation_rejects_unusable_instrument_states,
+#       truncated_instrument_can_carry_limited_observation,
+#       fingerprints_and_divergence_paths_reject_control_characters,
+#       fingerprint_and_divergence_path_enforce_exact_byte_limits,
+#       stable_ids_reject_empty_leading_separator_non_ascii_and_overlong_values,
+#       bounded_text_rejects_zero_limit_and_keeps_short_input_intact, and
+#       bounded_text_exposes_omitted_bytes_without_splitting_utf8;
+#   (d) panic::catch_unwind closure bodies in run_v1/run_v3, exercised through
+#       execute_v1/execute_v3 by
+#       historical_tree_sitter_diagnostic_summary_counts_error_nodes_exactly,
+#       native_recursive_descent_diagnostic_summary_counts_diagnostics_exactly,
+#       historical_error_nodes_are_recovery_not_instrument_failure, and the
+#       cat6_* corpus tests in tests/differential.rs.
+# Same EffortlessMetrics/ripr#1429 untraceable class as
+# ripr-suppress-test2-v1-import-scanner-predicates: the discriminator tests
+# exist and assert exact values; RIPR cannot statically connect them across
+# trait dispatch, private-callee, closure, or declaration boundaries.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-parser-comparison-evidence-model-untraceable"
+kind = "predicate_infection_untraceable"
+paths = [
+    "crates/perl-parser-comparison/src/evidence.rs",
+    "crates/perl-parser-comparison/src/harness.rs",
+    "crates/perl-parser-comparison/src/outcomes.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #9964 rewrites the perl-parser-comparison evidence model; ripr 0.9.x/0.10.x reports ~190 diff-scoped no_static_path/reachable_unrevealed seams in evidence.rs, harness.rs, and outcomes.rs. Every executable seam is covered by exact-value or exact-error-variant discriminator tests in crates/perl-parser-comparison/tests/generic_result_model.rs (34 tests) plus the cat6_* corpus tests, but the tracer cannot connect tests across (a) non-executable const/field/variant declarations, (b) Display/Error trait dispatch via to_string()/source(), (c) private helpers called only by the public constructors under test, and (d) panic::catch_unwind closure bodies in run_v1/run_v3. This is the documented EffortlessMetrics/ripr#1429 untraceable class (see docs/learnings/2026-07-ripr-weakly-exposed-suppression-churn.md): once the discriminator exists and RIPR still cannot see it, more tests will not clear the finding. Suppression is narrow: three production files in one crate, one PR. Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289."
+created = "2026-08-17"
+review_after = "2026-09-17"
+expires = "2026-11-17"
+removal_criteria = "EffortlessMetrics/ripr#1429 lets RIPR trace test activation across trait dispatch, private callees, catch_unwind closures, and declaration seams, or targeted mutation replaces this advisory path; then delete this entry and rerun the RIPR new-gap gate."

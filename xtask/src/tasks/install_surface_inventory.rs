@@ -95,6 +95,10 @@ pub enum ProductUnit {
     Unknown,
 }
 
+// `NeedsDisposition` intentionally ends with the enum name — the variant name is
+// self-documenting ("this item still needs a disposition") and the serialized
+// form `needs_disposition` must remain stable to avoid breaking saved receipts.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Disposition {
@@ -283,15 +287,15 @@ fn evaluate(root: &Path, registry: &Registry, registry_path: String) -> Result<R
     }
 
     for row in &registry.surfaces {
-        if let Some(path) = row.path.as_deref() {
-            if !root.join(path).is_file() {
-                findings.push(Finding {
-                    code: FindingCode::StaleRegistryPath,
-                    surface_id: Some(row.surface_id.clone()),
-                    path: Some(path.to_string()),
-                    detail: "registry row points to a path that is not a regular file".to_string(),
-                });
-            }
+        if let Some(path) = row.path.as_deref()
+            && !root.join(path).is_file()
+        {
+            findings.push(Finding {
+                code: FindingCode::StaleRegistryPath,
+                surface_id: Some(row.surface_id.clone()),
+                path: Some(path.to_string()),
+                detail: "registry row points to a path that is not a regular file".to_string(),
+            });
         }
         if row.consumer.trim().is_empty() {
             findings.push(row_finding(
@@ -410,21 +414,21 @@ fn discover(root: &Path) -> Result<BTreeMap<String, SurfaceKind>> {
 }
 
 fn tracked_paths(root: &Path) -> Result<Vec<String>> {
-    if let Ok(output) = Command::new("git").arg("-C").arg(root).args(["ls-files", "-z"]).output() {
-        if output.status.success() {
-            let mut paths = output
-                .stdout
-                .split(|byte| *byte == 0)
-                .filter(|bytes| !bytes.is_empty())
-                .map(|bytes| {
-                    String::from_utf8(bytes.to_vec())
-                        .map_err(|error| eyre!("git ls-files emitted non-UTF-8 path: {error}"))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            paths.sort();
-            paths.dedup();
-            return Ok(paths);
-        }
+    if let Ok(output) = Command::new("git").arg("-C").arg(root).args(["ls-files", "-z"]).output()
+        && output.status.success()
+    {
+        let mut paths = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|bytes| !bytes.is_empty())
+            .map(|bytes| {
+                String::from_utf8(bytes.to_vec())
+                    .map_err(|error| eyre!("git ls-files emitted non-UTF-8 path: {error}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        paths.sort();
+        paths.dedup();
+        return Ok(paths);
     }
 
     let mut paths = Vec::new();

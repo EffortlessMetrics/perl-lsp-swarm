@@ -5,8 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { resolveGeneratedShimTarget } = require('./check-typescript-authority');
 
-const windowsBinDir =
-  'D:\\a\\perl-lsp-swarm\\perl-lsp-swarm\\vscode-extension\\node_modules\\.bin';
+const windowsBinDir = 'D:\\a\\perl-lsp-swarm\\perl-lsp-swarm\\vscode-extension\\node_modules\\.bin';
 const windowsTsc =
   'D:\\a\\perl-lsp-swarm\\perl-lsp-swarm\\vscode-extension\\node_modules\\typescript\\bin\\tsc';
 
@@ -52,7 +51,11 @@ void test('a genuinely rooted Windows target is rejected rather than normalized'
 });
 
 void test('a wrapper with no TypeScript target is rejected', () => {
-  const result = resolveGeneratedShimTarget('@ECHO off\r\nnode other-tool.js %*\r\n', windowsBinDir, path.win32);
+  const result = resolveGeneratedShimTarget(
+    '@ECHO off\r\nnode other-tool.js %*\r\n',
+    windowsBinDir,
+    path.win32,
+  );
   assert.ok('reason' in result, `expected a rejection, received ${JSON.stringify(result)}`);
   assert.match(result.reason, /names no typescript\/bin\/tsc target/);
 });

@@ -25,8 +25,25 @@ import {
   WINDOWS_X64_TARGET,
   isTransientManagedInstallError,
   parseLocalVersion,
+  hostManagedCompatibilityKeys,
   __resetManagedInstallSingleflightForTesting,
 } from '../downloader';
+import {
+  legacyManagedBaseDir,
+  managedNamespaceDir,
+  managedUpdateCheckStateKey,
+} from '../managedStorageIdentity';
+
+/**
+ * The compatibility key this test host resolves to. Managed state is namespaced
+ * by it rather than by `process.platform`/`process.arch` (#9847), so tests must
+ * ask for it rather than reconstruct a path shape.
+ */
+const HOST_COMPATIBILITY_KEY = hostManagedCompatibilityKeys()[0]!;
+
+function hostNamespaceDir(storageRoot: string): string {
+  return managedNamespaceDir(storageRoot, HOST_COMPATIBILITY_KEY)!;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers: build a minimal mock ExtensionContext
@@ -107,11 +124,22 @@ describe('BinaryDownloader.getPlatformTarget', () => {
   });
 
   afterEach(() => {
-    process.env.ANDROID_ROOT = androidRootBackup;
-    process.env.ANDROID_DATA = androidDataBackup;
-    process.env.TERMUX_VERSION = termuxVersionBackup;
+    // Assigning `undefined` to a process.env key stores the *string*
+    // "undefined", which is truthy — that leaked a permanent Termux/Android
+    // host into every later test in this file. Unset instead.
+    restoreEnv('ANDROID_ROOT', androidRootBackup);
+    restoreEnv('ANDROID_DATA', androidDataBackup);
+    restoreEnv('TERMUX_VERSION', termuxVersionBackup);
     jest.restoreAllMocks();
   });
+
+  function restoreEnv(name: string, value: string | undefined): void {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
 
   function getPlatformTarget(dl: TestDownloader): string {
     return dl.getPlatformTarget();
@@ -392,13 +420,17 @@ describe('BinaryDownloader internal ARM64 mirror compatibility', () => {
 // Local binary path construction
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader.getLocalBinaryPath', () => {
-  test('binary path includes platform and arch subdirectory', () => {
+  test('binary path is namespaced by the host compatibility key, not platform/arch', () => {
     const ctx = makeContext('/tmp/test-storage');
     const downloader = new BinaryDownloader(ctx, makeOutputChannel()) as unknown as TestDownloader;
     const binaryPath: string = downloader.getLocalBinaryPath();
 
-    expect(binaryPath).toContain(process.platform);
-    expect(binaryPath).toContain(process.arch);
+    expect(binaryPath.startsWith(hostNamespaceDir('/tmp/test-storage'))).toBe(true);
+    // The pre-#9847 key must not be what selects the directory: on Linux it
+    // cannot distinguish GNU from musl.
+    expect(binaryPath).not.toContain(
+      legacyManagedBaseDir('/tmp/test-storage', process.platform, process.arch),
+    );
   });
 
   test('binary name is perllsp (or perllsp.exe on win32)', () => {
@@ -596,7 +628,7 @@ describe('Versioned managed install layout', () => {
     storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-install-test-'));
     const ctx = makeContext(storageRoot);
     downloader = new BinaryDownloader(ctx, makeOutputChannel()) as unknown as TestDownloader;
-    baseDir = path.join(storageRoot, 'bin', `${process.platform}-${process.arch}`);
+    baseDir = hostNamespaceDir(storageRoot);
     fs.mkdirSync(baseDir, { recursive: true });
   });
 
@@ -606,7 +638,7 @@ describe('Versioned managed install layout', () => {
     }
   });
 
-  test('getLocalBinaryPath falls back to flat layout when no pointer exists (legacy users)', () => {
+  test('getLocalBinaryPath falls back to the flat layout when no pointer exists', () => {
     const flat = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flat, 'fake binary');
 
@@ -740,7 +772,7 @@ describe('Versioned managed install layout', () => {
     expect(fs.existsSync(flatBin)).toBe(true);
   });
 
-  test('legacy migration: install side-by-side with flat layout, pointer activates versioned', () => {
+  test('install lands side-by-side with a flat layout and the pointer activates it', () => {
     // Seed a legacy 0.13.2-style flat binary that a long-running user would have.
     const flatBin = path.join(baseDir, lspBinaryName);
     fs.writeFileSync(flatBin, 'legacy 0.13.2 bytes');
@@ -1876,11 +1908,7 @@ describe('checkForUpdateSilent', () => {
     // Place a stub binary in the expected auto-download location so
     // fs.existsSync passes.
     const binaryName = process.platform === 'win32' ? 'perllsp.exe' : 'perllsp';
-    const binDir = path.join(
-      ctx.globalStorageUri.fsPath,
-      'bin',
-      `${process.platform}-${process.arch}`,
-    );
+    const binDir = hostNamespaceDir(ctx.globalStorageUri.fsPath);
     fs.mkdirSync(binDir, { recursive: true });
     tmpBinary = path.join(binDir, binaryName);
     fs.writeFileSync(tmpBinary, '#!/bin/sh\necho "perllsp 0.12.0"');
@@ -2082,7 +2110,7 @@ describe('checkForUpdateSilent', () => {
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
-  test('records lastUpdateCheck timestamp when check runs', async () => {
+  test("records the update-check timestamp under this target's scoped key", async () => {
     mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
     jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
     jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
@@ -2090,17 +2118,51 @@ describe('checkForUpdateSilent', () => {
       assets: [],
     });
 
+    const scopedKey = managedUpdateCheckStateKey(HOST_COMPATIBILITY_KEY)!;
     const before = Date.now();
     await downloader.checkForUpdateSilent();
     const after = Date.now();
 
-    expect(ctx.globalState.update).toHaveBeenCalledWith(
-      'perl-lsp.lastUpdateCheck',
-      expect.any(Number),
-    );
-    const recorded = ctx.globalState._store.get('perl-lsp.lastUpdateCheck') as number;
+    expect(ctx.globalState.update).toHaveBeenCalledWith(scopedKey, expect.any(Number));
+    const recorded = ctx.globalState._store.get(scopedKey) as number;
     expect(recorded).toBeGreaterThanOrEqual(before);
     expect(recorded).toBeLessThanOrEqual(after);
+    // The unscoped pre-#9847 key must not be advanced: it is shared by every
+    // compatibility target sitting in one global state object.
+    expect(ctx.globalState._store.get('perl-lsp.lastUpdateCheck')).toBeUndefined();
+  });
+
+  test("a foreign target's recent check does not suppress this target's check", async () => {
+    // A sibling host — same global state, different compatibility key — checked
+    // for updates a moment ago. That must not silence this host (#9847).
+    const foreignKey = managedUpdateCheckStateKey(
+      HOST_COMPATIBILITY_KEY.endsWith('-musl')
+        ? 'x86_64-unknown-linux-gnu'
+        : 'x86_64-unknown-linux-musl',
+    )!;
+    ctx.globalState._store.set(foreignKey, Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    jest.spyOn(downloader, 'getLocalVersion').mockResolvedValue('0.12.0');
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease').mockResolvedValue({
+      tag_name: 'v0.12.0',
+      assets: [],
+    });
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).toHaveBeenCalled();
+  });
+
+  test('the unscoped pre-#9847 timestamp still suppresses an immediate check', async () => {
+    // Upgrading the extension must not force every installed host to check at
+    // once; the legacy value seeds this target's first scoped decision.
+    ctx.globalState._store.set('perl-lsp.lastUpdateCheck', Date.now());
+    mockConfig({ channel: 'latest', serverPath: '', updateCheckInterval: 24 });
+    const getLatestSpy = jest.spyOn(downloader, 'getLatestRelease');
+
+    await downloader.checkForUpdateSilent();
+
+    expect(getLatestSpy).not.toHaveBeenCalled();
   });
 
   test('strips "v" prefix from remote tag_name before comparison', async () => {

@@ -427,8 +427,7 @@ function declaredTscBin(typescriptDir) {
  * @returns {{target: string} | {reason: string}}
  */
 function resolveGeneratedShimTarget(script, binDir, pathApi = path) {
-  const mentions =
-    script.match(/[\w.\\/-]*typescript[\\/]bin[\\/]tsc(?![\w.])/gi) ?? [];
+  const mentions = script.match(/[\w.\\/-]*typescript[\\/]bin[\\/]tsc(?![\w.])/gi) ?? [];
   if (mentions.length === 0) {
     return { reason: 'the generated shim names no typescript/bin/tsc target' };
   }

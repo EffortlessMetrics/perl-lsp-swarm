@@ -10,7 +10,8 @@ mod stable_order;
 
 pub use candidate::{
     CompletionCandidate, CompletionCandidateConflict, CompletionCandidateEvidence,
-    CompletionCandidateIdentity, CompletionCandidateProof,
+    CompletionCandidateIdentity, CompletionCandidateProof, CompletionFinalization,
+    CompletionRankClass, CompletionRankKey,
 };
 pub use snippet::{InsertTextFormat, render_snippet_plaintext, snippet_body_defects};
 
@@ -93,20 +94,28 @@ pub struct CompletionItem {
     pub label_details: Option<CompletionItemLabelDetails>,
 }
 
-/// Merge identity-bearing completion candidates with a deterministic total
-/// order while preserving the existing provider rank policy.
+/// Merge identity-bearing candidates, rank the complete admitted set once, and
+/// then apply the result cap.
 ///
-/// Candidates are deterministically ordered before merge so equal compatible
-/// evidence selects the same presentation winner regardless of provider
-/// iteration order. Retained conflicts receive a total order after merge.
+/// Equal-ranked inputs are put in a deterministic total order before the
+/// identity merge. The internal typed sort is stable, so candidates that remain
+/// equal after semantic rank retain that deterministic order at the cap boundary.
+#[must_use]
+pub fn finalize_completion_candidates(
+    mut candidates: Vec<CompletionCandidate>,
+    cap: usize,
+) -> CompletionFinalization {
+    candidates.sort_by(stable_order::candidate_premerge_order);
+    candidate::finalize_completion_candidates(candidates, cap)
+}
+
+/// Merge identity-bearing completion candidates and apply the final typed order
+/// without truncation.
 #[must_use]
 pub fn merge_and_sort_completion_candidates(
-    mut candidates: Vec<CompletionCandidate>,
+    candidates: Vec<CompletionCandidate>,
 ) -> Vec<CompletionCandidate> {
-    candidates.sort_by(stable_order::candidate_premerge_order);
-    let mut merged = candidate::merge_and_sort_completion_candidates(candidates);
-    merged.sort_by(stable_order::candidate_output_order);
-    merged
+    finalize_completion_candidates(candidates, usize::MAX).candidates
 }
 
 /// Remove duplicates and sort completions with stable, deterministic ordering.
