@@ -48,7 +48,10 @@ fn recovered_parser_output_satisfies_the_same_structural_oracle() {
 
 #[cfg(feature = "incremental")]
 #[test]
-#[expect(deprecated, reason = "the contract test deliberately targets the deprecated compatibility API until its replacement lands")]
+#[expect(
+    deprecated,
+    reason = "the contract test deliberately targets the deprecated compatibility API until its replacement lands"
+)]
 fn incremental_edit_output_satisfies_the_same_structural_oracle()
 -> Result<(), Box<dyn std::error::Error>> {
     use perl_parser::{Edit, IncrementalState, apply_edits};
