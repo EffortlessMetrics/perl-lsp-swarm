@@ -216,10 +216,7 @@ impl WorkspaceRuntimeLifecycleState {
     }
 
     fn accepts_publication(self) -> bool {
-        !matches!(
-            self,
-            Self::Creating | Self::Removing | Self::Detached | Self::Shutdown
-        )
+        !matches!(self, Self::Creating | Self::Removing | Self::Detached | Self::Shutdown)
     }
 
     fn exact_use_available(self) -> bool {
@@ -553,16 +550,10 @@ impl fmt::Display for WorkspaceRuntimeError {
                 current.get()
             ),
             Self::TaskRegistrationRejected(state) => {
-                write!(
-                    formatter,
-                    "workspace lifecycle state {state:?} rejects new tasks"
-                )
+                write!(formatter, "workspace lifecycle state {state:?} rejects new tasks")
             }
             Self::PublicationRejected(state) => {
-                write!(
-                    formatter,
-                    "workspace lifecycle state {state:?} rejects publication"
-                )
+                write!(formatter, "workspace lifecycle state {state:?} rejects publication")
             }
             Self::UnknownTask(task_id) => {
                 write!(formatter, "unknown workspace task {}", task_id.get())
@@ -576,10 +567,9 @@ impl fmt::Display for WorkspaceRuntimeError {
             Self::ControllerShutdown => {
                 formatter.write_str("workspace runtime controller is shut down")
             }
-            Self::TerminalStateRequiresExplicitDisposition(state) => write!(
-                formatter,
-                "workspace lifecycle state {state:?} requires detach or shutdown"
-            ),
+            Self::TerminalStateRequiresExplicitDisposition(state) => {
+                write!(formatter, "workspace lifecycle state {state:?} requires detach or shutdown")
+            }
         }
     }
 }
@@ -587,14 +577,17 @@ impl fmt::Display for WorkspaceRuntimeError {
 impl Error for WorkspaceRuntimeError {}
 
 /// Transport-neutral owner of process-local root generations and publication eligibility.
+///
+/// The public surface is the facade type in the parent module; this core type
+/// is crate-internal so its items stay reachable-pub clean.
 #[derive(Clone)]
-pub struct WorkspaceRuntimeController {
+pub(crate) struct WorkspaceRuntimeController {
     inner: Arc<ControllerInner>,
 }
 
 impl WorkspaceRuntimeController {
     /// Construct an empty controller for one process/application session.
-    pub fn new(session_id: WorkspaceRuntimeSessionId) -> Self {
+    pub(crate) fn new(session_id: WorkspaceRuntimeSessionId) -> Self {
         Self {
             inner: Arc::new(ControllerInner {
                 session_id,
@@ -617,7 +610,7 @@ impl WorkspaceRuntimeController {
     /// becomes current. Once the root map changes, old work cannot pass another
     /// current-generation check even if cancellation settlement is still in
     /// progress.
-    pub fn begin_transition(
+    pub(crate) fn begin_transition(
         &self,
         root_id: WorkspaceRootId,
         reason: WorkspaceRuntimeTransitionReason,
@@ -666,7 +659,10 @@ impl WorkspaceRuntimeController {
     }
 
     /// Return the current context and lifecycle state for a logical root.
-    pub fn current_root_context(&self, root_id: WorkspaceRootId) -> Option<WorkspaceRuntimeView> {
+    pub(crate) fn current_root_context(
+        &self,
+        root_id: WorkspaceRootId,
+    ) -> Option<WorkspaceRuntimeView> {
         let roots = self.inner.roots.read();
         let entry = roots.get(&root_id)?;
         let view = entry.lock().view();
@@ -674,7 +670,7 @@ impl WorkspaceRuntimeController {
     }
 
     /// Return whether the supplied generation is exactly current.
-    pub fn is_current(&self, generation: WorkspaceRuntimeGeneration) -> bool {
+    pub(crate) fn is_current(&self, generation: WorkspaceRuntimeGeneration) -> bool {
         if generation.session_id() != self.inner.session_id {
             return false;
         }
@@ -685,7 +681,7 @@ impl WorkspaceRuntimeController {
     }
 
     /// Register one root-scoped task under the exact current generation.
-    pub fn register_root_task(
+    pub(crate) fn register_root_task(
         &self,
         generation: WorkspaceRuntimeGeneration,
         operation_id: WorkspaceRuntimeOperationId,
@@ -696,47 +692,31 @@ impl WorkspaceRuntimeController {
 
         self.with_current_entry(generation, |entry| {
             if !entry.lifecycle_state.accepts_task_registration() {
-                return Err(WorkspaceRuntimeError::TaskRegistrationRejected(
-                    entry.lifecycle_state,
-                ));
+                return Err(WorkspaceRuntimeError::TaskRegistrationRejected(entry.lifecycle_state));
             }
-            entry.tasks.insert(
-                task_id,
-                TaskEntry {
-                    operation_id,
-                    cancelled: Arc::clone(&cancelled),
-                },
-            );
+            entry
+                .tasks
+                .insert(task_id, TaskEntry { operation_id, cancelled: Arc::clone(&cancelled) });
             Ok(())
         })?;
 
         self.push_observation(
             generation,
             WorkspaceRuntimeObservationKind::TaskRegistered,
-            WorkspaceRuntimeObservationDetail::Task {
-                task_id,
-                operation_id,
-            },
+            WorkspaceRuntimeObservationDetail::Task { task_id, operation_id },
         );
 
-        Ok(WorkspaceRuntimeTaskHandle {
-            id: task_id,
-            operation_id,
-            generation,
-            cancelled,
-        })
+        Ok(WorkspaceRuntimeTaskHandle { id: task_id, operation_id, generation, cancelled })
     }
 
     /// Record terminal settlement for one current root-scoped task.
-    pub fn complete_task(
+    pub(crate) fn complete_task(
         &self,
         handle: &WorkspaceRuntimeTaskHandle,
     ) -> Result<(), WorkspaceRuntimeError> {
         self.with_current_entry(handle.generation, |entry| {
-            let task = entry
-                .tasks
-                .get(&handle.id)
-                .ok_or(WorkspaceRuntimeError::UnknownTask(handle.id))?;
+            let task =
+                entry.tasks.get(&handle.id).ok_or(WorkspaceRuntimeError::UnknownTask(handle.id))?;
             if task.operation_id != handle.operation_id {
                 return Err(WorkspaceRuntimeError::UnknownTask(handle.id));
             }
@@ -760,7 +740,7 @@ impl WorkspaceRuntimeController {
     /// Domain owners still decide semantic completeness, readiness, edit
     /// safety, and storage validity. This guard proves only that the publication
     /// belongs to the current non-terminal root generation.
-    pub fn accept_publication(
+    pub(crate) fn accept_publication(
         &self,
         generation: WorkspaceRuntimeGeneration,
         publication: WorkspaceRuntimePublicationKind,
@@ -768,9 +748,7 @@ impl WorkspaceRuntimeController {
         let result = self.ensure_not_shutdown().and_then(|()| {
             self.with_current_entry(generation, |entry| {
                 if !entry.lifecycle_state.accepts_publication() {
-                    return Err(WorkspaceRuntimeError::PublicationRejected(
-                        entry.lifecycle_state,
-                    ));
+                    return Err(WorkspaceRuntimeError::PublicationRejected(entry.lifecycle_state));
                 }
                 Ok(())
             })
@@ -790,7 +768,7 @@ impl WorkspaceRuntimeController {
     }
 
     /// Complete one non-terminal lifecycle phase for the current generation.
-    pub fn complete_transition(
+    pub(crate) fn complete_transition(
         &self,
         generation: WorkspaceRuntimeGeneration,
         resulting_state: WorkspaceRuntimeLifecycleState,
@@ -799,9 +777,9 @@ impl WorkspaceRuntimeController {
         if resulting_state.is_terminal()
             || resulting_state == WorkspaceRuntimeLifecycleState::Removing
         {
-            return Err(
-                WorkspaceRuntimeError::TerminalStateRequiresExplicitDisposition(resulting_state),
-            );
+            return Err(WorkspaceRuntimeError::TerminalStateRequiresExplicitDisposition(
+                resulting_state,
+            ));
         }
 
         let view = self.with_current_entry(generation, |entry| {
@@ -818,18 +796,16 @@ impl WorkspaceRuntimeController {
     }
 
     /// Return whether exact provider/readiness use is currently permitted.
-    pub fn exact_use_available(
+    pub(crate) fn exact_use_available(
         &self,
         generation: WorkspaceRuntimeGeneration,
     ) -> Result<bool, WorkspaceRuntimeError> {
         self.ensure_not_shutdown()?;
-        self.with_current_entry(generation, |entry| {
-            Ok(entry.lifecycle_state.exact_use_available())
-        })
+        self.with_current_entry(generation, |entry| Ok(entry.lifecycle_state.exact_use_available()))
     }
 
     /// Detach the exact current root generation and cancel every owned task.
-    pub fn detach_root(
+    pub(crate) fn detach_root(
         &self,
         generation: WorkspaceRuntimeGeneration,
         reason: WorkspaceRuntimeTerminalReason,
@@ -850,7 +826,7 @@ impl WorkspaceRuntimeController {
     }
 
     /// Shut down every current root generation and cancel every owned task.
-    pub fn shutdown(&self) {
+    pub(crate) fn shutdown(&self) {
         if self.inner.shutdown.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -878,7 +854,7 @@ impl WorkspaceRuntimeController {
     }
 
     /// Return the bounded current observation window and its truncation count.
-    pub fn observations(&self) -> WorkspaceRuntimeObservationSnapshot {
+    pub(crate) fn observations(&self) -> WorkspaceRuntimeObservationSnapshot {
         let state = self.inner.observations.lock();
         WorkspaceRuntimeObservationSnapshot {
             observations: state.observations.iter().copied().collect(),
@@ -894,19 +870,12 @@ impl WorkspaceRuntimeController {
             &self.inner.next_generation,
             WorkspaceRuntimeError::GenerationExhausted,
         )?;
-        Ok(WorkspaceRuntimeGeneration {
-            session_id: self.inner.session_id,
-            root_id,
-            sequence,
-        })
+        Ok(WorkspaceRuntimeGeneration { session_id: self.inner.session_id, root_id, sequence })
     }
 
     fn allocate_task_id(&self) -> Result<WorkspaceRuntimeTaskId, WorkspaceRuntimeError> {
-        allocate_sequence(
-            &self.inner.next_task_id,
-            WorkspaceRuntimeError::TaskIdentityExhausted,
-        )
-        .map(WorkspaceRuntimeTaskId::new)
+        allocate_sequence(&self.inner.next_task_id, WorkspaceRuntimeError::TaskIdentityExhausted)
+            .map(WorkspaceRuntimeTaskId::new)
     }
 
     fn ensure_not_shutdown(&self) -> Result<(), WorkspaceRuntimeError> {
@@ -979,10 +948,7 @@ impl fmt::Debug for WorkspaceRuntimeController {
             .debug_struct("WorkspaceRuntimeController")
             .field("session_id", &self.inner.session_id)
             .field("root_count", &self.inner.roots.read().len())
-            .field(
-                "observation_count",
-                &self.inner.observations.lock().observations.len(),
-            )
+            .field("observation_count", &self.inner.observations.lock().observations.len())
             .finish()
     }
 }
@@ -1037,9 +1003,7 @@ fn allocate_sequence(
     exhausted: WorkspaceRuntimeError,
 ) -> Result<u64, WorkspaceRuntimeError> {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            current.checked_add(1)
-        })
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
         .map_err(|_| exhausted)
 }
 
@@ -1078,8 +1042,7 @@ mod tests {
 
     #[test]
     fn create_root_and_reach_active_current() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(11));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(11));
         let root_id = WorkspaceRootId::new(7);
         let context = active_root(&controller, root_id)?;
 
@@ -1092,24 +1055,18 @@ mod tests {
         let view = controller
             .current_root_context(root_id)
             .ok_or(WorkspaceRuntimeError::UnknownRoot(root_id))?;
-        assert_eq!(
-            view.lifecycle_state(),
-            WorkspaceRuntimeLifecycleState::ActiveCurrent
-        );
+        assert_eq!(view.lifecycle_state(), WorkspaceRuntimeLifecycleState::ActiveCurrent);
         assert_eq!(view.terminal_reason(), None);
         Ok(())
     }
 
     #[test]
     fn replacement_rejects_old_publication_and_cancels_old_task() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(12));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(12));
         let root_id = WorkspaceRootId::new(8);
         let first = active_root(&controller, root_id)?;
-        let task = controller.register_root_task(
-            first.generation(),
-            WorkspaceRuntimeOperationId::new(101),
-        )?;
+        let task = controller
+            .register_root_task(first.generation(), WorkspaceRuntimeOperationId::new(101))?;
 
         let replacement = controller.begin_transition(
             root_id,
@@ -1131,8 +1088,7 @@ mod tests {
 
     #[test]
     fn task_preserves_caller_operation_identity() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(13));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(13));
         let root_id = WorkspaceRootId::new(9);
         let current = active_root(&controller, root_id)?;
         let operation_id = WorkspaceRuntimeOperationId::new(9001);
@@ -1145,14 +1101,11 @@ mod tests {
 
     #[test]
     fn trust_transition_cancels_registered_work() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(14));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(14));
         let root_id = WorkspaceRootId::new(10);
         let current = active_root(&controller, root_id)?;
-        let task = controller.register_root_task(
-            current.generation(),
-            WorkspaceRuntimeOperationId::new(102),
-        )?;
+        let task = controller
+            .register_root_task(current.generation(), WorkspaceRuntimeOperationId::new(102))?;
 
         let replacement = controller.begin_transition(
             root_id,
@@ -1174,8 +1127,7 @@ mod tests {
 
     #[test]
     fn removal_invalidates_exact_use_before_detach() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(15));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(15));
         let root_id = WorkspaceRootId::new(11);
         let _ = active_root(&controller, root_id)?;
 
@@ -1187,10 +1139,8 @@ mod tests {
 
         assert!(!controller.exact_use_available(removing.generation())?);
         assert!(matches!(
-            controller.register_root_task(
-                removing.generation(),
-                WorkspaceRuntimeOperationId::new(103),
-            ),
+            controller
+                .register_root_task(removing.generation(), WorkspaceRuntimeOperationId::new(103),),
             Err(WorkspaceRuntimeError::TaskRegistrationRejected(
                 WorkspaceRuntimeLifecycleState::Removing
             ))
@@ -1209,30 +1159,20 @@ mod tests {
 
     #[test]
     fn detach_rejects_every_late_task_and_publication() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(16));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(16));
         let root_id = WorkspaceRootId::new(12);
         let current = active_root(&controller, root_id)?;
-        let task = controller.register_root_task(
-            current.generation(),
-            WorkspaceRuntimeOperationId::new(104),
-        )?;
+        let task = controller
+            .register_root_task(current.generation(), WorkspaceRuntimeOperationId::new(104))?;
 
-        let view = controller.detach_root(
-            current.generation(),
-            WorkspaceRuntimeTerminalReason::Removed,
-        )?;
+        let view = controller
+            .detach_root(current.generation(), WorkspaceRuntimeTerminalReason::Removed)?;
 
         assert!(task.is_cancelled());
-        assert_eq!(
-            view.terminal_reason(),
-            Some(WorkspaceRuntimeTerminalReason::Removed)
-        );
+        assert_eq!(view.terminal_reason(), Some(WorkspaceRuntimeTerminalReason::Removed));
         assert!(matches!(
-            controller.register_root_task(
-                current.generation(),
-                WorkspaceRuntimeOperationId::new(105),
-            ),
+            controller
+                .register_root_task(current.generation(), WorkspaceRuntimeOperationId::new(105),),
             Err(WorkspaceRuntimeError::TaskRegistrationRejected(
                 WorkspaceRuntimeLifecycleState::Detached
             ))
@@ -1251,8 +1191,7 @@ mod tests {
 
     #[test]
     fn rapid_remove_and_readd_same_root_mints_distinct_generation() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(17));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(17));
         let root_id = WorkspaceRootId::new(13);
         let first = active_root(&controller, root_id)?;
 
@@ -1261,10 +1200,7 @@ mod tests {
             WorkspaceRuntimeTransitionReason::RemoveRoot,
             inputs(1, 1, 1),
         )?;
-        controller.detach_root(
-            removing.generation(),
-            WorkspaceRuntimeTerminalReason::Removed,
-        )?;
+        controller.detach_root(removing.generation(), WorkspaceRuntimeTerminalReason::Removed)?;
         let readded = controller.begin_transition(
             root_id,
             WorkspaceRuntimeTransitionReason::AddRoot,
@@ -1285,16 +1221,13 @@ mod tests {
 
     #[test]
     fn root_transitions_are_isolated() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(18));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(18));
         let root_a = WorkspaceRootId::new(14);
         let root_b = WorkspaceRootId::new(15);
         let first_a = active_root(&controller, root_a)?;
         let current_b = active_root(&controller, root_b)?;
-        let task_b = controller.register_root_task(
-            current_b.generation(),
-            WorkspaceRuntimeOperationId::new(106),
-        )?;
+        let task_b = controller
+            .register_root_task(current_b.generation(), WorkspaceRuntimeOperationId::new(106))?;
 
         let replacement_a = controller.begin_transition(
             root_a,
@@ -1314,14 +1247,11 @@ mod tests {
 
     #[test]
     fn task_terminal_removes_owned_task() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(19));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(19));
         let root_id = WorkspaceRootId::new(16);
         let current = active_root(&controller, root_id)?;
-        let task = controller.register_root_task(
-            current.generation(),
-            WorkspaceRuntimeOperationId::new(107),
-        )?;
+        let task = controller
+            .register_root_task(current.generation(), WorkspaceRuntimeOperationId::new(107))?;
 
         assert_eq!(
             controller
@@ -1343,10 +1273,8 @@ mod tests {
 
     #[test]
     fn another_session_generation_fails_closed() -> Result<()> {
-        let first =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(20));
-        let second =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(21));
+        let first = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(20));
+        let second = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(21));
         let root_id = WorkspaceRootId::new(17);
         let foreign = active_root(&first, root_id)?;
 
@@ -1362,14 +1290,11 @@ mod tests {
 
     #[test]
     fn shutdown_cancels_tasks_and_rejects_publication() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(22));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(22));
         let root_id = WorkspaceRootId::new(18);
         let current = active_root(&controller, root_id)?;
-        let task = controller.register_root_task(
-            current.generation(),
-            WorkspaceRuntimeOperationId::new(108),
-        )?;
+        let task = controller
+            .register_root_task(current.generation(), WorkspaceRuntimeOperationId::new(108))?;
 
         controller.shutdown();
 
@@ -1386,8 +1311,7 @@ mod tests {
 
     #[test]
     fn shutdown_rejects_new_root_transitions() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(23));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(23));
         controller.shutdown();
 
         assert!(matches!(
@@ -1403,8 +1327,7 @@ mod tests {
 
     #[test]
     fn observation_window_is_bounded_and_reports_truncation() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(23));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(23));
         let root_id = WorkspaceRootId::new(19);
         let current = active_root(&controller, root_id)?;
 
@@ -1429,8 +1352,7 @@ mod tests {
 
     #[test]
     fn root_entries_are_sharded_below_a_shared_read_map() -> Result<()> {
-        let controller =
-            WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(24));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(24));
         let root_a = WorkspaceRootId::new(20);
         let root_b = WorkspaceRootId::new(21);
         let _ = active_root(&controller, root_a)?;
@@ -1438,11 +1360,7 @@ mod tests {
 
         let root_a_entry = {
             let roots = controller.inner.roots.read();
-            Arc::clone(
-                roots
-                    .get(&root_a)
-                    .ok_or(WorkspaceRuntimeError::UnknownRoot(root_a))?,
-            )
+            Arc::clone(roots.get(&root_a).ok_or(WorkspaceRuntimeError::UnknownRoot(root_a))?)
         };
         let _root_a_guard = root_a_entry.lock();
 

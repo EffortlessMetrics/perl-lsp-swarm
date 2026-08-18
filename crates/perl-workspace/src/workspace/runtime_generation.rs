@@ -14,14 +14,14 @@ use std::{fmt, sync::Arc};
 
 pub use core::{
     LogicalWorkspaceId, WorkspaceConfigurationGeneration, WorkspaceEnvironmentIdentity,
-    WorkspaceFolderSetGeneration, WorkspaceHostProfileId, WorkspaceRootId,
-    WorkspaceRuntimeContext, WorkspaceRuntimeError, WorkspaceRuntimeGeneration,
-    WorkspaceRuntimeInputs, WorkspaceRuntimeLifecycleState, WorkspaceRuntimeObservation,
-    WorkspaceRuntimeObservationDetail, WorkspaceRuntimeObservationKind,
-    WorkspaceRuntimeObservationSnapshot, WorkspaceRuntimeOperationId,
-    WorkspaceRuntimePublicationKind, WorkspaceRuntimeSessionId, WorkspaceRuntimeTaskHandle,
-    WorkspaceRuntimeTaskId, WorkspaceRuntimeTerminalReason, WorkspaceRuntimeTransitionReason,
-    WorkspaceRuntimeView, WorkspaceSourceAuthorityVersion, WorkspaceTrustGeneration,
+    WorkspaceFolderSetGeneration, WorkspaceHostProfileId, WorkspaceRootId, WorkspaceRuntimeContext,
+    WorkspaceRuntimeError, WorkspaceRuntimeGeneration, WorkspaceRuntimeInputs,
+    WorkspaceRuntimeLifecycleState, WorkspaceRuntimeObservation, WorkspaceRuntimeObservationDetail,
+    WorkspaceRuntimeObservationKind, WorkspaceRuntimeObservationSnapshot,
+    WorkspaceRuntimeOperationId, WorkspaceRuntimePublicationKind, WorkspaceRuntimeSessionId,
+    WorkspaceRuntimeTaskHandle, WorkspaceRuntimeTaskId, WorkspaceRuntimeTerminalReason,
+    WorkspaceRuntimeTransitionReason, WorkspaceRuntimeView, WorkspaceSourceAuthorityVersion,
+    WorkspaceTrustGeneration,
 };
 
 /// Process-local root authority with one shutdown/admission linearization gate.
@@ -193,10 +193,7 @@ mod tests {
             "active generation must compare current"
         );
 
-        controller.detach_root(
-            current.generation(),
-            WorkspaceRuntimeTerminalReason::Removed,
-        )?;
+        controller.detach_root(current.generation(), WorkspaceRuntimeTerminalReason::Removed)?;
         assert!(
             !controller.is_current(current.generation()),
             "detached generation must not compare current"
@@ -253,10 +250,8 @@ mod tests {
         );
         assert!(
             matches!(
-                controller.register_root_task(
-                    current.generation(),
-                    WorkspaceRuntimeOperationId::new(1),
-                ),
+                controller
+                    .register_root_task(current.generation(), WorkspaceRuntimeOperationId::new(1),),
                 Err(WorkspaceRuntimeError::ControllerShutdown)
             ),
             "shutdown must reject new root tasks"
