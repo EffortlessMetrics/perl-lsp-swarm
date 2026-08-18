@@ -322,9 +322,7 @@ fn classify_extension_path(path: &str) -> Option<ExtensionChangeClass> {
     if path.starts_with("vscode-extension/.vscode/") {
         return Some(ExtensionChangeClass::Authoring);
     }
-    if path.starts_with(".github/actions/setup-vscode-toolchain/")
-        || is_extension_workflow(path)
-    {
+    if path.starts_with(".github/actions/setup-vscode-toolchain/") || is_extension_workflow(path) {
         return Some(ExtensionChangeClass::WorkflowAction);
     }
     if path.starts_with("vscode-extension/docs/")
@@ -345,8 +343,7 @@ fn is_extension_workflow(path: &str) -> bool {
     path.starts_with(".github/workflows/vscode-")
         || matches!(
             path,
-            ".github/workflows/ux-regression-gate.yml"
-                | ".github/workflows/publish-extension.yml"
+            ".github/workflows/ux-regression-gate.yml" | ".github/workflows/publish-extension.yml"
         )
 }
 
@@ -371,10 +368,7 @@ fn looks_like_extension_tooling(path: &str) -> bool {
         .any(|suffix| path.ends_with(suffix))
 }
 
-fn is_extension_typescript_only(
-    paths: &[String],
-    classes: &[ExtensionChangeClass],
-) -> bool {
+fn is_extension_typescript_only(paths: &[String], classes: &[ExtensionChangeClass]) -> bool {
     !paths.is_empty()
         && paths.iter().all(|path| {
             path.starts_with("vscode-extension/")
