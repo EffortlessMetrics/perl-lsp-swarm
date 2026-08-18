@@ -691,6 +691,9 @@ pub(super) fn handle(
 
 #[cfg(test)]
 mod tests {
+    // Test helpers favor `expect()` with a descriptive message over silent
+    // unwraps; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used)]
     use super::*;
     use perl_lsp_rs_core::providers::formatting_types::{FormatPosition, FormatRange};
 

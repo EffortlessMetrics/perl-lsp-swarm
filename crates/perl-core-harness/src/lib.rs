@@ -7,6 +7,7 @@
 //! staged profile through a `t/perl` compatibility wrapper in parse and compile
 //! modes. Execute mode is limited to explicit selected base tests.
 
+pub mod artifacts;
 mod normalization;
 pub mod public_evidence;
 mod series;
