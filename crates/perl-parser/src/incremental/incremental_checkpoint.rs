@@ -475,6 +475,20 @@ impl CheckpointedIncrementalParser {
         let left_checkpoint = self.checkpoint_cache.find_before(edit.start);
         let right_checkpoint = self.checkpoint_cache.find_after(edit.start + new_len);
 
+        // CheckpointCache deliberately retains shifted checkpoints as
+        // compatibility entries, but an invalidated entry must never be
+        // restored into the lexer. Fail closed to a full reparse when either
+        // side of the candidate window is not valid for the edited source.
+        let probe = PerlLexer::new(&self.source);
+        let checkpoints_are_restorable = left_checkpoint
+            .as_ref()
+            .map_or(true, |checkpoint| probe.can_restore(checkpoint))
+            && right_checkpoint.as_ref().map_or(true, |checkpoint| probe.can_restore(checkpoint));
+        if !checkpoints_are_restorable {
+            self.stats.cache_misses += 1;
+            return self.parse_with_checkpoints();
+        }
+
         if left_checkpoint.is_some() || right_checkpoint.is_some() {
             self.stats.checkpoints_used += 1;
             self.reparse_from_checkpoint_two_sided(
@@ -687,6 +701,10 @@ impl CheckpointedIncrementalParser {
         // Restore lexer at left checkpoint position (or start of source)
         let mut lexer = PerlLexer::new(&self.source);
         if let Some(ref cp) = left_checkpoint {
+            if !lexer.can_restore(cp) {
+                self.stats.cache_misses += 1;
+                return self.parse_with_checkpoints();
+            }
             lexer.restore(cp);
         }
 
@@ -935,6 +953,40 @@ mod tests {
             let full_after = full.checkpoint_cache.find_after(query).map(|cp| cp.position);
             assert_eq!(incremental_after, full_after, "mismatched right checkpoint at {query}");
         }
+    }
+
+    #[test]
+    fn test_invalidated_checkpoint_falls_back_before_restore() {
+        let source = "my $value = 1;\n".repeat(25);
+        let edit = SimpleEdit { start: 90, end: 110, new_text: String::new() };
+
+        let mut parser = CheckpointedIncrementalParser::new();
+        must(parser.parse(source.clone()));
+
+        // Force a checkpoint into the edit so CheckpointCache retains an
+        // explicitly invalidated entry at the edit boundary.
+        parser.checkpoint_cache.add(LexerCheckpoint::at_position(100));
+        let tree = must(parser.apply_edit(&edit));
+
+        let mut expected_source = source;
+        expected_source.replace_range(edit.start..edit.end, &edit.new_text);
+        let mut full = CheckpointedIncrementalParser::new();
+        let full_tree = must(full.parse(expected_source));
+
+        assert_eq!(
+            format!("{tree:?}"),
+            format!("{full_tree:?}"),
+            "invalidated checkpoint path must produce the same tree as a full parse"
+        );
+        assert_eq!(
+            parser.stats().checkpoints_used,
+            0,
+            "invalidated checkpoint must not be restored"
+        );
+        assert!(
+            parser.stats().cache_misses > 0,
+            "invalidated checkpoint must trigger the conservative fallback"
+        );
     }
 
     #[test]

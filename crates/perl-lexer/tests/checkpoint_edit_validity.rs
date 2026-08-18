@@ -20,11 +20,8 @@ fn shifted_replay_position_fails_closed_without_target_source_coordinates() {
 #[test]
 fn compatibility_edit_cannot_turn_overlapped_quote_state_into_a_restorable_default() {
     let mut checkpoint = LexerCheckpoint::at_position(12);
-    checkpoint.current_quote_op = Some(QuoteOperatorCheckpoint {
-        operator: "qq".to_string(),
-        delimiter: '{',
-        start_pos: 9,
-    });
+    checkpoint.current_quote_op =
+        Some(QuoteOperatorCheckpoint { operator: "qq".to_string(), delimiter: '{', start_pos: 9 });
 
     checkpoint.apply_edit(8, 5, 1);
 

@@ -53,17 +53,7 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
                 source.len()
             );
         }
-<<<<<<< HEAD
-<<<<<<< HEAD
         if !source.is_char_boundary(edit.start_byte) || !source.is_char_boundary(edit.old_end_byte)
-=======
-        if !source.is_char_boundary(edit.start_byte)
-            || !source.is_char_boundary(edit.old_end_byte)
->>>>>>> c1d3a334f (fix(parser): keep stacked edit batches atomic)
-=======
-        if !source.is_char_boundary(edit.start_byte)
-            || !source.is_char_boundary(edit.old_end_byte)
->>>>>>> 72e3af30e (fix(parser): apply incremental batches atomically)
         {
             anyhow::bail!(
                 "incremental edit range {}..{} is not on UTF-8 boundaries",
@@ -178,14 +168,13 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         // Refresh from the same recovery-aware parser entry point used by a
         // fresh parse, then report the complete parser work truthfully.
         candidate.refresh_parse_output();
-        let reparsed_bytes = candidate.source().len();
         let reused_tokens = reparse.lex_restart.reused_tokens();
         let result = ReparseResult {
             changed_ranges: vec![reparse.range],
             parse_output: candidate.parse_output().clone(),
             diagnostics: vec![],
             lex_restart: reparse.lex_restart,
-            reparsed_bytes: candidate.source.len(),
+            reparsed_bytes: candidate.source().len(),
             reused_tokens,
             token_count: reparse.token_count,
         };
