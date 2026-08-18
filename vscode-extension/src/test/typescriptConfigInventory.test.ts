@@ -45,11 +45,7 @@ type InventoryModule = {
 };
 
 const extensionRoot = path.resolve(__dirname, '..', '..');
-const inventoryPath = path.join(
-  extensionRoot,
-  'scripts',
-  'typescript-config-inventory.json',
-);
+const inventoryPath = path.join(extensionRoot, 'scripts', 'typescript-config-inventory.json');
 const inventoryModule = require(
   path.join(extensionRoot, 'scripts', 'check-typescript-config-inventory'),
 ) as InventoryModule;

@@ -194,14 +194,10 @@ function evaluateTypeScriptConfigInventory(input) {
  * @returns {{ok: boolean, failures: string[], facts: string[]}}
  */
 function checkTypeScriptConfigInventory(extensionRoot) {
-  const inventory = JSON.parse(
-    fs.readFileSync(path.join(extensionRoot, INVENTORY_PATH), 'utf8'),
-  );
+  const inventory = JSON.parse(fs.readFileSync(path.join(extensionRoot, INVENTORY_PATH), 'utf8'));
   const packageJson = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'package.json'), 'utf8'));
   const rawConfigs = Array.isArray(inventory.configs) ? inventory.configs : [];
-  const configFiles = rawConfigs
-    .filter(isInventoryConfig)
-    .map((config) => config.path);
+  const configFiles = rawConfigs.filter(isInventoryConfig).map((config) => config.path);
   const tscEntry = path.join(extensionRoot, 'node_modules', 'typescript', 'bin', 'tsc');
 
   /** @type {Record<string, EffectiveConfig>} */
