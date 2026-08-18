@@ -227,6 +227,107 @@ test('invalid or ambiguous release metadata fails closed', () => {
   });
 });
 
+test('release records from another requirement or target fail closed', () => {
+  const wrongRequirement = select({
+    releases: [release('0.18.0', { compatibilityRequirement: 'extension-protocol.v1' })],
+  });
+  expect(wrongRequirement).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.18.0',
+  });
+
+  const wrongTarget = select({
+    releases: [release('0.18.0', { target: 'aarch64-apple-darwin' })],
+  });
+  expect(wrongTarget).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.18.0',
+  });
+});
+
+test('resolved compatibility or target states require evidence references', () => {
+  const missingCompatibilityEvidence = select({
+    releases: [release('0.18.0', { compatibilityEvidenceRef: '' })],
+  });
+  expect(missingCompatibilityEvidence).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.18.0',
+  });
+
+  const missingTargetEvidence = select({
+    releases: [release('0.18.0', { targetEvidenceRef: '' })],
+  });
+  expect(missingTargetEvidence).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.18.0',
+  });
+});
+
+test('duplicate release or tag identity fails closed', () => {
+  const duplicateReleaseId = select({
+    releases: [release('0.18.0'), release('0.18.1', { releaseId: 'release:v0.18.0' })],
+  });
+  expect(duplicateReleaseId).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.18.0',
+  });
+
+  const duplicateTag = select({
+    releases: [release('0.18.0'), release('0.18.1', { tagName: 'v0.18.0' })],
+  });
+  expect(duplicateTag).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.18.1',
+  });
+});
+
+test('prerelease flag must agree with the parsed semantic version', () => {
+  const flaggedStable = select({
+    releases: [release('0.19.0-rc.1', { prerelease: false })],
+  });
+  expect(flaggedStable).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.19.0-rc.1',
+  });
+
+  const flaggedPrerelease = select({
+    releases: [release('0.18.0', { prerelease: true })],
+  });
+  expect(flaggedPrerelease).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.18.0',
+  });
+});
+
+test('stable and latest refuse when no compatible release exists', () => {
+  expect(select({ releases: [] })).toMatchObject({
+    kind: 'refused',
+    reason: 'no_compatible_release',
+  });
+
+  expect(
+    select({
+      releases: [
+        release('0.18.0', {
+          compatibilityState: 'incompatible',
+          compatibilityEvidenceRef: 'compat:0.18.0:incompatible',
+        }),
+      ],
+    }),
+  ).toMatchObject({
+    kind: 'refused',
+    reason: 'no_compatible_release',
+  });
+});
+
 test('tag policy requires exactly one tag and other channels reject one', () => {
   expect(select({ channel: 'tag', explicitTag: undefined })).toMatchObject({
     kind: 'refused',
