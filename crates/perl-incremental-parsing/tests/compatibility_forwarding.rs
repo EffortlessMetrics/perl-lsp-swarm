@@ -20,8 +20,8 @@ fn compatibility_types_are_the_canonical_types() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn canonical_values_flow_through_the_compatibility_entry_point(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn canonical_values_flow_through_the_compatibility_entry_point()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut state: compatibility::IncrementalState =
         canonical::IncrementalState::new("my $x = 1;".to_string());
     let edit = canonical::Edit {
