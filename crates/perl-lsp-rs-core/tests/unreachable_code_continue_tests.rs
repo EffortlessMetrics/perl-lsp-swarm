@@ -1,8 +1,9 @@
 //! Parser-backed integration controls for PL406 loop and `continue` semantics.
 //!
 //! These tests exercise the public diagnostic entry point with source text.
-//! They deliberately distinguish exact language transfers from call spellings
-//! such as `croak`, `confess`, or `throw`, which require semantic authority
+//! They deliberately distinguish exact language transfers (plus Carp's
+//! documented non-returning API, accepted under #5062) from framework call
+//! spellings such as `$object->throw()`, which require semantic authority
 //! before they may be treated as non-returning.
 
 use perl_lsp_rs_core::providers::diagnostics::Diagnostic;
@@ -75,22 +76,29 @@ fn for_and_foreach_continue_blocks_use_the_same_local_flow_contract()
 }
 
 #[test]
-fn call_spelling_alone_does_not_close_continue_fallthrough()
--> Result<(), Box<dyn std::error::Error>> {
+fn carp_nonreturning_functions_close_continue_fallthrough() -> Result<(), Box<dyn std::error::Error>>
+{
+    // Accepted PL406 terminator authority under closed issue #5062.
     for (source, context) in [
-        (r#"while (1) { work(); } continue { croak "err"; print "reachable"; }"#, "croak spelling"),
+        (r#"while (1) { work(); } continue { croak "err"; print "dead"; }"#, "croak"),
         (
-            r#"while (1) { work(); } continue { Carp::confess "err"; print "reachable"; }"#,
-            "qualified confess spelling",
-        ),
-        (
-            r#"while (1) { work(); } continue { $object->throw(); print "reachable"; }"#,
-            "method spelling",
+            r#"while (1) { work(); } continue { Carp::confess "err"; print "dead"; }"#,
+            "qualified confess",
         ),
     ] {
-        assert_pl406_count(source, 0, context)?;
+        assert_pl406_count(source, 1, context)?;
     }
     Ok(())
+}
+
+#[test]
+fn framework_call_spelling_alone_does_not_close_continue_fallthrough()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_pl406_count(
+        r#"while (1) { work(); } continue { $object->throw(); print "reachable"; }"#,
+        0,
+        "method spelling without a semantic fact",
+    )
 }
 
 #[test]

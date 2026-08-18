@@ -52,6 +52,27 @@ impl FlowSummary {
         Self { can_fall_through, transfers }
     }
 
+    /// Demote loop-control transfers at a bare-block boundary. A bare BLOCK
+    /// is semantically a one-shot loop (perlsyn), so `last`/`next`/`redo`
+    /// terminate or restart the block itself: the parent statement list keeps
+    /// a reachable path even when the block's own summary does not fall
+    /// through. Non-loop transfers (`die`, `return`, `goto`) still promote.
+    fn without_loop_transfers(mut self) -> Self {
+        let is_loop_transfer = |transfer: &ControlTransfer| {
+            matches!(
+                transfer,
+                ControlTransfer::ContinueLoop { .. }
+                    | ControlTransfer::BreakLoop { .. }
+                    | ControlTransfer::RedoLoop { .. }
+            )
+        };
+        if self.transfers.iter().any(&is_loop_transfer) {
+            self.transfers.retain(|transfer| !is_loop_transfer(transfer));
+            self.can_fall_through = true;
+        }
+        self
+    }
+
     fn goto_labels(&self) -> Vec<String> {
         self.transfers
             .iter()
@@ -172,7 +193,16 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             // always retains a path that skips the controlled statement.
             FlowSummary::falls_through()
         }
-        NodeKind::LabeledStatement { statement, .. } => summarize_node(statement, diagnostics),
+        NodeKind::LabeledStatement { statement, .. } => {
+            let summary = summarize_node(statement, diagnostics);
+            // A labeled bare block is still a one-shot loop, so `last LABEL`
+            // targets the block itself rather than the enclosing loop.
+            if matches!(&statement.kind, NodeKind::Block { .. }) {
+                summary.without_loop_transfers()
+            } else {
+                summary
+            }
+        }
 
         NodeKind::Return { value } => {
             if let Some(value) = value {
@@ -266,6 +296,15 @@ fn summarize_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) -
         }
 
         let summary = summarize_node(stmt, diagnostics);
+        // A bare BLOCK statement is a one-shot loop (perlsyn): loop-control
+        // transfers target the block itself and must not close fallthrough in
+        // this list. Branch/body blocks of `if`, loops, and callables are not
+        // loop targets and keep their verbatim summary.
+        let summary = if matches!(&stmt.kind, NodeKind::Block { .. }) {
+            summary.without_loop_transfers()
+        } else {
+            summary
+        };
         if summary.can_fall_through {
             terminal_summary = FlowSummary::falls_through();
         } else {
@@ -349,6 +388,14 @@ fn summarize_function_call(
         "die" | "CORE::die" => FlowSummary::transfer(ControlTransfer::Raise),
         "exit" | "CORE::exit" | "exec" | "CORE::exec" => {
             FlowSummary::transfer(ControlTransfer::ProcessTransfer)
+        }
+        // `croak`/`confess` are Carp's documented non-returning API and were
+        // accepted PL406 terminators under closed issue #5062 ("verified
+        // correct — do not regress", fixed by #5151). Framework spellings
+        // such as `fatal` or `$object->throw()` remain conservative: without
+        // a canonical semantic fact they are not non-returning authority.
+        "croak" | "Carp::croak" | "confess" | "Carp::confess" => {
+            FlowSummary::transfer(ControlTransfer::Raise)
         }
         _ => FlowSummary::falls_through(),
     }
@@ -548,16 +595,84 @@ mod tests {
     }
 
     #[test]
-    fn call_spelling_alone_is_not_nonreturning_authority() {
+    fn carp_nonreturning_functions_close_fallthrough() {
+        // Accepted PL406 terminator authority under closed issue #5062.
         for source in [
-            r#"sub f { croak "maybe"; print "reachable"; }"#,
-            r#"sub f { Carp::confess "maybe"; print "reachable"; }"#,
+            r#"sub f { croak "stop"; print "dead"; }"#,
+            r#"sub f { Carp::croak "stop"; print "dead"; }"#,
+            r#"sub f { confess "stop"; print "dead"; }"#,
+            r#"sub f { Carp::confess "stop"; print "dead"; }"#,
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                has_pl406(&diags),
+                "Carp's documented non-returning API must close fallthrough: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn framework_call_spelling_alone_is_not_nonreturning_authority() {
+        for source in [
             r#"sub f { fatal(); print "reachable"; }"#,
             r#"sub f { $object->throw(); print "reachable"; }"#,
         ] {
             let diags = unreachable_diags(source);
-            assert!(!has_pl406(&diags), "call spelling cannot prove non-return: {diags:?}");
+            assert!(
+                !has_pl406(&diags),
+                "framework spelling without a semantic fact cannot prove non-return: {diags:?}"
+            );
         }
+    }
+
+    #[test]
+    fn bare_block_loop_control_exits_only_the_block() {
+        // A bare BLOCK is a one-shot loop (perlsyn): last/next/redo leave or
+        // restart the block, so the following sibling stays reachable.
+        for source in [
+            r#"sub f { { last; } print "after"; }"#,
+            r#"{ next; } print "after";"#,
+            r#"while ($c) { { last; } print "still-in-body"; last; }"#,
+        ] {
+            let diags = unreachable_diags(source);
+            assert!(
+                !has_pl406(&diags),
+                "loop control inside a bare block must not close parent fallthrough: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn labeled_bare_block_last_exits_only_the_block() {
+        let diags = unreachable_diags("DONE: { do_it(); last DONE; } print 'after';");
+        assert!(
+            !has_pl406(&diags),
+            "last LABEL targeting a labeled bare block must keep the sibling reachable: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn bare_block_raise_still_closes_fallthrough() {
+        let diags = unreachable_diags(r#"{ die "stop"; } print "dead";"#);
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "non-loop transfers still promote out of a bare block: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn loop_control_in_if_branches_still_targets_the_enclosing_loop() {
+        // if/else branch blocks are NOT loop blocks (perlsyn): a `last` in
+        // every complete branch exits the enclosing while, so the sibling
+        // after the if inside the loop body is genuinely unreachable.
+        let diags =
+            unreachable_diags("while (1) { if ($c) { last; } else { last; } print 'dead'; }");
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "complete if/else last branches must still close loop-body fallthrough: {diags:?}"
+        );
     }
 
     #[test]
