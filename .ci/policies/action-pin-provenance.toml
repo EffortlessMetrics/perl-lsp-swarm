@@ -328,3 +328,9 @@ action = 'SublimeText/UnitTesting/actions/setup'
 sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
 kind = 'branch_commit'
 value = 'master (sublime-journey)'
+
+[[pin]]
+action = 'SublimeText/UnitTesting/actions/run-tests'
+sha = 'b8abedefd5fbc0f64a8c6082506ebd1e24203164'
+kind = 'branch_commit'
+value = 'master (sublime-journey)'

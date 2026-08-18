@@ -1,5 +1,5 @@
 {
-  "tests_dir": "host_tests",
+  "tests_dir": "dap_host_tests",
   "pattern": "test_sublime_debugger_adapter.py",
   "deferred": true,
   "condition_timeout": 25000,

@@ -120,7 +120,7 @@ jobs:
             https://github.com/EffortlessMetrics/perl-lsp-swarm.git
 
       - name: Install Sublime, exact LSP 2.13.0, and exact Debugger 0.11.6 source
-        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164
+        uses: SublimeText/UnitTesting/actions/setup@b8abedefd5fbc0f64a8c6082506ebd1e24203164 # master (sublime-journey)
         with:
           package-name: LSP-perllsp
           package-path: target/LSP-perllsp-package
@@ -137,7 +137,7 @@ jobs:
 
       - name: Run the real Sublime Debugger adapter journey
         id: host-journey
-        uses: SublimeText/UnitTesting/actions/run-tests@b8abedefd5fbc0f64a8c6082506ebd1e24203164
+        uses: SublimeText/UnitTesting/actions/run-tests@b8abedefd5fbc0f64a8c6082506ebd1e24203164 # master (sublime-journey)
         with:
           package-name: LSP-perllsp
           coverage: false

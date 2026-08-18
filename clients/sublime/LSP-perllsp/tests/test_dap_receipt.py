@@ -115,6 +115,7 @@ class SublimeDapReceiptContractTests(unittest.TestCase):
 
     def test_dap_host_configuration_and_workflow_pin_exact_sources(self) -> None:
         config = json.loads((CLIENT / "dap-unittesting.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["tests_dir"], "dap_host_tests")
         self.assertEqual(config["pattern"], "test_sublime_debugger_adapter.py")
         self.assertTrue(config["deferred"])
 
