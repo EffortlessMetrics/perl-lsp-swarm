@@ -68,7 +68,10 @@ fn non_rust_inventory_check_command_exits_zero() -> Result<()> {
     Ok(())
 }
 
-/// Verify that the expected output files are created.
+/// Verify that the expected output files are created under `target/`.
+///
+/// `non-rust inventory` (without `--write`) must not modify any tracked file;
+/// output goes to `target/policy/` only.
 #[test]
 fn non_rust_inventory_creates_output_files() -> Result<()> {
     let _guard = inventory_output_lock()?;
@@ -87,10 +90,9 @@ fn non_rust_inventory_creates_output_files() -> Result<()> {
         root.join("target/policy/non-rust-inventory.json").exists(),
         "target/policy/non-rust-inventory.json should exist after the command"
     );
-    assert!(
-        root.join("docs/policy/NON_RUST_INVENTORY.md").exists(),
-        "docs/policy/NON_RUST_INVENTORY.md should exist after the command"
-    );
+    // docs/policy/NON_RUST_INVENTORY.md must NOT be rewritten by the
+    // non-`--write` path; the committed snapshot is updated only by
+    // `cargo xtask non-rust inventory --write`.
     Ok(())
 }
 
@@ -148,6 +150,53 @@ fn non_rust_inventory_markdown_has_header() -> Result<()> {
     Ok(())
 }
 
+/// Assert that `docs/policy/NON_RUST_INVENTORY.md` matches what the current
+/// tree generates.
+///
+/// When this test fails, the committed snapshot is stale.  Refresh it with:
+///
+/// ```text
+/// cargo xtask non-rust inventory --write
+/// ```
+///
+/// then commit the updated file.  The test deliberately fails with a diff so
+/// that the stale content is visible without opening a separate file — compare
+/// the "left" (committed) with the "right" (generated) in the panic output.
+#[test]
+fn non_rust_inventory_docs_are_current() -> Result<()> {
+    let _guard = inventory_output_lock()?;
+    let root = project_root()?;
+
+    // Generate fresh output to target/ — no tracked file is touched.
+    Command::cargo_bin("xtask")?
+        .args(["non-rust", "inventory"])
+        .current_dir(&root)
+        .assert()
+        .success();
+
+    let generated_path = root.join("target/policy/non-rust-inventory.md");
+    let committed_path = root.join("docs/policy/NON_RUST_INVENTORY.md");
+
+    let generated = std::fs::read_to_string(&generated_path).map_err(|e| {
+        eyre!("could not read generated inventory at {}: {e}", generated_path.display())
+    })?;
+    let committed = std::fs::read_to_string(&committed_path).map_err(|e| {
+        eyre!("could not read committed inventory at {}: {e}", committed_path.display())
+    })?;
+
+    // Normalise line endings so CRLF/LF differences do not cause spurious failures.
+    let normalize = |s: &str| s.replace("\r\n", "\n");
+
+    assert_eq!(
+        normalize(&committed),
+        normalize(&generated),
+        "\n\ndocs/policy/NON_RUST_INVENTORY.md is stale.\n\
+         Run `cargo xtask non-rust inventory --write` and commit the result.\n"
+    );
+
+    Ok(())
+}
+
 /// The generated inventory check is only useful when the existing policy
 /// shard actually invokes it. Keep the source policy and workflow matrix
 /// wired to the same direct, read-only command.
@@ -198,7 +247,7 @@ fn non_rust_inventory_check_is_wired_to_policy_shard() -> Result<()> {
 
     let workflow = std::fs::read_to_string(root.join(".github/workflows/ci.yml"))?;
     assert!(
-        workflow.contains("gates: docs_build non_rust_inventory_check v2_bundle_sync"),
+        workflow.contains("docs_build adr_link_check non_rust_inventory_check v2_bundle_sync"),
         "the live policy matrix must execute the inventory scan gate"
     );
     Ok(())

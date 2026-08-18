@@ -1,0 +1,9 @@
+project: product
+component: Compatibility
+kind: Added
+body: "Pin the exact released LSP4IJ 0.20.1 Perl LSP and DAP template subject as immutable upstream evidence for compatibility and drift checks."
+time: 2026-08-14T12:50:43Z
+custom:
+  PR: "9450"
+  Slug: lsp4ij-released-fixture
+  Breaking: "no"

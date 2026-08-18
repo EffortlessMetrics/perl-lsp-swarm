@@ -265,9 +265,21 @@ fn apply_edits_multiple_edits_triggers_full_reparse() -> Result<(), Box<dyn std:
 #[test]
 fn apply_edits_empty_list() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = IncrementalState::new("my $x = 1;".to_string());
+    let output_before = format!("{:?}", state.parse_output());
     let result = apply_edits(&mut state, &[])?;
-    // Empty edits should still trigger full reparse (multiple=0 path)
-    assert!(!result.changed_ranges.is_empty());
+    // Empty edit list short-circuits: the ParseOutput is retained unchanged and
+    // no ranges are marked as reparsed.  This is the correct contract introduced
+    // in #7296 — a zero-edit call is a no-op, not a trigger for a full reparse.
+    assert!(
+        result.changed_ranges.is_empty(),
+        "empty edit list must not mark any range as reparsed, got {:?}",
+        result.changed_ranges
+    );
+    assert_eq!(
+        format!("{:?}", &result.parse_output),
+        output_before,
+        "empty edit list must retain the previous parse output unchanged"
+    );
     Ok(())
 }
 

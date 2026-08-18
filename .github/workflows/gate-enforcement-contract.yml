@@ -1,0 +1,54 @@
+name: Gate Enforcement Contract
+
+on:
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group: {}
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Gate Enforcement Contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Checkout exact subject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run falsifiers and validate checked-in contract
+        shell: bash
+        run: |
+          set +e
+          python3 -m unittest \
+            scripts/ci/test_validate_gate_enforcement_contract.py \
+            scripts/ci/test_gate_enforcement_app_bindings.py \
+            scripts/ci/test_reconcile_github_enforcement_snapshot.py
+          test_status=$?
+          python3 scripts/ci/validate_gate_enforcement_contract.py \
+            --root . \
+            --receipt target/receipts/gate-enforcement-contract.json
+          contract_status=$?
+          set -e
+          if [[ "$test_status" -ne 0 || "$contract_status" -ne 0 ]]; then
+            echo "Gate enforcement contract failed: tests=$test_status contract=$contract_status" >&2
+            exit 1
+          fi
+
+      - name: Upload contract receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.0
+        with:
+          name: gate-enforcement-contract-${{ github.sha }}
+          path: target/receipts/gate-enforcement-contract.json
+          if-no-files-found: warn
+          retention-days: 7

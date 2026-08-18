@@ -5,13 +5,15 @@ import type {
   HealthCheckCommandStatus,
   ReinstallCommandResult,
 } from './commandResults';
+import { SHOW_BINARY_IDENTITY_COMMAND } from './binaryIdentityCommand';
 
 /**
  * Read-only and callback-based dependencies for server-facing commands.
  *
  * The command group does not read entry-module globals or own lifecycle
  * transitions. `currentServerPath` is a projection, while restart, reinstall,
- * and health probing remain owned by the composition layer that supplies them.
+ * health probing, and binary-identity presentation remain owned by the
+ * composition layer that supplies them.
  */
 export interface ServerCommandContext {
   readonly outputChannel: vscode.LogOutputChannel;
@@ -21,6 +23,8 @@ export interface ServerCommandContext {
   readonly reinstallServerBinary: () => Promise<ReinstallCommandResult>;
   readonly restartServer: () => Promise<void>;
   readonly runHealthCheck: (serverPath: string | null) => Promise<HealthCheckResult[]>;
+  /** Optional until the negotiated identity protocol is available in composition. */
+  readonly showBinaryIdentity?: () => Promise<unknown>;
 }
 
 function toHealthCheckCommandResult(results: HealthCheckResult[]): HealthCheckCommandResult {
@@ -57,6 +61,19 @@ export function registerServerCommandGroup(
   const restartCommand = vscode.commands.registerCommand('perl-lsp.restart', async () => {
     await dependencies.restartServer();
   });
+
+  const showBinaryIdentityCommand = vscode.commands.registerCommand(
+    SHOW_BINARY_IDENTITY_COMMAND,
+    async () => {
+      if (dependencies.showBinaryIdentity === undefined) {
+        await vscode.window.showInformationMessage(
+          'Binary identity is unavailable until the running server negotiates the identity feature.',
+        );
+        return { status: 'unsupported' as const };
+      }
+      return dependencies.showBinaryIdentity();
+    },
+  );
 
   const runHealthCheckCommand = vscode.commands.registerCommand(
     'perl-lsp.runHealthCheck',
@@ -113,5 +130,11 @@ export function registerServerCommandGroup(
     },
   );
 
-  return [showOutputCommand, reinstallCommand, restartCommand, runHealthCheckCommand];
+  return [
+    showOutputCommand,
+    reinstallCommand,
+    restartCommand,
+    showBinaryIdentityCommand,
+    runHealthCheckCommand,
+  ];
 }

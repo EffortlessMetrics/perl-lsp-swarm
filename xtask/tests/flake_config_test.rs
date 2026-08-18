@@ -1,3 +1,6 @@
+// Integration test: assertion helpers (`expect`/`unwrap`/`panic!`) carry the
+// failure message. The workspace-wide deny is a production-code rule.
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 //! Tests to verify flake.nix configuration is correct.
 //!
 //! These tests verify the acceptance criteria from work-24c7cfb5:
@@ -13,6 +16,31 @@ use std::path::Path;
 ///
 /// The version field is on a line like:
 ///   version = "0.12.3";  # Keep in sync with CLAUDE.md
+/// The workspace package version is the version authority CLAUDE.md used to
+/// carry; read it straight from Cargo.toml.
+fn workspace_package_version() -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let manifest =
+        fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml should be readable");
+    let mut in_section = false;
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[workspace.package]") {
+            in_section = true;
+            continue;
+        }
+        if trimmed.starts_with("[") {
+            in_section = false;
+        }
+        if in_section && trimmed.starts_with("version = ") {
+            let v =
+                trimmed.trim_start_matches("version = ").trim_end_matches(";").trim_matches('"');
+            return v.to_string();
+        }
+    }
+    panic!("Cargo.toml [workspace.package] has no version");
+}
+
 fn extract_perl_lsp_version(flake_content: &str) -> Option<String> {
     // Find the packages.perl-lsp section and then the version line
     // Look for the pattern: version = "X.Y.Z";
@@ -110,31 +138,20 @@ fn extract_latest_release_from_claude_md(claude_content: &str) -> Option<String>
 
 #[test]
 fn test_flake_version_matches_claude_md() {
-    // AC-1: Version field matches CLAUDE.md
-    //
-    // This test verifies that packages.perl-lsp.version in flake.nix
-    // matches the "Latest Release" declared in CLAUDE.md.
-
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let flake_path = repo_root.join("flake.nix");
-    let claude_path = repo_root.join("CLAUDE.md");
 
     let flake_content =
         fs::read_to_string(&flake_path).expect("flake.nix should exist and be readable");
 
-    let claude_content =
-        fs::read_to_string(&claude_path).expect("CLAUDE.md should exist and be readable");
-
+    let workspace_version = workspace_package_version();
     let flake_version = extract_perl_lsp_version(&flake_content)
-        .expect("packages.perl-lsp.version should be found in flake.nix");
-
-    let latest_release = extract_latest_release_from_claude_md(&claude_content)
-        .expect("Latest Release should be found in CLAUDE.md line 3");
+        .expect("packages.perllsp.version should be found in flake.nix");
 
     assert_eq!(
-        flake_version, latest_release,
-        "packages.perl-lsp version in flake.nix ({}) should match Latest Release in CLAUDE.md ({})",
-        flake_version, latest_release
+        flake_version, workspace_version,
+        "packages.perllsp version in flake.nix ({}) should match the workspace package version ({})",
+        flake_version, workspace_version
     );
 }
 
@@ -183,7 +200,7 @@ fn test_flake_nix_parses_without_error() {
         "flake.nix should define devShells.default"
     );
     assert!(
-        flake_content.contains("perl-lsp = pkgs.rustPlatform.buildRustPackage"),
+        flake_content.contains("perllsp = pkgs.rustPlatform.buildRustPackage"),
         "flake.nix should define perl-lsp package"
     );
 }

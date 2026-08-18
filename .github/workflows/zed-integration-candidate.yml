@@ -1,0 +1,85 @@
+name: Zed Integration Candidate
+
+on:
+  pull_request:
+    paths:
+      - '.ci/fixtures/zed-perl-upstream/**'
+      - '.ci/schemas/zed-*.json'
+      - '.github/workflows/zed-integration-candidate.yml'
+      - 'scripts/check-zed-*.sh'
+      - 'scripts/zed_exact_source_*.py'
+      - 'scripts/zed_host/**'
+      - 'scripts/tests/test_zed_host_*.py'
+      - 'xtask/src/bin/validate-zed-*.rs'
+      - 'xtask/tests/zed_*.rs'
+      - 'xtask/tests/support/zed_host_compat.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-integration-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: Format stacked Zed programme contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout head branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+          components: rustfmt
+
+      - name: Report rustfmt ratchet for Zed contract tests
+        shell: bash
+        run: |
+          shopt -s nullglob
+          tests=(xtask/tests/zed_*.rs xtask/tests/support/zed_host_compat.rs)
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo 'error: no Zed contract tests found' >&2
+            exit 1
+          fi
+          rustfmt --edition 2024 --check "${tests[@]}"
+
+      - name: Run Zed programme contracts selected by path filters
+        shell: bash
+        run: |
+          bash scripts/check-zed-programme-contracts.sh
+          bash scripts/check-zed-upstream-candidate.sh
+          cargo test -p xtask --locked \
+            --test zed_host_receipt \
+            --test zed_public_registry_receipt \
+            --test zed_support_claims \
+            --test zed_exact_source_host_driver
+
+      # The operator-assisted host driver is Python, so its fail-closed controls
+      # are invisible to the Rust contract tests above. Run them here; otherwise
+      # the only code that ever touches a real Zed host has no executed proof.
+      # The driver imports tomllib (Python >= 3.11) and uses 3.10+ syntax, so
+      # pin a supported interpreter instead of relying on the runner default.
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Run exact-source host driver unit tests
+        shell: bash
+        run: |
+          python3 -m unittest \
+            scripts.tests.test_zed_host_prepare \
+            scripts.tests.test_zed_host_process
+          python3 -m py_compile \
+            scripts/zed_exact_source_prepare.py \
+            scripts/zed_exact_source_launch.py \
+            scripts/zed_exact_source_finalize.py \
+            scripts/zed_host/*.py

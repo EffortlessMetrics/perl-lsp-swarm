@@ -7,7 +7,9 @@
 //! staged profile through a `t/perl` compatibility wrapper in parse and compile
 //! modes. Execute mode is limited to explicit selected base tests.
 
+pub mod artifacts;
 mod normalization;
+pub mod public_evidence;
 mod series;
 pub mod transition;
 
@@ -40,6 +42,7 @@ pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 pub use series::{SeriesManifestConfig, series_manifest};
 
 use normalization::{hex_lower, sha256_digest_bytes};
+use public_evidence::PublicStringClass;
 use serde::{Deserialize, de::DeserializeOwned};
 use series::{read_series_manifest, validate_series_manifest};
 use sha2::{Digest, Sha256};
@@ -2876,7 +2879,22 @@ fn registry_boundary_key_from_observed(boundary: &ObservedSemanticBoundary) -> S
     )
 }
 
+/// Validate one declared public path field.
+///
+/// Declared path fields must be repository-relative. The structural classifier
+/// in [`public_evidence`] owns detection of host-path material embedded
+/// anywhere inside a public string; this function additionally rejects the
+/// relative forms that are legal paths but still private (`..` traversal and
+/// `target`/`tmp`/`temp` components).
+///
+/// The rejected value is deliberately not echoed: failures surface in public CI
+/// logs, so reporting the classification has to be enough.
 fn validate_public_path(value: &str, label: &str) -> Result<()> {
+    if let Some(kind) = public_evidence::classify_public_string(value, PublicStringClass::Ordinary)
+    {
+        bail!("{label} contains a private host path ({}); the value was not echoed", kind.as_str());
+    }
+
     let normalized = value.replace('\\', "/");
     let private_component = normalized.split('/').any(|component| {
         matches!(component.to_ascii_lowercase().as_str(), "target" | "tmp" | "temp")
@@ -2887,7 +2905,7 @@ fn validate_public_path(value: &str, label: &str) -> Result<()> {
         || normalized.split('/').any(|part| part == "..")
         || private_component
     {
-        bail!("{label} contains a private or temporary host path: {value}");
+        bail!("{label} is not a public repository-relative path; the value was not echoed");
     }
     Ok(())
 }
@@ -5423,6 +5441,65 @@ mod tests {
 
     type TestResult<T = ()> = Result<T>;
 
+    /// Parity: the declared-path validator must not be weaker than the
+    /// structural classifier. If a form is host-path material anywhere in a
+    /// public string, a declared path field carrying that same value has to be
+    /// rejected too, or the two publication surfaces disagree about what is
+    /// publishable.
+    #[test]
+    fn declared_path_validation_is_not_weaker_than_structural_classification() {
+        for value in [
+            "/etc/passwd",
+            "/home/runner/work/",
+            "///etc/passwd",
+            "//etc/hostname",
+            r"C:\Users\runner\repo",
+            "C:/Users/runner/repo",
+            r"\\server\share\repo",
+            r"\\?\C:\Users\runner",
+            r"\??\C:\Users\runner",
+            "file:///tmp/repo/report.json",
+        ] {
+            assert!(
+                public_evidence::classify_public_string(value, PublicStringClass::Ordinary)
+                    .is_some(),
+                "structural classifier must reject {value}"
+            );
+            assert!(
+                validate_public_path(value, "parity probe").is_err(),
+                "declared-path validator must also reject {value}"
+            );
+        }
+    }
+
+    /// Both validators must keep publishing the repository-relative paths the
+    /// harness legitimately writes into its receipts.
+    #[test]
+    fn public_validators_agree_on_repository_relative_paths() -> TestResult {
+        for value in ["crates/perl-parser/src/lib.rs", "smoke/base/smoke.json", "base/if.t"] {
+            assert_eq!(
+                public_evidence::classify_public_string(value, PublicStringClass::Ordinary),
+                None,
+                "structural classifier must accept {value}"
+            );
+            validate_public_path(value, "parity probe")?;
+        }
+        Ok(())
+    }
+
+    /// #6882 acceptance: a public failure message must not republish the
+    /// private path it rejected.
+    #[test]
+    fn declared_path_rejection_does_not_echo_the_private_value() {
+        let Err(error) = validate_public_path("/home/runner/work/private", "failure path") else {
+            unreachable!("absolute host path must be rejected")
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains("failure path"), "label missing: {rendered}");
+        assert!(rendered.contains("unix_absolute"), "classification missing: {rendered}");
+        assert!(!rendered.contains("/home/runner"), "message echoed the private path: {rendered}");
+    }
+
     #[test]
     fn parses_dumptests_paths_and_ignores_noise() -> TestResult {
         let output = b"base/if.t\n# note from harness\n./base/lex.t\n t/base/term.t \n";
@@ -7476,7 +7553,14 @@ mod tests {
         let violations = validate_boundary_registry_shape(&registry);
         assert!(violations.iter().any(|violation| violation.contains("non-admissible")));
         assert!(violations.iter().any(|violation| violation.contains("invalid owner issue")));
-        assert!(violations.iter().any(|violation| violation.contains("private or temporary")));
+        // The Windows drive path is rejected under its structural
+        // classification, and the violation must not republish the path it
+        // rejected.
+        assert!(violations.iter().any(|violation| violation.contains("windows_drive")));
+        assert!(
+            !violations.iter().any(|violation| violation.contains("C:/private")),
+            "violation echoed the private path: {violations:?}"
+        );
     }
 
     #[test]
@@ -9529,5 +9613,696 @@ exit 1
             bail!("measured code path produced an unclear error: {error}");
         }
         Ok(())
+    }
+
+    fn write_json_receipt<T: serde::Serialize>(path: &Path, value: &T) -> TestResult {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(value)?;
+        fs::write(path, format!("{json}\n"))?;
+        Ok(())
+    }
+
+    /// Materialize a published evidence bundle on disk whose compile receipt and
+    /// semantic-boundary artifact carry the bundle's subject identity, so
+    /// [`triage`] reads the same authority the CLI does.
+    fn write_triage_bundle(root: &Path, report: &RunReport) -> TestResult<PathBuf> {
+        let bundle_dir = root.join("bundles").join("bundle-1");
+        let mut index = sample_boundary_bundle().index;
+        index.artifacts = vec![
+            EvidenceBundleArtifact {
+                kind: "semantic_boundaries".into(),
+                logical_path: "semantic-boundaries.json".into(),
+            },
+            EvidenceBundleArtifact {
+                kind: "compile_report".into(),
+                logical_path: "compile-report.json".into(),
+            },
+        ];
+        let index_path = bundle_dir.join("index.json");
+        write_json_receipt(&index_path, &index)?;
+        write_json_receipt(
+            &bundle_dir.join("semantic-boundaries.json"),
+            &report.semantic_boundaries,
+        )?;
+        write_json_receipt(&bundle_dir.join("compile-report.json"), report)?;
+        Ok(index_path)
+    }
+
+    /// A structurally valid compile receipt in which both manifest files fail
+    /// with the same bucket, so triage must produce exactly one cluster.
+    fn two_file_parse_failure_report() -> RunReport {
+        let mut report = sample_compile_report();
+        mark_file_failed(&mut report, "base/lex.t", "parse_recovery");
+        mark_file_failed(&mut report, "base/ok.t", "parse_recovery");
+        report.buckets.insert("parse_recovery".into(), 2);
+        report
+    }
+
+    fn triage_config(bundle: PathBuf, output: PathBuf) -> TriageConfig {
+        TriageConfig { bundle, output, history: None, write_history: false, check_history: false }
+    }
+
+    #[test]
+    fn triage_writes_cluster_and_history_receipts_for_a_fresh_bundle() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = two_file_parse_failure_report();
+        let bundle = write_triage_bundle(temp.path(), &report)?;
+        let output = temp.path().join("triage");
+        let history = temp.path().join("history").join("cluster-history.json");
+
+        triage(TriageConfig {
+            history: Some(history.clone()),
+            write_history: true,
+            ..triage_config(bundle, output.clone())
+        })?;
+
+        let clusters: FailureClusterReport =
+            serde_json::from_str(&fs::read_to_string(output.join("failure-clusters.json"))?)?;
+        assert_eq!(clusters.clusters.len(), 1);
+        let cluster = &clusters.clusters[0];
+        assert_eq!(cluster.occurrence_count, 2);
+        assert_eq!(cluster.affected_files, vec!["base/lex.t", "base/ok.t"]);
+
+        // The Markdown receipt must carry the same identity as the JSON receipt,
+        // not a re-derived or truncated summary.
+        let cluster_markdown = fs::read_to_string(output.join("failure-clusters.md"))?;
+        assert!(cluster_markdown.starts_with("# Compiler failure clusters\n"));
+        assert!(cluster_markdown.contains("- Bundle: `bundle-1`\n"));
+        assert!(cluster_markdown.contains(&format!("### `{}`\n", cluster.cluster_id)));
+        assert!(cluster_markdown.contains(&format!("- Bucket: `{}`\n", cluster.signature.bucket)));
+        assert!(cluster_markdown.contains("- Occurrences: 2\n"));
+        assert!(cluster_markdown.contains("- Files: base/lex.t, base/ok.t\n"));
+        assert!(cluster_markdown.contains("## Semantic-boundary debt candidates\n"));
+
+        let persisted: FailureClusterHistory =
+            serde_json::from_str(&fs::read_to_string(&history)?)?;
+        assert_eq!(persisted.entries.len(), 1);
+        assert_eq!(persisted.entries[0].cluster_id, cluster.cluster_id);
+        assert_eq!(persisted.entries[0].occurrence_count, 2);
+
+        // The history mirror inside the triage output must match the durable file.
+        let mirrored = fs::read_to_string(output.join("cluster-history.json"))?;
+        assert_eq!(mirrored, fs::read_to_string(&history)?);
+
+        let history_markdown = fs::read_to_string(output.join("cluster-history.md"))?;
+        assert!(history_markdown.starts_with("# Compiler failure cluster history\n"));
+        assert!(history_markdown.contains("- Entries: 1\n"));
+        assert!(history_markdown.contains("## Status counts\n\n- unassigned: 1\n"));
+        assert!(history_markdown.contains(&format!(
+            "- {}: 2 occurrence(s), status unassigned, owner unassigned\n",
+            cluster.cluster_id
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn triage_reports_a_clean_compile_receipt_without_inventing_clusters() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = sample_compile_report();
+        let bundle = write_triage_bundle(temp.path(), &report)?;
+        let output = temp.path().join("triage");
+
+        triage(triage_config(bundle, output.clone()))?;
+
+        let clusters: FailureClusterReport =
+            serde_json::from_str(&fs::read_to_string(output.join("failure-clusters.json"))?)?;
+        assert!(clusters.clusters.is_empty());
+        let markdown = fs::read_to_string(output.join("failure-clusters.md"))?;
+        assert!(markdown.contains("No product failure clusters were observed.\n"));
+        // Without --write-history / --check-history no history receipt is produced.
+        assert!(!output.join("cluster-history.json").exists());
+        assert!(!output.join("cluster-history.md").exists());
+        Ok(())
+    }
+
+    fn sample_history_entry(cluster_id: &str) -> FailureClusterHistoryEntry {
+        FailureClusterHistoryEntry {
+            cluster_id: cluster_id.to_string(),
+            signature_schema_version: FAILURE_CLUSTER_SCHEMA_VERSION.into(),
+            identity_quality: FailureClusterIdentityQuality::Provisional,
+            series_id: "series-1".into(),
+            manifest_hash: "manifest-1".into(),
+            first_seen_series_id: "series-1".into(),
+            first_seen_manifest_hash: "manifest-1".into(),
+            last_seen_series_id: "series-1".into(),
+            last_seen_manifest_hash: "manifest-1".into(),
+            first_seen_bundle: "bundle-1".into(),
+            last_seen_bundle: "bundle-1".into(),
+            current_affected_files: vec!["base/ok.t".into()],
+            historical_affected_files: vec!["base/ok.t".into()],
+            current_fact_classes: vec!["parse_recovery".into()],
+            fact_classes: vec!["parse_recovery".into()],
+            current_lsp_surfaces: vec!["diagnostics".into()],
+            lsp_surfaces: vec!["diagnostics".into()],
+            occurrence_count: 1,
+            current_stage: Some("compile".into()),
+            current_authority_bundle: Some("bundle-1".into()),
+            observed_in_current_bundle: true,
+            absence_since_bundle: None,
+            presence: FailureClusterHistoryPresence::Observed,
+            impacted_layer: "parser".into(),
+            owner_issue: None,
+            status: FailureClusterHistoryStatus::Unassigned,
+            direct_reproduction: "bundle=bundle-1 series=series-1".into(),
+            proposed_transition: "compiler_semantics".into(),
+            stop_condition: "cluster no longer reproduces".into(),
+            accepted_debt_refs: Vec::new(),
+            resolution_pr: None,
+            resolution_bundle: None,
+            transitions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn triage_history_ordering_is_stable_and_bounded_to_ten_entries() -> TestResult {
+        // `render_cluster_history_markdown` promotes the highest-occurrence
+        // clusters, breaking ties by cluster id, and lists at most ten. Build a
+        // history whose insertion order contradicts both rules.
+        let mut entries = Vec::new();
+        for index in 0..12 {
+            let mut entry = sample_history_entry(&format!("failure-{index:02}"));
+            entry.occurrence_count = index + 1;
+            entries.push(entry);
+        }
+        let mut tied = sample_history_entry("failure-00-tied");
+        tied.occurrence_count = 12;
+        entries.insert(0, tied);
+        let history = FailureClusterHistory {
+            schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+            entries,
+        };
+
+        let markdown = render_cluster_history_markdown(&history);
+        let leverage = markdown
+            .split("## High leverage\n\n")
+            .nth(1)
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing high-leverage section"))?
+            .split("\n## Clusters")
+            .next()
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+
+        assert_eq!(leverage.len(), 10);
+        // 12 occurrences is a tie between `failure-00-tied` and `failure-11`;
+        // the lexicographically smaller cluster id wins.
+        assert!(leverage[0].starts_with("- failure-00-tied: 12 occurrence(s)"));
+        assert!(leverage[1].starts_with("- failure-11: 12 occurrence(s)"));
+        assert!(leverage[2].starts_with("- failure-10: 11 occurrence(s)"));
+        // The bounded section must not leak the low-occurrence tail.
+        assert!(!leverage.iter().any(|line| line.starts_with("- failure-00:")));
+        // The full cluster section still records every entry.
+        assert!(markdown.contains("- Entries: 13\n"));
+        assert!(markdown.contains("### failure-00\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn cluster_history_markdown_renders_absent_transitions_and_missing_owners() -> TestResult {
+        let mut entry = sample_history_entry("failure-absent");
+        entry.owner_issue = None;
+        entry.current_stage = None;
+        entry.transitions.push(FailureClusterHistoryTransition {
+            transition_id: "transition-1".into(),
+            from_cluster_id: "failure-absent".into(),
+            to_cluster_id: None,
+            to_presence: FailureClusterHistoryPresence::Resolved,
+            from_stage: "compile_effect".into(),
+            to_stage: "absent".into(),
+            before_series_id: "series-1".into(),
+            before_manifest_hash: "manifest-1".into(),
+            before_bundle_id: "bundle-1".into(),
+            after_series_id: "series-2".into(),
+            after_manifest_hash: "manifest-2".into(),
+            after_bundle_id: "bundle-2".into(),
+            proof_plan: "replace symbolic reference lowering".into(),
+            stop_condition: "cluster no longer reproduces".into(),
+            implementation_pr: Some("#5300".into()),
+        });
+        let history = FailureClusterHistory {
+            schema_version: FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION.into(),
+            entries: vec![entry],
+        };
+
+        let markdown = render_cluster_history_markdown(&history);
+
+        assert!(markdown.contains("- Owner: unassigned\n"));
+        assert!(markdown.contains("- Stage: absent\n"));
+        assert!(markdown.contains(
+            "- Transition transition-1: failure-absent -> <absence> (compile_effect -> absent)\n"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn triage_check_history_requires_an_existing_history_receipt() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = two_file_parse_failure_report();
+        let bundle = write_triage_bundle(temp.path(), &report)?;
+        let missing = temp.path().join("history").join("cluster-history.json");
+
+        let Err(error) = triage(TriageConfig {
+            history: Some(missing.clone()),
+            check_history: true,
+            ..triage_config(bundle, temp.path().join("triage"))
+        }) else {
+            bail!("--check-history must fail closed when no history receipt exists");
+        };
+        // The absent receipt must be named directly. Silently substituting an
+        // empty history would also fail, but for the wrong reason — it would
+        // report a cluster-history mismatch instead of a missing receipt.
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("cluster history {} is missing", missing.display())),
+            "unclear error: {error}"
+        );
+        assert!(!message.contains("cluster history check failed"), "unclear error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn triage_check_history_rejects_a_stale_history_receipt() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let report = two_file_parse_failure_report();
+        let bundle = write_triage_bundle(temp.path(), &report)?;
+        let output = temp.path().join("triage");
+        let history = temp.path().join("history").join("cluster-history.json");
+
+        triage(TriageConfig {
+            history: Some(history.clone()),
+            write_history: true,
+            ..triage_config(bundle, output.clone())
+        })?;
+
+        // Re-run the same bundle against a receipt whose failures moved to a
+        // different bucket: the persisted cluster identity no longer reproduces.
+        let mut moved = sample_compile_report();
+        mark_file_failed(&mut moved, "base/lex.t", "hir_lowering");
+        mark_file_failed(&mut moved, "base/ok.t", "hir_lowering");
+        moved.buckets.insert("hir_lowering".into(), 2);
+        let moved_bundle = write_triage_bundle(temp.path(), &moved)?;
+
+        let Err(error) = triage(TriageConfig {
+            history: Some(history),
+            check_history: true,
+            ..triage_config(moved_bundle, output)
+        }) else {
+            bail!("--check-history must reject a history that no longer reproduces");
+        };
+        assert!(
+            error.to_string().contains("cluster history check failed"),
+            "unclear error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn triage_rejects_a_compile_receipt_from_a_different_subject() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut report = two_file_parse_failure_report();
+        report.commit = "different-measurement-sha".into();
+        let bundle = write_triage_bundle(temp.path(), &report)?;
+
+        let Err(error) = triage(triage_config(bundle, temp.path().join("triage"))) else {
+            bail!("triage must reject a compile receipt from another subject");
+        };
+        assert!(
+            error.to_string().contains("compile report identity does not match evidence bundle"),
+            "unclear error: {error}"
+        );
+        Ok(())
+    }
+
+    fn write_boundary_registry(path: &Path, entry: SemanticBoundaryRegistryEntry) -> TestResult {
+        write_boundary_registry_entries(path, vec![entry])
+    }
+
+    fn write_boundary_registry_entries(
+        path: &Path,
+        entries: Vec<SemanticBoundaryRegistryEntry>,
+    ) -> TestResult {
+        write_json_receipt(
+            path,
+            &SemanticBoundaryRegistry {
+                schema_version: SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION.into(),
+                entries,
+            },
+        )
+    }
+
+    /// Write an accepted V2 baseline for `report` and return its path.
+    fn write_accepted_baseline(path: &Path, report: &RunReport) -> TestResult {
+        let baseline = baseline_v2_from_report(
+            report,
+            &sample_registry_series(),
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        write_json_receipt(path, &baseline)
+    }
+
+    fn boundary_config(registry: PathBuf, output: PathBuf) -> BoundaryRegistryConfig {
+        BoundaryRegistryConfig {
+            registry,
+            baselines: Vec::new(),
+            bundles: Vec::new(),
+            output: Some(output),
+            check: false,
+            report: true,
+            historical: false,
+        }
+    }
+
+    fn read_boundary_report(path: &Path) -> TestResult<serde_json::Value> {
+        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+    }
+
+    #[test]
+    fn boundary_registry_report_is_structural_without_accepted_baselines() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let registry = temp.path().join("registry.json");
+        write_boundary_registry(&registry, sample_registry_entry())?;
+        let output = temp.path().join("reports").join("boundary-registry.json");
+
+        boundaries(boundary_config(registry, output.clone()))?;
+
+        let report = read_boundary_report(&output)?;
+        // Without baselines the registry can only be checked for shape, and the
+        // receipt must say so rather than claiming current-evidence authority.
+        assert_eq!(report["mode"], "structural");
+        assert_eq!(report["valid"], true);
+        assert_eq!(report["registry_entries"], 1);
+        assert_eq!(report["baselines_checked"].as_array().map(Vec::len), Some(0));
+        assert_eq!(report["bundles_checked"].as_array().map(Vec::len), Some(0));
+        assert_eq!(report["counts"]["by_disposition"]["deferred_runtime"], 1);
+        assert_eq!(report["counts"]["by_state"]["active"], 1);
+        assert_eq!(report["counts"]["by_lock_scope"]["none"], 1);
+        assert_eq!(report["counts"]["by_replacement_strategy"]["hir_semantics"], 1);
+        assert_eq!(report["counts"]["by_profile"]["base"], 1);
+        assert_eq!(report["counts"]["by_owner_issue"]["#4753"], 1);
+        assert_eq!(report["counts"]["downstream_static_facts_blocked"], 1);
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_registry_report_is_current_when_the_baseline_agrees() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let registry = temp.path().join("registry.json");
+        write_boundary_registry(&registry, sample_registry_entry())?;
+        let baseline = temp.path().join("baseline.json");
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        write_accepted_baseline(&baseline, &report)?;
+        let output = temp.path().join("boundary-registry.json");
+
+        boundaries(BoundaryRegistryConfig {
+            baselines: vec![baseline.clone()],
+            ..boundary_config(registry, output.clone())
+        })?;
+
+        let receipt = read_boundary_report(&output)?;
+        assert_eq!(receipt["mode"], "current");
+        assert_eq!(receipt["valid"], true);
+        assert_eq!(receipt["violations"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["baselines_checked"][0], baseline.display().to_string());
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_registry_report_separates_missing_active_boundaries() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let registry = temp.path().join("registry.json");
+        write_boundary_registry(&registry, sample_registry_entry())?;
+        let baseline = temp.path().join("baseline.json");
+        // The accepted baseline no longer emits the registered boundary.
+        write_accepted_baseline(&baseline, &sample_compile_report())?;
+        let output = temp.path().join("boundary-registry.json");
+
+        let Err(error) = boundaries(BoundaryRegistryConfig {
+            baselines: vec![baseline],
+            ..boundary_config(registry, output.clone())
+        }) else {
+            bail!("an active boundary absent from fresh evidence must fail closed");
+        };
+        assert!(
+            error.to_string().contains("semantic-boundary registry validation failed"),
+            "unclear error: {error}"
+        );
+
+        // The receipt is still written, and routes the violation to the
+        // dedicated missing-active channel rather than leaving it unclassified.
+        let receipt = read_boundary_report(&output)?;
+        assert_eq!(receipt["mode"], "current");
+        assert_eq!(receipt["valid"], false);
+        let missing = receipt["missing_active"]
+            .as_array()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing_active is not an array"))?;
+        assert_eq!(missing.len(), 1);
+        assert!(
+            missing[0]
+                .as_str()
+                .is_some_and(|violation| violation.contains("runtime_symbolic_reference")
+                    && violation.contains("absent from fresh baseline"))
+        );
+        assert_eq!(receipt["emitting_retired"].as_array().map(Vec::len), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_registry_report_keeps_shape_violations_out_of_the_missing_active_channel()
+    -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let registry = temp.path().join("registry.json");
+        // Two identical active entries produce a *duplicate* active-boundary
+        // violation. It mentions an active registry boundary but says nothing
+        // about absence, so it must stay in the general violation list.
+        write_boundary_registry_entries(
+            &registry,
+            vec![sample_registry_entry(), sample_registry_entry()],
+        )?;
+        let output = temp.path().join("boundary-registry.json");
+
+        let Err(_) = boundaries(boundary_config(registry, output.clone())) else {
+            bail!("a duplicate active registry boundary must fail closed");
+        };
+
+        let receipt = read_boundary_report(&output)?;
+        assert_eq!(receipt["valid"], false);
+        assert_eq!(receipt["missing_active"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["emitting_retired"].as_array().map(Vec::len), Some(0));
+        assert!(receipt["violations"].as_array().is_some_and(|violations| violations.iter().any(
+            |violation| {
+                violation
+                    .as_str()
+                    .is_some_and(|text| text.contains("duplicate active registry boundary key"))
+            }
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_registry_report_separates_retired_boundaries_that_still_emit() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let registry = temp.path().join("registry.json");
+        let mut entry = sample_registry_entry();
+        entry.state = SemanticBoundaryRegistryState::Retired;
+        entry.retirement_pr = Some("#5300".into());
+        entry.retirement_bundle = Some("bundle-sha256:example".into());
+        write_boundary_registry(&registry, entry)?;
+        let baseline = temp.path().join("baseline.json");
+        let mut report = sample_compile_report();
+        report.semantic_boundaries.push(sample_semantic_boundary());
+        write_accepted_baseline(&baseline, &report)?;
+        let output = temp.path().join("boundary-registry.json");
+
+        let Err(_) = boundaries(BoundaryRegistryConfig {
+            baselines: vec![baseline],
+            ..boundary_config(registry, output.clone())
+        }) else {
+            bail!("a retired boundary that still emits must fail closed");
+        };
+
+        let receipt = read_boundary_report(&output)?;
+        let emitting = receipt["emitting_retired"]
+            .as_array()
+            .ok_or_else(|| color_eyre::eyre::eyre!("emitting_retired is not an array"))?;
+        assert_eq!(emitting.len(), 1);
+        assert!(
+            emitting[0]
+                .as_str()
+                .is_some_and(|violation| violation.contains("still emits in baseline"))
+        );
+        assert_eq!(receipt["missing_active"].as_array().map(Vec::len), Some(0));
+        assert_eq!(receipt["counts"]["by_state"]["retired"], 1);
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_registry_historical_mode_accepts_boundaries_absent_from_the_baseline() -> TestResult
+    {
+        let temp = tempfile::tempdir()?;
+        let registry = temp.path().join("registry.json");
+        write_boundary_registry(&registry, sample_registry_entry())?;
+        let baseline = temp.path().join("baseline.json");
+        write_accepted_baseline(&baseline, &sample_compile_report())?;
+        let output = temp.path().join("boundary-registry.json");
+
+        // Historical replay compares registry shape and identity but must not
+        // demand that a retained historical boundary still emits today.
+        boundaries(BoundaryRegistryConfig {
+            baselines: vec![baseline],
+            historical: true,
+            ..boundary_config(registry, output.clone())
+        })?;
+
+        let receipt = read_boundary_report(&output)?;
+        assert_eq!(receipt["mode"], "historical");
+        assert_eq!(receipt["valid"], true);
+        assert_eq!(receipt["missing_active"].as_array().map(Vec::len), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn boundary_registry_report_records_unreadable_baselines_as_violations() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let registry = temp.path().join("registry.json");
+        write_boundary_registry(&registry, sample_registry_entry())?;
+        let baseline = temp.path().join("not-a-baseline.json");
+        fs::write(&baseline, "{ not json")?;
+        let output = temp.path().join("boundary-registry.json");
+
+        let Err(_) = boundaries(BoundaryRegistryConfig {
+            baselines: vec![baseline.clone()],
+            ..boundary_config(registry, output.clone())
+        }) else {
+            bail!("an undecodable baseline must fail closed");
+        };
+
+        let receipt = read_boundary_report(&output)?;
+        // An unreadable baseline is a violation, not a silently skipped input,
+        // and it must not be promoted to current-evidence authority.
+        assert_eq!(receipt["mode"], "structural");
+        assert_eq!(receipt["valid"], false);
+        assert!(
+            receipt["violations"][0]
+                .as_str()
+                .is_some_and(|violation| violation.contains("not-a-baseline.json"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_retirement_requires_every_identity_field_to_match() -> TestResult {
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &sample_registry_series(),
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let mut entry = sample_registry_entry();
+        entry.state = SemanticBoundaryRegistryState::Retiring;
+
+        // Without a retirement bundle reference there is no exact evidence.
+        assert!(!has_exact_retirement(&baseline, &entry));
+
+        entry.retirement_bundle = Some("bundle-sha256:example".into());
+        let retirement = BoundaryRetirement {
+            schema_version: BOUNDARY_RETIREMENT_SCHEMA_VERSION.into(),
+            path: entry.path.clone(),
+            id: entry.id.clone(),
+            source_start: entry.source_span.start,
+            source_end: entry.source_span.end,
+            series_id: baseline.series_id.clone(),
+            manifest_hash: baseline.manifest_hash.clone(),
+            measurement_sha: baseline.repository_commit.clone(),
+            source_report_digest: baseline.source_report_digest.clone(),
+            transition_id: "transition-1".into(),
+            replacement_issue: "#5168".into(),
+            evidence_bundle: "bundle-sha256:example".into(),
+        };
+        let mut accepted = baseline.clone();
+        accepted.boundary_retirements = vec![retirement.clone()];
+        assert!(has_exact_retirement(&accepted, &entry));
+
+        // Every identity field participates: weakening any one of them must
+        // stop the retirement from counting as exact evidence.
+        let mutations: Vec<Box<dyn Fn(&mut BoundaryRetirement)>> = vec![
+            Box::new(|value| value.path = "base/other.t".into()),
+            Box::new(|value| value.id = "other_boundary".into()),
+            Box::new(|value| value.source_start = value.source_start.saturating_add(1)),
+            Box::new(|value| value.source_end = value.source_end.saturating_add(1)),
+            Box::new(|value| value.series_id = "series-other".into()),
+            Box::new(|value| value.manifest_hash = "manifest-other".into()),
+            Box::new(|value| value.measurement_sha = "sha-other".into()),
+            Box::new(|value| value.source_report_digest = "sha256:other".into()),
+            Box::new(|value| value.evidence_bundle = "bundle-sha256:other".into()),
+        ];
+        for (index, mutate) in mutations.iter().enumerate() {
+            let mut weakened = retirement.clone();
+            mutate(&mut weakened);
+            let mut candidate = baseline.clone();
+            candidate.boundary_retirements = vec![weakened];
+            assert!(
+                !has_exact_retirement(&candidate, &entry),
+                "mutation {index} was accepted as exact retirement evidence"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_ref_validation_rejects_empty_and_path_like_refs() -> TestResult {
+        validate_prepare_ref("v5.42.0")?;
+        validate_prepare_ref("refs/heads/blead")?;
+
+        for rejected in ["", "   ", "../etc/passwd", "blead/../..", "windows\\path"] {
+            let Err(error) = validate_prepare_ref(rejected) else {
+                bail!("prepare --ref {rejected:?} must be rejected");
+            };
+            assert!(
+                error.to_string().contains("perl-core-harness prepare --ref"),
+                "unclear error for {rejected:?}: {error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_paths_sanitize_ref_characters_into_a_single_component() {
+        assert_eq!(safe_path_component("refs/heads/blead"), "refs-heads-blead");
+        assert_eq!(safe_path_component("v5.42.0-RC1_x"), "v5.42.0-RC1_x");
+        assert_eq!(safe_path_component("a b:c"), "a-b-c");
+
+        let output_dir = default_prepare_output_dir("refs/heads/blead");
+        assert!(output_dir.ends_with("target/perl-core/upstream/refs-heads-blead"));
+        let receipt = default_prepare_receipt_path("refs/heads/blead");
+        assert!(receipt.ends_with("target/perl-core/prepare/refs-heads-blead/prepare.json"));
+        assert!(
+            default_baseline_path(HarnessMode::Compile, HarnessProfile::Base)
+                .ends_with(".ci/perl-core-harness/base-compile-baseline.json")
+        );
+    }
+
+    #[test]
+    fn rail_states_distinguish_available_evidence_from_absence() {
+        let available = available_rail(
+            RUN_REPORT_SCHEMA_VERSION,
+            "selected execution receipt validated".into(),
+            vec!["bundle:bundle-1".into()],
+        );
+        assert_eq!(available.availability, CompatibilityRailAvailability::Available);
+        assert_eq!(available.schema_version.as_deref(), Some(RUN_REPORT_SCHEMA_VERSION));
+        assert_eq!(available.evidence_refs, vec!["bundle:bundle-1"]);
+
+        let unavailable = unavailable_rail("no execution receipt was supplied");
+        assert_eq!(unavailable.availability, CompatibilityRailAvailability::NotAvailable);
+        // An unavailable rail must not advertise a schema or borrow evidence.
+        assert!(unavailable.schema_version.is_none());
+        assert!(unavailable.evidence_refs.is_empty());
     }
 }
