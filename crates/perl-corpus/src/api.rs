@@ -27,9 +27,9 @@ pub use crate::glob_expressions::{
 pub use crate::gold::*;
 pub use crate::inventory::*;
 pub use crate::loading::{
-    CorpusLoadError, NewlineStyle, PlainPerlSource, SectionCaseId, SectionedCase,
-    SectionedCorpusDocument, load_plain_perl_source, load_sectioned_corpus_document, parse_dir,
-    parse_file,
+    CorpusLoadError, NO_FOLLOW_REVIEWED, NewlineStyle, PlainPerlSource, SectionCaseId,
+    SectionedCase, SectionedCorpusDocument, load_plain_perl_source, load_sectioned_corpus_document,
+    parse_dir, parse_file,
 };
 pub use crate::metadata::{Section, find_by_flag, find_by_tag};
 pub use crate::sidecar::*;
