@@ -36,12 +36,12 @@ impl TestContext {
     fn find_perl_lsp_binary() -> std::process::Command {
         // Resolution order:
         // Prefer an explicit candidate, then the canonical workspace product.
-        if let Ok(bin_path) = std::env::var("PERL_LSP_BIN") {
-            if std::path::Path::new(&bin_path).exists() {
-                let mut cmd = std::process::Command::new(bin_path);
-                cmd.arg("--stdio");
-                return cmd;
-            }
+        if let Ok(bin_path) = std::env::var("PERL_LSP_BIN")
+            && std::path::Path::new(&bin_path).exists()
+        {
+            let mut cmd = std::process::Command::new(bin_path);
+            cmd.arg("--stdio");
+            return cmd;
         }
 
         // Try workspace target directory
