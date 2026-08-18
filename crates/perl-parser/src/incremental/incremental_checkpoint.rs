@@ -480,10 +480,9 @@ impl CheckpointedIncrementalParser {
         // restored into the lexer. Fail closed to a full reparse when either
         // side of the candidate window is not valid for the edited source.
         let probe = PerlLexer::new(&self.source);
-        let checkpoints_are_restorable = left_checkpoint
-            .as_ref()
-            .map_or(true, |checkpoint| probe.can_restore(checkpoint))
-            && right_checkpoint.as_ref().map_or(true, |checkpoint| probe.can_restore(checkpoint));
+        let checkpoints_are_restorable =
+            left_checkpoint.as_ref().is_none_or(|checkpoint| probe.can_restore(checkpoint))
+                && right_checkpoint.as_ref().is_none_or(|checkpoint| probe.can_restore(checkpoint));
         if !checkpoints_are_restorable {
             self.stats.cache_misses += 1;
             return self.parse_with_checkpoints();
