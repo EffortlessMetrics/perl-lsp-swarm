@@ -112,6 +112,19 @@ jobs:
           extra-packages: |
             LSP:sublimelsp/LSP@4070-2.13.0
             Debugger:daveleroy/SublimeDebugger@0.11.6
+            sublime_aio:packagecontrol/sublime_aio@v0.2.3
+
+      - name: Reject sublime_aio tag drift from the pinned commit
+        shell: bash
+        run: |
+          resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio "refs/tags/v0.2.3^{}" | cut -f1)
+          if [[ -z "$resolved" ]]; then
+            resolved=$(git ls-remote https://github.com/packagecontrol/sublime_aio "refs/tags/v0.2.3" | cut -f1)
+          fi
+          if [[ "$resolved" != "b3d1d559ec223f276c9693e17476768257951266" ]]; then
+            echo "packagecontrol/sublime_aio tag v0.2.3 resolves to ${resolved:-<none>}, but the pinned commit is b3d1d559ec223f276c9693e17476768257951266." >&2
+            exit 1
+          fi
 
       - name: Vendor the pinned python dependencies for LSP 2.13.0
         # With Package Control disabled the declared dependencies never
