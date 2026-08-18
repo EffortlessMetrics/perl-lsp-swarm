@@ -2067,10 +2067,10 @@ sub main_func {}
             if node["name"].as_str().unwrap_or_default() == name {
                 return true;
             }
-            if let Some(children) = node["children"].as_array() {
-                if find_symbol(children, name) {
-                    return true;
-                }
+            if let Some(children) = node["children"].as_array()
+                && find_symbol(children, name)
+            {
+                return true;
             }
         }
         false

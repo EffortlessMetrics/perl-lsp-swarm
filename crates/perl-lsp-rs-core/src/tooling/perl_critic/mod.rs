@@ -9,6 +9,7 @@ mod identity;
 mod native;
 mod normalized;
 mod quick_fix;
+mod remediation;
 mod result_identity;
 mod types;
 
@@ -34,6 +35,7 @@ pub use normalized::{
     NormalizedCriticFinding, OwnedCriticObservedIdentity, normalize_critic_findings,
 };
 pub use quick_fix::{QuickFix, TextEdit};
+pub use remediation::{CriticRemediationClass, CriticRemediationEligibility};
 pub use result_identity::{
     CriticPolicyIdentity, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity,
     DiagnosticResultIdentity, DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions,

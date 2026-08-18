@@ -35,6 +35,7 @@ mod lsp;
 mod mod_tests;
 mod parser;
 mod quality;
+mod test_inventory;
 mod tests;
 mod token;
 mod workspace;
@@ -160,10 +161,19 @@ pub fn run(write: bool, check: bool, only: Option<StatusSubsystem>) -> Result<()
         })?;
     }
 
+    // One compiled workspace-lib inventory owns both the Tier-A total and the
+    // per-crate quality table. Full/quality runs fail closed; tests-only keeps
+    // its existing UNVERIFIED rendering when the bounded discovery is unavailable.
+    let test_inventory = test_inventory::collect_for_selection(need_tests, need_quality, || {
+        run_subsystem("test-inventory", "cargo xtask update-status --write --only quality", || {
+            test_inventory::collect_per_crate_test_counts(&root)
+        })
+    })?;
+
     // --- Tests subsystem ---
     if need_tests {
         run_subsystem("tests", "cargo xtask update-status --write --only tests", || {
-            let test_counts = tests::count_tests(&root);
+            let test_counts = tests::count_tests(&root, test_inventory.as_ref());
             let missing_docs_current = tests::count_missing_docs_perl_parser(&root);
             let missing_docs_baseline = tests::read_missing_docs_baseline(&root);
 
@@ -216,7 +226,11 @@ pub fn run(write: bool, check: bool, only: Option<StatusSubsystem>) -> Result<()
             let quality_path = root.join("docs/project/status/quality.md");
             let original_quality = fs::read_to_string(&quality_path)
                 .context("reading docs/project/status/quality.md")?;
-            let updated_quality = quality::generate_quality_status(&root, &original_quality)?;
+            let inventory = test_inventory
+                .as_ref()
+                .ok_or_else(|| eyre!("quality test inventory missing after required discovery"))?;
+            let updated_quality =
+                quality::generate_quality_status(&root, &original_quality, inventory)?;
             if updated_quality != original_quality {
                 files_to_update.push((
                     "docs/project/status/quality.md",

@@ -477,10 +477,26 @@ impl<'a> Parser<'a> {
 
                 // Either build via indirect-object path or the normal expression path
                 if let TokenKind::Identifier = kind {
-                    // We need the text for the indirect call check
-                    // We must clone it because is_indirect_call_pattern borrows self mutably to peek ahead
-                    let text = self.tokens.peek()?.text.clone();
+                    // We need the text for the indirect call check and the route trace.
+                    // We must copy because is_indirect_call_pattern borrows self mutably to peek ahead.
+                    // The span feeds the test-only decision trace and is unused otherwise.
+                    #[cfg_attr(not(test), allow(unused_variables))]
+                    let (text, token_start, token_end) = {
+                        let token = self.tokens.peek()?;
+                        (token.text.clone(), token.start, token.end)
+                    };
                     if self.is_unknown_lowercase_bareword_call_pattern(&text) {
+                        // The predicate stays the sole dispatch authority. The test-only
+                        // mutation control suppresses route evidence without moving any
+                        // source shape onto a different route, so the public AST is
+                        // preserved for every input while the positive proof fails.
+                        #[cfg(test)]
+                        if !self.unknown_lowercase_bareword_decision_is_bypassed() {
+                            self.record_unknown_lowercase_bareword_call_decision(
+                                token_start,
+                                token_end,
+                            );
+                        }
                         let call = self.parse_unknown_lowercase_bareword_call()?;
                         Ok(self.parse_named_unary_statement_tail(call)?)
                     } else if self.is_indirect_call_pattern(&text) {
