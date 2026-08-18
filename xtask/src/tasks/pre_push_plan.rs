@@ -766,6 +766,47 @@ mod tests {
     }
 
     #[test]
+    fn authority_script_change_selects_script_proof() {
+        let plan = plan_for(
+            vec!["vscode-extension/scripts/check-typescript-authority.js"],
+            "code",
+            Vec::new(),
+        );
+        assert_eq!(plan.posture, "PROCEED");
+        assert_eq!(plan.extension_change_classes, vec![ExtensionChangeClass::Scripts]);
+        assert!(has_command(&plan, "cd vscode-extension && npm run typecheck:scripts"));
+        assert!(has_command(&plan, "cd vscode-extension && npm run test:receipt-summary"));
+    }
+
+    #[test]
+    fn authoring_change_defers_manual_host_observation() {
+        let plan = plan_for(vec!["vscode-extension/.vscode/launch.json"], "code", Vec::new());
+        assert_eq!(plan.posture, "PROCEED");
+        assert_eq!(plan.extension_change_classes, vec![ExtensionChangeClass::Authoring]);
+        assert!(has_command(&plan, "cd vscode-extension && npm run typecheck:all"));
+        assert!(has_command(&plan, "cd vscode-extension && npm run test:ci"));
+        assert!(defers_command(&plan, "manual Extension Development Host observation"));
+    }
+
+    #[test]
+    fn bundle_scripts_are_not_generic_scripts() {
+        for path in [
+            "vscode-extension/scripts/check-source-map.js",
+            "vscode-extension/scripts/check-vsix-inventory.js",
+        ] {
+            assert_eq!(
+                classify_extension_path(path),
+                Some(ExtensionChangeClass::BundlePackage),
+                "{path} must classify as BundlePackage"
+            );
+        }
+        assert_eq!(
+            classify_extension_path("vscode-extension/scripts/lint-canary.js"),
+            Some(ExtensionChangeClass::Scripts)
+        );
+    }
+
+    #[test]
     fn setup_action_selects_workflow_and_extension_proof() {
         let plan = plan_for(
             vec![".github/actions/setup-vscode-toolchain/action.yml"],
