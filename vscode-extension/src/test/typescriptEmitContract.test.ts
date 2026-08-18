@@ -17,15 +17,11 @@ const extensionRoot = path.resolve(__dirname, '..', '..');
 const tscEntry = path.join(extensionRoot, 'node_modules', 'typescript', 'bin', 'tsc');
 
 function effectiveCompilerOptions(configFile: string): CompilerOptions {
-  const output = execFileSync(
-    process.execPath,
-    [tscEntry, '--showConfig', '-p', configFile],
-    {
-      cwd: extensionRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
+  const output = execFileSync(process.execPath, [tscEntry, '--showConfig', '-p', configFile], {
+    cwd: extensionRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   const config = JSON.parse(output) as EffectiveConfig;
   return config.compilerOptions ?? {};
 }
@@ -46,18 +42,12 @@ describe('TypeScript emit ownership', () => {
   test.each(contracts)('$file owns its effective emit boundary', (contract) => {
     const options = effectiveCompilerOptions(contract.file);
     expect(options.noEmit).toBe(contract.noEmit);
-    expect(resolvedOption(options.outDir)).toBe(
-      path.resolve(extensionRoot, contract.outDir),
-    );
-    expect(resolvedOption(options.rootDir)).toBe(
-      path.resolve(extensionRoot, contract.rootDir),
-    );
+    expect(resolvedOption(options.outDir)).toBe(path.resolve(extensionRoot, contract.outDir));
+    expect(resolvedOption(options.rootDir)).toBe(path.resolve(extensionRoot, contract.rootDir));
   });
 
   test('direct base-config tsc cannot emit even when an output directory is supplied', () => {
-    const redirectedOutput = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'perl-lsp-ts-no-emit-'),
-    );
+    const redirectedOutput = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-ts-no-emit-'));
     try {
       execFileSync(
         process.execPath,
