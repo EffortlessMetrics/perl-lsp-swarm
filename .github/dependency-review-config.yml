@@ -28,6 +28,10 @@ allow-licenses:
   - CC0-1.0
   - Zlib
   - CDLA-Permissive-2.0
+  # Development publishing tooling only (ovsx, Eclipse's own Open VSX CLI):
+  # never linked into or distributed with the product. ovsx@1.0.2 already
+  # carried EPL-2.0; the bump only made the delta gate see the license.
+  - EPL-2.0
 
 comment-summary-in-pr: never
 show-openssf-scorecard: true
