@@ -193,11 +193,12 @@ fn test_range_formatting_uses_utf16_columns_for_non_bmp_text() {
     };
     let code = "my$x=1; # 😀\n";
     let selected_line = "my$x=1; # 😀";
-    let exact_end = selected_line.encode_utf16().count() as u32;
+    let exact_end = selected_line.encode_utf16().count();
     assert_eq!(exact_end, 12, "the emoji occupies two UTF-16 code units");
-    assert_ne!(exact_end as usize, selected_line.len(), "UTF-16 is not byte length");
+    assert_ne!(exact_end, selected_line.len(), "UTF-16 is not byte length");
 
-    let range = WireRange { start: WirePosition::new(0, 0), end: WirePosition::new(0, exact_end) };
+    let range =
+        WireRange { start: WirePosition::new(0, 0), end: WirePosition::new(0, exact_end as u32) };
     let decision =
         must(formatter.format_range_decision(code, &range, &options, &FormatContext::default()));
 
