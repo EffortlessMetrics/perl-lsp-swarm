@@ -194,3 +194,32 @@ fn repository_name(repository: &str) -> Result<&str> {
     validate_repository(repository)?;
     repository.split_once('/').map(|(_, name)| name).context("repository has no name")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{repository_name, validate_repository};
+
+    #[test]
+    fn repository_slugs_validate_and_split() {
+        assert!(validate_repository("owner/name").is_ok());
+        assert_eq!(repository_name("owner/name").ok(), Some("name"));
+        assert_eq!(repository_name("a.b-c/d.e_f").ok(), Some("d.e_f"));
+    }
+
+    #[test]
+    fn repository_slug_rejects_missing_owner_or_extra_parts() {
+        assert!(validate_repository("name").is_err(), "missing owner");
+        assert!(validate_repository("").is_err(), "empty slug");
+        assert!(validate_repository("owner/name/extra").is_err(), "third part");
+        assert!(repository_name("name").is_err(), "name half cannot split");
+    }
+
+    #[test]
+    fn repository_slug_rejects_unsupported_characters() {
+        assert!(validate_repository("owner/name!").is_err());
+        assert!(validate_repository("ow ner/name").is_err());
+        assert!(validate_repository("owner/na me").is_err());
+        assert!(validate_repository("owner/").is_err(), "empty name half");
+        assert!(validate_repository("/name").is_err(), "empty owner half");
+    }
+}
