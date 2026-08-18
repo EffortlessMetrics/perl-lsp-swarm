@@ -1,0 +1,13 @@
+==========================================
+Checked-in first case
+==========================================
+# @id: checked.first
+# @tags: loader, sectioned
+my $first = 1;
+
+==========================================
+Checked-in second case
+==========================================
+# @id: checked.second
+# @tags: loader, sectioned
+my $second = 2;

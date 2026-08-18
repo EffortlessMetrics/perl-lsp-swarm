@@ -240,9 +240,18 @@ class CommandSurfaceContractTests(unittest.TestCase):
         self.assertNotIn("self.view.rowcol(point)", source)
 
     def test_deterministic_export_contains_the_command_runtime(self) -> None:
+        # The exported package contents derive from the package-source
+        # manifest (the single declared authority); the exporter must read it
+        # rather than carry a second list that would drift.
+        manifest = json.loads(
+            (PACKAGE.parent / "package-source.v1.json").read_text(encoding="utf-8")
+        )
+        package_files = manifest["package_files"]
+        self.assertIn("Default.sublime-commands", package_files)
+        self.assertIn("command_surface.py", package_files)
         exporter = (PACKAGE.parent / "export_lsp_perllsp.py").read_text(encoding="utf-8")
-        self.assertIn('"Default.sublime-commands"', exporter)
-        self.assertIn('"command_surface.py"', exporter)
+        self.assertIn('payload["package_files"]', exporter)
+        self.assertNotIn("INCLUDED = [", exporter)
 
 
 if __name__ == "__main__":

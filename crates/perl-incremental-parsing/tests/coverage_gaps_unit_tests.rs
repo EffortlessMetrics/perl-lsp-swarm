@@ -14,6 +14,7 @@ use perl_incremental_parsing::incremental::incremental_edit::{
     IncrementalEdit, IncrementalEditBatchError, IncrementalEditSet,
 };
 use perl_incremental_parsing::incremental::incremental_integration::lsp_change_to_edit;
+
 use perl_incremental_parsing::incremental::{Edit, IncrementalState, apply_edits};
 use ropey::Rope;
 use serde_json::json;

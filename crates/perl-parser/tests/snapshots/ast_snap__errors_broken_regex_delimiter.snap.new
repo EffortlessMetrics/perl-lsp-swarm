@@ -1,0 +1,9 @@
+---
+source: crates/perl-parser/tests/ast_snap.rs
+assertion_line: 331
+expression: "parse_errors(\"if ($text =~ /abc) { print 1; }\\nmy $ok = 1;\")"
+---
+Inferred a missing closing delimiter in argument list
+Missing operand in expression
+expected '{', found end of input at position 43
+expected statement, found end of input at position 43

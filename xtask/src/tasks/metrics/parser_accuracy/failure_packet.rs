@@ -4,7 +4,13 @@ use std::path::Path;
 
 use color_eyre::eyre::{Context, Result};
 
-use super::*;
+use super::{
+    AstExpectation, AstPrediction, FailurePacket, FixtureMetadata, LineTag, ParserAccuracyManifest,
+    SymbolEdgeKey, SymbolEntityKey, SymbolOccurrenceKey, best_ast_prediction_index,
+    comparable_actual_line_tags, edge_key_from_expectation, entity_key_from_expectation,
+    extract_ast_predictions, extract_line_tags, extract_symbol_predictions,
+    occurrence_key_from_expectation,
+};
 
 const FAILURE_PACKET_LIMIT: usize = 50;
 

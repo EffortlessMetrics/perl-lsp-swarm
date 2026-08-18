@@ -1,5 +1,30 @@
-//! Differential parser test harness for exact current, historical, and native
-//! Perl parser subjects.
+//! Differential parser evidence for exact current, historical, native, and
+//! experimental Perl parser subjects.
+//!
+//! The comparison model keeps five propositions separate:
+//!
+//! 1. [`HarnessOutcome`] records whether trustworthy subject output returned.
+//! 2. [`SubjectDisposition`] records what a completed parser subject reported.
+//! 3. [`InstrumentState`] records whether required evidence is complete.
+//! 4. [`ObservationDisposition`] records whether one plane is observable.
+//! 5. [`ScoredComparison`] records reviewed conformance for an exact observer
+//!    and expectation.
+//!
+//! A cleanly accepted parse is therefore not a correctness verdict by itself.
+//! Existing [`Verdict`] and `parse_v*` APIs remain as explicitly lossy
+//! compatibility surfaces while corpus and report consumers migrate.
+//!
+//! # Subjects
+//!
+//! | Role | Current implementation |
+//! |------|------------------------|
+//! | historical Tree-sitter C | `tree-sitter-perl-c` snapshot |
+//! | experimental Pest | `perl-parser-pest` |
+//! | native recursive descent | `perl-parser-core` |
+//! | current upstream Tree-sitter | `ts-parser-perl` via `current_upstream` |
+//! | native Tree-sitter facade | separate compatibility subject |
+//!
+//! # Grammar isolation
 //!
 //! Native Tree-sitter grammars are feature-isolated because the current
 //! upstream package and historical vendored snapshot export the same C symbol.
@@ -22,6 +47,32 @@
 //! binary still fails loudly with a duplicate native symbol. The
 //! current-upstream adapter never falls back to the historical grammar
 //! regardless of feature combination.
+//!
+//! # Usage
+//!
+//! ```no_run
+//! use perl_parser_comparison::{
+//!     ConformanceOutcome, ObserverId, ObservationPlane, ReviewedExpectationId,
+//!     ScoredComparison, SemanticFingerprint, SubjectDisposition, execute_v3,
+//! };
+//!
+//! let execution = execute_v3("my $x = 42;")?;
+//! assert_eq!(
+//!     execution.subject_disposition(),
+//!     Some(&SubjectDisposition::AcceptedClean),
+//! );
+//!
+//! let comparison = ScoredComparison::matches_expected(
+//!     &execution,
+//!     ObserverId::new("assignment-shape.v1")?,
+//!     ReviewedExpectationId::new("assignment-shape.expected.v1")?,
+//!     ObservationPlane::Structure,
+//!     SemanticFingerprint::new("assignment(variable,integer)")?,
+//!     SemanticFingerprint::new("assignment(variable,integer)")?,
+//! )?;
+//! assert_eq!(comparison.outcome(), ConformanceOutcome::MatchesExpected);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
 #![deny(unreachable_pub)]
 #![warn(rust_2018_idioms)]
@@ -40,6 +91,7 @@
 pub mod corpus_walker;
 #[cfg(feature = "current-upstream")]
 pub mod current_upstream;
+pub mod evidence;
 #[cfg(feature = "historical")]
 pub mod harness;
 #[cfg(feature = "historical")]
@@ -56,7 +108,14 @@ pub use current_upstream::{
     CurrentUpstreamPinError, CurrentUpstreamQueryKind, CurrentUpstreamSubjectManifest,
     SUBJECT_MANIFEST_TOML, validate_exact_package_requirement,
 };
+pub use evidence::{
+    BoundedText, ComparisonModelError, ConformanceOutcome, DiagnosticSummary, DivergencePath,
+    EvidenceValueError, HarnessFailure, HarnessOutcome, InstrumentState, MismatchClass,
+    MismatchDetail, NonDecisiveOutcome, ObservationDisposition, ObservationPlane, ObserverId,
+    ReviewedExpectationId, ScoredComparison, SemanticFingerprint, StableId, SubjectDisposition,
+    SubjectExecution, SubjectRole,
+};
 #[cfg(feature = "historical")]
-pub use harness::{ParseResult, parse_v1, parse_v2, parse_v3};
+pub use harness::{ParseResult, ParserLabel, execute_v1, execute_v3, parse_v1, parse_v2, parse_v3};
 #[cfg(feature = "historical")]
 pub use outcomes::Verdict;

@@ -1780,6 +1780,7 @@ dependencies = [
  "perl-module",
  "perl-parser-core",
  "perl-semantic-analyzer",
+ "perl-source-identity",
  "perl-tdd-support",
  "perl-test-generators",
  "perl-uri",
