@@ -23,13 +23,16 @@ jobs:
     timeout-minutes: 3
     steps:
       - name: Checkout exact subject
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Run falsifiers and validate checked-in contract
         shell: bash
         run: |
           set +e
-          python3 -m unittest scripts/ci/test_validate_gate_enforcement_contract.py
+          python3 -m unittest \
+            scripts/ci/test_validate_gate_enforcement_contract.py \
+            scripts/ci/test_gate_enforcement_app_bindings.py \
+            scripts/ci/test_reconcile_github_enforcement_snapshot.py
           test_status=$?
           python3 scripts/ci/validate_gate_enforcement_contract.py \
             --root . \

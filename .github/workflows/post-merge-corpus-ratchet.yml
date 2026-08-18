@@ -45,7 +45,7 @@ jobs:
 
     steps:
       - name: Checkout bounded analysis tree
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -62,7 +62,7 @@ jobs:
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -149,7 +149,7 @@ jobs:
 
     steps:
       - name: Checkout trusted default branch
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -166,7 +166,7 @@ jobs:
           shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -303,7 +303,7 @@ jobs:
 
     steps:
       - name: Checkout trusted default branch
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Pin the ref explicitly. `workflow_dispatch` can be launched against
           # any branch; without this the step's name would be a false claim and

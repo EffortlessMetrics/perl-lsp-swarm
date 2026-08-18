@@ -114,13 +114,13 @@ my$result=calculate(5,3);
 
     let actions_response = srv.handle_request(actions_req).ok_or("Failed to get code actions")?;
 
-    if let Some(actions_result) = actions_response.result {
-        if let Some(actions) = actions_result.as_array() {
-            println!("Available code actions: {} actions", actions.len());
-            for action in actions {
-                if let Some(title) = action.get("title").and_then(|t| t.as_str()) {
-                    println!("  - {}", title);
-                }
+    if let Some(actions_result) = actions_response.result
+        && let Some(actions) = actions_result.as_array()
+    {
+        println!("Available code actions: {} actions", actions.len());
+        for action in actions {
+            if let Some(title) = action.get("title").and_then(|t| t.as_str()) {
+                println!("  - {}", title);
             }
         }
     }
@@ -231,13 +231,13 @@ fn test_batteries_included_features_summary() -> Result<(), Box<dyn std::error::
     }
 
     // Execute Commands
-    if let Some(exec_cmd) = capabilities.get("executeCommandProvider") {
-        if let Some(commands) = exec_cmd.get("commands").and_then(|c| c.as_array()) {
-            println!("✓ Execute Commands:");
-            for cmd in commands {
-                if let Some(cmd_str) = cmd.as_str() {
-                    println!("    - {}", cmd_str);
-                }
+    if let Some(exec_cmd) = capabilities.get("executeCommandProvider")
+        && let Some(commands) = exec_cmd.get("commands").and_then(|c| c.as_array())
+    {
+        println!("✓ Execute Commands:");
+        for cmd in commands {
+            if let Some(cmd_str) = cmd.as_str() {
+                println!("    - {}", cmd_str);
             }
         }
     }

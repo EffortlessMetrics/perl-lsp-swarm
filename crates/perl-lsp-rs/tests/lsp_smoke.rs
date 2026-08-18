@@ -447,11 +447,11 @@ fn smoke_completion_returns_items() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // We may or may not have items depending on context
-    if let Some(items) = items {
-        if !items.is_empty() {
-            // Verify structure of first item
-            assert!(items[0].get("label").is_some(), "Completion items must have label");
-        }
+    if let Some(items) = items
+        && !items.is_empty()
+    {
+        // Verify structure of first item
+        assert!(items[0].get("label").is_some(), "Completion items must have label");
     }
 
     shutdown_server(&server);

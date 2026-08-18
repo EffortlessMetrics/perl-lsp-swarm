@@ -31,8 +31,33 @@ REQUIRED_ENFORCEMENT = {
     "github-ruleset",
     "github-branch-protection+ruleset",
 }
+CLASSIC_ENFORCEMENT = {
+    "github-branch-protection",
+    "github-branch-protection+ruleset",
+}
+RULESET_ENFORCEMENT = {
+    "github-ruleset",
+    "github-branch-protection+ruleset",
+}
 NON_REQUIRED_ENFORCEMENT = {"neither", "local", "not-proven"}
 WORKFLOW_RESULTS = {"propagate", "continue"}
+CHECK_ENTRY_FIELDS = frozenset(
+    {
+        "name",
+        "producer",
+        "workflow",
+        "job",
+        "workflow_result",
+        "events",
+        "required",
+        "policy_role",
+        "applicability",
+        "enforcement",
+        "classic_app_id",
+        "ruleset_integration_id",
+        "reason",
+    }
+)
 EVENT_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*(?:#.*)?$")
 
@@ -429,6 +454,35 @@ def _string_list(value: Any, *, field: str, subject: str) -> list[str]:
     return value
 
 
+def _binding_findings(
+    entry: dict[str, Any],
+    *,
+    field: str,
+    allowed_enforcement: set[str],
+    subject: str,
+) -> list[Finding]:
+    if field not in entry:
+        return []
+    value = entry[field]
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return [
+            Finding(
+                f"invalid_{field}",
+                subject,
+                f"{field} must be a positive integer",
+            )
+        ]
+    if entry.get("enforcement") not in allowed_enforcement:
+        return [
+            Finding(
+                f"{field}_source_mismatch",
+                subject,
+                f"{field} is incompatible with enforcement {entry.get('enforcement')!r}",
+            )
+        ]
+    return []
+
+
 def validate_context(
     entry: dict[str, Any],
     workflows: dict[str, Workflow],
@@ -436,6 +490,14 @@ def validate_context(
 ) -> tuple[list[Finding], bool]:
     findings: list[Finding] = []
     name = str(entry.get("name") or "<unnamed>")
+    for field in sorted(set(entry) - CHECK_ENTRY_FIELDS):
+        findings.append(
+            Finding(
+                "unknown_context_field",
+                name,
+                f"unsupported [[checks]] field {field!r}",
+            )
+        )
     role = entry.get("policy_role")
     required = entry.get("required")
     applicability = entry.get("applicability")
@@ -456,6 +518,23 @@ def validate_context(
         findings.append(Finding("required_without_github_enforcement", name, "required context names no protected enforcement"))
     if role in {"advisory", "informational", "local"} and enforcement not in NON_REQUIRED_ENFORCEMENT:
         findings.append(Finding("nonrequired_claims_github_enforcement", name, f"non-required role claims {enforcement!r}"))
+
+    findings.extend(
+        _binding_findings(
+            entry,
+            field="classic_app_id",
+            allowed_enforcement=CLASSIC_ENFORCEMENT,
+            subject=name,
+        )
+    )
+    findings.extend(
+        _binding_findings(
+            entry,
+            field="ruleset_integration_id",
+            allowed_enforcement=RULESET_ENFORCEMENT,
+            subject=name,
+        )
+    )
 
     workflow = entry.get("workflow")
     job_id = entry.get("job")
@@ -550,6 +629,8 @@ def _canonical_context(entry: dict[str, Any]) -> dict[str, Any]:
         "policy_role",
         "applicability",
         "enforcement",
+        "classic_app_id",
+        "ruleset_integration_id",
         "events",
     )
     return {field: entry[field] for field in fields if field in entry}
@@ -598,20 +679,45 @@ def validate(root: Path, policy_path: Path) -> dict[str, Any]:
         for workflow in sorted(workflows.values(), key=lambda item: item.path)
     ]
     canonical_contexts.sort(key=lambda item: str(item.get("name", "")))
-    subjects = {
-        "repository_sha": repository_sha,
-        "repository_dirty": repository_dirty,
+    policy_subject = {
+        "path": policy_relative,
+        "sha256": _sha256(policy_file),
+        "version": SUPPORTED_POLICY_VERSION,
+        "source": SUPPORTED_POLICY_SOURCE,
+    }
+    semantic_subject = {
+        "schema_version": CONTRACT_SCHEMA_VERSION,
         "policy": {
             "path": policy_relative,
-            "sha256": _sha256(policy_file),
             "version": SUPPORTED_POLICY_VERSION,
             "source": SUPPORTED_POLICY_SOURCE,
         },
-        "workflow_catalog": workflow_subjects,
         "contexts": canonical_contexts,
     }
-    subject_json = json.dumps(subjects, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    exact_source_subject = {
+        "repository_sha": repository_sha,
+        "repository_dirty": repository_dirty,
+        "policy": policy_subject,
+        "workflow_catalog": workflow_subjects,
+    }
+    subjects = {
+        **exact_source_subject,
+        "contexts": canonical_contexts,
+    }
+    subject_json = json.dumps(
+        semantic_subject,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    exact_source_json = json.dumps(
+        exact_source_subject,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
     subject_sha256 = hashlib.sha256(subject_json).hexdigest()
+    exact_source_sha256 = hashlib.sha256(exact_source_json).hexdigest()
 
     return {
         "schema_version": CONTRACT_SCHEMA_VERSION,
@@ -623,7 +729,9 @@ def validate(root: Path, policy_path: Path) -> dict[str, Any]:
         "mapped_jobs": mapped,
         "findings": [finding._asdict() for finding in findings],
         "subjects": subjects,
+        "semantic_subject": semantic_subject,
         "subject_sha256": subject_sha256,
+        "exact_source_sha256": exact_source_sha256,
         "live_enforcement_status": "NOT_PROVEN",
         "live_enforcement_reason": "static contract does not query classic protection and active rulesets",
     }
@@ -640,7 +748,9 @@ def _not_proven(policy: Path, error: Exception) -> dict[str, Any]:
         "mapped_jobs": 0,
         "findings": [Finding("instrument_failure", str(policy), str(error))._asdict()],
         "subjects": None,
+        "semantic_subject": None,
         "subject_sha256": None,
+        "exact_source_sha256": None,
         "live_enforcement_status": "NOT_PROVEN",
         "live_enforcement_reason": "static contract does not query classic protection and active rulesets",
     }
