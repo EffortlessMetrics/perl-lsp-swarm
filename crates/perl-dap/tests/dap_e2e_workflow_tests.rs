@@ -422,6 +422,10 @@ fn test_e2e_step_into_subroutine() -> TestResult {
 /// Validates that global variables can be inspected:
 /// stop at breakpoint → stackTrace → scopes → scopes_globals_ref → variables → inspect $variable
 #[test]
+#[ignore = "globals scope returns no observed variables at a live breakpoint; this passed \
+            previously only because the fallback substituted a fabricated `$_ = undef`, which \
+            the non-emptiness assertion could not distinguish from a real observation. \
+            Un-ignore once `$global_var` is genuinely enumerated (see issue #10162)"]
 fn test_e2e_globals_scope_inspection() -> TestResult {
     if !perl_available() {
         eprintln!("Skipping test_e2e_globals_scope_inspection - perl not available");
@@ -458,13 +462,22 @@ fn test_e2e_globals_scope_inspection() -> TestResult {
 
     // Retrieve global variables
     let globals = session.variables(globals_ref)?;
-    assert!(!globals.is_empty(), "globals scope must contain at least one variable");
 
     // Verify variable entries have non-empty names
     for var in &globals {
         let name = var.get("name").and_then(|v| v.as_str()).unwrap_or("");
         assert!(!name.is_empty(), "global variable entry must have non-empty name: {var:?}");
     }
+
+    // Name the variable this fixture exists to declare. Asserting only non-emptiness
+    // let a fabricated `$_` placeholder satisfy this test while `$global_var` was
+    // never enumerated at all (#10162).
+    let names: Vec<&str> =
+        globals.iter().filter_map(|v| v.get("name").and_then(|n| n.as_str())).collect();
+    assert!(
+        names.contains(&"$global_var"),
+        "globals scope must contain the declared `our $global_var`; got: {names:?}"
+    );
 
     session.disconnect()?;
 

@@ -19,6 +19,8 @@ import {
   VSCODE_DEBUG_TEST_COMMAND,
   VSCODE_RUN_TEST_COMMAND,
 } from '../debugAdapter';
+import { hostManagedCompatibilityKeys } from '../downloader';
+import { managedNamespaceDir } from '../managedStorageIdentity';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -229,7 +231,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
   });
 
   test('finds perl-dap in the auto-download directory', () => {
-    const binDir = path.join(tmpDir, 'bin', `${process.platform}-${process.arch}`);
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(binDir, { recursive: true });
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const dapPath = path.join(binDir, dapName);
@@ -250,7 +252,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
   });
 
   test('descriptor includes RUST_LOG=debug environment variable', () => {
-    const binDir = path.join(tmpDir, 'bin', `${process.platform}-${process.arch}`);
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(binDir, { recursive: true });
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const dapPath = path.join(binDir, dapName);
@@ -271,7 +273,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
   });
 
   test('passes --external-peer through to the descriptor when the session sets externalPeer', () => {
-    const binDir = path.join(tmpDir, 'bin', `${process.platform}-${process.arch}`);
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(binDir, { recursive: true });
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const dapPath = path.join(binDir, dapName);
@@ -292,7 +294,7 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
   });
 
   test('uses empty args for a plain launch session', () => {
-    const binDir = path.join(tmpDir, 'bin', `${process.platform}-${process.arch}`);
+    const binDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
     fs.mkdirSync(binDir, { recursive: true });
     const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
     const dapPath = path.join(binDir, dapName);

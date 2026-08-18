@@ -16,7 +16,7 @@ schema_version = 1
 policy = "non-rust-allowlist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-05-07"
+updated = "2026-08-13"
 
 [defaults]
 rust_is_default = true
@@ -28,6 +28,23 @@ coverage_required_for_production_surfaces = true
 # =============================================================================
 # Documentation
 # =============================================================================
+
+[[allow]]
+id = "non-rust-changelog-fragments"
+glob = ".changes/unreleased/*.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie release-note fragments staged for the next release. Each fragment is generated into a fixed naming convention and its content is validated by the changelog gate, so per-fragment allowlist rows added no review value and instead blocked every PR that produced one."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "The fragment directory is a generated, uniformly shaped staging area drained on release. `cargo xtask changelog check` owns fragment schema and content; the file gate only needs to know the directory is accounted for."
+created = "2026-08-15"
+review_after = "2026-11-15"
 
 [[allow]]
 id = "non-rust-generated-badge-endpoints"
@@ -77,228 +94,37 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 [[allow]]
-id = "non-rust-product-7821-changelog-fragment"
-path = ".changes/unreleased/product-7821-Changed-101512.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
+id = "non-rust-lsp4ij-template"
+glob = "integrations/lsp4ij/perl-lsp/**"
+kind = "editor_integration_template"
+language = "json"
+surface = "editor"
+classification = "config"
+owner = "editor/lsp4ij"
+reason = "LSP4IJ consumes an importable template directory of JSON descriptors; the format is defined by the LSP4IJ host, so it cannot be expressed in Rust."
 covered_by = [
-  "cargo xtask changelog check",
+  "cargo test -p perl-lsp-rs --test lsp4ij_template_projection_tests",
   "cargo xtask check-file-policy",
 ]
-created = "2026-08-14"
-review_after = "2026-09-14"
+broad_glob_reason = "One LSP4IJ template is a fixed directory of sibling descriptors (template, settings, settings schema, initialization options) plus its maintainer README; the host requires them to live together."
+created = "2026-08-15"
+review_after = "2026-11-15"
 
 [[allow]]
-id = "non-rust-product-7834-changelog-fragment"
-path = ".changes/unreleased/product-7834-Added-102449.yaml"
+id = "non-rust-product-7782-changelog-fragment"
+path = ".changes/unreleased/product-7782-Fixed-095500.yaml"
 kind = "release_metadata"
 language = "yaml"
 surface = "release"
 classification = "documentation"
 owner = "release/ci"
-reason = "Changie product release-note fragment announcing the fail-closed Vim + Vimspector launch journey for the native perl-dap debug adapter (#7834)."
+reason = "Changie product release-note fragment recording Sublime Text LSP 2.13 file-operation and inline-completion capability negotiation (#7782)."
 covered_by = [
   "cargo xtask changelog check",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-15"
 review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-product-7819-changelog-fragment"
-path = ".changes/unreleased/product-7819-Added-101327.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment announcing the fail-closed actual Coc-on-Vim interoperability journey for the perllsp client path (#7819)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-product-7902-changelog-fragment"
-path = ".changes/unreleased/product-7902-Added-115000.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7903-changelog-fragment"
-path = ".changes/unreleased/product-7903-Added-114500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7909-changelog-fragment"
-path = ".changes/unreleased/product-7909-Added-120500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7975-changelog-fragment"
-path = ".changes/unreleased/product-7975-Changed-213500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-product-7980-changelog-fragment"
-path = ".changes/unreleased/product-7980-Added-220800.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
-
-[[allow]]
-id = "non-rust-vscode-7911-changelog-fragment"
-path = ".changes/unreleased/vscode-7911-Security-111200.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie security release-note fragment recording that the generic configured-command MCP passthrough is disabled so stale public-beta settings cannot register arbitrary local MCP processes (#7119)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-vscode-7879-changelog-fragment"
-path = ".changes/unreleased/vscode-7879-Added-105100.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie release-note fragment announcing the typed structurally redacted VS Code support-packet model (#7860)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-vscode-7880-changelog-fragment"
-path = ".changes/unreleased/vscode-7880-Added-105230.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie release-note fragment announcing the versioned VS Code managed-cache candidate and mutation-lease protocol identities (#7857)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-vscode-7882-changelog-fragment"
-path = ".changes/unreleased/vscode-7882-Added-105400.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie release-note fragment announcing the versioned accessibility inventory and semantic guards for extension-authored VS Code control surfaces (#7864)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-vscode-7884-changelog-fragment"
-path = ".changes/unreleased/vscode-7884-Added-105530.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie release-note fragment announcing the bounded VS Code client measurement recorder (#7866)."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
-
-[[allow]]
-id = "non-rust-product-7992-changelog-fragment"
-path = ".changes/unreleased/product-7992-Added-234500.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-09-14"
 
 [[allow]]
 id = "non-rust-license-files"
@@ -428,6 +254,53 @@ covered_by = [
 ]
 created = "2026-08-15"
 review_after = "2026-11-15"
+
+[[allow]]
+id = "non-rust-agent-authority-status-test"
+path = "tests/test_agent_authority_status.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Validator and mutation controls for the document-authority registry that both root provider routes delegate to. Standard-library `unittest` and `tomllib` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_agent_authority_status.py",
+  ".github/workflows/agent-authority-status.yml",
+]
+created = "2026-08-15"
+review_after = "2026-11-15"
+
+[[allow]]
+id = "non-rust-legacy-authority-banners-test"
+path = "tests/test_legacy_authority_banners.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Requires every legacy document classified historical or superseded by the authority registry to carry one local status banner linking the canonical successor and index. Standard-library `unittest`, `re`, and `tomllib` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_legacy_authority_banners.py",
+  ".github/workflows/legacy-authority-banners.yml",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-legacy-authority-banner-migrator"
+path = "scripts/migrate-legacy-authority-banners.py"
+kind = "retired_one_shot_helper"
+language = "python"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "Inert stub for the completed one-shot #4555 banner migration. It carries no writer path and exits non-zero; `test_legacy_authority_banners.py` mutation-tests that it stays inert, so it is retained as a signpost rather than deleted."
+covered_by = [
+  "python3 -m unittest tests/test_legacy_authority_banners.py",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
 
 # =============================================================================
 # Perl fixtures (the corpus the LSP parses)
@@ -847,6 +720,23 @@ broad_glob_reason = "proptest writes regression files alongside the failing test
 created = "2026-05-07"
 review_after = "2026-08-07"
 
+[[allow]]
+id = "non-rust-lsp4ij-released-evidence"
+glob = "integrations/lsp4ij/upstream/0.20.1/**"
+kind = "upstream_evidence_snapshot"
+language = "mixed"
+surface = "fixtures"
+classification = "test"
+owner = "integrations/lsp4ij"
+reason = "Byte-exact snapshot of the released LSP4IJ 0.20.1 Perl LSP/DAP template subject, pinned as upstream evidence for compatibility and drift checks (#8565). These files are copied verbatim from redhat-developer/lsp4ij and must never be edited toward perl-lsp's desired state; each is addressed by its upstream Git blob identity in the sibling manifest.json."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_released_fixture_tests",
+  "cargo xtask check-file-policy",
+]
+broad_glob_reason = "One upstream release directory is one indivisible evidence subject. Its exact membership is already pinned by `evidence_namespace_holds_exactly_the_manifest_inventory`, which fails on any file absent from manifest.json, so per-file rows would duplicate that test without adding review value."
+created = "2026-08-16"
+review_after = "2026-11-16"
+
 # =============================================================================
 # CI / release scripts
 # =============================================================================
@@ -1232,21 +1122,6 @@ covered_by = [
 created = "2026-08-08"
 review_after = "2026-11-08"
 
-[[allow]]
-id = "non-rust-changelog-fragment-6844"
-path = ".changes/unreleased/product-6844-Added-204043.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "config"
-owner = "release/ci"
-reason = "Changie fragment for PR #6844; merged into generated release notes."
-covered_by = [
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-11"
-review_after = "2026-11-11"
-
 # =============================================================================
 # Receipts / status / metrics
 # =============================================================================
@@ -1301,7 +1176,181 @@ created = "2026-05-07"
 review_after = "2026-08-07"
 
 # =============================================================================
-# Compiler concept ledger (perl_compiler_concepts.v1)
+# Sublime Text helper package
+# Narrow per-file entries for the Sublime helper package: every current
+# file is classified individually, so a new file below clients/sublime
+# fails the inventory check until it is reviewed and classified (#7840
+# review).
+
+[[allow]]
+id = "non-rust-sublime-plugin"
+path = "clients/sublime/LSP-perllsp/plugin.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "The Sublime Text LSP client plugin that launches and configures the managed perllsp server."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-release-installer"
+path = "clients/sublime/LSP-perllsp/release.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Deterministic managed-server download, digest verification, and install metadata for the Sublime helper."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-export-tool"
+path = "clients/sublime/export_lsp_perllsp.py"
+kind = "build_tooling"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Deterministic export tooling that stages the helper package for packaging."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-settings"
+path = "clients/sublime/LSP-perllsp/LSP-perllsp.sublime-settings"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Package default settings including the semantic-token scope map for the Perl server."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-package-manifest"
+path = "clients/sublime/LSP-perllsp/sublime-package.json"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Sublime package manifest with the settings schema for server_path and env."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-server-manifest"
+path = "clients/sublime/LSP-perllsp/server-manifest.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Pinned release manifest of reviewed perllsp assets with exact digests per platform."
+covered_by = ["Sublime package contract", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-release-tests"
+path = "clients/sublime/LSP-perllsp/tests/test_release.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Focused Python contract tests for the release installer and manifest ratchets."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-messages-index"
+path = "clients/sublime/LSP-perllsp/messages.json"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Package message index for upgrade messaging."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-install-message"
+path = "clients/sublime/LSP-perllsp/messages/install.txt"
+kind = "editor_extension"
+language = "text"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Install-time message shown by Package Control."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-readme"
+path = "clients/sublime/LSP-perllsp/README.md"
+kind = "editor_extension"
+language = "markdown"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "User-facing documentation for the Sublime helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-license-apache"
+path = "clients/sublime/LSP-perllsp/LICENSE-APACHE"
+kind = "license"
+language = "text"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Apache-2.0 license text shipped with the helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-license-mit"
+path = "clients/sublime/LSP-perllsp/LICENSE-MIT"
+kind = "license"
+language = "text"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "MIT license text shipped with the helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-python-version"
+path = "clients/sublime/LSP-perllsp/.python-version"
+kind = "editor_extension"
+language = "text"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Selects the python 3.8 plugin host for the helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
 # =============================================================================
 
 [[allow]]
@@ -1334,7 +1383,108 @@ covered_by = [
 created = "2026-08-14"
 review_after = "2026-11-14"
 
+[[allow]]
+id = "non-rust-lsp-protocol-schema-source"
+path = "crates/perl-lsp-rs-core/protocol_schema_source.json"
+kind = "protocol_contract"
+language = "json"
+surface = "lsp"
+classification = "config"
+owner = "lsp"
+reason = "Pinned LSP method-direction manifest for the protocol schema validator (#7113); bound to the Rust registry by SCHEMA_SOURCE_MANIFEST_SHA256 and pinned_manifest_and_rust_registry_are_consistent."
+covered_by = [
+  "cargo test -p perl-lsp-rs-core --test ripr_seam_proof_protocol_schema",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
 # =============================================================================
+# Compiler proof policy (perl_compiler_proof_policy.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-compiler-proof-policy-contract"
+path = "contracts/compiler/perl_compiler_proof_policy.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Closed proof-class, composition-dimension, and campaign vocabulary for the compiler concept programme (#6689); validated by cargo run -p xtask --bin compiler-proof-policy -- --check in the policy merge-gate shard."
+covered_by = [
+  "cargo run -p xtask --bin compiler-proof-policy -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-compiler-proof-policy-schema"
+path = "schemas/perl_compiler_proof_policy.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the perl_compiler_proof_policy.v1 contract; the executable closure check is the proof-policy validator itself."
+covered_by = [
+  "cargo run -p xtask --bin compiler-proof-policy -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+# =============================================================================
+# Compiler concept proof obligations (perl_compiler_concept_proof.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-compiler-concept-proof-contract"
+path = "contracts/compiler/perl_compiler_concept_proof.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "One-to-one proof-obligation matrix binding every #6657 concept row to the #6689 proof classes; validated by cargo run -p xtask --bin compiler-concept-proof -- --check in the policy merge-gate shard."
+covered_by = [
+  "cargo run -p xtask --bin compiler-concept-proof -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-compiler-concept-proof-schema"
+path = "schemas/perl_compiler_concept_proof.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the perl_compiler_concept_proof.v1 contract; the executable closure check is the obligation-matrix validator itself."
+covered_by = [
+  "cargo run -p xtask --bin compiler-concept-proof -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+# =============================================================================
+# Binary identity protocol (perl_lsp.binary_identity.v1)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-binary-identity-schema"
+path = "schemas/binary_identity_protocol.v1.schema.json"
+kind = "protocol_contract"
+language = "json"
+surface = "lsp"
+classification = "config"
+owner = "identity"
+reason = "JSON Schema for the perl_lsp.binary_identity.v1 wire contract (#6852); schema-leg parity is ratcheted by the binary identity protocol contract test."
+covered_by = [
+  "cargo test -p perl-lsp-rs-core --test ripr_seam_proof_binary_identity --locked",
+]
+created = "2026-08-14"
+review_after = "2026-11-14"
+
 # Editor-intelligence gap-matrix fixture tree
 # =============================================================================
 
@@ -1386,36 +1536,6 @@ created = "2026-08-14"
 review_after = "2026-11-14"
 
 [[allow]]
-id = "non-rust-product-7984-changelog-fragment"
-path = ".changes/unreleased/product-7984-Added-230000.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-13"
-review_after = "2026-11-13"
-
-[[allow]]
-id = "non-rust-product-7990-changelog-fragment"
-path = ".changes/unreleased/product-7990-Added-233000.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-14"
-review_after = "2026-11-14"
-
-[[allow]]
 id = "non-rust-zed-settings-behavior-fixtures"
 glob = ".ci/fixtures/zed-perl-upstream/**"
 kind = "test_fixture"
@@ -1430,22 +1550,6 @@ covered_by = [
 broad_glob_reason = "The zed-perl-upstream fixture tree holds versioned contract/receipt JSON pairs consumed by name from the xtask zed contract tests; a missing or malformed fixture fails those tests by name."
 created = "2026-08-15"
 review_after = "2026-11-15"
-
-[[allow]]
-id = "non-rust-product-7701-changelog-fragment"
-path = ".changes/unreleased/product-7701-Changed-113000.yaml"
-kind = "release_metadata"
-language = "yaml"
-surface = "release"
-classification = "documentation"
-owner = "release/ci"
-reason = "Changie product release-note fragment for PR-time changelog disposition."
-covered_by = [
-  "cargo xtask changelog check",
-  "cargo xtask check-file-policy",
-]
-created = "2026-08-15"
-review_after = "2026-09-15"
 
 [[allow]]
 id = "non-rust-helix-initialize-profiles"
@@ -1473,6 +1577,51 @@ owner = "lsp/capability-negotiation"
 reason = "Provenance, refresh procedure, and actual-host claim boundary for the Helix initialize profiles (#7701)."
 covered_by = [
   "cargo test -p perllsp --test helix_capability_profiles --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-installer-policy"
+path = "integrations/lsp4ij/installer-policy.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Partitions every canonical release target into managed LSP4IJ installation or an explicit external/manual disposition, and records the checksum limitation (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-perl-lsp-installer"
+path = "integrations/lsp4ij/perl-lsp/installer.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Desired LSP4IJ managed installer for perllsp; selects the native release archive per platform and fails closed instead of falling back to a static URL (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-lsp4ij-perl-dap-installer"
+path = "integrations/lsp4ij/perl-dap/installer.json"
+kind = "integration_contract"
+language = "json"
+surface = "editor"
+classification = "production"
+owner = "release/downstream-integrations"
+reason = "Desired LSP4IJ managed installer for perl-dap; extracts the debugger member from the same shared release archive as the LSP installer (#7876)."
+covered_by = [
+  "cargo test -p perl-lsp-rs --test lsp4ij_installer_topology_tests --locked",
 ]
 created = "2026-08-15"
 review_after = "2026-09-15"
@@ -1523,3 +1672,745 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-publication-runtime-identity-schema"
+path = "schemas/publication_runtime_identity.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned bundle schema for staged-executable runtime identity evidence — host-side digests, path roles, and self-reported packets — projected into the publication-drift classifier input (#6856)."
+covered_by = [
+  "python3 -m unittest scripts.release.test_publication_runtime_identity",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-product-7810-changelog-fragment"
+path = ".changes/unreleased/product-7810-Added-100438.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing the fail-closed real Vim + vim-lsp interoperability journey for the canonical perllsp client path (#7810)."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-product-6991-changelog-fragment"
+path = ".changes/unreleased/product-6991-Changed-031000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-install-identity-verification-schema"
+path = "schemas/install_identity_verification.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "JSON Schema for the staged binary identity verification receipt (#6853); validated by the staged-identity verifier contract tests in crates/perllsp."
+covered_by = ["cargo test -p perllsp --all-targets --locked"]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-vscode-7878-changelog-fragment"
+path = ".changes/unreleased/vscode-7878-Added-104900.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie release-note fragment announcing the versioned public-beta VS Code settings migration registry (#7837)."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-15"
+review_after = "2026-09-15"
+
+[[allow]]
+id = "non-rust-product-7821-changelog-fragment"
+path = ".changes/unreleased/product-7821-Changed-101512.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7902-changelog-fragment"
+path = ".changes/unreleased/product-7902-Added-115000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7903-changelog-fragment"
+path = ".changes/unreleased/product-7903-Added-114500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7909-changelog-fragment"
+path = ".changes/unreleased/product-7909-Added-120500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7975-changelog-fragment"
+path = ".changes/unreleased/product-7975-Changed-213500.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-product-7980-changelog-fragment"
+path = ".changes/unreleased/product-7980-Added-220800.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment for PR-time changelog disposition."
+covered_by = ["cargo xtask changelog check", "cargo xtask check-file-policy"]
+created = "2026-08-14"
+review_after = "2026-09-14"
+
+[[allow]]
+id = "non-rust-sublime-unittesting-runner"
+path = "scripts/sublime/run_unit_tests.py"
+kind = "ci_tooling"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "editor-clients"
+reason = "Self-owned Sublime UnitTesting runner with an honest wall clock for the LSP-perllsp deferred host journey (#7694); the upstream action's 30 s x3 restart loop aborts a progressing suite."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest"]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-sublime-host-ci-launcher"
+path = "clients/sublime/LSP-perllsp/host_ci_launcher.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "CI launcher plugin that imports UnitTesting scheduler at plugin_loaded when a schedule exists; inert in editor installs."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-journey-test"
+path = "clients/sublime/LSP-perllsp/host_tests/test_sublime_host.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Deferred real-Sublime interoperability journey: initialize, diagnostics, completion, definition, hover, rename, semantic scopes, and the host receipt."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-journey-init"
+path = "clients/sublime/LSP-perllsp/host_tests/__init__.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Package marker for the host test module."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-contract-test"
+path = "clients/sublime/LSP-perllsp/tests/test_host_contract.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Static contract tests for the host journey configuration and package layout."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-unittesting-config"
+path = "clients/sublime/LSP-perllsp/unittesting.json"
+kind = "test"
+language = "json"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "UnitTesting configuration binding the deferred host journey with its condition timeout."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-fixture-config"
+path = "clients/sublime/host-fixture/.perl-lsp.toml"
+kind = "test"
+language = "toml"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Project configuration for the host journey fixture workspace."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-receipt-schema"
+path = "clients/sublime/sublime-host-receipt.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "JSON Schema for the exact-source host receipt the journey publishes."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-host-receipt-validator"
+path = "clients/sublime/validate_sublime_host_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Validates a produced host receipt against the v1 schema in CI."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-product-7243-changelog-fragment"
+path = ".changes/unreleased/product-7243-Added-090000.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing source-backed regex capture-group modeling with explicit numbering and named-capture families (#7243)."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-product-7799-changelog-fragment"
+path = ".changes/unreleased/product-7799-Added-100051.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing fail-closed Vim activation and workspace-root receipt contract for the canonical vim-lsp integration path (#7799)."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-product-7905-changelog-fragment"
+path = ".changes/unreleased/product-7905-Fixed-110832.yaml"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie product release-note fragment announcing deferred workspace/configuration pull until after initialize response so strict LSP clients no longer receive out-of-order server requests (#7905)."
+covered_by = [
+  "cargo xtask changelog check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-incremental-authority-contract"
+path = "crates/perl-parser/incremental_authority.json"
+kind = "config"
+language = "json"
+surface = "source"
+classification = "tooling"
+owner = "parser/incremental"
+reason = "Machine-readable contract declaring the canonical incremental-parsing authority: module path, entry points, and fact obligations for the single incremental API surface (#6742)."
+covered_by = [
+  "cargo test -p perl-incremental-parsing --locked",
+]
+created = "2026-08-16"
+review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-behavior-disposition-ledger"
+path = "crates/perl-incremental-parsing/behavior_disposition.json"
+kind = "config"
+language = "json"
+surface = "source"
+classification = "tooling"
+owner = "parser/incremental"
+reason = "Versioned evidence-convergence ledger classifying every compatibility test, source-test module, benchmark, and governed document in the perl-incremental-parsing adapter with owner, plane, disposition, and claim boundary (#6971)."
+covered_by = [
+  "cargo test -p perl-incremental-parsing --locked --test authority_disposition_contract",
+]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-current-upstream-subject-manifest"
+path = "crates/perl-parser-comparison/upstream/ts-parser-perl-1.2.1.toml"
+kind = "config"
+language = "toml"
+surface = "source"
+classification = "generated"
+owner = "parser-comparison/#7255"
+reason = "Generated projection of CURRENT_UPSTREAM_SUBJECT — the exact maintained-current ts-parser-perl comparison subject manifest (#7255). Never edited independently; drift from the typed manifest authority fails the byte-exact contract test."
+generated_by = "CurrentUpstreamSubjectManifest::render_toml (perl-parser-comparison)"
+covered_by = [
+  "cargo test -p perl-parser-comparison --no-default-features --features current-upstream --test current_upstream_subject --locked",
+]
+created = "2026-08-17"
+review_after = "2026-11-17"
+
+[[allow]]
+id = "non-rust-Default-commands"
+path = "clients/sublime/LSP-perllsp/Default.sublime-commands"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Sublime command palette entries exposing the curated LSP commands."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-command-surface"
+path = "clients/sublime/LSP-perllsp/command_surface.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Typed command surface for the curated palette: command specs, invocation preparation, result and error formatting, and navigation targets."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-test-sublime-commands"
+path = "clients/sublime/LSP-perllsp/host_tests/test_sublime_commands.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Real-host journey for the curated command palette against the live server."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-test-command-surface"
+path = "clients/sublime/LSP-perllsp/tests/test_command_surface.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Static contract tests for the command surface specs and the deterministic export."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-test-command-receipt"
+path = "clients/sublime/LSP-perllsp/tests/test_command_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Receipt-shape tests for the curated command journey."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-command-receipt-schema"
+path = "clients/sublime/sublime-command-receipt.v1.schema.json"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "JSON Schema for the curated-command host receipt."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-command-receipt-validator"
+path = "clients/sublime/validate_sublime_command_receipt.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Validates a produced command receipt against the v1 schema in CI."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-dap-workflow"
+path = ".github/workflows/sublime-dap-real-host.yml"
+kind = "editor_extension"
+language = "yaml"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Workflow binding the real Sublime Debugger adapter journey to the exact-source perl-dap candidate."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-compatibility"
+path = "clients/sublime/LSP-perllsp/compatibility.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Managed-install compatibility gate with the versioned compatibility registry."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-compatibility-registry"
+path = "clients/sublime/LSP-perllsp/compatibility.v1.json"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Versioned compatibility registry consumed by the managed-install gate."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-support"
+path = "clients/sublime/LSP-perllsp/dap_support.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "DAP session support for the native debugger adapter registration."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-debugger-adapter"
+path = "clients/sublime/LSP-perllsp/debugger_adapter.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Registers the native perl-dap adapter with the Sublime Debugger package."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-debugger-journey-test"
+path = "clients/sublime/LSP-perllsp/host_tests/test_sublime_debugger_adapter.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Real-Sublime Debugger adapter journey against the exact-source perl-dap candidate."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-integration-commands"
+path = "clients/sublime/LSP-perllsp/integration_commands.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Curated integration command surface for the palette."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-integration-status"
+path = "clients/sublime/LSP-perllsp/integration_status.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Read-only integration status reporting with bounded output."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-project-example"
+path = "clients/sublime/LSP-perllsp/Perl.sublime-project.example"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Example Sublime project settings for the helper package."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-package-source"
+path = "clients/sublime/package_source.py"
+kind = "build_tooling"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Deterministic package source authority tooling."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-package-source-registry"
+path = "clients/sublime/package-source.v1.json"
+kind = "release_metadata"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Package source authority registry."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-source-authority-doc"
+path = "clients/sublime/SOURCE_AUTHORITY.md"
+kind = "editor_extension"
+language = "markdown"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Documented package source authority model."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-package-source-test"
+path = "clients/sublime/LSP-perllsp/tests/test_package_source.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Contract tests for the deterministic package source authority."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-fixture"
+path = "clients/sublime/dap-fixture/debug_current.pl"
+kind = "test"
+language = "perl"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Debug-current fixture driving the real adapter journey."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-unittesting-config"
+path = "clients/sublime/dap-unittesting.json"
+kind = "test"
+language = "json"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "UnitTesting configuration binding the deferred DAP journey."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-runtime-receipt-writer"
+path = "clients/sublime/write_sublime_dap_runtime_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Records the exact-source perl-dap runtime receipt after the runtime journeys."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-receipt-validator"
+path = "clients/sublime/validate_sublime_dap_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Validates the bound runtime and host DAP receipts against the schema."
+covered_by = ["Sublime Debugger + perl-dap / Linux x64", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-compatibility-test"
+path = "clients/sublime/LSP-perllsp/tests/test_compatibility.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Contract tests for the managed-install compatibility gate."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-receipt-test"
+path = "clients/sublime/LSP-perllsp/tests/test_dap_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Receipt-shape tests for the DAP runtime and host journeys."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-dap-support-test"
+path = "clients/sublime/LSP-perllsp/tests/test_dap_support.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Contract tests for the DAP session support module."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-sublime-integration-status-test"
+path = "clients/sublime/LSP-perllsp/tests/test_integration_status.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Contract tests for the bounded read-only integration status."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-18"
+review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-vsix-candidate-payload-schema"
+path = "schemas/vsix_candidate_payload.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed Draft 2020-12 schema for the vsix_candidate_payload.v1 manifest (#9932); emitted-manifest conformance is pinned by the VSIX package projection Jest suite."
+covered_by = [
+  "cd vscode-extension && npm run compile:test && npx jest vsixPackageProjection",
+]
+created = "2026-08-18"
+review_after = "2026-11-18"
