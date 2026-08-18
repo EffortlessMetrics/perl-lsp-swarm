@@ -1,4 +1,6 @@
-use perl_ast::{AstInvariantOptions, Node, NodeKind, SourceLocation, validate_ast};
+use perl_ast::{
+    AstInvariantCode, AstInvariantOptions, Node, NodeKind, SourceLocation, validate_ast,
+};
 
 fn number(start: usize, end: usize) -> Node {
     Node::new(NodeKind::Number { value: "1".to_string() }, SourceLocation { start, end })
@@ -21,4 +23,21 @@ fn report_status_keeps_findings_and_completeness_independent() {
     assert!(!incomplete.has_findings());
     assert!(!incomplete.is_complete());
     assert!(!incomplete.is_valid());
+}
+
+#[test]
+fn every_invariant_code_has_an_exact_stable_machine_token() {
+    let expected: &[(AstInvariantCode, &str)] = &[
+        (AstInvariantCode::ReversedRange, "reversed_range"),
+        (AstInvariantCode::RangeOutOfBounds, "range_out_of_bounds"),
+        (AstInvariantCode::NonUtf8Boundary, "non_utf8_boundary"),
+        (AstInvariantCode::UnexpectedEmptyRange, "unexpected_empty_range"),
+        (AstInvariantCode::ChildOutsideParent, "child_outside_parent"),
+        (AstInvariantCode::ChildOrderRegression, "child_order_regression"),
+        (AstInvariantCode::DepthLimitExceeded, "depth_limit_exceeded"),
+        (AstInvariantCode::NodeLimitExceeded, "node_limit_exceeded"),
+    ];
+    for (code, token) in expected {
+        assert_eq!(code.as_str(), *token, "{code:?} lost its stable machine token");
+    }
 }
