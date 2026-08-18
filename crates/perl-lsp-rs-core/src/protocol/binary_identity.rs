@@ -474,14 +474,26 @@ fn evaluate_compatibility(
     deduplicate(&mut mismatch);
     deduplicate(&mut not_proven);
     deduplicate(&mut partial);
+
+    // Return the union of all reason buckets so that the client receives every
+    // actionable token regardless of which bucket drove the state decision.
+    // State precedence is kept: Mismatch > NotProven > CompatiblePartial > ExactMatch.
+    // The schema's `reasons` array already admits any reason-token set, so no
+    // wire-contract change is required.
+    let mut all_reasons: Vec<BinaryCompatibilityReason> = Vec::new();
+    all_reasons.extend_from_slice(&mismatch);
+    all_reasons.extend_from_slice(&not_proven);
+    all_reasons.extend_from_slice(&partial);
+    deduplicate(&mut all_reasons);
+
     if !mismatch.is_empty() {
-        return (BinaryCompatibilityState::Mismatch, mismatch, limitations);
+        return (BinaryCompatibilityState::Mismatch, all_reasons, limitations);
     }
     if !not_proven.is_empty() {
-        return (BinaryCompatibilityState::NotProven, not_proven, limitations);
+        return (BinaryCompatibilityState::NotProven, all_reasons, limitations);
     }
     if !partial.is_empty() {
-        return (BinaryCompatibilityState::CompatiblePartial, partial, limitations);
+        return (BinaryCompatibilityState::CompatiblePartial, all_reasons, limitations);
     }
     (
         BinaryCompatibilityState::ExactMatch,
@@ -1078,6 +1090,78 @@ mod tests {
         let response = state.respond(request());
         assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
         assert!(response.reasons.contains(&BinaryCompatibilityReason::ArtifactRoleMismatch));
+    }
+
+    // ── Reason-union tests ────────────────────────────────────────────────────
+    //
+    // `evaluate_compatibility` collects reasons into three separate buckets
+    // (mismatch, not_proven, partial) and applies state precedence.  The
+    // `reasons` field in the response must be the *union* of all buckets so
+    // that the client receives every actionable token—not just the reasons that
+    // drove the winning state bucket.
+
+    #[test]
+    fn mismatch_with_concurrent_not_proven_returns_full_reason_union() {
+        // ProductRepositoryMismatch → mismatch bucket
+        // ProductIdentityVersionUnsupported → not_proven bucket
+        // Both must appear in the response even though Mismatch wins.
+        let mut state = state();
+        state.server.product.public_repository = "Other/project".to_owned();
+        state.server.compatibility.expected_product_identity_version = 99;
+        let response = state.respond(request());
+        assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
+        assert!(
+            response.reasons.contains(&BinaryCompatibilityReason::ProductRepositoryMismatch),
+            "mismatch reason must be present"
+        );
+        assert!(
+            response
+                .reasons
+                .contains(&BinaryCompatibilityReason::ProductIdentityVersionUnsupported),
+            "not_proven reason must appear in the union even though Mismatch wins"
+        );
+    }
+
+    #[test]
+    fn mismatch_with_concurrent_partial_returns_full_reason_union() {
+        // ProductRepositoryMismatch → mismatch bucket
+        // DapIdentityAbsent (dap = None) → partial bucket
+        // Both must appear in the response even though Mismatch wins.
+        let mut state = state();
+        state.server.product.public_repository = "Other/project".to_owned();
+        state.dap = None;
+        let response = state.respond(request());
+        assert_eq!(response.compatibility, BinaryCompatibilityState::Mismatch);
+        assert!(
+            response.reasons.contains(&BinaryCompatibilityReason::ProductRepositoryMismatch),
+            "mismatch reason must be present"
+        );
+        assert!(
+            response.reasons.contains(&BinaryCompatibilityReason::DapIdentityAbsent),
+            "partial reason must appear in the union even though Mismatch wins"
+        );
+    }
+
+    #[test]
+    fn not_proven_with_concurrent_partial_returns_full_reason_union() {
+        // ProductIdentityVersionUnsupported → not_proven bucket
+        // DapIdentityAbsent (dap = None) → partial bucket
+        // Both must appear in the response even though NotProven wins over CompatiblePartial.
+        let mut state = state();
+        state.server.compatibility.expected_product_identity_version = 99;
+        state.dap = None;
+        let response = state.respond(request());
+        assert_eq!(response.compatibility, BinaryCompatibilityState::NotProven);
+        assert!(
+            response
+                .reasons
+                .contains(&BinaryCompatibilityReason::ProductIdentityVersionUnsupported),
+            "not_proven reason must be present"
+        );
+        assert!(
+            response.reasons.contains(&BinaryCompatibilityReason::DapIdentityAbsent),
+            "partial reason must appear in the union even though NotProven wins"
+        );
     }
 
     #[test]
