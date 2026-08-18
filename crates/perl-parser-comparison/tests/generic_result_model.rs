@@ -500,7 +500,7 @@ fn execution_and_comparison_accessors_expose_every_axis() -> Result<(), Box<dyn 
     assert_eq!(execution.diagnostics().diagnostic_count(), 0);
     assert!(!execution.diagnostics().recovery_observed());
     assert!(!execution.diagnostics().error_node_observed());
-    let projection = execution.debug_projection().expect("clean parse keeps a debug projection");
+    let projection = execution.debug_projection().ok_or("clean parse keeps a debug projection")?;
     assert!(projection.original_bytes() > 0);
     assert_eq!(projection.as_str().len() + projection.omitted_bytes(), projection.original_bytes());
     assert!(execution.error().is_none());
@@ -611,4 +611,119 @@ fn legacy_verdict_bridge_projects_each_reachable_arm() {
 
     let rejected_v2 = parse_v2("@@@ this is garbage not perl @@@");
     assert_eq!(rejected_v2.verdict, Verdict::Errors);
+}
+
+#[test]
+fn fingerprints_and_divergence_paths_reject_control_characters() {
+    assert_eq!(
+        SemanticFingerprint::new("line\nbreak"),
+        Err(EvidenceValueError::InvalidCharacter {
+            kind: "semantic_fingerprint",
+            index: 4,
+            character: '\n'
+        })
+    );
+    assert_eq!(
+        DivergencePath::new("root\tchild"),
+        Err(EvidenceValueError::InvalidCharacter {
+            kind: "divergence_path",
+            index: 4,
+            character: '\t'
+        })
+    );
+    assert!(SemanticFingerprint::new("nul\0byte").is_err());
+    assert!(DivergencePath::new("root\rchild").is_err());
+    assert!(SemanticFingerprint::new("plain-ascii.v1").is_ok());
+    assert!(DivergencePath::new("children[0].value").is_ok());
+}
+
+#[test]
+fn fingerprint_and_divergence_path_enforce_exact_byte_limits() {
+    assert_eq!(
+        SemanticFingerprint::new("a".repeat(1_025)),
+        Err(EvidenceValueError::TooLong {
+            kind: "semantic_fingerprint",
+            actual: 1_025,
+            maximum: 1_024
+        })
+    );
+    assert!(SemanticFingerprint::new("a".repeat(1_024)).is_ok());
+    assert_eq!(
+        DivergencePath::new("a".repeat(257)),
+        Err(EvidenceValueError::TooLong { kind: "divergence_path", actual: 257, maximum: 256 })
+    );
+    assert!(DivergencePath::new("a".repeat(256)).is_ok());
+}
+
+#[test]
+fn historical_tree_sitter_diagnostic_summary_counts_error_nodes_exactly()
+-> Result<(), Box<dyn Error>> {
+    let garbage =
+        execute_v1("my $prefix = 1;\n@@@ this is garbage not perl @@@\nmy $suffix = 2;\n")?;
+    assert_eq!(garbage.harness(), HarnessOutcome::Completed);
+    assert_eq!(garbage.subject_disposition(), Some(&SubjectDisposition::AcceptedRecovered));
+    assert_eq!(garbage.diagnostics().diagnostic_count(), 1);
+    assert!(garbage.diagnostics().recovery_observed());
+    assert!(garbage.diagnostics().error_node_observed());
+    let garbage_projection =
+        garbage.debug_projection().ok_or("recovered parse keeps a debug projection")?;
+    assert!(garbage_projection.as_str().contains("ERROR"));
+
+    let clean = execute_v1("my $x = 42;")?;
+    assert_eq!(clean.subject_disposition(), Some(&SubjectDisposition::AcceptedClean));
+    assert_eq!(clean.diagnostics().diagnostic_count(), 0);
+    assert!(!clean.diagnostics().recovery_observed());
+    assert!(!clean.diagnostics().error_node_observed());
+    let clean_projection =
+        clean.debug_projection().ok_or("clean parse keeps a debug projection")?;
+    assert!(clean_projection.as_str().contains("scalar"));
+    Ok(())
+}
+
+#[test]
+fn native_recursive_descent_diagnostic_summary_counts_diagnostics_exactly()
+-> Result<(), Box<dyn Error>> {
+    let recovered = execute_v3("my $x = ;")?;
+    assert_eq!(recovered.harness(), HarnessOutcome::Completed);
+    assert_eq!(recovered.subject_disposition(), Some(&SubjectDisposition::AcceptedRecovered));
+    assert_eq!(recovered.diagnostics().diagnostic_count(), 1);
+    assert!(recovered.diagnostics().recovery_observed());
+    assert!(!recovered.diagnostics().error_node_observed());
+
+    let clean = execute_v3("my $x = 42;")?;
+    assert_eq!(clean.subject_disposition(), Some(&SubjectDisposition::AcceptedClean));
+    assert_eq!(clean.diagnostics().diagnostic_count(), 0);
+    assert!(!clean.diagnostics().recovery_observed());
+    Ok(())
+}
+
+#[test]
+fn truncated_instrument_can_carry_limited_observation() -> Result<(), Box<dyn Error>> {
+    let execution = SubjectExecution::completed(
+        SubjectRole::NativeRecursiveDescent,
+        SubjectDisposition::AcceptedClean,
+        DiagnosticSummary::default(),
+        BTreeMap::from([(
+            ObservationPlane::Structure,
+            ObservationDisposition::ObservedWithLimitations,
+        )]),
+        None,
+        InstrumentState::Truncated,
+    )?;
+    assert_eq!(execution.instrument_state(), InstrumentState::Truncated);
+    assert_eq!(
+        execution.observation(&ObservationPlane::Structure),
+        Some(ObservationDisposition::ObservedWithLimitations)
+    );
+    Ok(())
+}
+
+#[test]
+fn bounded_text_accepts_input_exactly_at_the_byte_limit() -> Result<(), Box<dyn Error>> {
+    let bounded = BoundedText::new("abc", 3)?;
+    assert_eq!(bounded.as_str(), "abc");
+    assert_eq!(bounded.original_bytes(), 3);
+    assert_eq!(bounded.omitted_bytes(), 0);
+    assert!(!bounded.is_truncated());
+    Ok(())
 }
