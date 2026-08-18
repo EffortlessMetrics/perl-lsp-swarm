@@ -344,12 +344,12 @@ fn summarize_expression(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowS
             )
         }
         NodeKind::Assignment { lhs, rhs, .. } => {
+            // Perl evaluates the rhs before the lhs. Visit both sides so a
+            // transferring lhs cannot skip diagnostics nested in the rhs,
+            // then select the terminal summary in evaluation order.
+            let rhs_summary = summarize_expression(rhs, diagnostics);
             let lhs_summary = summarize_expression(lhs, diagnostics);
-            if !lhs_summary.can_fall_through {
-                lhs_summary
-            } else {
-                summarize_expression(rhs, diagnostics)
-            }
+            if !rhs_summary.can_fall_through { rhs_summary } else { lhs_summary }
         }
         NodeKind::Unary { operand, .. } => summarize_expression(operand, diagnostics),
         NodeKind::Binary { left, right, .. } => {
@@ -658,6 +658,20 @@ mod tests {
             count_pl406(&diags),
             1,
             "non-loop transfers still promote out of a bare block: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn assignment_visits_rhs_even_when_lhs_transfers() {
+        // Perl evaluates the rhs of an assignment before the lhs. A lhs that
+        // provably transfers must not skip rhs traversal: unreachable
+        // statements nested in the rhs would otherwise go unreported.
+        let diags =
+            unreachable_diags(r#"sub f { ($c ? exit : die) = do { die "x"; print "dead"; }; }"#);
+        assert_eq!(
+            count_pl406(&diags),
+            1,
+            "rhs do-block must still report its unreachable statement: {diags:?}"
         );
     }
 
