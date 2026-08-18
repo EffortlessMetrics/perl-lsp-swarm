@@ -7,8 +7,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::ast::{Node, NodeKind};
 use crate::SourceLocation;
+use crate::ast::{Node, NodeKind};
 
 /// Kind of callable declaration summarized by [`CallableExitSummary`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,10 +78,7 @@ pub struct CallableExitBudget {
 
 impl Default for CallableExitBudget {
     fn default() -> Self {
-        Self {
-            max_nodes: 8_192,
-            max_depth: 256,
-        }
+        Self { max_nodes: 8_192, max_depth: 256 }
     }
 }
 
@@ -137,23 +134,16 @@ impl CallableExitSummary {
             NodeKind::Subroutine { name, body, .. } => {
                 (CallableDeclarationKind::Subroutine, name.clone(), body.as_ref())
             }
-            NodeKind::Method { name, body, .. } => (
-                CallableDeclarationKind::Method,
-                Some(name.clone()),
-                body.as_ref(),
-            ),
+            NodeKind::Method { name, body, .. } => {
+                (CallableDeclarationKind::Method, Some(name.clone()), body.as_ref())
+            }
             _ => return None,
         };
 
         let mut analyzer = ExitAnalyzer::new(budget);
         analyzer.analyze_body(body);
         analyzer.exits.sort_by_key(|exit| {
-            (
-                exit.statement_range.start,
-                exit.statement_range.end,
-                exit.kind,
-                exit.control_depth,
-            )
+            (exit.statement_range.start, exit.statement_range.end, exit.kind, exit.control_depth)
         });
         analyzer.exits.dedup();
 
@@ -201,8 +191,7 @@ impl ExitAnalyzer {
 
     fn analyze_body(&mut self, body: &Node) {
         let NodeKind::Block { statements } = &body.kind else {
-            self.boundaries
-                .insert(CallableExitBoundary::UnsupportedFallthrough);
+            self.boundaries.insert(CallableExitBoundary::UnsupportedFallthrough);
             self.exits.push(CallableExit {
                 kind: CallableExitKind::ImplicitUnknown,
                 statement_range: body.location,
@@ -245,10 +234,7 @@ impl ExitAnalyzer {
             return;
         }
 
-        if self
-            .boundaries
-            .contains(&CallableExitBoundary::TraversalBudget)
-        {
+        if self.boundaries.contains(&CallableExitBoundary::TraversalBudget) {
             self.exits.push(CallableExit {
                 kind: CallableExitKind::ImplicitUnknown,
                 statement_range: body.location,
@@ -276,8 +262,7 @@ impl ExitAnalyzer {
                 control_depth: 0,
             });
         } else {
-            self.boundaries
-                .insert(CallableExitBoundary::UnsupportedFallthrough);
+            self.boundaries.insert(CallableExitBoundary::UnsupportedFallthrough);
             self.exits.push(CallableExit {
                 kind: CallableExitKind::ImplicitUnknown,
                 statement_range: last_statement.location,
@@ -288,10 +273,7 @@ impl ExitAnalyzer {
     }
 
     fn scan_descendants_without_root(&mut self, node: &Node, depth: usize) {
-        if matches!(
-            &node.kind,
-            NodeKind::Subroutine { .. } | NodeKind::Method { .. }
-        ) {
+        if matches!(&node.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. }) {
             self.nested_callable_count = self.nested_callable_count.saturating_add(1);
             return;
         }
@@ -299,10 +281,7 @@ impl ExitAnalyzer {
         self.record_boundary(node);
         for child in node.children() {
             self.scan_node(child, depth.saturating_add(1));
-            if self
-                .boundaries
-                .contains(&CallableExitBoundary::TraversalBudget)
-            {
+            if self.boundaries.contains(&CallableExitBoundary::TraversalBudget) {
                 break;
             }
         }
@@ -328,10 +307,7 @@ impl ExitAnalyzer {
         self.record_boundary(node);
         for child in node.children() {
             self.scan_node(child, depth.saturating_add(1));
-            if self
-                .boundaries
-                .contains(&CallableExitBoundary::TraversalBudget)
-            {
+            if self.boundaries.contains(&CallableExitBoundary::TraversalBudget) {
                 break;
             }
         }
@@ -339,8 +315,7 @@ impl ExitAnalyzer {
 
     fn reserve_node(&mut self, depth: usize) -> bool {
         if self.visited_nodes >= self.budget.max_nodes || depth > self.budget.max_depth {
-            self.boundaries
-                .insert(CallableExitBoundary::TraversalBudget);
+            self.boundaries.insert(CallableExitBoundary::TraversalBudget);
             return false;
         }
         self.visited_nodes = self.visited_nodes.saturating_add(1);
@@ -369,9 +344,7 @@ impl ExitAnalyzer {
             "While" | "Until" | "For" | "Foreach" | "CStyleFor" | "Continue" => {
                 Some(CallableExitBoundary::LoopControl)
             }
-            "Try" | "Catch" | "Finally" | "Eval" => {
-                Some(CallableExitBoundary::ExceptionControl)
-            }
+            "Try" | "Catch" | "Finally" | "Eval" => Some(CallableExitBoundary::ExceptionControl),
             "Goto" => Some(CallableExitBoundary::DynamicControl),
             "Error" => Some(CallableExitBoundary::RecoveredSyntax),
             _ => None,
@@ -385,10 +358,9 @@ impl ExitAnalyzer {
 fn implicit_value_range(statement: &Node) -> Option<SourceLocation> {
     match &statement.kind {
         NodeKind::ExpressionStatement { expression } => Some(expression.location),
-        NodeKind::VariableDeclaration {
-            initializer: Some(initializer),
-            ..
-        } => Some(initializer.location),
+        NodeKind::VariableDeclaration { initializer: Some(initializer), .. } => {
+            Some(initializer.location)
+        }
         NodeKind::Assignment { rhs, .. } => Some(rhs.location),
         NodeKind::Return { .. } | NodeKind::Block { .. } | NodeKind::If { .. } => None,
         NodeKind::Error { .. } => None,
@@ -405,9 +377,7 @@ mod tests {
 
     fn parse_first_callable(source: &str) -> Result<Node, String> {
         let mut parser = Parser::new(source);
-        let ast = parser
-            .parse()
-            .map_err(|errors| format!("fixture should parse: {errors:?}"))?;
+        let ast = parser.parse().map_err(|errors| format!("fixture should parse: {errors:?}"))?;
         find_first_callable(&ast)
             .cloned()
             .ok_or_else(|| "fixture should contain a callable".to_string())
@@ -420,15 +390,10 @@ mod tests {
     }
 
     fn find_first_callable(node: &Node) -> Option<&Node> {
-        if matches!(
-            &node.kind,
-            NodeKind::Subroutine { .. } | NodeKind::Method { .. }
-        ) {
+        if matches!(&node.kind, NodeKind::Subroutine { .. } | NodeKind::Method { .. }) {
             return Some(node);
         }
-        node.children()
-            .into_iter()
-            .find_map(find_first_callable)
+        node.children().into_iter().find_map(find_first_callable)
     }
 
     #[test]
@@ -469,11 +434,7 @@ mod tests {
         let summary = summarize("sub choose { if ($flag) { return 1; } return 2; }")?;
 
         assert_eq!(summary.completeness, CallableExitCompleteness::Partial);
-        assert!(
-            summary
-                .boundaries
-                .contains(&CallableExitBoundary::ConditionalControl)
-        );
+        assert!(summary.boundaries.contains(&CallableExitBoundary::ConditionalControl));
         assert_eq!(
             summary
                 .exits
@@ -500,25 +461,13 @@ mod tests {
         let callable = parse_first_callable("sub build { my $x = Foo->new; $x->prepare; $x; }")?;
         let summary = CallableExitSummary::analyze_with_budget(
             &callable,
-            CallableExitBudget {
-                max_nodes: 1,
-                max_depth: 1,
-            },
+            CallableExitBudget { max_nodes: 1, max_depth: 1 },
         )
         .ok_or_else(|| "callable should produce a budgeted exit summary".to_string())?;
 
         assert_eq!(summary.completeness, CallableExitCompleteness::Partial);
-        assert!(
-            summary
-                .boundaries
-                .contains(&CallableExitBoundary::TraversalBudget)
-        );
-        assert!(
-            summary
-                .exits
-                .iter()
-                .any(|exit| exit.kind == CallableExitKind::ImplicitUnknown)
-        );
+        assert!(summary.boundaries.contains(&CallableExitBoundary::TraversalBudget));
+        assert!(summary.exits.iter().any(|exit| exit.kind == CallableExitKind::ImplicitUnknown));
         Ok(())
     }
 }
