@@ -2487,3 +2487,18 @@ created = "2026-08-17"
 review_after = "2026-09-17"
 expires = "2026-11-17"
 removal_criteria = "EffortlessMetrics/ripr#1429 lets RIPR trace test activation across trait dispatch, private callees, catch_unwind closures, and declaration seams, or targeted mutation replaces this advisory path; then delete this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# Contributor topology observation falsifiers: xtask test-surface plumbing.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-contributor-observation-falsifiers"
+kind = "test_receipt_surface"
+paths = ["xtask/tests/ripr_seam_proof_contributor_observation.rs"]
+classification = ["side_effect", "call_deletion"]
+owner = "devex"
+issue = "#9541"
+reason = "The contributor-topology observation falsifiers are a diff-scoped proof harness driving every observation.rs bail! through fixture mutation; the matcher flags the harness's own rewrites and object surgery as unobserved side effects, the same test-surface limitation as ripr-suppress-seam-proof-tests (which covers only crates/**/tests). Remove when RIPR distinguishes fixture plumbing from production behavior."
+created = "2026-08-18"
+review_after = "2026-09-18"
+expires = "2026-09-30"
