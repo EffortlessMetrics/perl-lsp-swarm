@@ -218,6 +218,8 @@ fn classify_output(output: &ParseOutput) -> ParseTerminalDisposition {
         ParseTerminalDisposition::BudgetExhausted
     } else if output.recovered_count > 0 {
         ParseTerminalDisposition::Recovered
+    } else if output.diagnostics.iter().any(ParseError::blocks_clean_parse) {
+        ParseTerminalDisposition::Catastrophic
     } else {
         ParseTerminalDisposition::Clean
     }
@@ -277,6 +279,24 @@ mod tests {
             advisory,
         );
         assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Clean);
+        assert!(snapshot.validate_against(source).is_ok());
+    }
+
+    #[test]
+    fn blocking_diagnostic_without_recovery_is_catastrophic() {
+        let source = "my $x = 1;";
+        let mut output = parse(source);
+        assert_eq!(output.recovered_count, 0);
+        output.diagnostics.push(ParseError::UnexpectedEof);
+
+        let snapshot = ParseSnapshot::from_output(
+            source,
+            ParseGeneration::INITIAL,
+            ParseSnapshotStrategy::Fresh,
+            output,
+        );
+
+        assert_eq!(snapshot.disposition(), ParseTerminalDisposition::Catastrophic);
         assert!(snapshot.validate_against(source).is_ok());
     }
 
