@@ -1,0 +1,112 @@
+{
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/clients/sublime/sublime-host-receipt.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "assertions": {
+      "additionalProperties": { "type": "boolean" },
+      "properties": {
+        "completion": { "const": true },
+        "custom_semantic_mapping": { "const": true },
+        "definition": { "const": true },
+        "exact_binary_launch": { "const": true },
+        "file_family_activation": { "const": true },
+        "hover": { "const": true },
+        "project_configuration": { "const": true },
+        "pull_diagnostics_after_edit": { "const": true },
+        "pull_diagnostics_open": { "const": true },
+        "semantic_tokens": { "const": true },
+        "workspace_edit_applied": { "const": true }
+      },
+      "required": [
+        "file_family_activation",
+        "exact_binary_launch",
+        "pull_diagnostics_open",
+        "pull_diagnostics_after_edit",
+        "completion",
+        "definition",
+        "hover",
+        "project_configuration",
+        "workspace_edit_applied",
+        "semantic_tokens",
+        "custom_semantic_mapping"
+      ],
+      "type": "object"
+    },
+    "binary": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            { "minLength": 1, "type": "string" },
+            { "const": "--stdio" }
+          ],
+          "type": "array"
+        },
+        "path": { "minLength": 1, "type": "string" },
+        "sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" }
+      },
+      "required": ["path", "sha256", "command"],
+      "type": "object"
+    },
+    "fixtures": {
+      "additionalProperties": false,
+      "properties": {
+        "pl": { "pattern": "\\.pl$", "type": "string" },
+        "pm": { "pattern": "\\.pm$", "type": "string" },
+        "t": { "pattern": "\\.t$", "type": "string" }
+      },
+      "required": ["pl", "pm", "t"],
+      "type": "object"
+    },
+    "helper_package": {
+      "additionalProperties": false,
+      "properties": {
+        "name": { "const": "LSP-perllsp" },
+        "source": { "const": "clients/sublime/LSP-perllsp" }
+      },
+      "required": ["name", "source"],
+      "type": "object"
+    },
+    "host": {
+      "additionalProperties": false,
+      "properties": {
+        "arch": { "enum": ["x64", "arm64"] },
+        "name": { "const": "Sublime Text" },
+        "platform": { "enum": ["linux", "osx", "windows"] },
+        "version": { "pattern": "^[0-9]+$", "type": "string" }
+      },
+      "required": ["name", "version", "platform", "arch"],
+      "type": "object"
+    },
+    "lsp_package": {
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "const": "cc9f5201d9f053d9ab67aa0ea575b494fd133803" },
+        "repository": { "const": "sublimelsp/LSP" }
+      },
+      "required": ["repository", "ref"],
+      "type": "object"
+    },
+    "recorded_at": { "format": "date-time", "type": "string" },
+    "schema_version": { "const": 1 },
+    "source_sha": { "pattern": "^[0-9a-f]{40}$", "type": "string" },
+    "stage": { "const": "exact_source_local" }
+  },
+  "required": [
+    "schema_version",
+    "stage",
+    "source_sha",
+    "recorded_at",
+    "host",
+    "lsp_package",
+    "helper_package",
+    "binary",
+    "fixtures",
+    "assertions"
+  ],
+  "title": "Sublime exact-source host receipt",
+  "type": "object"
+}

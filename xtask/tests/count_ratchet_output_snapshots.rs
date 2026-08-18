@@ -1,3 +1,6 @@
+// Integration test: assertion helpers (`expect`/`unwrap`/`panic!`) carry the
+// failure message. The workspace-wide deny is a production-code rule.
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 //! Snapshot tests for `published-crate-count` xtask subcommand output.
 //!
 //! These tests capture the exact stdout/stderr output of the

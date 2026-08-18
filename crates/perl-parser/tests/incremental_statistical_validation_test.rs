@@ -479,7 +479,19 @@ fn test_regression_detection_across_sessions() -> Result<(), Box<dyn std::error:
 }
 
 /// Analyze performance distribution patterns
+///
+/// Ignored until #9831 settles what this should assert. The skewness and
+/// kurtosis bounds below are not satisfiable by microsecond-scale wall-clock
+/// samples: a single scheduler preemption is a >4σ outlier against a ~19µs
+/// median, and kurtosis is a fourth-power statistic. Measured 5/5 failures
+/// locally at skewness 5.08–6.97 (limit 5.0) and kurtosis 27.5–54.3 (limit
+/// 10.0). The oracle measures host scheduling noise, not parser behavior.
+///
+/// This ran zero times before #9795 enabled the `incremental` feature in CI,
+/// which is why an unsatisfiable assertion went unobserved. It is marked
+/// ignored rather than deleted or relaxed so that "not run" stays visible.
 #[test]
+#[ignore = "unsatisfiable wall-clock distribution-shape oracle; see #9831"]
 fn test_performance_distribution_analysis() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📊 Performance Distribution Analysis");
 
