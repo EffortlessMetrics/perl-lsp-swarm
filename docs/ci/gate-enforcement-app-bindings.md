@@ -58,4 +58,3 @@ The receipt retains two different digests:
 - `exact_source_sha256` hashes the exact repository, raw policy-file, and workflow-file attestations. Byte movement, including an order-only policy edit, remains visible here.
 
 Binding, enforcement-source, role, applicability, producer, workflow, job, result, or event movement changes the semantic subject. Raw file or repository movement cannot masquerade as semantic movement, and semantic normalization does not discard exact-source evidence.
-
