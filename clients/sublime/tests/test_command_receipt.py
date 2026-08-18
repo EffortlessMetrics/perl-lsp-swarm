@@ -5,8 +5,9 @@ import json
 import unittest
 from pathlib import Path
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-CLIENT_ROOT = PACKAGE_ROOT.parent
+SUBLIME_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_ROOT = SUBLIME_ROOT / "LSP-perllsp"
+CLIENT_ROOT = SUBLIME_ROOT
 VALIDATOR_PATH = CLIENT_ROOT / "validate_sublime_command_receipt.py"
 SCHEMA_PATH = CLIENT_ROOT / "sublime-command-receipt.v1.schema.json"
 

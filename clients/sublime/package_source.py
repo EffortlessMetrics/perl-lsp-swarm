@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -75,9 +76,12 @@ def load_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
     )
     phase = payload.get("authority_phase")
     require(phase in {"pre_public_release", "public_repository_authoritative"}, "invalid authority phase")
+    require(
+        phase == "pre_public_release",
+        "public_repository_authoritative source resolution is not implemented",
+    )
     editable = payload.get("editable_authority")
-    expected = "development_repository" if phase == "pre_public_release" else "public_repository"
-    require(editable == expected, f"editable_authority must be {expected} during {phase}")
+    require(editable == "development_repository", "editable_authority must be development_repository")
     source_files = _path_list(payload.get("source_files"), "source_files")
     package_files = _path_list(payload.get("package_files"), "package_files")
     require(set(package_files).issubset(source_files), "package_files must be a subset of source_files")
@@ -88,6 +92,57 @@ def load_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
 
 def _is_ephemeral(relative: str) -> bool:
     return any(fnmatch.fnmatch(relative, pattern) for pattern in EPHEMERAL_PATTERNS)
+
+
+def _git_output(cwd: Path, *arguments: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        detail = getattr(error, "stderr", "") or str(error)
+        raise AuthorityError(f"could not prove source repository state: {detail.strip()}") from error
+    return result.stdout.strip()
+
+
+def _require_development_authority(manifest: dict[str, Any]) -> None:
+    require(
+        manifest["authority_phase"] == "pre_public_release",
+        "public_repository_authoritative source resolution is not implemented",
+    )
+
+
+def resolve_source_commit(
+    package_root: Path = PACKAGE_ROOT,
+    manifest: dict[str, Any] | None = None,
+) -> str:
+    manifest = manifest or load_manifest()
+    _require_development_authority(manifest)
+    package_root = package_root.resolve()
+    repository_root = Path(_git_output(package_root, "rev-parse", "--show-toplevel")).resolve()
+    expected_root = (repository_root / manifest["development_root"]).resolve()
+    require(
+        package_root == expected_root,
+        "source tree must be the checked-out development repository path",
+    )
+    status = _git_output(
+        repository_root,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        *manifest["source_files"],
+    )
+    require(not status, "source tree must be clean before its commit can be recorded")
+    commit = _git_output(repository_root, "rev-parse", "--verify", "HEAD^{commit}")
+    require(
+        len(commit) == 40 and all(char in "0123456789abcdef" for char in commit),
+        "checked-out source commit is not a full lowercase Git commit SHA",
+    )
+    return commit
 
 
 def discover_files(root: Path) -> tuple[str, ...]:
@@ -111,6 +166,7 @@ def validate_source_tree(
     package_root: Path = PACKAGE_ROOT,
 ) -> tuple[str, ...]:
     manifest = manifest or load_manifest()
+    _require_development_authority(manifest)
     expected = tuple(manifest["source_files"])
     actual = discover_files(package_root)
     missing = sorted(set(expected) - set(actual))
@@ -168,10 +224,8 @@ def export_source_tree(
 ) -> dict[str, Any]:
     manifest = manifest or load_manifest()
     files = validate_source_tree(manifest, package_root)
-    require(
-        len(source_commit) == 40 and all(char in "0123456789abcdef" for char in source_commit),
-        "source_commit must be a full lowercase Git commit SHA",
-    )
+    actual_commit = resolve_source_commit(package_root, manifest)
+    require(source_commit == actual_commit, "source_commit does not match the clean source tree commit")
     _prepare_destination(destination)
     for relative in files:
         source = package_root / relative
@@ -221,9 +275,28 @@ def check_export(
 
 
 def _replace_directory_atomically(staged: Path, destination: Path) -> None:
+    backup_parent: Path | None = None
+    backup: Path | None = None
     if destination.exists():
-        shutil.rmtree(destination)
-    os.replace(staged, destination)
+        require(destination.is_dir() and not destination.is_symlink(), "destination must be a real directory")
+        backup_parent = Path(tempfile.mkdtemp(prefix=f".{destination.name}.backup-", dir=str(destination.parent)))
+        backup = backup_parent / destination.name
+        os.replace(destination, backup)
+    try:
+        os.replace(staged, destination)
+    except BaseException as error:
+        if backup is None:
+            raise
+        try:
+            os.replace(backup, destination)
+        except OSError as rollback_error:
+            raise AuthorityError(
+                f"directory replacement failed and rollback failed: {rollback_error}"
+            ) from rollback_error
+        raise error
+    finally:
+        if backup_parent is not None and backup_parent.exists():
+            shutil.rmtree(backup_parent, ignore_errors=True)
 
 
 def export_atomically(

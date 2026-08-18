@@ -28,12 +28,6 @@
     "release.py",
     "server-manifest.json",
     "sublime-package.json",
-    "tests/test_command_receipt.py",
-    "tests/test_command_surface.py",
-    "tests/test_dap_receipt.py",
-    "tests/test_dap_support.py",
-    "tests/test_host_contract.py",
-    "tests/test_package_source.py",
     "tests/test_release.py",
     "unittesting.json"
   ],

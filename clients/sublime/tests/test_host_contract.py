@@ -6,11 +6,12 @@ import unittest
 from pathlib import Path
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-CLIENT_ROOT = PACKAGE_ROOT.parent
+SUBLIME_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_ROOT = SUBLIME_ROOT / "LSP-perllsp"
+CLIENT_ROOT = SUBLIME_ROOT
 VALIDATOR_PATH = CLIENT_ROOT / "validate_sublime_host_receipt.py"
 SCHEMA_PATH = CLIENT_ROOT / "sublime-host-receipt.v1.schema.json"
-WORKFLOW_PATH = Path(__file__).resolve().parents[4] / ".github" / "workflows" / "sublime-real-host.yml"
+WORKFLOW_PATH = SUBLIME_ROOT.parents[1] / ".github" / "workflows" / "sublime-real-host.yml"
 
 
 def job_level_env_blocks(workflow_text: str):

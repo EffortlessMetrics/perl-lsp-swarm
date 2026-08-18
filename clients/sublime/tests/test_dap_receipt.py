@@ -5,10 +5,11 @@ import json
 import unittest
 from pathlib import Path
 
-PACKAGE = Path(__file__).resolve().parents[1]
-CLIENT = PACKAGE.parent
-REPO = Path(__file__).resolve().parents[4]
-VALIDATOR_PATH = CLIENT / "validate_sublime_dap_receipt.py"
+SUBLIME_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE = SUBLIME_ROOT / "LSP-perllsp"
+CLIENT = SUBLIME_ROOT
+VALIDATOR_PATH = SUBLIME_ROOT / "validate_sublime_dap_receipt.py"
+REPO = SUBLIME_ROOT.parents[1]
 WORKFLOW_PATH = REPO / ".github" / "workflows" / "sublime-dap-real-host.yml"
 
 

@@ -32,6 +32,8 @@ jobs:
           python-version: "3.8"
       - name: Run helper-package contract tests
         run: python -m unittest discover -s clients/sublime/LSP-perllsp/tests -p 'test_*.py'
+      - name: Run source authority handoff tests
+        run: python -m unittest discover -s clients/sublime/tests -p 'test_*.py'
       - name: Validate package metadata and source manifest
         run: |
           python -m json.tool clients/sublime/LSP-perllsp/LSP-perllsp.sublime-settings >/dev/null

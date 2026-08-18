@@ -9,8 +9,9 @@ import unittest
 import zipfile
 from pathlib import Path
 
-PACKAGE = Path(__file__).resolve().parents[1]
-REPO = Path(__file__).resolve().parents[4]
+SUBLIME_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE = SUBLIME_ROOT / "LSP-perllsp"
+REPO = SUBLIME_ROOT.parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "perllsp_command_surface",
     PACKAGE / "command_surface.py",

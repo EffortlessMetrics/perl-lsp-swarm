@@ -9,7 +9,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
-PACKAGE = Path(__file__).resolve().parents[1]
+SUBLIME_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE = SUBLIME_ROOT / "LSP-perllsp"
 SPEC = importlib.util.spec_from_file_location("perllsp_dap_support", PACKAGE / "dap_support.py")
 assert SPEC and SPEC.loader
 support = importlib.util.module_from_spec(SPEC)
@@ -123,7 +124,7 @@ class DapSupportContractTests(unittest.TestCase):
             try:
                 exporter_spec = importlib.util.spec_from_file_location(
                     "perllsp_exporter",
-                    PACKAGE.parent / "export_lsp_perllsp.py",
+                    SUBLIME_ROOT / "export_lsp_perllsp.py",
                 )
                 assert exporter_spec and exporter_spec.loader
                 exporter = importlib.util.module_from_spec(exporter_spec)
