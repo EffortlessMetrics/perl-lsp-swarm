@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 
 #[test]
@@ -23,6 +24,10 @@ fn project_matrix_covers_every_required_layout_once() -> Result<(), Box<dyn Erro
         assert!(fixture.open_file.is_file());
         assert!(fixture.open_file.starts_with(matrix.root()));
         if let Some(intended_root) = &fixture.intended_root {
+            assert!(
+                fixture.open_file.starts_with(intended_root),
+                "open_file must live inside its own intended root, not a sibling's"
+            );
             assert!(intended_root.starts_with(matrix.root()));
         }
     }
@@ -94,13 +99,31 @@ fn worktree_and_single_file_boundaries_are_explicit() -> Result<(), Box<dyn Erro
         worktree.intended_root.as_ref().ok_or("worktree fixture missing intended root")?;
     let dot_git = worktree_root.join(".git");
     assert!(dot_git.is_file());
-    assert!(fs::read_to_string(dot_git)?.starts_with("gitdir: "));
+    let pointer = fs::read_to_string(dot_git)?;
+    let target = pointer
+        .strip_prefix("gitdir: ")
+        .ok_or("worktree .git must carry a gitdir pointer")?
+        .trim()
+        .replace('\\', "/");
     // The linked-worktree case only discriminates while `.git` is the sole root
     // evidence: any competing distribution marker would let plain marker
     // discovery report the intended root with worktree recognition broken.
     for marker in ["Makefile.PL", "Build.PL", "cpanfile", "dist.ini", ".perl-lsp.toml"] {
         assert!(!worktree_root.join(marker).exists(), "competing marker {marker}");
     }
+    // The pointer must resolve to a real gitdir inside the fixture matrix,
+    // with forward separators only, so the boundary probe is exercising a
+    // genuine linked worktree rather than an opaque text prefix.
+    assert!(
+        target.contains(".git/worktrees/"),
+        "gitdir pointer must target a worktrees gitdir, got {target}"
+    );
+    let resolved = if target.starts_with('/') {
+        PathBuf::from(&target)
+    } else {
+        worktree_root.join(&target)
+    };
+    assert!(resolved.is_dir(), "gitdir pointer must resolve: {resolved:?}");
 
     let standalone =
         matrix.fixture(EmacsProjectCaseKind::StandaloneFile).ok_or("standalone fixture missing")?;
