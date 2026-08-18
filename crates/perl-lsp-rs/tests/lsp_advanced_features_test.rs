@@ -58,7 +58,12 @@ impl AdvancedTestContext {
             "script".to_string(),
             "#!/usr/bin/perl\nuse strict;\nuse warnings;\n".to_string(),
         );
-        template_cache.insert("test".to_string(), "use Test::More;\ndone_testing();\n".to_string());
+        template_cache.insert(
+            "test".to_string(),
+            // A fixed plan and `done_testing()` are mutually exclusive in Test::More
+            // (one plan per file), so this template declares the plan only.
+            "use Test::More tests => {{ TEST_COUNT }};\nuse {{ MODULE_NAME }};\n".to_string(),
+        );
 
         Self {
             server,
@@ -262,8 +267,17 @@ fn test_create_module_from_template() {
 
     let content = ctx.create_from_template("module", "lib/MyApp/Utils.pm", params);
 
-    // Template should be created (or error handled gracefully)
-    assert!(content.is_ok() || content.is_err(), "Template creation should complete");
+    let content = perl_tdd_support::must(content);
+    assert!(
+        content.contains("package MyApp::Utils;"),
+        "MODULE_NAME must be substituted into the package statement, got: {:?}",
+        content
+    );
+    assert!(
+        !content.contains("{{"),
+        "no template placeholder may survive rendering, got: {:?}",
+        content
+    );
 }
 
 #[test]
@@ -276,8 +290,22 @@ fn test_create_test_from_template() {
 
     let content = ctx.create_from_template("test", "t/calculator.t", params);
 
-    // Test template should be created
-    assert!(content.is_ok() || content.is_err(), "Test template creation should complete");
+    let content = perl_tdd_support::must(content);
+    assert!(
+        content.contains("tests => 5"),
+        "TEST_COUNT must be substituted into the plan, got: {:?}",
+        content
+    );
+    assert!(
+        content.contains("use MyApp::Calculator;"),
+        "MODULE_NAME must be substituted into the use statement, got: {:?}",
+        content
+    );
+    assert!(
+        !content.contains("{{"),
+        "no template placeholder may survive rendering, got: {:?}",
+        content
+    );
 }
 
 // ===================== Test Runner Integration =====================

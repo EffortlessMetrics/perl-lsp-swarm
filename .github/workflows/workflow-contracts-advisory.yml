@@ -25,6 +25,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/**"
+      - "scripts/ci/test_codecov_test_results_workflows.py"
       - "xtask/src/tasks/workflows.rs"
       - "xtask/src/tasks/workflow_policy_lint.rs"
       - "policy/workflow-contracts.toml"
@@ -33,6 +34,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/**"
+      - "scripts/ci/test_codecov_test_results_workflows.py"
       - "xtask/src/tasks/workflows.rs"
       - "policy/workflow-contracts.toml"
   workflow_dispatch: {}
@@ -65,7 +67,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Codecov test-results contract
+        run: python3 -m unittest scripts.ci.test_codecov_test_results_workflows
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772

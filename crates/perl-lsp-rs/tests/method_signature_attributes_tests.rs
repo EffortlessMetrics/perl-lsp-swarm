@@ -389,15 +389,14 @@ fn test_goto_def_class_name_resolves_to_declaration() -> TestResult {
     );
 
     // When the provider resolves the class, it should point into the same document.
-    if let Some(arr) = result.as_array() {
-        if let Some(first) = arr.first() {
-            if let Some(uri) = first.get("uri").and_then(|u| u.as_str()) {
-                assert!(
-                    uri.contains("method_class_def"),
-                    "goto-definition on class name should point to the same file, got: {uri}"
-                );
-            }
-        }
+    if let Some(arr) = result.as_array()
+        && let Some(first) = arr.first()
+        && let Some(uri) = first.get("uri").and_then(|u| u.as_str())
+    {
+        assert!(
+            uri.contains("method_class_def"),
+            "goto-definition on class name should point to the same file, got: {uri}"
+        );
     }
 
     Ok(())
@@ -465,30 +464,30 @@ fn test_semantic_tokens_method_sig_attr_monotonic_order() -> TestResult {
         )
         .unwrap_or(json!(null));
 
-    if !response.is_null() {
-        if let Some(arr) = response.get("data").and_then(|d| d.as_array()) {
-            assert_eq!(arr.len() % 5, 0, "Semantic token data must be 5-tuples");
-            let data: Vec<u64> = arr.iter().filter_map(|v| v.as_u64()).collect();
-            let tokens = decode_tokens(&data);
+    if !response.is_null()
+        && let Some(arr) = response.get("data").and_then(|d| d.as_array())
+    {
+        assert_eq!(arr.len() % 5, 0, "Semantic token data must be 5-tuples");
+        let data: Vec<u64> = arr.iter().filter_map(|v| v.as_u64()).collect();
+        let tokens = decode_tokens(&data);
 
-            let mut prev_line = 0u64;
-            let mut prev_col = 0u64;
-            for (line, col, _len, _tt, _tm) in &tokens {
-                if *line == prev_line {
-                    assert!(
-                        *col >= prev_col,
-                        "Token column must be non-decreasing on same line: \
-                         prev_col={prev_col} got col={col}"
-                    );
-                } else {
-                    assert!(
-                        *line > prev_line,
-                        "Token line must be non-decreasing: prev={prev_line} got={line}"
-                    );
-                }
-                prev_line = *line;
-                prev_col = *col;
+        let mut prev_line = 0u64;
+        let mut prev_col = 0u64;
+        for (line, col, _len, _tt, _tm) in &tokens {
+            if *line == prev_line {
+                assert!(
+                    *col >= prev_col,
+                    "Token column must be non-decreasing on same line: \
+                     prev_col={prev_col} got col={col}"
+                );
+            } else {
+                assert!(
+                    *line > prev_line,
+                    "Token line must be non-decreasing: prev={prev_line} got={line}"
+                );
             }
+            prev_line = *line;
+            prev_col = *col;
         }
     }
 

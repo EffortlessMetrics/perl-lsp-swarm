@@ -41,6 +41,8 @@ jobs:
     name: Preflight — is this SHA latest?
     runs-on: ubuntu-24.04
     timeout-minutes: 2
+    permissions:
+      contents: read
     outputs:
       is_latest: ${{ steps.check.outputs.is_latest }}
     steps:
@@ -86,7 +88,7 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -94,14 +96,14 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: audit-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: cargo-audit
 
@@ -140,7 +142,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -148,14 +150,14 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           key: deny-${{ hashFiles('Cargo.lock') }}
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60  # v2.85.7
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: cargo-deny
 
@@ -177,7 +179,7 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Run Trivy vulnerability scanner (filesystem mode)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
@@ -198,7 +200,7 @@ jobs:
 
       - name: Upload Trivy results to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@24c7eb380a2dc368f2d129e4c65e51d172983a1e  # v4
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'trivy-repository'
@@ -235,7 +237,7 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Build Docker image
         run: |
@@ -256,7 +258,7 @@ jobs:
 
       - name: Upload Trivy Docker results to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@24c7eb380a2dc368f2d129e4c65e51d172983a1e  # v4
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
         with:
           sarif_file: 'trivy-docker-results.sarif'
           category: 'trivy-docker'
