@@ -69,8 +69,8 @@ pub use ast::{FieldId, Node, NodeKind};
 pub use invariant_policy::{
     AST_NODE_POLICIES, AST_NODE_POLICY_SCHEMA_VERSION, AstChildContainmentPolicy,
     AstChildOrderPolicy, AstChildOverlapPolicy, AstEmptyRangePolicy, AstNodeClassification,
-    AstNodePolicy, AstPayloadPolicy, AstSourceBacking, all_ast_node_policies, ast_node_policy,
-    policy_accepts_observed_children,
+    AstNodePolicy, AstPayloadPolicy, AstSourceBacking, NodeKindFixture, all_ast_node_policies,
+    ast_node_policy, node_kind_fixtures, policy_accepts_observed_children,
 };
 /// AST structural validation types and entry point.
 pub use invariants::{
