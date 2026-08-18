@@ -114,7 +114,7 @@ pub(crate) fn apply_single_edit(
 }
 
 pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult> {
-    state.refresh_parse_output(ParseSnapshotStrategy::IncrementalFullFallback);
+    state.refresh_parse_output(ParseSnapshotStrategy::IncrementalFullFallback)?;
     let source = state.source().to_owned();
     let mut lexer = PerlLexer::new(&source);
     let mut tokens = Vec::new();
@@ -128,7 +128,6 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
     Ok(ReparseResult {
         changed_ranges: vec![0..source.len()],
         snapshot: state.snapshot().clone(),
-        parse_output: state.parse_output().clone(),
         diagnostics: vec![],
         reparsed_bytes: source.len(),
         reused_tokens: 0,
