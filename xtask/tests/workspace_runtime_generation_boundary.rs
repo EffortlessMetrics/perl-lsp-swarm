@@ -60,11 +60,7 @@ fn read_source(root: &Path, path: &str) -> Result<String> {
 }
 
 fn forbidden_tokens(source: &str) -> Vec<&'static str> {
-    FORBIDDEN_TOKENS
-        .iter()
-        .copied()
-        .filter(|token| source.contains(token))
-        .collect()
+    FORBIDDEN_TOKENS.iter().copied().filter(|token| source.contains(token)).collect()
 }
 
 #[test]
@@ -87,10 +83,7 @@ fn workspace_runtime_generation_authority_is_transport_and_domain_neutral() -> R
         );
     }
     for marker in REQUIRED_CORE_MARKERS {
-        ensure!(
-            core.contains(marker),
-            "{CORE_PATH} is missing generation-core marker {marker:?}"
-        );
+        ensure!(core.contains(marker), "{CORE_PATH} is missing generation-core marker {marker:?}");
     }
 
     ensure!(
@@ -127,14 +120,8 @@ fn a_transport_or_semantic_back_edge_is_rejected() {
     "#;
 
     let forbidden = forbidden_tokens(mutated);
-    assert!(
-        forbidden.contains(&"lsp_types"),
-        "LSP wire types must be rejected"
-    );
-    assert!(
-        forbidden.contains(&"WorkspaceEdit"),
-        "edit semantics must be rejected"
-    );
+    assert!(forbidden.contains(&"lsp_types"), "LSP wire types must be rejected");
+    assert!(forbidden.contains(&"WorkspaceEdit"), "edit semantics must be rejected");
 }
 
 #[test]

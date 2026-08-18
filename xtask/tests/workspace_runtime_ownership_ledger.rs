@@ -134,11 +134,7 @@ fn validate_rows(rows: &[OwnershipRow]) -> Result<()> {
 
     for row in rows {
         ensure!(row.id.starts_with("WRT-"), "{}: invalid stable row ID", row.id);
-        ensure!(
-            ids.insert(row.id.as_str()),
-            "duplicate ownership row {}",
-            row.id
-        );
+        ensure!(ids.insert(row.id.as_str()), "duplicate ownership row {}", row.id);
         ensure!(
             ALLOWED_STATES.contains(&row.current_state.as_str()),
             "{}: unknown current state {}",
@@ -287,39 +283,25 @@ fn generated_reviewer_projection_is_current() -> Result<()> {
     let root = repo_root()?;
     let actual = fs::read_to_string(root.join(GENERATED_PATH))
         .with_context(|| format!("read {GENERATED_PATH}"))?;
-    ensure!(
-        actual == expected,
-        "{GENERATED_PATH} is stale; regenerate it from {LEDGER_PATH}"
-    );
+    ensure!(actual == expected, "{GENERATED_PATH} is stale; regenerate it from {LEDGER_PATH}");
     Ok(())
 }
 
 #[test]
 fn duplicate_stable_row_id_is_rejected() -> Result<()> {
     let mut rows = load_rows()?;
-    let duplicate = rows
-        .first()
-        .cloned()
-        .context("ownership ledger unexpectedly empty")?;
+    let duplicate = rows.first().cloned().context("ownership ledger unexpectedly empty")?;
     rows.push(duplicate);
-    ensure!(
-        validate_rows(&rows).is_err(),
-        "duplicate row ID must fail validation"
-    );
+    ensure!(validate_rows(&rows).is_err(), "duplicate row ID must fail validation");
     Ok(())
 }
 
 #[test]
 fn path_or_uri_only_identity_is_rejected() -> Result<()> {
     let mut rows = load_rows()?;
-    let row = rows
-        .first_mut()
-        .context("ownership ledger unexpectedly empty")?;
+    let row = rows.first_mut().context("ownership ledger unexpectedly empty")?;
     row.identity = "root URI".to_string();
-    ensure!(
-        validate_rows(&rows).is_err(),
-        "path/URI-only root identity must fail validation"
-    );
+    ensure!(validate_rows(&rows).is_err(), "path/URI-only root identity must fail validation");
     Ok(())
 }
 
