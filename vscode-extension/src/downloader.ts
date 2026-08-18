@@ -1102,17 +1102,23 @@ export class BinaryDownloader {
       }
     }
 
+    const conversion = toManagedReleaseRecords(
+      releases,
+      expectation,
+      assetTargetCandidates,
+      archiveExtension,
+      findReleaseAssetName,
+    );
+    if (conversion.droppedTags.length > 0) {
+      this.outputChannel.appendLine(
+        `Managed release metadata: quarantined unparseable tag(s): ${conversion.droppedTags.join(', ')}`,
+      );
+    }
     const selection = selectManagedRelease({
       expectation,
       channel,
       explicitTag: channel === 'tag' && versionTag ? versionTag : undefined,
-      releases: toManagedReleaseRecords(
-        releases,
-        expectation,
-        assetTargetCandidates,
-        archiveExtension,
-        findReleaseAssetName,
-      ),
+      releases: conversion.records,
     });
     if (selection.kind === 'refused') {
       throw new Error(describeManagedReleaseRefusal(selection, channel));

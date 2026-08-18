@@ -1480,6 +1480,29 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
   });
 
+  test('a historical mistagged release cannot poison the stable route (hosted-smoke regression)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    stableChannelConfig();
+    // Mirrors the live EffortlessMetrics/perl-lsp release history: v0.13.1
+    // carries prerelease:true on a stable-semver tag.
+    respondWithReleaseList(seams, [
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
+      { tag_name: 'v0.13.1', prerelease: true, assets: [] },
+    ]);
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
+  });
+
   test('refuses to install a prerelease when the stable channel has no stable release', async () => {
     const seams = downloader as unknown as DownloaderSeams;
     stableChannelConfig();

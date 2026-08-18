@@ -57,6 +57,15 @@ export interface ManagedReleaseExpectationFacts {
   readonly hostTarget: string;
 }
 
+/**
+ * Mirrors `managedReleaseSelector`'s SEMVER_PATTERN exactly. The adapter must
+ * be at least as strict as the selector: a record this adapter judges
+ * parseable reaches the selector's own parse, and any disagreement there
+ * fails the whole input set closed.
+ */
+const SEMVER_PATTERN =
+  /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
 export function buildManagedReleaseExpectation(
   facts: ManagedReleaseExpectationFacts,
 ): ManagedReleaseExpectation {
@@ -72,12 +81,19 @@ export function buildManagedReleaseExpectation(
  * Convert one transport release into the selector's record model.
  *
  * Fail-closed mappings:
- * - anything other than an explicit `prerelease: false` counts as a
- *   prerelease (a stable-version record then disagrees with its parsed
- *   semver and the selector refuses the metadata, exactly the fail-closed
- *   behavior the stable channel has always had);
+ * - anything other than an explicit `prerelease: false` counts as a claimed
+ *   prerelease;
  * - target availability is evidence from the release's own asset list, not
  *   assumed: `available` only when a candidate asset name is present.
+ *
+ * Quarantine (real release history is unbounded, unlike the selector's
+ * curated-input contract): a record whose prerelease claim disagrees with
+ * its parsed semver — a historical mistag — is kept but demoted to
+ * `not_proven` compatibility with its flag aligned to the parsed tag. It can
+ * never be selected, and it blocks selection only when it is actually newer
+ * than every proven candidate (the selector's newer-unknown rule), so one
+ * bad historical record cannot poison every managed route (#9925 hosted
+ * smoke: v0.13.1 mistagged prerelease).
  */
 export function toManagedReleaseRecord(
   release: TransportRelease,
@@ -90,20 +106,30 @@ export function toManagedReleaseRecord(
     .map((target) => findAsset(release.assets, release.tag_name, target, archiveExtension))
     .find((name) => name !== undefined);
   const targetState: ManagedTargetState = matchedAsset === undefined ? 'unavailable' : 'available';
+  const parsed = SEMVER_PATTERN.exec(release.tag_name);
+  const claimedPrerelease = release.prerelease !== false;
+  const actualPrerelease = parsed?.[4] !== undefined;
+  const mistagged = parsed !== null && claimedPrerelease !== actualPrerelease;
   return {
     releaseId: `release:${release.tag_name}`,
     candidateId: `candidate:${release.tag_name}`,
     tagName: release.tag_name,
     version: release.tag_name,
-    prerelease: release.prerelease !== false,
+    prerelease: mistagged ? actualPrerelease : claimedPrerelease,
     draft: release.draft === true,
     compatibilityRequirement: expectation.compatibilityRequirement,
-    compatibilityState: 'compatible',
-    compatibilityEvidenceRef: `release-train:${release.tag_name}`,
+    compatibilityState: mistagged ? 'not_proven' : 'compatible',
+    compatibilityEvidenceRef: mistagged ? undefined : `release-train:${release.tag_name}`,
     target: expectation.target,
     targetState,
     targetEvidenceRef: `release-assets:${release.tag_name}`,
   };
+}
+
+export interface ManagedReleaseRecordConversion {
+  readonly records: ManagedReleaseRecord[];
+  /** Tags quarantined out of the candidate set entirely (unparseable semver). */
+  readonly droppedTags: string[];
 }
 
 export function toManagedReleaseRecords(
@@ -112,14 +138,25 @@ export function toManagedReleaseRecords(
   assetTargetCandidates: readonly string[],
   archiveExtension: string,
   findAsset: ReleaseAssetMatcher,
-): ManagedReleaseRecord[] {
-  return releases.map((release) =>
-    toManagedReleaseRecord(
-      release,
-      expectation,
-      assetTargetCandidates,
-      archiveExtension,
-      findAsset,
-    ),
-  );
+): ManagedReleaseRecordConversion {
+  const records: ManagedReleaseRecord[] = [];
+  const droppedTags: string[] = [];
+  for (const release of releases) {
+    if (!SEMVER_PATTERN.test(release.tag_name)) {
+      // Unparseable tags cannot be ordered by the selector at all; their
+      // recency is unknowable, so they neither satisfy nor block selection.
+      droppedTags.push(release.tag_name);
+      continue;
+    }
+    records.push(
+      toManagedReleaseRecord(
+        release,
+        expectation,
+        assetTargetCandidates,
+        archiveExtension,
+        findAsset,
+      ),
+    );
+  }
+  return { records, droppedTags };
 }

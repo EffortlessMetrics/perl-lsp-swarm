@@ -42,7 +42,8 @@ function select(
   return selectManagedRelease({
     expectation,
     channel: 'stable',
-    releases: toManagedReleaseRecords(releases, expectation, [HOST_TARGET], '.tar.gz', findAsset),
+    releases: toManagedReleaseRecords(releases, expectation, [HOST_TARGET], '.tar.gz', findAsset)
+      .records,
     ...overrides,
   });
 }
@@ -135,15 +136,63 @@ test('tag channel requires the exact configured tag without substitution', () =>
   });
 });
 
-test('duplicate or malformed transport records fail closed', () => {
+test('duplicate transport records fail closed', () => {
   expect(select({}, [release('v0.18.0'), release('v0.18.0')])).toMatchObject({
     kind: 'refused',
     reason: 'release_metadata_not_proven',
   });
-  expect(
-    select({}, [{ tag_name: 'not-semver', prerelease: false, draft: false, assets: [] }]),
-  ).toMatchObject({
+});
+
+test('a mistagged historical record older than a valid release cannot poison selection', () => {
+  // Hosted-smoke regression: GitHub release v0.13.1 carries prerelease:true
+  // on a stable-semver tag. Quarantined to not_proven, it must not refuse the
+  // whole route when a valid newer release exists.
+  const result = select({}, [release('v0.13.1', { prerelease: true }), release('v0.18.0')]);
+  expect(result).toMatchObject({
+    kind: 'selected',
+    reason: 'stable_newest_compatible',
+    release: { tagName: 'v0.18.0' },
+  });
+});
+
+test('a mistagged record newer than every valid release blocks selection', () => {
+  const result = select({}, [release('v0.99.0', { prerelease: true }), release('v0.18.0')]);
+  expect(result).toMatchObject({
     kind: 'refused',
     reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.99.0',
   });
+});
+
+test('a mistagged record is never selected, even on the exact-tag path', () => {
+  const mistagged = [release('v0.13.1', { prerelease: true })];
+  expect(select({ channel: 'tag', explicitTag: 'v0.13.1' }, mistagged)).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.13.1',
+  });
+  expect(select({ channel: 'tag', explicitTag: 'v0.18.0' }, [release('v0.18.0')])).toMatchObject({
+    kind: 'selected',
+    reason: 'tag_exact_compatible',
+  });
+});
+
+test('unparseable tags are quarantined out without blocking or satisfying selection', () => {
+  const conversion = toManagedReleaseRecords(
+    [
+      { tag_name: 'nightly-build', prerelease: false, draft: false, assets: [] },
+      release('v0.18.0'),
+    ],
+    expectation,
+    [HOST_TARGET],
+    '.tar.gz',
+    findAsset,
+  );
+  expect(conversion.droppedTags).toEqual(['nightly-build']);
+  expect(
+    selectManagedRelease({ expectation, channel: 'stable', releases: conversion.records }),
+  ).toMatchObject({ kind: 'selected', release: { tagName: 'v0.18.0' } });
+
+  const onlyGarbage = select({}, [{ tag_name: 'nightly-build', prerelease: false, assets: [] }]);
+  expect(onlyGarbage).toMatchObject({ kind: 'refused', reason: 'no_compatible_release' });
 });
