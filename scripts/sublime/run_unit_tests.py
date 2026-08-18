@@ -78,22 +78,38 @@ def _dump_process_state() -> None:
     whether Xvfb/Sublime/plugin_host were alive, and what this process was
     doing when the signal landed.
     """
-    print(f"pid={os.getpid()} pgid={os.getpgrp()} sid={os.getsid(0)}")
+    identity = [f"pid={os.getpid()}"]
+    if hasattr(os, "getpgrp"):
+        identity.append(f"pgid={os.getpgrp()}")
+    if hasattr(os, "getsid"):
+        identity.append(f"sid={os.getsid(0)}")
+    print(" ".join(identity))
     try:
         with open("/proc/self/wchan", encoding="utf-8") as handle:
             print(f"wchan: {handle.read().strip()}")
     except OSError:
         pass
-    for probe in (["ps", "axjf"], ["ps", "-eo", "pid,ppid,pgid,stat,etime,comm"]):
-        result = subprocess.run(probe, capture_output=True, text=True)
+    # Targeted first: the full axjf forest is dominated by kernel threads and
+    # truncates before the user tree that identifies the signal's sender.
+    for probe in (
+        ["ps", "-eo", "pid,ppid,pgid,sid,stat,etime,args", "--sort=pid"],
+        ["ps", "axjf"],
+    ):
+        try:
+            result = subprocess.run(probe, capture_output=True, text=True)
+        except OSError:
+            continue
         if result.returncode == 0:
             print(f"===== {' '.join(probe)} =====")
             print(result.stdout[:6000])
             break
     for name in ("Xvfb", "sublime_text", "plugin_host", "perllsp"):
-        result = subprocess.run(
-            ["pgrep", "-a", name], capture_output=True, text=True
-        )
+        try:
+            result = subprocess.run(
+                ["pgrep", "-a", name], capture_output=True, text=True
+            )
+        except OSError:
+            continue
         state = result.stdout.strip() if result.returncode == 0 else "not running"
         print(f"===== {name}: {state or 'not running'} =====")
 
