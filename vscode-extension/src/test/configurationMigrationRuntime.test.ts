@@ -319,6 +319,98 @@ describe('configuration migration runtime', () => {
     expect(JSON.stringify(snapshot)).not.toContain('hunter2');
   });
 
+  test('the safe snapshot redacts a compatible legacy value, not only inert ones', () => {
+    // A compatible result DOES carry the legacy value at runtime; a snapshot
+    // implementation that leaks canonical_value only fails here, never on the
+    // inert fixtures above.
+    const secret = 'hunter2-compatible-legacy-secret';
+    const runtime = interpretLegacyConfiguration(compatibleRegistry(), {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource',
+      legacy_value_present: true,
+      legacy_value: secret,
+      current_value_present: false,
+      current_value: null,
+    });
+
+    expect(runtime.status).toBe('compatible_legacy');
+    expect(runtime.canonical_value).toBe(secret);
+    const snapshot = safeMigrationRuntimeSnapshot(runtime);
+    expect('canonical_value' in snapshot).toBe(false);
+    expect(JSON.stringify(snapshot)).not.toContain(secret);
+  });
+
+  test.each([
+    {
+      name: 'renamed_compatible without automatic read compatibility',
+      disposition: 'renamed_compatible',
+      automaticReadCompatibility: false,
+      expectedStatus: 'action_required',
+    },
+    {
+      name: 'renamed_requires_user_action',
+      disposition: 'renamed_requires_user_action',
+      automaticReadCompatibility: true,
+      expectedStatus: 'action_required',
+    },
+    {
+      name: 'replaced_by_standard_vscode_setting',
+      disposition: 'replaced_by_standard_vscode_setting',
+      automaticReadCompatibility: true,
+      expectedStatus: 'action_required',
+    },
+    {
+      name: 'replaced_by_server_or_project_config',
+      disposition: 'replaced_by_server_or_project_config',
+      automaticReadCompatibility: true,
+      expectedStatus: 'action_required',
+    },
+    {
+      name: 'unsupported_legacy_value',
+      disposition: 'unsupported_legacy_value',
+      automaticReadCompatibility: true,
+      expectedStatus: 'invalid',
+    },
+  ] as const)(
+    'disposition never silently adopts the legacy value: $name',
+    ({ disposition, automaticReadCompatibility, expectedStatus }) => {
+      const base = compatibleRegistry();
+      const row = base.rows[0];
+      if (row === undefined) {
+        throw new Error('compatibleRegistry must define one row');
+      }
+      const registry: ConfigurationMigrationRegistry = {
+        ...base,
+        rows: [
+          {
+            ...row,
+            migration_disposition: disposition,
+            automatic_read_compatibility: automaticReadCompatibility,
+          },
+        ],
+      };
+
+      const result = interpretLegacyConfiguration(registry, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: true,
+        current_value_present: false,
+        current_value: null,
+      });
+
+      // A wrong implementation that returns compatible_legacy with the legacy
+      // value fails every row of this table.
+      expect(result).toMatchObject({
+        status: expectedStatus,
+        canonical_value_present: false,
+        canonical_value: null,
+        notice_required: true,
+        disk_write_allowed: false,
+      });
+    },
+  );
+
   test('deduplicates migration notices per migration and configuration generation', () => {
     const runtime = interpretLegacyConfiguration(V018_CONFIGURATION_MIGRATIONS, {
       old_key: 'perl-lsp.mcp.servers',
