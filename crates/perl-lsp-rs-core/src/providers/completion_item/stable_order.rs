@@ -4,8 +4,8 @@
 //! semantics. This module supplies the final, non-semantic tie-break needed when
 //! equal-ranked candidates differ only in identity metadata, presentation, or
 //! conflicting insertion plans. It is used before merge so equal compatible
-//! candidates select the same winner regardless of provider iteration order,
-//! and after merge so retained conflicts have a total output order.
+//! candidates select the same winner regardless of provider iteration order;
+//! the final output order after merge is the typed rank order in `candidate`.
 
 use std::cmp::Ordering;
 
@@ -13,16 +13,6 @@ use super::{CompletionCandidate, CompletionItem, CompletionItemLabelDetails, Ins
 
 /// Deterministic input order before identity merge.
 pub(crate) fn candidate_premerge_order(
-    left: &CompletionCandidate,
-    right: &CompletionCandidate,
-) -> Ordering {
-    completion_item_order(&left.item, &right.item)
-        .then_with(|| left.identity.cmp(&right.identity))
-        .then_with(|| candidate_metadata_order(left, right))
-}
-
-/// Deterministic total order after identity merge.
-pub(crate) fn candidate_output_order(
     left: &CompletionCandidate,
     right: &CompletionCandidate,
 ) -> Ordering {
