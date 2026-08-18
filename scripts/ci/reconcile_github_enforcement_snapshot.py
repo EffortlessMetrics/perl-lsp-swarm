@@ -36,7 +36,7 @@ ENFORCEMENT_SOURCES = {
     "github-branch-protection+ruleset": frozenset({"classic", "ruleset"}),
 }
 WILDCARD_CHARACTERS = frozenset("*?[")
-GITHUB_ACTIONS_APP_ID = 15368
+AUTHORITY_VERSION = 1
 
 
 class ContractError(ValueError):
@@ -338,7 +338,12 @@ def validate_snapshot(raw: Any) -> dict[str, Any]:
     closed(
         static,
         "snapshot.static_contract",
-        {"subject_sha256", "policy_sha256", "repository_sha"},
+        {
+            "subject_sha256",
+            "exact_source_sha256",
+            "policy_sha256",
+            "repository_sha",
+        },
     )
 
     classic = obj(
@@ -530,6 +535,11 @@ def validate_snapshot(raw: Any) -> dict[str, Any]:
                 "snapshot.static_contract.subject_sha256",
                 64,
             ),
+            "exact_source_sha256": hex_digest(
+                static["exact_source_sha256"],
+                "snapshot.static_contract.exact_source_sha256",
+                64,
+            ),
             "policy_sha256": hex_digest(
                 static["policy_sha256"],
                 "snapshot.static_contract.policy_sha256",
@@ -559,11 +569,60 @@ def validate_snapshot(raw: Any) -> dict[str, Any]:
     }
 
 
+
+STATIC_RECEIPT_FIELDS = {
+    "schema_version",
+    "status",
+    "policy_path",
+    "policy_version",
+    "policy_source",
+    "contexts",
+    "mapped_jobs",
+    "findings",
+    "subjects",
+    "semantic_subject",
+    "subject_sha256",
+    "exact_source_sha256",
+    "live_enforcement_status",
+    "live_enforcement_reason",
+}
+STATIC_CONTEXT_FIELDS = {
+    "name",
+    "producer",
+    "workflow",
+    "job",
+    "workflow_result",
+    "required",
+    "policy_role",
+    "applicability",
+    "enforcement",
+    "classic_app_id",
+    "ruleset_integration_id",
+    "events",
+}
+
+
 def validate_static(raw: Any) -> dict[str, Any]:
     raw = obj(raw, "static_receipt")
-    for field in ("schema_version", "status", "subject_sha256", "subjects"):
-        if field not in raw:
-            raise ContractError(f"static_receipt missing {field}")
+    closed(
+        raw,
+        "static_receipt",
+        {
+            "schema_version",
+            "status",
+            "subject_sha256",
+            "exact_source_sha256",
+            "subjects",
+        },
+        STATIC_RECEIPT_FIELDS
+        - {
+            "schema_version",
+            "status",
+            "subject_sha256",
+            "exact_source_sha256",
+            "subjects",
+        },
+    )
     if raw["schema_version"] != STATIC_VERSION:
         raise ContractError(
             f"static_receipt.schema_version must be {STATIC_VERSION}"
@@ -572,18 +631,22 @@ def validate_static(raw: Any) -> dict[str, Any]:
     if status != "SUCCESS":
         subject = raw["subject_sha256"]
         if subject is not None:
-            subject = hex_digest(
-                subject, "static_receipt.subject_sha256", 64
-            )
+            subject = hex_digest(subject, "static_receipt.subject_sha256", 64)
         return {"status": status, "subject_sha256": subject}
 
     subjects = obj(raw["subjects"], "static_receipt.subjects")
-    for field in ("repository_sha", "policy", "contexts"):
-        if field not in subjects:
-            raise ContractError(f"static_receipt.subjects missing {field}")
+    closed(
+        subjects,
+        "static_receipt.subjects",
+        {"repository_sha", "policy", "contexts"},
+        {"repository_dirty", "workflow_catalog"},
+    )
     policy = obj(subjects["policy"], "static_receipt.subjects.policy")
-    if "sha256" not in policy:
-        raise ContractError("static_receipt.subjects.policy missing sha256")
+    closed(
+        policy,
+        "static_receipt.subjects.policy",
+        {"path", "sha256", "version", "source"},
+    )
 
     contexts: list[dict[str, Any]] = []
     names: set[str] = set()
@@ -592,40 +655,42 @@ def validate_static(raw: Any) -> dict[str, Any]:
     ):
         field = f"static_receipt.subjects.contexts[{index}]"
         entry = obj(entry, field)
-        for required in ("name", "policy_role", "enforcement"):
-            if required not in entry:
-                raise ContractError(f"{field} missing {required}")
+        closed(
+            entry,
+            field,
+            {"name", "producer", "policy_role", "enforcement"},
+            STATIC_CONTEXT_FIELDS
+            - {"name", "producer", "policy_role", "enforcement"},
+        )
         name = text(entry["name"], f"{field}.name")
         if name in names:
             raise ContractError(f"duplicate static context: {name}")
         names.add(name)
         row = {
             "name": name,
-            "policy_role": text(
-                entry["policy_role"], f"{field}.policy_role"
-            ),
-            "enforcement": text(
-                entry["enforcement"], f"{field}.enforcement"
-            ),
+            "producer": text(entry["producer"], f"{field}.producer"),
+            "policy_role": text(entry["policy_role"], f"{field}.policy_role"),
+            "enforcement": text(entry["enforcement"], f"{field}.enforcement"),
         }
-        producer = entry.get("producer")
-        if producer is not None:
-            producer = text(producer, f"{field}.producer")
-            row["producer"] = producer
-        if "app_id" in entry:
-            row["app_id"] = app_id(entry["app_id"], f"{field}.app_id")
-        elif producer == "repository-job":
-            # Repository-owned GitHub Actions jobs emit checks under the
-            # GitHub Actions app. This makes the existing static producer
-            # identity consumable without adding a second policy registry.
-            row["app_id"] = GITHUB_ACTIONS_APP_ID
+        if "classic_app_id" in entry:
+            row["classic_app_id"] = positive_int(
+                entry["classic_app_id"], f"{field}.classic_app_id"
+            )
+        if "ruleset_integration_id" in entry:
+            row["ruleset_integration_id"] = positive_int(
+                entry["ruleset_integration_id"],
+                f"{field}.ruleset_integration_id",
+            )
         contexts.append(row)
     contexts.sort(key=lambda row: row["name"])
     return {
         "status": status,
         "subject_sha256": hex_digest(
-            raw["subject_sha256"],
-            "static_receipt.subject_sha256",
+            raw["subject_sha256"], "static_receipt.subject_sha256", 64
+        ),
+        "exact_source_sha256": hex_digest(
+            raw["exact_source_sha256"],
+            "static_receipt.exact_source_sha256",
             64,
         ),
         "repository_sha": hex_digest(
@@ -641,9 +706,9 @@ def validate_static(raw: Any) -> dict[str, Any]:
         "contexts": contexts,
     }
 
-
 def app_sort(value: int | None) -> int:
     return -1 if value is None else value
+
 
 
 def live_union(
@@ -653,34 +718,34 @@ def live_union(
     list[dict[str, Any]],
     list[dict[str, Any]],
 ]:
-    rows: dict[str, dict[str, Any]] = {}
+    rows: dict[str, dict[str, list[dict[str, Any]]]] = {}
     excluded: list[dict[str, Any]] = []
     limitations: list[dict[str, Any]] = []
 
-    def add(
-        item: dict[str, Any],
-        *,
-        source: str,
-        ruleset_id: int | None = None,
-    ) -> None:
-        row = rows.setdefault(
-            item["context"],
-            {
-                "bindings": {
-                    "classic": {"app_ids": set(), "ruleset_ids": set()},
-                    "ruleset": {"app_ids": set(), "ruleset_ids": set()},
-                }
-            },
-        )
-        binding = row["bindings"][source]
-        binding["app_ids"].add(item["app_id"])
-        if ruleset_id is not None:
-            binding["ruleset_ids"].add(ruleset_id)
+    def add_classic(item: dict[str, Any]) -> None:
+        row = rows.setdefault(item["context"], {"classic": [], "ruleset": []})
+        observation = {"app_id": item["app_id"]}
+        if observation in row["classic"]:
+            raise ContractError(
+                f"duplicate classic context/app observation: {item['context']!r}"
+            )
+        row["classic"].append(observation)
 
-    for item in snapshot["classic_branch_protection"][
-        "required_status_checks"
-    ]:
-        add(item, source="classic")
+    def add_ruleset(item: dict[str, Any], ruleset_id: int) -> None:
+        row = rows.setdefault(item["context"], {"classic": [], "ruleset": []})
+        observation = {
+            "ruleset_id": ruleset_id,
+            "integration_id": item["app_id"],
+        }
+        if observation in row["ruleset"]:
+            raise ContractError(
+                "duplicate ruleset/context/integration observation: "
+                f"{ruleset_id}:{item['context']}"
+            )
+        row["ruleset"].append(observation)
+
+    for item in snapshot["classic_branch_protection"]["required_status_checks"]:
+        add_classic(item)
 
     for ruleset in snapshot["rulesets"]["items"]:
         targeting = ruleset["targeting"]["status"]
@@ -718,40 +783,29 @@ def live_union(
             )
             continue
         for item in ruleset["required_status_checks"]:
-            add(item, source="ruleset", ruleset_id=ruleset["id"])
+            add_ruleset(item, ruleset["id"])
 
     union: list[dict[str, Any]] = []
     for context in sorted(rows):
-        bindings = rows[context]["bindings"]
-        sources = [
-            source
-            for source in ("classic", "ruleset")
-            if bindings[source]["app_ids"]
-        ]
-        source_bindings = []
-        all_app_ids: set[int | None] = set()
-        for source in sources:
-            app_ids = sorted(
-                bindings[source]["app_ids"], key=app_sort
-            )
-            all_app_ids.update(app_ids)
-            source_bindings.append(
-                {
-                    "source": source,
-                    "app_ids": app_ids,
-                    "ruleset_ids": sorted(
-                        bindings[source]["ruleset_ids"]
-                    ),
-                }
-            )
+        classic = sorted(rows[context]["classic"], key=lambda row: app_sort(row["app_id"]))
+        ruleset = sorted(
+            rows[context]["ruleset"],
+            key=lambda row: (row["ruleset_id"], app_sort(row["integration_id"])),
+        )
+        sources = [source for source, values in (("classic", classic), ("ruleset", ruleset)) if values]
+        source_bindings: list[dict[str, Any]] = []
+        if classic:
+            source_bindings.append({"source": "classic", "observations": classic})
+        if ruleset:
+            source_bindings.append({"source": "ruleset", "observations": ruleset})
+        all_app_ids = {row["app_id"] for row in classic}
+        all_app_ids.update(row["integration_id"] for row in ruleset)
         union.append(
             {
                 "context": context,
                 "app_ids": sorted(all_app_ids, key=app_sort),
                 "sources": sources,
-                "source_class": (
-                    "both" if sources == ["classic", "ruleset"] else sources[0]
-                ),
+                "source_class": "both" if sources == ["classic", "ruleset"] else sources[0],
                 "source_bindings": source_bindings,
             }
         )
@@ -760,7 +814,6 @@ def live_union(
         sorted(excluded, key=lambda row: row["id"]),
         sorted(limitations, key=lambda row: (row["code"], row["message"])),
     )
-
 
 def invalid_receipt(message: str) -> dict[str, Any]:
     return {
@@ -780,42 +833,131 @@ def invalid_receipt(message: str) -> dict[str, Any]:
     }
 
 
-def reconcile(snapshot_raw: Any, static_raw: Any) -> dict[str, Any]:
+
+def validate_authority(raw: Any) -> dict[str, Any]:
+    raw = obj(raw, "reconciliation_authority")
+    closed(
+        raw,
+        "reconciliation_authority",
+        {
+            "schema_version",
+            "producer",
+            "repository",
+            "evaluated_at",
+            "max_observation_age_seconds",
+            "max_future_skew_seconds",
+        },
+    )
+    if raw["schema_version"] != AUTHORITY_VERSION:
+        raise ContractError(
+            f"reconciliation_authority.schema_version must be {AUTHORITY_VERSION}"
+        )
+    repository = obj(raw["repository"], "reconciliation_authority.repository")
+    closed(
+        repository,
+        "reconciliation_authority.repository",
+        {"full_name", "repository_id", "default_branch"},
+    )
+    return {
+        "schema_version": AUTHORITY_VERSION,
+        "producer": text(raw["producer"], "reconciliation_authority.producer"),
+        "repository": {
+            "full_name": text(
+                repository["full_name"],
+                "reconciliation_authority.repository.full_name",
+            ),
+            "repository_id": positive_int(
+                repository["repository_id"],
+                "reconciliation_authority.repository.repository_id",
+            ),
+            "default_branch": text(
+                repository["default_branch"],
+                "reconciliation_authority.repository.default_branch",
+            ),
+        },
+        "evaluated_at": timestamp(
+            raw["evaluated_at"], "reconciliation_authority.evaluated_at"
+        ),
+        "max_observation_age_seconds": positive_int(
+            raw["max_observation_age_seconds"],
+            "reconciliation_authority.max_observation_age_seconds",
+        ),
+        "max_future_skew_seconds": positive_int(
+            raw["max_future_skew_seconds"],
+            "reconciliation_authority.max_future_skew_seconds",
+        ),
+    }
+
+
+def parsed_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+
+
+def reconcile(snapshot_raw: Any, static_raw: Any, authority_raw: Any) -> dict[str, Any]:
     try:
         snapshot = validate_snapshot(snapshot_raw)
         static = validate_static(static_raw)
+        authority = validate_authority(authority_raw)
+        union, excluded, union_limitations = live_union(snapshot)
     except ContractError as error:
         return invalid_receipt(str(error))
 
-    union, excluded, union_limitations = live_union(snapshot)
     base = {
         "schema_version": RECEIPT_VERSION,
         "repository": snapshot["repository"],
         "observation": snapshot["observation"],
+        "reconciliation_authority": authority,
+        "reconciliation_authority_sha256": digest(authority),
         "snapshot_sha256": digest(snapshot),
         "static_contract_subject_sha256": static.get("subject_sha256"),
         "surface_states": {
-            "classic_branch_protection": snapshot[
-                "classic_branch_protection"
-            ]["instrument_state"],
+            "classic_branch_protection": snapshot["classic_branch_protection"]["instrument_state"],
             "rulesets": snapshot["rulesets"]["instrument_state"],
         },
         "evidence_digests": {
-            "classic_branch_protection": snapshot[
-                "classic_branch_protection"
-            ]["response_sha256"],
+            "classic_branch_protection": snapshot["classic_branch_protection"]["response_sha256"],
             "ruleset_list": snapshot["rulesets"]["list_response_sha256"],
             "ruleset_details": [
-                {
-                    "id": ruleset["id"],
-                    "sha256": ruleset["detail_response_sha256"],
-                }
+                {"id": ruleset["id"], "sha256": ruleset["detail_response_sha256"]}
                 for ruleset in snapshot["rulesets"]["items"]
             ],
         },
         "ruleset_inventory": snapshot["rulesets"]["items"],
     }
     limitations: list[dict[str, Any]] = list(union_limitations)
+
+    expected_repository = authority["repository"]
+    for code, observed, expected in (
+        ("repository_name_mismatch", snapshot["repository"]["full_name"], expected_repository["full_name"]),
+        ("repository_id_mismatch", snapshot["repository"]["repository_id"], expected_repository["repository_id"]),
+        ("default_branch_mismatch", snapshot["repository"]["default_branch"], expected_repository["default_branch"]),
+    ):
+        if observed != expected:
+            limitations.append({"code": code, "message": f"observed={observed}, expected={expected}"})
+
+    observed_at = parsed_timestamp(snapshot["repository"]["observed_at"])
+    evaluated_at = parsed_timestamp(authority["evaluated_at"])
+    age_seconds = (evaluated_at - observed_at).total_seconds()
+    if age_seconds > authority["max_observation_age_seconds"]:
+        limitations.append(
+            {
+                "code": "observation_stale",
+                "message": (
+                    f"age_seconds={int(age_seconds)}, maximum="
+                    f"{authority['max_observation_age_seconds']}"
+                ),
+            }
+        )
+    if age_seconds < -authority["max_future_skew_seconds"]:
+        limitations.append(
+            {
+                "code": "observation_from_future",
+                "message": (
+                    f"future_seconds={int(-age_seconds)}, maximum="
+                    f"{authority['max_future_skew_seconds']}"
+                ),
+            }
+        )
 
     if static["status"] != "SUCCESS":
         limitations.append(
@@ -825,73 +967,37 @@ def reconcile(snapshot_raw: Any, static_raw: Any) -> dict[str, Any]:
             }
         )
     else:
-        identities = (
-            (
-                "static_subject_mismatch",
-                snapshot["static_contract"]["subject_sha256"],
-                static["subject_sha256"],
-            ),
-            (
-                "policy_digest_mismatch",
-                snapshot["static_contract"]["policy_sha256"],
-                static["policy_sha256"],
-            ),
-            (
-                "static_repository_sha_mismatch",
-                snapshot["static_contract"]["repository_sha"],
-                static["repository_sha"],
-            ),
-            (
-                "branch_sha_mismatch",
-                snapshot["repository"]["branch_sha"],
-                static["repository_sha"],
-            ),
-        )
-        for code, observed, expected in identities:
+        for code, observed, expected in (
+            ("static_subject_mismatch", snapshot["static_contract"]["subject_sha256"], static["subject_sha256"]),
+            ("exact_source_mismatch", snapshot["static_contract"]["exact_source_sha256"], static["exact_source_sha256"]),
+            ("policy_digest_mismatch", snapshot["static_contract"]["policy_sha256"], static["policy_sha256"]),
+            ("static_repository_sha_mismatch", snapshot["static_contract"]["repository_sha"], static["repository_sha"]),
+            ("branch_sha_mismatch", snapshot["repository"]["branch_sha"], static["repository_sha"]),
+        ):
             if observed != expected:
-                limitations.append(
-                    {
-                        "code": code,
-                        "message": f"observed={observed}, expected={expected}",
-                    }
-                )
+                limitations.append({"code": code, "message": f"observed={observed}, expected={expected}"})
 
-    if (
-        snapshot["classic_branch_protection"]["branch"]
-        != snapshot["repository"]["default_branch"]
-    ):
+    if snapshot["classic_branch_protection"]["branch"] != snapshot["repository"]["default_branch"]:
         limitations.append(
-            {
-                "code": "classic_branch_mismatch",
-                "message": "classic protection targets another branch",
-            }
+            {"code": "classic_branch_mismatch", "message": "classic protection targets another branch"}
         )
     for surface, state in base["surface_states"].items():
         if state != "observed":
             limitations.append(
-                {
-                    "code": f"{surface}_not_observed",
-                    "message": f"{surface} instrument state is {state}",
-                }
+                {"code": f"{surface}_not_observed", "message": f"{surface} instrument state is {state}"}
             )
     if snapshot["observation"]["permission"] != "complete":
         limitations.append(
             {
                 "code": "observation_permission_incomplete",
-                "message": (
-                    "permission is "
-                    f"{snapshot['observation']['permission']}"
-                ),
+                "message": f"permission is {snapshot['observation']['permission']}",
             }
         )
     if snapshot["observation"]["source"] not in LIVE_OBSERVATION_SOURCES:
         limitations.append(
             {
                 "code": "non_live_observation_source",
-                "message": (
-                    f"source {snapshot['observation']['source']} "
-                    "cannot establish current live enforcement"
-                ),
+                "message": f"source {snapshot['observation']['source']} cannot establish current live enforcement",
             }
         )
     limitations.extend(
@@ -905,10 +1011,7 @@ def reconcile(snapshot_raw: Any, static_raw: Any) -> dict[str, Any]:
             "live_union": union,
             "excluded_rulesets": excluded,
             "differences": [],
-            "limitations": sorted(
-                limitations,
-                key=lambda row: (row["code"], row["message"]),
-            ),
+            "limitations": sorted(limitations, key=lambda row: (row["code"], row["message"])),
         }
 
     expected: dict[str, dict[str, Any]] = {}
@@ -944,7 +1047,6 @@ def reconcile(snapshot_raw: Any, static_raw: Any) -> dict[str, Any]:
                 }
             )
             continue
-
         actual_sources = frozenset(actual["sources"])
         if actual_sources != wanted_sources:
             differences.append(
@@ -955,35 +1057,37 @@ def reconcile(snapshot_raw: Any, static_raw: Any) -> dict[str, Any]:
                     "observed": sorted(actual_sources),
                 }
             )
-
-        if "app_id" in wanted:
-            bindings = {
-                binding["source"]: binding["app_ids"]
-                for binding in actual["source_bindings"]
-            }
-            mismatched_sources = {
-                source: bindings.get(source, [])
-                for source in sorted(wanted_sources)
-                if wanted["app_id"] not in bindings.get(source, [])
-            }
-            if mismatched_sources:
+        bindings = {binding["source"]: binding["observations"] for binding in actual["source_bindings"]}
+        if "classic_app_id" in wanted:
+            observed_classic = [row["app_id"] for row in bindings.get("classic", [])]
+            if not observed_classic or any(value != wanted["classic_app_id"] for value in observed_classic):
                 differences.append(
                     {
-                        "code": "app_identity_mismatch",
+                        "code": "classic_app_identity_mismatch",
                         "context": name,
-                        "expected": {
-                            source: wanted["app_id"]
-                            for source in sorted(wanted_sources)
-                        },
-                        "observed": mismatched_sources,
+                        "expected": wanted["classic_app_id"],
+                        "observed": observed_classic,
+                    }
+                )
+        if "ruleset_integration_id" in wanted:
+            observed_rulesets = bindings.get("ruleset", [])
+            mismatches = [
+                row for row in observed_rulesets
+                if row["integration_id"] != wanted["ruleset_integration_id"]
+            ]
+            if not observed_rulesets or mismatches:
+                differences.append(
+                    {
+                        "code": "ruleset_integration_identity_mismatch",
+                        "context": name,
+                        "expected": wanted["ruleset_integration_id"],
+                        "observed": mismatches if observed_rulesets else [],
                     }
                 )
 
     for name in sorted(set(observed) - set(expected)):
         static_row = static_by_name.get(name)
         if static_row is not None and static_row["policy_role"] == "required":
-            # An unsupported required enforcement already emitted its specific
-            # difference above; do not misclassify the same row as a role drift.
             continue
         if static_row is None:
             code = "live_context_missing_from_policy"
@@ -1000,7 +1104,6 @@ def reconcile(snapshot_raw: Any, static_raw: Any) -> dict[str, Any]:
             }
         )
     differences.sort(key=lambda row: (row["context"], row["code"]))
-
     return {
         **base,
         "status": "DRIFT" if differences else "MATCH",
@@ -1009,7 +1112,6 @@ def reconcile(snapshot_raw: Any, static_raw: Any) -> dict[str, Any]:
         "differences": differences,
         "limitations": [],
     }
-
 
 def read_json(path: Path) -> Any:
     try:
@@ -1065,6 +1167,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     compare = commands.add_parser("reconcile")
     compare.add_argument("--snapshot", type=Path, required=True)
     compare.add_argument("--static-receipt", type=Path, required=True)
+    compare.add_argument("--authority", type=Path, required=True)
     compare.add_argument("--receipt", type=Path)
 
     describe = commands.add_parser("explain")
@@ -1089,7 +1192,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         try:
             snapshot_raw = read_json(args.snapshot)
             static_raw = read_json(args.static_receipt)
-            result = reconcile(snapshot_raw, static_raw)
+            authority_raw = read_json(args.authority)
+            result = reconcile(snapshot_raw, static_raw, authority_raw)
         except ContractError as error:
             result = invalid_receipt(str(error))
         write_receipt(args.receipt, result)

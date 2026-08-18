@@ -23,6 +23,7 @@ SPEC.loader.exec_module(model)
 SHA = "a" * 40
 POLICY = "b" * 64
 SUBJECT = "c" * 64
+EXACT_SOURCE = "9" * 64
 CLASSIC_DIGEST = "d" * 64
 RULESET_LIST_DIGEST = "e" * 64
 
@@ -32,21 +33,29 @@ def static_receipt() -> dict:
         "schema_version": 2,
         "status": "SUCCESS",
         "subject_sha256": SUBJECT,
+        "exact_source_sha256": EXACT_SOURCE,
         "subjects": {
             "repository_sha": SHA,
-            "policy": {"sha256": POLICY},
+            "policy": {
+                "path": ".ci/policies/required-checks.toml",
+                "sha256": POLICY,
+                "version": 2,
+                "source": "github-enforcement-union",
+            },
             "contexts": [
                 {
                     "name": "Classic Required",
                     "policy_role": "required",
                     "enforcement": "github-branch-protection",
                     "producer": "repository-job",
+                    "classic_app_id": 15368,
                 },
                 {
                     "name": "Ruleset Required",
                     "policy_role": "required",
                     "enforcement": "github-ruleset",
                     "producer": "repository-job",
+                    "ruleset_integration_id": 15368,
                 },
                 {
                     "name": "Both Required",
@@ -55,6 +64,8 @@ def static_receipt() -> dict:
                         "github-branch-protection+ruleset"
                     ),
                     "producer": "repository-job",
+                    "classic_app_id": 15368,
+                    "ruleset_integration_id": 15368,
                 },
                 {
                     "name": "Advisory",
@@ -129,6 +140,7 @@ def snapshot(*, source: str = "trusted_default_branch") -> dict:
         },
         "static_contract": {
             "subject_sha256": SUBJECT,
+            "exact_source_sha256": EXACT_SOURCE,
             "policy_sha256": POLICY,
             "repository_sha": SHA,
         },
@@ -166,9 +178,32 @@ def snapshot(*, source: str = "trusted_default_branch") -> dict:
     }
 
 
+def authority() -> dict:
+    return {
+        "schema_version": 1,
+        "producer": "trusted-default-branch-observer",
+        "repository": {
+            "full_name": "EffortlessMetrics/perl-lsp-swarm",
+            "repository_id": 1244101844,
+            "default_branch": "main",
+        },
+        "evaluated_at": "2026-08-16T00:05:00Z",
+        "max_observation_age_seconds": 3600,
+        "max_future_skew_seconds": 300,
+    }
+
+
+def reconcile(candidate: dict, static: dict | None = None, auth: dict | None = None) -> dict:
+    return model.reconcile(
+        candidate,
+        static_receipt() if static is None else static,
+        authority() if auth is None else auth,
+    )
+
+
 class EnforcementSnapshotTests(unittest.TestCase):
     def test_complete_matching_union(self) -> None:
-        receipt = model.reconcile(snapshot(), static_receipt())
+        receipt = reconcile(snapshot(), static_receipt())
         self.assertEqual(receipt["status"], "MATCH")
         self.assertEqual(receipt["differences"], [])
         by_name = {
@@ -186,7 +221,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
         )
 
     def test_fixture_source_cannot_establish_live_match(self) -> None:
-        receipt = model.reconcile(
+        receipt = reconcile(
             snapshot(source="fixture"), static_receipt()
         )
         self.assertEqual(receipt["status"], "NOT_PROVEN")
@@ -198,7 +233,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
         )
 
     def test_connector_source_can_feed_the_closed_contract(self) -> None:
-        receipt = model.reconcile(
+        receipt = reconcile(
             snapshot(source="connector"), static_receipt()
         )
         self.assertEqual(receipt["status"], "MATCH")
@@ -210,7 +245,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
             "list_response_sha256": None,
             "items": [],
         }
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "NOT_PROVEN")
         self.assertTrue(
             any(
@@ -228,7 +263,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
             "strict": None,
             "required_status_checks": [],
         }
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "NOT_PROVEN")
         self.assertTrue(
             any(
@@ -241,7 +276,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
     def test_nonobserved_surface_cannot_carry_stale_rows(self) -> None:
         candidate = snapshot()
         candidate["rulesets"]["instrument_state"] = "unreadable"
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "NOT_PROVEN")
         self.assertEqual(
             receipt["limitations"][0]["code"], "invalid_input"
@@ -252,7 +287,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
         candidate["classic_branch_protection"][
             "response_sha256"
         ] = None
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "NOT_PROVEN")
         self.assertIn(
             "requires response_sha256",
@@ -264,7 +299,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
         candidate["rulesets"]["items"][0][
             "required_status_checks"
         ] = [check("Both Required", None)]
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "DRIFT")
         self.assertIn(
             "Ruleset Required",
@@ -280,7 +315,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
         candidate["classic_branch_protection"][
             "required_status_checks"
         ].append(check("Unexpected Live"))
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "DRIFT")
         self.assertTrue(
             any(
@@ -295,7 +330,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
         candidate["classic_branch_protection"][
             "required_status_checks"
         ].append(check("Advisory"))
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "DRIFT")
         self.assertTrue(
             any(
@@ -314,7 +349,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
         candidate["rulesets"]["items"][0][
             "required_status_checks"
         ].append(check("Classic Required", None))
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "DRIFT")
         self.assertTrue(
             any(
@@ -327,7 +362,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
     def test_stale_policy_digest_is_not_proven(self) -> None:
         candidate = snapshot()
         candidate["static_contract"]["policy_sha256"] = "f" * 64
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "NOT_PROVEN")
         self.assertTrue(
             any(
@@ -339,7 +374,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
     def test_cross_sha_snapshot_is_not_proven(self) -> None:
         candidate = snapshot()
         candidate["repository"]["branch_sha"] = "f" * 40
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "NOT_PROVEN")
         self.assertTrue(
             any(
@@ -351,7 +386,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
     def test_same_context_in_both_surfaces_is_not_duplicate_error(
         self,
     ) -> None:
-        receipt = model.reconcile(snapshot(), static_receipt())
+        receipt = reconcile(snapshot(), static_receipt())
         both = next(
             row
             for row in receipt["live_union"]
@@ -365,13 +400,13 @@ class EnforcementSnapshotTests(unittest.TestCase):
             [
                 {
                     "source": "classic",
-                    "app_ids": [15368],
-                    "ruleset_ids": [],
+                    "observations": [{"app_id": 15368}],
                 },
                 {
                     "source": "ruleset",
-                    "app_ids": [15368],
-                    "ruleset_ids": [16664791],
+                    "observations": [
+                        {"ruleset_id": 16664791, "integration_id": 15368}
+                    ],
                 },
             ],
         )
@@ -382,21 +417,21 @@ class EnforcementSnapshotTests(unittest.TestCase):
         candidate["classic_branch_protection"][
             "required_status_checks"
         ][0] = check("Classic Required", None)
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "DRIFT")
         mismatch = next(
             row
             for row in receipt["differences"]
-            if row["code"] == "app_identity_mismatch"
+            if row["code"] == "classic_app_identity_mismatch"
         )
         self.assertEqual(
-            mismatch["observed"], {"classic": [None]}
+            mismatch["observed"], [None]
         )
 
     def test_unknown_snapshot_field_fails_closed(self) -> None:
         candidate = snapshot()
         candidate["surprise"] = True
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "NOT_PROVEN")
         self.assertEqual(
             receipt["limitations"][0]["code"], "invalid_input"
@@ -421,7 +456,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
             "include": ["refs/heads/release/*"],
             "exclude": [],
         }
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "NOT_PROVEN")
         self.assertTrue(
             any(
@@ -440,7 +475,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
             "include": ["refs/heads/release"],
             "exclude": [],
         }
-        receipt = model.reconcile(candidate, static_receipt())
+        receipt = reconcile(candidate, static_receipt())
         self.assertEqual(receipt["status"], "DRIFT")
         self.assertTrue(
             any(
@@ -453,7 +488,7 @@ class EnforcementSnapshotTests(unittest.TestCase):
     def test_active_ruleset_and_bypass_evidence_remains_in_receipt(
         self,
     ) -> None:
-        receipt = model.reconcile(snapshot(), static_receipt())
+        receipt = reconcile(snapshot(), static_receipt())
         active = next(
             row
             for row in receipt["ruleset_inventory"]
@@ -490,8 +525,8 @@ class EnforcementSnapshotTests(unittest.TestCase):
         ].reverse()
         right["rulesets"]["items"].reverse()
         right["rulesets"]["items"][2]["bypass_actors"].reverse()
-        left_receipt = model.reconcile(left, static_receipt())
-        right_receipt = model.reconcile(right, static_receipt())
+        left_receipt = reconcile(left, static_receipt())
+        right_receipt = reconcile(right, static_receipt())
         self.assertEqual(
             left_receipt["snapshot_sha256"],
             right_receipt["snapshot_sha256"],
@@ -510,10 +545,14 @@ class EnforcementSnapshotTests(unittest.TestCase):
             root = Path(tmp)
             snapshot_path = root / "snapshot.json"
             static_path = root / "static.json"
+            authority_path = root / "authority.json"
             receipt_path = root / "receipt.json"
             snapshot_path.write_text("{", encoding="utf-8")
             static_path.write_text(
                 json.dumps(static_receipt()), encoding="utf-8"
+            )
+            authority_path.write_text(
+                json.dumps(authority()), encoding="utf-8"
             )
             status = model.main(
                 [
@@ -522,6 +561,8 @@ class EnforcementSnapshotTests(unittest.TestCase):
                     str(snapshot_path),
                     "--static-receipt",
                     str(static_path),
+                    "--authority",
+                    str(authority_path),
                     "--receipt",
                     str(receipt_path),
                 ]
@@ -534,6 +575,143 @@ class EnforcementSnapshotTests(unittest.TestCase):
         self.assertEqual(
             receipt["limitations"][0]["code"], "invalid_input"
         )
+
+    def test_unbound_ruleset_does_not_inherit_classic_binding(self) -> None:
+        static = static_receipt()
+        row = next(row for row in static["subjects"]["contexts"] if row["name"] == "Both Required")
+        row.pop("ruleset_integration_id")
+        candidate = snapshot()
+        candidate["rulesets"]["items"][0]["required_status_checks"][1]["app_id"] = None
+        receipt = reconcile(candidate, static)
+        self.assertEqual("MATCH", receipt["status"])
+
+    def test_ruleset_binding_is_checked_for_every_contributing_ruleset(self) -> None:
+        candidate = snapshot()
+        candidate["rulesets"]["items"].append(
+            ruleset(99, check("Ruleset Required", 4242))
+        )
+        receipt = reconcile(candidate)
+        self.assertEqual("DRIFT", receipt["status"])
+        finding = next(
+            row for row in receipt["differences"]
+            if row["code"] == "ruleset_integration_identity_mismatch"
+        )
+        self.assertEqual(99, finding["observed"][0]["ruleset_id"])
+
+    def test_cross_repository_snapshot_is_not_proven(self) -> None:
+        candidate = snapshot()
+        candidate["repository"]["full_name"] = "Other/Repository"
+        candidate["repository"]["repository_id"] = 42
+        receipt = reconcile(candidate)
+        self.assertEqual("NOT_PROVEN", receipt["status"])
+        codes = {row["code"] for row in receipt["limitations"]}
+        self.assertIn("repository_name_mismatch", codes)
+        self.assertIn("repository_id_mismatch", codes)
+
+    def test_missing_reconciliation_authority_is_not_proven(self) -> None:
+        receipt = model.reconcile(snapshot(), static_receipt(), None)
+        self.assertEqual("NOT_PROVEN", receipt["status"])
+        self.assertIn("reconciliation_authority", receipt["limitations"][0]["message"])
+
+    def test_stale_and_future_observations_are_not_proven(self) -> None:
+        for observed_at, code in (
+            ("2026-08-15T20:00:00Z", "observation_stale"),
+            ("2026-08-16T00:20:00Z", "observation_from_future"),
+        ):
+            with self.subTest(code=code):
+                candidate = snapshot()
+                candidate["repository"]["observed_at"] = observed_at
+                receipt = reconcile(candidate)
+                self.assertEqual("NOT_PROVEN", receipt["status"])
+                self.assertIn(code, {row["code"] for row in receipt["limitations"]})
+
+    def test_unbound_classic_does_not_inherit_ruleset_binding(self) -> None:
+        static = static_receipt()
+        row = next(row for row in static["subjects"]["contexts"] if row["name"] == "Both Required")
+        row.pop("classic_app_id")
+        candidate = snapshot()
+        candidate["classic_branch_protection"]["required_status_checks"][1]["app_id"] = None
+        receipt = reconcile(candidate, static)
+        self.assertEqual("MATCH", receipt["status"])
+
+    def test_both_sources_bound_to_distinct_ids(self) -> None:
+        static = static_receipt()
+        row = next(row for row in static["subjects"]["contexts"] if row["name"] == "Both Required")
+        row["classic_app_id"] = 15368
+        row["ruleset_integration_id"] = 999
+        candidate = snapshot()
+        candidate["rulesets"]["items"][0]["required_status_checks"][1]["app_id"] = 999
+        receipt = reconcile(candidate, static)
+        self.assertEqual("MATCH", receipt["status"])
+
+    def test_producer_identity_supplies_no_binding(self) -> None:
+        static = static_receipt()
+        for row in static["subjects"]["contexts"]:
+            row.pop("classic_app_id", None)
+            row.pop("ruleset_integration_id", None)
+        receipt = reconcile(snapshot(), static)
+        self.assertEqual("MATCH", receipt["status"])
+        self.assertEqual([], receipt["differences"])
+
+    def test_unknown_static_receipt_field_fails_closed(self) -> None:
+        static = static_receipt()
+        static["surprise"] = True
+        receipt = reconcile(snapshot(), static)
+        self.assertEqual("NOT_PROVEN", receipt["status"])
+        self.assertEqual("invalid_input", receipt["limitations"][0]["code"])
+        self.assertIn("surprise", receipt["limitations"][0]["message"])
+
+    def test_unknown_static_context_field_fails_closed(self) -> None:
+        static = static_receipt()
+        static["subjects"]["contexts"][0]["app_id"] = 15368
+        receipt = reconcile(snapshot(), static)
+        self.assertEqual("NOT_PROVEN", receipt["status"])
+        self.assertEqual("invalid_input", receipt["limitations"][0]["code"])
+        self.assertIn("app_id", receipt["limitations"][0]["message"])
+
+    def test_missing_static_producer_identity_fails_closed(self) -> None:
+        static = static_receipt()
+        static["subjects"]["contexts"][0].pop("producer")
+        receipt = reconcile(snapshot(), static)
+        self.assertEqual("NOT_PROVEN", receipt["status"])
+        self.assertEqual("invalid_input", receipt["limitations"][0]["code"])
+
+    def test_malformed_static_binding_fails_closed(self) -> None:
+        for bad in (True, 0, -1, "15368", 15368.0):
+            with self.subTest(bad=bad):
+                static = static_receipt()
+                static["subjects"]["contexts"][0]["classic_app_id"] = bad
+                receipt = reconcile(snapshot(), static)
+                self.assertEqual("NOT_PROVEN", receipt["status"])
+                self.assertEqual(
+                    "invalid_input", receipt["limitations"][0]["code"]
+                )
+
+    def test_static_version_drift_fails_closed(self) -> None:
+        static = static_receipt()
+        static["schema_version"] = 3
+        receipt = reconcile(snapshot(), static)
+        self.assertEqual("NOT_PROVEN", receipt["status"])
+        self.assertIn(
+            "schema_version", receipt["limitations"][0]["message"]
+        )
+
+    def test_default_branch_mismatch_is_not_proven(self) -> None:
+        auth = authority()
+        auth["repository"]["default_branch"] = "trunk"
+        receipt = reconcile(snapshot(), auth=auth)
+        self.assertEqual("NOT_PROVEN", receipt["status"])
+        self.assertIn(
+            "default_branch_mismatch",
+            {row["code"] for row in receipt["limitations"]},
+        )
+
+    def test_unknown_authority_field_fails_closed(self) -> None:
+        auth = authority()
+        auth["surprise"] = True
+        receipt = reconcile(snapshot(), auth=auth)
+        self.assertEqual("NOT_PROVEN", receipt["status"])
+        self.assertEqual("invalid_input", receipt["limitations"][0]["code"])
 
 
 if __name__ == "__main__":

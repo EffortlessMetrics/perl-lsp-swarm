@@ -17,7 +17,7 @@ A snapshot binds:
 - repository full name and numeric repository ID;
 - default branch, exact observed branch SHA, and normalized UTC observation time;
 - capture source, permission completeness, and explicit limitations;
-- the exact static-contract subject, policy digest, and repository SHA;
+- the exact static-contract subject, exact-source attestation digest, policy digest, and repository SHA;
 - classic-protection instrument state, response digest, branch, strictness, contexts, and app IDs;
 - ruleset-list response digest;
 - every captured branch ruleset's ID, name, source, enforcement state, detail-response digest, ref-name conditions, bypass actors, required-check settings, contexts, and app IDs.
@@ -81,7 +81,7 @@ The reconciler reports exact differences for:
 - app-identity mismatch for each declared enforcement source;
 - unsupported checked-in enforcement claims.
 
-Repository-owned static producers imply the GitHub Actions app identity (`15368`) already represented by the existing static producer contract. Live checks that are unbound or bound to another app are therefore visible as app-identity drift rather than being flattened away.
+Producer identity supplies no enforcement binding. The static contract may declare `classic_app_id` and `ruleset_integration_id` independently; an absent binding remains unconstrained rather than being synthesized from a repository-owned job.
 
 ## Receipt evidence
 
@@ -106,6 +106,7 @@ python3 scripts/ci/reconcile_github_enforcement_snapshot.py \
   reconcile \
   --snapshot snapshot.json \
   --static-receipt target/receipts/gate-enforcement-contract.json \
+  --authority reconciliation-authority.json \
   --receipt target/receipts/github-enforcement-union.json
 
 python3 scripts/ci/reconcile_github_enforcement_snapshot.py \
@@ -123,3 +124,11 @@ The Gate Enforcement Contract remains authority for checked-in roles, producer i
 Issue #9154 owns the least-privileged capture path and freshness policy. It can now provide classic and ruleset response digests, raw ref-name conditions, and a `trusted_default_branch`, `operator`, or `connector` source without redefining target or union semantics.
 
 Promotion and correction remain separate human-authorized transactions under #3048. A source PR, a green workflow, one accessible API surface, or a fixture cannot establish live enforcement by itself.
+
+## Reconciliation authority
+
+`reconcile` requires a third, closed offline input that independently states the expected repository full name, numeric repository ID, default branch, evaluation time, maximum observation age, and future-clock-skew allowance. Snapshot self-report cannot authenticate itself. Missing authority, repository mismatch, stale observation, or implausibly future observation yields `NOT_PROVEN`.
+
+## Source-specific bindings
+
+The static contract supplies independent optional `classic_app_id` and `ruleset_integration_id` values. Producer identity supplies neither. Classic observations remain `{context, app_id}`; ruleset observations remain paired `{ruleset_id, context, integration_id}`. When a binding is declared, every contributing observation for that source must match it. When it is absent, the observed value remains receipt-visible but creates no inferred binding verdict.
