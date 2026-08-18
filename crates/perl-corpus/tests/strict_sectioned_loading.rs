@@ -4,6 +4,29 @@
 //! section must not be able to hide a malformed later section, and identity is
 //! rejected before any filesystem access.
 
+#![cfg(any(
+    windows,
+    all(
+        any(target_os = "linux", target_os = "android"),
+        any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "arm",
+            target_arch = "aarch64",
+            target_arch = "riscv32",
+            target_arch = "riscv64"
+        )
+    ),
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
 use perl_corpus::{CorpusLoadError, load_plain_perl_source, load_sectioned_corpus_document};
 use std::fs;
 
