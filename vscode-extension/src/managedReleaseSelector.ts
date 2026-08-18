@@ -149,7 +149,8 @@ function parseSemver(value: string): ParsedSemver | null {
   const prerelease = prereleaseText ? prereleaseText.split('.') : [];
   if (
     prerelease.some(
-      (identifier) => /^\d+$/.test(identifier) && identifier.length > 1 && identifier.startsWith('0'),
+      (identifier) =>
+        /^\d+$/.test(identifier) && identifier.length > 1 && identifier.startsWith('0'),
     )
   ) {
     return null;
@@ -328,7 +329,7 @@ function prepareReleases(
       };
     }
 
-    if ((version.prerelease.length > 0) !== release.prerelease) {
+    if (version.prerelease.length > 0 !== release.prerelease) {
       return {
         error: refuse(
           input.expectation,
@@ -339,7 +340,9 @@ function prepareReleases(
       };
     }
 
-    const precedenceKey = [version.major, version.minor, version.patch, ...version.prerelease].join('.');
+    const precedenceKey = [version.major, version.minor, version.patch, ...version.prerelease].join(
+      '.',
+    );
     if (seenPrecedence.has(precedenceKey)) {
       return {
         error: refuse(
@@ -378,9 +381,7 @@ function selected(
   };
 }
 
-export function selectManagedRelease(
-  input: ManagedReleaseSelectionInput,
-): ManagedReleaseSelection {
+export function selectManagedRelease(input: ManagedReleaseSelectionInput): ManagedReleaseSelection {
   const policyError = validatePolicy(input);
   if (policyError) {
     return refuse(input.expectation, 'invalid_policy', policyError, {
@@ -453,9 +454,7 @@ export function selectManagedRelease(
     return selected(
       input,
       release,
-      input.channel === 'stable'
-        ? 'stable_newest_compatible'
-        : 'latest_newest_compatible',
+      input.channel === 'stable' ? 'stable_newest_compatible' : 'latest_newest_compatible',
     );
   }
 
