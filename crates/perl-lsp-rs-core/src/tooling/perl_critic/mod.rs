@@ -37,9 +37,9 @@ pub use normalized::{
 pub use quick_fix::{QuickFix, TextEdit};
 pub use remediation::{CriticRemediationClass, CriticRemediationEligibility};
 pub use result_identity::{
-    CriticPolicyIdentity, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity,
-    DiagnosticResultIdentity, DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions,
-    DiagnosticSourceIdentity,
+    CriticPolicyIdentity, CriticPolicyIdentityError, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION,
+    DiagnosticFactIdentity, DiagnosticResultIdentity, DiagnosticResultIdentityInput,
+    DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
 };
 pub use types::{CriticConfig, Severity, Violation};
 
