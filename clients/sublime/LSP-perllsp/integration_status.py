@@ -109,7 +109,15 @@ def _managed_server_status(storage_path: Path, platform: str, arch: str) -> dict
     metadata_path = binary_path.with_name("install.json")
     binary_exists = binary_path.is_file()
     metadata_exists = metadata_path.is_file()
-    verified = installed_binary_is_current(binary_path, asset)
+    # An unreadable or vanishing managed binary is an invalid cache, not a
+    # crashed health command: hashing inside the currency check raises for
+    # those, so verify defensively and surface the failure in the payload.
+    verify_error: str | None = None
+    try:
+        verified = installed_binary_is_current(binary_path, asset)
+    except OSError as error:
+        verified = False
+        verify_error = str(error)
     if verified:
         state = "verified_cache"
     elif binary_exists or metadata_exists:
@@ -131,6 +139,8 @@ def _managed_server_status(storage_path: Path, platform: str, arch: str) -> dict
         "metadata_exists": metadata_exists,
         "verified": verified,
     }
+    if verify_error is not None:
+        result["verify_error"] = verify_error
     if binary_exists:
         try:
             result["binary_sha256"] = sha256_file(binary_path)
@@ -272,12 +282,29 @@ def collect_status(
         "managed_server_unsupported",
         "external_server_missing",
     }
+    # A record that vouches compatibility but carries an unsupported or
+    # withdrawn currentness must demand action: the install gate and the
+    # plugin refuse that record, so reporting it as merely usable would lie.
+    # A not_proven record stays a usable-but-unproven candidate, matching
+    # the verified-cache contract the health surface pins.
+    currentness = compatibility_payload.get("currentness")
+    if compatibility_payload.get("compatibility") == "compatible" and currentness not in {
+        "current",
+        "stale_supported",
+    }:
+        blocking.add("compatibility_currentness_unsupported")
+        reason_tokens.append("compatibility_currentness_unsupported")
+        reason_tokens = sorted(set(reason_tokens))
     structural_state = "action_required" if blocking.intersection(reason_tokens) else "usable_candidate"
     if (
         structural_state == "usable_candidate"
         and compatibility_payload.get("compatibility") == "compatible"
-        and compatibility_payload.get("currentness") in {"current", "stale_supported"}
+        and currentness in {"current", "stale_supported"}
         and server.get("state") in {"verified_cache", "resolved"}
+        # A user-owned external executable stays a usable but unproven
+        # candidate even when the pinned pair is compatible: the record
+        # never verified this binary.
+        and "external_server_user_owned" not in reason_tokens
     ):
         structural_state = "ready"
 

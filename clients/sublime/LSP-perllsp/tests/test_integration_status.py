@@ -54,6 +54,33 @@ class IntegrationStatusTests(unittest.TestCase):
         self.assertIn("compatibility_not_proven", payload["reason_tokens"])
         self.assertFalse(payload["mutated"])
 
+    def test_unsupported_currentness_is_action_required(self) -> None:
+        # A compatible record with stale_unsupported currentness is refused
+        # by the install gate and the plugin; the health surface must not
+        # report it as merely usable.
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Path(directory)
+            self._write_verified_cache(storage)
+            with mock.patch.object(
+                integration_status,
+                "compatibility_summary",
+                lambda _record: {
+                    "compatibility": "compatible",
+                    "currentness": "stale_unsupported",
+                },
+            ):
+                payload = integration_status.collect_status(
+                    storage,
+                    "linux",
+                    "x64",
+                    which=lambda _name: None,
+                    debugger_registered=False,
+                )
+        self.assertEqual(payload["structural_state"], "action_required")
+        self.assertIn(
+            "compatibility_currentness_unsupported", payload["reason_tokens"]
+        )
+
     def test_verified_cache_is_usable_but_not_semantically_promoted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             storage = Path(directory)

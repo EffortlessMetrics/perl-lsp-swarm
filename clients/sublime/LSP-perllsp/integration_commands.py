@@ -84,7 +84,7 @@ class PerllspIntegrationStatusCommand(sublime_plugin.WindowCommand):
             payload = _collect()
             rendered = format_status(payload)
         except Exception as error:
-            sublime.set_timeout(lambda: _show_error(self.window, "status", error))
+            sublime.set_timeout(lambda bound=error: _show_error(self.window, "status", bound))
             return
         sublime.set_timeout(lambda: _write_output(self.window, rendered))
 
@@ -125,7 +125,7 @@ class PerllspRepairManagedServerCommand(sublime_plugin.WindowCommand):
                 f"{format_status(payload)}"
             )
         except Exception as error:
-            sublime.set_timeout(lambda: _show_error(self.window, "managed-server repair", error))
+            sublime.set_timeout(lambda bound=error: _show_error(self.window, "managed-server repair", bound))
             return
         sublime.set_timeout(lambda: _write_output(self.window, rendered))
 
@@ -165,9 +165,9 @@ class PerllspClearInvalidCacheCommand(sublime_plugin.WindowCommand):
                 f"{format_status(payload)}"
             )
         except IntegrationStatusError as error:
-            sublime.set_timeout(lambda: _show_error(self.window, "cache cleanup", error))
+            sublime.set_timeout(lambda bound=error: _show_error(self.window, "cache cleanup", bound))
             return
         except Exception as error:
-            sublime.set_timeout(lambda: _show_error(self.window, "cache cleanup", error))
+            sublime.set_timeout(lambda bound=error: _show_error(self.window, "cache cleanup", bound))
             return
         sublime.set_timeout(lambda: _write_output(self.window, rendered))
