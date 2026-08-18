@@ -33,6 +33,14 @@ allow-licenses:
   # carried EPL-2.0; the bump only made the delta gate see the license.
   - EPL-2.0
 
+# ovsx is Eclipse's own Open VSX publishing CLI: a devDependency used only
+# by the check:openvsx script, never linked into or distributed with the
+# product. ovsx@1.0.2 already carried EPL-2.0; the bump only made the delta
+# gate see the license. The exemption is per-package so EPL-2.0 stays denied
+# for every other dependency (#10939).
+allow-dependencies-licenses:
+  - pkg:npm/ovsx
+
 comment-summary-in-pr: never
 show-openssf-scorecard: true
 warn-on-openssf-scorecard-level: 4
