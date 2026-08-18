@@ -1,0 +1,13 @@
+name: fixture-inherited-job-write-single-job
+# A single-job workflow: the workflow default and the only job's effective
+# authority are the same declaration, so nothing is silently widened.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "opens a version-bump PR"

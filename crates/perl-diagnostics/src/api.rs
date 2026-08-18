@@ -3,16 +3,16 @@
 //! Explicit per-symbol re-exports (no wildcards).
 //! This prevents silent breakage from future module edits that might introduce colliding names.
 
-// Re-export from codes module
+// Re-export from codes module.
 pub use crate::codes::{DiagnosticCategory, DiagnosticCode, DiagnosticSeverity, DiagnosticTag};
 
-// Re-export from types module
-pub use crate::types::{Diagnostic, RelatedInformation};
+// Re-export from types module.
+pub use crate::types::{ByteSpan, Diagnostic, InvalidByteSpan, RelatedInformation};
 
 // Note: DiagnosticSeverity and DiagnosticTag are canonically defined in codes::
 // and re-exported via types::. api.rs re-exports them via the canonical codes:: path.
 
-// Re-export from catalog module
+// Re-export from catalog module.
 pub use crate::catalog::{
     DiagnosticMeta, bareword_filehandle, diagnostic_meta, duplicate_package, duplicate_sub,
     eval_error_flow, from_message, implicit_return, missing_package_declaration, missing_return,

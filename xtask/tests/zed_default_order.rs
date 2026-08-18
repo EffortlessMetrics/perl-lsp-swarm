@@ -125,7 +125,7 @@ fn passing_default_order_receipt(root: &Path) -> Result<(Value, Value), Box<dyn 
     for row in receipt
         .pointer_mut("/selection_cases")
         .and_then(Value::as_array_mut)
-        .ok_or_else(|| "missing selection cases in test receipt")?
+        .ok_or("missing selection cases in test receipt")?
     {
         row["result"] = Value::String("pass".to_string());
         row["evidence"] = Value::String("synthetic test input".to_string());
@@ -133,7 +133,7 @@ fn passing_default_order_receipt(root: &Path) -> Result<(Value, Value), Box<dyn 
     let cases = receipt
         .pointer_mut("/selection_cases")
         .and_then(Value::as_array_mut)
-        .ok_or_else(|| "missing selection cases in test receipt")?;
+        .ok_or("missing selection cases in test receipt")?;
     for row in cases {
         match row.get("id").and_then(Value::as_str) {
             Some("default_only") => row["started_server_ids"] = json!(["perlnavigator-server"]),

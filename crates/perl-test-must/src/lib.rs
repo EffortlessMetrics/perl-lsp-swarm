@@ -1,87 +1,268 @@
-#![warn(missing_docs)]
-#![cfg_attr(clippy, allow(missing_docs))]
+#![deny(missing_docs)]
 
-//! Safe unwrap replacements for tests.
+//! Assertion-boundary extraction helpers for Rust tests.
 //!
-//! This crate provides panic-on-failure helpers that are safe to use in tests,
-//! avoiding explicit `unwrap()` calls which are denied by clippy policy.
+//! `perl-test-must` is a dependency-free leaf crate for the cases where a test
+//! scenario asserts that a [`Result`] or [`Option`] branch is impossible. The
+//! helpers preserve the unexpected value, its type, and the invocation location
+//! in the panic diagnostic.
 //!
-//! # Overview
+//! # Propagate setup failures with `?`
 //!
-//! Three helpers cover the common cases:
-//! - [`must`] — extract the value from a `Result`, or panic with the error
-//! - [`must_some`] — extract the value from an `Option`, or panic
-//! - [`must_err`] — extract the error from a `Result`, or panic if `Ok`
-//!
-//! # Example
+//! Use ordinary `Result` propagation when a helper or test setup step should
+//! return its failure to the caller:
 //!
 //! ```rust
-//! use perl_test_must::{must, must_some, must_err};
-//!
-//! let result: Result<i32, &str> = Ok(42);
-//! assert_eq!(must(result), 42);
-//!
-//! let opt: Option<i32> = Some(7);
-//! assert_eq!(must_some(opt), 7);
-//!
-//! let err_result: Result<i32, &str> = Err("oops");
-//! assert_eq!(must_err(err_result), "oops");
+//! # fn read_fixture() -> Result<&'static str, &'static str> { Ok("source") }
+//! # fn setup() -> Result<&'static str, &'static str> {
+//! let source = read_fixture()?;
+//! Ok(source)
+//! # }
+//! # assert_eq!(setup(), Ok("source"));
 //! ```
+//!
+//! # Assert scenario invariants with `must*`
+//!
+//! Use these helpers at the assertion boundary, where the scenario itself says
+//! which branch must exist:
+//!
+//! ```rust
+//! use perl_test_must::{must, must_err, must_some_with};
+//!
+//! let parsed: Result<i32, &str> = Ok(42);
+//! assert_eq!(must(parsed), 42);
+//!
+//! let symbol = must_some_with(Some("Example"), "the fixture declares Example");
+//! assert_eq!(symbol, "Example");
+//!
+//! let rejected: Result<(), &str> = Err("invalid fixture");
+//! assert_eq!(must_err(rejected), "invalid fixture");
+//! ```
+//!
+//! The `_with` variants preserve an `expect`-style explanation. All helpers use
+//! [`track_caller`](https://doc.rust-lang.org/reference/attributes/codegen.html#the-track_caller-attribute)
+//! so a failure points to the test invocation rather than this crate's internals.
+//! Fully qualified type-name spelling is diagnostic evidence, not a stable ABI
+//! or portable string contract.
 
-// This crate provides test helpers that intentionally panic on failure.
-// The must/must_some/must_err helpers are designed to panic in tests.
-#![allow(clippy::panic)]
+use std::any::type_name;
+use std::fmt::{self, Debug, Display};
 
-/// Extract the value from a `Result`, or panic with the error.
+/// Extracts the success value from a [`Result`].
 ///
-/// This is a test-only replacement for `unwrap` that is compliant
-/// with the "no unwrap/expect" policy.
+/// Use this where the test scenario asserts that the operation must succeed. For
+/// setup failures that should propagate, return `Result` from the caller and use
+/// `?` instead.
 ///
-/// Note: `#[must_use]` is intentionally omitted. `must()` is frequently
-/// called as an assertion (`must(fs::write(...))`) where the caller intentionally
-/// discards the `()` return value. Adding `#[must_use]` would trigger ~373
-/// spurious warnings across the workspace for those valid use cases.
+/// `must` intentionally does not carry `#[must_use]`: asserting a side-effecting
+/// `Result<(), E>` and discarding the extracted unit value is valid.
+///
+/// # Panics
+///
+/// Panics at the invocation site when `result` is [`Err`], including the error
+/// type and [`Debug`] representation in the diagnostic.
+///
+/// # Examples
+///
+/// ```rust
+/// use perl_test_must::must;
+///
+/// let result: Result<i32, &str> = Ok(42);
+/// assert_eq!(must(result), 42);
+/// ```
 #[track_caller]
-pub fn must<T, E: std::fmt::Debug>(r: Result<T, E>) -> T {
-    match r {
-        Ok(v) => v,
-        Err(e) => panic!("unexpected Err: {e:?} (unexpected Err<{}>)", std::any::type_name::<E>()),
-    }
-}
-
-/// Extract the value from an `Option`, or panic.
-///
-/// This is a test-only replacement for `unwrap` that is compliant
-/// with the "no unwrap/expect" policy.
-#[track_caller]
-#[must_use]
-pub fn must_some<T>(o: Option<T>) -> T {
-    match o {
-        Some(v) => v,
-        None => panic!("unexpected None<{}>", std::any::type_name::<T>()),
-    }
-}
-
-/// Extract the error from a `Result`, or panic if `Ok`.
-///
-/// This is a test-only replacement for `.unwrap_err()` that is compliant
-/// with the "no unwrap/expect" policy.
-#[track_caller]
-#[must_use]
-pub fn must_err<T: std::fmt::Debug, E>(r: Result<T, E>) -> E {
-    match r {
-        Err(e) => e,
-        Ok(v) => panic!(
-            "expected Err, got Ok({v:?}): expected Err<{}>, got Ok<{}>({v:?})",
-            std::any::type_name::<E>(),
-            std::any::type_name::<T>()
+pub fn must<T, E: Debug>(result: Result<T, E>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => panic_failure(
+            "must",
+            None,
+            format_args!("unexpected Err<{}>: {error:?}", type_name::<E>()),
         ),
+    }
+}
+
+/// Extracts the success value from a [`Result`] and retains assertion context.
+///
+/// This is the context-preserving counterpart to [`must`]. The supplied
+/// [`Display`] value appears once in the failure diagnostic.
+///
+/// `must_with` intentionally does not carry `#[must_use]`: asserting a
+/// side-effecting `Result<(), E>` and discarding the extracted unit value is
+/// valid.
+///
+/// # Panics
+///
+/// Panics at the invocation site when `result` is [`Err`], including `context`,
+/// the error type, and the error's [`Debug`] representation.
+///
+/// # Examples
+///
+/// ```rust
+/// use perl_test_must::must_with;
+///
+/// let result: Result<&str, &str> = Ok("ready");
+/// assert_eq!(must_with(result, "the fixture must load"), "ready");
+/// ```
+#[track_caller]
+pub fn must_with<T, E: Debug>(result: Result<T, E>, context: impl Display) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => panic_failure(
+            "must",
+            Some(&context),
+            format_args!("unexpected Err<{}>: {error:?}", type_name::<E>()),
+        ),
+    }
+}
+
+/// Extracts the present value from an [`Option`].
+///
+/// # Panics
+///
+/// Panics at the invocation site when `option` is [`None`], including the
+/// expected payload type in the diagnostic.
+///
+/// # Examples
+///
+/// ```rust
+/// use perl_test_must::must_some;
+///
+/// assert_eq!(must_some(Some("ready")), "ready");
+/// ```
+#[track_caller]
+#[must_use]
+pub fn must_some<T>(option: Option<T>) -> T {
+    match option {
+        Some(value) => value,
+        None => {
+            panic_failure("must_some", None, format_args!("unexpected None<{}>", type_name::<T>()))
+        }
+    }
+}
+
+/// Extracts the present value from an [`Option`] and retains assertion context.
+///
+/// This is the context-preserving counterpart to [`must_some`]. The supplied
+/// [`Display`] value appears once in the failure diagnostic.
+///
+/// # Panics
+///
+/// Panics at the invocation site when `option` is [`None`], including `context`
+/// and the expected payload type.
+///
+/// # Examples
+///
+/// ```rust
+/// use perl_test_must::must_some_with;
+///
+/// let symbol = must_some_with(Some("Example"), "the fixture declares Example");
+/// assert_eq!(symbol, "Example");
+/// ```
+#[track_caller]
+#[must_use]
+pub fn must_some_with<T>(option: Option<T>, context: impl Display) -> T {
+    match option {
+        Some(value) => value,
+        None => panic_failure(
+            "must_some",
+            Some(&context),
+            format_args!("unexpected None<{}>", type_name::<T>()),
+        ),
+    }
+}
+
+/// Extracts the error value from a [`Result`].
+///
+/// # Panics
+///
+/// Panics at the invocation site when `result` is [`Ok`], including the expected
+/// error type, observed success type, and success value's [`Debug`]
+/// representation.
+///
+/// # Examples
+///
+/// ```rust
+/// use perl_test_must::must_err;
+///
+/// let result: Result<(), &str> = Err("rejected");
+/// assert_eq!(must_err(result), "rejected");
+/// ```
+#[track_caller]
+#[must_use]
+pub fn must_err<T: Debug, E>(result: Result<T, E>) -> E {
+    match result {
+        Err(error) => error,
+        Ok(value) => panic_failure(
+            "must_err",
+            None,
+            format_args!(
+                "expected Err<{}>, got Ok<{}>: {value:?}",
+                type_name::<E>(),
+                type_name::<T>()
+            ),
+        ),
+    }
+}
+
+/// Extracts the error value from a [`Result`] and retains assertion context.
+///
+/// This is the context-preserving counterpart to [`must_err`]. The supplied
+/// [`Display`] value appears once in the failure diagnostic.
+///
+/// # Panics
+///
+/// Panics at the invocation site when `result` is [`Ok`], including `context`,
+/// the expected error type, observed success type, and success value's [`Debug`]
+/// representation.
+///
+/// # Examples
+///
+/// ```rust
+/// use perl_test_must::must_err_with;
+///
+/// let result: Result<(), &str> = Err("invalid input");
+/// assert_eq!(
+///     must_err_with(result, "the invalid fixture must be rejected"),
+///     "invalid input"
+/// );
+/// ```
+#[track_caller]
+#[must_use]
+pub fn must_err_with<T: Debug, E>(result: Result<T, E>, context: impl Display) -> E {
+    match result {
+        Err(error) => error,
+        Ok(value) => panic_failure(
+            "must_err",
+            Some(&context),
+            format_args!(
+                "expected Err<{}>, got Ok<{}>: {value:?}",
+                type_name::<E>(),
+                type_name::<T>()
+            ),
+        ),
+    }
+}
+
+#[track_caller]
+#[expect(
+    clippy::panic,
+    reason = "This test assertion failure seam intentionally panics when its required branch is absent."
+)]
+fn panic_failure(
+    helper: &'static str,
+    context: Option<&dyn Display>,
+    detail: fmt::Arguments<'_>,
+) -> ! {
+    match context {
+        Some(context) => panic!("{helper}: {context}: {detail}"),
+        None => panic!("{helper}: {detail}"),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{must, must_err, must_some};
+    use super::{must, must_err, must_err_with, must_some, must_some_with, must_with};
 
     #[test]
     fn must_unwraps_ok() {
@@ -90,10 +271,23 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "unexpected Err")]
+    #[should_panic(expected = "must: unexpected Err")]
     fn must_panics_on_err() {
         let result: Result<i32, &str> = Err("oops");
         must(result);
+    }
+
+    #[test]
+    fn must_with_unwraps_ok() {
+        let result: Result<i32, &str> = Ok(42);
+        assert_eq!(must_with(result, "fixture must load"), 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "must: fixture must load: unexpected Err")]
+    fn must_with_panics_on_err_with_context() {
+        let result: Result<i32, &str> = Err("oops");
+        must_with(result, "fixture must load");
     }
 
     #[test]
@@ -102,9 +296,20 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "unexpected None")]
+    #[should_panic(expected = "must_some: unexpected None")]
     fn must_some_panics_on_none() {
         let _ = must_some(Option::<i32>::None);
+    }
+
+    #[test]
+    fn must_some_with_unwraps_some() {
+        assert_eq!(must_some_with(Some(99), "fixture has a value"), 99);
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: fixture has a value: unexpected None")]
+    fn must_some_with_panics_on_none_with_context() {
+        let _ = must_some_with(Option::<i32>::None, "fixture has a value");
     }
 
     #[test]
@@ -114,9 +319,22 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "expected Err")]
+    #[should_panic(expected = "must_err: expected Err")]
     fn must_err_panics_on_ok() {
         let result: Result<i32, &str> = Ok(1);
         let _ = must_err(result);
+    }
+
+    #[test]
+    fn must_err_with_unwraps_err() {
+        let result: Result<i32, &str> = Err("expected error");
+        assert_eq!(must_err_with(result, "fixture must fail"), "expected error");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: fixture must fail: expected Err")]
+    fn must_err_with_panics_on_ok_with_context() {
+        let result: Result<i32, &str> = Ok(1);
+        let _ = must_err_with(result, "fixture must fail");
     }
 }

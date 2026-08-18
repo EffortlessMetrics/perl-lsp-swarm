@@ -1,3 +1,6 @@
+// Integration test: `expect()` carries the assertion message on fixture and
+// CLI-output parsing. The workspace-wide deny is a production-code rule.
+#![allow(clippy::expect_used)]
 use assert_cmd::cargo::cargo_bin_cmd;
 
 fn fixture(path: &str) -> String {

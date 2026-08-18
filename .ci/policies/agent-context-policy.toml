@@ -63,10 +63,6 @@ reason = "Subprocess execution test/runtime support; infra, not product."
 name = "perl-test-generators"
 reason = "Test-fixture generation tooling; no product surface to document."
 
-[[exempt]]
-name = "perl-test-must"
-reason = "`must`/`must_some` test-assertion helpers; test infra, not product."
-
 # ---------------------------------------------------------------------------
 # needs_context -- core-product crates tracked as explicit context debt
 # ---------------------------------------------------------------------------

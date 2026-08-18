@@ -76,15 +76,6 @@
   ],
   "incremental_public_exports": [
     {
-      "name": "perl_line_index::LineIndex",
-      "classification": "compatibility_reexport",
-      "disposition": "review",
-      "owner": "#6701",
-      "target_owner": "#6975",
-      "exit_condition": "Keep only if downstream consumers require this exact re-export.",
-      "production_eligible": false
-    },
-    {
       "name": "checkpoint::LexCheckpoint",
       "classification": "incremental_parser",
       "disposition": "review",
@@ -112,6 +103,24 @@
       "production_eligible": false
     },
     {
+      "name": "diagnostics::LexRestartReport",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain as the diagnostics component of the canonical ReparseResult contract.",
+      "production_eligible": true
+    },
+    {
+      "name": "diagnostics::LexRestartStrategy",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain as the strategy component of the canonical ReparseResult contract.",
+      "production_eligible": true
+    },
+    {
       "name": "diagnostics::ReparseResult",
       "classification": "incremental_parser",
       "disposition": "retain",
@@ -127,6 +136,60 @@
       "owner": "#6701",
       "target_owner": "#6975",
       "exit_condition": "Remain a canonical production edit input.",
+      "production_eligible": true
+    },
+    {
+      "name": "perl_line_index::LineIndex",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Keep only if downstream consumers require this exact re-export.",
+      "production_eligible": false
+    },
+    {
+      "name": "snapshot::ParseGeneration",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Monotonic committed-generation identity with checked advancement (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshot",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Canonical generation-bound parser result authority: exact source digest, disposition, strategy, native output (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshotStrategy",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Production-path identity for each committed generation (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshotValidationError",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Typed snapshot/source and disposition mismatch contract (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseTerminalDisposition",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Typed terminal classification for one exact source generation (#7001).",
       "production_eligible": true
     },
     {

@@ -609,9 +609,7 @@ export class PerlTestAdapter implements vscode.Disposable {
       run.passed(fileItem, duration);
     } else {
       const message = new vscode.TestMessage(
-        result.stderr.trim() ||
-          `${tapResults.failed} of ${tapResults.total} tests failed` +
-            (tapResults.bailOut ? ` (Bail out! ${tapResults.bailOut})` : ''),
+        result.stderr.trim() || describeFileFailure(result.exitCode, tapResults),
       );
       if (fileItem.uri) {
         message.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
@@ -647,6 +645,40 @@ export class PerlTestAdapter implements vscode.Disposable {
       d.dispose();
     }
   }
+}
+
+/**
+ * Describe why a test file failed when the process produced no stderr.
+ *
+ * A non-zero exit with no failing assertion is a real outcome — a bail out, a
+ * plan the run never reached, or a crash after the last `ok` line. Reporting it
+ * as "0 of N tests failed" contradicts the failure the user is looking at, so
+ * each shape gets its own explanation.
+ */
+export function describeFileFailure(
+  exitCode: number | null,
+  tapResults: { total: number; failed: number; bailOut: string | null },
+): string {
+  const bailSuffix =
+    tapResults.bailOut !== null
+      ? ` (Bail out!${tapResults.bailOut ? ` ${tapResults.bailOut}` : ''})`
+      : '';
+
+  if (tapResults.failed > 0) {
+    const tests = tapResults.total === 1 ? 'test' : 'tests';
+    return `${tapResults.failed} of ${tapResults.total} ${tests} failed${bailSuffix}`;
+  }
+
+  if (tapResults.bailOut !== null) {
+    return `Test run bailed out${tapResults.bailOut ? `: ${tapResults.bailOut}` : ''}`;
+  }
+
+  const exitDescription =
+    exitCode === null ? 'was terminated by a signal' : `exited with ${exitCode}`;
+  if (tapResults.total === 0) {
+    return `No test results were reported; the test process ${exitDescription}.`;
+  }
+  return `No assertion failed, but the test process ${exitDescription}.`;
 }
 
 /** Parse the top-level TAP summary from prove output. */
