@@ -129,6 +129,9 @@ pub enum CallResultMaterializationLimitation {
     UnknownValue,
     /// The relation was explicitly unknown.
     UnknownRelation,
+    /// The fact's callable subject identity was absent or did not match the
+    /// resolved callable identity for this call.
+    CallableIdentityMismatch,
     /// Bare return could not be represented exactly in the current scalar/list context.
     BareReturnContext,
     /// Deterministic relation-node or value-cardinality budget was exhausted.
@@ -199,6 +202,9 @@ pub fn materialize_call_result(
     let fact_status = fact.status();
     if !matches!(fact_status, SemanticFactStatus::Exact) {
         state.limit(CallResultMaterializationLimitation::RelationNotExact(fact_status));
+    }
+    if fact.envelope.entity_id != Some(input.callable_entity_id) {
+        state.limit(CallResultMaterializationLimitation::CallableIdentityMismatch);
     }
     if !input.call_generation.is_known()
         || !matches!(input.call_freshness, SemanticFreshness::Fresh)
@@ -275,6 +281,12 @@ impl<'a> MaterializationState<'a> {
             }
             CallableResultRelation::FiniteUnion(relations) => {
                 for relation in relations {
+                    if self
+                        .limitations
+                        .contains(&CallResultMaterializationLimitation::BudgetExhausted)
+                    {
+                        break;
+                    }
                     self.materialize_relation(relation);
                 }
             }
@@ -696,6 +708,103 @@ mod tests {
 
         assert_eq!(result.status(), SemanticFactStatus::Degraded);
         assert_eq!(result.possible_values.len(), 1);
+        assert!(result.limitations.contains(&CallResultMaterializationLimitation::BudgetExhausted));
+    }
+
+    #[test]
+    fn fact_for_another_callable_is_not_exact() {
+        let mut call = input();
+        call.callable_entity_id = EntityId(999);
+
+        let result = materialize_call_result(
+            &exact_fact(CallableResultRelation::Concrete(object("App::Client"))),
+            &call,
+            CallResultMaterializationBudget::default(),
+        );
+
+        assert_eq!(result.status(), SemanticFactStatus::Degraded);
+        assert!(
+            result
+                .limitations
+                .contains(&CallResultMaterializationLimitation::CallableIdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn fact_without_callable_identity_is_not_exact() {
+        let mut fact = exact_fact(CallableResultRelation::Concrete(object("App::Client")));
+        fact.envelope.entity_id = None;
+
+        let result =
+            materialize_call_result(&fact, &input(), CallResultMaterializationBudget::default());
+
+        assert_eq!(result.status(), SemanticFactStatus::Degraded);
+        assert!(
+            result
+                .limitations
+                .contains(&CallResultMaterializationLimitation::CallableIdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn missing_argument_binding_is_partial() {
+        let result = materialize_call_result(
+            &exact_fact(CallableResultRelation::Argument {
+                parameter_entity_id: EntityId(101),
+                position: 0,
+            }),
+            &input(),
+            CallResultMaterializationBudget::default(),
+        );
+
+        assert_eq!(result.status(), SemanticFactStatus::Degraded);
+        assert!(result.limitations.contains(&CallResultMaterializationLimitation::MissingArgument));
+    }
+
+    #[test]
+    fn non_exact_relation_fact_is_partial() {
+        let mut fact = exact_fact(CallableResultRelation::Concrete(object("App::Client")));
+        fact.envelope.freshness = SemanticFreshness::Stale;
+
+        let result =
+            materialize_call_result(&fact, &input(), CallResultMaterializationBudget::default());
+
+        assert_eq!(result.status(), SemanticFactStatus::Degraded);
+        assert!(result.limitations.contains(
+            &CallResultMaterializationLimitation::RelationNotExact(SemanticFactStatus::Stale)
+        ));
+    }
+
+    #[test]
+    fn stale_call_identity_is_partial() {
+        let mut call = input();
+        call.call_freshness = SemanticFreshness::Stale;
+
+        let result = materialize_call_result(
+            &exact_fact(CallableResultRelation::Concrete(object("App::Client"))),
+            &call,
+            CallResultMaterializationBudget::default(),
+        );
+
+        assert_eq!(result.status(), SemanticFactStatus::Degraded);
+        assert!(result.limitations.contains(&CallResultMaterializationLimitation::CallNotCurrent));
+    }
+
+    #[test]
+    fn relation_node_budget_stops_union_traversal() {
+        let relation = CallableResultRelation::finite_union(vec![
+            CallableResultRelation::Concrete(object("App::A")),
+            CallableResultRelation::Concrete(object("App::B")),
+            CallableResultRelation::Concrete(object("App::C")),
+        ]);
+        let result = materialize_call_result(
+            &exact_fact(relation),
+            &input(),
+            CallResultMaterializationBudget { max_relation_nodes: 1, max_values: 16 },
+        );
+
+        assert_eq!(result.status(), SemanticFactStatus::Degraded);
+        assert_eq!(result.work_units, 1);
         assert!(result.limitations.contains(&CallResultMaterializationLimitation::BudgetExhausted));
     }
 }
