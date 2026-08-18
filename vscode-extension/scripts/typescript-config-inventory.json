@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "configs": [
+    {
+      "path": "tsconfig.json",
+      "role": "source",
+      "blocking": true,
+      "authority": true,
+      "command": "typecheck",
+      "emit": false,
+      "outDir": "out",
+      "rootDir": "src"
+    },
+    {
+      "path": "tsconfig.test.json",
+      "role": "unit-test-emit",
+      "blocking": true,
+      "authority": true,
+      "command": "typecheck:test",
+      "emit": true,
+      "outDir": "out-test",
+      "rootDir": "src"
+    },
+    {
+      "path": "tsconfig.integration.json",
+      "role": "integration-emit",
+      "blocking": true,
+      "authority": true,
+      "command": "typecheck:integration",
+      "emit": true,
+      "outDir": "out",
+      "rootDir": "src"
+    },
+    {
+      "path": "tsconfig.published-smoke.json",
+      "role": "published-smoke-emit",
+      "blocking": true,
+      "authority": true,
+      "command": "typecheck:published",
+      "emit": true,
+      "outDir": "out",
+      "rootDir": "src"
+    },
+    {
+      "path": "tsconfig.scripts.json",
+      "role": "tooling-scripts",
+      "blocking": true,
+      "authority": true,
+      "command": "typecheck:scripts",
+      "emit": false,
+      "outDir": "out",
+      "rootDir": "."
+    }
+  ]
+}
