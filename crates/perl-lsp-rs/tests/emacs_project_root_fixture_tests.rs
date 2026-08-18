@@ -118,11 +118,8 @@ fn worktree_and_single_file_boundaries_are_explicit() -> Result<(), Box<dyn Erro
         target.contains(".git/worktrees/"),
         "gitdir pointer must target a worktrees gitdir, got {target}"
     );
-    let resolved = if target.starts_with('/') {
-        PathBuf::from(&target)
-    } else {
-        worktree_root.join(&target)
-    };
+    let resolved =
+        if target.starts_with('/') { PathBuf::from(&target) } else { worktree_root.join(&target) };
     assert!(resolved.is_dir(), "gitdir pointer must resolve: {resolved:?}");
 
     let standalone =
