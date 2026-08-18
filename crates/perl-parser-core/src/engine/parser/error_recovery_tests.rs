@@ -737,9 +737,8 @@ fn test_unclosed_qw_ignores_close_in_following_quote_operator() -> Result<(), St
 fn test_unclosed_qw_recovers_named_subroutine_after_cr_only_line_break() -> Result<(), String> {
     let code = "my @items = qw(word\rsub run { print 1; }";
     let mut parser = Parser::new(code);
-    let ast = parser
-        .parse()
-        .map_err(|error| format!("CR-only named-sub recovery failed: {error}"))?;
+    let ast =
+        parser.parse().map_err(|error| format!("CR-only named-sub recovery failed: {error}"))?;
     let NodeKind::Program { statements } = &ast.kind else {
         return Err(format!("expected program root, got {}", ast.to_sexp()));
     };
@@ -763,9 +762,7 @@ fn test_unclosed_qw_recovers_named_subroutine_after_cr_only_line_break() -> Resu
 fn test_unclosed_qw_preserves_print_closer_before_cr_only_statement() -> Result<(), String> {
     let code = "my @items = qw(word\rprint \"x)\";";
     let mut parser = Parser::new(code);
-    let ast = parser
-        .parse()
-        .map_err(|error| format!("CR-only print recovery failed: {error}"))?;
+    let ast = parser.parse().map_err(|error| format!("CR-only print recovery failed: {error}"))?;
     let NodeKind::Program { statements } = &ast.kind else {
         return Err(format!("expected program root, got {}", ast.to_sexp()));
     };

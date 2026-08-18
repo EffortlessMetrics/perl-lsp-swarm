@@ -8,12 +8,19 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Pure TAP result facts for native Perl test intelligence"
-publish = false
+readme = "README.md"
+documentation = "https://docs.rs/perl-test-facts"
+keywords = ["perl", "tap", "testing", "test-results"]
+categories = ["development-tools::testing", "parser-implementations"]
 
 [lib]
 doctest = false
 
+# Deliberately dependency-free: this crate parses TAP text only.
 [dependencies]
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true

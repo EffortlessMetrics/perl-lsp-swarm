@@ -4,6 +4,16 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use perl_parser::{Node, ParseError, Parser};
+use serde::Serialize;
+
+const LEGACY_SUMMARY_SCHEMA: &str = "perl.parse_summary.legacy.v1";
+const LEGACY_SUMMARY_SUBJECT: &str = "native_ast_root_summary";
+const LEGACY_SUMMARY_LIMITATIONS: &[&str] = &[
+    "root_summary_only",
+    "not_native_parse_artifact",
+    "legacy_native_ast_sexp_is_not_canonical_tree_sitter_output",
+    "parser_terminal_source_identity_and_decode_history_are_not_recorded",
+];
 
 #[derive(Default)]
 struct TotalStats {
@@ -105,16 +115,33 @@ enum Input {
 
 #[derive(Debug, Clone, Copy)]
 enum OutputFormat {
-    Sexp,
-    Json,
-    Debug,
+    LegacySexp,
+    LegacyJson,
+    UnstableDebug,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct ByteRange {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct LegacyParseSummary {
+    schema: &'static str,
+    subject: &'static str,
+    native_root_kind: &'static str,
+    root_byte_range: ByteRange,
+    node_count: usize,
+    legacy_native_ast_sexp: String,
+    limitations: &'static [&'static str],
 }
 
 impl Args {
     fn parse() -> Result<Self, String> {
         let mut args = std::env::args().skip(1);
         let mut inputs = Vec::new();
-        let mut output_format = OutputFormat::Sexp;
+        let mut output_format = OutputFormat::LegacySexp;
         let mut show_stats = false;
         let mut pretty = false;
         let mut quiet = false;
@@ -133,9 +160,9 @@ impl Args {
                 "-f" | "--format" => {
                     let format = args.next().ok_or("Missing format argument")?;
                     output_format = match format.as_str() {
-                        "sexp" | "s-expression" => OutputFormat::Sexp,
-                        "json" => OutputFormat::Json,
-                        "debug" => OutputFormat::Debug,
+                        "sexp" | "s-expression" => OutputFormat::LegacySexp,
+                        "json" => OutputFormat::LegacyJson,
+                        "debug" => OutputFormat::UnstableDebug,
                         _ => return Err(format!("Unknown format: {}", format)),
                     };
                 }
@@ -162,8 +189,11 @@ impl Args {
 }
 
 fn print_help() {
-    println!(
-        r#"perl-parse - Parse Perl code and output the AST
+    println!("{}", help_text());
+}
+
+fn help_text() -> &'static str {
+    r#"perl-parse - Parse Perl code and render a selected parser projection
 
 USAGE:
     perl-parse [OPTIONS] [FILE...]
@@ -174,30 +204,33 @@ ARGS:
 OPTIONS:
     -h, --help              Print help information
     -V, --version           Print version information
-    -f, --format <FORMAT>   Output format [default: sexp]
-                           Possible values: sexp, json, debug
-    -s, --stats            Show parsing statistics
-    -p, --pretty           Pretty-print output (for JSON)
-    -q, --quiet            Suppress output (useful with --stats)
-    -c, --continue         Continue on error when parsing multiple files
+    -f, --format <FORMAT>   Output projection [default: sexp]
+                           sexp  Legacy native-AST S-expression; transitional,
+                                 not canonical Tree-sitter output
+                           json  Versioned legacy root summary;
+                                 not NativeParseArtifact
+                           debug Unstable human-only Rust Debug output
+    -s, --stats             Show parsing statistics
+    -p, --pretty            Pretty-print JSON output
+    -q, --quiet             Suppress output (useful with --stats)
+    -c, --continue          Continue on error when parsing multiple files
 
 EXAMPLES:
-    # Parse a file and output S-expression
+    # Render the transitional native-AST S-expression
     perl-parse script.pl
 
     # Parse from stdin
     echo 'print "Hello"' | perl-parse -
 
-    # Output as JSON with statistics
+    # Render the versioned legacy JSON root summary with statistics
     perl-parse -f json -s script.pl
 
     # Parse multiple files, show only stats
     perl-parse -q -s *.pl
 
-    # Pretty-print JSON output
+    # Pretty-print the versioned legacy JSON root summary
     perl-parse -f json -p script.pl
 "#
-    );
 }
 
 fn main() {
@@ -243,26 +276,23 @@ fn main() {
 
         match result {
             Ok(ast) => {
+                let node_count = ast.count_nodes();
                 if !args.quiet {
-                    match args.output_format {
-                        OutputFormat::Sexp => println!("{}", ast.to_sexp()),
-                        OutputFormat::Json => {
-                            let json = ast_to_json(&ast);
-                            let output = if args.pretty {
-                                serde_json::to_string_pretty(&json)
-                            } else {
-                                serde_json::to_string(&json)
-                            };
-                            match output {
-                                Ok(s) => println!("{s}"),
-                                Err(e) => eprintln!("JSON serialization error: {e}"),
+                    match render_output(&ast, args.output_format, args.pretty) {
+                        Ok(output) => println!("{output}"),
+                        Err(error) => {
+                            eprintln!("Output serialization error in {}: {}", path_str, error);
+                            had_error = true;
+                            total_stats.add_error(&path_str);
+                            if args.continue_on_error {
+                                continue;
                             }
+                            std::process::exit(1);
                         }
-                        OutputFormat::Debug => println!("{:#?}", ast),
                     }
                 }
 
-                total_stats.add_file(&path_str, source.len(), parse_time, ast.count_nodes());
+                total_stats.add_file(&path_str, source.len(), parse_time, node_count);
             }
             Err(e) => {
                 if !args.quiet {
@@ -285,6 +315,37 @@ fn main() {
 
     if had_error {
         std::process::exit(1);
+    }
+}
+
+fn render_output(
+    ast: &Node,
+    output_format: OutputFormat,
+    pretty: bool,
+) -> Result<String, serde_json::Error> {
+    match output_format {
+        OutputFormat::LegacySexp => Ok(ast.to_sexp()),
+        OutputFormat::LegacyJson => {
+            let summary = legacy_parse_summary(ast);
+            if pretty {
+                serde_json::to_string_pretty(&summary)
+            } else {
+                serde_json::to_string(&summary)
+            }
+        }
+        OutputFormat::UnstableDebug => Ok(format!("{ast:#?}")),
+    }
+}
+
+fn legacy_parse_summary(ast: &Node) -> LegacyParseSummary {
+    LegacyParseSummary {
+        schema: LEGACY_SUMMARY_SCHEMA,
+        subject: LEGACY_SUMMARY_SUBJECT,
+        native_root_kind: ast.kind.kind_name(),
+        root_byte_range: ByteRange { start: ast.location.start, end: ast.location.end },
+        node_count: ast.count_nodes(),
+        legacy_native_ast_sexp: ast.to_sexp(),
+        limitations: LEGACY_SUMMARY_LIMITATIONS,
     }
 }
 
@@ -404,19 +465,6 @@ fn decode_byte_as_windows_1252(byte: u8) -> char {
     }
 }
 
-fn ast_to_json(ast: &Node) -> serde_json::Value {
-    // Convert AST to JSON representation
-    serde_json::json!({
-        "type": format!("{:?}", ast.kind).split('(').next().unwrap_or("Unknown"),
-        "location": {
-            "start": ast.location.start,
-            "end": ast.location.end,
-        },
-        "sexp": ast.to_sexp(),
-        "node_count": ast.count_nodes(),
-    })
-}
-
 fn print_error(error: &ParseError, source: &str) {
     let mut stderr = io::stderr();
 
@@ -478,6 +526,10 @@ fn print_error(error: &ParseError, source: &str) {
             .ok();
             print_error_context(source, *location, &mut stderr);
         }
+        // Forward-compatible fallback for future variants (#2898)
+        _ => {
+            writeln!(stderr, "Parse error: {}", error).ok();
+        }
     }
 }
 
@@ -527,207 +579,5 @@ fn print_error_context(source: &str, position: usize, stderr: &mut io::Stderr) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::read_source_bytes;
-
-    #[test]
-    fn read_source_bytes_preserves_utf8() -> Result<(), Box<dyn std::error::Error>> {
-        let decoded = read_source_bytes(b"use strict;\n".to_vec())?;
-        assert_eq!(decoded, "use strict;\n");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_decodes_latin1_losslessly() -> Result<(), Box<dyn std::error::Error>> {
-        // "Sår" in ISO-8859-1 bytes
-        let decoded = read_source_bytes(vec![0x53, 0xE5, 0x72, 0x0A])?;
-        assert_eq!(decoded, "Sår\n");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_decodes_windows_1252_punctuation() -> Result<(), Box<dyn std::error::Error>>
-    {
-        // “quote” in Windows-1252 bytes
-        let decoded = read_source_bytes(vec![0x93, b'q', b'u', b'o', b't', b'e', 0x94, b'\n'])?;
-        assert_eq!(decoded, "“quote”\n");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_repairs_utf8_mojibake() -> Result<(), Box<dyn std::error::Error>> {
-        // `cafÃ©` is mojibake for `café` after a UTF-8 -> Latin-1 decode/encode cycle.
-        let decoded = read_source_bytes("cafÃ©\n".as_bytes().to_vec())?;
-        assert_eq!(decoded, "café\n");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_decodes_utf16_le_bom() -> Result<(), Box<dyn std::error::Error>> {
-        let bytes = vec![
-            0xFF, 0xFE, // UTF-16LE BOM
-            b'u', 0x00, b's', 0x00, b'e', 0x00, b' ', 0x00, b'8', 0x00, b';', 0x00, b'\n', 0x00,
-        ];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "use 8;\n");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_decodes_utf16_be_bom() -> Result<(), Box<dyn std::error::Error>> {
-        // UTF-16BE BOM followed by "use 8;\n" in big-endian encoding.
-        let bytes = vec![
-            0xFE, 0xFF, // UTF-16BE BOM
-            0x00, b'u', 0x00, b's', 0x00, b'e', 0x00, b' ', 0x00, b'8', 0x00, b';', 0x00, b'\n',
-        ];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "use 8;\n");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_decodes_utf16_surrogate_pair() -> Result<(), Box<dyn std::error::Error>> {
-        // UTF-16LE BOM + U+1F600 (grinning face), encoded as surrogate pair
-        // high=0xD83D, low=0xDE00 → LE bytes: 3D D8 00 DE.
-        let bytes = vec![
-            0xFF, 0xFE, // UTF-16LE BOM
-            0x3D, 0xD8, 0x00, 0xDE, // surrogate pair for U+1F600
-        ];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "\u{1F600}");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_handles_unpaired_high_surrogate() -> Result<(), Box<dyn std::error::Error>>
-    {
-        // UTF-16LE BOM + lone high surrogate (0xD83D) followed by a valid BMP char 'A' (0x0041).
-        // from_utf16_lossy replaces the unpaired surrogate with U+FFFD.
-        let bytes = vec![
-            0xFF, 0xFE, // UTF-16LE BOM
-            0x3D, 0xD8, // unpaired high surrogate (no low surrogate follows)
-            0x41, 0x00, // 'A'
-        ];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "\u{FFFD}A");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_handles_unpaired_low_surrogate() -> Result<(), Box<dyn std::error::Error>>
-    {
-        // UTF-16LE BOM + lone low surrogate (0xDE00) without a preceding high surrogate.
-        let bytes = vec![
-            0xFF, 0xFE, // UTF-16LE BOM
-            0x00, 0xDE, // unpaired low surrogate
-        ];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "\u{FFFD}");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_handles_utf16_odd_byte_length() -> Result<(), Box<dyn std::error::Error>> {
-        // UTF-16LE BOM + 'A' (0x41 0x00) + trailing lone byte 0x42.
-        // The loop condition `index + 1 < bytes.len()` drops the trailing byte.
-        let bytes = vec![
-            0xFF, 0xFE, // UTF-16LE BOM
-            0x41, 0x00, // 'A'
-            0x42, // orphan trailing byte — must not panic
-        ];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "A");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_handles_utf16_bom_only() -> Result<(), Box<dyn std::error::Error>> {
-        // Just the BOM with no payload — empty string expected, no panic.
-        let decoded = read_source_bytes(vec![0xFF, 0xFE])?;
-        assert_eq!(decoded, "");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_handles_empty_input() -> Result<(), Box<dyn std::error::Error>> {
-        let decoded = read_source_bytes(Vec::new())?;
-        assert_eq!(decoded, "");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_handles_truncated_utf8_multibyte() -> Result<(), Box<dyn std::error::Error>>
-    {
-        // Valid UTF-8 "ab" followed by a truncated 2-byte sequence (0xC3 without continuation).
-        // from_utf8 fails → Windows-1252 fallback kicks in. 0xC3 is undefined in the mapping
-        // table so it falls through to char::from(byte) = U+00C3 ('Ã').
-        let bytes = vec![b'a', b'b', 0xC3];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "ab\u{00C3}");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_handles_lone_utf8_continuation_byte()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // 0x80 is a UTF-8 continuation byte with no leader — invalid UTF-8.
-        // Falls through to Windows-1252 which maps 0x80 → U+20AC ('€').
-        let bytes = vec![b'x', 0x80, b'y'];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "x\u{20AC}y");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_preserves_null_bytes_in_utf8() -> Result<(), Box<dyn std::error::Error>> {
-        // NUL (0x00) is valid UTF-8 and valid in Rust strings.
-        let bytes = vec![b'a', 0x00, b'b'];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "a\u{0000}b");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_maps_undefined_windows_1252_bytes_as_latin1()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // Windows-1252 has five undefined slots: 0x81, 0x8D, 0x8F, 0x90, 0x9D.
-        // The fallback's `_` arm maps them via `char::from(byte)` which is Latin-1 (U+00xx).
-        // Combined with a truncated UTF-8 prefix byte to force the fallback path.
-        let bytes = vec![0xC3, 0x81, 0x8D, 0x8F, 0x90, 0x9D];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "\u{00C3}\u{0081}\u{008D}\u{008F}\u{0090}\u{009D}");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_handles_utf16_with_embedded_null_code_unit()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // UTF-16LE BOM + 'A' + U+0000 (NUL, as a 16-bit code unit) + 'B'.
-        let bytes = vec![
-            0xFF, 0xFE, // UTF-16LE BOM
-            0x41, 0x00, // 'A'
-            0x00, 0x00, // NUL
-            0x42, 0x00, // 'B'
-        ];
-        let decoded = read_source_bytes(bytes)?;
-        assert_eq!(decoded, "A\u{0000}B");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_rejects_partial_bom_as_not_utf16() -> Result<(), Box<dyn std::error::Error>>
-    {
-        // A single 0xFF byte is neither a full BOM nor valid UTF-8; Windows-1252 fallback
-        // maps 0xFF through the `_` arm to U+00FF ('ÿ').
-        let decoded = read_source_bytes(vec![0xFF])?;
-        assert_eq!(decoded, "\u{00FF}");
-        Ok(())
-    }
-
-    #[test]
-    fn read_source_bytes_keeps_valid_non_mojibake_text() -> Result<(), Box<dyn std::error::Error>> {
-        let decoded = read_source_bytes("Ångström\n".as_bytes().to_vec())?;
-        assert_eq!(decoded, "Ångström\n");
-        Ok(())
-    }
-}
+#[path = "perl-parse/tests.rs"]
+mod tests;

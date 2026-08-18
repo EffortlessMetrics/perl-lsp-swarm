@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 /// ServerCapabilities with a typed struct that can be serialized
 /// directly, preventing field name drift.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TextDocumentSyncOptions {
     open_close: bool,
     change: i32,
@@ -22,6 +23,7 @@ struct TextDocumentSyncOptions {
 
 /// Save options for TextDocumentSyncOptions.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SaveOptions {
     include_text: bool,
 }
@@ -38,30 +40,78 @@ impl TextDocumentSyncOptions {
     }
 }
 
-/// Build the workspace capabilities with file operation filters for Perl
-/// extensions (#4995).
-fn workspace_capabilities(workspace_folders_support: bool) -> Value {
+/// File-operation requests the client explicitly declared it can send.
+///
+/// LSP file-operation support is negotiated per operation. A server that
+/// advertises an operation the client omitted creates a false capability
+/// surface even when the client never happens to invoke it.
+#[derive(Debug, Clone, Copy, Default)]
+struct FileOperationSupport {
+    will_create: bool,
+    did_create: bool,
+    will_rename: bool,
+    did_rename: bool,
+    will_delete: bool,
+    did_delete: bool,
+}
+
+impl FileOperationSupport {
+    fn from_initialize_params(params: Option<&Value>) -> Self {
+        let supported = |path: &str| {
+            params.and_then(|params| params.pointer(path)).and_then(Value::as_bool).unwrap_or(false)
+        };
+
+        Self {
+            will_create: supported("/capabilities/workspace/fileOperations/willCreate"),
+            did_create: supported("/capabilities/workspace/fileOperations/didCreate"),
+            will_rename: supported("/capabilities/workspace/fileOperations/willRename"),
+            did_rename: supported("/capabilities/workspace/fileOperations/didRename"),
+            will_delete: supported("/capabilities/workspace/fileOperations/willDelete"),
+            did_delete: supported("/capabilities/workspace/fileOperations/didDelete"),
+        }
+    }
+
+    fn insert_capabilities(self, target: &mut serde_json::Map<String, Value>, filters: &[Value]) {
+        for (name, supported) in [
+            ("willCreate", self.will_create),
+            ("didCreate", self.did_create),
+            ("willRename", self.will_rename),
+            ("didRename", self.did_rename),
+            ("willDelete", self.will_delete),
+            ("didDelete", self.did_delete),
+        ] {
+            if supported {
+                target.insert(name.to_string(), json!({ "filters": filters }));
+            }
+        }
+    }
+}
+
+/// Build workspace capabilities, intersecting file operations with the exact
+/// operations the client declared during initialize.
+fn workspace_capabilities(
+    workspace_folders_support: bool,
+    file_operations: FileOperationSupport,
+) -> Value {
     let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
     let filters: Vec<Value> =
         perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
+    let mut file_operation_capabilities = serde_json::Map::new();
+    file_operations.insert_capabilities(&mut file_operation_capabilities, &filters);
 
-    json!({
+    let mut workspace = json!({
         "workspaceFolders": {
             "supported": workspace_folders_support,
             "changeNotifications": true
         },
-        "fileOperations": {
-            "willCreate": { "filters": filters.clone() },
-            "didCreate": { "filters": filters.clone() },
-            "willRename": { "filters": filters.clone() },
-            "didRename": { "filters": filters.clone() },
-            "willDelete": { "filters": filters.clone() },
-            "didDelete": { "filters": filters }
-        },
         "textDocumentContent": {
             "schemes": ["perldoc"]
         }
-    })
+    });
+    if !file_operation_capabilities.is_empty() {
+        workspace["fileOperations"] = Value::Object(file_operation_capabilities);
+    }
+    workspace
 }
 
 /// The LSP protocol version this server implements.
@@ -432,8 +482,25 @@ impl LspServer {
                         .unwrap_or(false);
 
                     // workspace/diagnostic/refresh
+                    //
+                    // Two spellings are accepted on purpose — do not "clean this up":
+                    // - `workspace.diagnostics` (plural) is the spec key. LSP 3.17
+                    //   names it `ClientCapabilities.workspace.diagnostics?:
+                    //   DiagnosticWorkspaceClientCapabilities` (confirmed against the
+                    //   published metaModel, version 3.17.0). It is preferred here.
+                    // - `workspace.diagnostic` (singular) is a known client-side
+                    //   deviation, not a spec reading. `lsp-types` (and its
+                    //   `helix-lsp-types` fork) declare the field as
+                    //   `pub diagnostic: Option<DiagnosticWorkspaceClientCapabilities>`
+                    //   under `#[serde(rename_all = "camelCase")]` with no per-field
+                    //   rename, so real Helix and other `lsp-types`-based clients put
+                    //   `diagnostic` on the wire. Dropping it would regress them.
+                    //
+                    // The sibling `textDocument.diagnostic` *is* singular per spec,
+                    // which is the source of the confusion. See issue #9592.
                     caps.diagnostic_refresh_support = cap_val
-                        .pointer("/workspace/diagnostic/refreshSupport")
+                        .pointer("/workspace/diagnostics/refreshSupport")
+                        .or_else(|| cap_val.pointer("/workspace/diagnostic/refreshSupport"))
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
 
@@ -715,18 +782,27 @@ impl LspServer {
         // dynamic registration for the same selector.
         let mut capabilities =
             crate::protocol::capabilities::capabilities_json(build_flags.clone());
-        let inline_completion_dynamic_registration_support =
-            self.client_capabilities.lock().inline_completion_dynamic_registration_support;
+        let (inline_completion_support, inline_completion_dynamic_registration_support) = {
+            let client_capabilities = self.client_capabilities.lock();
+            (
+                client_capabilities.inline_completion_support,
+                client_capabilities.inline_completion_dynamic_registration_support,
+            )
+        };
 
-        match (features.inline_completion, inline_completion_dynamic_registration_support) {
+        match (
+            features.inline_completion,
+            inline_completion_support,
+            inline_completion_dynamic_registration_support,
+        ) {
             // LSP 3.18 dynamic registration is an alternate registration mode,
             // not an addition to static registration for the same selector.
-            (true, true) => {
+            (true, true, true) => {
                 if let Some(capabilities) = capabilities.as_object_mut() {
                     capabilities.remove("inlineCompletionProvider");
                 }
             }
-            (true, false) => {
+            (true, true, false) => {
                 if let Some(capabilities) = capabilities.as_object_mut() {
                     capabilities.insert(
                         "inlineCompletionProvider".to_string(),
@@ -734,7 +810,7 @@ impl LspServer {
                     );
                 }
             }
-            (false, _) => {
+            _ => {
                 if let Some(capabilities) = capabilities.as_object_mut() {
                     capabilities.remove("inlineCompletionProvider");
                 }
@@ -777,12 +853,16 @@ impl LspServer {
             serde_json::to_value(TextDocumentSyncOptions::new(sync_kind))
                 .unwrap_or_else(|_| json!({"openClose": true, "change": sync_kind}));
 
-        // Workspace capabilities: typed helper for file operations (#4995)
+        // Workspace capabilities: intersect client-dependent file-operation
+        // participation with the exact initialize declaration (#7682).
         let workspace_folders_support = self.client_capabilities.lock().workspace_folders_support;
-        capabilities["workspace"] = workspace_capabilities(workspace_folders_support);
+        let file_operations = FileOperationSupport::from_initialize_params(params.as_ref());
+        capabilities["workspace"] =
+            workspace_capabilities(workspace_folders_support, file_operations);
 
-        // Advertise experimental custom requests
-        if features.inline_completion {
+        // Advertise experimental custom requests only to clients that declared
+        // the corresponding standard inline-completion capability.
+        if features.inline_completion && inline_completion_support {
             merge_experimental_capability(
                 &mut capabilities,
                 "perlInlineCompletionStream",
@@ -1989,5 +2069,61 @@ mod tests {
 
         let _ = server.handle_initialize(Some(params));
         assert_eq!(server.client_capabilities.lock().prepare_support_default_behavior, 0);
+    }
+
+    /// LSP 3.17 spec key: `ClientCapabilities.workspace.diagnostics` (plural).
+    #[test]
+    fn initialize_reads_diagnostic_refresh_support_from_spec_plural_key() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "workspace": {
+                    "diagnostics": { "refreshSupport": true }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+        assert!(
+            server.client_capabilities.lock().diagnostic_refresh_support,
+            "spec-conformant `workspace.diagnostics.refreshSupport` must enable refresh"
+        );
+    }
+
+    /// `lsp-types`/`helix-lsp-types` client deviation: `workspace.diagnostic`
+    /// (singular). Accepted for compatibility, not because the spec says so.
+    #[test]
+    fn initialize_reads_diagnostic_refresh_support_from_singular_client_deviation() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "workspace": {
+                    "diagnostic": { "refreshSupport": true }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+        assert!(
+            server.client_capabilities.lock().diagnostic_refresh_support,
+            "`lsp-types`-style `workspace.diagnostic.refreshSupport` must still enable refresh"
+        );
+    }
+
+    #[test]
+    fn initialize_leaves_diagnostic_refresh_support_false_when_neither_key_present() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "workspace": { "codeLens": { "refreshSupport": true } },
+                "textDocument": { "diagnostic": { "dynamicRegistration": true } }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+        assert!(
+            !server.client_capabilities.lock().diagnostic_refresh_support,
+            "neither workspace diagnostic-refresh spelling advertised: must stay false"
+        );
     }
 }

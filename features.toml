@@ -5,7 +5,7 @@
 [meta]
 version = "0.17.0"
 lsp_version = "3.18"
-compliance_percent = 100  # 125 total features (101 LSP-area + 24 DAP, all GA), 124/125 advertised
+compliance_percent = 98  # 125 total features; notebook sync/execution remain non-GA previews
 
 # Text Document Features
 
@@ -544,21 +544,21 @@ description = "Detailed work progress"
 id = "lsp.notebook_document_sync"
 spec = "LSP 3.17"
 area = "notebook"
-maturity = "ga"
-advertised = true
+maturity = "preview"
+advertised = false
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs"]
-description = "Notebook document synchronization (didOpen/didChange/didSave/didClose handlers)"
+tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs", "crates/perl-lsp-rs/tests/ripr_seam_proof_notebook_preview_boundary.rs"]
+description = "Preview implementation evidence only. Limited to in-process lifecycle/store tests; transactional versioning, mixed-language lifecycle, save semantics, cleanup, and real Jupyter/VS Code receipts remain unproven. Promotion owners: #7130 and #7132; this row is not GA evidence for #7032."
 
 [[feature]]
 id = "lsp.notebook_cell_execution"
 spec = "LSP 3.17"
 area = "notebook"
-maturity = "ga"
+maturity = "preview"
 advertised = false
 counts_in_coverage = false
-tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs"]
-description = "Notebook cell execution summary tracking (LSP does not execute cells; this tracks executionSummary metadata)"
+tests = ["crates/perl-lsp-rs/tests/lsp_3_17_notebook_tests.rs", "crates/perl-lsp-rs/tests/ripr_seam_proof_notebook_preview_boundary.rs"]
+description = "Preview metadata tracking only; the LSP server does not execute cells and no editor lifecycle receipt exists. Promotion owners: #7130 and #7132; this row is not GA evidence for #7032."
 
 # Debug Features (DAP)
 

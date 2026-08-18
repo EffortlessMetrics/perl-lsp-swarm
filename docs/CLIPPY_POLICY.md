@@ -8,9 +8,9 @@
 
 ## Workspace posture
 
-The policy applies to production code and tests. The current active Cargo lint block remains intentionally small; broader guardrail lints are tracked in `policy/clippy-lints.toml` until the relevant cleanup PRs can activate them without bundling behavior changes into the policy gate. Tests should return `Result` or use repository test helpers such as `perl_tdd_support::must` and `perl_tdd_support::must_some`.
+The policy applies to production code and to test, example, and benchmark targets reached by the maintained gates. The active Cargo lint block denies unchecked `Result`/`Option` collapse through `unwrap_used` and `expect_used`; `clippy.toml` no longer grants an `allow-unwrap-in-tests` exception and currently configures no method-level exceptions.
 
-The workspace still carries Clippy's legacy test unwrap carveout in `clippy.toml`. That carveout is recorded as expiring debt in `policy/clippy-debt.toml` so this control-plane PR can add governance without also rewriting unrelated tests.
+For fallible test setup that should propagate, return `Result` and use `?`. For an asserted branch at the test boundary, use the extraction helpers owned by `perl-test-must`, such as `perl_test_must::must` and `perl_test_must::must_some`. Existing `perl_tdd_support::must*` imports are compatibility and migration state governed by #8605 and #8436; do not add a new dependency on the umbrella package solely for these helpers.
 
 The tracked lint set covers five guardrail families:
 
@@ -19,6 +19,8 @@ The tracked lint set covers five guardrail families:
 3. **Silent-failure prevention**: ignored futures, ignored `must_use` values, discarded errors, and lossy line iteration are denied.
 4. **Async, memory, numeric, and file/process footguns**: concurrency and parser correctness hazards are denied or warned according to the ledger.
 5. **Suppression governance**: broad or unexplained suppressions are rejected. Prefer narrow `#[expect(..., reason = "...")]` receipts.
+
+Intentional assertion helpers and explicit panic-injection tests may carry narrow, reviewed exceptions. They do not create a general test carveout.
 
 ## Suppression style
 
@@ -36,13 +38,11 @@ fn generated_table_lookup(table: &[usize], index: usize) -> usize {
 
 Do not use a silent `#[allow]`. If a lint needs repo-wide temporary treatment, add a scoped entry to `policy/clippy-debt.toml` with `lint`, `path`, `owner`, `reason`, and `expires`.
 
-## Planned Rust upgrades
+## Rust-version lint planning
 
-The ledger tracks planned Rust 1.94 and 1.95 flips before the workspace MSRV moves. `cargo xtask check-lint-policy` verifies that planned lints are present in the ledger and not activated ahead of the MSRV bump.
+The product MSRV is recorded in `Cargo.toml`, `clippy.toml`, and the governed lint ledger. `cargo xtask check-lint-policy` verifies that planned lints are present in the ledger, active lints agree with Cargo, and version-gated lints are not activated ahead of the product toolchain.
 
-The Rust 1.95 / 0.14.0 rollout is mapped in [`docs/development/RUST_1_95_ROLLOUT.md`](development/RUST_1_95_ROLLOUT.md). The current workspace remains on the MSRV recorded in `Cargo.toml`, `clippy.toml`, and `policy/clippy-lints.toml` until the dedicated MSRV/toolchain PR lands. The compatibility spike comes first; it must not also activate lint floors, remove test carveouts, reset no-panic baselines, or bump the release version.
-
-The legacy `allow-unwrap-in-tests = true` setting in `clippy.toml` is a known mismatch with the target panic-free test posture. It stays visible as policy debt until the dedicated no-test-carveout PR removes it and adds fallible helper paths for later test-suite burndown work.
+The Rust 1.95 rollout material remains useful historical and design context, but current configuration is authoritative for current-state claims. The former `allow-unwrap-in-tests = true` setting has already been removed. Historical documents may describe that earlier rollout state; active policy must not present it as a current exception or pending removal.
 
 ## Local check
 
@@ -59,5 +59,4 @@ The gate checks lint inheritance, active Cargo lint levels, tracked lint metadat
 The `clippy::disallowed_fields` rail is **activated** (#6114) with an empty
 denylist in `clippy.toml` (`disallowed-fields = []`). The design anchor lives in
 [`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md). Concrete field
-selectors and accessors will be added incrementally via the DF-2 through DF-4
-slices in the Rust 1.95 rollout.
+selectors and accessors will be added incrementally through their owning lint-policy work.
