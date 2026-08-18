@@ -112,6 +112,24 @@
       "production_eligible": false
     },
     {
+      "name": "diagnostics::LexRestartReport",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain behind the canonical restart contract once generation identity is complete.",
+      "production_eligible": false
+    },
+    {
+      "name": "diagnostics::LexRestartStrategy",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain behind the canonical restart contract once generation identity is complete.",
+      "production_eligible": false
+    },
+    {
       "name": "diagnostics::ReparseResult",
       "classification": "incremental_parser",
       "disposition": "retain",
