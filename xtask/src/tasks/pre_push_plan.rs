@@ -461,7 +461,9 @@ fn add_extension_proof(
             ExtensionChangeClass::Unknown => {
                 let unknown = changed_paths
                     .iter()
-                    .filter(|path| classify_extension_path(path) == Some(ExtensionChangeClass::Unknown))
+                    .filter(|path| {
+                        classify_extension_path(path) == Some(ExtensionChangeClass::Unknown)
+                    })
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -507,12 +509,7 @@ fn add_rust_package_proof(
     });
 }
 
-fn push_step(
-    steps: &mut Vec<ProofStep>,
-    class: &str,
-    command: &str,
-    reason: &str,
-) {
+fn push_step(steps: &mut Vec<ProofStep>, class: &str, command: &str, reason: &str) {
     steps.push(ProofStep {
         class: class.to_string(),
         command: command.to_string(),
@@ -675,7 +672,11 @@ fn print_human(plan: &PrePushProofPlan) {
 mod tests {
     use super::*;
 
-    fn plan_for(paths: Vec<&str>, diff_class: &str, affected_packages: Vec<&str>) -> PrePushProofPlan {
+    fn plan_for(
+        paths: Vec<&str>,
+        diff_class: &str,
+        affected_packages: Vec<&str>,
+    ) -> PrePushProofPlan {
         build_plan(PlannerInput {
             base: "main".to_string(),
             head: "head".to_string(),
@@ -760,14 +761,8 @@ mod tests {
             &plan,
             "cd vscode-extension && npm run typecheck:all && npm run compile"
         ));
-        assert!(has_command(
-            &plan,
-            "cd vscode-extension && npm run check:package-inventory"
-        ));
-        assert!(defers_command(
-            &plan,
-            "cd vscode-extension && npm run verify:marketplace"
-        ));
+        assert!(has_command(&plan, "cd vscode-extension && npm run check:package-inventory"));
+        assert!(defers_command(&plan, "cd vscode-extension && npm run verify:marketplace"));
     }
 
     #[test]
@@ -793,11 +788,7 @@ mod tests {
 
     #[test]
     fn unknown_extension_tooling_is_not_proven() {
-        let plan = plan_for(
-            vec!["vscode-extension/tooling/new.config.cjs"],
-            "code",
-            Vec::new(),
-        );
+        let plan = plan_for(vec!["vscode-extension/tooling/new.config.cjs"], "code", Vec::new());
         assert_eq!(plan.posture, "NOT_PROVEN");
         assert!(has_command(&plan, "none"));
         assert!(plan.selected.iter().any(|step| step.reason.contains("new.config.cjs")));
@@ -806,10 +797,7 @@ mod tests {
     #[test]
     fn mixed_rust_and_extension_changes_preserve_both_proof_families() {
         let plan = plan_for(
-            vec![
-                "crates/perl-lsp-rs/src/lib.rs",
-                "vscode-extension/package-lock.json",
-            ],
+            vec!["crates/perl-lsp-rs/src/lib.rs", "vscode-extension/package-lock.json"],
             "mixed",
             vec!["perl-lsp-rs"],
         );
@@ -849,10 +837,7 @@ mod tests {
     #[test]
     fn duplicate_commands_are_collapsed_without_losing_reasons() {
         let plan = plan_for(
-            vec![
-                "vscode-extension/src/extension.ts",
-                "vscode-extension/tsconfig.json",
-            ],
+            vec!["vscode-extension/src/extension.ts", "vscode-extension/tsconfig.json"],
             "code",
             Vec::new(),
         );
