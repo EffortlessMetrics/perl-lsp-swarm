@@ -441,10 +441,9 @@ fn relation_sort_key(relation: &CallableResultRelation) -> String {
         }
         CallableResultRelation::BareReturn => "3:bare-return".to_string(),
         CallableResultRelation::Optional(inner) => format!("4:{}", relation_sort_key(inner)),
-        CallableResultRelation::FiniteUnion(relations) => format!(
-            "5:{}",
-            relations.iter().map(relation_sort_key).collect::<Vec<_>>().join("|")
-        ),
+        CallableResultRelation::FiniteUnion(relations) => {
+            format!("5:{}", relations.iter().map(relation_sort_key).collect::<Vec<_>>().join("|"))
+        }
         CallableResultRelation::Unknown => "9:unknown".to_string(),
     }
 }
@@ -866,10 +865,8 @@ mod tests {
     #[test]
     fn receiver_self_and_argument_remain_symbolic_relations() {
         let receiver = CallableResultRelation::ReceiverSelf;
-        let argument = CallableResultRelation::Argument {
-            parameter_entity_id: EntityId(88),
-            position: 1,
-        };
+        let argument =
+            CallableResultRelation::Argument { parameter_entity_id: EntityId(88), position: 1 };
         assert_ne!(receiver, argument);
         assert!(!receiver.contains_unknown());
         assert!(!argument.contains_unknown());
