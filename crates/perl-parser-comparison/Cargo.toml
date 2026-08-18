@@ -45,6 +45,10 @@ required-features = ["historical"]
 name = "recovery_differential"
 required-features = ["historical"]
 
+[[test]]
+name = "generic_result_model"
+required-features = ["historical"]
+
 [lib]
 doctest = false
 
