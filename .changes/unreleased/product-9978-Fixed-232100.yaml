@@ -1,9 +1,0 @@
-project: product
-component: VS Code extension
-kind: Fixed
-body: "Managed release selection now applies canonical compatibility and exact target availability before semantic-version recency, keeps stable/latest/tag behavior explicit, and refuses unresolved or incompatible release metadata instead of silently substituting another server."
-time: 2026-08-15T23:21:00Z
-custom:
-  PR: "9978"
-  Slug: vscode-managed-release-selector
-  Breaking: "no"

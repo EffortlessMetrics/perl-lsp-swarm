@@ -211,6 +211,7 @@ test('invalid or ambiguous release metadata fails closed', () => {
   expect(invalidVersion).toMatchObject({
     kind: 'refused',
     reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:v0.18',
   });
 
   const equalPrecedence = select({
@@ -222,6 +223,7 @@ test('invalid or ambiguous release metadata fails closed', () => {
   expect(equalPrecedence).toMatchObject({
     kind: 'refused',
     reason: 'release_metadata_not_proven',
+    blockingReleaseId: 'release:b',
   });
 });
 
@@ -243,7 +245,18 @@ test('fixed input produces byte-equivalent canonical result content', () => {
     releases: [release('0.18.0'), release('0.19.0-rc.1')],
   };
 
-  expect(JSON.stringify(selectManagedRelease(input))).toBe(
+  expect(selectManagedRelease(input)).toEqual({
+    kind: 'selected',
+    reason: 'latest_newest_compatible',
+    expectation: { ...expectation },
+    release: release('0.19.0-rc.1'),
+  });
+
+  const permuted: ManagedReleaseSelectionInput = {
+    ...input,
+    releases: [release('0.19.0-rc.1'), release('0.18.0')],
+  };
+  expect(JSON.stringify(selectManagedRelease(permuted))).toBe(
     JSON.stringify(selectManagedRelease(input)),
   );
 });
