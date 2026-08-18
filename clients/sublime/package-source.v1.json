@@ -18,6 +18,7 @@
     "command_surface.py",
     "dap_support.py",
     "debugger_adapter.py",
+    "host_ci_launcher.py",
     "host_tests/__init__.py",
     "host_tests/test_sublime_commands.py",
     "host_tests/test_sublime_debugger_adapter.py",
