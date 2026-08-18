@@ -23,6 +23,7 @@
  */
 
 import type {
+  ManagedReleaseChannel,
   ManagedReleaseExpectation,
   ManagedReleaseRecord,
   ManagedTargetState,
@@ -88,12 +89,16 @@ export function buildManagedReleaseExpectation(
  *
  * Quarantine (real release history is unbounded, unlike the selector's
  * curated-input contract): a record whose prerelease claim disagrees with
- * its parsed semver — a historical mistag — is kept but demoted to
- * `not_proven` compatibility with its flag aligned to the parsed tag. It can
- * never be selected, and it blocks selection only when it is actually newer
- * than every proven candidate (the selector's newer-unknown rule), so one
- * bad historical record cannot poison every managed route (#9925 hosted
- * smoke: v0.13.1 mistagged prerelease).
+ * its parsed semver — a historical mistag — has its flag aligned to the
+ * parsed tag. On the recency-ordered channels (`stable`/`latest`) it is
+ * additionally demoted to `not_proven` compatibility: never selectable, and
+ * blocking selection only when actually newer than every proven candidate
+ * (the selector's newer-unknown rule), so one bad historical record cannot
+ * poison every managed route (#9925 hosted smoke: v0.13.1 mistagged
+ * prerelease). On the exact-tag channel there is no recency ordering to
+ * protect: an explicit pin is the user choosing one specific artifact, so a
+ * mistagged pinned release keeps its train-lineage compatibility evidence
+ * and remains installable, exactly as before this wiring.
  */
 export function toManagedReleaseRecord(
   release: TransportRelease,
@@ -101,6 +106,7 @@ export function toManagedReleaseRecord(
   assetTargetCandidates: readonly string[],
   archiveExtension: string,
   findAsset: ReleaseAssetMatcher,
+  channel: ManagedReleaseChannel,
 ): ManagedReleaseRecord {
   const matchedAsset = assetTargetCandidates
     .map((target) => findAsset(release.assets, release.tag_name, target, archiveExtension))
@@ -110,6 +116,7 @@ export function toManagedReleaseRecord(
   const claimedPrerelease = release.prerelease !== false;
   const actualPrerelease = parsed?.[4] !== undefined;
   const mistagged = parsed !== null && claimedPrerelease !== actualPrerelease;
+  const demote = mistagged && channel !== 'tag';
   return {
     releaseId: `release:${release.tag_name}`,
     candidateId: `candidate:${release.tag_name}`,
@@ -118,8 +125,8 @@ export function toManagedReleaseRecord(
     prerelease: mistagged ? actualPrerelease : claimedPrerelease,
     draft: release.draft === true,
     compatibilityRequirement: expectation.compatibilityRequirement,
-    compatibilityState: mistagged ? 'not_proven' : 'compatible',
-    compatibilityEvidenceRef: mistagged ? undefined : `release-train:${release.tag_name}`,
+    compatibilityState: demote ? 'not_proven' : 'compatible',
+    compatibilityEvidenceRef: demote ? undefined : `release-train:${release.tag_name}`,
     target: expectation.target,
     targetState,
     targetEvidenceRef: `release-assets:${release.tag_name}`,
@@ -138,6 +145,7 @@ export function toManagedReleaseRecords(
   assetTargetCandidates: readonly string[],
   archiveExtension: string,
   findAsset: ReleaseAssetMatcher,
+  channel: ManagedReleaseChannel,
 ): ManagedReleaseRecordConversion {
   const records: ManagedReleaseRecord[] = [];
   const droppedTags: string[] = [];
@@ -155,6 +163,7 @@ export function toManagedReleaseRecords(
         assetTargetCandidates,
         archiveExtension,
         findAsset,
+        channel,
       ),
     );
   }

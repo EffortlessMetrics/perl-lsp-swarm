@@ -39,11 +39,18 @@ function select(
   overrides: Partial<ManagedReleaseSelectionInput> = {},
   releases: TransportRelease[] = [release('v0.18.0')],
 ) {
+  const channel = overrides.channel ?? 'stable';
   return selectManagedRelease({
     expectation,
-    channel: 'stable',
-    releases: toManagedReleaseRecords(releases, expectation, [HOST_TARGET], '.tar.gz', findAsset)
-      .records,
+    channel,
+    releases: toManagedReleaseRecords(
+      releases,
+      expectation,
+      [HOST_TARGET],
+      '.tar.gz',
+      findAsset,
+      channel,
+    ).records,
     ...overrides,
   });
 }
@@ -132,6 +139,7 @@ test('a release servable through any candidate target is available', () => {
     ['aarch64-pc-windows-msvc', 'x86_64-pc-windows-msvc'],
     '.zip',
     findAsset,
+    'stable',
   );
   expect(conversion.records[0]).toMatchObject({
     target: 'aarch64-pc-windows-msvc',
@@ -147,6 +155,7 @@ test('a release servable through any candidate target is available', () => {
     ['aarch64-pc-windows-msvc', 'x86_64-pc-windows-msvc'],
     '.zip',
     findAsset,
+    'stable',
   );
   expect(nativeOnly.records[0]).toMatchObject({ targetState: 'available' });
   const unservable = toManagedReleaseRecords(
@@ -155,6 +164,7 @@ test('a release servable through any candidate target is available', () => {
     [HOST_TARGET, 'x86_64-unknown-linux-musl'],
     '.tar.gz',
     findAsset,
+    'stable',
   );
   expect(unservable.records[0]).toMatchObject({ targetState: 'unavailable' });
 });
@@ -212,12 +222,25 @@ test('a mistagged record newer than every valid release blocks selection', () =>
   });
 });
 
-test('a mistagged record is never selected, even on the exact-tag path', () => {
+test('a mistagged record is never selected on recency channels but remains pinnable', () => {
   const mistagged = [release('v0.13.1', { prerelease: true })];
-  expect(select({ channel: 'tag', explicitTag: 'v0.13.1' }, mistagged)).toMatchObject({
+  // stable/latest: quarantined to not_proven, never selected.
+  expect(select({}, mistagged)).toMatchObject({
     kind: 'refused',
     reason: 'release_metadata_not_proven',
-    blockingReleaseId: 'release:v0.13.1',
+  });
+  expect(select({ channel: 'latest' }, mistagged)).toMatchObject({
+    kind: 'refused',
+    reason: 'release_metadata_not_proven',
+  });
+  // Exact-tag: an explicit user pin of one specific artifact overrides the
+  // channel-level metadata anomaly — pinning a mistagged historical release
+  // keeps working, as it did before the selector wiring (hosted smoke pins
+  // exactly v0.13.1).
+  expect(select({ channel: 'tag', explicitTag: 'v0.13.1' }, mistagged)).toMatchObject({
+    kind: 'selected',
+    reason: 'tag_exact_compatible',
+    release: { tagName: 'v0.13.1' },
   });
   expect(select({ channel: 'tag', explicitTag: 'v0.18.0' }, [release('v0.18.0')])).toMatchObject({
     kind: 'selected',
@@ -235,6 +258,7 @@ test('unparseable tags are quarantined out without blocking or satisfying select
     [HOST_TARGET],
     '.tar.gz',
     findAsset,
+    'stable',
   );
   expect(conversion.droppedTags).toEqual(['nightly-build']);
   expect(

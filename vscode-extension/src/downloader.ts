@@ -1113,6 +1113,7 @@ export class BinaryDownloader {
       assetTargetCandidates,
       archiveExtension,
       findReleaseAssetName,
+      channel,
     );
     if (conversion.droppedTags.length > 0) {
       this.outputChannel.appendLine(

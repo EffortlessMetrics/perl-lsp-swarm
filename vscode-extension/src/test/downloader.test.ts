@@ -1508,6 +1508,55 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
   });
 
+  test('an explicit tag pin of a mistagged historical release still installs (smoke shape)', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    // The hosted managed-binary smoke pins channel=tag, versionTag=v0.13.1.
+    // The mistag quarantine protects recency channels; an exact pin chooses
+    // one specific artifact and must keep working.
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'tag';
+        }
+        if (key === 'versionTag') {
+          return 'v0.13.1';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify({
+            tag_name: 'v0.13.1',
+            prerelease: true,
+            assets: [
+              {
+                name: 'perllsp-0.13.1-x86_64-unknown-linux-gnu.tar.gz',
+                browser_download_url:
+                  'https://example.invalid/perllsp-0.13.1-x86_64-unknown-linux-gnu.tar.gz',
+              },
+            ],
+          }),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v0.13.1' });
+  });
+
   test('refuses to install a prerelease when the stable channel has no stable release', async () => {
     const seams = downloader as unknown as DownloaderSeams;
     stableChannelConfig();
