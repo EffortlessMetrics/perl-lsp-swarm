@@ -1,4 +1,4 @@
-//! Differential parser evidence for current, historical, native, and
+//! Differential parser evidence for exact current, historical, native, and
 //! experimental Perl parser subjects.
 //!
 //! The comparison model keeps five propositions separate:
@@ -21,8 +21,32 @@
 //! | historical Tree-sitter C | `tree-sitter-perl-c` snapshot |
 //! | experimental Pest | `perl-parser-pest` |
 //! | native recursive descent | `perl-parser-core` |
-//! | current upstream Tree-sitter | introduced by the exact-subject train |
+//! | current upstream Tree-sitter | `ts-parser-perl` via `current_upstream` |
 //! | native Tree-sitter facade | separate compatibility subject |
+//!
+//! # Grammar isolation
+//!
+//! Native Tree-sitter grammars are feature-isolated because the current
+//! upstream package and historical vendored snapshot export the same C symbol.
+//! A single binary may therefore select exactly one native grammar subject:
+//!
+//! ```text
+//! default / historical
+//!   cargo test -p perl-parser-comparison
+//!
+//! current upstream
+//!   cargo test -p perl-parser-comparison \
+//!     --no-default-features --features current-upstream
+//! ```
+//!
+//! Grammar exclusivity is enforced by per-binary feature selection: every
+//! linking build (tests, bins, CI lanes) enables exactly one grammar feature,
+//! and the historical-only targets are gated with `required-features`. The
+//! workspace `--all-features` pass is check-only (no linking), so both modules
+//! may type-check together there; any attempt to *link* both grammars into one
+//! binary still fails loudly with a duplicate native symbol. The
+//! current-upstream adapter never falls back to the historical grammar
+//! regardless of feature combination.
 //!
 //! # Usage
 //!
@@ -63,13 +87,26 @@
 // Tests in this crate use assertion macros to preserve compact verdict receipts.
 #![cfg_attr(test, allow(clippy::panic))]
 
+#[cfg(feature = "historical")]
 pub mod corpus_walker;
+#[cfg(feature = "current-upstream")]
+pub mod current_upstream;
 pub mod evidence;
+#[cfg(feature = "historical")]
 pub mod harness;
+#[cfg(feature = "historical")]
 pub mod outcomes;
 
+#[cfg(feature = "historical")]
 pub use corpus_walker::{
     AggregateStats, DisagreementKind, FileRecord, classify, format_report, walk_corpora,
+};
+#[cfg(feature = "current-upstream")]
+pub use current_upstream::{
+    BoundedSubjectText, CURRENT_UPSTREAM_SUBJECT, CurrentUpstreamAdapter,
+    CurrentUpstreamAdapterError, CurrentUpstreamParse, CurrentUpstreamParseMode,
+    CurrentUpstreamPinError, CurrentUpstreamQueryKind, CurrentUpstreamSubjectManifest,
+    SUBJECT_MANIFEST_TOML, validate_exact_package_requirement,
 };
 pub use evidence::{
     BoundedText, ComparisonModelError, ConformanceOutcome, DiagnosticSummary, DivergencePath,
@@ -78,5 +115,7 @@ pub use evidence::{
     ReviewedExpectationId, ScoredComparison, SemanticFingerprint, StableId, SubjectDisposition,
     SubjectExecution, SubjectRole,
 };
+#[cfg(feature = "historical")]
 pub use harness::{ParseResult, ParserLabel, execute_v1, execute_v3, parse_v1, parse_v2, parse_v3};
+#[cfg(feature = "historical")]
 pub use outcomes::Verdict;

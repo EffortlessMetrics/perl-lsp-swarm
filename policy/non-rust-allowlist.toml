@@ -2004,3 +2004,19 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-current-upstream-subject-manifest"
+path = "crates/perl-parser-comparison/upstream/ts-parser-perl-1.2.1.toml"
+kind = "config"
+language = "toml"
+surface = "source"
+classification = "generated"
+owner = "parser-comparison/#7255"
+reason = "Generated projection of CURRENT_UPSTREAM_SUBJECT — the exact maintained-current ts-parser-perl comparison subject manifest (#7255). Never edited independently; drift from the typed manifest authority fails the byte-exact contract test."
+generated_by = "CurrentUpstreamSubjectManifest::render_toml (perl-parser-comparison)"
+covered_by = [
+  "cargo test -p perl-parser-comparison --no-default-features --features current-upstream --test current_upstream_subject --locked",
+]
+created = "2026-08-17"
+review_after = "2026-11-17"

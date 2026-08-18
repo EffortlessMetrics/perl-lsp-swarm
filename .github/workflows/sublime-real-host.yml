@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "clients/sublime/**"
+      - "scripts/sublime/**"
       - "crates/perl-lsp-rs/**"
       - "crates/perllsp/**"
       - "crates/perl-lsp-rs-core/**"

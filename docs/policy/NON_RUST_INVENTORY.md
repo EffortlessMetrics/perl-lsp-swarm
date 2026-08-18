@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 10953 |
-| Rust-family files | 3329 |
-| Non-Rust files | 7624 |
-| Allowlisted | 5350 |
+| Total tracked files | 10962 |
+| Rust-family files | 3337 |
+| Non-Rust files | 7625 |
+| Allowlisted | 5351 |
 | Unclassified | 2274 |
 
 ## Non-Rust files by category
@@ -18,7 +18,7 @@
 |---|---|
 | config | 331 |
 | documentation | 2504 |
-| generated | 1 |
+| generated | 2 |
 | production | 260 |
 | test | 1800 |
 | tooling | 454 |
@@ -3501,6 +3501,7 @@
 | `crates/perl-parser-bench/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser-bench/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser-bench/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-parser-comparison/upstream/ts-parser-perl-1.2.1.toml` | generated | `non-rust-current-upstream-subject-manifest` | parser-comparison/#7255 |
 | `crates/perl-parser-core/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-parser-core/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-parser-core/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
