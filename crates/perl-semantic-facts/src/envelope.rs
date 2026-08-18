@@ -459,7 +459,6 @@ fn value_shape_sort_key(shape: &ValueShape) -> String {
         ValueShape::Object { package, confidence } => {
             format!("object:{package}:{confidence:?}")
         }
-        _ => "future-shape".to_string(),
     }
 }
 
