@@ -8,10 +8,12 @@ ROOT = Path(__file__).resolve().parent
 PACKAGE = ROOT / "LSP-perllsp"
 INCLUDED = [
     ".python-version",
+    "Default.sublime-commands",
     "LICENSE-APACHE",
     "LICENSE-MIT",
     "LSP-perllsp.sublime-settings",
     "README.md",
+    "command_surface.py",
     "messages.json",
     "messages/install.txt",
     "plugin.py",
