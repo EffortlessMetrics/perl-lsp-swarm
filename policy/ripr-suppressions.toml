@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-07-07"
+updated = "2026-08-17"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -2258,3 +2258,216 @@ created = "2026-08-13"
 review_after = "2026-09-13"
 expires = "2026-10-31"
 removal_criteria = "EffortlessMetrics/ripr#1428 distinguishes xtask/tests/support helpers from production seams, or exact-head RIPR no longer reports actionable gaps in zed_host_compat.rs after the contract tests grip the validators; then delete this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# Shared client-compat fixture/expectation identity (PR #7874 / #7777):
+# Result-style contract plumbing misclassified as production seams (ripr#1428).
+#
+# Same class as ripr-suppress-zed-host-compat-test-support. The structural half
+# was fixed rather than suppressed first: the contract modules moved from
+# xtask/tests/support into xtask/src, which eliminated every no_static_path
+# finding (74 -> 0) and made the contract production-reachable like its
+# actual_host_receipt.v1 peer.
+#
+# What remains is not closable by proof. Exact-head RIPR 0.9.0 reports 23
+# reachable_unrevealed findings, of which 14 are the trailing `Ok(())` of the
+# contract test functions themselves; the rest are `Ok(())`, `})?` and
+# `digest_identity(hasher)` plumbing on already-covered paths. Writing more
+# tests raises the count rather than lowering it — measured across three
+# iterations on this candidate: 80 actionable before the move, 11 after it,
+# 23 after adding six discriminating guard tests, and 23 again after relocating
+# those tests to an integration contract. The guards themselves are proven in
+# xtask/tests/client_compat_fixture_contract.rs (empty/duplicate/untokenized
+# expectation sets, set-id binding, order independence, membership binding,
+# non-directory and empty fixture roots, path-versus-content separation).
+#
+# One genuinely uncovered path is retained deliberately and not claimed as
+# proven: the non-UTF-8 fixture path guard in fixture_digest, which needs a
+# platform-specific invalid filename to reach.
+#
+# Exact-path and contract-scoped; no provider, LSP, DAP, or parser finding is
+# suppressed.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-client-compat-fixture-contract-surface"
+kind = "test_receipt_surface"
+paths = [
+  "xtask/src/client_compat_fixture.rs",
+  "xtask/tests/client_compat_fixture_contract.rs",
+  "xtask/tests/support/agent_client_compat.rs",
+]
+classification = ["reachable_unrevealed", "no_static_path"]
+owner = "integrations-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #7874 establishes the shared fixture and expectation-set identity consumed by agent_client_compat.v1 and editor_client_compat.v1. Exact-head RIPR 0.9.0 reports 23 reachable_unrevealed findings on Result-style contract plumbing, 14 of which are the trailing Ok(()) of the contract tests themselves — a class no additional test can reveal, measured across three iterations (80 actionable before moving the modules into xtask/src, 11 after, 23 after adding guard tests, 23 after relocating them to an integration contract). The discriminating oracles live in xtask/tests/client_compat_fixture_contract.rs and cover every guard except the non-UTF-8 fixture path, which is left explicitly unproven. Same ripr#1428 test_receipt_surface class as ripr-suppress-zed-host-compat-test-support. Exact-path and contract-scoped; production provider/LSP/DAP/parser findings suppressed are 0."
+created = "2026-08-16"
+review_after = "2026-09-16"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr#1428 stops classifying Result-style test and contract plumbing as unrevealed production seams, or exact-head RIPR no longer reports actionable gaps in these files; then delete this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# handle_slow_operation_dispatch error_variant seams (PR #9674): the
+# `Err(server_cancelled_error())` return form resists test-based gripping
+# even with the exact recommended discriminator (ripr#1429 class, escalated
+# to a dedicated upstream issue for the error_variant weakly_gripped case).
+#
+# PR #9674 (make perl-lsp-rs and three sibling crates clippy-clean on all
+# targets) touches crates/perl-lsp-rs/src/runtime/dispatch/experimental.rs.
+# ripr 0.10.0 reports two weakly_gripped error_variant gaps on the
+# `Err(server_cancelled_error())` return at experimental.rs:66:
+#   (1) 8ce00adcbe1aa3d9 — the `Err(server_cancelled_error())` return form
+#   (2) 8ce00bdcbe1aa58c — the error_variant return form (sibling seam)
+#
+# The neighboring boundary gap ca5c52bed561439e (`start.elapsed() >= to` at
+# experimental.rs:64) WAS cleared by a boundary discriminator test
+# (handle_slow_operation_dispatch_boundary_discriminator) that forces
+# `to = Duration::ZERO` via `serverTimeoutMs: 0`, making the boundary
+# statically determinable. The same `serverTimeoutMs: 0` input was used to
+# build the exact recommended error_variant grip
+# (handle_slow_operation_dispatch_exact_error_variant), which asserts the
+# returned variant is exactly `JsonRpcError { code: SERVER_CANCELLED, .. }`
+# with the exact message and `data.is_none()`.
+#
+# Confirmed locally with ripr 0.10.0: even the exact recommended
+# error_variant discriminator does NOT clear the weakly_gripped
+# classification. The seam sits in a cfg-gated test-only code path
+# (`#[cfg(test)] mod slow_operation_timeout_tests`) and the error_variant
+# return form resists test-based gripping — the static analyzer cannot
+# connect the test's `matches!` oracle through the `Err(...)` return to the
+# error_variant construction. This is a stricter limitation than the
+# ripr#1429 predicate-infection-untraceable class: the error_variant return
+# form is gripped by an exact-variant oracle yet remains weakly_gripped.
+#
+# Owner approval: the maintainer approved suppressing this resistant seam
+# rather than weakening the test or ratcheting the gate. A dedicated upstream
+# issue has been filed on EffortlessMetrics/ripr documenting the
+# error_variant weakly_gripped resistance for cfg-gated test functions.
+#
+# Suppression is narrow: single production file, only the weakly_gripped
+# classification (the cleared boundary gap is untouched). Remove when the
+# upstream error_variant gripping issue is fixed or targeted mutation
+# replaces this advisory path.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-slow-operation-dispatch-error-variant"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-lsp-rs/src/runtime/dispatch/experimental.rs"]
+classification = ["weakly_gripped"]
+owner = "lsp-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #9674 touches experimental.rs; ripr 0.10.0 reports two weakly_gripped error_variant gaps (8ce00adcbe1aa3d9 and 8ce00bdcbe1aa58c) on the `Err(server_cancelled_error())` return at experimental.rs:66. The neighboring boundary gap ca5c52bed561439e (`start.elapsed() >= to`) was cleared by handle_slow_operation_dispatch_boundary_discriminator (serverTimeoutMs:0 forces to=Duration::ZERO). The exact recommended error_variant grip (handle_slow_operation_dispatch_exact_error_variant, same serverTimeoutMs:0 input, asserts matches!(err, JsonRpcError { code: SERVER_CANCELLED, .. }) plus exact message and data.is_none()) does NOT clear the weakly_gripped classification — confirmed locally with ripr 0.10.0. The error_variant return form resists test-based gripping even with an exact-variant oracle; the seam sits in a cfg-gated test-only function. Maintainer-approved suppression of the resistant seam. Suppression is narrow: single production file, only the weakly_gripped classification (the cleared boundary gap is untouched). Remove when the upstream error_variant gripping issue is fixed or targeted mutation replaces this advisory path."
+created = "2026-08-17"
+review_after = "2026-09-17"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr can grip an exact error_variant return form from a cfg-gated test function's matches! oracle, or targeted mutation replaces this advisory path; then delete this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# handle_code_action associated-diagnostic equality guard (PR #9674):
+# `diagnostic.code.as_deref() == Some(code) && diagnostic.range == range` at
+# code_actions.rs:749 — ripr#1429-class equality-guard predicate whose
+# activation RIPR cannot statically trace from JSON test inputs through the
+# diagnostic-list `find` closure.
+#
+# PR #9674 touches crates/perl-lsp-rs/src/runtime/language/code_actions.rs.
+# ripr reports a weakly_gripped boundary gap (5cdcf8ac817bf4de) on the
+# equality guard at line 749:
+#   diagnostic.code.as_deref() == Some(code) && diagnostic.range == range
+# inside the `diagnostics.iter().find(...)` closure that associates a
+# quick-fix action with its originating diagnostic.
+#
+# This is the same ripr#1429 class as ripr-suppress-lsp-declaration-
+# equality-guards: an equality-guard predicate whose activation RIPR cannot
+# statically confirm via call-graph tracing from the test's JSON-RPC inputs
+# through the diagnostic-list parsing into the `find` closure's equality
+# guard. There is no `serverTimeoutMs:0`-style trick that makes this boundary
+# statically determinable — it is an equality over parsed diagnostic data
+# structures, so a boundary discriminator test cannot clear it the way the
+# experimental.rs boundary was cleared.
+#
+# The boundary IS exercised by an existing integration test:
+#   test_quickfix_actions_include_associated_diagnostics
+# (crates/perl-lsp-rs/tests/lsp_code_actions_tests.rs) pulls diagnostics,
+# requests codeAction with those diagnostics in context, and asserts the
+# resulting quick-fix action carries the associated diagnostic with
+# matching range/severity/code/source/message — i.e. the `find` closure's
+# equality guard MUST return true for the asserted associated diagnostic to
+# appear. The boundary is covered; RIPR just cannot trace the activation.
+#
+# Owner approval: the maintainer approved suppressing this ripr#1429-class
+# equality-guard gap rather than adding a test the analyzer cannot credit.
+# Suppression is narrow: single production file, one PR. Remove when
+# ripr#1429 is fixed upstream or targeted mutation replaces this advisory
+# path.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-code-action-associated-diagnostic-equality-guard"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
+classification = ["weakly_gripped", "reachable_unrevealed"]
+owner = "lsp-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #9674 touches code_actions.rs; ripr reports a weakly_gripped boundary gap (5cdcf8ac817bf4de) on the equality guard `diagnostic.code.as_deref() == Some(code) && diagnostic.range == range` at code_actions.rs:749 inside the `diagnostics.iter().find(...)` closure that associates a quick-fix action with its originating diagnostic. Same ripr#1429 class as ripr-suppress-lsp-declaration-equality-guards: RIPR cannot statically trace activation from JSON-RPC test inputs through diagnostic-list parsing into the find closure's equality guard. No statically-determinable boundary trick applies (equality over parsed diagnostic data structures, unlike the experimental.rs Duration::ZERO boundary). The boundary IS exercised by test_quickfix_actions_include_associated_diagnostics (crates/perl-lsp-rs/tests/lsp_code_actions_tests.rs), which pulls diagnostics, requests codeAction with them in context, and asserts the quick-fix carries the associated diagnostic with matching range/severity/code/source/message — the find closure's equality guard must return true for the asserted diagnostic to appear. Maintainer-approved suppression. Suppression is narrow: single production file, one PR. Remove when ripr#1429 is fixed upstream or targeted mutation replaces this advisory path."
+created = "2026-08-17"
+review_after = "2026-09-17"
+expires = "2026-10-31"
+removal_criteria = "EffortlessMetrics/ripr#1429 lets RIPR trace equality-guard activation from JSON-RPC test inputs through the diagnostic-list find closure, or targeted mutation replaces this advisory path; then delete this entry and rerun the RIPR new-gap gate."
+
+# -----------------------------------------------------------------------------
+# Generic comparison evidence model (PR #9964, closes #8127): ripr reports
+# no_static_path for changed seams in the new evidence model whose
+# discriminating tests already exist in
+# crates/perl-parser-comparison/tests/generic_result_model.rs but that the
+# static tracer cannot connect:
+#   (a) non-executable declarations — private const limits, tuple-struct
+#       declarations, struct field declarations, and enum variant
+#       declarations (e.g. evidence.rs:12-14, 34, 192-194, 353-355,
+#       388-395, 597-603; harness.rs:17-18, 78-82);
+#   (b) Display/Error trait-impl bodies reached only through
+#       ToString::to_string / Error::source dispatch, asserted exactly by
+#       checked_id_and_fingerprint_display_surface_is_stable,
+#       model_error_display_and_source_are_stable, and
+#       legacy_label_and_verdict_display_is_unchanged;
+#   (c) private helpers (can_score, validate_observation_states,
+#       validate_nonempty_bounded, validate_no_control_characters,
+#       subject_execution, *_observations, failed_observations,
+#       bounded_optional_text) reached only through the public constructors
+#       that call them — exercised with exact error-variant and exact-value
+#       oracles by failed_harness_cannot_carry_subject_disposition_or_decisive_score,
+#       incomplete_instrument_cannot_carry_decisive_score,
+#       limited_observation_cannot_carry_decisive_score,
+#       failed_harness_rejects_observed_plane_and_complete_instrument,
+#       complete_observation_requires_complete_instrument,
+#       limited_observation_rejects_unusable_instrument_states,
+#       truncated_instrument_can_carry_limited_observation,
+#       fingerprints_and_divergence_paths_reject_control_characters,
+#       fingerprint_and_divergence_path_enforce_exact_byte_limits,
+#       stable_ids_reject_empty_leading_separator_non_ascii_and_overlong_values,
+#       bounded_text_rejects_zero_limit_and_keeps_short_input_intact, and
+#       bounded_text_exposes_omitted_bytes_without_splitting_utf8;
+#   (d) panic::catch_unwind closure bodies in run_v1/run_v3, exercised through
+#       execute_v1/execute_v3 by
+#       historical_tree_sitter_diagnostic_summary_counts_error_nodes_exactly,
+#       native_recursive_descent_diagnostic_summary_counts_diagnostics_exactly,
+#       historical_error_nodes_are_recovery_not_instrument_failure, and the
+#       cat6_* corpus tests in tests/differential.rs.
+# Same EffortlessMetrics/ripr#1429 untraceable class as
+# ripr-suppress-test2-v1-import-scanner-predicates: the discriminator tests
+# exist and assert exact values; RIPR cannot statically connect them across
+# trait dispatch, private-callee, closure, or declaration boundaries.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-parser-comparison-evidence-model-untraceable"
+kind = "predicate_infection_untraceable"
+paths = [
+    "crates/perl-parser-comparison/src/evidence.rs",
+    "crates/perl-parser-comparison/src/harness.rs",
+    "crates/perl-parser-comparison/src/outcomes.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #9964 rewrites the perl-parser-comparison evidence model; ripr 0.9.x/0.10.x reports ~190 diff-scoped no_static_path/reachable_unrevealed seams in evidence.rs, harness.rs, and outcomes.rs. Every executable seam is covered by exact-value or exact-error-variant discriminator tests in crates/perl-parser-comparison/tests/generic_result_model.rs (34 tests) plus the cat6_* corpus tests, but the tracer cannot connect tests across (a) non-executable const/field/variant declarations, (b) Display/Error trait dispatch via to_string()/source(), (c) private helpers called only by the public constructors under test, and (d) panic::catch_unwind closure bodies in run_v1/run_v3. This is the documented EffortlessMetrics/ripr#1429 untraceable class (see docs/learnings/2026-07-ripr-weakly-exposed-suppression-churn.md): once the discriminator exists and RIPR still cannot see it, more tests will not clear the finding. Suppression is narrow: three production files in one crate, one PR. Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289."
+created = "2026-08-17"
+review_after = "2026-09-17"
+expires = "2026-11-17"
+removal_criteria = "EffortlessMetrics/ripr#1429 lets RIPR trace test activation across trait dispatch, private callees, catch_unwind closures, and declaration seams, or targeted mutation replaces this advisory path; then delete this entry and rerun the RIPR new-gap gate."

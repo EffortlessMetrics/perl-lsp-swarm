@@ -1,10 +1,12 @@
 //! Typed results for bounded static regex analysis.
 //!
 //! These types keep machine identity, source ranges, reusable facts, and
-//! completeness separate from presentation text. Ranges are byte offsets
-//! relative to the regex body supplied to [`super::RegexValidator::analyze`].
+//! completeness separate from presentation text. [`RegexRange`] uses the
+//! coordinate space declared by the producing API: [`super::RegexValidator::analyze`]
+//! emits regex-body-relative ranges, while modifier analysis preserves the
+//! caller-supplied source range of its [`crate::analyzer::ModifierSequence`].
 
-/// A half-open byte range relative to an analyzed regex body.
+/// A half-open byte range in the coordinate space declared by its producing API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RegexRange {
     /// Inclusive byte offset where the range starts.
@@ -262,8 +264,8 @@ pub enum RegexDynamicRegionKind {
     EmbeddedCodeDeferred,
     /// Source interpolation such as `$name`, `${expr}`, or `@values`.
     ///
-    /// Reserved for a follow-up scanner slice; this PR only populates embedded-code
-    /// dynamic regions so hosted ripr stays within the new-gap budget.
+    /// Interpolated text is not knowable from this source alone, so its presence is
+    /// reported as a dynamic boundary rather than folded into a static interpretation.
     Interpolation,
 }
 
@@ -283,7 +285,7 @@ pub struct RegexDynamicRegionFact {
 pub struct RegexFacts {
     /// Embedded executable or runtime-supplied regions in source order.
     pub embedded_code: Vec<EmbeddedCodeFact>,
-    /// Dynamic regions in source order (embedded code in this slice).
+    /// Dynamic regions in source order (embedded code and source interpolation).
     pub dynamic_regions: Vec<RegexDynamicRegionFact>,
     /// Nested-quantifier advisory ranges in source order.
     pub nested_quantifiers: Vec<RegexRange>,
@@ -332,6 +334,18 @@ impl RegexAnalysisCompleteness {
     }
 }
 
+/// Deterministic event-stream budget that prevented complete structural analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegexAnalysisBudget {
+    /// Maximum event count was reached.
+    Events,
+    /// Maximum structural nesting depth was reached.
+    Nesting,
+    /// Maximum deterministic scan-step count was reached.
+    Steps,
+}
+
 /// Complete typed result of one bounded static regex analysis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -342,6 +356,10 @@ pub struct RegexAnalysis {
     pub facts: RegexFacts,
     /// Local completeness classification.
     pub completeness: RegexAnalysisCompleteness,
+    /// Event-stream budget that stopped analysis, when any.
+    pub exhausted: Option<RegexAnalysisBudget>,
+    /// Whether malformed or truncated structure was observed by the bounded event stream.
+    pub malformed: bool,
 }
 
 impl RegexAnalysis {
@@ -349,5 +367,11 @@ impl RegexAnalysis {
     #[must_use]
     pub fn is_clean(&self) -> bool {
         self.diagnostics.is_empty()
+    }
+
+    /// Whether deterministic event production stopped at a configured budget.
+    #[must_use]
+    pub const fn is_exhausted(&self) -> bool {
+        self.exhausted.is_some()
     }
 }
