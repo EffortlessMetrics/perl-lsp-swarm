@@ -22,21 +22,14 @@ type EffectiveConfig = {
 const extensionRoot = path.resolve(__dirname, '..', '..');
 const tscEntry = path.join(extensionRoot, 'node_modules', 'typescript', 'bin', 'tsc');
 const inventory = JSON.parse(
-  fs.readFileSync(
-    path.join(extensionRoot, 'scripts', 'typescript-config-inventory.json'),
-    'utf8',
-  ),
+  fs.readFileSync(path.join(extensionRoot, 'scripts', 'typescript-config-inventory.json'), 'utf8'),
 ) as Inventory;
 
 function readEffectiveSourcePolicy(): Partial<SourcePolicy> {
-  const result = spawnSync(
-    process.execPath,
-    [tscEntry, '--showConfig', '-p', 'tsconfig.json'],
-    {
-      cwd: extensionRoot,
-      encoding: 'utf8',
-    },
-  );
+  const result = spawnSync(process.execPath, [tscEntry, '--showConfig', '-p', 'tsconfig.json'], {
+    cwd: extensionRoot,
+    encoding: 'utf8',
+  });
   expect(result.status).toBe(0);
   const parsed = JSON.parse(result.stdout) as EffectiveConfig;
   return parsed.compilerOptions ?? {};
@@ -84,10 +77,14 @@ function runFixture(source: string): { status: number | null; output: string } {
         include: ['index.ts'],
       }),
     );
-    const result = spawnSync(process.execPath, [tscEntry, '-p', 'tsconfig.json', '--pretty', 'false'], {
-      cwd: root,
-      encoding: 'utf8',
-    });
+    const result = spawnSync(
+      process.execPath,
+      [tscEntry, '-p', 'tsconfig.json', '--pretty', 'false'],
+      {
+        cwd: root,
+        encoding: 'utf8',
+      },
+    );
     return {
       status: result.status,
       output: `${result.stdout ?? ''}\n${result.stderr ?? ''}`,
@@ -106,7 +103,7 @@ describe('explicit TypeScript 7 source policy', () => {
     ['types', { types: ['node'] }],
     ['noUncheckedSideEffectImports', { noUncheckedSideEffectImports: false }],
     ['libReplacement', { libReplacement: true }],
-  ] as const)('%s drift is named', (name, mutation) => {
+  ])('%s drift is named', (name, mutation) => {
     const actual = { ...inventory.policy.source, ...mutation };
     expect(policyFailures(inventory.policy.source, actual).join('\n')).toContain(name);
   });
