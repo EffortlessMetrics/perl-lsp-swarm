@@ -1492,6 +1492,7 @@ version = "0.17.0"
 dependencies = [
  "chrono",
  "color-eyre",
+ "nix",
  "perl-core-harness-types",
  "perl-tdd-support",
  "serde",
@@ -1813,8 +1814,10 @@ dependencies = [
  "perl-parser-core",
  "perl-parser-pest",
  "perl-tdd-support",
+ "sha2",
  "tree-sitter",
  "tree-sitter-perl-c",
+ "ts-parser-perl",
  "walkdir",
 ]
 
@@ -3300,6 +3303,16 @@ dependencies = [
  "perl-semantic-analyzer",
  "perl-tdd-support",
  "regex",
+]
+
+[[package]]
+name = "ts-parser-perl"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d125f7bfdd1fd82a7e87d2e85793f486ad1b5f465144e9e22132dbe5bd80e694"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
 ]
 
 [[package]]

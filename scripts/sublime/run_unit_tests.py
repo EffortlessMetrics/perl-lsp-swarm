@@ -15,7 +15,11 @@ This runner keeps the upstream schedule mechanics (schedule.json plus the
 scheduler shim inside the installed UnitTesting package) but polls for the
 result once, with a generous default wall that the CI job timeout still
 bounds, and dumps the recorded Sublime log and result file on failure so a
-hang is diagnosable from the job log alone.
+hang is diagnosable from the job log alone.  SIGTERM/SIGINT (the observed
+ubuntu failure mode is an external kill long before any timeout fires) gets
+the same treatment: a handler dumps the process tree, this process' wait
+channel, and the recorded logs before re-raising with the original exit
+semantics.
 
 Usage:
 
@@ -27,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -56,6 +61,88 @@ OUTPUT_IDLE_TIMEOUT_SECONDS = int(
 )
 
 IS_WINDOWS = sys.platform == "win32"
+
+_START = time.monotonic()
+
+
+def _elapsed() -> str:
+    return f"T+{time.monotonic() - _START:.1f}s"
+
+
+def _dump_process_state() -> None:
+    """Snapshot the process tree and this process' kernel wait channel.
+
+    The observed ubuntu failure mode is an external SIGTERM ~10s after Sublime
+    launches, long before any poll timeout can fire, so the normal failure
+    dumps never run.  This snapshot exists to identify the killer's context:
+    whether Xvfb/Sublime/plugin_host were alive, and what this process was
+    doing when the signal landed.
+    """
+    identity = [f"pid={os.getpid()}"]
+    if hasattr(os, "getpgrp"):
+        try:
+            identity.append(f"pgid={os.getpgrp()}")
+        except OSError:
+            pass
+    if hasattr(os, "getsid"):
+        try:
+            identity.append(f"sid={os.getsid(0)}")
+        except OSError:
+            pass
+    print(" ".join(identity))
+    try:
+        with open("/proc/self/wchan", encoding="utf-8") as handle:
+            print(f"wchan: {handle.read().strip()}")
+    except OSError:
+        pass
+    # Targeted first: the full axjf forest is dominated by kernel threads and
+    # truncates before the user tree that identifies the signal's sender.
+    for probe in (
+        ["ps", "-eo", "pid,ppid,pgid,sid,stat,etime,args", "--sort=pid"],
+        ["ps", "axjf"],
+    ):
+        try:
+            result = subprocess.run(probe, capture_output=True, text=True)
+        except OSError:
+            continue
+        if result.returncode == 0:
+            print(f"===== {' '.join(probe)} =====")
+            print(result.stdout[:6000])
+            break
+    for name in ("Xvfb", "sublime_text", "plugin_host", "perllsp"):
+        try:
+            result = subprocess.run(
+                ["pgrep", "-a", name], capture_output=True, text=True
+            )
+        except OSError:
+            continue
+        state = result.stdout.strip() if result.returncode == 0 else "not running"
+        print(f"===== {name}: {state or 'not running'} =====")
+
+
+def _install_signal_diagnostics(package: str) -> None:
+    def _handler(signum: int, _frame) -> None:
+        print(
+            f"\nreceived signal {signum} at {_elapsed()}; "
+            "dumping state before re-raising",
+            flush=True,
+        )
+        try:
+            _dump_process_state()
+            _diagnose(package)
+        finally:
+            # Block-buffered stdout would otherwise lose the dump.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            # Preserve the original exit semantics (128 + signum, e.g. 143).
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(signum, _handler)
+        except (OSError, ValueError):
+            pass
 
 
 def _remove(path: str) -> None:
@@ -94,7 +181,10 @@ def _diagnose(package: str) -> None:
          "Get-Process | Where-Object {$_.Name -match 'sublime|plugin_host'}"
          " | Format-Table Id,Name,Path -AutoSize | Out-String"],
     ]:
-        alive = subprocess.run(probe, capture_output=True, text=True)
+        try:
+            alive = subprocess.run(probe, capture_output=True, text=True)
+        except OSError:
+            continue
         if alive.returncode == 0:
             hits = "\n".join(
                 line
@@ -135,6 +225,7 @@ def _dump(label: str, path: str) -> None:
 
 def _wait_for_output(path: str, timeout: int) -> None:
     deadline = time.monotonic() + timeout
+    last_heartbeat = time.monotonic()
     while True:
         try:
             if os.stat(path).st_size != 0:
@@ -143,6 +234,9 @@ def _wait_for_output(path: str, timeout: int) -> None:
             pass
         if time.monotonic() > deadline:
             raise ValueError(f"result file {path} stayed empty for {timeout}s")
+        if time.monotonic() - last_heartbeat > 15:
+            print(f" still waiting ({_elapsed()})", flush=True)
+            last_heartbeat = time.monotonic()
         time.sleep(1)
 
 
@@ -214,6 +308,7 @@ def _kill_sublime_text() -> None:
 
 def main() -> int:
     package = sys.argv[1] if len(sys.argv) > 1 else "LSP-perllsp"
+    _install_signal_diagnostics(package)
     output_dir = os.path.join(UT_OUTPUT_DIR_PATH, package)
     output_file = os.path.join(output_dir, "result")
     log_file = os.path.join(PACKAGES_DIR_PATH, package, "unittesting.log")

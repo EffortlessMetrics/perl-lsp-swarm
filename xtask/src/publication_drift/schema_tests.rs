@@ -180,11 +180,10 @@ fn validate_schema_keywords(schema: &Value, context: &str) -> Result<()> {
         }
     }
     if let Some(additional) = object.get("additionalProperties")
-        && !additional.is_boolean() {
-            bail!(
-                "{context}: schema-valued additionalProperties is not supported by this validator"
-            );
-        }
+        && !additional.is_boolean()
+    {
+        bail!("{context}: schema-valued additionalProperties is not supported by this validator");
+    }
     Ok(())
 }
 
@@ -210,17 +209,20 @@ fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -
     }
 
     if let Some(expected) = schema.get("const")
-        && value != expected {
-            bail!("{context}: value {value} does not match const {expected}");
-        }
+        && value != expected
+    {
+        bail!("{context}: value {value} does not match const {expected}");
+    }
     if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
-        && !allowed.contains(value) {
-            bail!("{context}: value {value} is not in enum {allowed:?}");
-        }
+        && !allowed.contains(value)
+    {
+        bail!("{context}: value {value} is not in enum {allowed:?}");
+    }
     if let Some(schema_type) = schema.get("type")
-        && !matches_type(value, schema_type)? {
-            bail!("{context}: value {value} does not match type {schema_type}");
-        }
+        && !matches_type(value, schema_type)?
+    {
+        bail!("{context}: value {value} does not match type {schema_type}");
+    }
 
     if let Some(object) = value.as_object() {
         if let Some(required) = schema.get("required").and_then(Value::as_array) {
@@ -252,9 +254,10 @@ fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -
 
     if let Some(array) = value.as_array() {
         if let Some(minimum) = schema.get("minItems").and_then(Value::as_u64)
-            && array.len() < minimum as usize {
-                bail!("{context}: expected at least {minimum} items");
-            }
+            && array.len() < minimum as usize
+        {
+            bail!("{context}: expected at least {minimum} items");
+        }
         if let Some(item_schema) = schema.get("items") {
             for (index, item) in array.iter().enumerate() {
                 validate_schema(item, item_schema, root, &format!("{context}[{index}]"))?;
@@ -264,9 +267,10 @@ fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -
 
     if let Some(string) = value.as_str() {
         if let Some(minimum) = schema.get("minLength").and_then(Value::as_u64)
-            && string.chars().count() < minimum as usize {
-                bail!("{context}: string is shorter than minLength {minimum}");
-            }
+            && string.chars().count() < minimum as usize
+        {
+            bail!("{context}: string is shorter than minLength {minimum}");
+        }
         if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
             let regex = Regex::new(pattern)
                 .map_err(|error| eyre!("{context}: invalid schema pattern {pattern:?}: {error}"))?;
@@ -277,19 +281,21 @@ fn validate_schema(value: &Value, schema: &Value, root: &Value, context: &str) -
     }
 
     if value.is_number()
-        && let Some(minimum) = schema.get("minimum").and_then(Value::as_f64) {
-            let number = value
-                .as_f64()
-                .ok_or_else(|| eyre!("{context}: value {value} is not a comparable number"))?;
-            if number < minimum {
-                bail!("{context}: number {number} is below minimum {minimum}");
-            }
+        && let Some(minimum) = schema.get("minimum").and_then(Value::as_f64)
+    {
+        let number = value
+            .as_f64()
+            .ok_or_else(|| eyre!("{context}: value {value} is not a comparable number"))?;
+        if number < minimum {
+            bail!("{context}: number {number} is below minimum {minimum}");
         }
+    }
 
     if let Some(forbidden) = schema.get("not")
-        && validate_schema(value, forbidden, root, context).is_ok() {
-            bail!("{context}: value matches forbidden schema");
-        }
+        && validate_schema(value, forbidden, root, context).is_ok()
+    {
+        bail!("{context}: value matches forbidden schema");
+    }
 
     Ok(())
 }

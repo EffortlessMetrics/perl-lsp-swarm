@@ -6,10 +6,11 @@
 //! discover GitHub state, compare sibling lanes, or invent another command
 //! matrix.
 
-// The public API in this module is intentionally complete but not yet wired
-// into any xtask command; wiring is tracked in issue #4588. Suppressing
-// dead_code here preserves the implementation, tests, and stable schema
-// contract without false-positive lint noise.
+// The `integration-trigger.v1` evaluator is complete and covered by its own
+// tests, but no production caller has landed yet, so every item reads as dead
+// to the bin target. Deleting a versioned schema and its evaluator to satisfy
+// dead_code would drop the contract, not dead code. Remove this when #4588's
+// consumer wires it in.
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,6 @@
+// Integration test: assertion helpers (`expect`/`unwrap`/`panic!`) carry the
+// failure message. The workspace-wide deny is a production-code rule.
+#![allow(clippy::expect_used, clippy::panic)]
 use std::fs;
 use std::path::{Path, PathBuf};
 

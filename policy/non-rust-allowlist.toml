@@ -2004,3 +2004,110 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-09-16"
+
+[[allow]]
+id = "non-rust-current-upstream-subject-manifest"
+path = "crates/perl-parser-comparison/upstream/ts-parser-perl-1.2.1.toml"
+kind = "config"
+language = "toml"
+surface = "source"
+classification = "generated"
+owner = "parser-comparison/#7255"
+reason = "Generated projection of CURRENT_UPSTREAM_SUBJECT — the exact maintained-current ts-parser-perl comparison subject manifest (#7255). Never edited independently; drift from the typed manifest authority fails the byte-exact contract test."
+generated_by = "CurrentUpstreamSubjectManifest::render_toml (perl-parser-comparison)"
+covered_by = [
+  "cargo test -p perl-parser-comparison --no-default-features --features current-upstream --test current_upstream_subject --locked",
+]
+created = "2026-08-17"
+review_after = "2026-11-17"
+
+[[allow]]
+id = "non-rust-Default-commands"
+path = "clients/sublime/LSP-perllsp/Default.sublime-commands"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "Sublime command palette entries exposing the curated LSP commands."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-command-surface"
+path = "clients/sublime/LSP-perllsp/command_surface.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "production"
+owner = "editor/sublime"
+reason = "Typed command surface for the curated palette: command specs, invocation preparation, result and error formatting, and navigation targets."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-test-sublime-commands"
+path = "clients/sublime/LSP-perllsp/host_tests/test_sublime_commands.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Real-host journey for the curated command palette against the live server."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-test-command-surface"
+path = "clients/sublime/LSP-perllsp/tests/test_command_surface.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Static contract tests for the command surface specs and the deterministic export."
+covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-test-command-receipt"
+path = "clients/sublime/LSP-perllsp/tests/test_command_receipt.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Receipt-shape tests for the curated command journey."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-command-receipt-schema"
+path = "clients/sublime/sublime-command-receipt.v1.schema.json"
+kind = "editor_extension"
+language = "json"
+surface = "editor"
+classification = "documentation"
+owner = "editor/sublime"
+reason = "JSON Schema for the curated-command host receipt."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"
+
+[[allow]]
+id = "non-rust-sublime-command-receipt-validator"
+path = "clients/sublime/validate_sublime_command_receipt.py"
+kind = "editor_extension"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Validates a produced command receipt against the v1 schema in CI."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-17"
+review_after = "2026-09-17"

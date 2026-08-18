@@ -139,16 +139,15 @@ impl TestEnvironment {
 /// Detect available system memory in MB
 fn detect_available_memory() -> Option<u64> {
     // Try /proc/meminfo on Linux
-    if cfg!(target_os = "linux") {
-        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-            for line in content.lines() {
-                if line.starts_with("MemAvailable:") {
-                    if let Some(kb_str) = line.split_whitespace().nth(1) {
-                        if let Ok(kb) = kb_str.parse::<u64>() {
-                            return Some(kb / 1024); // Convert to MB
-                        }
-                    }
-                }
+    if cfg!(target_os = "linux")
+        && let Ok(content) = std::fs::read_to_string("/proc/meminfo")
+    {
+        for line in content.lines() {
+            if line.starts_with("MemAvailable:")
+                && let Some(kb_str) = line.split_whitespace().nth(1)
+                && let Ok(kb) = kb_str.parse::<u64>()
+            {
+                return Some(kb / 1024); // Convert to MB
             }
         }
     }

@@ -42,6 +42,12 @@ pub struct SyntheticSquashConstruction {
     pub cleanup: SyntheticCleanup,
 }
 
+// Declared public surface of the synthetic-squash primitive: the constructor
+// and its serde report schema. `with_synthetic_squash` is live (integration_proof
+// uses it); these entry points and schema types have no caller yet. Deleting a
+// documented primitive and its wire schema to satisfy dead_code would drop the
+// contract, not dead code.
+#[allow(dead_code)]
 /// Apply the PR's net patch to an isolated integration basis and return the
 /// resulting tree identity.
 ///
@@ -188,6 +194,7 @@ fn apply_patch(worktree: &Path, patch: &[u8]) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyntheticSquashInput {
     pub pr_head: String,
@@ -196,6 +203,7 @@ pub struct SyntheticSquashInput {
     pub observation: SyntheticObservation,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SyntheticObservation {
@@ -207,6 +215,7 @@ pub enum SyntheticObservation {
     InstrumentFailure,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SyntheticVerdict {
@@ -215,6 +224,7 @@ pub enum SyntheticVerdict {
     NotProven,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyntheticSquashReceipt {
     pub schema_version: String,
