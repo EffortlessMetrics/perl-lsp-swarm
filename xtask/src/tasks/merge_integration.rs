@@ -4,11 +4,6 @@
 //! integration proof separately. It does not read GitHub, mutate branches, or
 //! authorize a merge.
 
-// Several items in this module are part of a planned API (#4556) that is
-// not yet wired into any xtask command. Suppressing dead_code preserves the
-// implementation and stable receipt schema without false-positive lint noise.
-#![allow(dead_code)]
-
 use color_eyre::eyre::{Context, Result, eyre};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -236,6 +231,10 @@ pub struct SyntheticSquashReceipt {
     pub findings: Vec<String>,
 }
 
+// Part of the same declared public surface as the items above: the
+// `synthetic-squash.v1` evaluator has no production caller yet (its tests
+// exercise it in-file). Kept with its wire schema rather than deleted.
+#[allow(dead_code)]
 pub fn evaluate_synthetic_squash(input: SyntheticSquashInput) -> SyntheticSquashReceipt {
     let mut findings = Vec::new();
     for (label, identity) in [

@@ -1091,6 +1091,26 @@ fn normalize_suppression_match_path(path: &str) -> String {
         .map_or_else(|| normalized.to_string(), |index| normalized[index..].to_string())
 }
 
+#[cfg(test)]
+fn pr_evidence_packet(
+    options: &PrEvidenceOptions,
+    changed_files: &[String],
+    check_value: &Value,
+    base_sha: &str,
+    head_sha: &str,
+    suppressions: &RiprSuppressionRules,
+) -> Value {
+    pr_evidence_packet_with_count(
+        options,
+        check_value,
+        base_sha,
+        head_sha,
+        suppressions,
+        changed_files.len(),
+        None,
+    )
+}
+
 fn pr_evidence_packet_with_count(
     options: &PrEvidenceOptions,
     check_value: &Value,
@@ -2304,6 +2324,11 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
     run_git_output(repo, &["rev-parse", "--verify", commit.as_str()])
         .map(|_| ())
         .with_context(|| format!("bad base/head revision {rev:?}"))
+}
+
+#[cfg(test)]
+fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
+    Ok(resolve_committed_diff(repo, base, head)?.changed_paths)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
