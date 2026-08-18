@@ -2384,3 +2384,18 @@ reason = "Contract tests for the bounded read-only integration status."
 covered_by = ["Sublime package contract", "python3 -m unittest discover -s clients/sublime/LSP-perllsp/tests -p test_*.py", "cargo xtask check-file-policy"]
 created = "2026-08-18"
 review_after = "2026-09-18"
+
+[[allow]]
+id = "non-rust-vsix-candidate-payload-schema"
+path = "schemas/vsix_candidate_payload.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed Draft 2020-12 schema for the vsix_candidate_payload.v1 manifest (#9932); emitted-manifest conformance is pinned by the VSIX package projection Jest suite."
+covered_by = [
+  "cd vscode-extension && npm run compile:test && npx jest vsixPackageProjection",
+]
+created = "2026-08-18"
+review_after = "2026-11-18"
