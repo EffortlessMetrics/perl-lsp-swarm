@@ -1,6 +1,8 @@
 #![cfg(feature = "current-upstream")]
-// Integration test: expect_err keeps negative-pin assertions compact (repo pattern).
-#![allow(clippy::expect_used)]
+#![expect(
+    clippy::expect_used,
+    reason = "expect_err keeps negative-pin assertions compact in this integration test"
+)]
 
 use std::error::Error;
 use std::fs;
@@ -10,6 +12,7 @@ use perl_parser_comparison::{
     CURRENT_UPSTREAM_SUBJECT, CurrentUpstreamAdapter, CurrentUpstreamParseMode,
     SUBJECT_MANIFEST_TOML, validate_exact_package_requirement,
 };
+use sha2::{Digest, Sha256};
 use tree_sitter::{InputEdit, Point};
 
 fn workspace_root() -> PathBuf {
@@ -49,7 +52,20 @@ fn exact_subject_manifest_is_one_complete_authority() {
 #[test]
 fn checked_in_manifest_is_an_exact_generated_projection() {
     assert_eq!(SUBJECT_MANIFEST_TOML, CURRENT_UPSTREAM_SUBJECT.render_toml());
-    assert_eq!(CURRENT_UPSTREAM_SUBJECT.canonical_semantic_json().len(), 542);
+}
+
+#[test]
+fn semantic_digest_is_derived_from_canonical_semantic_json() {
+    let json = CURRENT_UPSTREAM_SUBJECT.canonical_semantic_json();
+    let digest = Sha256::digest(json.as_bytes());
+    let computed =
+        format!("sha256:{}", digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+    assert_eq!(
+        computed,
+        CURRENT_UPSTREAM_SUBJECT.semantic_digest(),
+        "semantic_digest must be the SHA-256 of canonical_semantic_json(); \
+         a stale constant means the manifest identity no longer matches its content"
+    );
 }
 
 #[test]
@@ -165,42 +181,86 @@ fn manifest_and_lock_bind_the_exact_crates_io_subject() -> Result<(), Box<dyn Er
     assert!(!manifest.contains("ts-parser-perl = \"1.2.1\""));
 
     let lock = fs::read_to_string(workspace_root().join("Cargo.lock"))?;
-    let package_marker = format!(
-        "name = \"{}\"\nversion = \"{}\"",
-        CURRENT_UPSTREAM_SUBJECT.package_name(),
-        CURRENT_UPSTREAM_SUBJECT.package_version()
-    );
-    assert!(lock.contains(&package_marker));
+
+    // Bind every fact to the named [[package]] block, not to a substring
+    // anywhere in the lockfile: a workspace may resolve several versions of
+    // the same crate, and a bare `contains` cannot prove which package a
+    // version or checksum belongs to.
+    let subject_block = package_block(&lock, CURRENT_UPSTREAM_SUBJECT.package_name())
+        .ok_or("lockfile has no ts-parser-perl package block")?;
     assert!(
-        lock.contains(&format!("checksum = \"{}\"", CURRENT_UPSTREAM_SUBJECT.package_checksum()))
+        subject_block
+            .contains(&format!("version = \"{}\"", CURRENT_UPSTREAM_SUBJECT.package_version())),
+        "the ts-parser-perl package block must pin the exact manifest version"
     );
-    assert!(lock.contains(&format!(
-        "name = \"tree-sitter\"\nversion = \"{}\"",
-        CURRENT_UPSTREAM_SUBJECT.tree_sitter_runtime_version()
-    )));
-    assert!(lock.contains(&format!(
-        "name = \"tree-sitter-language\"\nversion = \"{}\"",
-        CURRENT_UPSTREAM_SUBJECT.tree_sitter_language_version()
-    )));
+    assert!(
+        subject_block
+            .contains("source = \"registry+https://github.com/rust-lang/crates.io-index\""),
+        "the ts-parser-perl package block must come from crates.io"
+    );
+    assert!(
+        subject_block
+            .contains(&format!("checksum = \"{}\"", CURRENT_UPSTREAM_SUBJECT.package_checksum())),
+        "the ts-parser-perl package block must carry the manifest checksum"
+    );
+
+    // The runtime/bridge binding is only unambiguous when the lockfile
+    // resolves exactly one version of each; reject a split resolution instead
+    // of silently matching one of several.
+    for (package, expected_version) in [
+        ("tree-sitter", CURRENT_UPSTREAM_SUBJECT.tree_sitter_runtime_version()),
+        ("tree-sitter-language", CURRENT_UPSTREAM_SUBJECT.tree_sitter_language_version()),
+    ] {
+        let blocks = package_blocks(&lock, package);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "lockfile must resolve exactly one {package} version for the manifest binding to be \
+             unambiguous"
+        );
+        assert!(
+            blocks[0].contains(&format!("version = \"{expected_version}\"")),
+            "the single {package} resolution must match the manifest"
+        );
+    }
     Ok(())
+}
+
+/// All `[[package]]` blocks in a lockfile whose package name is exactly `name`.
+fn package_blocks<'a>(lock: &'a str, name: &str) -> Vec<&'a str> {
+    lock.split("[[package]]")
+        .map(str::trim_start)
+        .filter(|block| block.starts_with(&format!("name = \"{name}\"\n")))
+        .collect()
+}
+
+/// The unique `[[package]]` block for `name`, when exactly one exists.
+fn package_block<'a>(lock: &'a str, name: &str) -> Option<&'a str> {
+    let blocks = package_blocks(lock, name);
+    (blocks.len() == 1).then_some(blocks[0])
 }
 
 #[test]
 fn adapter_does_not_reintroduce_a_private_comparison_outcome_model() -> Result<(), Box<dyn Error>> {
-    let source =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/current_upstream.rs"))?;
-
-    for forbidden in [
-        "CurrentUpstreamExecutionDisposition",
-        "AcceptedClean",
-        "AcceptedRecovered",
-        "ScoredComparison",
-        "Verdict::Correct",
-    ] {
-        assert!(
-            !source.contains(forbidden),
-            "current-upstream adapter must remain factual: found {forbidden}"
-        );
+    // Scan every source file the current-upstream feature compiles: the
+    // adapter module and the crate root whose feature-gated re-exports are
+    // part of the same public surface. Vocabulary hidden in either would
+    // recreate a private outcome model beside the shared #8127 authority.
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for source_file in ["src/current_upstream.rs", "src/lib.rs"] {
+        let source = fs::read_to_string(crate_root.join(source_file))?;
+        for forbidden in [
+            "CurrentUpstreamExecutionDisposition",
+            "AcceptedClean",
+            "AcceptedRecovered",
+            "ScoredComparison",
+            "Verdict::Correct",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "current-upstream adapter must remain factual: found {forbidden} in {source_file}"
+            );
+        }
     }
     Ok(())
 }
@@ -210,7 +270,20 @@ fn native_tree_sitter_style_facade_remains_a_distinct_subject() -> Result<(), Bo
     let facade_manifest =
         fs::read_to_string(workspace_root().join("crates/tree-sitter-perl-rs/Cargo.toml"))?;
 
-    assert!(!facade_manifest.contains("ts-parser-perl"));
-    assert!(facade_manifest.contains("perl-parser-core"));
+    // The facade must stay backed by the native parser and must not gain a
+    // dependency on either C grammar — neither the exact current-upstream
+    // package nor the historical vendored snapshot.
+    assert!(
+        !facade_manifest.contains("ts-parser-perl"),
+        "facade must not depend on the current-upstream C grammar package"
+    );
+    assert!(
+        !facade_manifest.contains("tree-sitter-perl-c"),
+        "facade must not depend on the historical vendored C grammar"
+    );
+    assert!(
+        facade_manifest.contains("perl-parser-core"),
+        "facade must remain backed by the native perl-parser-core parser"
+    );
     Ok(())
 }

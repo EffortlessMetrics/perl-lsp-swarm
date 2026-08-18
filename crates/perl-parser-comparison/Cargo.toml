@@ -26,6 +26,7 @@ walkdir = { workspace = true }
 
 [dev-dependencies]
 perl-tdd-support = { workspace = true }
+sha2 = { workspace = true }
 
 [[bin]]
 name = "corpus_differential"
