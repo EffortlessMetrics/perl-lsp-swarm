@@ -172,7 +172,10 @@ test('a stale PATH candidate cannot defeat packaged or managed authority', () =>
     select({ managedCandidate: candidate('managed_candidate'), externalPathCandidate: stalePath }),
   ).toMatchObject({ sourceRole: 'managed_candidate' });
   expect(
-    select({ packagedCandidate: candidate('packaged_candidate'), externalPathCandidate: stalePath }),
+    select({
+      packagedCandidate: candidate('packaged_candidate'),
+      externalPathCandidate: stalePath,
+    }),
   ).toMatchObject({ sourceRole: 'packaged_candidate' });
 });
 
@@ -210,7 +213,11 @@ test('canonical external PATH compatibility remains visible as an external role'
 test('unsupported and not-proven targets terminate before candidate discovery', () => {
   expect(
     select({
-      target: { target: 'powerpc-unknown-linux-gnu', state: 'unsupported', evidenceRef: 'topology' },
+      target: {
+        target: 'powerpc-unknown-linux-gnu',
+        state: 'unsupported',
+        evidenceRef: 'topology',
+      },
       packagedCandidate: candidate('packaged_candidate'),
     }),
   ).toMatchObject({
