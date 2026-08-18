@@ -1,0 +1,9 @@
+project: vscode
+component: Packaging and distribution
+kind: Added
+body: Added the topology-derived VSIX target projection and closed candidate payload manifest, keeping GNU/musl, Windows ARM64, required server/DAP members, and binaryless universal packages distinct before package construction.
+time: 2026-08-15T23:47:00Z
+custom:
+  PR: 10003
+  Slug: vscode-vsix-package-projection
+  Breaking: "no"

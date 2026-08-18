@@ -125,15 +125,15 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
         if patch.is_none() {
             next_actions.push(patch_coverage_unknown_action(args));
         }
-        if let Some(patch) = patch {
-            if patch < PATCH_TARGET {
-                next_actions.push(patch_coverage_below_target_action(
-                    patch,
-                    patch_source.unwrap_or("unknown"),
-                    &coverage,
-                    args,
-                ));
-            }
+        if let Some(patch) = patch
+            && patch < PATCH_TARGET
+        {
+            next_actions.push(patch_coverage_below_target_action(
+                patch,
+                patch_source.unwrap_or("unknown"),
+                &coverage,
+                args,
+            ));
         }
         match coverage.project {
             Some(project) if project < PROJECT_TARGET => {
@@ -276,15 +276,15 @@ fn evaluate_patch_coverage(head: &str, args: &QualityGateArgs) -> Result<GateEva
         next_actions.push(patch_coverage_unknown_action(args));
     }
 
-    if let Some(patch) = patch {
-        if patch < PATCH_TARGET {
-            next_actions.push(patch_coverage_below_target_action(
-                patch,
-                patch_source.unwrap_or("unknown"),
-                &coverage,
-                args,
-            ));
-        }
+    if let Some(patch) = patch
+        && patch < PATCH_TARGET
+    {
+        next_actions.push(patch_coverage_below_target_action(
+            patch,
+            patch_source.unwrap_or("unknown"),
+            &coverage,
+            args,
+        ));
     }
 
     if codecov_status != "present" {
@@ -382,12 +382,17 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
         match ripr_pr.new_unresolved {
             Some(count) if count > 0 && !review.is_nonproduction_only_scope() => {
                 next_actions.push(new_ripr_gap_action(count, &ripr_pr, &review, args));
-                if review.status != "present" {
-                    if !review_receipt_blocks_without_new_gaps {
-                        next_actions.push(ripr_review_receipt_action(&review, head, args));
+                // An incomplete receipt that still names actionable seams
+                // (#10054 fallback) is sufficient for the gate to fail on named
+                // evidence; only nameless degradation blocks on the receipt.
+                let review_names_gaps = review.status == "present"
+                    || (review.status == "incomplete" && !review.top_gaps.is_empty());
+                if review.status == "present" {
+                    if review.top_gaps.is_empty() {
+                        next_actions.push(ripr_review_guidance_gap_action(&review, head, args));
                     }
-                } else if review.top_gaps.is_empty() {
-                    next_actions.push(ripr_review_guidance_gap_action(&review, head, args));
+                } else if !review_names_gaps && !review_receipt_blocks_without_new_gaps {
+                    next_actions.push(ripr_review_receipt_action(&review, head, args));
                 }
             }
             None => next_actions.push(new_ripr_gap_unknown_action(&ripr_pr, args)),
@@ -445,9 +450,7 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
 fn parse_changed_production_files(files: &[Value]) -> Option<Vec<String>> {
     let mut parsed = Vec::with_capacity(files.len());
     for file in files {
-        let Some(path) = file.as_str() else {
-            return None;
-        };
+        let path = file.as_str()?;
         parsed.push(path.to_owned());
     }
     Some(parsed)
@@ -1033,8 +1036,15 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
                 "present"
             }
             .to_string();
-            let top_gaps =
-                if status == "present" { review_guidance_items(&payload, 3) } else { Vec::new() };
+            let top_gaps = if matches!(status.as_str(), "present" | "incomplete") {
+                // An `incomplete` receipt may still name actionable seams: the
+                // fallback path (#10054) synthesizes them from the completed
+                // diff-scoped raw check when the review-comments pass does not
+                // finish, so the gate can block on named evidence.
+                review_guidance_items(&payload, 3)
+            } else {
+                Vec::new()
+            };
             if status == "present"
                 && top_gaps.is_empty()
                 && review_guidance_declares_items(&payload)
@@ -2409,5 +2419,182 @@ mod tests {
 
         assert!(mapped.get("gap_id").and_then(Value::as_str).is_none());
         assert!(!review_guidance_item_is_actionable(&mapped));
+    }
+
+    // ── #10054 fallback guidance: named seams from the raw check ────────────
+
+    fn minimal_exception_policy(dir: &Path) -> Result<PathBuf> {
+        let path = dir.join("quality-gate-exceptions.toml");
+        fs::write(
+            &path,
+            "schema_version = 1\npolicy = \"quality-gate-exceptions\"\nowner = \"test\"\nstatus = \"active\"\nupdated = \"2026-01-01\"\ndue_review = \"pass\"\n",
+        )?;
+        Ok(path)
+    }
+
+    fn new_ripr_args(dir: &Path) -> Result<QualityGateArgs> {
+        Ok(QualityGateArgs {
+            mode: QualityGateMode::EnforceNewRipr,
+            exception_policy: minimal_exception_policy(dir)?,
+            ripr_receipt: dir.join("ripr-plus.json"),
+            ripr_pr_receipt: dir.join("repo-exposure.json"),
+            review_receipt: dir.join("comments.json"),
+            coverage_receipt: dir.join("coverage.json"),
+            codecov: dir.join("codecov.yml"),
+            patch_coverage: None,
+            ripr_base: "origin/main".to_string(),
+            ripr_head: "HEAD".to_string(),
+            receipt: dir.join("quality-gate.json"),
+            summary: dir.join("quality-gate.md"),
+            check: false,
+        })
+    }
+
+    fn write_gate_inputs(dir: &Path, head: &str, review_packet: &Value) -> Result<()> {
+        fs::write(
+            dir.join("ripr-plus.json"),
+            json!({ "head": head, "unresolved": 0 }).to_string(),
+        )?;
+        fs::write(
+            dir.join("repo-exposure.json"),
+            json!({
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-sha",
+                "summary": { "severe_gaps": 2, "reachable_unrevealed": 1, "no_static_path": 1 }
+            })
+            .to_string(),
+        )?;
+        fs::write(dir.join("comments.json"), review_packet.to_string())?;
+        Ok(())
+    }
+
+    fn named_fallback_seam() -> Value {
+        json!({
+            "id": "probe:crates_perl-parser-comparison_src_evidence.rs:495:error_path",
+            "path": "crates/perl-parser-comparison/src/evidence.rs",
+            "line": 495,
+            "seam": "error_path: return Err(ComparisonModelError::ScoringRequiresCompletedHarness);",
+            "reason": "no_static_path: No static test path found for the changed owner",
+            "suggested_test": "Add a focused test that statically exercises the owner of this changed seam."
+        })
+    }
+
+    #[test]
+    fn incomplete_guidance_with_named_seams_extracts_top_gaps() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "review-head";
+        fs::write(
+            dir.path().join("comments.json"),
+            json!({
+                "head_sha": head,
+                "status": "incomplete",
+                "comments": [],
+                "summary_only": [named_fallback_seam()],
+                "suppressed": [],
+                "warnings": [{ "kind": "tool_error", "message": "ripr timed out after 600s" }]
+            })
+            .to_string(),
+        )?;
+
+        let receipt = read_review_guidance_receipt(&dir.path().join("comments.json"), head);
+
+        assert_eq!(receipt.status, "incomplete");
+        assert_eq!(receipt.top_gaps.len(), 1);
+        assert_eq!(
+            receipt.top_gaps[0].get("path").and_then(Value::as_str),
+            Some("crates/perl-parser-comparison/src/evidence.rs")
+        );
+        assert_eq!(receipt.unavailable_reason.as_deref(), Some("ripr timed out after 600s"));
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_guidance_with_named_seams_blocks_on_named_evidence_only() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "review-head";
+        write_gate_inputs(
+            dir.path(),
+            head,
+            &json!({
+                "head_sha": head,
+                "status": "incomplete",
+                "comments": [],
+                "summary_only": [named_fallback_seam()],
+                "suppressed": [],
+                "warnings": [{ "kind": "tool_error", "message": "ripr timed out after 600s" }]
+            }),
+        )?;
+        let args = new_ripr_args(dir.path())?;
+
+        let evaluation = evaluate_new_ripr(head, &args)?;
+
+        assert!(evaluation.failed);
+        let actions = evaluation
+            .receipt
+            .get("next_actions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let gap_actions = actions
+            .iter()
+            .filter(|action| action.get("kind").and_then(Value::as_str) == Some("new_ripr_gap"))
+            .count();
+        assert_eq!(gap_actions, 1, "{actions:?}");
+        let gap = actions
+            .iter()
+            .find(|action| action.get("kind").and_then(Value::as_str) == Some("new_ripr_gap"))
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(gap.get("gap_list_proven"), Some(&json!(true)));
+        assert_eq!(gap.get("guidance_status"), Some(&json!("incomplete")));
+        assert_eq!(gap.get("top_gaps").and_then(Value::as_array).map(Vec::len), Some(1));
+        assert!(
+            actions.iter().all(|action| action.get("kind").and_then(Value::as_str)
+                != Some("ripr_review_receipt_not_current")),
+            "named fallback guidance must not also block on the receipt: {actions:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn error_guidance_without_named_seams_keeps_not_proven_blocking() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "review-head";
+        write_gate_inputs(
+            dir.path(),
+            head,
+            &json!({
+                "head_sha": head,
+                "status": "error",
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": [{ "kind": "tool_error", "message": "ripr timed out after 600s" }]
+            }),
+        )?;
+        let args = new_ripr_args(dir.path())?;
+
+        let evaluation = evaluate_new_ripr(head, &args)?;
+
+        assert!(evaluation.failed);
+        let actions = evaluation
+            .receipt
+            .get("next_actions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let gap = actions
+            .iter()
+            .find(|action| action.get("kind").and_then(Value::as_str) == Some("new_ripr_gap"))
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(gap.get("gap_list_proven"), Some(&json!(false)));
+        assert!(
+            actions.iter().any(|action| action.get("kind").and_then(Value::as_str)
+                == Some("ripr_review_receipt_not_current")),
+            "nameless guidance failure must still block on the receipt: {actions:?}"
+        );
+        Ok(())
     }
 }

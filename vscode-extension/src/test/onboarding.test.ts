@@ -21,6 +21,8 @@ import {
   resolveUnixShellInvocationFallback,
   toPosixShellCommand,
   classifyStartupFailure,
+  PERL_MISSING_MESSAGE,
+  STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE,
 } from '../onboarding';
 import type { HealthCheckResult } from '../onboarding';
 
@@ -522,20 +524,19 @@ describe('classifyStartupFailure', () => {
     return { label, ok, status, detail };
   }
 
-  test('returns Perl-missing message when Perl check failed', () => {
+  test('returns Perl-missing message when the Perl check explicitly failed', () => {
     const results: HealthCheckResult[] = [
       makeResult('Perl interpreter', false, HealthCheckStatus.Error, 'perl: command not found'),
       makeResult('perltidy', true, HealthCheckStatus.Ok, 'perltidy found'),
       makeResult('LSP binary', true, HealthCheckStatus.Ok, 'Binary found: /usr/bin/perllsp'),
     ];
     const msg = classifyStartupFailure(results);
-    expect(msg).toContain('Perl');
+    expect(msg).toBe(PERL_MISSING_MESSAGE);
     expect(msg).toContain('5.10');
     expect(msg).toContain('strawberryperl.com');
     expect(msg).toContain('brew install perl');
     expect(msg).toContain('package manager');
     expect(msg).toMatch(/install|Install/);
-    // Should NOT show the generic "restart" message when root cause is known
     expect(msg).not.toContain('Restart the server');
   });
 
@@ -557,19 +558,16 @@ describe('classifyStartupFailure', () => {
       makeResult('LSP binary', true, HealthCheckStatus.Ok, 'Binary found: /usr/bin/perllsp'),
     ];
     const msg = classifyStartupFailure(results);
-    // Should point to Output panel, not blame Perl or binary
     expect(msg).toMatch(/Output panel|output/i);
     expect(msg).not.toContain('Install Perl');
     expect(msg).not.toContain('perl-lsp binary not found');
   });
 
-  test('returns Perl-missing message when results array is empty (check could not run)', () => {
-    // Edge case: diagnostics could not run at all; safest is to assume Perl missing
+  test('returns unavailable diagnostics when required result rows are absent', () => {
     const msg = classifyStartupFailure([]);
-    // Falls back to PERL_MISSING_MESSAGE — the most actionable default
-    expect(msg).toContain('Perl');
-    expect(msg).toMatch(/install|Install/);
-    expect(msg).toContain('5.10');
+    expect(msg).toBe(STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE);
+    expect(msg).not.toContain('Install Perl');
+    expect(msg).not.toContain('5.10');
   });
 });
 
@@ -631,22 +629,38 @@ describe('OnboardingManager.showWelcomeNotification', () => {
 // ---------------------------------------------------------------------------
 
 describe('OnboardingManager.runStartupDiagnostics', () => {
-  test('returns Perl-specific error when Perl is missing', async () => {
+  test('does not blame optional Perl when the explicit binary check failed', async () => {
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
-    mockExecCheck(mgr, () => Promise.reject(new Error('perl: command not found')));
+    mockExecCheck(mgr, () => Promise.reject(new Error('command not found')));
+
     const msg = await mgr.runStartupDiagnostics(null);
-    expect(msg).toContain('Perl');
-    expect(msg).toMatch(/install|Install/);
-    expect(msg).not.toContain('Restart the server');
+
+    expect(msg).toMatch(/binary|perllsp/i);
+    expect(msg).not.toContain('Install Perl 5.10');
   });
 
   test('returns binary-missing message when Perl is present but binary not found', async () => {
     const mgr = new OnboardingManager(makeContext(), makeOutputChannel());
     mockExecCheck(mgr, (_cmd: string) => Promise.resolve({ stdout: '5.036000', stderr: '' }));
-    // No binary path provided (null) — binary check will fail
     const msg = await mgr.runStartupDiagnostics(null);
     expect(msg).toMatch(/binary|perllsp/i);
-    // Perl IS installed — should NOT show the Perl install guide
     expect(msg).not.toContain('Install Perl 5.10');
+  });
+
+  test('keeps diagnostic instrument failure distinct from product root causes', async () => {
+    const outputChannel = makeOutputChannel();
+    const mgr = new OnboardingManager(makeContext(), outputChannel);
+    jest
+      .spyOn(mgr, 'runSetupHealthCheck')
+      .mockRejectedValue(new Error('/private/workspace diagnostic instrument failed'));
+
+    const msg = await mgr.runStartupDiagnostics('/path/to/perllsp');
+
+    expect(msg).toBe(STARTUP_DIAGNOSTICS_UNAVAILABLE_MESSAGE);
+    expect(msg).not.toContain('Install Perl');
+    expect(msg).not.toContain('/private/workspace');
+    expect(outputChannel.appendLine).toHaveBeenCalledWith(
+      '[onboarding] Startup diagnostics failed: /private/workspace diagnostic instrument failed',
+    );
   });
 });

@@ -1,0 +1,7 @@
+---
+source: crates/perl-parser/tests/ast_snap.rs
+assertion_line: 311
+expression: "parse_errors(\"my $x = ;\\nmy $y = ;\")"
+---
+Missing operand in expression
+Missing operand in expression

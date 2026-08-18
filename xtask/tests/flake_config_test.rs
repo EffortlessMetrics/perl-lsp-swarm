@@ -1,3 +1,6 @@
+// Integration test: assertion helpers (`expect`/`unwrap`/`panic!`) carry the
+// failure message. The workspace-wide deny is a production-code rule.
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 //! Tests to verify flake.nix configuration is correct.
 //!
 //! These tests verify the acceptance criteria from work-24c7cfb5:
