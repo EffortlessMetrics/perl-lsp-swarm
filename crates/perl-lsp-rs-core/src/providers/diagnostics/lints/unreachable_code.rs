@@ -24,9 +24,9 @@ enum ControlTransfer {
     ProcessTransfer,
     GotoLabel(String),
     DynamicGoto,
-    ContinueLoop { _label: Option<String> },
-    BreakLoop { _label: Option<String> },
-    RedoLoop { _label: Option<String> },
+    ContinueLoop { label: Option<String> },
+    BreakLoop { label: Option<String> },
+    RedoLoop { label: Option<String> },
 }
 
 /// Whether a statement or block can reach its next sibling, plus the terminal
@@ -52,22 +52,44 @@ impl FlowSummary {
         Self { can_fall_through, transfers }
     }
 
-    /// Demote loop-control transfers at a bare-block boundary. A bare BLOCK
-    /// is semantically a one-shot loop (perlsyn), so `last`/`next`/`redo`
-    /// terminate or restart the block itself: the parent statement list keeps
-    /// a reachable path even when the block's own summary does not fall
-    /// through. Non-loop transfers (`die`, `return`, `goto`) still promote.
-    fn without_loop_transfers(mut self) -> Self {
-        let is_loop_transfer = |transfer: &ControlTransfer| {
-            matches!(
-                transfer,
-                ControlTransfer::ContinueLoop { .. }
-                    | ControlTransfer::BreakLoop { .. }
-                    | ControlTransfer::RedoLoop { .. }
-            )
+    /// Demote loop-control transfers at a bare-block boundary.
+    ///
+    /// A bare BLOCK is semantically a one-shot loop (perlsyn), so unlabeled
+    /// `last`/`next`, or labeled `last`/`next` whose label names the block
+    /// itself, terminate or skip to the end of the block — the parent
+    /// statement list keeps a reachable path even when the block's summary
+    /// does not fall through. Non-loop transfers (`die`, `return`, `goto`)
+    /// always promote unchanged.
+    ///
+    /// Importantly, two classes of loop control must **not** be demoted:
+    ///
+    /// * `redo` (with or without label) — `redo` *restarts* the current
+    ///   iteration. In a one-shot bare block `redo` creates an infinite loop;
+    ///   no execution path falls through to the parent statement list.
+    /// * Labeled `last`/`next` whose label names an *outer* construct —
+    ///   those transfers escape the bare block entirely and must remain visible
+    ///   to the outer summarizer so it can close fallthrough correctly.
+    ///
+    /// `block_label` is `Some(label)` for a labeled bare block (`LABEL: {
+    /// … }`), `None` for an anonymous one.
+    fn without_loop_transfers(mut self, block_label: Option<&str>) -> Self {
+        let is_demotable = |transfer: &ControlTransfer| match transfer {
+            // `last`/`next` that target the block itself exit it normally;
+            // the parent statement list regains a fallthrough path.
+            ControlTransfer::BreakLoop { label } | ControlTransfer::ContinueLoop { label } => {
+                label.is_none() || label.as_deref() == block_label
+            }
+            // `redo` always restarts the target construct. Even when the label
+            // matches the block's own label the effect is an infinite loop —
+            // the parent statement list does not regain a fallthrough path.
+            ControlTransfer::RedoLoop { .. } => false,
+            _ => false,
         };
-        if self.transfers.iter().any(&is_loop_transfer) {
-            self.transfers.retain(|transfer| !is_loop_transfer(transfer));
+        let had_demotable = self.transfers.iter().any(&is_demotable);
+        if had_demotable {
+            self.transfers.retain(|t| !is_demotable(t));
+            // Demotable transfers represent paths that exit the block normally,
+            // so the parent gains at least one fallthrough path.
             self.can_fall_through = true;
         }
         self
@@ -193,12 +215,12 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
             // always retains a path that skips the controlled statement.
             FlowSummary::falls_through()
         }
-        NodeKind::LabeledStatement { statement, .. } => {
+        NodeKind::LabeledStatement { label, statement } => {
             let summary = summarize_node(statement, diagnostics);
             // A labeled bare block is still a one-shot loop, so `last LABEL`
             // targets the block itself rather than the enclosing loop.
             if matches!(&statement.kind, NodeKind::Block { .. }) {
-                summary.without_loop_transfers()
+                summary.without_loop_transfers(Some(label.as_str()))
             } else {
                 summary
             }
@@ -299,9 +321,10 @@ fn summarize_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) -
         // A bare BLOCK statement is a one-shot loop (perlsyn): loop-control
         // transfers target the block itself and must not close fallthrough in
         // this list. Branch/body blocks of `if`, loops, and callables are not
-        // loop targets and keep their verbatim summary.
+        // loop targets and keep their verbatim summary. An anonymous bare
+        // block carries no label, so only unlabeled loop controls are demoted.
         let summary = if matches!(&stmt.kind, NodeKind::Block { .. }) {
-            summary.without_loop_transfers()
+            summary.without_loop_transfers(None)
         } else {
             summary
         };
@@ -409,9 +432,9 @@ fn analyze_expression_list(nodes: &[Node], diagnostics: &mut Vec<Diagnostic>) {
 
 fn summarize_loop_control(op: &str, label: &Option<String>) -> FlowSummary {
     let transfer = match op {
-        "next" => ControlTransfer::ContinueLoop { _label: label.clone() },
-        "last" => ControlTransfer::BreakLoop { _label: label.clone() },
-        "redo" => ControlTransfer::RedoLoop { _label: label.clone() },
+        "next" => ControlTransfer::ContinueLoop { label: label.clone() },
+        "last" => ControlTransfer::BreakLoop { label: label.clone() },
+        "redo" => ControlTransfer::RedoLoop { label: label.clone() },
         _ => return FlowSummary::falls_through(),
     };
     FlowSummary::transfer(transfer)
@@ -794,5 +817,86 @@ mod tests {
     fn clean_sub_has_no_pl406() {
         let diags = unreachable_diags("sub f { my $x = 1; my $y = 2; return $x + $y; }");
         assert!(!has_pl406(&diags), "ordinary reachable code should remain clean: {diags:?}");
+    }
+
+    // ── label-aware demotion (issue #10804) ──────────────────────────────────
+
+    /// `last OUTER` inside a bare block exits the enclosing loop, not the
+    /// block. The bare block therefore does not fall through, and the
+    /// statement after it inside the loop body is unreachable.
+    #[test]
+    fn last_outer_label_in_bare_block_closes_loop_body_fallthrough() {
+        // last OUTER exits the while, so "dead" never executes.
+        let diags = unreachable_diags("OUTER: while (1) { { last OUTER; } print \"dead\"; last; }");
+        assert!(
+            has_pl406(&diags),
+            "last OUTER escapes the bare block; the sibling inside the loop body \
+             must be PL406: {diags:?}"
+        );
+    }
+
+    /// `redo LABEL` targeting a labeled bare block restarts the block from the
+    /// beginning, creating an infinite loop. The statement after the labeled
+    /// block is unreachable.
+    #[test]
+    fn redo_own_label_bare_block_closes_following_sibling() {
+        let diags = unreachable_diags("R: { redo R; } print \"x\";");
+        assert!(
+            has_pl406(&diags),
+            "redo R restarts the R block forever; the sibling after it must be PL406: {diags:?}"
+        );
+    }
+
+    /// `redo` without a label in a bare block also creates an infinite loop
+    /// (one-shot loops have no next iteration to `redo` into other than
+    /// themselves). The following sibling is unreachable.
+    #[test]
+    fn redo_unlabeled_bare_block_closes_following_sibling() {
+        let diags = unreachable_diags("{ redo; } print \"y\";");
+        assert!(
+            has_pl406(&diags),
+            "redo in an unlabeled bare block is an infinite loop; the following \
+             sibling must be PL406: {diags:?}"
+        );
+    }
+
+    /// `next OUTER` inside a bare block targets the outer loop's next
+    /// iteration, not the bare block itself. The bare block therefore does not
+    /// fall through, and the sibling after it inside the loop body is
+    /// unreachable.
+    #[test]
+    fn next_outer_label_in_bare_block_closes_loop_body_fallthrough() {
+        let diags = unreachable_diags("OUTER: while (1) { { next OUTER; } print \"dead\"; last; }");
+        assert!(
+            has_pl406(&diags),
+            "next OUTER escapes the bare block; the sibling inside the loop body \
+             must be PL406: {diags:?}"
+        );
+    }
+
+    /// `last DONE` inside a labeled bare block `DONE: { … }` exits the block
+    /// itself (the label matches). The parent still falls through — this is
+    /// the same as unlabeled `last` in an anonymous bare block.
+    #[test]
+    fn last_matching_label_in_bare_block_keeps_parent_fallthrough() {
+        let diags = unreachable_diags("DONE: { last DONE; } print \"after\";");
+        assert!(
+            !has_pl406(&diags),
+            "last DONE exits the DONE block itself; the sibling after it must \
+             remain reachable: {diags:?}"
+        );
+    }
+
+    /// `next DONE` inside a labeled bare block `DONE: { … }` skips to the
+    /// end of the block (there is no next iteration in a one-shot loop), so
+    /// the parent falls through — same as unlabeled `next`.
+    #[test]
+    fn next_matching_label_in_bare_block_keeps_parent_fallthrough() {
+        let diags = unreachable_diags("DONE: { next DONE; } print \"after\";");
+        assert!(
+            !has_pl406(&diags),
+            "next DONE exits the DONE block itself; the sibling after it must \
+             remain reachable: {diags:?}"
+        );
     }
 }
