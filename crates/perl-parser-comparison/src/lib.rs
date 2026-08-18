@@ -1,36 +1,27 @@
-//! Differential parser test harness for v1/v2/v3 Perl parsers.
+//! Differential parser test harness for exact current, historical, and native
+//! Perl parser subjects.
 //!
-//! This crate provides a structured harness for measuring how each of the three
-//! perl-lsp parsers handles constructs that historically defeated tree-sitter
-//! (documented in `docs/articles/research/TREE_SITTER_BREAKAGE.md`).
+//! Native Tree-sitter grammars are feature-isolated because the current
+//! upstream package and historical vendored snapshot export the same C symbol.
+//! A single binary may therefore select exactly one native grammar subject:
 //!
-//! # Design
+//! ```text
+//! default / historical
+//!   cargo test -p perl-parser-comparison
 //!
-//! Each test case records a [`Verdict`] for each parser - not a pass/fail bit,
-//! but a *category* of outcome: `Correct`, `WrongButPlausible`, `SilentlyEmpty`,
-//! `Errors`, or `Crashes`.  The suite asserts that each parser produces its
-//! *expected* verdict.  When a parser improves (or regresses) the expected
-//! verdict must be updated intentionally, making the disagreement table the
-//! durable artifact.
-//!
-//! # Parsers
-//!
-//! | Label | Crate | Description |
-//! |-------|-------|-------------|
-//! | v1 | `tree-sitter-perl-c` | C tree-sitter FFI binding |
-//! | v2 | `perl-parser-pest` | Pest/PEG legacy parser |
-//! | v3 | `perl-parser-core` | Recursive-descent production parser |
-//!
-//! # Usage
-//!
-//! ```no_run
-//! use perl_parser_comparison::{parse_v1, parse_v2, parse_v3, Verdict};
-//!
-//! let src = "my $x = 42;";
-//! assert_eq!(parse_v1(src).verdict, Verdict::Correct);
-//! assert_eq!(parse_v2(src).verdict, Verdict::Correct);
-//! assert_eq!(parse_v3(src).verdict, Verdict::Correct);
+//! current upstream
+//!   cargo test -p perl-parser-comparison \
+//!     --no-default-features --features current-upstream
 //! ```
+//!
+//! Grammar exclusivity is enforced by per-binary feature selection: every
+//! linking build (tests, bins, CI lanes) enables exactly one grammar feature,
+//! and the historical-only targets are gated with `required-features`. The
+//! workspace `--all-features` pass is check-only (no linking), so both modules
+//! may type-check together there; any attempt to *link* both grammars into one
+//! binary still fails loudly with a duplicate native symbol. The
+//! current-upstream adapter never falls back to the historical grammar
+//! regardless of feature combination.
 
 #![deny(unreachable_pub)]
 #![warn(rust_2018_idioms)]
@@ -45,12 +36,27 @@
 // Tests in this crate use assertion macros to preserve compact verdict receipts.
 #![cfg_attr(test, allow(clippy::panic))]
 
+#[cfg(feature = "historical")]
 pub mod corpus_walker;
+#[cfg(feature = "current-upstream")]
+pub mod current_upstream;
+#[cfg(feature = "historical")]
 pub mod harness;
+#[cfg(feature = "historical")]
 pub mod outcomes;
 
+#[cfg(feature = "historical")]
 pub use corpus_walker::{
     AggregateStats, DisagreementKind, FileRecord, classify, format_report, walk_corpora,
 };
+#[cfg(feature = "current-upstream")]
+pub use current_upstream::{
+    BoundedSubjectText, CURRENT_UPSTREAM_SUBJECT, CurrentUpstreamAdapter,
+    CurrentUpstreamAdapterError, CurrentUpstreamParse, CurrentUpstreamParseMode,
+    CurrentUpstreamPinError, CurrentUpstreamQueryKind, CurrentUpstreamSubjectManifest,
+    SUBJECT_MANIFEST_TOML, validate_exact_package_requirement,
+};
+#[cfg(feature = "historical")]
 pub use harness::{ParseResult, parse_v1, parse_v2, parse_v3};
+#[cfg(feature = "historical")]
 pub use outcomes::Verdict;

@@ -159,6 +159,12 @@ fn generate_test_receipts(artifacts_dir: &Path, test_threads: u32) -> Result<Tes
         "--workspace",
         "--exclude",
         "xtask",
+        // perl-parser-comparison cannot join the --all-features run: its
+        // historical and current-upstream Tree-sitter grammar features export
+        // the same native symbol, so linking both into one test binary fails.
+        // It is tested separately below, one grammar feature at a time (#7255).
+        "--exclude",
+        "perl-parser-comparison",
         "--all-features",
         "--no-fail-fast",
         "--",
@@ -173,7 +179,53 @@ fn generate_test_receipts(artifacts_dir: &Path, test_threads: u32) -> Result<Tes
     .run()
     .context("Failed to execute cargo test")?;
 
-    let output = String::from_utf8_lossy(&result.stdout);
+    // One grammar feature per invocation; see the exclusion above.
+    let comparison_historical = cmd!(
+        "cargo",
+        "+stable",
+        "test",
+        "-p",
+        "perl-parser-comparison",
+        "--no-fail-fast",
+        "--",
+        "--test-threads",
+        &threads_str
+    )
+    .env("RUST_TEST_THREADS", &threads_str)
+    .env("LC_ALL", "C")
+    .stderr_to_stdout()
+    .stdout_capture()
+    .unchecked()
+    .run()
+    .context("Failed to execute cargo test for perl-parser-comparison (historical)")?;
+    let comparison_upstream = cmd!(
+        "cargo",
+        "+stable",
+        "test",
+        "-p",
+        "perl-parser-comparison",
+        "--no-default-features",
+        "--features",
+        "current-upstream",
+        "--no-fail-fast",
+        "--",
+        "--test-threads",
+        &threads_str
+    )
+    .env("RUST_TEST_THREADS", &threads_str)
+    .env("LC_ALL", "C")
+    .stderr_to_stdout()
+    .stdout_capture()
+    .unchecked()
+    .run()
+    .context("Failed to execute cargo test for perl-parser-comparison (current-upstream)")?;
+
+    let output = format!(
+        "{}\n{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&comparison_historical.stdout),
+        String::from_utf8_lossy(&comparison_upstream.stdout)
+    );
 
     // Write raw output
     fs::write(&test_output_path, output.as_bytes()).with_context(|| {
@@ -182,9 +234,11 @@ fn generate_test_receipts(artifacts_dir: &Path, test_threads: u32) -> Result<Tes
 
     let elapsed = start.elapsed();
     println!(
-        "Tests completed in {:.1}s (exit code: {})",
+        "Tests completed in {:.1}s (exit codes: workspace={}, comparison-historical={}, comparison-current-upstream={})",
         elapsed.as_secs_f64(),
-        result.status.code().unwrap_or(-1)
+        result.status.code().unwrap_or(-1),
+        comparison_historical.status.code().unwrap_or(-1),
+        comparison_upstream.status.code().unwrap_or(-1)
     );
 
     // Parse test output
