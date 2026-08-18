@@ -663,6 +663,7 @@ fn frontmatter_metadata_chars(text: &str) -> usize {
     0
 }
 
+#[cfg(test)]
 fn route_targets(text: &str) -> Vec<String> {
     edge_targets(&route_observations(text))
 }
@@ -732,6 +733,7 @@ fn missing_route_target_message(
     )
 }
 
+#[cfg(test)]
 fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
     edge_targets(&route_line_observations(line, 1, in_route_section))
 }

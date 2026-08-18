@@ -1009,10 +1009,10 @@ impl HeadLineExtents {
             // phantom deletion and silently drop its findings — fail-open, the one
             // direction this filter must never take. `C` leaves its source in place;
             // only `D` and `R` remove one.
-            if entry.status.starts_with(['D', 'R']) {
-                if let Some(old_path) = entry.old_path.as_deref() {
-                    removed.insert(normalize_repo_relative_path(old_path));
-                }
+            if entry.status.starts_with(['D', 'R'])
+                && let Some(old_path) = entry.old_path.as_deref()
+            {
+                removed.insert(normalize_repo_relative_path(old_path));
             }
         }
         // A path some other entry adds back still exists at head and keeps its extent.
@@ -1091,6 +1091,7 @@ fn normalize_suppression_match_path(path: &str) -> String {
         .map_or_else(|| normalized.to_string(), |index| normalized[index..].to_string())
 }
 
+#[cfg(test)]
 fn pr_evidence_packet(
     options: &PrEvidenceOptions,
     changed_files: &[String],
@@ -2325,6 +2326,7 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
         .with_context(|| format!("bad base/head revision {rev:?}"))
 }
 
+#[cfg(test)]
 fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     Ok(resolve_committed_diff(repo, base, head)?.changed_paths)
 }
@@ -2827,7 +2829,7 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_files_rank_repo_seams_across_path_shapes() {
-        let seams = vec![
+        let seams = [
             json!({"file": "crates/perl-parser/src/lib.rs"}),
             json!({"path": "crates/perl-lexer/src/lib.rs"}),
             json!({"location": {"path": r"crates\perl-parser\src\lib.rs"}}),
@@ -2850,7 +2852,7 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_gap_kinds_rank_repo_seams_across_kind_shapes() {
-        let seams = vec![
+        let seams = [
             json!({"kind": "ReceiptParsing"}),
             json!({"gap_kind": "BoundaryPredicate"}),
             json!({"classification": ["StaticUnknown", "NoStaticPath"]}),
@@ -5048,7 +5050,7 @@ esac
     #[cfg(not(windows))]
     fn write_large_output_script(dir: &Path, byte_count: usize) -> Result<PathBuf> {
         // Round up to whole megabytes so dd's block arithmetic is exact.
-        let mb = (byte_count + 1_048_575) / 1_048_576;
+        let mb = byte_count.div_ceil(1_048_576);
         let path = dir.join("gen_large.sh");
         fs::write(
             &path,
