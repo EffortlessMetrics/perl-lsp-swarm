@@ -1397,14 +1397,25 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
 
   test('resolves a successful release response and clears the pending timer', async () => {
     const seams = downloader as unknown as DownloaderSeams;
-    const release = { tag_name: 'v1.2.3', assets: [] };
+    const release = {
+      tag_name: 'v1.2.3',
+      prerelease: false,
+      assets: [
+        {
+          name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+          browser_download_url:
+            'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+        },
+      ],
+    };
     const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify(release));
+        // The latest channel now fetches the release list; the selector picks.
+        response.emit('data', JSON.stringify([release]));
         response.emit('end');
       });
       return request;
@@ -1453,7 +1464,17 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     stableChannelConfig();
     respondWithReleaseList(seams, [
       { tag_name: 'v2.0.0-rc.1', prerelease: true, assets: [] },
-      { tag_name: 'v1.9.0', prerelease: false, assets: [] },
+      {
+        tag_name: 'v1.9.0',
+        prerelease: false,
+        assets: [
+          {
+            name: 'perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+            browser_download_url:
+              'https://example.invalid/perllsp-1.9.0-x86_64-unknown-linux-gnu.tar.gz',
+          },
+        ],
+      },
     ]);
 
     await expect(seams.getLatestRelease(1000)).resolves.toMatchObject({ tag_name: 'v1.9.0' });
@@ -1475,7 +1496,12 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     stableChannelConfig();
     respondWithReleaseList(seams, [{ tag_name: 'v1.9.0', assets: [] }]);
 
-    await expect(seams.getLatestRelease(1000)).rejects.toThrow('No stable release found');
+    // The omitted prerelease flag is unresolved metadata: the adapter maps it
+    // fail-closed, the record then disagrees with its parsed semver, and the
+    // selector refuses the whole input rather than guessing.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'Managed release metadata is not proven',
+    );
   });
 
   test('reports a missing release when GitHub answers 404', async () => {
@@ -1573,13 +1599,20 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       capturedUrl = url as string;
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: [] }));
+        response.emit(
+          'data',
+          JSON.stringify({ tag_name: 'v1.2.3', prerelease: false, assets: [] }),
+        );
         response.emit('end');
       });
       return request;
     });
 
-    await seams.getLatestRelease(1000);
+    // The selector enforces the exact configured tag: a 200 echo whose
+    // tag_name does not match the configuration is refused, not normalized.
+    await expect(seams.getLatestRelease(1000)).rejects.toThrow(
+      'No compatible managed release found',
+    );
 
     expect(capturedUrl).toBe(
       'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases/tags/' +
@@ -1674,7 +1707,22 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       capturedOptions = options as { headers?: Record<string, string> };
       (callback as (value: unknown) => void)(response);
       process.nextTick(() => {
-        response.emit('data', JSON.stringify({ tag_name: 'v1.2.3', assets: [] }));
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
         response.emit('end');
       });
       return request;
