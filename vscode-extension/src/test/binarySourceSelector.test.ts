@@ -267,5 +267,22 @@ test('fixed facts produce deterministic decision content', () => {
     allowManagedInstall: true,
   };
 
-  expect(JSON.stringify(selectBinarySource(input))).toBe(JSON.stringify(selectBinarySource(input)));
+  expect(selectBinarySource(input)).toEqual({
+    kind: 'selected',
+    sourceRole: 'packaged_candidate',
+    compatibility: 'exact_match',
+    reason: 'packaged_candidate_selected',
+    target: { ...target },
+    candidate: candidate('packaged_candidate'),
+    detail: 'packaged_candidate is available with canonical exact_match evidence.',
+  });
+
+  const withLowerPriorityCandidates: BinarySourceSelectionInput = {
+    ...input,
+    managedCandidate: candidate('managed_candidate'),
+    externalPathCandidate: candidate('external_path_legacy'),
+  };
+  expect(JSON.stringify(selectBinarySource(withLowerPriorityCandidates))).toBe(
+    JSON.stringify(selectBinarySource(input)),
+  );
 });
