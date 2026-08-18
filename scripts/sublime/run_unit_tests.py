@@ -80,9 +80,15 @@ def _dump_process_state() -> None:
     """
     identity = [f"pid={os.getpid()}"]
     if hasattr(os, "getpgrp"):
-        identity.append(f"pgid={os.getpgrp()}")
+        try:
+            identity.append(f"pgid={os.getpgrp()}")
+        except OSError:
+            pass
     if hasattr(os, "getsid"):
-        identity.append(f"sid={os.getsid(0)}")
+        try:
+            identity.append(f"sid={os.getsid(0)}")
+        except OSError:
+            pass
     print(" ".join(identity))
     try:
         with open("/proc/self/wchan", encoding="utf-8") as handle:
@@ -175,7 +181,10 @@ def _diagnose(package: str) -> None:
          "Get-Process | Where-Object {$_.Name -match 'sublime|plugin_host'}"
          " | Format-Table Id,Name,Path -AutoSize | Out-String"],
     ]:
-        alive = subprocess.run(probe, capture_output=True, text=True)
+        try:
+            alive = subprocess.run(probe, capture_output=True, text=True)
+        except OSError:
+            continue
         if alive.returncode == 0:
             hits = "\n".join(
                 line
