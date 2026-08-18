@@ -15,7 +15,7 @@ fn compatibility_types_are_the_canonical_types() -> Result<(), Box<dyn std::erro
     let result: canonical::ReparseResult = compatibility::apply_edits(&mut state, &[edit])?;
 
     assert_eq!(state.source(), "my $x = 2;");
-    assert_eq!(result.parse_output.ast, state.parse_output().ast);
+    assert_eq!(result.parse_output().ast, state.parse_output().ast);
     Ok(())
 }
 
@@ -34,6 +34,6 @@ fn canonical_values_flow_through_the_compatibility_entry_point()
     let result: compatibility::ReparseResult = compatibility::apply_edits(&mut state, &[edit])?;
 
     assert_eq!(state.source(), "my $x = 3;");
-    assert_eq!(result.parse_output.ast, state.parse_output().ast);
+    assert_eq!(result.parse_output().ast, state.parse_output().ast);
     Ok(())
 }

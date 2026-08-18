@@ -1,5 +1,5 @@
 use crate::incremental::{
-    IncrementalState,
+    IncrementalState, ParseSnapshotStrategy,
     diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult},
     edit::Edit,
     lex::{capture_live_checkpoint, lex_from_live_checkpoint, lex_source_with_checkpoints},
@@ -90,7 +90,7 @@ pub(crate) fn apply_single_edit(
 }
 
 pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult> {
-    state.refresh_parse_output();
+    state.refresh_parse_output(ParseSnapshotStrategy::IncrementalFullFallback)?;
     let source_len = state.source().len();
     let lexed = lex_source_with_checkpoints(state.source(), state.line_index());
     state.replace_lex_state(lexed.tokens, lexed.checkpoints);
@@ -105,7 +105,7 @@ pub(crate) fn full_reparse(state: &mut IncrementalState) -> Result<ReparseResult
 
     Ok(ReparseResult {
         changed_ranges: vec![0..source_len],
-        parse_output: state.parse_output().clone(),
+        snapshot: state.snapshot().clone(),
         diagnostics: vec![],
         lex_restart,
         reparsed_bytes: source_len,

@@ -1,5 +1,6 @@
 use crate::incremental::checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
 use crate::incremental::lex::lex_source_with_checkpoints;
+use crate::incremental::snapshot::{ParseGeneration, ParseSnapshot, ParseSnapshotStrategy};
 use perl_lexer::Token;
 use perl_line_index::LineIndex;
 use perl_parser_core::ast::{Node, NodeKind};
@@ -27,10 +28,10 @@ pub struct IncrementalStateReadView {
     pub lex_checkpoints: Vec<LexCheckpoint>,
     /// Parser restart summaries for the current committed parse output.
     pub parse_checkpoints: Vec<ParseCheckpoint>,
-    /// Authoritative recovery-aware parser output for this generation.
-    pub parse_output: ParseOutput,
-    /// Parsed AST compatibility mirror.
-    pub ast: Node,
+    /// Generation-bound authoritative parser snapshot. This is the sole owned
+    /// authority for generation, exact source identity, disposition, and
+    /// native parser output; no mirrored `parse_output`/`ast` copies exist.
+    pub snapshot: ParseSnapshot,
     /// Current committed lexer token stream.
     pub tokens: Vec<Token>,
 }
@@ -91,9 +92,14 @@ impl IncrementalState {
         let line_index = LineIndex::new(&source);
         let mut parser = Parser::new(&source);
         let parse_output = parser.parse_with_recovery();
-        let ast = parse_output.ast.clone();
+        let snapshot = ParseSnapshot::from_output(
+            &source,
+            ParseGeneration::INITIAL,
+            ParseSnapshotStrategy::Fresh,
+            parse_output,
+        );
         let lexed = lex_source_with_checkpoints(&source, &line_index);
-        let parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
+        let parse_checkpoints = Self::create_parse_checkpoints(&snapshot.parse_output().ast);
 
         Self {
             read_view: IncrementalStateReadView {
@@ -102,8 +108,7 @@ impl IncrementalState {
                 line_index,
                 lex_checkpoints: lexed.checkpoints,
                 parse_checkpoints,
-                parse_output,
-                ast,
+                snapshot,
                 tokens: lexed.tokens,
             },
         }
@@ -139,17 +144,32 @@ impl IncrementalState {
         &self.read_view.parse_checkpoints
     }
 
-    /// Authoritative recovery-aware parser output for this generation.
+    /// Monotonic identity for the committed source generation.
+    #[must_use]
+    pub fn generation(&self) -> ParseGeneration {
+        self.read_view.snapshot.generation()
+    }
+
+    /// Generation-bound authoritative parser snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> &ParseSnapshot {
+        &self.read_view.snapshot
+    }
+
+    /// Authoritative recovery-aware parser output for this generation,
+    /// projected from the generation-bound snapshot.
     #[must_use]
     pub fn parse_output(&self) -> &ParseOutput {
-        &self.read_view.parse_output
+        self.read_view.snapshot.parse_output()
     }
 
     /// Compatibility AST view for the current generation.
-    #[deprecated(note = "Use parse_output().ast; this compatibility view will be removed.")]
+    #[deprecated(
+        note = "Use snapshot().parse_output().ast; this compatibility view will be removed."
+    )]
     #[must_use]
     pub fn ast(&self) -> &Node {
-        &self.read_view.parse_output.ast
+        &self.read_view.snapshot.parse_output().ast
     }
 
     /// Current committed lexer token stream.
@@ -193,14 +213,26 @@ impl IncrementalState {
 
     /// Refresh the authoritative parser output from the current source.
     ///
-    /// The compatibility AST and parse checkpoints are updated from the same
-    /// recovered parse so the state cannot expose mixed parse generations.
-    pub(crate) fn refresh_parse_output(&mut self) {
+    /// The snapshot and parse checkpoints are updated from the same recovered
+    /// parse so the state cannot expose mixed generations. Generation
+    /// advancement is checked: counter exhaustion fails closed before any
+    /// state is committed.
+    pub(crate) fn refresh_parse_output(
+        &mut self,
+        strategy: ParseSnapshotStrategy,
+    ) -> anyhow::Result<()> {
+        let generation = self
+            .generation()
+            .checked_next()
+            .ok_or_else(|| anyhow::anyhow!("parse generation counter exhausted"))?;
         let mut parser = Parser::new(self.source());
         let parse_output = parser.parse_with_recovery();
-        self.read_view.parse_checkpoints = Self::create_parse_checkpoints(&parse_output.ast);
-        self.read_view.ast = parse_output.ast.clone();
-        self.read_view.parse_output = parse_output;
+        let snapshot =
+            ParseSnapshot::from_output(self.source(), generation, strategy, parse_output);
+        self.read_view.parse_checkpoints =
+            Self::create_parse_checkpoints(&snapshot.parse_output().ast);
+        self.read_view.snapshot = snapshot;
+        Ok(())
     }
 
     pub(crate) fn create_parse_checkpoints(ast: &Node) -> Vec<ParseCheckpoint> {

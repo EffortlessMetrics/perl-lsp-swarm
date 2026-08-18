@@ -6,12 +6,12 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Current boundary
 
-- Authority digest: `bfa41ebc22eb1f167f9e895df526933b1834526474b482106f57b4a95670d23b`
+- Authority digest: `7a50cf6745a219af32fea45bc3eaf8ed009a47c42b264412b6ae95b67ea604e3`
 - Digest input: `full_normalized_ledger`
 - Public modules: 14
 - Public re-exports: 139
 - Cargo features: 23
-- Direct dependencies: 18
+- Direct dependencies: 19
 - Workspace consumers: 9
 
 ## Dependency direction

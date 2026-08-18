@@ -10,14 +10,17 @@
 use perl_parser::{Edit, IncrementalState, apply_edits};
 
 /// Regression guard: IncrementalState must expose ast as a public field.
-/// Previously, state.parse() returned the AST; now it's accessed via state.ast.
+/// Previously, state.parse() returned the AST; now it's accessed via state.snapshot().parse_output().ast.
 #[test]
 fn test_incremental_state_ast_field_exposed() -> Result<(), Box<dyn std::error::Error>> {
     let code = "my $x = 1;";
     let state = IncrementalState::new(code.to_string());
 
     // The ast field must be accessible directly
-    assert!(matches!(state.ast.kind, perl_parser::NodeKind::Program { .. }));
+    assert!(matches!(
+        state.snapshot().parse_output().ast.kind,
+        perl_parser::NodeKind::Program { .. }
+    ));
 
     Ok(())
 }
@@ -29,7 +32,10 @@ fn test_incremental_state_new_takes_string() -> Result<(), Box<dyn std::error::E
     let code = String::from("sub foo { }");
     let state = IncrementalState::new(code);
 
-    assert!(matches!(state.ast.kind, perl_parser::NodeKind::Program { .. }));
+    assert!(matches!(
+        state.snapshot().parse_output().ast.kind,
+        perl_parser::NodeKind::Program { .. }
+    ));
 
     Ok(())
 }
@@ -41,7 +47,10 @@ fn test_incremental_state_new_with_to_string() -> Result<(), Box<dyn std::error:
     let code = "my @arr = (1, 2, 3);";
     let state = IncrementalState::new(code.to_string());
 
-    assert!(matches!(state.ast.kind, perl_parser::NodeKind::Program { .. }));
+    assert!(matches!(
+        state.snapshot().parse_output().ast.kind,
+        perl_parser::NodeKind::Program { .. }
+    ));
 
     Ok(())
 }
@@ -102,35 +111,41 @@ fn test_apply_edits_empty_slice() -> Result<(), Box<dyn std::error::Error>> {
 
     // Applying zero edits should be a no-op
     let _result = apply_edits(&mut state, empty_edits)?;
-    assert!(matches!(state.ast.kind, perl_parser::NodeKind::Program { .. }));
+    assert!(matches!(
+        state.snapshot().parse_output().ast.kind,
+        perl_parser::NodeKind::Program { .. }
+    ));
 
     Ok(())
 }
 
 /// Regression guard: IncrementalState must initialize ast correctly even with malformed code.
-/// The parser uses recovery, so state.ast should always be set (Program or Error).
+/// The parser uses recovery, so state.snapshot().parse_output().ast should always be set (Program or Error).
 #[test]
 fn test_incremental_state_ast_always_set() -> Result<(), Box<dyn std::error::Error>> {
     let code = "if ("; // Incomplete, parser should recover
     let state = IncrementalState::new(code.to_string());
 
-    // state.ast should always be set, regardless of parse success
+    // state.snapshot().parse_output().ast should always be set, regardless of parse success
     // The parser uses recovery to produce a valid AST
-    assert!(matches!(state.ast.kind, perl_parser::NodeKind::Program { .. }));
+    assert!(matches!(
+        state.snapshot().parse_output().ast.kind,
+        perl_parser::NodeKind::Program { .. }
+    ));
 
     Ok(())
 }
 
 /// Regression guard: ast field must not require mutable access to read.
-/// Ensure state.ast is immutable and accessible on a borrowed state.
+/// Ensure state.snapshot().parse_output().ast is immutable and accessible on a borrowed state.
 #[test]
 fn test_incremental_state_ast_immutable_access() -> Result<(), Box<dyn std::error::Error>> {
     let code = "my $x = 1;";
     let state = IncrementalState::new(code.to_string());
 
     // Should be able to read ast multiple times without mut
-    let kind1 = &state.ast.kind;
-    let kind2 = &state.ast.kind;
+    let kind1 = &state.snapshot().parse_output().ast.kind;
+    let kind2 = &state.snapshot().parse_output().ast.kind;
 
     assert_eq!(std::mem::discriminant(kind1), std::mem::discriminant(kind2));
 
@@ -205,7 +220,7 @@ fn test_incremental_state_fields_accessible() -> Result<(), Box<dyn std::error::
     // All these fields must be accessible
     let _ = &state.rope;
     let _ = &state.line_index;
-    let _ = &state.ast;
+    let _ = &state.snapshot().parse_output().ast;
     let _ = &state.source;
     let _ = &state.tokens;
 
@@ -257,7 +272,10 @@ fn test_incremental_state_empty_source() -> Result<(), Box<dyn std::error::Error
     let state = IncrementalState::new(String::new());
 
     // Even empty source should create an AST node (possibly Program or Error)
-    assert!(!matches!(state.ast.kind, perl_parser::NodeKind::Error { .. }));
+    assert!(!matches!(
+        state.snapshot().parse_output().ast.kind,
+        perl_parser::NodeKind::Error { .. }
+    ));
 
     Ok(())
 }
@@ -288,7 +306,10 @@ fn test_incremental_state_complex_code() -> Result<(), Box<dyn std::error::Error
 
     let state = IncrementalState::new(code.to_string());
 
-    assert!(matches!(state.ast.kind, perl_parser::NodeKind::Program { .. }));
+    assert!(matches!(
+        state.snapshot().parse_output().ast.kind,
+        perl_parser::NodeKind::Program { .. }
+    ));
 
     Ok(())
 }

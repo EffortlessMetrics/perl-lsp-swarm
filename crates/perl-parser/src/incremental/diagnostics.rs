@@ -1,3 +1,4 @@
+use crate::incremental::snapshot::ParseSnapshot;
 use lsp_types::Diagnostic;
 use perl_parser_core::error::ParseOutput;
 use std::ops::Range;
@@ -47,16 +48,18 @@ impl LexRestartReport {
 pub struct ReparseResult {
     /// Byte ranges reparsed or replaced by the selected strategy.
     pub changed_ranges: Vec<Range<usize>>,
-    /// Authoritative native parser output for the current source generation.
+    /// Generation-bound parser snapshot for the committed source.
     ///
-    /// This carries the AST, ordered parser diagnostics, recovery count,
-    /// budget usage, and early-termination state produced by the same
-    /// `Parser::parse_with_recovery` contract used by a fresh parse.
-    pub parse_output: ParseOutput,
+    /// This is the sole owned parser-output authority in the result; read the
+    /// native output through [`Self::parse_output`], which projects from the
+    /// snapshot so the two can never diverge.
+    pub snapshot: ParseSnapshot,
     /// Legacy LSP-shaped diagnostics retained for compatibility.
     ///
-    /// Parser consumers should use [`Self::parse_output`]. LSP projection is a
-    /// transport concern and remains intentionally separate from the native
+    /// This is intentionally an unprojected compatibility slot: it is not a
+    /// lossy byte-to-LSP projection of the native diagnostics. Parser
+    /// consumers should use `snapshot.parse_output().diagnostics`; LSP
+    /// projection is a transport concern and remains separate from the native
     /// parser output contract.
     pub diagnostics: Vec<Diagnostic>,
     /// Lexer restart, fresh-work, and token-retention receipt.
@@ -70,4 +73,51 @@ pub struct ReparseResult {
     pub reused_tokens: usize,
     /// Total token count in the resulting incremental state.
     pub token_count: usize,
+}
+
+impl ReparseResult {
+    /// Native recovery-aware parser output for the current source generation,
+    /// projected from the generation-bound snapshot.
+    #[must_use]
+    pub fn parse_output(&self) -> &ParseOutput {
+        self.snapshot.parse_output()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::incremental::{ParseGeneration, ParseSnapshotStrategy};
+    use perl_parser_core::parser::Parser;
+
+    #[test]
+    fn native_snapshot_diagnostics_are_authoritative_over_legacy_lsp_slot() {
+        let source = "my $x = ;";
+        let parse_output = Parser::new(source).parse_with_recovery();
+        assert!(!parse_output.diagnostics.is_empty());
+        let snapshot = ParseSnapshot::from_output(
+            source,
+            ParseGeneration::INITIAL,
+            ParseSnapshotStrategy::Fresh,
+            parse_output,
+        );
+        let result = ReparseResult {
+            changed_ranges: Vec::new(),
+            snapshot,
+            diagnostics: Vec::new(),
+            lex_restart: LexRestartReport {
+                strategy: LexRestartStrategy::Unchanged,
+                restart_byte: source.len(),
+                relexed_bytes: 0,
+                reused_prefix_tokens: 0,
+                reused_suffix_tokens: 0,
+            },
+            reparsed_bytes: 0,
+            reused_tokens: 0,
+            token_count: 0,
+        };
+
+        assert!(!result.parse_output().diagnostics.is_empty());
+        assert!(result.diagnostics.is_empty());
+    }
 }

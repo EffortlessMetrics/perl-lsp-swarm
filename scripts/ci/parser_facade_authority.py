@@ -206,6 +206,11 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
         "diagnostics::LexRestartStrategy",
         "diagnostics::ReparseResult",
         "edit::Edit",
+        "snapshot::ParseGeneration",
+        "snapshot::ParseSnapshot",
+        "snapshot::ParseSnapshotStrategy",
+        "snapshot::ParseSnapshotValidationError",
+        "snapshot::ParseTerminalDisposition",
         "state::IncrementalState",
     ]:
         raise ValueError("canonical incremental export marker differs from reviewed authority")

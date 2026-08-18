@@ -173,6 +173,23 @@
       "reason": "Prove live lexer checkpoint restart preserves token and span parity across stateful edits.",
       "disposition": "execute",
       "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.parse_snapshot",
+      "package": "perl-parser",
+      "target": "incremental_parse_snapshot",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#7001",
+      "reason": "Prove generation-bound ParseSnapshot identity, disposition, and validation across committed incremental generations.",
+      "disposition": "execute",
+      "boundedness": "focused"
     }
   ]
 }

@@ -48,10 +48,6 @@ fn recovered_parser_output_satisfies_the_same_structural_oracle() {
 
 #[cfg(feature = "incremental")]
 #[test]
-#[expect(
-    deprecated,
-    reason = "the contract test deliberately targets the deprecated compatibility API until its replacement lands"
-)]
 fn incremental_edit_output_satisfies_the_same_structural_oracle()
 -> Result<(), Box<dyn std::error::Error>> {
     use perl_parser::{Edit, IncrementalState, apply_edits};
@@ -70,7 +66,11 @@ fn incremental_edit_output_satisfies_the_same_structural_oracle()
     assert_eq!(state.source, "my $x = 2; print $x;");
     assert_valid(
         &state.source,
-        validate_ast(&state.source, &state.ast, AstInvariantOptions::default()),
+        validate_ast(
+            &state.source,
+            &state.snapshot().parse_output().ast,
+            AstInvariantOptions::default(),
+        ),
         "incremental edit",
     );
 
