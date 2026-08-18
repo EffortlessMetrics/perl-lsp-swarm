@@ -114,7 +114,8 @@ fn recovery_registry_is_generated_from_the_canonical_recovery_set() {
 /// classified existing row therefore turns red here instead of becoming
 /// trusted input to downstream consumers.
 #[test]
-fn every_kind_reconciles_observed_structure_with_its_policy_row() {
+fn every_kind_reconciles_observed_structure_with_its_policy_row()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixtures = node_kind_fixtures();
 
     let fixture_names =
@@ -128,18 +129,18 @@ fn every_kind_reconciles_observed_structure_with_its_policy_row() {
     for fixture in &fixtures {
         let kind_name = fixture.sample.kind.kind_name();
         let policy = ast_node_policy(kind_name)
-            .unwrap_or_else(|| panic!("{kind_name} has a fixture but no policy row"));
+            .ok_or_else(|| format!("{kind_name} has a fixture but no policy row"))?;
 
         // Observe the fully populated sample through the canonical traversal.
-        let mut observed: Vec<&str> = Vec::new();
-        fixture.sample.try_for_each_child_with_field(|field, _child| {
-            observed.push(
-                field
-                    .unwrap_or_else(|| panic!("{kind_name} child emission lost its field identity"))
-                    .name(),
-            );
+        let mut observed: Vec<Option<&str>> = Vec::new();
+        let _ = fixture.sample.try_for_each_child_with_field(|field, _child| {
+            observed.push(field.map(|field| field.name()));
             ControlFlow::<()>::Continue(())
         });
+        let mut observed = observed
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| format!("{kind_name} child emission lost its field identity"))?;
         observed.sort_unstable();
         observed.dedup();
 
@@ -211,6 +212,7 @@ fn every_kind_reconciles_observed_structure_with_its_policy_row() {
             );
         }
     }
+    Ok(())
 }
 
 #[test]
