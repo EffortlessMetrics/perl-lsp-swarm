@@ -1,5 +1,9 @@
 # Octopus Cluster
 
+<!-- authority-status:v1 -->
+> **Status: historical.** Current authority: [Development method](../agents/DEVELOPMENT_METHOD.md).
+> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
 > For the design philosophy behind the architecture described here, see [ORCHESTRATION_DOCTRINE.md](ORCHESTRATION_DOCTRINE.md).
 > For the 7-gate model with skip criteria and triangulation, see [PIPELINE_GATES.md](PIPELINE_GATES.md).
 > For the live-truth principle that governs label semantics, see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).

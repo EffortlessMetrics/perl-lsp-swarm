@@ -42,9 +42,14 @@ the proof, since a reviewer's push carries none — or replace it and say why in
 thread. Step 8 of `address-review-comments` covers the same case: a reviewer-applied
 repair makes a new authored candidate whose affected review dimensions are invalid.
 
-Recreating a closed PR is a different matter: GitHub refuses to reopen a pull request
-whose branch was force-pushed or rebuilt, so a rebuilt claim needs a fresh PR that
-names what it supersedes. Prefer not rebuilding at all — see the currentness contract.
+Recreating a closed PR is a different matter, and the first move is to try reopening
+it. A closed PR whose head and base branches both still exist normally reopens even
+after the head was force-pushed or rewritten, and reopening preserves the review record
+— findings, dispositions, and the conversation — that a fresh PR discards. Open a new PR
+only when reopening is actually refused: the head or base branch was deleted, the head
+was rebuilt as an unrelated branch, or GitHub rejects the transition for its own
+reasons. Then name what it supersedes and carry forward only findings still verified
+against the new candidate. Prefer not rebuilding at all — see the currentness contract.
 
 ## Routes
 

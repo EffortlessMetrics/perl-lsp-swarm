@@ -1009,10 +1009,10 @@ impl HeadLineExtents {
             // phantom deletion and silently drop its findings — fail-open, the one
             // direction this filter must never take. `C` leaves its source in place;
             // only `D` and `R` remove one.
-            if entry.status.starts_with(['D', 'R']) {
-                if let Some(old_path) = entry.old_path.as_deref() {
-                    removed.insert(normalize_repo_relative_path(old_path));
-                }
+            if entry.status.starts_with(['D', 'R'])
+                && let Some(old_path) = entry.old_path.as_deref()
+            {
+                removed.insert(normalize_repo_relative_path(old_path));
             }
         }
         // A path some other entry adds back still exists at head and keeps its extent.
@@ -1091,6 +1091,7 @@ fn normalize_suppression_match_path(path: &str) -> String {
         .map_or_else(|| normalized.to_string(), |index| normalized[index..].to_string())
 }
 
+#[cfg(test)]
 fn pr_evidence_packet(
     options: &PrEvidenceOptions,
     changed_files: &[String],
@@ -1380,7 +1381,7 @@ fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result
     if current_pr_evidence_has_no_severe_gaps(repo, options)? {
         write_clean_review_comments(repo, options, &root)?;
     } else if let Err(err) = run_ripr_review_comments(repo, options, &root) {
-        write_error_review_comments(repo, options, &root, &err.to_string())?;
+        write_degraded_review_comments(repo, options, &root, &err.to_string())?;
     }
     stamp_review_comments_receipt(repo, options)?;
     validate_review_comments(repo, options, true)?;
@@ -1633,6 +1634,238 @@ fn render_error_review_comments_markdown(packet: &Value) -> String {
         string_field(packet, "head", DEFAULT_HEAD),
         md_escape(warning)
     )
+}
+
+/// Cap on synthesized fallback seam names so one large diff cannot emit an
+/// unbounded receipt.
+const FALLBACK_GUIDANCE_LIMIT: usize = 25;
+
+/// Raw-check classifications the merge gate can block on. Mirrors
+/// `genuine_new_ripr_gap_count` in `quality_gate.rs`, whose blocking count is
+/// `reachable_unrevealed + no_static_path`.
+fn gate_actionable_classification(classification: &str) -> bool {
+    matches!(classification, "reachable_unrevealed" | "no_static_path")
+}
+
+/// Suggested-proof text attached to fallback seam names. The diff-scoped
+/// analysis identifies the seam; only the full review-comments pass derives
+/// analyzer-specific proof suggestions, so this text is deliberately generic.
+fn fallback_suggested_test(classification: &str) -> &'static str {
+    match classification {
+        "reachable_unrevealed" => {
+            "Add a focused test that executes the owner of this changed seam and asserts a discriminating value, so the reachable seam is revealed."
+        }
+        _ => {
+            "Add a focused test that statically exercises the owner of this changed seam. If the seam is a non-executable declaration or a body the analyzer cannot trace to its covering test (ripr#1429 class), say so in the PR instead of adding proof theatre."
+        }
+    }
+}
+
+/// Build named seam comments from the completed diff-scoped raw check when the
+/// review-comments pass itself did not finish (#10054). Returns `None` when the
+/// raw check is unavailable, stale against the requested base, or has no
+/// unsuppressed actionable seam at the head revision, so the caller can fall
+/// back to the plain error receipt.
+fn fallback_guidance_comments(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+) -> Result<Option<(Vec<Value>, usize)>> {
+    let Ok(text) = fs::read_to_string(repo.join(PR_RAW_CHECK_JSON)) else {
+        return Ok(None);
+    };
+    let Ok(packet) = serde_json::from_str::<Value>(&text) else {
+        return Ok(None);
+    };
+    if packet.get("base").and_then(Value::as_str) != Some(options.base.as_str()) {
+        return Ok(None);
+    }
+    let Some(findings) = packet.get("findings").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let Ok(suppressions) = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))
+    else {
+        return Ok(None);
+    };
+    // Best-effort head-revision filter, matching the producer's counted set
+    // (#6260). If the diff cannot be resolved, name without it — the direction
+    // is names ⊇ counted, which stays fail-closed.
+    let head_extents = resolve_committed_diff(repo, &options.base, &options.head)
+        .map(|diff| HeadLineExtents::from_committed_diff(repo, &diff))
+        .ok();
+
+    let mut suppressed = 0usize;
+    let mut seams: Vec<(String, u64, String, Value)> = Vec::new();
+    for finding in findings {
+        // ripr 0.5.x: "classification"; ripr 0.9.x may emit "grip_class" with
+        // "weakly_gripped" folded into the counted reachable_unrevealed bucket
+        // (see ripr_pr_summary_counts). Accept both and name the counted class.
+        let raw_class = finding
+            .get("classification")
+            .and_then(Value::as_str)
+            .or_else(|| finding.get("grip_class").and_then(Value::as_str));
+        let canonical = match raw_class {
+            Some("weakly_gripped") => "reachable_unrevealed",
+            Some(other) => other,
+            None => continue,
+        };
+        if !gate_actionable_classification(canonical) {
+            continue;
+        }
+        if suppression_matches_finding(&suppressions, finding) {
+            suppressed += 1;
+            continue;
+        }
+        if head_extents.as_ref().is_some_and(|extents| extents.finding_is_outside_head(finding)) {
+            continue;
+        }
+        let Some(file) = ripr_finding_path(finding) else { continue };
+        let path = normalize_suppression_match_path(&file);
+        // Without a known anchor the normalized value is still an absolute host
+        // path; never emit CI-runner paths into receipts.
+        if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
+            continue;
+        }
+        let Some(line) = ripr_finding_line(finding) else { continue };
+        let id = finding
+            .get("id")
+            .and_then(Value::as_str)
+            .or_else(|| finding.pointer("/probe/id").and_then(Value::as_str))
+            .or_else(|| finding.pointer("/seam/id").and_then(Value::as_str))
+            .unwrap_or("unknown-seam");
+        let family = finding
+            .pointer("/probe/family")
+            .and_then(Value::as_str)
+            .or_else(|| finding.pointer("/seam/family").and_then(Value::as_str))
+            .unwrap_or(canonical);
+        let expression = finding
+            .pointer("/probe/expression")
+            .and_then(Value::as_str)
+            .or_else(|| finding.pointer("/seam/expression").and_then(Value::as_str))
+            .unwrap_or("");
+        let reach_summary = finding
+            .pointer("/ripr/reach/summary")
+            .and_then(Value::as_str)
+            .unwrap_or("no static test path found");
+        let comment = json!({
+            "id": id,
+            "path": path,
+            "line": line,
+            "seam": format!("{family}: {}", first_line(expression)),
+            "reason": format!("{canonical}: {reach_summary}"),
+            "suggested_test": fallback_suggested_test(canonical),
+        });
+        seams.push((path.clone(), line, id.to_string(), comment));
+    }
+
+    seams.sort_by(|left, right| (&left.0, left.1, &left.2).cmp(&(&right.0, right.1, &right.2)));
+    seams.dedup_by(|next, previous| next.0 == previous.0 && next.1 == previous.1);
+    seams.truncate(FALLBACK_GUIDANCE_LIMIT);
+    let comments = seams.into_iter().map(|(_, _, _, comment)| comment).collect::<Vec<_>>();
+    if comments.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((comments, suppressed)))
+}
+
+/// Emit an `incomplete` guidance receipt that names the gate-actionable seams
+/// from the completed diff-scoped analysis when the review-comments pass did
+/// not finish (#10054). The gate may then block on named evidence it has —
+/// file, line, seam, reason — instead of an unnamed count.
+fn write_fallback_review_comments(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+    root: &str,
+    error: &str,
+    comments: &[Value],
+    suppressed: usize,
+) -> Result<()> {
+    let packet = json!({
+        "schema_version": "0.1",
+        "tool": "ripr",
+        "status": "incomplete",
+        "root": normalize_path_text(root),
+        "base": options.base,
+        "head": options.head,
+        "pr_head_sha": optional_sha_value(options.pr_head_sha.as_deref()),
+        "evaluated_head": options.head,
+        "evaluated_head_sha": revision_sha(repo, &options.head)?,
+        "mode": "pr_evidence_fallback",
+        "rendering_limits": {
+            "max_inline_comments": 0,
+            "max_summary_items": FALLBACK_GUIDANCE_LIMIT
+        },
+        "summary": {
+            "comments": 0,
+            "summary_only": comments.len(),
+            "suppressed": suppressed,
+            "unchanged_tests": true,
+            "source": "raw_check_fallback"
+        },
+        "comments": [],
+        "summary_only": comments,
+        "suppressed": [],
+        "warnings": [
+            {
+                "kind": "tool_error",
+                "message": first_line(error),
+                "path": null
+            },
+            {
+                "kind": "guidance_fallback",
+                "message": "review-comments pass did not complete; seam names were synthesized from the completed diff-scoped ripr check. Suggested-proof text is generic, not analyzer-derived.",
+                "path": null
+            }
+        ],
+        "limits_note": "Review guidance generation is advisory. The producer did not complete, so seam names come from the completed diff-scoped analysis rather than the guidance pass."
+    });
+    write_text(&repo.join(REVIEW_COMMENTS_JSON), &format_json(&packet)?)?;
+    write_text(&repo.join(REVIEW_COMMENTS_MD), &render_fallback_review_comments_markdown(&packet))
+}
+
+fn write_degraded_review_comments(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+    root: &str,
+    error: &str,
+) -> Result<()> {
+    match fallback_guidance_comments(repo, options)? {
+        Some((comments, suppressed)) => {
+            write_fallback_review_comments(repo, options, root, error, &comments, suppressed)
+        }
+        None => write_error_review_comments(repo, options, root, error),
+    }
+}
+
+fn render_fallback_review_comments_markdown(packet: &Value) -> String {
+    let mut markdown = format!(
+        "# RIPR PR Guidance\n\n- status: incomplete\n- base: `{}`\n- head: `{}`\n- line annotations: 0\n- summary-only recommendations: {}\n- suppressed recommendations: {}\n\nThe review-comments pass did not complete; the seam names below come from the completed diff-scoped ripr check.\n",
+        string_field(packet, "base", DEFAULT_BASE),
+        string_field(packet, "head", DEFAULT_HEAD),
+        packet.pointer("/summary/summary_only").and_then(Value::as_u64).unwrap_or(0),
+        packet.pointer("/summary/suppressed").and_then(Value::as_u64).unwrap_or(0),
+    );
+    if let Some(items) = packet.get("summary_only").and_then(Value::as_array) {
+        markdown.push_str("\n## Named seams (fallback)\n\n");
+        for item in items {
+            markdown.push_str(&format!(
+                "- `{}:{}` {} — {}\n",
+                string_field(item, "path", "<unknown>"),
+                item.get("line").and_then(Value::as_u64).unwrap_or(0),
+                md_escape(string_field(item, "seam", "<unknown seam>")),
+                md_escape(string_field(item, "reason", "<no reason>")),
+            ));
+        }
+    }
+    if let Some(warning) = packet
+        .get("warnings")
+        .and_then(Value::as_array)
+        .and_then(|warnings| warnings.first())
+        .and_then(|warning| warning.get("message"))
+        .and_then(Value::as_str)
+    {
+        markdown.push_str(&format!("\n## Warnings\n\n- tool_error: {}\n", md_escape(warning)));
+    }
+    markdown
 }
 
 fn render_pr_evidence_summary(repo: &Path) -> String {
@@ -2093,6 +2326,7 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
         .with_context(|| format!("bad base/head revision {rev:?}"))
 }
 
+#[cfg(test)]
 fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     Ok(resolve_committed_diff(repo, base, head)?.changed_paths)
 }
@@ -2595,7 +2829,7 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_files_rank_repo_seams_across_path_shapes() {
-        let seams = vec![
+        let seams = [
             json!({"file": "crates/perl-parser/src/lib.rs"}),
             json!({"path": "crates/perl-lexer/src/lib.rs"}),
             json!({"location": {"path": r"crates\perl-parser\src\lib.rs"}}),
@@ -2618,7 +2852,7 @@ mod tests {
 
     #[test]
     fn ripr_plus_top_gap_kinds_rank_repo_seams_across_kind_shapes() {
-        let seams = vec![
+        let seams = [
             json!({"kind": "ReceiptParsing"}),
             json!({"gap_kind": "BoundaryPredicate"}),
             json!({"classification": ["StaticUnknown", "NoStaticPath"]}),
@@ -4057,6 +4291,132 @@ paths = ["archive/["]
         Ok(())
     }
 
+    fn raw_check_finding(id: &str, classification: &str, file: &str, line: u64) -> Value {
+        json!({
+            "id": id,
+            "classification": classification,
+            "probe": {
+                "id": id,
+                "family": "error_path",
+                "file": file,
+                "line": line,
+                "expression": "return Err(ModelError::Failed);"
+            },
+            "ripr": {
+                "reach": { "state": "no", "summary": "No static test path found for the changed owner" }
+            }
+        })
+    }
+
+    #[test]
+    fn write_degraded_review_comments_names_actionable_seams_from_raw_check() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            "[[suppress]]\nid = \"test-suppression\"\nkind = \"test_receipt_surface\"\npaths = [\"crates/suppressed/**\"]\nreason = \"test fixture\"\n",
+        )?;
+        let raw_check = repo.join(PR_RAW_CHECK_JSON);
+        if let Some(parent) = raw_check.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(
+            &raw_check,
+            json!({
+                "base": "HEAD",
+                "findings": [
+                    raw_check_finding("probe:b20", "reachable_unrevealed", "/abs/repo/crates/foo/src/b.rs", 20),
+                    raw_check_finding("probe:a10b", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
+                    raw_check_finding("probe:a10a", "no_static_path", "/abs/repo/crates/foo/src/a.rs", 10),
+                    raw_check_finding("probe:c30", "exposed", "/abs/repo/crates/foo/src/c.rs", 30),
+                    raw_check_finding("probe:d40", "no_static_path", "/abs/repo/crates/suppressed/src/d.rs", 40),
+                    // ripr 0.9.x shape: grip_class + seam.file (no probe node).
+                    {
+                        "id": "probe:e50",
+                        "grip_class": "no_static_path",
+                        "seam": {
+                            "id": "probe:e50",
+                            "family": "match_arm",
+                            "file": "/abs/repo/crates/foo/src/e.rs",
+                            "line": 50,
+                            "expression": "Self::Fallback => write!(f, \"fallback\")"
+                        },
+                        "ripr": { "reach": { "state": "no", "summary": "No static test path found" } }
+                    }
+                ]
+            })
+            .to_string(),
+        )?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+
+        write_degraded_review_comments(repo, &options, ".", "ripr timed out after 600s\n detail")?;
+        stamp_review_comments_receipt(repo, &options)?;
+        validate_review_comments(repo, &options, true)?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        assert_eq!(packet["status"], json!("incomplete"));
+        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(3)));
+        assert_eq!(packet.pointer("/summary/suppressed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/warnings/0/kind"), Some(&json!("tool_error")), "{packet}");
+        assert_eq!(packet.pointer("/warnings/1/kind"), Some(&json!("guidance_fallback")));
+
+        let items = packet
+            .get("summary_only")
+            .and_then(Value::as_array)
+            .ok_or_else(|| eyre!("missing summary_only array"))?;
+        assert_eq!(items[0]["path"], json!("crates/foo/src/a.rs"));
+        assert_eq!(items[0]["line"], json!(10));
+        assert_eq!(items[1]["path"], json!("crates/foo/src/b.rs"));
+        assert_eq!(items[2]["path"], json!("crates/foo/src/e.rs"));
+        assert_eq!(items[2]["line"], json!(50));
+        for item in items {
+            for key in ["id", "path", "seam", "reason", "suggested_test"] {
+                assert!(
+                    item.get(key).and_then(Value::as_str).is_some_and(|v| !v.is_empty()),
+                    "{item}"
+                );
+            }
+            assert!(item.get("line").and_then(Value::as_u64).is_some_and(|line| line > 0));
+        }
+
+        let markdown = fs::read_to_string(repo.join(REVIEW_COMMENTS_MD))?;
+        assert!(markdown.contains("- status: incomplete"), "{markdown}");
+        assert!(markdown.contains("crates/foo/src/a.rs:10"), "{markdown}");
+        assert!(markdown.contains("tool_error: ripr timed out after 600s"), "{markdown}");
+        Ok(())
+    }
+
+    #[test]
+    fn write_degraded_review_comments_without_raw_check_keeps_error_receipt() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+            timeout_seconds: None,
+        };
+
+        write_degraded_review_comments(repo, &options, ".", "ripr timed out after 600s")?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        assert_eq!(packet["status"], json!("error"));
+        assert_eq!(packet.pointer("/summary/summary_only"), Some(&json!(0)));
+        Ok(())
+    }
+
     #[test]
     fn render_review_comment_markdown_falls_back_and_escapes_warnings() {
         let clean = render_clean_review_comments_markdown(&json!({}));
@@ -4690,7 +5050,7 @@ esac
     #[cfg(not(windows))]
     fn write_large_output_script(dir: &Path, byte_count: usize) -> Result<PathBuf> {
         // Round up to whole megabytes so dd's block arithmetic is exact.
-        let mb = (byte_count + 1_048_575) / 1_048_576;
+        let mb = byte_count.div_ceil(1_048_576);
         let path = dir.join("gen_large.sh");
         fs::write(
             &path,

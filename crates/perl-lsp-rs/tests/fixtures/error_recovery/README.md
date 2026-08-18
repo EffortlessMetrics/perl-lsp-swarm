@@ -139,10 +139,9 @@ fn test_partial_ast_lsp_feature_availability() {
 
 ## Related Documentation
 
-- [LSP_IMPLEMENTATION_GUIDE.md](../../../../docs/reference/LSP_IMPLEMENTATION_GUIDE.md)
-- [PARSER_ERROR_HANDLING_SPEC.md](../../../../docs/PARSER_ERROR_HANDLING_SPEC.md)
-- [THREADING_CONFIGURATION_GUIDE.md](../../../../docs/how-to/THREADING_CONFIGURATION_GUIDE.md)
-- [issue-178-spec.md](../../../../docs/issue-178-spec.md)
+- [LSP_IMPLEMENTATION_GUIDE.md](../../../../../docs/reference/LSP_IMPLEMENTATION_GUIDE.md)
+- [ERROR_HANDLING_STRATEGY.md](../../../../../docs/explanation/ERROR_HANDLING_STRATEGY.md) — Issue #178 defensive error-handling strategy for the parser/lexer
+- [THREADING_CONFIGURATION_GUIDE.md](../../../../../docs/how-to/THREADING_CONFIGURATION_GUIDE.md)
 
 ## Acceptance Criteria Coverage
 

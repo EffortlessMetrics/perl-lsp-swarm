@@ -1,0 +1,35 @@
+{
+  "schema_version": "lsp4ij_released_fixture.v1",
+  "upstream": {
+    "repository": "redhat-developer/lsp4ij",
+    "release": "0.20.1",
+    "tag": "0.20.1",
+    "commit": "1f62a3f8d8718db00b3db9189772f3a9172e4fb3",
+    "lsp_tree_sha1": "8741f16eeddcc05350ea1f15452fde3e270d1ba5",
+    "dap_tree_sha1": "b805cbe3a40772c2ed90d819180b556ff2d38111",
+    "normalization": "identity-v1"
+  },
+  "import_tool": {
+    "name": "git-hash-object",
+    "version": "1"
+  },
+  "sources": [
+    {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/attach.pid.json","git_blob_sha1":"595e4d3dbb3c7c31862b738c5d491711d26396cb","size":92,"materialized":false},
+    {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/attach.tcp.json","git_blob_sha1":"467b08deb4b0ceba10267afd75c7735b4f3e1097","size":129,"materialized":false},
+    {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/installer.json","git_blob_sha1":"28b5e067b6e3d3bd4a8ccbde63ba0ad0866a28e1","size":2053,"materialized":true,"fixture_path":"dap/installer.json"},
+    {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/launch.a.json","git_blob_sha1":"60f3cac033ac6677c09f46af9397a03b1d5431f0","size":117,"materialized":false},
+    {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/launch.customLibs.json","git_blob_sha1":"4468681e00c092b98fb25a97be35a616a5ccd4ec","size":249,"materialized":false},
+    {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/launch.env.json","git_blob_sha1":"f1219021307444c70ad05a7b97f52fa1e8025a55","size":268,"materialized":false},
+    {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/launch.wsl.json","git_blob_sha1":"9383ed22b7e5961d9c739bd8cdd040f0204e209b","size":176,"materialized":false},
+    {"namespace":"dap","path":"src/main/resources/templates/dap/perl-dap/template.json","git_blob_sha1":"4fa6c6ccd5895d52a355e8e8d82f3a8adf2fc797","size":628,"materialized":true,"fixture_path":"dap/template.json"},
+    {"namespace":"dap_docs","path":"docs/dap/user-defined-dap/perl-dap.md","git_blob_sha1":"4bd2e3cc9f75a954342bedc9b0908e66a86d93ef","size":141,"materialized":true,"fixture_path":"docs/perl-dap.md"},
+    {"namespace":"lsp","path":"src/main/resources/templates/lsp/perl-lsp/clientSettings.json","git_blob_sha1":"9e26dfeeb6e641a33dae4961196235bdb965b21b","size":2,"materialized":false},
+    {"namespace":"lsp","path":"src/main/resources/templates/lsp/perl-lsp/experimental.json","git_blob_sha1":"9e26dfeeb6e641a33dae4961196235bdb965b21b","size":2,"materialized":false},
+    {"namespace":"lsp","path":"src/main/resources/templates/lsp/perl-lsp/initializationOptions.json","git_blob_sha1":"9e26dfeeb6e641a33dae4961196235bdb965b21b","size":2,"materialized":true,"fixture_path":"lsp/initializationOptions.json"},
+    {"namespace":"lsp","path":"src/main/resources/templates/lsp/perl-lsp/installer.json","git_blob_sha1":"39f33723e3ce1233fcaf2336e93304c5a1c2964d","size":2096,"materialized":true,"fixture_path":"lsp/installer.json"},
+    {"namespace":"lsp","path":"src/main/resources/templates/lsp/perl-lsp/settings.json","git_blob_sha1":"b0b4a46ddf9f2e955a442303676d5e2fd78e7b9d","size":1010,"materialized":true,"fixture_path":"lsp/settings.json"},
+    {"namespace":"lsp","path":"src/main/resources/templates/lsp/perl-lsp/settings.schema.json","git_blob_sha1":"db9934f780af8c8136d949598a5cb22aa5da9d10","size":15174,"materialized":false},
+    {"namespace":"lsp","path":"src/main/resources/templates/lsp/perl-lsp/template.json","git_blob_sha1":"17fbd097c7bedc82a12ecc19de61597a17073b73","size":663,"materialized":true,"fixture_path":"lsp/template.json"},
+    {"namespace":"lsp_docs","path":"docs/user-defined-ls/perl-lsp.md","git_blob_sha1":"6235e6c28711afabb20ed48b0befcec2e44cea36","size":1708,"materialized":true,"fixture_path":"docs/perl-lsp.md"}
+  ]
+}

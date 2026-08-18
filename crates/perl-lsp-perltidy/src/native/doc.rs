@@ -1,5 +1,9 @@
 use super::config::FormatConfig;
 
+const MAX_LINE_WIDTH: usize = 1_000;
+const MAX_INDENT_WIDTH: usize = 16;
+const MAX_RENDER_INDENT_COLUMNS: usize = 4_096;
+
 /// Native formatter document tree.
 ///
 /// This is the small, lossless-friendly formatting IR from the replacement
@@ -81,22 +85,37 @@ impl FormatDoc {
             Self::Space | Self::SoftLine => Some(1),
             Self::Line | Self::HardLine => None,
             Self::Group(parts) | Self::Indent(parts) => {
-                parts.iter().try_fold(0_usize, |sum, doc| doc.flat_width().map(|width| sum + width))
+                parts.iter().try_fold(0_usize, |sum, doc| {
+                    doc.flat_width().and_then(|width| sum.checked_add(width))
+                })
             }
             Self::IfBreak { flat, .. } => flat.flat_width(),
         }
     }
 }
 
-struct DocRenderer<'a> {
-    config: &'a FormatConfig,
+struct DocRenderer {
     output: String,
     column: usize,
+    line_width: usize,
+    indent_width: usize,
+    use_tabs: bool,
 }
 
-impl<'a> DocRenderer<'a> {
-    fn new(config: &'a FormatConfig) -> Self {
-        Self { config, output: String::new(), column: 0 }
+impl DocRenderer {
+    fn new(config: &FormatConfig) -> Self {
+        let line_width =
+            usize::try_from(config.line_width).unwrap_or(MAX_LINE_WIDTH).clamp(1, MAX_LINE_WIDTH);
+        let indent_width = usize::try_from(config.indent_width)
+            .unwrap_or(MAX_INDENT_WIDTH)
+            .clamp(1, MAX_INDENT_WIDTH);
+        Self {
+            output: String::new(),
+            column: 0,
+            line_width,
+            indent_width,
+            use_tabs: config.use_tabs,
+        }
     }
 
     fn render_doc(&mut self, doc: &FormatDoc, indent_level: usize, flat: bool, broken: bool) {
@@ -109,14 +128,16 @@ impl<'a> DocRenderer<'a> {
             FormatDoc::Group(parts) => {
                 let fits = doc
                     .flat_width()
-                    .is_some_and(|width| self.column + width <= self.config.line_width as usize);
+                    .and_then(|width| self.column.checked_add(width))
+                    .is_some_and(|end_column| end_column <= self.line_width);
                 for part in parts {
                     self.render_doc(part, indent_level, fits, !fits);
                 }
             }
             FormatDoc::Indent(parts) => {
+                let nested_indent = indent_level.saturating_add(1);
                 for part in parts {
-                    self.render_doc(part, indent_level + 1, flat, broken);
+                    self.render_doc(part, nested_indent, flat, broken);
                 }
             }
             FormatDoc::IfBreak { broken: broken_doc, flat: flat_doc } => {
@@ -131,18 +152,61 @@ impl<'a> DocRenderer<'a> {
         if let Some((_, tail)) = text.rsplit_once('\n') {
             self.column = tail.chars().count();
         } else {
-            self.column += text.chars().count();
+            self.column = self.column.saturating_add(text.chars().count());
         }
     }
 
     fn push_line(&mut self, indent_level: usize) {
         self.output.push('\n');
-        let indent = if self.config.use_tabs {
-            "\t".repeat(indent_level)
+        let indent_columns = if self.use_tabs {
+            indent_level.min(MAX_RENDER_INDENT_COLUMNS)
         } else {
-            " ".repeat(indent_level * self.config.indent_width as usize)
+            indent_level
+                .checked_mul(self.indent_width)
+                .unwrap_or(MAX_RENDER_INDENT_COLUMNS)
+                .min(MAX_RENDER_INDENT_COLUMNS)
         };
+        let indent =
+            if self.use_tabs { "\t".repeat(indent_columns) } else { " ".repeat(indent_columns) };
         self.output.push_str(&indent);
-        self.column = indent.chars().count();
+        self.column = indent_columns;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renderer_bounds_extreme_indent_width_before_allocation() {
+        let config = FormatConfig { indent_width: u32::MAX, ..FormatConfig::default() };
+        let doc = FormatDoc::indent(vec![FormatDoc::HardLine, FormatDoc::text("x")]);
+
+        let rendered = doc.render(&config);
+
+        assert_eq!(rendered, format!("\n{}x", " ".repeat(MAX_INDENT_WIDTH)));
+    }
+
+    #[test]
+    fn renderer_bounds_zero_indent_width_to_a_nonzero_step() {
+        let config = FormatConfig { indent_width: 0, ..FormatConfig::default() };
+        let doc = FormatDoc::indent(vec![FormatDoc::HardLine, FormatDoc::text("x")]);
+
+        assert_eq!(doc.render(&config), "\n x");
+    }
+
+    #[test]
+    fn renderer_bounds_extreme_line_width_for_group_decisions() {
+        let config = FormatConfig { line_width: u32::MAX, ..FormatConfig::default() };
+        let doc = FormatDoc::group(vec![
+            FormatDoc::text("x".repeat(MAX_LINE_WIDTH)),
+            FormatDoc::SoftLine,
+            FormatDoc::text("y"),
+        ]);
+
+        let rendered = doc.render(&config);
+
+        assert!(rendered.contains('\n'));
+        assert!(!rendered.contains(" y"));
     }
 }
