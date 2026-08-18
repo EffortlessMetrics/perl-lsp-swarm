@@ -2,8 +2,8 @@
 mod emacs_projects;
 
 use emacs_projects::{
-    EmacsProjectCaseKind, EmacsProjectFixtureMatrix, REQUIRED_CASES, bind_stock_project_probe,
-    stock_project_probe_driver,
+    bind_stock_project_probe, stock_project_probe_driver, EmacsProjectCaseKind,
+    EmacsProjectFixtureMatrix, REQUIRED_CASES,
 };
 use std::collections::BTreeSet;
 use std::error::Error;

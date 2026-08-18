@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -12,12 +12,12 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use xtask::editor_client_compat::{
-    ArtifactKind, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, CleanupResult,
-    ClientSourceState, DiagnosticMode, DiagnosticsIdentity, EditorClientCompatReceipt,
-    EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity, IntegrationIdentity,
-    IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity, RegistrationState,
-    SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity, WorkspaceFixtureIdentity,
-    canonical_expectation_set_digest, fixture_digest,
+    canonical_expectation_set_digest, fixture_digest, ArtifactKind, CapabilityIdentity,
+    CleanupResult, ClientSourceState, DiagnosticMode, DiagnosticsIdentity,
+    EditorClientCompatReceipt, EvidenceArtifact, EvidenceStage, FailureClass, HostIdentity,
+    IntegrationIdentity, IntegrationMode, JourneyCell, ObservationResult, PlatformIdentity,
+    RegistrationState, ServerIdentity, WorkspaceFixtureIdentity, CANONICAL_EXPECTATION_SET_ID,
+    SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION,
 };
 
 pub const RUN_PLAN_SCHEMA_VERSION: &str = "emacs_host_run_plan.v1";
@@ -803,7 +803,11 @@ fn sanitize_text(bytes: &[u8], plan: &EmacsHostRunPlan, layout: &HermeticLayout)
 }
 
 fn bound_capture(bytes: &[u8]) -> &[u8] {
-    if bytes.len() <= MAX_CAPTURE_BYTES { bytes } else { &bytes[..MAX_CAPTURE_BYTES] }
+    if bytes.len() <= MAX_CAPTURE_BYTES {
+        bytes
+    } else {
+        &bytes[..MAX_CAPTURE_BYTES]
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

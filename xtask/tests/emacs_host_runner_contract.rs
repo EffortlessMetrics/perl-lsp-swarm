@@ -8,10 +8,10 @@
 #[path = "support/emacs_host_runner.rs"]
 mod emacs_host_runner;
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 use emacs_host_runner::{
-    DRIVER_SCHEMA_VERSION, DriverEvent, DriverEventKind, RUN_PLAN_SCHEMA_VERSION,
-    default_not_proven_diagnostics, validate_driver_events,
+    default_not_proven_diagnostics, validate_driver_events, DriverEvent, DriverEventKind,
+    DRIVER_SCHEMA_VERSION, RUN_PLAN_SCHEMA_VERSION,
 };
 use std::collections::BTreeMap;
 use xtask::editor_client_compat::{DiagnosticMode, DiagnosticsIdentity};
