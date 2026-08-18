@@ -841,18 +841,13 @@ mod tests {
             "code",
             Vec::new(),
         );
-        assert_eq!(
-            plan.selected
-                .iter()
-                .filter(|step| step.command == "cd vscode-extension && npm run typecheck:all")
-                .count(),
-            1
-        );
-        let step = plan
+        let steps: Vec<_> = plan
             .selected
             .iter()
-            .find(|step| step.command == "cd vscode-extension && npm run typecheck:all")
-            .expect("typecheck step");
+            .filter(|step| step.command == "cd vscode-extension && npm run typecheck:all")
+            .collect();
+        assert_eq!(steps.len(), 1);
+        let step = steps[0];
         assert!(step.reason.contains("source"));
         assert!(step.reason.contains("authority config"));
     }
