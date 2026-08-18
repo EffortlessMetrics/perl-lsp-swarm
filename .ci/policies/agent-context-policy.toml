@@ -79,3 +79,8 @@ reason = "`must`/`must_some` test-assertion helpers; test infra, not product."
 # perl-module, perl-workspace-core, perl-pod, perl-lsp-perltidy,
 # perl-diagnostics, perl-line-index, perl-ast-v2, perl-semantic-facts,
 # perl-tree-sitter-compat, perl-dead-code.
+
+[[needs_context]]
+name = "perl-source-identity"
+reason = "Canonical source_identity.v1 core types on the toolchain transport boundary; core product surface, so exemption would be dishonest. Package-local context is not yet authored."
+tracking_issue = 3874
