@@ -410,10 +410,10 @@ fn test_semantic_tokens_stdin_readline_no_error() -> TestResult {
         )
         .unwrap_or(json!(null));
 
-    if !response.is_null() {
-        if let Some(arr) = response.get("data").and_then(|d| d.as_array()) {
-            assert_eq!(arr.len() % 5, 0, "Semantic token data must be 5-tuples");
-        }
+    if !response.is_null()
+        && let Some(arr) = response.get("data").and_then(|d| d.as_array())
+    {
+        assert_eq!(arr.len() % 5, 0, "Semantic token data must be 5-tuples");
     }
 
     Ok(())
@@ -436,10 +436,10 @@ fn test_semantic_tokens_glob_pattern_no_error() -> TestResult {
         )
         .unwrap_or(json!(null));
 
-    if !response.is_null() {
-        if let Some(arr) = response.get("data").and_then(|d| d.as_array()) {
-            assert_eq!(arr.len() % 5, 0, "Semantic token data must be 5-tuples");
-        }
+    if !response.is_null()
+        && let Some(arr) = response.get("data").and_then(|d| d.as_array())
+    {
+        assert_eq!(arr.len() % 5, 0, "Semantic token data must be 5-tuples");
     }
 
     Ok(())

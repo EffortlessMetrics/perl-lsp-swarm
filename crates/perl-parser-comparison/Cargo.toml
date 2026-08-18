@@ -7,23 +7,43 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Differential test suite measuring v1/v2/v3 parser gaps on constructs that historically defeated tree-sitter"
+description = "Differential test suite measuring exact current, historical, and native Perl parser subjects"
 publish = false
+
+[features]
+default = ["historical"]
+historical = ["dep:tree-sitter-perl-c"]
+current-upstream = ["dep:ts-parser-perl"]
 
 [dependencies]
 perl-ast = { workspace = true }
 perl-parser-core = { workspace = true }
 perl-parser-pest = { workspace = true }
-tree-sitter-perl-c = { workspace = true }
+ts-parser-perl = { version = "=1.2.1", optional = true }
+tree-sitter-perl-c = { workspace = true, optional = true }
 tree-sitter = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
 perl-tdd-support = { workspace = true }
+sha2 = { workspace = true }
 
 [[bin]]
 name = "corpus_differential"
 path = "src/bin/corpus_differential.rs"
+required-features = ["historical"]
+
+[[test]]
+name = "differential"
+required-features = ["historical"]
+
+[[test]]
+name = "corpus_differential"
+required-features = ["historical"]
+
+[[test]]
+name = "recovery_differential"
+required-features = ["historical"]
 
 [lib]
 doctest = false
