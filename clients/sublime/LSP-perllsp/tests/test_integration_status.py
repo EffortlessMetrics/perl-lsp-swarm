@@ -155,6 +155,7 @@ class IntegrationStatusTests(unittest.TestCase):
                 )
                 install_dir.mkdir(parents=True, exist_ok=True)
                 binary.write_bytes(b"repaired")
+                binary.chmod(0o755)
                 binary.with_name("install.json").write_text(
                     json.dumps(
                         {
