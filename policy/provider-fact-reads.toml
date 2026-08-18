@@ -3,7 +3,7 @@
 # This inventory is evidence about current ownership and duplication. It does
 # not promote a producer, change provider output, or authorize an edit.
 
-schema_version = 2
+schema_version = 3
 policy = "provider-fact-reads"
 owner_issue = 6815
 generated_status = "docs/project/status/provider_fact_reads.md"
@@ -69,7 +69,13 @@ count = 1
 [[read.source.anchor]]
 kind = "rust_call"
 value = "route_index_access"
-count = 2
+owner = "handle_completion"
+count = 1
+[[read.source.anchor]]
+kind = "rust_call"
+value = "route_index_access"
+owner = "handle_completion_cancellable"
+count = 1
 
 [[read]]
 id = "completion.receiver_shadow"
@@ -92,6 +98,7 @@ count = 1
 [[read.source.anchor]]
 kind = "rust_call"
 value = "completion_visibility_shadow"
+owner = "completion_semantic_shadow_receipt"
 count = 1
 
 [[read]]
@@ -191,6 +198,7 @@ count = 1
 [[read.source.anchor]]
 kind = "rust_call"
 value = "get_document_diagnostics_with_context"
+owner = "handle_document_diagnostic"
 count = 1
 
 [[read]]
@@ -260,6 +268,7 @@ count = 1
 [[read.source.anchor]]
 kind = "rust_call"
 value = "safe_delete_symbol_live_pilot"
+owner = "handle_execute_command"
 count = 1
 [[read.source]]
 path = "crates/perl-lsp-rs-core/src/providers/navigation/safe_delete_shadow.rs"
@@ -270,7 +279,13 @@ count = 1
 [[read.source.anchor]]
 kind = "rust_call"
 value = "safe_delete_plan"
-count = 2
+owner = "safe_delete_shadow"
+count = 1
+[[read.source.anchor]]
+kind = "rust_call"
+value = "safe_delete_plan"
+owner = "safe_delete_cutover"
+count = 1
 
 [[read]]
 id = "workspace_symbols.index_query"

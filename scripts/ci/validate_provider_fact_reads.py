@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 INVENTORY = PurePosixPath("policy/provider-fact-reads.toml")
-EXPECTED_SCHEMA = 2
+EXPECTED_SCHEMA = 3
 EXPECTED_POLICY = "provider-fact-reads"
 EXPECTED_OWNER = 6815
 EXPECTED_STATUS = PurePosixPath("docs/project/status/provider_fact_reads.md")
@@ -75,6 +75,7 @@ REQUIRED_TEXT_FIELDS = (
 )
 OWNER_TOKEN = re.compile(r"^#[1-9][0-9]*$")
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 
 
 class ValidationError(RuntimeError):
@@ -104,6 +105,8 @@ def exact_vocabulary(label: str, actual: Iterable[str], expected: Iterable[str])
 
 
 def safe_repo_path(raw: str, *, generated: bool = False) -> PurePosixPath:
+    if "\\" in raw or DRIVE_PREFIX.match(raw):
+        fail(f"repository path must use POSIX separators and no drive letter: {raw!r}")
     path = PurePosixPath(raw)
     if path.is_absolute() or ".." in path.parts or "." in path.parts:
         fail(f"repository path must be normalized and relative: {raw!r}")
@@ -218,12 +221,113 @@ def rust_tokens(source: str) -> list[str]:
     return tokens
 
 
-def anchor_count(tokens: list[str], kind: str, value: str) -> int:
+def _opens_test_attribute(tokens: list[str], index: int) -> bool:
+    """True when `tokens[index]` starts a `#[test]` / `#[cfg(..., test, ...)]` attribute."""
+    if tokens[index : index + 2] != ["#", "["]:
+        return False
+    depth = 0
+    end: int | None = None
+    for cursor in range(index + 1, len(tokens)):
+        if tokens[cursor] == "[":
+            depth += 1
+        elif tokens[cursor] == "]":
+            depth -= 1
+            if depth == 0:
+                end = cursor
+                break
+    if end is None:
+        return False
+    inner = tokens[index + 2 : end]
+    if inner[:1] == ["test"]:
+        return True
+    if inner[:1] != ["cfg"]:
+        return False
+
+    # `cfg(test)` and `cfg(all(test, ...))` are test-only, but `cfg(any(test, X))`
+    # still compiles whenever X holds — e.g. `any(test, feature = "expose_lsp_test_api")`
+    # guards a production-reachable API. Excluding those would drop real fact-read
+    # seams from the inventory, so only a `test` outside every `any(...)` counts.
+    any_depth = 0
+    depth = 0
+    for position, token in enumerate(inner):
+        if token == "(":
+            depth += 1
+            if inner[position - 1 : position] == ["any"]:
+                any_depth = any_depth or depth
+        elif token == ")":
+            if any_depth == depth:
+                any_depth = 0
+            depth -= 1
+        elif token == "test" and any_depth == 0:
+            return True
+    return False
+
+
+def scope_index(tokens: list[str]) -> tuple[list[str | None], list[bool]]:
+    """Per-token enclosing `fn` name and whether the token sits in test-only code.
+
+    A flat token count cannot bind a call to the fact-read seam that owns it: moving
+    the call anywhere else in the same file preserves the count, and a call relocated
+    into `#[cfg(test)]` satisfies a production anchor exactly like a real one. Both
+    are false-green paths, so anchors are resolved against this index instead.
+    """
+    enclosing: list[str | None] = [None] * len(tokens)
+    in_test: list[bool] = [False] * len(tokens)
+    depth = 0
+    fn_stack: list[tuple[str, int]] = []
+    test_depths: list[int] = []
+    pending_fn: str | None = None
+    pending_test = False
+
+    for index, token in enumerate(tokens):
+        enclosing[index] = fn_stack[-1][0] if fn_stack else None
+        in_test[index] = bool(test_depths) or pending_test
+
+        if token == "#":
+            if _opens_test_attribute(tokens, index):
+                pending_test = True
+        elif token == "fn":
+            following = tokens[index + 1] if index + 1 < len(tokens) else ""
+            if IDENTIFIER.fullmatch(following):
+                pending_fn = following
+        elif token == "{":
+            depth += 1
+            if pending_test:
+                test_depths.append(depth)
+                pending_test = False
+            if pending_fn is not None:
+                fn_stack.append((pending_fn, depth))
+                pending_fn = None
+        elif token == "}":
+            if fn_stack and fn_stack[-1][1] == depth:
+                fn_stack.pop()
+            if test_depths and test_depths[-1] == depth:
+                test_depths.pop()
+            depth -= 1
+        elif token == ";":
+            # `#[cfg(test)] use ...;` and `fn f();` never open a block.
+            pending_test = False
+            pending_fn = None
+
+    return enclosing, in_test
+
+
+def anchor_count(
+    tokens: list[str],
+    kind: str,
+    value: str,
+    *,
+    owner: str | None = None,
+    scopes: tuple[list[str | None], list[bool]] | None = None,
+) -> int:
+    enclosing, in_test = scope_index(tokens) if scopes is None else scopes
     if kind == "rust_fn":
         return sum(
             1
             for index in range(len(tokens) - 1)
-            if tokens[index] == "fn" and tokens[index + 1] == value
+            if tokens[index] == "fn"
+            and tokens[index + 1] == value
+            and not in_test[index]
         )
     if kind == "rust_call":
         return sum(
@@ -232,6 +336,8 @@ def anchor_count(tokens: list[str], kind: str, value: str) -> int:
             if tokens[index] == value
             and tokens[index + 1] == "("
             and (index == 0 or tokens[index - 1] != "fn")
+            and not in_test[index]
+            and (owner is None or enclosing[index] == owner)
         )
     fail(f"unsupported anchor kind {kind!r}")
     return 0
@@ -243,6 +349,24 @@ def validate_source(root: Path, read_id: str, source: dict[str, Any]) -> None:
         fail(f"{read_id}: source path must be a non-empty string")
     relative = safe_repo_path(raw_path)
     path = root / relative
+
+    # A lexical `..` check alone cannot contain a tracked symlink: it would let an
+    # anchor be satisfied by content outside the checkout entirely.
+    resolved_root = root.resolve()
+    for parent in (path, *path.parents):
+        if parent == root:
+            break
+        if parent.is_symlink():
+            fail(f"{read_id}: source path traverses a symlink at {parent.relative_to(root)}")
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        fail(f"{read_id}: failed to resolve {relative}: {error}")
+    if not resolved.is_relative_to(resolved_root):
+        fail(f"{read_id}: source path escapes the repository root: {relative}")
+    if not resolved.is_file():
+        fail(f"{read_id}: source path is not a regular file: {relative}")
+
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as error:
@@ -252,7 +376,8 @@ def validate_source(root: Path, read_id: str, source: dict[str, Any]) -> None:
     if not isinstance(anchors, list) or not anchors:
         fail(f"{read_id}: {relative} must declare at least one structural anchor")
     tokens = rust_tokens(text)
-    seen: set[tuple[str, str]] = set()
+    scopes = scope_index(tokens)
+    seen: set[tuple[str, str, str | None]] = set()
     for anchor in anchors:
         if not isinstance(anchor, dict):
             fail(f"{read_id}: {relative} anchor must be a table")
@@ -265,11 +390,26 @@ def validate_source(root: Path, read_id: str, source: dict[str, Any]) -> None:
             fail(f"{read_id}: invalid Rust anchor identifier {value!r}")
         if not isinstance(expected_count, int) or isinstance(expected_count, bool) or expected_count < 1:
             fail(f"{read_id}: anchor count must be a positive integer")
-        identity = (kind, value)
+        owner = anchor.get("owner")
+        if kind == "rust_call":
+            if not isinstance(owner, str) or not IDENTIFIER.fullmatch(owner):
+                fail(
+                    f"{read_id}: rust_call anchor {value!r} must declare the owning "
+                    'fact-read seam as owner = "<fn>"'
+                )
+            if anchor_count(tokens, "rust_fn", owner, scopes=scopes) < 1:
+                fail(
+                    f"{read_id}: {relative} rust_call owner {owner!r} is not a "
+                    "production fn defined in this file"
+                )
+        elif owner is not None:
+            fail(f"{read_id}: owner is only meaningful on rust_call anchors")
+
+        identity = (kind, value, owner)
         if identity in seen:
             fail(f"{read_id}: duplicate anchor {kind}:{value}")
         seen.add(identity)
-        actual_count = anchor_count(tokens, kind, value)
+        actual_count = anchor_count(tokens, kind, value, owner=owner, scopes=scopes)
         if actual_count != expected_count:
             fail(
                 f"{read_id}: {relative} anchor {kind}:{value} expected "
@@ -475,6 +615,69 @@ const EXAMPLE: &str = "route_index_access(self.coordinator());";
     assert anchor_count(multi_tokens, "rust_fn", "handle_completion") == 1
     assert anchor_count(multi_tokens, "rust_fn", "handle_completion_cancellable") == 1
     assert anchor_count(multi_tokens, "rust_call", "route_index_access") == 2
+
+    # A call is only evidence for the seam that owns it. Without the owner binding a
+    # relocated call keeps an identical flat count, and a call moved under
+    # `#[cfg(test)]` satisfies a production anchor.
+    ownership = '''
+fn owner_a() { tracked_call(); }
+fn owner_b() { tracked_call(); }
+#[cfg(test)]
+mod tests {
+    fn owner_a() { tracked_call(); }
+    #[test]
+    fn only_a_test() { tracked_call(); }
+}
+'''
+    owned_tokens = rust_tokens(ownership)
+    owned_scopes = scope_index(owned_tokens)
+    assert anchor_count(owned_tokens, "rust_call", "tracked_call", scopes=owned_scopes) == 2
+    assert (
+        anchor_count(owned_tokens, "rust_call", "tracked_call", owner="owner_a", scopes=owned_scopes)
+        == 1
+    )
+    assert (
+        anchor_count(owned_tokens, "rust_call", "tracked_call", owner="owner_b", scopes=owned_scopes)
+        == 1
+    )
+    # the call moved to a seam that does not own it
+    assert (
+        anchor_count(owned_tokens, "rust_call", "tracked_call", owner="absent_fn", scopes=owned_scopes)
+        == 0
+    )
+    # test-only definitions never satisfy a production anchor
+    assert anchor_count(owned_tokens, "rust_fn", "only_a_test", scopes=owned_scopes) == 0
+    assert anchor_count(owned_tokens, "rust_fn", "owner_a", scopes=owned_scopes) == 1
+
+    # `any(test, ...)` still compiles outside test builds, so those seams stay governed;
+    # `all(test, ...)` genuinely requires test and must not.
+    gated = '''
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) fn exposed_seam() { inner_call(); }
+#[cfg(all(test, unix))]
+fn strictly_test() { inner_call(); }
+'''
+    gated_tokens = rust_tokens(gated)
+    gated_scopes = scope_index(gated_tokens)
+    assert anchor_count(gated_tokens, "rust_fn", "exposed_seam", scopes=gated_scopes) == 1
+    assert anchor_count(gated_tokens, "rust_fn", "strictly_test", scopes=gated_scopes) == 0
+    assert (
+        anchor_count(gated_tokens, "rust_call", "inner_call", owner="exposed_seam", scopes=gated_scopes)
+        == 1
+    )
+    assert (
+        anchor_count(gated_tokens, "rust_call", "inner_call", owner="strictly_test", scopes=gated_scopes)
+        == 0
+    )
+
+    # Source paths are contained lexically as well as on disk.
+    for rejected in ("crates\\windows\\path.rs", "C:/crates/drive.rs"):
+        try:
+            safe_repo_path(rejected)
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError(f"expected rejection of {rejected!r}")
 
 
 def main() -> int:

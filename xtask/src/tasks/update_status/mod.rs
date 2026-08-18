@@ -298,9 +298,8 @@ pub fn run(write: bool, check: bool, only: Option<StatusSubsystem>) -> Result<()
             "cargo xtask update-status --write --only provider-facts",
             || {
                 let (status_path, updated_status) = provider_fact_reads::generate(&root)?;
-                let original_status = fs::read_to_string(&status_path).with_context(|| {
-                    format!("reading {}", status_path.display())
-                })?;
+                let original_status = fs::read_to_string(&status_path)
+                    .with_context(|| format!("reading {}", status_path.display()))?;
                 if updated_status != original_status {
                     files_to_update.push((
                         "docs/project/status/provider_fact_reads.md",
