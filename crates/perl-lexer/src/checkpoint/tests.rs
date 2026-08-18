@@ -363,7 +363,10 @@ fn test_checkpoint_apply_edit_resets_position_tracking_on_shift_and_invalidate()
     assert_eq!(shifted.current_pos.byte, usize::MAX);
     assert_eq!(shifted.current_pos.line, Position::start().line);
     assert_eq!(shifted.current_pos.column, Position::start().column);
-    assert!(!shifted.is_valid_for("012345678901234"));
+    assert!(
+        !shifted.is_valid_for("012345678901234"),
+        "shifted checkpoint must fail closed without reconstructed line/column state"
+    );
 
     let mut invalidated = LexerCheckpoint::at_position(10);
     invalidated.current_pos.line = 4;
@@ -376,7 +379,10 @@ fn test_checkpoint_apply_edit_resets_position_tracking_on_shift_and_invalidate()
     assert_eq!(invalidated.current_pos.byte, usize::MAX);
     assert_eq!(invalidated.current_pos.line, Position::start().line);
     assert_eq!(invalidated.current_pos.column, Position::start().column);
-    assert!(!invalidated.is_valid_for("0123456789"));
+    assert!(
+        !invalidated.is_valid_for("0123456789"),
+        "overlapped checkpoint must fail closed after required state is invalidated"
+    );
     assert_eq!(invalidated.mode, LexerMode::ExpectTerm);
     assert_eq!(invalidated.context, CheckpointContext::Normal);
 }

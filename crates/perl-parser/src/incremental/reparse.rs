@@ -33,7 +33,12 @@ pub(crate) fn apply_single_edit(
     state: &mut IncrementalState,
     edit: &Edit,
 ) -> Result<SingleEditReparse> {
-    let Some(summary) = state.find_lex_checkpoint(edit.start_byte).copied() else {
+    let checkpoint_boundary = state
+        .tokens()
+        .iter()
+        .find(|token| token.end >= edit.start_byte)
+        .map_or(edit.start_byte, |token| token.start);
+    let Some(summary) = state.find_lex_checkpoint(checkpoint_boundary).copied() else {
         apply_text_edit_to_state(state, edit)?;
         anyhow::bail!("No lexer restart boundary found");
     };
@@ -175,7 +180,30 @@ mod tests {
     }
 
     #[test]
-    fn heredoc_body_edit_restores_the_live_queue_and_matches_fresh_lex() -> Result<()> {
+    fn token_boundary_insertion_relexes_adjoining_token_and_matches_fresh_lex() -> Result<()> {
+        let source = "my $foo;";
+        let token_start = source.find("$foo").ok_or_else(|| anyhow::anyhow!("variable missing"))?;
+        let edit_start = token_start + "$foo".len();
+        let edit = Edit {
+            start_byte: edit_start,
+            old_end_byte: edit_start,
+            new_end_byte: edit_start + 1,
+            new_text: "x".to_string(),
+        };
+        let mut state = IncrementalState::new(source.to_string());
+        let result = apply_single_edit(&mut state, &edit)?;
+
+        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
+        assert_eq!(
+            result.lex_restart.restart_byte, 2,
+            "restart must begin before the adjoining variable token"
+        );
+        assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
+        Ok(())
+    }
+
+    #[test]
+    fn heredoc_body_edit_fails_closed_then_full_reparse_matches_fresh_lex() -> Result<()> {
         let source = "my $value = <<EOF;\nbody\nEOF\nprint $value;\n";
         let start = source.find("body").ok_or_else(|| anyhow::anyhow!("body missing"))?;
         let edit = Edit {
@@ -185,15 +213,11 @@ mod tests {
             new_text: "changed".to_string(),
         };
         let mut state = IncrementalState::new(source.to_string());
-        if apply_single_edit(&mut state, &edit).is_err() {
-            full_reparse(&mut state)?;
-            assert_tokens_equal(state.tokens(), &fresh_tokens(state.source()));
-            return Ok(());
-        }
-        let result = apply_single_edit(&mut state, &edit)?;
+        let result = apply_single_edit(&mut state, &edit);
+        assert!(result.is_err(), "queued-heredoc restart must fail closed");
+        let reparsed = full_reparse(&mut state)?;
 
-        assert_eq!(result.lex_restart.strategy, LexRestartStrategy::LiveCheckpointToEof);
-        assert_eq!(result.lex_restart.reused_suffix_tokens, 0);
+        assert_eq!(reparsed.lex_restart.strategy, LexRestartStrategy::FullRelex);
         assert_tokens_equal(&state.tokens, &fresh_tokens(&state.source));
         Ok(())
     }

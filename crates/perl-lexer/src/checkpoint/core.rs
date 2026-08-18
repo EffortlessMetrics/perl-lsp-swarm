@@ -371,7 +371,8 @@ pub trait Checkpointable {
 
     /// Restore mutable replay state into a lexer for the target input.
     ///
-    /// The target lexer retains its configured recovery policy.
+    /// Checkpointed recovery flags, including `qw_recovery_enabled`, are
+    /// restored as replay state.
     fn restore(&mut self, checkpoint: &LexerCheckpoint);
 
     /// Check whether every source-relative checkpoint offset is valid.

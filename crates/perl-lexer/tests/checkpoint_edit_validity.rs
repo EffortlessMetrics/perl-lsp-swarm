@@ -13,8 +13,14 @@ fn shifted_replay_position_fails_closed_without_target_source_coordinates() {
     assert_ne!(checkpoint.current_pos.byte, checkpoint.position);
 
     let lexer = PerlLexer::new("xxxmy $value = 1;\n");
-    assert!(!checkpoint.is_valid_for("xxxmy $value = 1;\n"));
-    assert!(!lexer.can_restore(&checkpoint));
+    assert!(
+        !checkpoint.is_valid_for("xxxmy $value = 1;\n"),
+        "shifted checkpoint must fail closed for the edited source"
+    );
+    assert!(
+        !lexer.can_restore(&checkpoint),
+        "lexer must reject a shifted checkpoint without valid source coordinates"
+    );
 }
 
 #[test]
@@ -26,10 +32,13 @@ fn compatibility_edit_cannot_turn_overlapped_quote_state_into_a_restorable_defau
     checkpoint.apply_edit(8, 5, 1);
 
     assert_eq!(checkpoint.position, 8, "compatibility inspection retains the edit boundary");
-    assert!(!checkpoint.is_valid_for("xxxxxxxxrest"));
+    assert!(
+        !checkpoint.is_valid_for("xxxxxxxxrest"),
+        "overlapped quote checkpoint must fail closed for the edited source"
+    );
 
     let lexer = PerlLexer::new("xxxxxxxxrest");
-    assert!(!lexer.can_restore(&checkpoint));
+    assert!(!lexer.can_restore(&checkpoint), "lexer must reject an invalidated quote checkpoint");
 }
 
 #[test]

@@ -99,6 +99,10 @@ pub(crate) fn capture_live_checkpoint(
 /// Restore the complete mutable checkpoint contract into the edited source and
 /// re-lex from that boundary to EOF. No old suffix is reused in this
 /// correctness-first strategy.
+///
+/// The bytes before `checkpoint.position` must be unchanged from the
+/// checkpoint's original source. Checkpoint validation can verify source-relative
+/// offsets, but it cannot detect changed prefix content.
 pub(crate) fn lex_from_live_checkpoint(
     source: &str,
     line_index: &LineIndex,
@@ -157,9 +161,14 @@ mod tests {
             .iter()
             .position(|token| token.text.as_ref() == "method")
             .ok_or_else(|| anyhow::anyhow!("method token is missing"))?;
-        let checkpoint = &lexed.live_checkpoints[method_index];
+        let method_start = lexed.tokens[method_index].start;
+        let checkpoint = lexed
+            .live_checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.position == method_start)
+            .ok_or_else(|| anyhow::anyhow!("method checkpoint is missing"))?;
 
-        assert_eq!(checkpoint.position, lexed.tokens[method_index].start);
+        assert_eq!(checkpoint.position, method_start);
         assert!(checkpoint.after_arrow, "method restart must preserve after_arrow");
         Ok(())
     }
@@ -190,7 +199,12 @@ mod tests {
             .iter()
             .position(|token| token.text.as_ref() == "method")
             .ok_or_else(|| anyhow::anyhow!("method token is missing"))?;
-        let expected = &lexed.live_checkpoints[method_index];
+        let method_start = lexed.tokens[method_index].start;
+        let expected = lexed
+            .live_checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.position == method_start)
+            .ok_or_else(|| anyhow::anyhow!("method checkpoint is missing"))?;
         let replayed = capture_live_checkpoint(source, expected.position)
             .ok_or_else(|| anyhow::anyhow!("live checkpoint replay failed"))?;
 

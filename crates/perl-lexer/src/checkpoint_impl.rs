@@ -205,7 +205,7 @@ mod tests {
         lexer.current_quote_op =
             Some(QuoteOperatorInfo { operator: "s".to_string(), delimiter: '{', start_pos: 28 });
         lexer.qw_recovery_enabled = false;
-        lexer.eof_emitted = false;
+        lexer.eof_emitted = true;
 
         let expected = lexer.checkpoint();
         let mut restored = PerlLexer::new(&input);
