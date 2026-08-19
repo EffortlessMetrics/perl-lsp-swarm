@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 const CHECK: &str = "public-beta-experience";
 const SCHEMA_VERSION: &str = "public_beta_experience.v1";
@@ -61,6 +61,10 @@ struct Args {
     /// Fan-in receipt JSON to validate.
     #[arg(long)]
     receipt: PathBuf,
+
+    /// Permit a structurally valid but not-yet-ready fan-in receipt.
+    #[arg(long)]
+    allow_not_proven: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -229,6 +233,14 @@ struct ReceiptRef {
     status: InputStatus,
     claim_boundary: String,
     limitation: Option<String>,
+    artifact_hashes: Option<ArtifactHashes>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ArtifactHashes {
+    vsix_sha256: String,
+    bundled_server_sha256: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -257,6 +269,7 @@ struct VerifiedChildArtifact {
     status: InputStatus,
     claim_boundary: String,
     limitation: Option<String>,
+    artifact_hashes: Option<ArtifactHashes>,
 }
 
 impl ChildReceipts {
@@ -301,6 +314,32 @@ fn exact_hex(value: &str, bytes: usize, field: &str) -> Result<()> {
         bail!("{field} must be exactly {} hexadecimal characters", bytes * 2);
     }
     Ok(())
+}
+
+fn unsafe_serialized_path(value: &str) -> bool {
+    value.is_empty()
+        || value.contains('\0')
+        || value.starts_with('/')
+        || value.starts_with('\\')
+        || (value.len() >= 2
+            && value.as_bytes()[0].is_ascii_alphabetic()
+            && value.as_bytes()[1] == b':')
+        || value.split(['/', '\\']).any(|component| component == "..")
+}
+
+fn safe_artifact_path(artifact_root: &Path, serialized_path: &str) -> Result<PathBuf> {
+    if unsafe_serialized_path(serialized_path) {
+        bail!("artifact path must stay below the receipt directory");
+    }
+    let root = fs::canonicalize(artifact_root)
+        .with_context(|| format!("canonicalizing receipt root {}", artifact_root.display()))?;
+    let path = fs::canonicalize(root.join(serialized_path)).with_context(|| {
+        format!("canonicalizing artifact path {}", root.join(serialized_path).display())
+    })?;
+    if !path.starts_with(&root) {
+        bail!("artifact path resolves outside the receipt directory");
+    }
+    Ok(path)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -410,10 +449,7 @@ fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
             (Some(path), Some(digest)) => {
                 non_empty(path, &format!("child_receipts.{name}.source_artifact_path"))?;
                 exact_hex(digest, 32, &format!("child_receipts.{name}.source_sha256"))?;
-                let source_path = Path::new(path);
-                if source_path.is_absolute()
-                    || source_path.components().any(|component| component == Component::ParentDir)
-                {
+                if unsafe_serialized_path(path) {
                     bail!(
                         "child_receipts.{name}.source_artifact_path must stay below the receipt directory"
                     );
@@ -427,10 +463,7 @@ fn validate_child_receipts(receipt: &Receipt) -> Result<()> {
             bail!("child_receipts.{name} must be owned by {expected_owner}");
         }
         non_empty(&child.artifact_path, &format!("child_receipts.{name}.artifact_path"))?;
-        let artifact_path = Path::new(&child.artifact_path);
-        if artifact_path.is_absolute()
-            || artifact_path.components().any(|component| component == Component::ParentDir)
-        {
+        if unsafe_serialized_path(&child.artifact_path) {
             bail!("child_receipts.{name}.artifact_path must stay below the receipt directory");
         }
         if child.candidate_id != receipt.candidate.candidate_id {
@@ -454,7 +487,8 @@ fn load_verified_child_artifact(
     receipt: &Receipt,
     artifact_root: &Path,
 ) -> Result<()> {
-    let path = artifact_root.join(&child.artifact_path);
+    let path = safe_artifact_path(artifact_root, &child.artifact_path)
+        .with_context(|| format!("validating child receipt artifact path {name}"))?;
     let bytes = fs::read(&path)
         .with_context(|| format!("reading child receipt artifact {name}: {}", path.display()))?;
     let digest = sha256_hex(&bytes);
@@ -490,6 +524,20 @@ fn load_verified_child_artifact(
     if artifact.limitation != child.limitation {
         bail!("child_receipts.{name} limitation differs from the verified artifact");
     }
+    if name == "installed_acceptance" {
+        let hashes = artifact.artifact_hashes.as_ref().ok_or_else(|| {
+            color_eyre::eyre::eyre!("child_receipts.{name} artifact lacks artifact_hashes")
+        })?;
+        exact_hex(&hashes.vsix_sha256, 32, "installed acceptance VSIX SHA-256")?;
+        exact_hex(
+            &hashes.bundled_server_sha256,
+            32,
+            "installed acceptance bundled-server SHA-256",
+        )?;
+        if child.artifact_hashes.as_ref() != Some(hashes) {
+            bail!("child_receipts.{name} artifact hashes differ from the parent receipt");
+        }
+    }
     Ok(())
 }
 
@@ -504,7 +552,8 @@ fn validate_source_receipt(
     else {
         return Ok(());
     };
-    let path = artifact_root.join(source_path);
+    let path = safe_artifact_path(artifact_root, source_path)
+        .with_context(|| format!("validating source receipt path {name}"))?;
     let bytes = fs::read(&path)
         .with_context(|| format!("reading source receipt {name}: {}", path.display()))?;
     let digest = sha256_hex(&bytes);
@@ -602,6 +651,67 @@ fn validate_installed_acceptance_source(
         bail!(
             "child_receipts.{name} installed-acceptance source belongs to a different frozen product"
         );
+    }
+
+    let server_identity =
+        source.get("server_identity").and_then(serde_json::Value::as_object).ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "child_receipts.{name} installed-acceptance source lacks server_identity"
+            )
+        })?;
+    if server_identity.get("source").and_then(serde_json::Value::as_str)
+        != Some("packaged_vsix_bundle")
+        || server_identity.get("path").and_then(serde_json::Value::as_str).is_none_or(str::is_empty)
+    {
+        bail!(
+            "child_receipts.{name} installed-acceptance source has incomplete packaged server identity"
+        );
+    }
+    let artifact_hashes =
+        source.get("artifact_hashes").and_then(serde_json::Value::as_object).ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "child_receipts.{name} installed-acceptance source lacks artifact_hashes"
+            )
+        })?;
+    let vsix_sha256 = artifact_hashes
+        .get("vsix_sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "child_receipts.{name} installed-acceptance source lacks vsix_sha256"
+            )
+        })?;
+    let bundled_server_sha256 = artifact_hashes
+        .get("bundled_server_sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "child_receipts.{name} installed-acceptance source lacks bundled_server_sha256"
+            )
+        })?;
+    exact_hex(vsix_sha256, 32, &format!("child_receipts.{name}.vsix_sha256"))?;
+    exact_hex(bundled_server_sha256, 32, &format!("child_receipts.{name}.bundled_server_sha256"))?;
+    let parent_hashes = child.artifact_hashes.as_ref().ok_or_else(|| {
+        color_eyre::eyre::eyre!("child_receipts.{name} parent receipt lacks artifact_hashes")
+    })?;
+    if parent_hashes.vsix_sha256 != vsix_sha256
+        || parent_hashes.bundled_server_sha256 != bundled_server_sha256
+    {
+        bail!("child_receipts.{name} source artifact hashes differ from the parent receipt");
+    }
+    let vsix_identity =
+        source.get("vsix_identity").and_then(serde_json::Value::as_object).ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "child_receipts.{name} installed-acceptance source lacks vsix_identity"
+            )
+        })?;
+    for field in ["extension_id", "version", "path"] {
+        if vsix_identity.get(field).and_then(serde_json::Value::as_str).is_none_or(str::is_empty) {
+            bail!("child_receipts.{name} installed-acceptance source lacks vsix_identity.{field}");
+        }
+    }
+    if source.get("claim_boundary").and_then(serde_json::Value::as_str).is_none_or(str::is_empty) {
+        bail!("child_receipts.{name} installed-acceptance source lacks claim_boundary");
     }
     Ok(())
 }
@@ -728,6 +838,17 @@ fn load(path: &Path) -> Result<Receipt> {
     Ok(serde_json::from_str(&content)?)
 }
 
+fn enforce_exit_status(status: OverallStatus, allow_not_proven: bool) -> Result<()> {
+    match status {
+        OverallStatus::Ready => Ok(()),
+        OverallStatus::Blocked => bail!("public-beta experience is blocked"),
+        OverallStatus::NotProven if allow_not_proven => Ok(()),
+        OverallStatus::NotProven => bail!(
+            "public-beta experience is not_proven; pass --allow-not-proven only for an intentional incomplete result"
+        ),
+    }
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
@@ -747,15 +868,14 @@ fn main() -> Result<()> {
         receipt.journey_cells.len(),
         receipt.child_receipts.iter().len()
     );
-    if status != OverallStatus::Ready {
-        bail!("public-beta experience is {}", status.as_str());
-    }
-    Ok(())
+    enforce_exit_status(status, args.allow_not_proven)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CellDisposition, OverallStatus, Receipt, validate, validate_child_artifacts};
+    use super::{
+        CellDisposition, OverallStatus, Receipt, sha256_hex, validate, validate_child_artifacts,
+    };
     use color_eyre::eyre::Result;
     use std::fs;
     use std::path::Path;
@@ -763,6 +883,14 @@ mod tests {
 
     fn fixture(content: &str) -> Result<Receipt> {
         Ok(serde_json::from_str(content)?)
+    }
+
+    fn create_file_symlink(link: &Path, target: &Path) -> Result<()> {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link)?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(target, link)?;
+        Ok(())
     }
 
     #[test]
@@ -855,6 +983,42 @@ mod tests {
     }
 
     #[test]
+    fn allow_not_proven_only_allows_intended_incomplete_statuses() -> Result<()> {
+        assert!(super::enforce_exit_status(OverallStatus::Blocked, true).is_err());
+        assert!(super::enforce_exit_status(OverallStatus::Blocked, false).is_err());
+        super::enforce_exit_status(OverallStatus::NotProven, true)?;
+        assert!(super::enforce_exit_status(OverallStatus::NotProven, false).is_err());
+        super::enforce_exit_status(OverallStatus::Ready, true)?;
+        Ok(())
+    }
+
+    #[test]
+    fn producer_shaped_verified_receipt_deserializes_through_fan_in_schema() -> Result<()> {
+        let artifact: super::VerifiedChildArtifact = serde_json::from_value(serde_json::json!({
+            "owner_issue": "#4346",
+            "schema_version": "verified_child_receipt.v1",
+            "receipt_schema_version": "installed_acceptance.v1",
+            "candidate_id": "v0.18.0-rc1",
+            "frozen_product_sha": "0123456789abcdef0123456789abcdef01234567",
+            "artifact_set_id": "v0.18.0-rc1-primary",
+            "status": "not_proven",
+            "claim_boundary": "Packaged VSIX and bundled-server journey exercised by the VS Code extension host.",
+            "limitation": "DAP preview is not exercised by this slice.",
+            "source_receipt_sha256": "a".repeat(64),
+            "artifact_hashes": {
+                "vsix_sha256": "b".repeat(64),
+                "bundled_server_sha256": "c".repeat(64)
+            }
+        }))?;
+        let hashes = artifact
+            .artifact_hashes
+            .ok_or_else(|| color_eyre::eyre::eyre!("producer receipt omitted artifact hashes"))?;
+        assert_eq!(hashes.vsix_sha256, "b".repeat(64));
+        assert_eq!(hashes.bundled_server_sha256, "c".repeat(64));
+        Ok(())
+    }
+
+    #[test]
     fn a_nonzero_zero_budget_count_cannot_claim_ready() -> Result<()> {
         let mut receipt =
             fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
@@ -895,7 +1059,18 @@ mod tests {
     #[test]
     fn installed_acceptance_source_uses_runtime_receipt_shape() -> Result<()> {
         let receipt = fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
-        let source: serde_json::Value = serde_json::from_slice(br#"{"schema_version":1,"outcome":"completed","repository_sha":"0123456789abcdef0123456789abcdef01234567","known_limitations":[]}"#)?;
+        let source: serde_json::Value = serde_json::from_slice(
+            br#"{
+                "schema_version":1,
+                "outcome":"completed",
+                "repository_sha":"0123456789abcdef0123456789abcdef01234567",
+                "known_limitations":[],
+                "claim_boundary":"Packaged VSIX and bundled-server journey.",
+                "server_identity":{"source":"packaged_vsix_bundle","path":"bin/linux-x64/perl-lsp"},
+                "artifact_hashes":{"vsix_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bundled_server_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+                "vsix_identity":{"extension_id":"EffortlessMetrics.perl-lsp-rs","version":"0.18.0","path":"extension"}
+            }"#,
+        )?;
         super::validate_installed_acceptance_source(
             "installed_acceptance",
             &receipt.child_receipts.installed_acceptance,
@@ -911,7 +1086,16 @@ mod tests {
             fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
         receipt.child_receipts.installed_acceptance.status = super::InputStatus::NotProven;
         let source: serde_json::Value = serde_json::from_slice(
-            br#"{"schema_version":1,"outcome":"not_proven","repository_sha":"0123456789abcdef0123456789abcdef01234567","known_limitations":["DAP preview is not exercised"]}"#,
+            br#"{
+                "schema_version":1,
+                "outcome":"not_proven",
+                "repository_sha":"0123456789abcdef0123456789abcdef01234567",
+                "known_limitations":["DAP preview is not exercised"],
+                "claim_boundary":"Packaged VSIX and bundled-server journey.",
+                "server_identity":{"source":"packaged_vsix_bundle","path":"bin/linux-x64/perl-lsp"},
+                "artifact_hashes":{"vsix_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bundled_server_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+                "vsix_identity":{"extension_id":"EffortlessMetrics.perl-lsp-rs","version":"0.18.0","path":"extension"}
+            }"#,
         )?;
         super::validate_installed_acceptance_source(
             "installed_acceptance",
@@ -929,6 +1113,235 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_missing_source_receipt_fails_closed() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.installed_acceptance.source_artifact_path =
+            Some("sources/packaged_bundle_journey_receipt.json".to_string());
+        receipt.child_receipts.installed_acceptance.source_sha256 = Some("a".repeat(64));
+        let artifact_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        assert!(validate_child_artifacts(&receipt, &artifact_root).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_source_path_cannot_escape_receipt_root() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        receipt.child_receipts.installed_acceptance.source_artifact_path =
+            Some("../packaged_bundle_journey_receipt.json".to_string());
+        receipt.child_receipts.installed_acceptance.source_sha256 = Some("a".repeat(64));
+        assert!(validate(&receipt).is_err());
+
+        for path in [
+            "C:/outside/packaged_bundle_journey_receipt.json",
+            r#"C:\outside\packaged_bundle_journey_receipt.json"#,
+            r#"\\server\share\packaged_bundle_journey_receipt.json"#,
+            "//server/share/packaged_bundle_journey_receipt.json",
+            "/tmp/packaged_bundle_journey_receipt.json",
+            r#"\tmp\packaged_bundle_journey_receipt.json"#,
+            r#"nested\..\packaged_bundle_journey_receipt.json"#,
+        ] {
+            receipt.child_receipts.installed_acceptance.source_artifact_path =
+                Some(path.to_string());
+            assert!(validate(&receipt).is_err(), "path should be rejected: {path}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_symlink_escape_fails_closed() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        let directory = tempdir()?;
+        let outside = tempdir()?;
+        for (_, child) in receipt.child_receipts.iter() {
+            let source_path = fixture_root.join(&child.artifact_path);
+            let target_path = directory.path().join(&child.artifact_path);
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(source_path, target_path)?;
+        }
+
+        let outside_artifact = outside.path().join("installed_acceptance.json");
+        let fixture_artifact = fixture_root.join("child_receipts/installed_acceptance.json");
+        fs::copy(&fixture_artifact, &outside_artifact)?;
+        let linked_artifact = directory.path().join("child_receipts/installed_acceptance.json");
+        fs::remove_file(&linked_artifact)?;
+        if let Err(error) = create_file_symlink(&linked_artifact, &outside_artifact) {
+            if cfg!(windows)
+                && error
+                    .root_cause()
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.raw_os_error() == Some(1314))
+            {
+                eprintln!(
+                    "NOT_PROVEN: symlink escape witness unavailable on Windows without symlink privilege: {error}"
+                );
+                return Ok(());
+            }
+            return Err(error);
+        }
+        receipt.child_receipts.installed_acceptance.sha256 =
+            sha256_hex(&fs::read(&outside_artifact)?);
+
+        assert!(validate_child_artifacts(&receipt, directory.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_manifest_hashes_are_required_and_bound() -> Result<()> {
+        let artifact_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        let mut missing =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        missing.child_receipts.installed_acceptance.artifact_hashes = None;
+        assert!(validate_child_artifacts(&missing, &artifact_root).is_err());
+
+        let mut mismatched =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        if let Some(hashes) =
+            mismatched.child_receipts.installed_acceptance.artifact_hashes.as_mut()
+        {
+            hashes.vsix_sha256 = "c".repeat(64);
+        }
+        assert!(validate_child_artifacts(&mismatched, &artifact_root).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_source_rejects_forged_minimal_receipt() -> Result<()> {
+        let receipt = fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let forged: serde_json::Value = serde_json::from_slice(
+            br#"{"schema_version":1,"outcome":"completed","repository_sha":"0123456789abcdef0123456789abcdef01234567","known_limitations":[]}"#,
+        )?;
+        assert!(
+            super::validate_installed_acceptance_source(
+                "installed_acceptance",
+                &receipt.child_receipts.installed_acceptance,
+                &receipt,
+                &forged,
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parent_fan_in_consumes_candidate_bound_installed_pair() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        let directory = tempdir()?;
+        for (_, child) in receipt.child_receipts.iter() {
+            let source_path = fixture_root.join(&child.artifact_path);
+            let target_path = directory.path().join(&child.artifact_path);
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(target_path, fs::read(source_path)?)?;
+        }
+        {
+            let claim_boundary =
+                "Packaged VSIX and bundled-server journey exercised by the VS Code extension host.";
+            let source = serde_json::json!({
+                "schema_version": 1,
+                "outcome": "not_proven",
+                "repository_sha": receipt.candidate.frozen_product_sha,
+                "known_limitations": ["DAP preview is not exercised by this slice."],
+                "claim_boundary": claim_boundary,
+                "server_identity": {"source": "packaged_vsix_bundle", "path": "bin/linux-x64/perl-lsp"},
+                "artifact_hashes": {"vsix_sha256": "a".repeat(64), "bundled_server_sha256": "b".repeat(64)},
+                "vsix_identity": {"extension_id": "EffortlessMetrics.perl-lsp-rs", "version": "0.18.0", "path": "extension"}
+            });
+            let source_bytes = serde_json::to_vec_pretty(&source)?;
+            let source_path = directory.path().join("sources/packaged_bundle_journey_receipt.json");
+            fs::create_dir_all(
+                source_path
+                    .parent()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("missing source parent"))?,
+            )?;
+            fs::write(&source_path, &source_bytes)?;
+
+            let verified = serde_json::json!({
+                "owner_issue": "#4346",
+                "schema_version": "verified_child_receipt.v1",
+                "receipt_schema_version": "installed_acceptance.v1",
+                "candidate_id": receipt.candidate.candidate_id,
+                "frozen_product_sha": receipt.candidate.frozen_product_sha,
+                "artifact_set_id": receipt.candidate.artifact_set_id,
+                "status": "not_proven",
+                "claim_boundary": claim_boundary,
+                "limitation": "DAP preview is not exercised by this slice.",
+                "source_receipt_sha256": sha256_hex(&source_bytes),
+                "artifact_hashes": {
+                    "vsix_sha256": "a".repeat(64),
+                    "bundled_server_sha256": "b".repeat(64)
+                }
+            });
+            let verified_bytes = serde_json::to_vec_pretty(&verified)?;
+            let verified_path = directory.path().join("verified/installed_acceptance.json");
+            fs::create_dir_all(
+                verified_path
+                    .parent()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("missing verified parent"))?,
+            )?;
+            fs::write(&verified_path, &verified_bytes)?;
+
+            let installed = &mut receipt.child_receipts.installed_acceptance;
+            installed.source_artifact_path =
+                Some("sources/packaged_bundle_journey_receipt.json".to_string());
+            installed.source_sha256 = Some(sha256_hex(&source_bytes));
+            installed.artifact_path = "verified/installed_acceptance.json".to_string();
+            installed.sha256 = sha256_hex(&verified_bytes);
+            installed.status = super::InputStatus::NotProven;
+            installed.claim_boundary = claim_boundary.to_string();
+            installed.limitation = Some("DAP preview is not exercised by this slice.".to_string());
+            installed.artifact_hashes = Some(super::ArtifactHashes {
+                vsix_sha256: "a".repeat(64),
+                bundled_server_sha256: "b".repeat(64),
+            });
+        }
+        validate_child_artifacts(&receipt, directory.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn installed_acceptance_verified_status_must_match_fan_in() -> Result<()> {
+        let mut receipt =
+            fixture(include_str!("../../fixtures/experience/public_beta/ready.json"))?;
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/experience/public_beta");
+        let directory = tempdir()?;
+        let mut installed_digest = None;
+        for (name, child) in receipt.child_receipts.iter() {
+            let source_path = fixture_root.join(&child.artifact_path);
+            let target_path = directory.path().join(&child.artifact_path);
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut bytes = fs::read(source_path)?;
+            if name == "installed_acceptance" {
+                let mut artifact: serde_json::Value = serde_json::from_slice(&bytes)?;
+                artifact["status"] = serde_json::Value::String("not_proven".to_string());
+                bytes = serde_json::to_vec_pretty(&artifact)?;
+                installed_digest = Some(super::sha256_hex(&bytes));
+            }
+            fs::write(target_path, bytes)?;
+        }
+        receipt.child_receipts.installed_acceptance.sha256 = installed_digest
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing installed artifact"))?;
+
+        assert!(validate_child_artifacts(&receipt, directory.path()).is_err());
         Ok(())
     }
 

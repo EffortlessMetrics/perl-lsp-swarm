@@ -4,7 +4,8 @@
 
 pub use perl_parser_core::ast::{Node, NodeKind, SourceLocation};
 pub use perl_parser_core::error::{
-    ErrorCategory, ErrorClass, ParseError, ParseOutput, ParseResult,
+    ErrorCategory, ErrorClass, ParseDiagnosticAnchor, ParseError, ParseOutput, ParseResult,
+    ResolvedParseDiagnosticAnchor,
 };
 pub use perl_parser_core::parser::Parser;
 

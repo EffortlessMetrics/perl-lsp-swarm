@@ -1,0 +1,6 @@
+---
+source: crates/perl-parser/tests/ast_snap.rs
+assertion_line: 301
+expression: "parse_errors(\"my $x = ;\")"
+---
+Missing operand in expression

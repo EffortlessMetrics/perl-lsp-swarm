@@ -11,6 +11,8 @@
 //! # Modules
 //!
 //! - [`ast`] -- The primary AST used by the current recursive-descent parser.
+//! - [`invariant_policy`] -- Exhaustive range, child, payload, and recovery policy.
+//! - [`invariants`] -- Bounded structural validation shared by parser paths.
 //! - [`v2`] -- Experimental second-generation AST re-exported from `perl-ast-v2`
 //!   for incremental parsing.
 //!
@@ -42,12 +44,19 @@
 //! # Traversal
 //!
 //! [`Node`] exposes `to_sexp()` for a tree-sitter-compatible S-expression and
-//! `count_nodes()` for a quick size metric. For deeper inspection, match on
-//! [`NodeKind`] variants and recurse into child nodes.
+//! `count_nodes()` for a quick size metric. [`validate_ast`] uses the canonical
+//! exhaustive child iterator to check source and tree invariants without a
+//! recursive call stack. The policy registry is reconciled directly with
+//! [`NodeKind::ALL_KIND_NAMES`], so a new variant cannot inherit an undocumented
+//! permissive policy.
 
 pub mod ast;
 /// Static classification metadata for [`NodeKind`] variants: categories and flags.
 pub mod classification;
+/// Exhaustive invariant policy metadata for every [`NodeKind`] variant.
+pub mod invariant_policy;
+/// Bounded structural validation for parser-produced ASTs.
+pub mod invariants;
 
 /// Incremental parsing AST types extracted into a dedicated microcrate.
 pub use perl_ast_v2 as v2;
@@ -56,5 +65,16 @@ pub use perl_ast_v2 as v2;
 pub use ast::GotoTargetForm;
 /// Primary AST node -- the building block of every syntax tree.
 pub use ast::{FieldId, Node, NodeKind};
+/// Exhaustive AST invariant policy types and registry.
+pub use invariant_policy::{
+    AST_NODE_POLICIES, AST_NODE_POLICY_SCHEMA_VERSION, AstChildContainmentPolicy,
+    AstChildOrderPolicy, AstChildOverlapPolicy, AstEmptyRangePolicy, AstNodeClassification,
+    AstNodePolicy, AstPayloadPolicy, AstSourceBacking, NodeKindFixture, all_ast_node_policies,
+    ast_node_policy, ast_node_policy_of, node_kind_fixtures, policy_accepts_observed_children,
+};
+/// AST structural validation types and entry point.
+pub use invariants::{
+    AstInvariantCode, AstInvariantFinding, AstInvariantOptions, AstInvariantReport, validate_ast,
+};
 /// Byte-offset span indicating where a node appears in source text.
 pub use perl_position_tracking::SourceLocation;

@@ -90,9 +90,14 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 - Applies the documented suppression policy to diff-scoped PR evidence as well
   as repo-wide RIPR+ receipts. Suppressed paths remain visible in receipts, but
   they do not count as new blocking gaps.
-- In CI, review guidance has an explicit timeout. If guidance cannot produce an
-  actionable receipt for a new gap, the quality gate reports the missing repair
-  packet instead of hiding the failure.
+- In CI, review guidance has an explicit timeout. When the guidance pass does
+  not finish, the harness emits an `incomplete` receipt that names the
+  gate-actionable seams (`reachable_unrevealed` / `no_static_path`) from the
+  completed diff-scoped raw check, so the quality gate blocks on named
+  file/line/seam evidence instead of an unnameable count (#10054). The
+  suggested-proof text on these fallback names is generic, not
+  analyzer-derived, and the receipt warning says so. Only when the raw check
+  is also unavailable does the gate report the missing repair packet.
 - Emits non-blocking warning annotations from `comments[]` only.
 - Produces mutation-routing evidence under
   `target/xtask/impacted-evidence/`.

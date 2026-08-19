@@ -87,12 +87,6 @@ inlayHintProvider:
 inlineValueProvider: true
 linkedEditingRangeProvider: true
 monikerProvider: true
-notebookDocumentSync:
-  notebookSelector:
-    - cells:
-        - language: perl
-      notebook: jupyter-notebook
-  save: true
 positionEncoding: utf-16
 referencesProvider: true
 renameProvider:
@@ -164,47 +158,7 @@ typeHierarchyProvider:
   workDoneProgressOptions: {}
 workspace:
   fileOperations:
-    didCreate:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
-    didDelete:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
     didRename:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
-    willCreate:
-      filters:
-        - pattern:
-            glob: "**/*.pl"
-        - pattern:
-            glob: "**/*.pm"
-        - pattern:
-            glob: "**/*.t"
-        - pattern:
-            glob: "**/*.psgi"
-    willDelete:
       filters:
         - pattern:
             glob: "**/*.pl"

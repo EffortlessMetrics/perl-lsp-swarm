@@ -11,7 +11,6 @@ cargo_package = "perllsp"
 package_manifest = "crates/perllsp/Cargo.toml"
 implementation_crate = "perl-lsp-rs"
 implementation_manifest = "crates/perl-lsp-rs/Cargo.toml"
-compatibility_executable = "perl-lsp"
 
 [extension]
 publisher = "EffortlessMetrics"

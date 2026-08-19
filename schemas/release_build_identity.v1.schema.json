@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/release_build_identity.v1.schema.json",
+  "title": "perl_lsp.release_build_identity.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_role",
+    "candidate_identity",
+    "product_identity_contract_digest",
+    "profile",
+    "release_topology_digest",
+    "release_version",
+    "repository",
+    "schema_version",
+    "source_revision",
+    "source_tree_digest",
+    "target",
+    "toolchain_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "perl_lsp.release_build_identity.v1"
+    },
+    "repository": {
+      "enum": [
+        "EffortlessMetrics/perl-lsp",
+        "EffortlessMetrics/perl-lsp-swarm"
+      ]
+    },
+    "release_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+      "maxLength": 64
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_tree_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "target": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z_.-]{2,127}$",
+      "maxLength": 128
+    },
+    "profile": {
+      "const": "release"
+    },
+    "candidate_identity": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z_.:@+-]{0,127}$",
+      "maxLength": 128
+    },
+    "artifact_role": {
+      "enum": [
+        "archive",
+        "managed",
+        "package_install"
+      ]
+    },
+    "product_identity_contract_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "release_topology_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "toolchain_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

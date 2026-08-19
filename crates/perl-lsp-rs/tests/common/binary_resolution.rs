@@ -2,17 +2,12 @@
 //!
 //! Resolution order (fixed for test reliability):
 //! 1. PERL_LSP_BIN env var (explicit override)
-//! 2. Compile-time CARGO_BIN_EXE (guaranteed correct during `cargo test -p perl-lsp-rs`)
-//! 3. Runtime CARGO_BIN_EXE_* (fallback for edge cases)
-//! 4. Workspace target directory binaries (DEBUG first, then release)
-//! 5. PATH lookup
-//! 6. cargo run fallback (slow but always works)
+//! 2. Runtime `CARGO_BIN_EXE_perllsp` (when owned by the product package)
+//! 3. Workspace target directory binaries (DEBUG first, then release)
+//! 4. PATH lookup
+//! 5. `cargo run -p perllsp` fallback
 
 use std::process::Command;
-
-/// Compile-time path to the perl-lsp binary, set by Cargo when building integration tests.
-/// This is the most reliable way to get the correct binary path.
-pub(crate) const CARGO_BIN_EXE: Option<&str> = option_env!("CARGO_BIN_EXE_perl-lsp");
 
 pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
     // Resolution order (fixed for test reliability):
@@ -34,26 +29,8 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         v.push(c);
     }
 
-    // 2. Compile-time CARGO_BIN_EXE (most reliable for `cargo test`)
-    // This is set at compile time by Cargo and points to the exact binary that was built
-    if let Some(p) = CARGO_BIN_EXE {
-        let mut c = Command::new(p);
-        c.arg("--stdio");
-        v.push(c);
-    }
-
-    // 3. Runtime CARGO_BIN_EXE_* (fallback, in case compile-time wasn't set)
+    // 2. Runtime Cargo product-binary path.
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_perllsp") {
-        let mut c = Command::new(p);
-        c.arg("--stdio");
-        v.push(c);
-    }
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_perl-lsp") {
-        let mut c = Command::new(p);
-        c.arg("--stdio");
-        v.push(c);
-    }
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_perl_lsp") {
         let mut c = Command::new(p);
         c.arg("--stdio");
         v.push(c);
@@ -68,49 +45,41 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         let workspace_root =
             crate_dir.ancestors().find(|p| p.join("Cargo.lock").exists()).unwrap_or(crate_dir);
 
-        // Try DEBUG binary first (this is what `cargo test` builds by default)
-        let debug_binary = workspace_root.join("target/debug/perllsp");
-        if debug_binary.exists() {
-            let mut c = Command::new(&debug_binary);
-            c.arg("--stdio");
-            v.push(c);
+        // Try DEBUG binary first (this is what `cargo test` builds by default).
+        // The executable suffix matters: on Windows the file is `perllsp.exe`, so a
+        // suffix-less `exists()` check silently skips a perfectly good local binary
+        // and forces the slow `cargo run` fallback below.
+        // Prefer the profile these tests were themselves built with, so a `cargo test
+        // --release` run does not silently drive a debug server (or vice versa).
+        for profile in active_profile_order() {
+            let binary = workspace_root.join("target").join(profile).join(perllsp_file_name());
+            if binary.exists() {
+                let mut c = Command::new(&binary);
+                c.arg("--stdio");
+                v.push(c);
+            }
         }
 
-        let debug_compat_binary = workspace_root.join("target/debug/perl-lsp");
-        if debug_compat_binary.exists() {
-            let mut c = Command::new(&debug_compat_binary);
-            c.arg("--stdio");
-            v.push(c);
-        }
-
-        let release_binary = workspace_root.join("target/release/perllsp");
-        if release_binary.exists() {
-            let mut c = Command::new(&release_binary);
-            c.arg("--stdio");
-            v.push(c);
-        }
-
-        let release_compat_binary = workspace_root.join("target/release/perl-lsp");
-        if release_compat_binary.exists() {
-            let mut c = Command::new(&release_compat_binary);
+        // The server binary lives in the `perllsp` package, not in `perl-lsp-rs` where
+        // these tests live, so `cargo test -p perl-lsp-rs` never builds it. If nothing
+        // above resolved, build it ONCE here rather than leaving the `cargo run`
+        // fallback to compile inside a per-request timeout it cannot possibly meet.
+        if v.is_empty()
+            && let Some(built) = ensure_perllsp_built(workspace_root)
+        {
+            let mut c = Command::new(built);
             c.arg("--stdio");
             v.push(c);
         }
     }
 
-    // 5. Try the public command from PATH, then the compatibility alias
+    // 4. Try the public command from PATH.
     {
         let mut c = Command::new("perllsp");
         c.arg("--stdio");
         v.push(c);
     }
-    {
-        let mut c = Command::new("perl-lsp");
-        c.arg("--stdio");
-        v.push(c);
-    }
-
-    // 6. Fallback: use cargo run with debug profile (matches what tests build)
+    // 5. Fallback: use cargo run with debug profile (matches what tests build)
     // This is SLOW because it may need to compile, but always works
     {
         let mut c = Command::new("cargo");
@@ -118,11 +87,62 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         v.push(c);
     }
 
-    {
-        let mut c = Command::new("cargo");
-        c.args(["run", "-q", "-p", "perl-lsp-rs", "--", "--stdio"]);
-        v.push(c);
-    }
-
     v.into_iter()
+}
+
+/// File name of the server executable, including the platform suffix.
+fn perllsp_file_name() -> String {
+    format!("perllsp{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// Cargo profile directory these tests were compiled into.
+fn active_profile() -> &'static str {
+    if cfg!(debug_assertions) { "debug" } else { "release" }
+}
+
+/// Target-directory profiles to probe, most-appropriate first.
+fn active_profile_order() -> [&'static str; 2] {
+    if cfg!(debug_assertions) { ["debug", "release"] } else { ["release", "debug"] }
+}
+
+/// Build the `perllsp` binary once per test process and return its path.
+///
+/// The tests spawn a server owned by a different package, so nothing in
+/// `cargo test -p perl-lsp-rs` guarantees it exists. Building it here — before any
+/// request deadline starts — keeps the cost out of `initialize`, which previously
+/// timed out against an inline `cargo run` that needed roughly a minute to compile.
+fn ensure_perllsp_built(workspace_root: &std::path::Path) -> Option<std::path::PathBuf> {
+    static BUILT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            // Build the profile these tests were built with. Building debug from a
+            // `cargo test --release` run would hand the suite a debug server and
+            // quietly change the performance characteristics under measurement.
+            let profile = active_profile();
+            let mut args = vec!["build", "-q", "-p", "perllsp", "--bin", "perllsp"];
+            if profile == "release" {
+                args.push("--release");
+            }
+            let status =
+                Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()))
+                    .args(&args)
+                    .current_dir(workspace_root)
+                    .status();
+            match status {
+                Ok(s) if s.success() => {
+                    let path =
+                        workspace_root.join("target").join(profile).join(perllsp_file_name());
+                    path.exists().then_some(path)
+                }
+                Ok(s) => {
+                    eprintln!("perl-lsp-rs tests: `cargo build -p perllsp` failed with {s}");
+                    None
+                }
+                Err(e) => {
+                    eprintln!("perl-lsp-rs tests: could not run `cargo build -p perllsp`: {e}");
+                    None
+                }
+            }
+        })
+        .clone()
 }

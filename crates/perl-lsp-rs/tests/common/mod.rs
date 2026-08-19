@@ -7,7 +7,7 @@
 //! - **Response Matching**: Match by ID for request/response pairing
 //! - **Timeouts**: Configurable via env vars, with sensible defaults
 //! - **Quiet Drain**: Wait for server to settle after changes before assertions
-//! - **Portable Spawn**: PERL_LSP_BIN -> CARGO_BIN_EXE_* -> PATH -> cargo run fallback
+//! - **Portable Spawn**: PERL_LSP_BIN -> canonical perllsp artifact -> PATH -> cargo run fallback
 //!
 //! ## Environment Variables
 //!
@@ -53,7 +53,7 @@ pub use protocol_io::{
     read_response_timeout, send_raw, send_raw_message, send_request_no_wait,
 };
 
-use binary_resolution::{CARGO_BIN_EXE, resolve_perl_lsp_cmds};
+use binary_resolution::resolve_perl_lsp_cmds;
 use protocol_io::{
     ERR_TEST_TIMEOUT, error_response_for_request, map_send_error, send_message_inner,
 };
@@ -156,14 +156,9 @@ pub fn start_lsp_server() -> LspServer {
             eprintln!("╠════════════════════════════════════════════════════════════════════╣");
             eprintln!("║ Resolution order tried:                                            ║");
             eprintln!("║  1. PERL_LSP_BIN env var: {:?}", std::env::var("PERL_LSP_BIN").ok());
-            eprintln!("║  2. Compile-time CARGO_BIN_EXE: {:?}", CARGO_BIN_EXE);
             eprintln!(
-                "║  3. Runtime CARGO_BIN_EXE_perl-lsp: {:?}",
-                std::env::var("CARGO_BIN_EXE_perl-lsp").ok()
-            );
-            eprintln!(
-                "║  4. Runtime CARGO_BIN_EXE_perl_lsp: {:?}",
-                std::env::var("CARGO_BIN_EXE_perl_lsp").ok()
+                "║  2. Runtime CARGO_BIN_EXE_perllsp: {:?}",
+                std::env::var("CARGO_BIN_EXE_perllsp").ok()
             );
             if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
                 let crate_dir = std::path::Path::new(&manifest_dir);
@@ -171,8 +166,8 @@ pub fn start_lsp_server() -> LspServer {
                     .ancestors()
                     .find(|p| p.join("Cargo.lock").exists())
                     .unwrap_or(crate_dir);
-                let debug_binary = workspace_root.join("target/debug/perl-lsp");
-                let release_binary = workspace_root.join("target/release/perl-lsp");
+                let debug_binary = workspace_root.join("target/debug/perllsp");
+                let release_binary = workspace_root.join("target/release/perllsp");
                 eprintln!(
                     "║  5. Debug binary exists: {} ({})",
                     debug_binary.exists(),
@@ -184,15 +179,15 @@ pub fn start_lsp_server() -> LspServer {
                     release_binary.display()
                 );
             }
-            eprintln!("║  7. perl-lsp in PATH: {:?}", which::which("perl-lsp").ok());
-            eprintln!("║  8. cargo run fallback");
+            eprintln!("║  5. perllsp in PATH: {:?}", which::which("perllsp").ok());
+            eprintln!("║  6. cargo run -p perllsp fallback");
             eprintln!("╠════════════════════════════════════════════════════════════════════╣");
             eprintln!("║ Last error: {:?}", last_err);
             eprintln!("╠════════════════════════════════════════════════════════════════════╣");
             eprintln!("║ HINTS:                                                             ║");
-            eprintln!("║  • Run: cargo build -p perl-lsp-rs   (builds debug binary)            ║");
+            eprintln!("║  • Run: cargo build -p perllsp --bin perllsp                         ║");
             eprintln!("║  • Or:  cargo test -p perl-lsp-rs    (builds + tests automatically)   ║");
-            eprintln!("║  • Set PERL_LSP_BIN=/path/to/perl-lsp for custom binary            ║");
+            eprintln!("║  • Set PERL_LSP_BIN=/path/to/perllsp for a custom product binary    ║");
             eprintln!("╚════════════════════════════════════════════════════════════════════╝");
             must(Err::<std::process::Child, _>(format!(
                 "Failed to start perl-lsp via any available method: {:?}",

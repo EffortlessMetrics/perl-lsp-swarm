@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "incremental_public_modules": [
+    {
+      "name": "incremental_advanced_reuse",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#6707",
+      "target_owner": "#7081",
+      "exit_condition": "Quarantine as non-production analytical similarity or retire.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_checkpoint",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Replace with canonical checkpoint/restart contracts or remove.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_document",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#6707",
+      "target_owner": "#7081",
+      "exit_condition": "Quarantine post-full-parse reuse and retain only proven algorithms.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_edit",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Forward to the canonical Edit contract or remove.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_handler_v2",
+      "classification": "retire",
+      "disposition": "remove",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Remove the parser-owned LSP handler surface.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_integration",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Migrate consumers to the canonical incremental API.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_simple",
+      "classification": "compatibility_reexport",
+      "disposition": "deprecate",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Forward to the canonical API or remove.",
+      "production_eligible": false
+    },
+    {
+      "name": "incremental_v2",
+      "classification": "experimental",
+      "disposition": "gate",
+      "owner": "#6707",
+      "target_owner": "#7081",
+      "exit_condition": "Quarantine noncanonical reuse paths until an admitted strategy is proven.",
+      "production_eligible": false
+    }
+  ],
+  "incremental_public_exports": [
+    {
+      "name": "checkpoint::LexCheckpoint",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain behind the canonical restart contract once generation identity is complete.",
+      "production_eligible": false
+    },
+    {
+      "name": "checkpoint::ParseCheckpoint",
+      "classification": "retire",
+      "disposition": "remove",
+      "owner": "#6734",
+      "target_owner": "#6977",
+      "exit_condition": "Remove the post-hoc pseudo continuation checkpoint.",
+      "production_eligible": false
+    },
+    {
+      "name": "checkpoint::ScopeSnapshot",
+      "classification": "retire",
+      "disposition": "remove",
+      "owner": "#6734",
+      "target_owner": "#6977",
+      "exit_condition": "Move any real scope projection to its semantic owner or remove.",
+      "production_eligible": false
+    },
+    {
+      "name": "diagnostics::LexRestartReport",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain as the diagnostics component of the canonical ReparseResult contract.",
+      "production_eligible": true
+    },
+    {
+      "name": "diagnostics::LexRestartStrategy",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#6704",
+      "target_owner": "#6982",
+      "exit_condition": "Retain as the strategy component of the canonical ReparseResult contract.",
+      "production_eligible": true
+    },
+    {
+      "name": "diagnostics::ReparseResult",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6710",
+      "target_owner": "#7001",
+      "exit_condition": "Migrate into the canonical generation-bound snapshot/result contract.",
+      "production_eligible": true
+    },
+    {
+      "name": "edit::Edit",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Remain a canonical production edit input.",
+      "production_eligible": true
+    },
+    {
+      "name": "perl_line_index::LineIndex",
+      "classification": "compatibility_reexport",
+      "disposition": "review",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Keep only if downstream consumers require this exact re-export.",
+      "production_eligible": false
+    },
+    {
+      "name": "snapshot::ParseGeneration",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Monotonic committed-generation identity with checked advancement (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshot",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Canonical generation-bound parser result authority: exact source digest, disposition, strategy, native output (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshotStrategy",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Production-path identity for each committed generation (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseSnapshotValidationError",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Typed snapshot/source and disposition mismatch contract (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "snapshot::ParseTerminalDisposition",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#7001",
+      "target_owner": "#6975",
+      "exit_condition": "Typed terminal classification for one exact source generation (#7001).",
+      "production_eligible": true
+    },
+    {
+      "name": "state::IncrementalState",
+      "classification": "incremental_parser",
+      "disposition": "retain",
+      "owner": "#6701",
+      "target_owner": "#6975",
+      "exit_condition": "Remain canonical until the generation-bound snapshot API supersedes its public shape.",
+      "production_eligible": true
+    },
+    {
+      "name": "strategy::MAX_EDIT_SIZE",
+      "classification": "experimental",
+      "disposition": "review",
+      "owner": "#6707",
+      "target_owner": "#7072",
+      "exit_condition": "Replace public heuristic constants with typed strategy policy or make private.",
+      "production_eligible": false
+    }
+  ],
+  "incremental_public_functions": [
+    "apply_edits"
+  ]
+}
