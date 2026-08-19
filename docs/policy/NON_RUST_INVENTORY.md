@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11127 |
+| Total tracked files | 11128 |
 | Rust-family files | 3392 |
-| Non-Rust files | 7735 |
-| Allowlisted | 5460 |
+| Non-Rust files | 7736 |
+| Allowlisted | 5461 |
 | Unclassified | 2275 |
 
 ## Non-Rust files by category
@@ -20,7 +20,7 @@
 | documentation | 2537 |
 | generated | 2 |
 | production | 298 |
-| test | 1825 |
+| test | 1826 |
 | tooling | 460 |
 | unclassified | 2275 |
 
@@ -3218,6 +3218,7 @@
 | `clients/sublime/LSP-perllsp/release.py` | production | `non-rust-sublime-release-installer` | editor/sublime |
 | `clients/sublime/LSP-perllsp/server-manifest.json` | documentation | `non-rust-sublime-server-manifest` | editor/sublime |
 | `clients/sublime/LSP-perllsp/sublime-package.json` | documentation | `non-rust-sublime-package-manifest` | editor/sublime |
+| `clients/sublime/LSP-perllsp/tests/test_command_dispatch_contract.py` | test | `non-rust-sublime-dispatch-contract-test` | editor/sublime |
 | `clients/sublime/LSP-perllsp/tests/test_command_receipt.py` | test | `non-rust-test-command-receipt` | editor/sublime |
 | `clients/sublime/LSP-perllsp/tests/test_command_surface.py` | test | `non-rust-test-command-surface` | editor/sublime |
 | `clients/sublime/LSP-perllsp/tests/test_compatibility.py` | test | `non-rust-sublime-compatibility-test` | editor/sublime |

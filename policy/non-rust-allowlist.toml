@@ -1894,6 +1894,19 @@ created = "2026-08-17"
 review_after = "2026-09-17"
 
 [[allow]]
+id = "non-rust-sublime-dispatch-contract-test"
+path = "clients/sublime/LSP-perllsp/tests/test_command_dispatch_contract.py"
+kind = "test"
+language = "python"
+surface = "editor"
+classification = "test"
+owner = "editor/sublime"
+reason = "Source-contract tests pinning the palette-dispatch seam repair (#9610): no session gating in is_enabled, the window-manager session fallback, try-wrapped execute_command dispatch, and promise-rejection recording."
+covered_by = ["Sublime host / ubuntu-latest", "Sublime host / windows-latest", "Sublime host / macos-latest", "cargo xtask check-file-policy"]
+created = "2026-08-19"
+review_after = "2026-09-19"
+
+[[allow]]
 id = "non-rust-sublime-host-contract-test"
 path = "clients/sublime/LSP-perllsp/tests/test_host_contract.py"
 kind = "test"
