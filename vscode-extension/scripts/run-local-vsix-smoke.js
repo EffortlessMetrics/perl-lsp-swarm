@@ -190,7 +190,9 @@ function initialReceipt(revision) {
     repository_sha: revision,
     platform: process.platform,
     architecture: process.arch,
-    vscode_version: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'unknown',
+    // One default across receipt and child check: the extension-host child
+    // records 'stable' when the matrix version is unset, so we do too.
+    vscode_version: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
     source_label: (process.env.PERL_LSP_SMOKE_SOURCE_LABEL || '').trim() || 'local-current-source',
     server: {
       source_sha: serverSourceRevision || null,

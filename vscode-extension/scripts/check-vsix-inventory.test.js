@@ -48,6 +48,20 @@ void test('classifies byte-only growth separately from structural package drift'
   assert.equal(classifyInventoryViolations(['new packaged file: unexpected.exe']), 'structural');
 });
 
+void test('near-miss size messages are never classified as size-only', () => {
+  // size_only admits installed behavior through behavior_safe, so messages
+  // that merely resemble the size pattern must stay structural.
+  assert.equal(
+    classifyInventoryViolations(['file out/extension.js grew from 8 to 10']),
+    'structural',
+  );
+  assert.equal(
+    classifyInventoryViolations(['file out/extension.js grew from 8 to 10 bytes; see receipt']),
+    'structural',
+  );
+  assert.equal(classifyInventoryViolations(['total bytes grew from 10 to 12 ']), 'structural');
+});
+
 void test('classifies an unchanged inventory as pass', () => {
   assert.equal(classifyInventoryViolations([]), 'pass');
 });

@@ -74,6 +74,7 @@ jobs:
         run: >-
           node --test
           scripts/check-vsix-inventory-transition.test.js
+          scripts/check-vsix-inventory.test.js
           scripts/run-local-vsix-smoke.test.js
 
       - name: Cache Cargo dependencies

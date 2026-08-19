@@ -117,7 +117,14 @@ function ensureDistinctBase(candidateSha, baseSha, source = 'base revision') {
 
 function resolveBaseRevision(candidateSha, explicitBase = '') {
   const requested = explicitBase.trim() || (process.env.PERL_LSP_PACKAGE_BASE_SHA || '').trim();
-  if (requested && !/^0+$/.test(requested)) {
+  if (requested) {
+    // An explicit base (including an all-zero placeholder) is an operator
+    // claim: reject it loudly rather than silently falling back.
+    if (!/^[0-9a-f]{40}$/.test(requested)) {
+      throw new Error(
+        `requested base revision must be a full lowercase commit SHA, got ${JSON.stringify(requested)}`,
+      );
+    }
     return ensureDistinctBase(candidateSha, resolveRevision(requested), 'requested base revision');
   }
 
@@ -281,7 +288,11 @@ function validateInventoryObject(value, label = 'inventory') {
 function normalizedInventory(value) {
   validateInventoryObject(value);
   const files = Object.fromEntries(
-    Object.entries(value.files).sort(([left], [right]) => left.localeCompare(right)),
+    // Code-unit ordering: locale-sensitive collation could produce different
+    // digests for the same package on runners with different ICU/locale data.
+    Object.entries(value.files).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    ),
   );
   return {
     schema_version: 1,

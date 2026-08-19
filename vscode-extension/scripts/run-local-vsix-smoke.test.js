@@ -155,6 +155,54 @@ function transitionReport(overrides = {}) {
   };
 }
 
+void test('maps a proven transition to a passing inventory stage', () => {
+  const stage = interpretTransitionResult(
+    {
+      status: 0,
+      stdout: JSON.stringify(
+        transitionReport({
+          state: 'transition_candidate',
+          passed: true,
+          package_policy_class: 'pass',
+          behavior_safe: true,
+          policy_violations: [],
+        }),
+      ),
+      stderr: '',
+      error: null,
+    },
+    'a'.repeat(40),
+  );
+  assert.equal(stage.status, 'pass');
+  assert.equal(stage.classification, 'pass');
+  assert.equal(stage.behavior_safe, true);
+  assert.equal(stage.exit_code, 0);
+});
+
+void test('a contradictory zero-exit non-pass classification is not proven', () => {
+  // exit 0 with passed:true but a size_only classification satisfies no known
+  // branch and must fall to the catch-all rather than being promoted.
+  const stage = interpretTransitionResult(
+    {
+      status: 0,
+      stdout: JSON.stringify(
+        transitionReport({
+          state: 'transition_candidate',
+          passed: true,
+          package_policy_class: 'size_only',
+          behavior_safe: true,
+          policy_violations: [],
+        }),
+      ),
+      stderr: '',
+      error: null,
+    },
+    'a'.repeat(40),
+  );
+  assert.equal(stage.status, 'not_proven');
+  assert.equal(stage.behavior_safe, false);
+});
+
 void test('maps size-only transition policy red to a safe failed inventory stage', () => {
   const stage = interpretTransitionResult(
     { status: 1, stdout: JSON.stringify(transitionReport()), stderr: '', error: null },
