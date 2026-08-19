@@ -4240,9 +4240,9 @@ gates:
     fn shell_command_natural_exit_preserves_actual_exit_code() -> color_eyre::eyre::Result<()> {
         let tmp = tempdir()?;
         let log_path = tmp.path().join("natural_exit.log");
-        // A command that exits quickly with a non-zero code.
-        // On Windows `cmd /C exit 42` is reliable; on Unix `bash -lc "exit 42"`.
-        let command = if cfg!(windows) { "exit 42" } else { "exit 42" };
+        // A command that exits quickly with a non-zero code. `exit 42` is spelled the
+        // same for the Windows and Unix shells this runner drives.
+        let command = "exit 42";
 
         let execution = run_shell_command_with_timeout(command, &log_path, 30)?;
 
