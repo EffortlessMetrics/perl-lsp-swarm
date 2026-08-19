@@ -345,7 +345,7 @@ fn dry_run_keeps_dirty_and_flags_clean_for_removal_without_deleting_either() -> 
         output
             .lines()
             .skip_while(|line| !line.contains("wt-clean"))
-            .take(4)
+            .take(8)
             .collect::<Vec<_>>()
             .join(" / ")
     );
