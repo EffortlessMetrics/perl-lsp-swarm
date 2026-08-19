@@ -27,6 +27,11 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use serde_yaml_ng::Value;
 
+#[path = "support/workflow_bash.rs"]
+mod workflow_bash;
+
+use workflow_bash::bash_executable;
+
 const SMOKE_WORKFLOW: &str = "post-publish-smoke.yml";
 const PUBLISH_WORKFLOW: &str = "publish-crates.yml";
 const RESOLVE_JOB: &str = "resolve-version";
@@ -78,24 +83,6 @@ fn resolve_run_block() -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("step `{RESOLVE_STEP}` must have a run block"))
-}
-
-fn bash_executable() -> PathBuf {
-    if let Some(path) = env::var_os("BASH") {
-        return path.into();
-    }
-    #[cfg(windows)]
-    {
-        for candidate in
-            [r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe"]
-        {
-            let path = PathBuf::from(candidate);
-            if path.is_file() {
-                return path;
-            }
-        }
-    }
-    PathBuf::from("bash")
 }
 
 /// What the resolver decided, read back from the `GITHUB_OUTPUT` file exactly
@@ -152,7 +139,12 @@ fn resolve(event: &str, conclusion: &str, receipt: Option<&str>) -> Result<Resol
         .output()
         .context("executing the resolver under Actions bash semantics")?;
 
-    let rendered = fs::read_to_string(&github_output).unwrap_or_default();
+    // Not `unwrap_or_default()`: an unreadable GITHUB_OUTPUT would read as
+    // "no outputs", which is indistinguishable from a refusal — every
+    // refuse-path test below would then pass without the resolver having
+    // refused anything.
+    let rendered = fs::read_to_string(&github_output)
+        .with_context(|| format!("reading GITHUB_OUTPUT at {}", github_output.display()))?;
     let read = |key: &str| -> Option<String> {
         rendered
             .lines()
