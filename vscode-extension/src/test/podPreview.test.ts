@@ -192,4 +192,111 @@ describe('podToHtml', () => {
     expect(html).toContain('&amp;');
     expect(html).toContain('&gt;');
   });
+
+  test('escapes prose that looks like an HTML tag instead of emitting markup', () => {
+    const pod = '=pod\n\nUse <angle> markers around a name.\n\n=cut\n';
+    const html = podToHtml(pod);
+    // A raw `<angle>` reaches the webview as an unknown element, and the text
+    // between the angle brackets disappears from the rendered preview.
+    expect(html).not.toContain('<angle>');
+    expect(html).toContain('Use &lt;angle&gt; markers around a name.');
+  });
+
+  test('escapes a closing-tag-shaped run in prose', () => {
+    const pod = '=pod\n\nClose it with </sub> when done.\n\n=cut\n';
+    const html = podToHtml(pod);
+    expect(html).not.toContain('</sub>');
+    expect(html).toContain('&lt;/sub&gt;');
+  });
+
+  test('renders inline formatting codes inside headings', () => {
+    const html = podToHtml('=head1 The C<fetch> helper\n');
+    expect(html).toContain('<h1>The <code>fetch</code> helper</h1>');
+  });
+
+  test('keeps an item body inside its own list item', () => {
+    const pod =
+      '=over 4\n\n=item * First\n\nExplains the first item.\n\n' +
+      '=item * Second\n\nExplains the second item.\n\n=back\n';
+    const html = podToHtml(pod);
+
+    // One list, not one list per item: the explanatory paragraphs must not
+    // terminate the list and restart it for the next =item.
+    expect(html.match(/<ul>/g)).toHaveLength(1);
+    expect(html.match(/<\/ul>/g)).toHaveLength(1);
+    expect(html.indexOf('Explains the first item.')).toBeGreaterThan(html.indexOf('<ul>'));
+    expect(html.indexOf('Explains the second item.')).toBeLessThan(html.indexOf('</ul>'));
+    expect(html).toContain('<li>First\n<p>Explains the first item.</p>\n</li>');
+  });
+
+  test('keeps a verbatim item body inside its list item', () => {
+    const pod = '=over 4\n\n=item * Example\n\n    my $x = 1;\n\n=back\n';
+    const html = podToHtml(pod);
+    expect(html.match(/<ul>/g)).toHaveLength(1);
+    expect(html).toContain('<li>Example\n<pre><code>my $x = 1;</code></pre>\n</li>');
+  });
+
+  test('treats a dotted numeric =item marker as an ordered list and strips the marker', () => {
+    const pod = '=over 4\n\n=item 1.\n\nFirst step.\n\n=item 2.\n\nSecond step.\n\n=back\n';
+    const html = podToHtml(pod);
+    expect(html.match(/<ol>/g)).toHaveLength(1);
+    expect(html.match(/<\/ol>/g)).toHaveLength(1);
+    // The marker is a list marker, not item text.
+    expect(html).not.toContain('<li>1.');
+    expect(html).not.toContain('<li>2.');
+  });
+
+  test('treats a bare numeric =item marker as an ordered list', () => {
+    const pod = '=over 4\n\n=item 1\n\nFirst step.\n\n=item 2\n\nSecond step.\n\n=back\n';
+    const html = podToHtml(pod);
+    expect(html.match(/<ol>/g)).toHaveLength(1);
+    expect(html).not.toContain('<ul>');
+    expect(html).not.toContain('<li>1');
+  });
+
+  test('does not treat numeric prose as an ordered =item marker', () => {
+    const pod = '=over 4\n\n=item 1996 was a year\n\n=back\n';
+    const html = podToHtml(pod);
+    expect(html).toContain('<ul>');
+    expect(html).toContain('1996 was a year');
+  });
+
+  test('renders a formatting code nested inside another', () => {
+    // `B<C<fetch>>` closes at the second `>`. Stopping at the first splits the
+    // sequence and leaves the remainder as stray prose.
+    const html = podToHtml('=pod\n\nCall B<C<fetch>> first.\n\n=cut\n');
+    expect(html).toContain('<strong><code>fetch</code></strong>');
+    expect(html).not.toContain('&gt;');
+  });
+
+  test('renders repeated-angle delimiters and strips their padding', () => {
+    const html = podToHtml('=pod\n\nUse C<<< $x >>> here.\n\n=cut\n');
+    expect(html).toContain('<code>$x</code>');
+    expect(html).not.toContain('&gt;');
+    expect(html).not.toContain('&lt;');
+  });
+
+  test('keeps a literal > inside a repeated-angle code', () => {
+    // The whole point of the `<< >>` form: content may contain a bare `>`.
+    const html = podToHtml('=pod\n\nCompare C<< $a > $b >> now.\n\n=cut\n');
+    expect(html).toContain('<code>$a &gt; $b</code>');
+  });
+
+  test('renders formatting codes inside a link label', () => {
+    const html = podToHtml('=pod\n\nSee L<B<the docs>|https://example.com/x>.\n\n=cut\n');
+    expect(html).toContain('<a href="https://example.com/x"><strong>the docs</strong></a>');
+  });
+
+  test('leaves an unterminated formatting code as escaped text', () => {
+    const html = podToHtml('=pod\n\nA stray B<open code.\n\n=cut\n');
+    expect(html).toContain('B&lt;open code.');
+    expect(html).not.toContain('<strong>');
+  });
+
+  test('emits no empty list for an =over block with no =item', () => {
+    const html = podToHtml('=over 4\n\n=back\n\n=head1 NAME\n');
+    expect(html).not.toContain('<ul>');
+    expect(html).not.toContain('<ol>');
+    expect(html).toContain('<h1>NAME</h1>');
+  });
 });

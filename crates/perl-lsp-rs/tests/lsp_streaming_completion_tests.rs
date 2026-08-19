@@ -720,10 +720,10 @@ mod mock_streaming_completion_tests {
                 -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
         ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
             for (idx, chunk) in self.chunks.iter().enumerate() {
-                if let Some(delay_ms) = self.delays_ms.get(idx) {
-                    if *delay_ms > 0 {
-                        thread::sleep(Duration::from_millis(*delay_ms));
-                    }
+                if let Some(delay_ms) = self.delays_ms.get(idx)
+                    && *delay_ms > 0
+                {
+                    thread::sleep(Duration::from_millis(*delay_ms));
                 }
                 let is_final = idx + 1 == self.chunks.len();
                 let _ = sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
