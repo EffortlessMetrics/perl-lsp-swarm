@@ -333,7 +333,11 @@ void test('the orchestrator reads the child receipt where the child writes it', 
     /(hosted-linux-current-source|local-current-source|first-hour)/,
     'child receipt path must include the source-label leg',
   );
-  assert.match(resolved, /(linux|macos|windows)/, 'child receipt path must include the platform leg');
+  assert.match(
+    resolved,
+    /(linux|macos|windows)/,
+    'child receipt path must include the platform leg',
+  );
 });
 
 const CHILD_SUBJECT = {
