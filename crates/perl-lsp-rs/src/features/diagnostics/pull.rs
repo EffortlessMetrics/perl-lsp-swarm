@@ -29,7 +29,9 @@ use perl_module::resolution::use_lib::{
     resolve_use_lib_paths_from_operations_at_offset,
 };
 use perl_parser::Parser;
-use perl_parser::error::ParseError;
+use perl_parser::error::{ParseError, ResolvedParseDiagnosticAnchor};
+#[cfg(test)]
+use perl_parser::error::{RecoveryKind, RecoverySite};
 use perl_parser::position::offset_to_utf16_line_col;
 use perl_parser::util::code_slice;
 
@@ -604,7 +606,7 @@ impl PullDiagnosticsProvider {
             ..CriticConfig::default()
         };
         let critic_context = CriticContext::new(content, ast.as_ref(), &critic_config);
-        let profile = NativeCriticProfile::parse(&context.native_critic_profile)
+        let profile = NativeCriticProfile::parse_legacy(&context.native_critic_profile)
             .unwrap_or(NativeCriticProfile::Strict);
         let registry = NativeCriticRegistry::for_profile_with_config(profile, &critic_config);
 
@@ -1118,15 +1120,32 @@ impl PullDiagnosticsProvider {
         error: &ParseError,
         context: &PullDiagnosticsContext,
     ) -> LspDiagnostic {
-        let (offset, base_message) = match error {
-            ParseError::UnexpectedToken { location, expected, found } => {
-                (*location, format!("Expected {expected}, found {found}"))
+        // Keep message formatting local, but let parser-core own source placement.
+        let base_message = match error {
+            ParseError::UnexpectedToken { expected, found, .. } => {
+                format!("Expected {expected}, found {found}")
             }
-            ParseError::SyntaxError { location, message } => (*location, message.clone()),
-            ParseError::Advisory { location, message } => (*location, message.clone()),
-            ParseError::UnexpectedEof => (text.len(), "Unexpected end of input".to_string()),
-            ParseError::LexerError { message } => (0, message.clone()),
-            _ => (0, error.to_string()),
+            ParseError::SyntaxError { message, .. } | ParseError::Advisory { message, .. } => {
+                message.clone()
+            }
+            ParseError::Recovered { .. } => error.to_string(),
+            ParseError::UnexpectedEof => "Unexpected end of input".to_string(),
+            ParseError::LexerError { message } => message.clone(),
+            ParseError::RecursionLimit
+            | ParseError::InvalidNumber { .. }
+            | ParseError::InvalidString
+            | ParseError::UnclosedDelimiter { .. }
+            | ParseError::InvalidRegex { .. }
+            | ParseError::NestingTooDeep { .. }
+            | ParseError::Cancelled => error.to_string(),
+            // `ParseError` is `#[non_exhaustive]`, so a wildcard is mandatory
+            // outside perl-parser-core. It is safe here because this match only
+            // selects message text, and `Display` is defined for every variant,
+            // present and future. Source placement deliberately does not come
+            // from this match — it comes from `resolved_diagnostic_anchor`,
+            // whose exhaustiveness is enforced inside the defining crate, so a
+            // future variant cannot silently anchor a diagnostic at byte 0.
+            _ => error.to_string(),
         };
 
         // Append the suggestion inline so users see actionable hints in the fallback path,
@@ -1138,6 +1157,7 @@ impl PullDiagnosticsProvider {
             None => base_message,
         };
 
+        let offset = resolved_parse_diagnostic_offset(error, text);
         let end_offset = offset.saturating_add(1).min(text.len());
         let range = lsp_range_from_offsets(text, offset, end_offset);
 
@@ -1198,6 +1218,30 @@ fn lsp_range_from_offsets(text: &str, start: usize, end: usize) -> Range {
     let (start_line, start_col) = offset_to_utf16_line_col(text, start);
     let (end_line, end_col) = offset_to_utf16_line_col(text, end);
     Range::new(Position::new(start_line, start_col), Position::new(end_line, end_col))
+}
+
+fn resolved_parse_diagnostic_offset(error: &ParseError, text: &str) -> usize {
+    match error.resolved_diagnostic_anchor(text) {
+        ResolvedParseDiagnosticAnchor::Exact(offset) => offset,
+        ResolvedParseDiagnosticAnchor::EndOfInput(offset) => offset,
+        ResolvedParseDiagnosticAnchor::NoSource => 0,
+        ResolvedParseDiagnosticAnchor::InvalidOffset { reported, source_len } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned an out-of-range diagnostic anchor"
+            );
+            source_len
+        }
+        ResolvedParseDiagnosticAnchor::InvalidUtf8Boundary { reported, source_len } => {
+            tracing::error!(
+                reported,
+                source_len,
+                "parser returned a UTF-8 interior diagnostic anchor"
+            );
+            source_len
+        }
+    }
 }
 
 fn to_lsp_severity(severity: InternalDiagnosticSeverity) -> LspDiagnosticSeverity {
@@ -1509,6 +1553,52 @@ mod tests {
         assert_eq!(diagnostic.severity, Some(LspDiagnosticSeverity::WARNING));
         let data = diagnostic.data.as_ref().ok_or("data should be populated")?;
         assert_eq!(data["code"], "PL302");
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostic_preserves_recovered_anchor() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let diagnostic = provider.parse_error_to_diagnostic(
+            &uri,
+            "ab + ;",
+            &ParseError::Recovered {
+                site: RecoverySite::InfixRhs,
+                kind: RecoveryKind::MissingOperand,
+                location: 2,
+            },
+        );
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 2));
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostic_rejects_out_of_range_anchor() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let diagnostic = provider.parse_error_to_diagnostic(
+            &uri,
+            "abc",
+            &ParseError::SyntaxError { location: 42, message: "bad syntax".to_string() },
+        );
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 3));
+        Ok(())
+    }
+
+    #[test]
+    fn pull_diagnostic_rejects_utf8_interior_anchor() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let diagnostic = provider.parse_error_to_diagnostic(
+            &uri,
+            "💖",
+            &ParseError::SyntaxError { location: 1, message: "bad syntax".to_string() },
+        );
+
+        assert_eq!(diagnostic.range.start, Position::new(0, 2));
         Ok(())
     }
 
@@ -2009,6 +2099,35 @@ mod tests {
                 )
             }),
             "recommended native critic profile should omit broader variable findings: {items:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_critic_legacy_profile_carrier_keeps_invalid_case_fallback_strict()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let mut context = PullDiagnosticsContext::new();
+        context.critic_engine = CriticEngine::Native;
+        context.native_critic_profile = " RECOMMENDED ".to_string();
+
+        let items = get_full_items(provider.get_document_diagnostics_with_context(
+            &uri,
+            "use strict;\nuse warnings;\nmy $unused = 1;\nprint 1;\n",
+            None,
+            &context,
+            None,
+        ));
+
+        assert!(
+            items.iter().any(|diag| {
+                diag.code.as_ref().is_some_and(
+                    |code| matches!(code, NumberOrString::String(value) if value == "native.variables.unused_lexical"),
+                )
+            }),
+            "legacy invalid profile fallback must remain strict: {items:?}"
         );
 
         Ok(())

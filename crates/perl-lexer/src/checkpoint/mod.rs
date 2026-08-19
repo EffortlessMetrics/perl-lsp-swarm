@@ -5,7 +5,10 @@ mod core;
 mod diff;
 
 pub use cache::CheckpointCache;
-pub use core::{CheckpointContext, Checkpointable, LexerCheckpoint};
+pub use core::{
+    CheckpointContext, Checkpointable, LexerCheckpoint, PendingHeredocCheckpoint,
+    QuoteOperatorCheckpoint,
+};
 pub use diff::CheckpointDiff;
 
 #[cfg(test)]

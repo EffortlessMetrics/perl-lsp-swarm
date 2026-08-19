@@ -44,6 +44,7 @@ lsp-types = { workspace = true, optional = true }
 url.workspace = true
 rustc-hash = "2.1.2"
 # Core dependencies for position mapping (unconditional, all targets)
+perl-source-identity.workspace = true
 ropey.workspace = true
 
 

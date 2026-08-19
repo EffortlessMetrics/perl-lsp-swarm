@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Corrected every documented Helix registration to the reviewed Perl 5 override so Raku/NQP/P6 files no longer launch the Perl 5 server, standardized the Helix-local server ID on perllsp, and added an executable drift check binding the setup guides to the canonical languages.toml fixture.
+time: 2026-08-16T09:00:00Z
+custom:
+  PR: "7818"
+  Slug: helix-registration-drift-check
+  Breaking: "no"

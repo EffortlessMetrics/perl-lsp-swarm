@@ -1,0 +1,15 @@
+project: product
+component: Packaging and distribution
+kind: Added
+body: >-
+  Add a fail-closed publication-drift classifier exposed through the canonical
+  cargo xtask command and compatibility binary. Bind the independently loaded
+  manifest to exact swarm/public repositories, commits, tree digests, rules,
+  and required invariants; reject authority paths that resolve outside the
+  repository. Preserve the v0.17 Windows ARM64 managed-download mismatch as a
+  same-version product-drift fixture and emit clean/drift/not-proven receipts.
+time: 2026-08-11T10:09:03Z
+custom:
+  PR: "6756"
+  Slug: publication-drift-classifier
+  Breaking: "no"

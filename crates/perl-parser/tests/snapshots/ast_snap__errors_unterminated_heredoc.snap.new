@@ -1,0 +1,7 @@
+---
+source: crates/perl-parser/tests/ast_snap.rs
+assertion_line: 336
+expression: "parse_errors(\"my $sql = <<'SQL';\\nselect * from users;\\n\")"
+---
+Invalid syntax at position 10: Unterminated heredoc: SQL
+Invalid syntax at position 19: Unterminated heredoc body: SQL

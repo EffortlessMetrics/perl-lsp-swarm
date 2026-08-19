@@ -5,12 +5,22 @@
 
 mod analyzer;
 mod built_in;
+mod identity;
 mod native;
+mod normalized;
 mod quick_fix;
+mod remediation;
+mod result_identity;
 mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
 pub use built_in::{BuiltInAnalyzer, Policy};
+pub use identity::{
+    CRITIC_IDENTITY_SCHEMA_VERSION, CriticAlias, CriticFindingOrigin, CriticFindingShape,
+    CriticIdentityCategory, CriticIdentityDisposition, CriticIdentityEntry, CriticIdentityRegistry,
+    CriticIdentityRegistryError, CriticObservedIdentity, CriticObservedIdentityError,
+    NativeCriticIdentityDisposition,
+};
 pub use native::{
     AssignmentInConditionRule, CriticCategory, CriticContext, CriticFinding, CriticFix,
     CriticRelatedInformation, CriticRule, CriticSuppression, CriticSuppressionMap,
@@ -20,8 +30,25 @@ pub use native::{
     RequireUseStrictRule, RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule,
     UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
 };
+pub use normalized::{
+    CriticFindingCandidate, CriticFindingContributor, CriticSourceIdentity,
+    NormalizedCriticFinding, OwnedCriticObservedIdentity, normalize_critic_findings,
+};
 pub use quick_fix::{QuickFix, TextEdit};
+pub use remediation::{CriticRemediationClass, CriticRemediationEligibility};
+pub use result_identity::{
+    CriticPolicyIdentity, CriticPolicyIdentityError, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION,
+    DiagnosticFactIdentity, DiagnosticResultIdentity, DiagnosticResultIdentityInput,
+    DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
+};
 pub use types::{CriticConfig, Severity, Violation};
+
+/// Error returned when an external native-critic profile token is not recognized.
+///
+/// The concrete error is owned by the profile implementation; this public alias
+/// keeps the error name stable without requiring every caller to know that
+/// implementation module's path.
+pub type NativeCriticProfileParseError = <NativeCriticProfile as std::str::FromStr>::Err;
 
 #[cfg(not(feature = "lsp-compat"))]
 pub use types::ViolationSummary;

@@ -24,10 +24,10 @@ fn test_semantic_tokens_full_3_17() -> TestResult {
         }),
     );
 
-    if let Ok(tokens) = response {
-        if !tokens.is_null() {
-            assert!(tokens["data"].is_array());
-        }
+    if let Ok(tokens) = response
+        && !tokens.is_null()
+    {
+        assert!(tokens["data"].is_array());
     }
     Ok(())
 }
