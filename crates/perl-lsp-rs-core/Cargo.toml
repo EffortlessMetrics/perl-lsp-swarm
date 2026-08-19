@@ -26,6 +26,7 @@ include = [
 doctest = false
 
 [dependencies]
+perl-source-identity.workspace = true
 lsp-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
