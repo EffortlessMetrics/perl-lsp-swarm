@@ -62,7 +62,11 @@ fn external_adapter_can_construct_and_validate_public_sdk_values() {
     let result = MinimalAdapter::run(&input, &NoopAdapterCancellationControl);
 
     assert!(result.is_authoritative_against(&input));
-    assert!(!result.is_authoritative(), "unbound results must fail closed");
+    assert_eq!(
+        result.validate_authority(),
+        Err(AdapterAuthorityError::InputRequired),
+        "an unbound result fails closed and names the cause"
+    );
 }
 
 /// The live control must be what carries cancellation, not the admission snapshot.

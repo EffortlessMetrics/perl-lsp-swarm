@@ -886,12 +886,6 @@ impl AdapterResult {
         Ok(())
     }
 
-    /// Whether this result passed the complete authority contract.
-    #[must_use]
-    pub fn is_authoritative(&self) -> bool {
-        false
-    }
-
     /// Whether this result passed the complete authority contract for `input`.
     #[must_use]
     pub fn is_authoritative_against(&self, input: &AdapterInput) -> bool {
@@ -1145,7 +1139,6 @@ mod tests {
         );
         let result = applied(AdapterDisposition::Production, fact);
         assert_eq!(result.validate_authority(), Err(AdapterAuthorityError::InputRequired));
-        assert!(!result.is_authoritative());
         assert!(result.is_authoritative_against(&input()));
     }
 
