@@ -2430,3 +2430,37 @@ covered_by = [
 ]
 created = "2026-08-18"
 review_after = "2026-11-18"
+
+[[allow]]
+id = "non-rust-compiler-builtin-semantics-contract"
+path = "contracts/compiler/perl_builtin_semantics.v1.toml"
+kind = "compiler_contract"
+language = "toml"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Versioned builtin semantic catalog contract for the compiler programme (#6679); validated by cargo xtask --bin compiler-builtin-catalog -- --check."
+covered_by = [
+  "cargo run -p xtask --bin compiler-builtin-catalog -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-compiler-builtin-semantics-schema"
+path = "schemas/perl_builtin_semantics.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the perl_builtin_semantics.v1 contract; mirrors the concepts schema entry in the same programme."
+covered_by = [
+  "cargo run -p xtask --bin compiler-builtin-catalog -- --check",
+]
+created = "2026-08-16"
+review_after = "2026-11-16"
+
+# =============================================================================
+# Binary identity protocol (perl_lsp.binary_identity.v1)
+# =============================================================================

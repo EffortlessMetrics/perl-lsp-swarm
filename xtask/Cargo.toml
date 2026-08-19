@@ -36,6 +36,7 @@ indicatif = "0.18.4"
 console = "0.16.2"
 chrono = { version = "0.4.43", features = ["serde"] }
 perl-parser = { workspace = true, features = ["incremental"] }
+perl-lexer = { workspace = true }
 perl-parser-core = { workspace = true }
 perl-position-tracking = { workspace = true }
 perl-corpus = { workspace = true }
