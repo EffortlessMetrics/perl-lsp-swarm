@@ -1162,6 +1162,29 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
         )
     };
 
+    // An explicit source declaration is source-backed: `can_override_generated`
+    // requires both a source provenance and `ExactSource`, so a fixture that only
+    // sets `is_stronger_than_generated` cannot stand in for one.
+    let make_source_envelope = |entity_id: u64| {
+        SemanticFactEnvelope::new(
+            FactId(entity_id),
+            Some(EntityId(entity_id)),
+            SemanticFactKind::Declaration,
+            SourceAnchor::new(Some(AnchorId(1)), FileId(10), 10, 20),
+            SourceGeneration::known("sha256:aabbcc"),
+            None,
+            Some("My::Package".to_string()),
+            LifecyclePhase::Runtime,
+            SemanticProducer::FrameworkAdapter,
+            SemanticProvenance::Known(Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticFreshness::Fresh,
+            None,
+            vec![],
+            SemanticReasonCode::ExactSource,
+        )
+    };
+
     // Synthesised fact (lower priority).
     let synthesised = EmittedFact::new(
         FactSinkId(1),
@@ -1180,19 +1203,45 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
         FactSinkId(1),
         AdapterId(1),
         "Moo",
-        Provenance::FrameworkSynthesis,
+        Provenance::ExactAst,
         Confidence::High,
-        make_envelope(2),
+        make_source_envelope(2),
         FactClass::GeneratedMembers,
         None,
         true, // IS stronger than generated — explicit `reader => 'get_name'`
     );
 
-    // Provider conflict resolution: pick the explicit fact.
-    let winning_fact = if explicit.is_stronger_than_generated { &explicit } else { &synthesised };
+    // Provider conflict resolution. `is_stronger_than_generated` is an untrusted
+    // producer hint, so selecting on it directly would assert the same field the
+    // fixture sets. Resolve through the validator that downstream code must use.
+    let winning_fact = if explicit.can_override_generated() { &explicit } else { &synthesised };
 
-    assert!(winning_fact.is_stronger_than_generated);
+    assert!(winning_fact.can_override_generated(), "the winner must be source-backed");
     assert_eq!(winning_fact.confidence, Confidence::High);
+    assert!(
+        !synthesised.can_override_generated(),
+        "a synthesised fact never overrides a generated one, whatever its hint claims"
+    );
+
+    // The discriminating case: a synthesised fact that *claims* precedence. Only
+    // this shape separates "reads the validator" from "reads the hint", because
+    // for the two facts above the hint and the validator happen to agree.
+    let forged = EmittedFact::new(
+        FactSinkId(1),
+        AdapterId(1),
+        "Moo",
+        Provenance::FrameworkSynthesis,
+        Confidence::High,
+        make_envelope(3),
+        FactClass::GeneratedMembers,
+        None,
+        true, // claims precedence with no source backing
+    );
+    assert!(forged.is_stronger_than_generated, "the fixture must carry the untrusted claim");
+    assert!(
+        !forged.can_override_generated(),
+        "a precedence claim without source-backed provenance must not override a generated fact"
+    );
 
     // Both facts round-trip cleanly through JSON.
     for fact in [&synthesised, &explicit] {
