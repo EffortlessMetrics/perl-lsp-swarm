@@ -24,7 +24,8 @@ use crate::runtime::window::RequestProgressGuard;
 use crate::state::{code_lens_cap, code_lens_resolve_deadline, inlay_hints_cap};
 use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache;
 use perl_lsp_rs_core::providers::inline_completion::{
-    BackendError, InlineCompletionEnvironment, InlinePackageMethodFact,
+    BackendError, EvaluatedInlineCompletionItem, InlineCompletionEnvironment,
+    InlineCompletionProvider, InlinePackageMethodFact,
 };
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 use perl_parser_core::source_file::is_perl_source_uri;
@@ -201,18 +202,17 @@ fn selected_inline_completion_info(
 }
 
 fn constrain_inline_completions_to_selected_info(
-    mut list: perl_lsp_rs_core::providers::inline_completion::InlineCompletionList,
+    candidates: Vec<EvaluatedInlineCompletionItem>,
     selected: Option<&SelectedInlineCompletionInfo>,
     line: u32,
     character: u32,
-) -> perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+) -> Vec<EvaluatedInlineCompletionItem> {
     let Some(selected) = selected else {
-        return list;
+        return candidates;
     };
 
     if selected.range.start.line != selected.range.end.line {
-        list.items.clear();
-        return list;
+        return Vec::new();
     }
 
     let implicit_range = lsp_types::Range {
@@ -220,49 +220,60 @@ fn constrain_inline_completions_to_selected_info(
         end: lsp_types::Position::new(line, character),
     };
 
-    list.items = list
-        .items
+    candidates
         .into_iter()
-        .filter_map(|mut item| {
-            if !item.insert_text.starts_with(&selected.text) {
+        .filter_map(|mut candidate| {
+            if !candidate.item.insert_text.starts_with(&selected.text) {
                 return None;
             }
 
-            match &item.range {
-                Some(range) if range == &selected.range => Some(item),
+            match &candidate.item.range {
+                Some(range) if range == &selected.range => Some(candidate),
                 Some(_) => None,
                 None if selected.range == implicit_range => {
-                    item.range = Some(selected.range);
-                    Some(item)
+                    candidate.item.range = Some(selected.range);
+                    Some(candidate)
                 }
                 None => None,
             }
         })
-        .collect();
-    list
+        .collect()
 }
 
-fn apply_inline_completion_trigger_policy(
-    mut list: perl_lsp_rs_core::providers::inline_completion::InlineCompletionList,
+/// Apply the shared selected-completion and trigger contracts to evaluated
+/// candidates from either the deterministic or the external backend path.
+///
+/// Automatic ghost text is decided by the candidate's evidence rather than by
+/// the shape of its text, so an ordinary Perl continuation backed by a proven
+/// fact can appear while a scaffold or guess stays invoked-only.
+fn finalize_inline_completions(
+    provider: &InlineCompletionProvider,
+    candidates: Vec<EvaluatedInlineCompletionItem>,
+    selected: Option<&SelectedInlineCompletionInfo>,
     trigger_kind: InlineCompletionTriggerKind,
+    line: u32,
+    character: u32,
 ) -> perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+    let constrained =
+        constrain_inline_completions_to_selected_info(candidates, selected, line, character);
+
     if trigger_kind == InlineCompletionTriggerKind::Automatic {
-        list.items.retain(is_safe_automatic_inline_item);
-        list.items.truncate(1);
+        return provider.select_automatic_item(constrained);
     }
 
-    list
+    perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
+        items: constrained.into_iter().map(|candidate| candidate.item).collect(),
+    }
 }
 
-fn is_safe_automatic_inline_item(
-    item: &perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem,
-) -> bool {
-    let text = item.insert_text.trim();
-    !text.is_empty()
-        && text.chars().count() <= 80
-        && text.ends_with(';')
-        && !text.contains(['\r', '\n', '$', '@', '%', '{', '}', '[', ']', '(', ')'])
-        && !text.contains("...")
+/// Attach external-backend evidence to AI-produced items.
+///
+/// AI text carries no local supporting fact, so it enters finalization as
+/// low-confidence external evidence and is never shown as automatic ghost text.
+fn evaluate_external_backend_items(
+    list: perl_lsp_rs_core::providers::inline_completion::InlineCompletionList,
+) -> Vec<EvaluatedInlineCompletionItem> {
+    list.items.into_iter().map(EvaluatedInlineCompletionItem::from_external_backend).collect()
 }
 
 fn inline_use_module_fragment(prefix: &str) -> Option<&str> {
@@ -970,7 +981,14 @@ impl LspServer {
                 let a = &cfg.ai_completion;
                 (a.enabled, a.fallback, a.max_output_tokens, a.timeout_ms)
             };
-            if ai_enabled && let Some(context) = provider.prepare_context(&text, line, character) {
+            // Automatic requests are deterministic-first: a keystroke-triggered
+            // suggestion must not wait on — or pay for — a remote call, and no
+            // external candidate can qualify for automatic display anyway.
+            let consult_backend =
+                ai_enabled && trigger_kind != InlineCompletionTriggerKind::Automatic;
+            if consult_backend
+                && let Some(context) = provider.prepare_context(&text, line, character)
+            {
                 let backend_result =
                     self.try_ai_inline_completion(&context, ai_max_output_tokens, ai_timeout_ms);
                 match backend_result {
@@ -982,13 +1000,14 @@ impl LspServer {
                         let list = provider
                             .apply_replacement_ranges_for_context(list, &context, line, character);
                         let list = provider.filter_parse_safe_items(list, &text, line, character);
-                        let list = constrain_inline_completions_to_selected_info(
-                            list,
+                        let list = finalize_inline_completions(
+                            &provider,
+                            evaluate_external_backend_items(list),
                             selected_completion.as_ref(),
+                            trigger_kind,
                             line,
                             character,
                         );
-                        let list = apply_inline_completion_trigger_policy(list, trigger_kind);
                         if !list.items.is_empty() || !ai_fallback {
                             return Ok(Some(serde_json::to_value(list).map_err(|e| {
                                 crate::protocol::internal_error(&format!(
@@ -1030,18 +1049,14 @@ impl LspServer {
                     )
                 })
                 .unwrap_or_default();
-            let completions = constrain_inline_completions_to_selected_info(
-                provider.get_inline_completions_with_environment(
-                    &text,
-                    line,
-                    character,
-                    &environment,
-                ),
+            let completions = finalize_inline_completions(
+                &provider,
+                provider.evaluate_inline_completions(&text, line, character, &environment),
                 selected_completion.as_ref(),
+                trigger_kind,
                 line,
                 character,
             );
-            let completions = apply_inline_completion_trigger_policy(completions, trigger_kind);
             return Ok(Some(serde_json::to_value(completions).map_err(|e| {
                 crate::protocol::internal_error(&format!(
                     "Failed to serialize inline completions: {}",

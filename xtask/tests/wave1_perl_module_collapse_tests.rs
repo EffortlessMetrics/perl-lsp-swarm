@@ -284,38 +284,29 @@ fn test_perl_module_version_matches_workspace_version() -> Result<(), Box<dyn st
         .and_then(toml::Value::as_str)
         .ok_or("workspace.package.version missing from Cargo.toml")?;
 
-    // Resolve what cargo will actually publish rather than how the version happens
-    // to be spelled. 43 of the 46 workspace crates use `version.workspace = true`,
-    // which parses as a table and never as a string; reading the declaration alone
-    // reports every one of them as missing a version. The resolved value is the
-    // subject the contract is about, and it discriminates a stale pinned literal
-    // just as well as a mismatched inherited one.
-    let metadata = std::process::Command::new(env!("CARGO"))
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .current_dir(&root)
-        .output()?;
-    assert!(
-        metadata.status.success(),
-        "cargo metadata must succeed to resolve perl-module's version.\nstderr:\n{}",
-        String::from_utf8_lossy(&metadata.stderr)
-    );
-    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout)?;
-    let perl_module_version = metadata
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or("cargo metadata emitted no packages array")?
-        .iter()
-        .find(|package| {
-            package.get("name").and_then(serde_json::Value::as_str) == Some("perl-module")
-        })
-        .and_then(|package| package.get("version"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or("perl-module is absent from cargo metadata, or carries no version")?;
+    let perl_module_cargo = fs::read_to_string(root.join("crates/perl-module/Cargo.toml"))?;
+    let perl_module_value: toml::Value = toml::from_str(&perl_module_cargo)?;
+    let declared_version = perl_module_value
+        .get("package")
+        .and_then(|value| value.get("version"))
+        .ok_or("package.version missing from crates/perl-module/Cargo.toml")?;
+    // `version.workspace = true` inherits the workspace release line by
+    // construction, which satisfies the alignment contract more strongly
+    // than a duplicated literal.
+    if let Some(inherits) = declared_version.get("workspace").and_then(toml::Value::as_bool) {
+        if !inherits {
+            return Err("perl-module version inheritance must be enabled".into());
+        }
+        return Ok(());
+    }
+    let perl_module_version = declared_version
+        .as_str()
+        .ok_or("package.version must be a string or workspace-inherited")?;
 
     assert_eq!(
         perl_module_version, workspace_version,
-        "perl-module must resolve to workspace.package.version.\n\
-         This reflects the breaking change: perl_module_name::* \u{2192} perl_module::name::*\n\
+        "perl-module Cargo.toml must match workspace.package.version.\n\
+         This reflects the breaking change: perl_module_name::* → perl_module::name::*\n\
          See .spec/4420-wave1-perl-module/acceptance.md line 63\n\
          See .spec/4420-wave1-perl-module/context.md section 'Major version bump'"
     );
