@@ -650,7 +650,9 @@ gates:
     tier: pr_fast
     description: "Clippy lints on core library crates (not full workspace)"
     required: true
-    # Core crates only for speed; full workspace in merge_gate
+    # Core crates only for speed. The full-workspace run is `clippy_full`,
+    # which is also `pr_fast` -- no gate in any tier runs clippy at
+    # merge_gate, and none runs it outside library targets (#11736).
     command: >-
       cargo clippy
       -p perl-parser -p perl-lexer -p perl-parser-core
