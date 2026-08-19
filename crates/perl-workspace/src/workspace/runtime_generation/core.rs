@@ -11,6 +11,8 @@
 //! the LSP composition crate can consume the workspace-owned authority.
 
 use parking_lot::{Mutex, RwLock};
+#[cfg(test)]
+use std::sync::mpsc;
 use std::{
     collections::{BTreeMap, VecDeque},
     error::Error,
@@ -19,6 +21,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const MAX_OBSERVATIONS: usize = 128;
@@ -43,10 +46,39 @@ macro_rules! opaque_id {
     };
 }
 
-opaque_id!(
-    /// Identifies one server/application session. It is never portable semantic state.
-    WorkspaceRuntimeSessionId
-);
+/// Identifies one server/application session. It is never portable semantic state.
+///
+/// Identity comes only from [`WorkspaceRuntimeSessionId::mint`]: the mint
+/// combines the wall clock, the OS process id, and a process-local counter
+/// into one opaque value, so a fresh application session can never reproduce
+/// a historical identity, and callers cannot choose a colliding one. Raw
+/// construction from an integer is deliberately absent from the surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WorkspaceRuntimeSessionId(u128);
+
+impl WorkspaceRuntimeSessionId {
+    /// Mint one fresh process/application session identity.
+    ///
+    /// Every mint is distinct for the life of the machine's clock: two mints
+    /// in one process differ by the counter, and a restarted process differs
+    /// by the wall clock even when the OS reuses the process id. The value is
+    /// operational process-local state only.
+    pub fn mint() -> Self {
+        static MINTS: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos() as u64);
+        let process = u64::from(std::process::id());
+        let counter = MINTS.fetch_add(1, Ordering::Relaxed);
+        Self((u128::from(nanos) << 64) | (u128::from(process) << 32) | u128::from(counter))
+    }
+
+    /// Return the opaque numeric value.
+    pub const fn get(self) -> u128 {
+        self.0
+    }
+}
+
 opaque_id!(
     /// Identifies one logical workspace independently from a display path or URI.
     LogicalWorkspaceId
@@ -600,11 +632,19 @@ impl WorkspaceRuntimeController {
                     observations: VecDeque::new(),
                     dropped: 0,
                 }),
+                #[cfg(test)]
+                transition_gate: Mutex::new(None),
             }),
         }
     }
 
     /// Begin an accepted root transition and mint a replacement generation.
+    ///
+    /// Generation allocation, accepted-input binding, and current-entry
+    /// replacement all happen under the root-map write guard, so accepted
+    /// same-root transitions linearize: whichever transition installs later
+    /// mints the later generation, and the root's current generation can
+    /// never move backwards across concurrent transitions.
     ///
     /// Existing root-scoped tasks are cancelled after the replacement entry
     /// becomes current. Once the root map changes, old work cannot pass another
@@ -616,21 +656,29 @@ impl WorkspaceRuntimeController {
         reason: WorkspaceRuntimeTransitionReason,
         inputs: WorkspaceRuntimeInputs,
     ) -> Result<WorkspaceRuntimeContext, WorkspaceRuntimeError> {
-        let generation = self.allocate_generation(root_id)?;
-        let context = WorkspaceRuntimeContext { generation, inputs };
-        let replacement = Arc::new(Mutex::new(RootEntry {
-            context,
-            lifecycle_state: reason.initial_state(),
-            terminal_reason: None,
-            tasks: BTreeMap::new(),
-        }));
+        #[cfg(test)]
+        {
+            let gate = self.inner.transition_gate.lock().take();
+            if let Some(gate) = gate {
+                let _ = gate.entered.send(());
+                let _ = gate.release.recv();
+            }
+        }
 
-        let prior = {
+        let (prior, context) = {
             let mut roots = self.inner.roots.write();
             if self.inner.shutdown.load(Ordering::Acquire) {
                 return Err(WorkspaceRuntimeError::ControllerShutdown);
             }
-            roots.insert(root_id, Arc::clone(&replacement))
+            let generation = self.allocate_generation(root_id)?;
+            let context = WorkspaceRuntimeContext { generation, inputs };
+            let replacement = Arc::new(Mutex::new(RootEntry {
+                context,
+                lifecycle_state: reason.initial_state(),
+                terminal_reason: None,
+                tasks: BTreeMap::new(),
+            }));
+            (roots.insert(root_id, Arc::clone(&replacement)), context)
         };
 
         if let Some(prior) = prior {
@@ -651,7 +699,7 @@ impl WorkspaceRuntimeController {
         }
 
         self.push_observation(
-            generation,
+            context.generation(),
             WorkspaceRuntimeObservationKind::TransitionStarted,
             WorkspaceRuntimeObservationDetail::Transition(reason),
         );
@@ -867,6 +915,19 @@ impl WorkspaceRuntimeController {
         }
     }
 
+    /// Arm the one-shot transition gate used by the linearization tests.
+    ///
+    /// Returns the entered signal (fires when the next transition reaches the
+    /// hold point) and the release sender (unblocks it).
+    #[cfg(test)]
+    fn arm_transition_gate(&self) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *self.inner.transition_gate.lock() =
+            Some(TransitionGate { entered: entered_tx, release: release_rx });
+        (entered_rx, release_tx)
+    }
+
     fn allocate_generation(
         &self,
         root_id: WorkspaceRootId,
@@ -966,6 +1027,20 @@ struct ControllerInner {
     shutdown: AtomicBool,
     roots: RwLock<BTreeMap<WorkspaceRootId, Arc<Mutex<RootEntry>>>>,
     observations: Mutex<ObservationState>,
+    #[cfg(test)]
+    transition_gate: Mutex<Option<TransitionGate>>,
+}
+
+/// Deterministic pre-linearization hold for one `begin_transition` call.
+///
+/// The gate blocks the first transition that reaches it after being armed and
+/// only before the root-map write guard is acquired, so the held transition has
+/// not yet allocated its generation. It exists solely to force the interleaving
+/// examined by this module's same-root linearization tests.
+#[cfg(test)]
+struct TransitionGate {
+    entered: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
 }
 
 struct RootEntry {
@@ -1047,7 +1122,7 @@ mod tests {
 
     #[test]
     fn create_root_and_reach_active_current() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(11));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(7);
         let context = active_root(&controller, root_id)?;
 
@@ -1067,7 +1142,7 @@ mod tests {
 
     #[test]
     fn replacement_rejects_old_publication_and_cancels_old_task() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(12));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(8);
         let first = active_root(&controller, root_id)?;
         let task = controller
@@ -1092,8 +1167,121 @@ mod tests {
     }
 
     #[test]
+    fn same_root_transitions_install_in_linearization_order() -> Result<()> {
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
+        let root_id = WorkspaceRootId::new(10);
+        let initial = active_root(&controller, root_id)?;
+
+        // Hold one transition before its linearization point while a second
+        // transition for the same root fully crosses installation.
+        let (entered, release) = controller.arm_transition_gate();
+        let held = {
+            let controller = controller.clone();
+            std::thread::spawn(move || {
+                controller.begin_transition(
+                    root_id,
+                    WorkspaceRuntimeTransitionReason::Restart,
+                    inputs(2, 1, 1),
+                )
+            })
+        };
+        entered.recv().expect("held transition reached the pre-linearization gate");
+
+        let crossed = controller.begin_transition(
+            root_id,
+            WorkspaceRuntimeTransitionReason::ConfigurationChanged,
+            inputs(3, 1, 1),
+        )?;
+
+        release.send(()).expect("release the held transition");
+        let held = held
+            .join()
+            .expect("held transition thread")
+            .expect("held transition installs after release");
+
+        // The transition that linearizes later must mint the later generation,
+        // so releasing the held transition can never roll currentness back.
+        assert!(held.generation().sequence() > crossed.generation().sequence());
+        assert_ne!(initial.generation(), held.generation());
+
+        let current = controller
+            .current_root_context(root_id)
+            .ok_or(WorkspaceRuntimeError::UnknownRoot(root_id))?;
+        assert_eq!(current.context().generation(), held.generation());
+
+        // The crossed generation is immediately stale for work and publication.
+        assert!(matches!(
+            controller
+                .register_root_task(crossed.generation(), WorkspaceRuntimeOperationId::new(1)),
+            Err(WorkspaceRuntimeError::StaleGeneration { .. })
+        ));
+        assert!(matches!(
+            controller.accept_publication(
+                crossed.generation(),
+                WorkspaceRuntimePublicationKind::WorkspaceFacts,
+            ),
+            Err(WorkspaceRuntimeError::StaleGeneration { .. })
+        ));
+
+        // Observations represent the crossed generation as superseded exactly
+        // once, with no rollback record for the winner.
+        let superseded = controller
+            .observations()
+            .observations
+            .iter()
+            .filter(|observation| {
+                observation.generation() == crossed.generation()
+                    && observation.kind() == WorkspaceRuntimeObservationKind::GenerationSuperseded
+            })
+            .count();
+        assert_eq!(superseded, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_root_remains_usable_while_a_transition_is_held() -> Result<()> {
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
+        let held_root = WorkspaceRootId::new(11);
+        let other_root = WorkspaceRootId::new(12);
+        let held_initial = active_root(&controller, held_root)?;
+        let other_initial = active_root(&controller, other_root)?;
+
+        let (entered, release) = controller.arm_transition_gate();
+        let held = {
+            let controller = controller.clone();
+            std::thread::spawn(move || {
+                controller.begin_transition(
+                    held_root,
+                    WorkspaceRuntimeTransitionReason::ConfigurationChanged,
+                    inputs(2, 1, 1),
+                )
+            })
+        };
+        entered.recv().expect("held root transition reached the pre-linearization gate");
+
+        // The unrelated root keeps accepting work and reporting currentness
+        // while the held transition has not reached its linearization point.
+        let other_task = controller
+            .register_root_task(other_initial.generation(), WorkspaceRuntimeOperationId::new(2))?;
+        assert!(controller.is_current(other_initial.generation()));
+        assert!(!other_task.is_cancelled());
+
+        release.send(()).expect("release the held transition");
+        let held = held
+            .join()
+            .expect("held transition thread")
+            .expect("held transition installs after release");
+
+        assert!(held.generation().sequence() > held_initial.generation().sequence());
+        assert!(controller.is_current(held.generation()));
+        assert!(controller.is_current(other_initial.generation()));
+        controller.complete_task(&other_task)?;
+        Ok(())
+    }
+
+    #[test]
     fn task_preserves_caller_operation_identity() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(13));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(9);
         let current = active_root(&controller, root_id)?;
         let operation_id = WorkspaceRuntimeOperationId::new(9001);
@@ -1106,7 +1294,7 @@ mod tests {
 
     #[test]
     fn trust_transition_cancels_registered_work() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(14));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(10);
         let current = active_root(&controller, root_id)?;
         let task = controller
@@ -1132,7 +1320,7 @@ mod tests {
 
     #[test]
     fn removal_invalidates_exact_use_before_detach() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(15));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(11);
         let _ = active_root(&controller, root_id)?;
 
@@ -1164,7 +1352,7 @@ mod tests {
 
     #[test]
     fn detach_rejects_every_late_task_and_publication() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(16));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(12);
         let current = active_root(&controller, root_id)?;
         let task = controller
@@ -1196,7 +1384,7 @@ mod tests {
 
     #[test]
     fn rapid_remove_and_readd_same_root_mints_distinct_generation() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(17));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(13);
         let first = active_root(&controller, root_id)?;
 
@@ -1226,7 +1414,7 @@ mod tests {
 
     #[test]
     fn root_transitions_are_isolated() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(18));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_a = WorkspaceRootId::new(14);
         let root_b = WorkspaceRootId::new(15);
         let first_a = active_root(&controller, root_a)?;
@@ -1252,7 +1440,7 @@ mod tests {
 
     #[test]
     fn task_terminal_removes_owned_task() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(19));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(16);
         let current = active_root(&controller, root_id)?;
         let task = controller
@@ -1278,8 +1466,8 @@ mod tests {
 
     #[test]
     fn another_session_generation_fails_closed() -> Result<()> {
-        let first = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(20));
-        let second = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(21));
+        let first = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
+        let second = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(17);
         let foreign = active_root(&first, root_id)?;
 
@@ -1295,7 +1483,7 @@ mod tests {
 
     #[test]
     fn shutdown_cancels_tasks_and_rejects_publication() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(22));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(18);
         let current = active_root(&controller, root_id)?;
         let task = controller
@@ -1316,7 +1504,7 @@ mod tests {
 
     #[test]
     fn shutdown_rejects_new_root_transitions() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(23));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         controller.shutdown();
 
         assert!(matches!(
@@ -1332,7 +1520,7 @@ mod tests {
 
     #[test]
     fn observation_window_is_bounded_and_reports_truncation() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(23));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(19);
         let current = active_root(&controller, root_id)?;
 
@@ -1357,7 +1545,7 @@ mod tests {
 
     #[test]
     fn root_entries_are_sharded_below_a_shared_read_map() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(24));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_a = WorkspaceRootId::new(20);
         let root_b = WorkspaceRootId::new(21);
         let _ = active_root(&controller, root_a)?;

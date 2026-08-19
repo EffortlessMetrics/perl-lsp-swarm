@@ -147,16 +147,20 @@ fn validate_rows(rows: &[OwnershipRow]) -> Result<()> {
             row.id,
             row.disposition
         );
-        ensure!(
-            !row.proposition.trim().is_empty()
-                && !row.current_owner.trim().is_empty()
-                && !row.identity.trim().is_empty()
-                && !row.publication.trim().is_empty()
-                && !row.cleanup.trim().is_empty()
-                && !row.proof_family.trim().is_empty(),
-            "{}: ownership proposition is incomplete",
-            row.id
-        );
+        for (field, value) in [
+            ("proposition", &row.proposition),
+            ("current_owner", &row.current_owner),
+            ("identity", &row.identity),
+            ("publication", &row.publication),
+            ("cleanup", &row.cleanup),
+            ("proof_family", &row.proof_family),
+        ] {
+            ensure!(
+                !value.trim().is_empty(),
+                "{}: ownership proposition field {field} is empty",
+                row.id
+            );
+        }
         ensure!(
             !identity_is_path_or_uri_only(&row.identity),
             "{}: a path or URI alone cannot be root-runtime identity",

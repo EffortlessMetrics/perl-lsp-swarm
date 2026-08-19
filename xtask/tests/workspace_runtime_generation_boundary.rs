@@ -22,11 +22,12 @@ const REQUIRED_WRAPPER_MARKERS: &[&str] = &[
 
 const REQUIRED_CORE_MARKERS: &[&str] = &[
     "pub struct WorkspaceRuntimeGeneration",
-    "pub struct WorkspaceRuntimeController",
-    "pub fn begin_transition",
-    "pub fn register_root_task",
-    "pub fn accept_publication",
-    "pub fn detach_root",
+    "pub(crate) struct WorkspaceRuntimeController",
+    "pub fn mint() -> Self",
+    "pub(crate) fn begin_transition",
+    "pub(crate) fn register_root_task",
+    "pub(crate) fn accept_publication",
+    "pub(crate) fn detach_root",
     "operation_id: WorkspaceRuntimeOperationId",
     "shutdown: AtomicBool",
     "roots: RwLock<BTreeMap<WorkspaceRootId, Arc<Mutex<RootEntry>>>>",
@@ -46,6 +47,7 @@ const FORBIDDEN_TOKENS: &[&str] = &[
     "serde::Serialize",
     "serde::Deserialize",
     "inner: Arc<Mutex<ControllerState>>",
+    "WorkspaceRuntimeSessionId::new(",
 ];
 
 fn repo_root() -> Result<PathBuf> {
@@ -97,12 +99,16 @@ fn workspace_runtime_generation_authority_is_transport_and_domain_neutral() -> R
 fn workspace_runtime_generation_module_is_hidden_and_not_glob_reexported() -> Result<()> {
     let root = repo_root()?;
     let source = read_source(&root, MODULE_ROOT_PATH)?;
+    let normalized = source.replace("\r\n", "\n");
 
     ensure!(
-        source.contains(
-            "/// Process-local root-generation and publication-eligibility authority.\n#[doc(hidden)]\npub mod runtime_generation;"
-        ),
+        normalized.contains("#[doc(hidden)]\npub mod runtime_generation;"),
         "{MODULE_ROOT_PATH} must expose the cross-crate integration module as doc-hidden"
+    );
+    ensure!(
+        normalized
+            .contains("/// Process-local root-generation and publication-eligibility authority."),
+        "{MODULE_ROOT_PATH} must keep the integration module's authority declaration"
     );
     ensure!(
         !source.contains("pub use runtime_generation"),
@@ -160,13 +166,36 @@ fn shutdown_gate_requires_shared_admission_and_exclusive_close() -> Result<()> {
     let root = repo_root()?;
     let wrapper = read_source(&root, MODULE_PATH)?;
 
+    // Bind the read-gate requirement to the wrapper's public method surface:
+    // the constructor builds the gate and `shutdown` takes the write gate, so
+    // every remaining public admission/observation method must hold the read
+    // gate. A floor count would keep passing when an ungated method is added.
+    let public_methods = wrapper.matches("    pub fn ").count();
+    let read_gates = wrapper.matches("let _lifecycle = self.lifecycle_gate.read();").count();
     ensure!(
-        wrapper.matches("let _lifecycle = self.lifecycle_gate.read();").count() >= 10,
-        "all root admission and observation paths must share the shutdown gate"
+        public_methods >= 3 && read_gates == public_methods - 2,
+        "every public controller method except the constructor and shutdown must hold the \
+         admission read gate (found {read_gates} read gates across {public_methods} public methods)"
     );
     ensure!(
         wrapper.matches("let _lifecycle = self.lifecycle_gate.write();").count() == 1,
         "shutdown must be the only exclusive application-lifecycle transition"
+    );
+    Ok(())
+}
+
+#[test]
+fn generation_allocation_shares_the_installation_linearization_point() -> Result<()> {
+    let root = repo_root()?;
+    let core = read_source(&root, CORE_PATH)?;
+
+    // Same-root transitions must mint their generation under the root-map
+    // write guard so allocation order and installation order cannot diverge.
+    let guard = core.find("let mut roots = self.inner.roots.write();");
+    let allocation = core.find("self.allocate_generation(root_id)?");
+    ensure!(
+        guard.is_some_and(|guard| allocation.is_some_and(|allocation| guard < allocation)),
+        "{CORE_PATH} must allocate each generation inside the root-map write guard"
     );
     Ok(())
 }

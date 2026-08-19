@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn terminal_generation_is_not_current() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(40));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(1);
         let current = active_root(&controller, root_id)?;
         assert!(
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn shutdown_and_restart_identities_do_not_compare_current() -> Result<()> {
-        let first = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(41));
+        let first = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(2);
         let old = active_root(&first, root_id)?;
         first.shutdown();
@@ -212,8 +212,13 @@ mod tests {
             "shutdown generation must not compare current"
         );
 
-        let restarted = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(42));
+        let restarted = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let fresh = active_root(&restarted, root_id)?;
+        assert_eq!(
+            old.generation().sequence(),
+            fresh.generation().sequence(),
+            "restart must reproduce the ABA shape: same root, same first sequence"
+        );
         assert_ne!(
             old.generation(),
             fresh.generation(),
@@ -227,12 +232,65 @@ mod tests {
             restarted.is_current(fresh.generation()),
             "fresh restart generation must compare current"
         );
+
+        // The historical generation fails every new-session boundary even
+        // though its root and sequence coincide with the current generation.
+        assert!(matches!(
+            restarted.register_root_task(old.generation(), WorkspaceRuntimeOperationId::new(1)),
+            Err(WorkspaceRuntimeError::WrongSession { .. })
+        ));
+        assert!(matches!(
+            restarted.accept_publication(
+                old.generation(),
+                WorkspaceRuntimePublicationKind::WorkspaceFacts,
+            ),
+            Err(WorkspaceRuntimeError::WrongSession { .. })
+        ));
+        assert!(matches!(
+            restarted.complete_transition(
+                old.generation(),
+                WorkspaceRuntimeLifecycleState::ActiveCurrent,
+            ),
+            Err(WorkspaceRuntimeError::WrongSession { .. })
+        ));
+        assert!(matches!(
+            restarted.detach_root(old.generation(), WorkspaceRuntimeTerminalReason::Removed),
+            Err(WorkspaceRuntimeError::WrongSession { .. })
+        ));
         Ok(())
     }
 
     #[test]
+    fn controller_clones_share_one_live_session_identity() -> Result<()> {
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
+        let clone = controller.clone();
+        let root_a = WorkspaceRootId::new(5);
+        let root_b = WorkspaceRootId::new(6);
+        let a = active_root(&controller, root_a)?;
+        let b = active_root(&clone, root_b)?;
+
+        assert!(clone.is_current(a.generation()), "clones share one session");
+        assert!(controller.is_current(b.generation()));
+        assert_ne!(a.generation(), b.generation(), "roots stay distinct");
+
+        // A later mint does not disturb the still-live controller's equality.
+        let _later = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
+        assert!(controller.is_current(a.generation()));
+        assert!(clone.is_current(b.generation()));
+        Ok(())
+    }
+
+    #[test]
+    fn minted_session_identities_never_repeat() {
+        use std::collections::HashSet;
+
+        let minted: HashSet<_> = (0..256).map(|_| WorkspaceRuntimeSessionId::mint()).collect();
+        assert_eq!(minted.len(), 256, "every mint must be structurally distinct");
+    }
+
+    #[test]
     fn shutdown_closes_every_admission_path() -> Result<()> {
-        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::new(43));
+        let controller = WorkspaceRuntimeController::new(WorkspaceRuntimeSessionId::mint());
         let root_id = WorkspaceRootId::new(3);
         let current = active_root(&controller, root_id)?;
         controller.shutdown();
