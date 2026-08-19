@@ -215,11 +215,25 @@ class PerllspExecuteCommand(LspTextCommand):
                 return
             sublime.set_timeout(lambda: self._show_success(invocation, response))
 
+        def handle_rejection(error: Any) -> None:
+            _diag(
+                f"response action={action!r} command={invocation.spec.command_id!r} "
+                f"kind=promise_rejected: {error!r}"
+            )
+
         _diag(
             f"run action={action!r} dispatched command={invocation.spec.command_id!r} "
             f"arguments={invocation.arguments!r}"
         )
-        session.execute_command(params, progress=True, view=self.view).then(handle_response)
+        promise = session.execute_command(params, progress=True, view=self.view)
+        promise.then(handle_response)
+        # Server-side failures arrive as Error values inside .then; a
+        # transport-level rejection would otherwise vanish without a
+        # response line. The promise API carries .catch when it supports
+        # it, so attach defensively rather than assume.
+        attach_catch = getattr(promise, "catch", None)
+        if attach_catch is not None:
+            attach_catch(handle_rejection)
 
     def _prepare(self, action: str, session: Any) -> CommandInvocation:
         selection = self.view.sel()
