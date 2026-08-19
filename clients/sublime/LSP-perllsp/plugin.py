@@ -221,11 +221,19 @@ class PerllspExecuteCommand(LspTextCommand):
                 f"kind=promise_rejected: {error!r}"
             )
 
+        try:
+            promise = session.execute_command(params, progress=True, view=self.view)
+        except Exception as error:
+            _diag(
+                f"run action={action!r} dispatched=False "
+                f"reason={type(error).__name__}: {error}"
+            )
+            self._status(f"Dispatching {invocation.spec.command_id} failed: {error}")
+            return
         _diag(
             f"run action={action!r} dispatched command={invocation.spec.command_id!r} "
             f"arguments={invocation.arguments!r}"
         )
-        promise = session.execute_command(params, progress=True, view=self.view)
         promise.then(handle_response)
         # Server-side failures arrive as Error values inside .then; a
         # transport-level rejection would otherwise vanish without a
