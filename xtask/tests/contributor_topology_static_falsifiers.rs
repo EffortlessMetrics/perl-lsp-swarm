@@ -231,7 +231,7 @@ fn schema_change_makes_checked_projection_stale() {
     let projection = build_projection(temp.path(), None).expect("build projection");
     let path = temp.path().join(RELEASE_SCHEMA);
     let mut text = fs::read_to_string(&path).expect("read release schema");
-    text.push_str("\n");
+    text.push('\n');
     fs::write(path, text).expect("write release schema mutation");
     assert!(validate_projection(temp.path(), &projection).is_err());
 }
