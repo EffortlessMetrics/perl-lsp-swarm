@@ -39,8 +39,10 @@ struct EvidenceBundle {
     schema_version: String,
     /// `bootstrap` evidence is checked-in structural seed data: it proves the
     /// projection wiring, not any observation, so the fatal freshness window
-    /// does not apply. `live_run` evidence comes from a real producer run and
-    /// must be fresh.
+    /// does not apply. `live_run` evidence asserts a real producer run and
+    /// must be fresh. The class is self-declared by the evidence file — no
+    /// producer-provenance field exists — so a producer must not relabel
+    /// stale or synthetic data to escape the window.
     evidence_class: String,
     subject_sha: String,
     run_id: String,
@@ -188,13 +190,23 @@ fn construct(e: &EvidenceBundle) -> Result<Projection> {
             ("limited", "limited")
         } else if fail > 0 {
             ("complete", "failed")
-        } else {
+        } else if pass > 0 {
             ("complete", "proven")
-        };
-        let limitations = if complete {
-            vec![]
         } else {
+            // Every member was skipped: the producer ran nothing. A passing
+            // verdict requires a known, non-zero, fully-passing population —
+            // a harness no-op or discovery failure must never mint `proven`.
+            ("complete", "limited")
+        };
+        let limitations = if !complete {
             vec![format!("{} expected population member(s) have incomplete attribution", not_run)]
+        } else if pass == 0 && fail == 0 {
+            vec![
+                "no population member passed; a `proven` verdict requires a non-zero passing count"
+                    .to_string(),
+            ]
+        } else {
+            vec![]
         };
         cells.push(StatusCell {
             id: c.id.clone(),
@@ -656,6 +668,23 @@ mod tests {
         let p = construct(&e).unwrap();
         assert_eq!(p.cells[0].verdict, "limited");
         assert_eq!(p.cells[0].not_run, 1)
+    }
+    #[test]
+    fn all_skipped_population_is_never_proven() {
+        // A broken producer that skips everything (discovery failure, harness
+        // no-op) ran nothing: zero passes must not mint `proven`.
+        let mut e = bundle();
+        for row in &mut e.cells[0].results {
+            row.outcome = Outcome::Skip;
+        }
+        let p = construct(&e).unwrap();
+        assert_eq!((p.cells[0].passed, p.cells[0].skipped), (0, 2));
+        assert_eq!(p.cells[0].completeness, "complete");
+        assert_eq!(p.cells[0].verdict, "limited");
+        assert!(p.cells[0].limitations.iter().any(|l| l.contains("no population member passed")));
+        // The deliberate contrast: skips beside at least one pass stay `proven`.
+        let p = construct(&bundle()).unwrap();
+        assert_eq!(p.cells[0].verdict, "proven");
     }
     #[test]
     fn another_head_is_rejected() {
