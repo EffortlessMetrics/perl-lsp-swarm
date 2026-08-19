@@ -22,22 +22,22 @@
 | perl-ast | — | 38 |
 | perl-ast-v2 | — | 10 |
 | perl-ci-hygiene | — | 93 |
-| perl-core-harness | — | 145 |
+| perl-core-harness | — | 216 |
 | perl-core-harness-types | — | 6 |
 | perl-corpus | — | 197 |
 | perl-dap | — | 689 |
-| perl-diagnostics | — | 13 |
+| perl-diagnostics | — | 17 |
 | perl-incremental-parsing | — | 13 |
 | perl-kwalitee | — | 82 |
 | perl-lexer | — | 232 |
 | perl-line-index | — | 40 |
-| perl-lsp | — | 1571 |
-| perl-lsp-perltidy | — | 31 |
-| perl-lsp-rs-core | — | 3140 |
+| perl-lsp | — | 1582 |
+| perl-lsp-perltidy | — | 34 |
+| perl-lsp-rs-core | — | 3211 |
 | perl-lsp-ux-tests | — | 78 |
 | perl-module | — | 20 |
 | perl-parser | — | 338 |
-| perl-parser-core | — | 1012 |
+| perl-parser-core | — | 1016 |
 | perl-parser-pest | — | 13 |
 | perl-pod | — | 28 |
 | perl-position-tracking | — | 73 |
@@ -47,7 +47,7 @@
 | perl-semantic-analyzer | — | 406 |
 | perl-semantic-facts | — | 69 |
 | perl-source-identity | — | 63 |
-| perl-subprocess-runtime | — | 36 |
+| perl-subprocess-runtime | — | 38 |
 | perl-symbol | — | 77 |
 | perl-tdd-support | — | 54 |
 | perl-test-facts | — | 25 |
@@ -60,7 +60,7 @@
 | perl-workspace-core | — | 122 |
 | tree-sitter-perl-c | — | 13 |
 | tree-sitter-perl-rs | — | 47 |
-| xtask | — | 41 |
+| xtask | — | 62 |
 <!-- END: QUALITY_CRATE_TABLE -->
 
 ## Flaky Test Registry

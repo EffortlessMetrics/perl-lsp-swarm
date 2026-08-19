@@ -242,26 +242,47 @@ fn package_block<'a>(lock: &'a str, name: &str) -> Option<&'a str> {
 
 #[test]
 fn adapter_does_not_reintroduce_a_private_comparison_outcome_model() -> Result<(), Box<dyn Error>> {
-    // Scan every source file the current-upstream feature compiles: the
-    // adapter module and the crate root whose feature-gated re-exports are
-    // part of the same public surface. Vocabulary hidden in either would
-    // recreate a private outcome model beside the shared #8127 authority.
+    // The adapter module must stay factual: outcome vocabulary hidden in it
+    // would recreate a private outcome model beside the shared #8127
+    // authority (`evidence` module).
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for source_file in ["src/current_upstream.rs", "src/lib.rs"] {
-        let source = fs::read_to_string(crate_root.join(source_file))?;
-        for forbidden in [
-            "CurrentUpstreamExecutionDisposition",
-            "AcceptedClean",
-            "AcceptedRecovered",
-            "ScoredComparison",
-            "Verdict::Correct",
-        ] {
-            assert!(
-                !source.contains(forbidden),
-                "current-upstream adapter must remain factual: found {forbidden} in {source_file}"
-            );
-        }
+    let adapter = fs::read_to_string(crate_root.join("src/current_upstream.rs"))?;
+    for forbidden in [
+        "CurrentUpstreamExecutionDisposition",
+        "AcceptedClean",
+        "AcceptedRecovered",
+        "ScoredComparison",
+        "Verdict::Correct",
+    ] {
+        assert!(
+            !adapter.contains(forbidden),
+            "current-upstream adapter must remain factual: found {forbidden} in src/current_upstream.rs"
+        );
     }
+
+    // The crate root legitimately re-exports the shared #8127 evidence model
+    // (`pub use evidence::{... ScoredComparison ...}`), so a plain string scan
+    // no longer discriminates there. What must not appear in the crate root
+    // is a *private definition* of outcome vocabulary: adapter-specific names
+    // remain forbidden outright, and the shared vocabulary must arrive only
+    // through the evidence-module re-export, never a local `enum`/`struct`
+    // definition.
+    let root = fs::read_to_string(crate_root.join("src/lib.rs"))?;
+    assert!(
+        !root.contains("CurrentUpstreamExecutionDisposition"),
+        "crate root must not define adapter-private outcome vocabulary"
+    );
+    for shared in ["SubjectDisposition", "ScoredComparison", "HarnessOutcome"] {
+        assert!(
+            !root.contains(&format!("enum {shared}"))
+                && !root.contains(&format!("struct {shared}")),
+            "crate root must not privately define shared outcome vocabulary: {shared}"
+        );
+    }
+    assert!(
+        root.contains("pub use evidence::"),
+        "crate root must re-export the shared #8127 evidence model, not redefine it"
+    );
     Ok(())
 }
 

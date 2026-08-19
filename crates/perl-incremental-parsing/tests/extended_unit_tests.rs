@@ -276,7 +276,7 @@ fn apply_edits_empty_list() -> Result<(), Box<dyn std::error::Error>> {
         result.changed_ranges
     );
     assert_eq!(
-        format!("{:?}", &result.parse_output),
+        format!("{:?}", &result.parse_output()),
         output_before,
         "empty edit list must retain the previous parse output unchanged"
     );
