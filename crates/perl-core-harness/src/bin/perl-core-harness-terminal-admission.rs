@@ -579,6 +579,49 @@ mod tests {
     }
 
     #[test]
+    fn recycled_valid_report_with_inflated_counts_breaks_verification() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let parse = write_report(temp.path(), "parse.json", HarnessMode::Parse, Some(0), false)?;
+        let compile =
+            write_report(temp.path(), "compile.json", HarnessMode::Compile, Some(0), false)?;
+        let expected = expected_identity();
+        let receipt = build_receipt(&[parse, compile], &expected, &temp.path().join("admitted"))?;
+        let compile_path = receipt
+            .reports
+            .iter()
+            .find(|report| report.mode == HarnessMode::Compile.to_string())
+            .and_then(|report| report.admitted_path.as_deref())
+            .ok_or_else(|| color_eyre::eyre::eyre!("compile admitted path missing"))?;
+
+        // Swap in a valid, schema-conformant report carrying the same identity
+        // but inflated counts, as if recycled from another run of the same
+        // subject. Read-only is restored so verification passes every gate up
+        // to the recorded-vs-recomputed comparison.
+        let mut recycled: RunReport = serde_json::from_str(&fs::read_to_string(compile_path)?)?;
+        recycled.summary.files_total = 7;
+        recycled.summary.files_passed = 7;
+        recycled.summary.tap_assertions_total = 7;
+        recycled.summary.tap_assertions_passed = 7;
+        make_writable(Path::new(compile_path))?;
+        fs::write(compile_path, format!("{}\n", serde_json::to_string_pretty(&recycled)?))?;
+        make_readonly(Path::new(compile_path))?;
+
+        let error = match verify_admitted_receipt(&receipt, &expected) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "a recycled admitted copy with different counts was accepted"
+                ));
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("admitted report differs from the recorded receipt"),
+            "verification must fail at the recorded-vs-recomputed comparison: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn serialized_identity_flags_cannot_override_recomputed_identity() -> TestResult {
         let temp = tempfile::tempdir()?;
         let parse = write_report(temp.path(), "parse.json", HarnessMode::Parse, Some(0), false)?;
@@ -608,6 +651,13 @@ mod tests {
     fn make_writable(path: &Path) -> Result<()> {
         let mut permissions = fs::metadata(path)?.permissions();
         permissions.set_readonly(false);
+        fs::set_permissions(path, permissions)?;
+        Ok(())
+    }
+
+    fn make_readonly(path: &Path) -> Result<()> {
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_readonly(true);
         fs::set_permissions(path, permissions)?;
         Ok(())
     }
