@@ -11,7 +11,7 @@ import sublime_plugin
 from LSP.plugin import LspPlugin, OnPreStartContext, PluginStartError
 from LSP.plugin.core.open import open_file
 from LSP.plugin.core.protocol import Error
-from LSP.plugin.core.registry import LspTextCommand
+from LSP.plugin.core.registry import LspTextCommand, windows
 from LSP.plugin.core.url import filename_to_uri
 
 from .command_surface import (
@@ -164,9 +164,28 @@ class PerllspExecuteCommand(LspTextCommand):
             _diag(f"is_enabled action={action!r} enabled=False reason=unknown_action")
         return known
 
+    def _resolve_session(self) -> Any:
+        """Resolve the perllsp session owning this view.
+
+        session_by_name alone proved insufficient on macOS (#9610): the
+        command journey verified the session READY through the window
+        manager while session_by_name still returned None at dispatch
+        time, so the command never fired. Try the canonical text-command
+        lookup first, then the window-manager path the host verifies
+        with.
+        """
+        session = self.session_by_name(self.session_name)
+        if session is not None:
+            return session
+        window = self.view.window()
+        file_name = self.view.file_name()
+        if window is None or file_name is None:
+            return None
+        return windows.lookup(window).get_session(self.session_name, file_name)
+
     def run(self, edit: sublime.Edit, action: str = "") -> None:
         del edit
-        session = self.session_by_name(self.session_name)
+        session = self._resolve_session()
         if session is None:
             _diag(f"run action={action!r} dispatched=False reason=session_none")
             self._status("No active LSP-perllsp session owns the current Perl view.")
