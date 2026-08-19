@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "total_files": 31,
-  "total_bytes": 36613985,
+  "total_bytes": 36614890,
   "files": {
     "package.nls.json": 2110,
     "package.json": 58611,
@@ -33,6 +33,6 @@
     "assets/demo-project/lib/Database.pm": 298,
     "readme.md": 25290,
     "LICENSE.txt": 1069,
-    "changelog.md": 19046
+    "changelog.md": 19951
   }
 }
