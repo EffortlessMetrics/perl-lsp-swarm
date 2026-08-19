@@ -99,20 +99,6 @@ def _diag(message: str) -> None:
     print(f"[perllsp-command] {message}")
 
 
-# Sublime re-queries is_enabled frequently (palette opens, menu refreshes,
-# capability changes), so its diagnostics deduplicate per action+reason: the
-# first occurrence of each reason reaches the console, repeats stay silent.
-_enabled_diag_seen: set[tuple[str, str]] = set()
-
-
-def _diag_enabled_once(action: str, reason: str) -> None:
-    key = (action, reason)
-    if key in _enabled_diag_seen:
-        return
-    _enabled_diag_seen.add(key)
-    _diag(f"is_enabled action={action!r} enabled=False reason={reason}")
-
-
 class PerllspPlugin(LspPlugin):
     @classmethod
     def on_pre_start_async(cls, context: OnPreStartContext) -> None:
@@ -165,16 +151,18 @@ class PerllspExecuteCommand(LspTextCommand):
         point: int | None = None,
     ) -> bool:
         del event, point
-        session = self.session_by_name(self.session_name)
-        if session is None:
-            _diag_enabled_once(action, "session_none")
-            return False
-        try:
-            self._prepare(action, session)
-        except CommandSurfaceError as error:
-            _diag_enabled_once(action, f"{type(error).__name__}: {error}")
-            return False
-        return True
+        # Deliberately not gated on session presence or invocation
+        # readiness: Sublime queries is_enabled during palette and menu
+        # refresh, before a session has registered, caches the disabled
+        # verdict, and then suppresses run_command outright — the
+        # macOS-only seam evidenced on #9610 (an is_enabled
+        # reason=session_none line with no dispatch that followed).
+        # run() owns the no-session and rejected-invocation UX (status
+        # message plus console diagnostic) at actual dispatch time.
+        known = action in COMMAND_SPECS
+        if not known:
+            _diag(f"is_enabled action={action!r} enabled=False reason=unknown_action")
+        return known
 
     def run(self, edit: sublime.Edit, action: str = "") -> None:
         del edit
