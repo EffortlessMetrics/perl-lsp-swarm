@@ -155,12 +155,10 @@ fn test_node_equality() {
     assert_ne!(a, b);
 }
 
-// ---- Fallback `_` arm in to_sexp (Unary, If, VariableDeclaration, etc.) ---
+// ---- Explicit to_sexp arms for Unary, Identifier, If, VariableDeclaration, etc.
 //
-// Variants without an explicit to_sexp arm use the wildcard:
-//   `_ => format!("({:?})", self)`
-// These tests exercise that path and verify it produces a non-empty string
-// that starts with `(` (the Debug representation wrapped in parens).
+// All NodeKind variants have explicit arms in to_sexp_depth; there is no wildcard
+// fallback.  These tests verify the human-readable s-expression each arm produces.
 
 #[test]
 fn test_unary_sexp_fallback() {
@@ -169,9 +167,7 @@ fn test_unary_sexp_fallback() {
     let node =
         make_node(&mut id_gen, NodeKind::Unary { op: "-".into(), operand: Box::new(operand) });
     let sexp = node.to_sexp();
-    // The wildcard arm produces ({:?}) — it must start with '(' and contain Unary
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(sexp.contains("Unary"), "to_sexp fallback must contain variant name, got: {sexp}");
+    assert_eq!(sexp, "(unary_- (number 1))");
 }
 
 #[test]
@@ -179,9 +175,7 @@ fn test_identifier_sexp_fallback() {
     let mut id_gen = NodeIdGenerator::new();
     let node = make_node(&mut id_gen, NodeKind::Identifier { name: "foo".into() });
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(sexp.contains("Identifier"), "to_sexp fallback must contain variant name, got: {sexp}");
-    assert!(sexp.contains("foo"), "to_sexp fallback must include identifier name, got: {sexp}");
+    assert_eq!(sexp, "(identifier foo)");
 }
 
 #[test]
@@ -198,11 +192,7 @@ fn test_variable_declaration_sexp_fallback() {
         },
     );
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(
-        sexp.contains("VariableDeclaration"),
-        "to_sexp fallback must contain variant name, got: {sexp}"
-    );
+    assert_eq!(sexp, "(variable_declaration my (variable $ x))");
 }
 
 #[test]
@@ -220,11 +210,7 @@ fn test_variable_list_declaration_sexp_fallback() {
         },
     );
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(
-        sexp.contains("VariableListDeclaration"),
-        "to_sexp fallback must contain variant name, got: {sexp}"
-    );
+    assert_eq!(sexp, "(variable_list_declaration my (variable $ a) (variable $ b))");
 }
 
 #[test]
@@ -243,8 +229,7 @@ fn test_if_sexp_fallback() {
         },
     );
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(sexp.contains("If"), "to_sexp fallback must contain variant name, got: {sexp}");
+    assert_eq!(sexp, "(if (variable $ ok) (block ))");
 }
 
 #[test]
@@ -312,10 +297,12 @@ fn test_variable_declaration_fallback_includes_attributes_and_initializer() {
     );
 
     let sexp = node.to_sexp();
-    assert!(sexp.contains("VariableDeclaration"), "variant missing from {sexp}");
+    // Declarator, variable, attributes, and initializer must all appear in the sexp.
+    assert!(sexp.contains("variable_declaration"), "tag missing from {sexp}");
     assert!(sexp.contains("state"), "declarator missing from {sexp}");
-    assert!(sexp.contains("shared"), "attribute missing from {sexp}");
-    assert!(sexp.contains("initializer: Some"), "initializer missing from {sexp}");
+    assert!(sexp.contains("(attrs shared)"), "attribute missing from {sexp}");
+    assert!(sexp.contains("(number 1)"), "initializer missing from {sexp}");
+    assert_eq!(sexp, "(variable_declaration state (variable $ count) (attrs shared) (number 1))");
 }
 
 #[test]
@@ -339,8 +326,13 @@ fn test_if_fallback_includes_elsif_and_else_branches() {
     );
 
     let sexp = node.to_sexp();
-    assert!(sexp.contains("If"), "variant missing from {sexp}");
-    assert!(sexp.contains("elsif_branches"), "elsif branch field missing from {sexp}");
-    assert!(sexp.contains("else_branch: Some"), "else branch missing from {sexp}");
-    assert!(sexp.contains("name: \"b\""), "elsif condition missing from {sexp}");
+    // All branches must appear in the rendered sexp.
+    assert!(sexp.starts_with("(if "), "if tag missing from {sexp}");
+    assert!(sexp.contains("(elsif "), "elsif clause missing from {sexp}");
+    assert!(sexp.contains("(else "), "else clause missing from {sexp}");
+    assert!(sexp.contains("variable $ b"), "elsif condition missing from {sexp}");
+    assert_eq!(
+        sexp,
+        "(if (variable $ a) (block ) (elsif (variable $ b) (block )) (else (block )))"
+    );
 }
