@@ -1,9 +1,8 @@
-//! Checked root-runtime ownership denominator for issue #10011.
+//! Checked root-runtime ownership denominator for issues #10011 and #10013.
 //!
-//! The machine authority lives in `policy/workspace-runtime-ownership.v1.tsv`.
-//! This test keeps the checked denominator complete, source-backed where the
-//! behavior is already live, and explicitly non-green where a successor issue
-//! has not landed yet.
+//! `policy/workspace-runtime-ownership.v1.tsv` is the machine authority. Live
+//! rows must resolve to exact current source markers; planned rows must remain
+//! explicitly non-green and source-unreachable.
 
 use std::{
     collections::BTreeSet,
@@ -54,56 +53,53 @@ fn repo_root() -> Result<PathBuf> {
 }
 
 fn parse_ledger(source: &str) -> Result<Vec<OwnershipRow>> {
-    let mut rows = Vec::new();
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'))
+        .map(|(index, line)| parse_row(index + 1, line))
+        .collect()
+}
 
-    for (index, raw_line) in source.lines().enumerate() {
-        let line_number = index + 1;
-        let line = raw_line.trim_end();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
+fn parse_row(line_number: usize, line: &str) -> Result<OwnershipRow> {
+    let columns: Vec<&str> = line.split('|').collect();
+    ensure!(
+        columns.len() == COLUMN_COUNT,
+        "{LEDGER_PATH}:{line_number}: expected {COLUMN_COUNT} columns, found {}",
+        columns.len()
+    );
+    let blocking_work_reachable = match columns[8] {
+        "true" => true,
+        "false" => false,
+        value => bail!(
+            "{LEDGER_PATH}:{line_number}: blocking_work_reachable must be true or false, found {value:?}"
+        ),
+    };
 
-        let columns: Vec<&str> = line.split('|').collect();
-        ensure!(
-            columns.len() == COLUMN_COUNT,
-            "{LEDGER_PATH}:{line_number}: expected {COLUMN_COUNT} columns, found {}",
-            columns.len()
-        );
-
-        let blocking_work_reachable = match columns[8] {
-            "true" => true,
-            "false" => false,
-            value => bail!(
-                "{LEDGER_PATH}:{line_number}: blocking_work_reachable must be true or false, found {value:?}"
-            ),
-        };
-
-        rows.push(OwnershipRow {
-            id: columns[0].to_string(),
-            current_state: columns[1].to_string(),
-            disposition: columns[2].to_string(),
-            proposition: columns[3].to_string(),
-            current_owner: columns[4].to_string(),
-            identity: columns[5].to_string(),
-            publication: columns[6].to_string(),
-            cleanup: columns[7].to_string(),
-            blocking_work_reachable,
-            target_issue: columns[9].to_string(),
-            proof_family: columns[10].to_string(),
-            source_path: columns[11].to_string(),
-            source_marker: columns[12].to_string(),
-        });
-    }
-
-    ensure!(!rows.is_empty(), "{LEDGER_PATH} contains no ownership rows");
-    Ok(rows)
+    Ok(OwnershipRow {
+        id: columns[0].to_string(),
+        current_state: columns[1].to_string(),
+        disposition: columns[2].to_string(),
+        proposition: columns[3].to_string(),
+        current_owner: columns[4].to_string(),
+        identity: columns[5].to_string(),
+        publication: columns[6].to_string(),
+        cleanup: columns[7].to_string(),
+        blocking_work_reachable,
+        target_issue: columns[9].to_string(),
+        proof_family: columns[10].to_string(),
+        source_path: columns[11].to_string(),
+        source_marker: columns[12].to_string(),
+    })
 }
 
 fn load_rows() -> Result<Vec<OwnershipRow>> {
     let root = repo_root()?;
     let source = fs::read_to_string(root.join(LEDGER_PATH))
         .with_context(|| format!("read {LEDGER_PATH}"))?;
-    parse_ledger(&source)
+    let rows = parse_ledger(&source)?;
+    ensure!(!rows.is_empty(), "{LEDGER_PATH} contains no ownership rows");
+    Ok(rows)
 }
 
 fn expected_target_issue(disposition: &str) -> Option<&'static str> {
@@ -119,9 +115,8 @@ fn expected_target_issue(disposition: &str) -> Option<&'static str> {
 }
 
 fn identity_is_path_or_uri_only(identity: &str) -> bool {
-    let normalized = identity.trim().to_ascii_lowercase();
     matches!(
-        normalized.as_str(),
+        identity.trim().to_ascii_lowercase().as_str(),
         "path"
             | "uri"
             | "root path"
@@ -135,10 +130,10 @@ fn identity_is_path_or_uri_only(identity: &str) -> bool {
 
 fn validate_rows(rows: &[OwnershipRow]) -> Result<()> {
     ensure!(!rows.is_empty(), "ownership denominator must not be empty");
-
     let mut ids = BTreeSet::new();
+
     for row in rows {
-        ensure!(row.id.starts_with("WRT-"), "{}: stable row ID must start with WRT-", row.id);
+        ensure!(row.id.starts_with("WRT-"), "{}: invalid stable row ID", row.id);
         ensure!(ids.insert(row.id.as_str()), "duplicate ownership row {}", row.id);
         ensure!(
             ALLOWED_STATES.contains(&row.current_state.as_str()),
@@ -152,23 +147,30 @@ fn validate_rows(rows: &[OwnershipRow]) -> Result<()> {
             row.id,
             row.disposition
         );
-        ensure!(!row.proposition.trim().is_empty(), "{}: proposition is empty", row.id);
-        ensure!(!row.current_owner.trim().is_empty(), "{}: current owner is empty", row.id);
-        ensure!(!row.identity.trim().is_empty(), "{}: identity is empty", row.id);
+        for (field, value) in [
+            ("proposition", &row.proposition),
+            ("current_owner", &row.current_owner),
+            ("identity", &row.identity),
+            ("publication", &row.publication),
+            ("cleanup", &row.cleanup),
+            ("proof_family", &row.proof_family),
+        ] {
+            ensure!(
+                !value.trim().is_empty(),
+                "{}: ownership proposition field {field} is empty",
+                row.id
+            );
+        }
         ensure!(
             !identity_is_path_or_uri_only(&row.identity),
             "{}: a path or URI alone cannot be root-runtime identity",
             row.id
         );
-        ensure!(!row.publication.trim().is_empty(), "{}: publication disposition is empty", row.id);
-        ensure!(!row.cleanup.trim().is_empty(), "{}: cleanup disposition is empty", row.id);
         ensure!(
             row.target_issue.starts_with('#'),
             "{}: target issue must be an issue identity",
             row.id
         );
-        ensure!(!row.proof_family.trim().is_empty(), "{}: proof family is empty", row.id);
-
         if let Some(expected) = expected_target_issue(&row.disposition) {
             ensure!(
                 row.target_issue == expected,
@@ -181,13 +183,11 @@ fn validate_rows(rows: &[OwnershipRow]) -> Result<()> {
         }
 
         match row.current_state.as_str() {
-            "live" => {
-                ensure!(
-                    !row.source_path.is_empty() && !row.source_marker.is_empty(),
-                    "{}: live rows require an exact source path and marker",
-                    row.id
-                );
-            }
+            "live" => ensure!(
+                !row.source_path.is_empty() && !row.source_marker.is_empty(),
+                "{}: live rows require an exact source path and marker",
+                row.id
+            ),
             "planned_not_on_main" => {
                 ensure!(
                     row.source_path.is_empty() && row.source_marker.is_empty(),
@@ -209,7 +209,6 @@ fn validate_rows(rows: &[OwnershipRow]) -> Result<()> {
 
 fn validate_live_source_markers(rows: &[OwnershipRow]) -> Result<()> {
     let root = repo_root()?;
-
     for row in rows.iter().filter(|row| row.current_state == "live") {
         let source = fs::read_to_string(root.join(&row.source_path))
             .with_context(|| format!("read live source {}", row.source_path))?;
@@ -221,7 +220,6 @@ fn validate_live_source_markers(rows: &[OwnershipRow]) -> Result<()> {
             row.source_path
         );
     }
-
     Ok(())
 }
 
@@ -240,7 +238,7 @@ fn render_markdown(rows: &[OwnershipRow]) -> Result<String> {
     output.push_str("| ID | Current state | Disposition | Proposition | Current owner | Identity | Publication | Cleanup | Blocking | Target | Proof family |\n");
     output.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
 
-    for row in &ordered {
+    for row in ordered {
         writeln!(
             output,
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
@@ -258,7 +256,6 @@ fn render_markdown(rows: &[OwnershipRow]) -> Result<String> {
         )
         .context("render workspace-runtime ownership row")?;
     }
-
     Ok(output)
 }
 
@@ -273,7 +270,6 @@ fn ownership_rows_are_unique_complete_and_well_formed() -> Result<()> {
         observed == expected,
         "every W02-W06/existing/retire disposition must be represented; observed {observed:?}"
     );
-
     Ok(())
 }
 
@@ -291,7 +287,6 @@ fn generated_reviewer_projection_is_current() -> Result<()> {
     let root = repo_root()?;
     let actual = fs::read_to_string(root.join(GENERATED_PATH))
         .with_context(|| format!("read {GENERATED_PATH}"))?;
-
     ensure!(actual == expected, "{GENERATED_PATH} is stale; regenerate it from {LEDGER_PATH}");
     Ok(())
 }
@@ -301,7 +296,6 @@ fn duplicate_stable_row_id_is_rejected() -> Result<()> {
     let mut rows = load_rows()?;
     let duplicate = rows.first().cloned().context("ownership ledger unexpectedly empty")?;
     rows.push(duplicate);
-
     ensure!(validate_rows(&rows).is_err(), "duplicate row ID must fail validation");
     Ok(())
 }
@@ -311,7 +305,6 @@ fn path_or_uri_only_identity_is_rejected() -> Result<()> {
     let mut rows = load_rows()?;
     let row = rows.first_mut().context("ownership ledger unexpectedly empty")?;
     row.identity = "root URI".to_string();
-
     ensure!(validate_rows(&rows).is_err(), "path/URI-only root identity must fail validation");
     Ok(())
 }
@@ -325,7 +318,6 @@ fn planned_row_cannot_claim_live_source_reachability() -> Result<()> {
         .context("expected at least one planned row")?;
     row.source_path = "crates/perl-lsp-rs/src/runtime/mod.rs".to_string();
     row.source_marker = "pub struct LspServer".to_string();
-
     ensure!(
         validate_rows(&rows).is_err(),
         "planned work must not gain live reachability from a source citation"
@@ -341,7 +333,6 @@ fn missing_live_source_marker_is_rejected() -> Result<()> {
         .find(|row| row.current_state == "live")
         .context("expected at least one live row")?;
     row.source_marker = "__workspace_runtime_marker_that_does_not_exist__".to_string();
-
     ensure!(
         validate_live_source_markers(&rows).is_err(),
         "missing live source marker must fail validation"
@@ -350,20 +341,15 @@ fn missing_live_source_marker_is_rejected() -> Result<()> {
 }
 
 #[test]
-fn planned_domains_remain_non_green_until_their_owner_lands() -> Result<()> {
+fn later_domains_remain_non_green_until_their_owner_lands() -> Result<()> {
     let rows = load_rows()?;
-    let required_planned_ids = [
+    for id in [
         "WRT-CHECKPOINT-001",
-        "WRT-GEN-001",
-        "WRT-GEN-002",
-        "WRT-GEN-003",
         "WRT-HYDRATE-001",
         "WRT-NAMESPACE-001",
         "WRT-PROOF-001",
         "WRT-RELOAD-001",
-    ];
-
-    for id in required_planned_ids {
+    ] {
         let row = rows
             .iter()
             .find(|row| row.id == id)
@@ -373,6 +359,5 @@ fn planned_domains_remain_non_green_until_their_owner_lands() -> Result<()> {
             "{id} cannot become green without its owning implementation leaf"
         );
     }
-
     Ok(())
 }
