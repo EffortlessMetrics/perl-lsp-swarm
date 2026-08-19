@@ -84,7 +84,7 @@ classification = "special_syntax"
 recognition = "parser_builtin_or_core_qualified"
 perl_version_min = "5.0.0"
 arguments = [
-  { role = "filehandle", context = "filehandle", access = "read", cardinality = "zero_or_one" },
+  { role = "filehandle", context = "filehandle", access = "write", cardinality = "zero_or_one" },
   { role = "values", context = "list", access = "read", cardinality = "zero_or_more" },
 ]
 implicit_operands = ["selected_output_handle", "topic_when_omitted"]

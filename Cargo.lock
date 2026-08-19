@@ -4003,6 +4003,7 @@ dependencies = [
  "perl-core-harness-types",
  "perl-corpus",
  "perl-kwalitee",
+ "perl-lexer",
  "perl-lsp-rs-core",
  "perl-lsp-ux-tests",
  "perl-parser",

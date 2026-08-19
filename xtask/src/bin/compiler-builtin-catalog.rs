@@ -9,6 +9,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
+use perl_lexer::api::BUILTIN_SIGS;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -111,6 +112,9 @@ enum ArgumentContext {
 enum ArgumentAccess {
     Read,
     ReadModifyWrite,
+    /// The builtin writes through this argument (for example print's
+    /// filehandle). A write argument must retain its effect declaration.
+    Write,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -234,6 +238,7 @@ stable_names!(ArgumentContext, {
 stable_names!(ArgumentAccess, {
     ArgumentAccess::Read => "read",
     ArgumentAccess::ReadModifyWrite => "read_modify_write",
+    ArgumentAccess::Write => "write",
 });
 stable_names!(Cardinality, {
     Cardinality::ExactlyOne => "exactly_one",
@@ -341,16 +346,28 @@ impl BuiltinCatalog {
             }
         }
 
-        if self.complete
-            && self.builtins.iter().any(|builtin| {
+        if self.complete {
+            if self.builtins.iter().any(|builtin| {
                 builtin.proof != ProofState::Proven
                     || builtin.hir_pir_lowering == HirPirLowering::CatalogOnly
                     || builtin.eir_profile != EirProfile::Executable
-            })
-        {
-            bail!(
-                "complete builtin catalog cannot contain missing proof, catalog-only lowering, or non-executable EIR rows"
-            );
+            }) {
+                bail!(
+                    "complete builtin catalog cannot contain missing proof, catalog-only lowering, or non-executable EIR rows"
+                );
+            }
+            // `complete` must also prove inventory completeness: bind the set
+            // to the canonical, versioned lexer builtin inventory so a
+            // one-row catalog cannot claim completeness.
+            let missing: Vec<&str> =
+                BUILTIN_SIGS.keys().filter(|name| !names.contains(**name)).copied().collect();
+            if !missing.is_empty() {
+                bail!(
+                    "complete builtin catalog must cover the canonical lexer builtin inventory; missing {} rows including {:?}",
+                    missing.len(),
+                    &missing[..missing.len().min(5)]
+                );
+            }
         }
         Ok(())
     }
@@ -534,6 +551,22 @@ impl BuiltinEntry {
                 );
             }
         }
+        // Both directions: a callback argument must retain its invocation and
+        // dynamic-boundary truth rather than degrading to a plain argument.
+        if self.arguments.iter().any(|argument| argument.context == ArgumentContext::Callback) {
+            if !self.side_effects.contains(&SideEffect::CallbackInvocation) {
+                bail!(
+                    "builtin {} callback argument requires callback_invocation side effect",
+                    self.builtin_id
+                );
+            }
+            if !self.boundaries.contains(&Boundary::DynamicCallback) {
+                bail!(
+                    "builtin {} callback argument requires dynamic_callback boundary",
+                    self.builtin_id
+                );
+            }
+        }
         if self.side_effects.contains(&SideEffect::TopicLocalization)
             && !self.implicit_operands.contains(&ImplicitOperand::TopicAliasPerIteration)
         {
@@ -556,6 +589,25 @@ impl BuiltinEntry {
                 bail!("builtin {} container_mutation requires tie_magic boundary", self.builtin_id);
             }
         }
+        // Both directions: a read_modify_write place performs the mutation it
+        // declares, so the row must retain the mutation and tie/magic truth.
+        if self.arguments.iter().any(|argument| {
+            argument.context == ArgumentContext::Place
+                && argument.access == ArgumentAccess::ReadModifyWrite
+        }) {
+            if !self.side_effects.contains(&SideEffect::ContainerMutation) {
+                bail!(
+                    "builtin {} read_modify_write place argument requires container_mutation side effect",
+                    self.builtin_id
+                );
+            }
+            if !self.boundaries.contains(&Boundary::TieMagic) {
+                bail!(
+                    "builtin {} read_modify_write place argument requires tie_magic boundary",
+                    self.builtin_id
+                );
+            }
+        }
         if self.arguments.iter().any(|argument| argument.context == ArgumentContext::Filehandle)
             && (!self.capabilities.contains(&Capability::Io)
                 || !self.boundaries.contains(&Boundary::Io))
@@ -570,6 +622,18 @@ impl BuiltinEntry {
                 || !self.boundaries.contains(&Boundary::Io))
         {
             bail!("builtin {} stream_write requires io capability and boundary", self.builtin_id);
+        }
+        // Both directions: a builtin that writes through a filehandle argument
+        // must retain the stream_write effect.
+        if self.arguments.iter().any(|argument| {
+            argument.context == ArgumentContext::Filehandle
+                && argument.access == ArgumentAccess::Write
+        }) && !self.side_effects.contains(&SideEffect::StreamWrite)
+        {
+            bail!(
+                "builtin {} filehandle write argument requires stream_write side effect",
+                self.builtin_id
+            );
         }
         if self.implicit_operands.contains(&ImplicitOperand::SelectedOutputHandle)
             && (!self.capabilities.contains(&Capability::Io)
@@ -589,9 +653,64 @@ impl BuiltinEntry {
                 self.builtin_id
             );
         }
-        if self.proof == ProofState::Proven && self.evidence.len() < 2 {
+        // Both directions: hidden interpreter-state operands and the read
+        // effect must appear together, in either order of authorship.
+        let reads_interpreter_state = self.implicit_operands.iter().any(|operand| {
+            matches!(
+                operand,
+                ImplicitOperand::CallerContext | ImplicitOperand::SelectedOutputHandle
+            )
+        });
+        if reads_interpreter_state && !self.side_effects.contains(&SideEffect::InterpreterStateRead)
+        {
             bail!(
-                "builtin {} proven status requires implementation proof beyond one language reference",
+                "builtin {} caller-context/selected-handle operand requires interpreter_state_read side effect",
+                self.builtin_id
+            );
+        }
+        if self.side_effects.contains(&SideEffect::InterpreterStateRead) && !reads_interpreter_state
+        {
+            bail!(
+                "builtin {} interpreter_state_read requires a caller_context or selected_output_handle implicit operand",
+                self.builtin_id
+            );
+        }
+        if self.eir_profile == EirProfile::Executable
+            && self.hir_pir_lowering == HirPirLowering::CatalogOnly
+        {
+            bail!(
+                "builtin {} cannot be EIR-executable with catalog-only lowering; executable EIR requires an implemented lowering seam",
+                self.builtin_id
+            );
+        }
+        let mut evidence_roles = BTreeSet::new();
+        for entry in &self.evidence {
+            let (role, reference) = entry.split_once(':').ok_or_else(|| {
+                anyhow!(
+                    "builtin {} evidence entry {entry:?} must be typed as <role>:<reference>",
+                    self.builtin_id
+                )
+            })?;
+            if !EVIDENCE_ROLES.contains(&role) {
+                bail!(
+                    "builtin {} evidence entry {entry:?} has unknown role {role:?}; expected one of {:?}",
+                    self.builtin_id,
+                    EVIDENCE_ROLES
+                );
+            }
+            evidence_roles.insert(role);
+            if matches!(role, "impl" | "test") && !repository_root().join(reference).is_file() {
+                bail!(
+                    "builtin {} evidence entry {entry:?} does not name a tracked repository file",
+                    self.builtin_id
+                );
+            }
+        }
+        if self.proof == ProofState::Proven
+            && (evidence_roles.len() < 2 || !evidence_roles.iter().any(|role| *role != "perldoc"))
+        {
+            bail!(
+                "builtin {} proven status requires at least two evidence roles, including implementation or test evidence beyond a language reference",
                 self.builtin_id
             );
         }
@@ -704,6 +823,17 @@ fn validate_builtin_id(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Typed evidence roles for admission: a language reference alone never
+/// proves implementation.
+const EVIDENCE_ROLES: &[&str] = &["perldoc", "impl", "test", "receipt"];
+
+fn repository_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn validate_name(value: &str) -> Result<()> {
     if value.is_empty()
         || !value.as_bytes()[0].is_ascii_lowercase()
@@ -717,7 +847,17 @@ fn validate_name(value: &str) -> Result<()> {
 }
 
 fn validate_role(value: &str) -> Result<()> {
-    validate_name(value).with_context(|| format!("invalid builtin argument role {value:?}"))
+    // Keep parity with the published schema pattern `^[a-z0-9][a-z0-9_-]*$`:
+    // argument roles may carry hyphens even though builtin names may not.
+    if value.is_empty()
+        || !value.as_bytes()[0].is_ascii_lowercase()
+        || value.bytes().any(|byte| {
+            !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-')
+        })
+    {
+        bail!("invalid builtin argument role {value:?}");
+    }
+    Ok(())
 }
 
 fn validate_version(value: &str) -> Result<()> {
@@ -843,6 +983,123 @@ mod tests {
         let mut reversed = catalog.clone();
         reversed.builtins.reverse();
         assert_eq!(reversed.render_markdown()?, expected);
+        Ok(())
+    }
+
+    fn catalog_with_mutated_row(
+        name: &str,
+        mutate: impl Fn(&mut BuiltinEntry),
+    ) -> Result<BuiltinCatalog> {
+        let mut catalog = BuiltinCatalog::from_str(CATALOG)?;
+        let builtin = catalog
+            .builtins
+            .iter_mut()
+            .find(|builtin| builtin.name == name)
+            .ok_or_else(|| anyhow!("committed catalog has no {name} row"))?;
+        mutate(builtin);
+        Ok(catalog)
+    }
+
+    #[test]
+    fn callback_argument_without_invocation_fails_closed() -> Result<()> {
+        // Reverse direction: deleting callback_invocation from map must fail.
+        let catalog = catalog_with_mutated_row("map", |builtin| {
+            builtin.side_effects.retain(|effect| *effect != SideEffect::CallbackInvocation);
+        })?;
+        assert!(catalog.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn read_modify_write_place_without_mutation_fails_closed() -> Result<()> {
+        // Reverse direction: deleting container_mutation from push must fail.
+        let catalog = catalog_with_mutated_row("push", |builtin| {
+            builtin.side_effects.retain(|effect| *effect != SideEffect::ContainerMutation);
+        })?;
+        assert!(catalog.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn filehandle_write_without_stream_write_fails_closed() -> Result<()> {
+        // Reverse direction: deleting stream_write from print must fail.
+        let catalog = catalog_with_mutated_row("print", |builtin| {
+            builtin.side_effects.retain(|effect| *effect != SideEffect::StreamWrite);
+        })?;
+        assert!(catalog.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn interpreter_state_operand_and_read_effect_move_together() -> Result<()> {
+        // wantarray without the read effect fails...
+        let catalog = catalog_with_mutated_row("wantarray", |builtin| {
+            builtin.side_effects.clear();
+        })?;
+        assert!(catalog.validate().is_err());
+        // ...and the read effect without any interpreter-state operand fails.
+        let catalog = catalog_with_mutated_row("wantarray", |builtin| {
+            builtin.implicit_operands.clear();
+        })?;
+        assert!(catalog.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn executable_eir_with_catalog_only_lowering_fails_closed() -> Result<()> {
+        let catalog = catalog_with_mutated_row("map", |builtin| {
+            builtin.eir_profile = EirProfile::Executable;
+            builtin.proof = ProofState::Proven;
+            builtin.evidence = vec![
+                "perldoc:perlfunc#map".to_string(),
+                "impl:xtask/src/bin/compiler-builtin-catalog.rs".to_string(),
+            ];
+        })?;
+        assert!(catalog.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn proven_with_only_language_reference_fails_closed() -> Result<()> {
+        let catalog = catalog_with_mutated_row("map", |builtin| {
+            builtin.proof = ProofState::Proven;
+            builtin.evidence =
+                vec!["perldoc:perlfunc#map".to_string(), "perldoc:perlsyn#map".to_string()];
+        })?;
+        assert!(catalog.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn proven_with_untyped_or_missing_evidence_fails_closed() -> Result<()> {
+        let catalog = catalog_with_mutated_row("map", |builtin| {
+            builtin.proof = ProofState::Proven;
+            builtin.evidence = vec!["anything".to_string(), "perldoc:perlfunc#map".to_string()];
+        })?;
+        assert!(catalog.validate().is_err());
+        let catalog = catalog_with_mutated_row("map", |builtin| {
+            builtin.proof = ProofState::Proven;
+            builtin.evidence =
+                vec!["perldoc:perlfunc#map".to_string(), "test:does/not/exist.rs".to_string()];
+        })?;
+        assert!(catalog.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn complete_catalog_must_cover_canonical_builtin_inventory() -> Result<()> {
+        // A complete flag on this partial seed catalog must fail: seven rows
+        // cannot cover the canonical lexer builtin inventory.
+        let mut catalog = BuiltinCatalog::from_str(CATALOG)?;
+        catalog.complete = true;
+        assert!(catalog.validate().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn argument_roles_may_carry_hyphens_like_the_schema_allows() -> Result<()> {
+        validate_role("input-list")?;
+        assert!(validate_role("not a role").is_err());
         Ok(())
     }
 }
