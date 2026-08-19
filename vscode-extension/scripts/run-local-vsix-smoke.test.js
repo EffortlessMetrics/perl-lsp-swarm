@@ -321,6 +321,21 @@ void test('independent cleanup failures are accumulated before receipt persisten
   });
 });
 
+void test('the orchestrator reads the child receipt where the child writes it', () => {
+  // The extension-host child nests by source label and platform
+  // (firstHourReceipt.test.ts receiptsDir). A flat lookup here silently turns
+  // every hosted run not_proven — the 0490e2962 smoke failure.
+  const { childReceiptPath } = require('./run-local-vsix-smoke');
+  const resolved = childReceiptPath();
+  assert.ok(resolved.endsWith(path.join('first_hour_vscode_receipt.json')));
+  assert.match(
+    resolved,
+    /(hosted-linux-current-source|local-current-source|first-hour)/,
+    'child receipt path must include the source-label leg',
+  );
+  assert.match(resolved, /(linux|macos|windows)/, 'child receipt path must include the platform leg');
+});
+
 const CHILD_SUBJECT = {
   expectedRevision: 'a'.repeat(40),
   expectedVsixSha256: 'b'.repeat(64),

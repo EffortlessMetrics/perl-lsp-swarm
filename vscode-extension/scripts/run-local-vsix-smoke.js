@@ -426,8 +426,28 @@ function runInventoryTransition(env, expectedRevision, vsixPath) {
 
 const CHILD_RECEIPT_NAME = 'first_hour_vscode_receipt.json';
 
+function smokeSourceLabel() {
+  return (process.env.PERL_LSP_SMOKE_SOURCE_LABEL || '').trim() || 'local-current-source';
+}
+
+function smokePlatformLabel() {
+  switch (process.platform) {
+    case 'win32':
+      return 'windows';
+    case 'darwin':
+      return 'macos';
+    case 'linux':
+      return 'linux';
+    default:
+      return process.platform;
+  }
+}
+
 function childReceiptPath() {
-  return path.join(receiptsRoot(), CHILD_RECEIPT_NAME);
+  // The extension-host child nests its receipt by source label and platform
+  // (receiptsDir() in src/test/integration/firstHourReceipt.test.ts); the
+  // orchestrator must read and clear exactly where the child writes.
+  return path.join(receiptsRoot(), smokeSourceLabel(), smokePlatformLabel(), CHILD_RECEIPT_NAME);
 }
 
 /**
@@ -734,8 +754,7 @@ function main() {
           PERL_LSP_PUBLISHED_VSIX_PATH: vsixPath,
           PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision,
           PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
-          PERL_LSP_SMOKE_SOURCE_LABEL:
-            process.env.PERL_LSP_SMOKE_SOURCE_LABEL || 'local-current-source',
+          PERL_LSP_SMOKE_SOURCE_LABEL: smokeSourceLabel(),
           PERL_LSP_VSIX_SHA256: receipt.vsix.sha256,
         };
 
@@ -818,6 +837,7 @@ if (require.main === module) {
 
 module.exports = {
   bundleTargetForPlatform,
+  childReceiptPath,
   computeOverallStatus,
   finalizeSmokeRun,
   initialReceipt,
