@@ -50,6 +50,7 @@ const LAYERS: &[LayerRow] = &[
     layer!("parse_worker", ApplicationServices),
     layer!("readiness", ApplicationServices),
     layer!("refresh", AdapterPolicy),
+    layer!("resolve_session", RuntimeProtocol),
     layer!("routing", AdapterPolicy),
     layer!("scheduler", RuntimeProtocol),
     layer!("serving", RuntimeProtocol),
