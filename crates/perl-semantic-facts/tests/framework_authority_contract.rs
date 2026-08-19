@@ -1,7 +1,7 @@
 use perl_semantic_facts::framework::{
     AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterCancellationControl,
     AdapterDescriptor, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome, AdapterResult,
-    AdapterSourceScope, EmittedFact, FactClass, FactSink, FactSinkId,
+    AdapterSourceScope, EmittedFact, FactClass, FactLimitation, FactSink, FactSinkId,
 };
 use perl_semantic_facts::{
     AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance, SemanticConfidence,
@@ -158,5 +158,69 @@ fn exact_source_precedence_is_generation_bound() {
     assert_eq!(
         candidate.validate_authority_against(&input()),
         Err(AdapterAuthorityError::GenerationMismatch)
+    );
+}
+
+/// An otherwise-authoritative candidate, used as the baseline for falsifiers.
+fn authoritative_candidate() -> AdapterResult {
+    let fact = EmittedFact::new(
+        FactSinkId(9),
+        AdapterId(7),
+        "Moo",
+        Provenance::ExactAst,
+        Confidence::High,
+        envelope(Provenance::ExactAst),
+        FactClass::GeneratedMembers,
+        None,
+        true,
+    );
+    result(AdapterDisposition::Production, fact)
+}
+
+/// Each structural check must have a falsifier, or deleting it stays green.
+///
+/// `UnsupportedSchema`, `BlockingLimitation`, `SinkIdentityMismatch`, and
+/// `InputMismatch` are distinct branches of `validate_structure` and
+/// `validate_authority_against` that no other test reaches.
+#[test]
+fn each_structural_authority_check_has_a_falsifier() {
+    let input = input();
+    assert!(
+        authoritative_candidate().is_authoritative_against(&input),
+        "the baseline must be authoritative, or the mutations below prove nothing"
+    );
+
+    let mut wrong_schema = authoritative_candidate();
+    wrong_schema.schema_version += 1;
+    assert_eq!(
+        wrong_schema.validate_authority_against(&input),
+        Err(AdapterAuthorityError::UnsupportedSchema)
+    );
+
+    let mut blocked = authoritative_candidate();
+    if let AdapterOutcome::Applied { limitations, .. } = &mut blocked.outcome {
+        limitations.push(FactLimitation::new("dynamic symbol table", true, Confidence::Low));
+    }
+    assert_eq!(
+        blocked.validate_authority_against(&input),
+        Err(AdapterAuthorityError::BlockingLimitation)
+    );
+
+    let mut foreign_sink = authoritative_candidate();
+    if let AdapterOutcome::Applied { sink, .. } = &mut foreign_sink.outcome {
+        sink.adapter_id = AdapterId(8);
+    }
+    assert_eq!(
+        foreign_sink.validate_authority_against(&input),
+        Err(AdapterAuthorityError::SinkIdentityMismatch)
+    );
+
+    // A descriptor field structural validation does not read, so this reaches
+    // the input-binding check rather than failing earlier.
+    let mut other_descriptor = authoritative_candidate();
+    other_descriptor.descriptor.framework_version_constraint = Some(">=2".to_string());
+    assert_eq!(
+        other_descriptor.validate_authority_against(&input),
+        Err(AdapterAuthorityError::InputMismatch)
     );
 }

@@ -956,11 +956,6 @@ mod tests {
     use crate::{
         EntityId, FactId, LifecyclePhase, SemanticFactKind, SemanticReasonCode, SourceAnchor,
     };
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-
     fn descriptor(disposition: AdapterDisposition) -> AdapterDescriptor {
         AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, disposition)
     }
@@ -1055,23 +1050,6 @@ mod tests {
             SourceGeneration::known("generation-1"),
             AdapterOutcome::Applied { sink, limitations: Vec::new() },
         )
-    }
-
-    struct AtomicControl(Arc<AtomicBool>);
-
-    impl AdapterCancellationControl for AtomicControl {
-        fn is_cancelled(&self) -> bool {
-            self.0.load(Ordering::SeqCst)
-        }
-    }
-
-    #[test]
-    fn live_cancellation_can_change_after_dispatch() {
-        let flag = Arc::new(AtomicBool::new(false));
-        let control = AtomicControl(Arc::clone(&flag));
-        assert!(!control.is_cancelled());
-        flag.store(true, Ordering::SeqCst);
-        assert!(control.is_cancelled());
     }
 
     #[test]
