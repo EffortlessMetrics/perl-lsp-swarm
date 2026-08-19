@@ -190,15 +190,13 @@ my $x = unknown_function();
         .unwrap_or(json!(null));
 
     // Should return null or empty array
-    if !result.is_null() {
-        if result.is_array() {
-            let locations = result.as_array().ok_or("Expected array")?;
-            assert!(
-                locations.is_empty(),
-                "Definition on comment should return empty array, got {} locations",
-                locations.len()
-            );
-        }
+    if !result.is_null() && result.is_array() {
+        let locations = result.as_array().ok_or("Expected array")?;
+        assert!(
+            locations.is_empty(),
+            "Definition on comment should return empty array, got {} locations",
+            locations.len()
+        );
     }
 
     Ok(())
@@ -345,11 +343,9 @@ fn test_definition_on_empty_file() -> TestResult {
         .unwrap_or(json!(null));
 
     // Empty file should return null or empty array
-    if !result.is_null() {
-        if result.is_array() {
-            let locations = result.as_array().ok_or("Expected array")?;
-            assert!(locations.is_empty(), "Definition on empty file should return empty array");
-        }
+    if !result.is_null() && result.is_array() {
+        let locations = result.as_array().ok_or("Expected array")?;
+        assert!(locations.is_empty(), "Definition on empty file should return empty array");
     }
 
     Ok(())

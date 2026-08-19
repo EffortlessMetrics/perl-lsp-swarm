@@ -1220,6 +1220,9 @@ fn process_job(
 
 #[cfg(test)]
 mod tests {
+    // Test assertions favor `expect()`/`panic!` with a descriptive message
+    // over silent unwraps; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used, clippy::panic)]
     use super::*;
     use perl_tdd_support::must_some;
     use std::sync::atomic::AtomicUsize;

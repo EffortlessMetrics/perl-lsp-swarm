@@ -199,10 +199,18 @@ export const window = {
   showTextDocument: jest.fn(async () => undefined),
   withProgress: jest.fn(async (_options: unknown, task: ProgressTask) => {
     const progress = { report: jest.fn() };
-    const token = { isCancellationRequested: false };
+    // A real progress token also exposes onCancellationRequested; code under
+    // test may subscribe to it for the duration of the operation.
+    const token = {
+      isCancellationRequested: false,
+      onCancellationRequested: jest.fn(() => ({ dispose: jest.fn() })),
+    };
     return task(progress, token);
   }),
   activeTextEditor: undefined as { document: unknown } | undefined,
+  // Server-demand deferral (#8180) arms this listener so a Perl document
+  // restored with the window still starts the language server.
+  onDidChangeActiveTextEditor: jest.fn(() => ({ dispose: jest.fn() })),
 };
 
 export const workspace = {

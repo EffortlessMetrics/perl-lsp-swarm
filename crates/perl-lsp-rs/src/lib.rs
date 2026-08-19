@@ -13,6 +13,12 @@
 //! Formatting and critic diagnostics use the native implementations by default.
 //! External Perl tools may be selected explicitly for compatibility work, but
 //! their presence does not change product defaults and they are not bundled.
+//!
+//! # Public JSON-RPC envelope compatibility facade
+//!
+//! [`dispatch`] re-exports the canonical envelope types only. Request routing,
+//! lifecycle checks, cancellation, and response finalization remain internal to
+//! `runtime::dispatch` and are reached through [`LspServer::handle_request`].
 
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::print_stderr, clippy::print_stdout))]
