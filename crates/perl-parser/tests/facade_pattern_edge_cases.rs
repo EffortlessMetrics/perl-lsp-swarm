@@ -448,14 +448,26 @@ fn test_incremental_parsing_facade() -> Result<(), Box<dyn std::error::Error>> {
     let code = "my $x = 1;";
     let mut state = IncrementalState::new(code.to_string());
 
-    assert!(matches!(state.ast.kind, perl_parser::NodeKind::Program { .. }));
+    assert!(matches!(
+        state.snapshot().parse_output().ast.kind,
+        perl_parser::NodeKind::Program { .. }
+    ));
+    let initial_generation = state.generation();
 
     // Apply an edit
     let edit = Edit { start_byte: 3, old_end_byte: 5, new_end_byte: 5, new_text: "$y".to_string() };
     perl_parser::apply_edits(&mut state, &[edit])?;
 
+    assert_eq!(state.source(), "my $y = 1;");
+    assert_eq!(initial_generation, perl_parser::incremental::ParseGeneration::INITIAL);
+    assert_eq!(state.generation().get(), 1);
+    state.snapshot().validate_against(state.source())?;
+
     // After apply_edits, the state's AST is updated
-    assert!(matches!(state.ast.kind, perl_parser::NodeKind::Program { .. }));
+    assert!(matches!(
+        state.snapshot().parse_output().ast.kind,
+        perl_parser::NodeKind::Program { .. }
+    ));
 
     Ok(())
 }

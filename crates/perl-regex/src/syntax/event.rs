@@ -115,17 +115,34 @@ pub(crate) enum RegexMalformedKind {
 pub(crate) enum RegexEventKind {
     Atom,
     Escape,
-    QuotedLiteral { closed: bool },
-    CharacterClass { closed: bool },
+    QuotedLiteral {
+        closed: bool,
+    },
+    CharacterClass {
+        closed: bool,
+    },
     Comment(RegexCommentKind),
     GroupOpen(RegexGroupKind),
     GroupClose(RegexGroupKind),
     ModeChange,
     Alternation,
     Quantifier(RegexQuantifier),
-    UnicodeProperty { negated: bool, closed: bool },
-    EmbeddedCode { kind: RegexEmbeddedCodeKind, opener_range: RegexRange, closed: bool },
-    Interpolation,
+    UnicodeProperty {
+        negated: bool,
+        closed: bool,
+    },
+    EmbeddedCode {
+        kind: RegexEmbeddedCodeKind,
+        opener_range: RegexRange,
+        closed: bool,
+    },
+    /// Interpolation of runtime text into the pattern. `quoted` marks
+    /// `\Q...\E`-protected interpolation: the value is quoted before regex
+    /// interpretation, so it cannot inject captures or other structure the
+    /// way bare pattern interpolation can.
+    Interpolation {
+        quoted: bool,
+    },
     Malformed(RegexMalformedKind),
 }
 
@@ -271,6 +288,8 @@ impl<'a> EventParser<'a> {
 
         let start = self.pos;
         let mut cursor = start + 2;
+        let mut interpolations = Vec::new();
+        let mut truncated_interpolation = false;
         let mut closed = false;
         while cursor + 1 < self.bytes.len() {
             if self.bytes[cursor] == b'\\' && self.bytes[cursor + 1] == b'E' {
@@ -278,10 +297,37 @@ impl<'a> EventParser<'a> {
                 closed = true;
                 break;
             }
+            // A backslash escapes the byte that follows it inside `\Q...\E`, so
+            // `\Q\$x\E` is a literal `$x` rather than a runtime interpolation.
+            // Skipping the escaped byte as a unit also keeps backslash parity
+            // honest, matching the character-class scanner: in `\Q\\$x\E` the
+            // `\\` pair is a literal backslash and the `$x` still interpolates.
+            if self.bytes[cursor] == b'\\' {
+                cursor = self.next_char_end(cursor + 1);
+                continue;
+            }
+            // `\Q...\E` suppresses regex metacharacter interpretation but does NOT
+            // suppress Perl variable interpolation: `\Q$x\E` still expands `$x` at
+            // runtime, so a `$` or `@` here introduces a dynamic boundary exactly as
+            // it would outside a quoted region.  Omitting this scan would let a
+            // caller treat the result as a complete static literal when it is not.
+            if matches!(self.bytes[cursor], b'$' | b'@')
+                && let Some((end, interpolation_closed)) = self.interpolation_end_at(cursor)
+            {
+                if !interpolation_closed {
+                    truncated_interpolation = true;
+                }
+                interpolations.push(RegexRange { start: cursor, end });
+                cursor = end;
+                continue;
+            }
             cursor += 1;
         }
         if !closed {
             cursor = self.bytes.len();
+            self.malformed = true;
+        }
+        if truncated_interpolation {
             self.malformed = true;
         }
         if !self.advance(cursor) {
@@ -299,6 +345,15 @@ impl<'a> EventParser<'a> {
                 cursor,
                 cursor,
                 RegexEventKind::Malformed(RegexMalformedKind::UnterminatedQuotedLiteral),
+                self.mode,
+                self.stack.len(),
+            );
+        }
+        for range in interpolations {
+            let _ = self.emit(
+                range.start,
+                range.end,
+                RegexEventKind::Interpolation { quoted: true },
                 self.mode,
                 self.stack.len(),
             );
@@ -413,7 +468,7 @@ impl<'a> EventParser<'a> {
             let _ = self.emit(
                 range.start,
                 range.end,
-                RegexEventKind::Interpolation,
+                RegexEventKind::Interpolation { quoted: false },
                 self.mode,
                 self.stack.len(),
             );
@@ -785,7 +840,13 @@ impl<'a> EventParser<'a> {
         if !self.advance(end) {
             return true;
         }
-        let _ = self.emit(start, end, RegexEventKind::Interpolation, self.mode, self.stack.len());
+        let _ = self.emit(
+            start,
+            end,
+            RegexEventKind::Interpolation { quoted: false },
+            self.mode,
+            self.stack.len(),
+        );
         if !closed {
             let _ = self.emit(
                 end,
@@ -982,10 +1043,16 @@ impl<'a> EventParser<'a> {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
                         cursor += 1;
-                        if self.bytes.get(cursor) == Some(&b')') {
+                        // `(?{ code })` requires the closing `)` after the `}`.  A
+                        // bare `(?{ code }` without `)` is rejected by Perl as
+                        // unterminated.  Track whether the paren was actually found
+                        // and propagate that as the closed flag so callers can mark
+                        // the construct malformed when it is absent.
+                        let paren_closed = self.bytes.get(cursor) == Some(&b')');
+                        if paren_closed {
                             cursor += 1;
                         }
-                        return (cursor, true);
+                        return (cursor, paren_closed);
                     }
                 }
                 _ => {}
@@ -1207,7 +1274,9 @@ mod tests {
             .events
             .iter()
             .filter_map(|event| match event.kind {
-                RegexEventKind::Interpolation => pattern.get(event.range.start..event.range.end),
+                RegexEventKind::Interpolation { .. } => {
+                    pattern.get(event.range.start..event.range.end)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();

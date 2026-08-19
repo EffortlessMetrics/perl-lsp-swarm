@@ -11,6 +11,7 @@
   // not Jest; they keep their own tsconfig + runner and are excluded here.
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "noEmit": false,
     "outDir": "./out-test",
     "rootDir": "./src",
     "sourceMap": false,

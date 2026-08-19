@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "controller_issue": 7460,
+  "active_owners": [
+    { "issue": 6604, "role": "constructor assignment positive control" },
+    { "issue": 7426, "role": "defined/ref/isa flow refinement" },
+    { "issue": 7436, "role": "local, returned, and schema key completion" },
+    { "issue": 7438, "role": "direct callable-result receiver completion" },
+    { "issue": 7439, "role": "method-result and bounded chain completion" },
+    { "issue": 7441, "role": "Mojo::Base object semantics" },
+    { "issue": 7443, "role": "DBIx::Class component relations" },
+    { "issue": 7444, "role": "native class role composition" },
+    { "issue": 7448, "role": "module move semantic plan" },
+    { "issue": 7449, "role": "finite dynamic method and package targets" },
+    { "issue": 7450, "role": "module move client edit materialization" },
+    { "issue": 7451, "role": "inherited override-family rename" },
+    { "issue": 7454, "role": "restart-warm fact hydration" },
+    { "issue": 7460, "role": "generated editor-intelligence claim matrix" },
+    { "issue": 7464, "role": "container-slot receiver completion" },
+    { "issue": 7465, "role": "finite receiver union completion" },
+    { "issue": 7470, "role": "resolved external dependency source facts" },
+    { "issue": 7478, "role": "declarative user adapter live integration" }
+  ],
+  "superseded_owners": {
+    "7437": 7426,
+    "7440": 7436,
+    "7446": 7449,
+    "7459": 7478
+  }
+}

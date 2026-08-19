@@ -2827,6 +2827,9 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Test assertions favor `expect_err()` with a descriptive message over
+    // silent unwraps; the workspace-wide deny is a production-code rule.
+    #![allow(clippy::expect_used)]
     #[cfg(feature = "workspace")]
     use super::WORKSPACE_INDEX_PROGRESS_TOKEN;
     use super::{LspServer, module_name_appears_in_text};

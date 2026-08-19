@@ -166,16 +166,15 @@ fn test_incremental_edits_no_state_corruption() -> Result<(), Box<dyn std::error
     );
 
     // If we got symbols back, verify the sub name reflects the latest edit
-    if let Some(result) = response.get("result") {
-        if let Some(symbols) = result.as_array() {
-            if let Some(first) = symbols.first() {
-                let name = first.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                assert_eq!(
-                    name, "greet",
-                    "Symbol name should reflect the latest incremental edit, got: {name}"
-                );
-            }
-        }
+    if let Some(result) = response.get("result")
+        && let Some(symbols) = result.as_array()
+        && let Some(first) = symbols.first()
+    {
+        let name = first.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        assert_eq!(
+            name, "greet",
+            "Symbol name should reflect the latest incremental edit, got: {name}"
+        );
     }
 
     Ok(())

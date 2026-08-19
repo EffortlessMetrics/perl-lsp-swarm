@@ -1,0 +1,11 @@
+project: product
+component: Editor Integrations
+kind: Added
+body: >-
+  Add a curated Sublime Text command palette that routes through the active
+  LSP-perllsp session with checked command IDs and bounded result surfaces.
+time: 2026-08-13T10:57:00Z
+custom:
+  PR: "7887"
+  Slug: sublime-command-palette
+  Breaking: "no"

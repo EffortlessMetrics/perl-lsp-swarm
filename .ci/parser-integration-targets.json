@@ -124,6 +124,72 @@
       "reason": "Keep the parser-to-semantic consumer seam executable in the bounded merge gate.",
       "disposition": "execute",
       "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.authority",
+      "package": "perl-parser",
+      "target": "incremental_authority_contract",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6701",
+      "reason": "Prove the single incremental authority ledger contract so parser incremental ownership cannot silently fork.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.parse_output",
+      "package": "perl-parser",
+      "target": "incremental_parse_output",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6710",
+      "reason": "Prove recovery-aware ParseOutput is retained across incremental edits; previously run by a hardcoded command in run_parser_integration.py.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.lexer_restart",
+      "package": "perl-parser",
+      "target": "incremental_lexer_restart",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6704",
+      "reason": "Prove live lexer checkpoint restart preserves token and span parity across stateful edits.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.parse_snapshot",
+      "package": "perl-parser",
+      "target": "incremental_parse_snapshot",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#7001",
+      "reason": "Prove generation-bound ParseSnapshot identity, disposition, and validation across committed incremental generations.",
+      "disposition": "execute",
+      "boundedness": "focused"
     }
   ]
 }

@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: Register LSP 3.17 window-message payload validators on the protocol schema envelope.
+time: 2026-08-17T12:12:00Z
+custom:
+  PR: "10532"
+  Slug: protocol-schema-window-messages
+  Breaking: "no"

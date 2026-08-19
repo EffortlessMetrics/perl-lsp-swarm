@@ -5421,11 +5421,63 @@ my $x = 1;
 
         assert_eq!(suppressions.suppressions().len(), 3);
         assert_eq!(suppressions.suppressions()[0].rule_id, "native.testing.require_use_strict");
-        assert_eq!(suppressions.suppressions()[0].scope, CriticSuppressionScope::File);
+        assert_eq!(suppressions.suppressions()[0].scope, CriticSuppressionScope::ToEndOfFile);
         assert_eq!(suppressions.suppressions()[0].line, 0);
         assert_eq!(suppressions.suppressions()[0].reason.as_deref(), Some("generated legacy file"));
         assert_eq!(suppressions.suppressions()[1].rule_id, "native.testing.require_use_warnings");
+        assert_eq!(suppressions.suppressions()[1].line, 1);
         assert_eq!(suppressions.suppressions()[2].rule_id, "native.test.second");
+        assert_eq!(suppressions.suppressions()[2].line, 1);
+    }
+
+    /// Production route (#6968): the registry filter must honor the directive's
+    /// position, not merely its presence anywhere in the file.
+    #[test]
+    fn native_critic_registry_scopes_suppression_to_the_directive_region() {
+        let source = "\
+use strict;
+use warnings;
+my $x = 0;
+if ($x = 1) { print $x; }
+## no critic native.common.assignment_in_condition
+if ($x = 2) { print $x; }
+## use critic
+if ($x = 3) { print $x; }
+";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(AssignmentInConditionRule)]);
+
+        let findings = registry.check(&ctx);
+        let lines: Vec<u32> = findings.iter().map(|finding| finding.range.start.line).collect();
+
+        // The finding above the directive survives, the one inside the region is
+        // suppressed, and the one after `## use critic` is reported again.
+        assert_eq!(findings.len(), 2);
+        assert_eq!(lines, vec![3, 7]);
+    }
+
+    /// Negative control for the repaired contract: a directive placed below a
+    /// finding must not reach back and suppress it.
+    #[test]
+    fn native_critic_registry_does_not_suppress_findings_above_the_directive() {
+        let source = "\
+use strict;
+use warnings;
+my $x = 0;
+if ($x = 1) { print $x; }
+## no critic native.common.assignment_in_condition
+";
+        let ast = parse_source(source);
+        let config = CriticConfig::default();
+        let ctx = CriticContext::new(source, &ast, &config);
+        let registry = NativeCriticRegistry::with_rules(vec![Box::new(AssignmentInConditionRule)]);
+
+        let findings = registry.check(&ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].range.start.line, 3);
     }
 
     #[test]
