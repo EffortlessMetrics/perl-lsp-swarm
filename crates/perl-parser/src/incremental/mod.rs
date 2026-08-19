@@ -7,6 +7,7 @@ mod diagnostics;
 mod edit;
 mod lex;
 mod reparse;
+mod snapshot;
 mod state;
 mod strategy;
 
@@ -15,9 +16,13 @@ use anyhow::Result;
 pub use perl_line_index::LineIndex;
 
 pub use checkpoint::{LexCheckpoint, ParseCheckpoint, ScopeSnapshot};
-pub use diagnostics::ReparseResult;
+pub use diagnostics::{LexRestartReport, LexRestartStrategy, ReparseResult};
 pub use edit::Edit;
 use reparse::{apply_single_edit, apply_text_edit_to_state, full_reparse};
+pub use snapshot::{
+    ParseGeneration, ParseSnapshot, ParseSnapshotStrategy, ParseSnapshotValidationError,
+    ParseTerminalDisposition,
+};
 pub use state::IncrementalState;
 pub use strategy::MAX_EDIT_SIZE;
 
@@ -96,12 +101,20 @@ fn validate_edits(source: &str, edits: &[Edit]) -> Result<usize> {
 }
 
 fn unchanged_result(state: &IncrementalState) -> ReparseResult {
+    let lex_restart = LexRestartReport {
+        strategy: LexRestartStrategy::Unchanged,
+        restart_byte: state.source().len(),
+        relexed_bytes: 0,
+        reused_prefix_tokens: state.tokens().len(),
+        reused_suffix_tokens: 0,
+    };
     ReparseResult {
         changed_ranges: Vec::new(),
-        parse_output: state.parse_output().clone(),
+        snapshot: state.snapshot().clone(),
         diagnostics: Vec::new(),
+        lex_restart,
         reparsed_bytes: 0,
-        reused_tokens: state.tokens().len(),
+        reused_tokens: lex_restart.reused_tokens(),
         token_count: state.tokens().len(),
     }
 }
@@ -159,14 +172,16 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         // The token fast path does not define a second parser-output contract.
         // Refresh from the same recovery-aware parser entry point used by a
         // fresh parse, then report the complete parser work truthfully.
-        candidate.refresh_parse_output();
-        let reparsed_bytes = candidate.source().len();
+        candidate
+            .refresh_parse_output(ParseSnapshotStrategy::IncrementalTokenRestartThenFullParse)?;
+        let reused_tokens = reparse.lex_restart.reused_tokens();
         let result = ReparseResult {
             changed_ranges: vec![reparse.range],
-            parse_output: candidate.parse_output().clone(),
+            snapshot: candidate.snapshot().clone(),
             diagnostics: vec![],
-            reparsed_bytes,
-            reused_tokens: reparse.reused_tokens,
+            lex_restart: reparse.lex_restart,
+            reparsed_bytes: candidate.source().len(),
+            reused_tokens,
             token_count: reparse.token_count,
         };
         *state = candidate;

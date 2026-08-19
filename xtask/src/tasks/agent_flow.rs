@@ -663,6 +663,7 @@ fn frontmatter_metadata_chars(text: &str) -> usize {
     0
 }
 
+#[cfg(test)]
 fn route_targets(text: &str) -> Vec<String> {
     edge_targets(&route_observations(text))
 }
@@ -732,6 +733,7 @@ fn missing_route_target_message(
     )
 }
 
+#[cfg(test)]
 fn route_tokens(line: &str, in_route_section: bool) -> Vec<String> {
     edge_targets(&route_line_observations(line, 1, in_route_section))
 }
@@ -796,7 +798,7 @@ fn scan_backticked_tokens(
             } else if segment.contains("->") || segment.contains('→') {
                 RouteSyntax::ArrowTarget
             } else {
-                classify_arrowless_code_span(line, code_span)
+                classify_arrowless_code_span(line, code_span, opening)
             };
             observations.insert(RouteObservation {
                 target: token.to_string(),
@@ -811,7 +813,7 @@ fn scan_backticked_tokens(
     }
 }
 
-fn classify_arrowless_code_span(line: &str, code_span: &str) -> RouteSyntax {
+fn classify_arrowless_code_span(line: &str, code_span: &str, opening: usize) -> RouteSyntax {
     let trimmed = line.trim();
     let candidate = strip_markdown_list_marker(trimmed);
     if candidate == code_span {
@@ -827,20 +829,41 @@ fn classify_arrowless_code_span(line: &str, code_span: &str) -> RouteSyntax {
     // list forms above carry no list requirement either, and
     // `has_route_label_prefix` already restricts the match to
     // `ROUTE_BEARING_LABELS`.
-    if has_route_label_prefix(candidate, code_span) {
+    //
+    // Use `&line[..opening]` (the exact prefix before this token's opening
+    // backtick) rather than the full line. When the same code span appears
+    // more than once on a line, passing the full line to a `str::find`-based
+    // helper always resolves the first occurrence's prefix context, silently
+    // misclassifying every later occurrence. Scoping to `&line[..opening]`
+    // makes each token's classification independent of its position in the
+    // line — consistent with the arrow branch, which already uses `segment`
+    // (the text since the previous closing backtick) for the same reason.
+    let prefix_before_opening = &line[..opening];
+    if has_route_label_prefix(prefix_before_opening) {
         return RouteSyntax::LabeledTarget;
     }
-    if is_markdown_list_item(trimmed) && has_imperative_route_prefix(candidate, code_span) {
+    if is_markdown_list_item(trimmed) && has_imperative_route_prefix(prefix_before_opening) {
         return RouteSyntax::ImperativeInvocation;
     }
     RouteSyntax::InlineCode
 }
 
-fn has_route_label_prefix(candidate: &str, code_span: &str) -> bool {
-    let Some(index) = candidate.find(code_span) else {
-        return false;
-    };
-    let prefix = candidate[..index].trim();
+/// Check whether `prefix_before_opening` — everything in the source line
+/// before the current token's opening backtick — ends with a route-bearing
+/// label followed by a colon.
+///
+/// Accepts the raw `&line[..opening]` slice. The list marker (if any) and
+/// trailing whitespace are stripped internally, so the caller does not need
+/// to pre-process it.
+///
+/// Uses suffix matching (not equality) so that earlier content on the same
+/// line — such as a preceding prose code span — does not prevent a later
+/// labeled route from being recognised. The route labels in
+/// `ROUTE_BEARING_LABELS` are specific enough that suffix matching is safe.
+fn has_route_label_prefix(prefix_before_opening: &str) -> bool {
+    // Strip the list marker and surrounding whitespace from the prefix.
+    let candidate = strip_markdown_list_marker(prefix_before_opening.trim());
+    let prefix = candidate.trim();
     let label = if let Some(without_colon) = prefix.strip_suffix(':') {
         strip_strong_emphasis(without_colon).trim()
     } else {
@@ -851,18 +874,32 @@ fn has_route_label_prefix(candidate: &str, code_span: &str) -> bool {
         without_colon.trim()
     };
     let normalized = label.to_ascii_lowercase();
-    ROUTE_BEARING_LABELS.contains(&normalized.as_str())
+    ROUTE_BEARING_LABELS.iter().any(|&route_label| {
+        // Suffix match: the route label appears at the end of a longer prefix.
+        // Guard with a non-alphanumeric boundary so "xentry flow" doesn't
+        // spuriously match "entry flow". An exact match yields an empty
+        // `before`, which also passes the guard.
+        if let Some(before) = normalized.strip_suffix(route_label) {
+            !before.ends_with(|c: char| c.is_alphanumeric())
+        } else {
+            false
+        }
+    })
 }
 
 fn strip_strong_emphasis(text: &str) -> &str {
     text.strip_prefix("**").and_then(|inner| inner.strip_suffix("**")).unwrap_or(text)
 }
 
-fn has_imperative_route_prefix(candidate: &str, code_span: &str) -> bool {
-    let Some(index) = candidate.find(code_span) else {
-        return false;
-    };
-    let prefix = candidate[..index].trim().to_ascii_lowercase();
+/// Check whether `prefix_before_opening` — everything in the source line
+/// before the current token's opening backtick — is exactly an imperative
+/// route verb (after stripping the list marker and surrounding whitespace).
+///
+/// Accepts the raw `&line[..opening]` slice. The list marker and whitespace
+/// are stripped internally.
+fn has_imperative_route_prefix(prefix_before_opening: &str) -> bool {
+    let candidate = strip_markdown_list_marker(prefix_before_opening.trim());
+    let prefix = candidate.trim().to_ascii_lowercase();
     matches!(
         prefix.as_str(),
         "invoke"
@@ -1018,6 +1055,78 @@ mod tests {
             resolve_route_syntax(&observations[0], &BTreeSet::new()),
             RouteSyntax::LabeledTarget,
             "a misspelled labeled route stays an edge so it fails closed"
+        );
+    }
+
+    /// Regression test for #10201.
+    ///
+    /// When the same code span text appears more than once on a line and the
+    /// first occurrence is prose, the later occurrence that carries a
+    /// route-bearing label must still be classified as `LabeledTarget` and
+    /// must therefore appear in the route edge set.
+    ///
+    /// The historical bug: `classify_arrowless_code_span` passed the whole
+    /// line to the prefix helpers, which used `str::find` to locate the
+    /// code span. `find` always returned the first occurrence's position, so
+    /// every later occurrence was classified using the first occurrence's
+    /// context — silently turning a real executable edge into `InlineCode`.
+    #[test]
+    fn prose_occurrence_before_labeled_route_does_not_shadow_it() {
+        // "See `delver-pr`" is prose. "Entry flow: `delver-pr`" is a labeled
+        // route reference to a non-existent skill — it must be an edge.
+        let line = "- See `delver-pr` \u{2014} Entry flow: `delver-pr`";
+        let observations = route_line_observations(line, 1, true);
+        assert_eq!(observations.len(), 2, "both occurrences of `delver-pr` are observed");
+
+        // Prose occurrence: prefix is "- See " — no route-bearing label.
+        let prose = observations
+            .iter()
+            .find(|obs| {
+                &line[obs.column_start..obs.column_end] == "delver-pr" && obs.column_start < 10
+            })
+            .expect("first (prose) occurrence is present");
+        assert_eq!(
+            prose.syntax,
+            RouteSyntax::InlineCode,
+            "prose occurrence has no route label and stays InlineCode"
+        );
+
+        // Labeled occurrence: prefix ends with "Entry flow:" — must be an edge.
+        let labeled = observations
+            .iter()
+            .find(|obs| {
+                &line[obs.column_start..obs.column_end] == "delver-pr" && obs.column_start > 10
+            })
+            .expect("second (labeled) occurrence is present");
+        assert_eq!(
+            resolve_route_syntax(labeled, &std::collections::BTreeSet::new()),
+            RouteSyntax::LabeledTarget,
+            "labeled occurrence is a route edge even when a prose occurrence precedes it"
+        );
+        assert_eq!(
+            edge_targets(&observations),
+            vec!["delver-pr"],
+            "only the labeled occurrence contributes to the edge set"
+        );
+    }
+
+    /// Verify that the word-boundary guard in `has_route_label_prefix` rejects
+    /// a label whose text appears at the end of a longer word (e.g. "xentry
+    /// flow" must not match "entry flow").
+    #[test]
+    fn word_boundary_guard_prevents_suffix_false_positive() {
+        // "Reentry flow:" — ends with "entry flow" in bytes but is not the
+        // label "entry flow" because there is no word boundary before it.
+        let observations = route_line_observations("- Reentry flow: `deliver-pr`", 1, true);
+        assert_eq!(observations.len(), 1, "the single token is observed");
+        assert!(
+            edge_targets(&observations).is_empty(),
+            "'Reentry flow' ends with 'entry flow' but is not a route-bearing label: no edge"
+        );
+        assert_eq!(
+            observations[0].syntax,
+            RouteSyntax::InlineCode,
+            "a non-route label does not create a LabeledTarget"
         );
     }
 
