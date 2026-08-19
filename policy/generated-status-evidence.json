@@ -1,5 +1,6 @@
 {
   "schema_version": "generated_status_evidence.v1",
+  "evidence_class": "bootstrap",
   "subject_sha": "379d0bb0b4c9079a03f4efd89ae2aaaa91c8347a",
   "run_id": "checked-in-6909-379d0bb",
   "observed_at": "2026-08-12T00:00:00Z",
@@ -7,19 +8,41 @@
     {
       "id": "lsp.protocol_compliance",
       "claim_boundary": "Projection arithmetic only; LSP maturity remains owned by #6731.",
-      "expected_population": ["protocol-summary"],
-      "results": [{"identity":"protocol-summary","subject_sha":"379d0bb0b4c9079a03f4efd89ae2aaaa91c8347a","run_id":"checked-in-6909-379d0bb","observed_at":"2026-08-12T00:00:00Z","outcome":"pass"}]
+      "expected_population": [
+        "protocol-summary"
+      ],
+      "results": [
+        {
+          "identity": "protocol-summary",
+          "subject_sha": "379d0bb0b4c9079a03f4efd89ae2aaaa91c8347a",
+          "run_id": "checked-in-6909-379d0bb",
+          "observed_at": "2026-08-12T00:00:00Z",
+          "outcome": "pass"
+        }
+      ]
     },
     {
       "id": "tests.tier_a",
       "claim_boundary": "Tier A execution evidence only; test-domain authority remains with its generator.",
-      "expected_population": ["tier-a-suite"],
-      "results": [{"identity":"tier-a-suite","subject_sha":"379d0bb0b4c9079a03f4efd89ae2aaaa91c8347a","run_id":"checked-in-6909-379d0bb","observed_at":"2026-08-12T00:00:00Z","outcome":"pass"}]
+      "expected_population": [
+        "tier-a-suite"
+      ],
+      "results": [
+        {
+          "identity": "tier-a-suite",
+          "subject_sha": "379d0bb0b4c9079a03f4efd89ae2aaaa91c8347a",
+          "run_id": "checked-in-6909-379d0bb",
+          "observed_at": "2026-08-12T00:00:00Z",
+          "outcome": "pass"
+        }
+      ]
     },
     {
       "id": "quality.per_crate_attribution",
       "claim_boundary": "Attribution completeness only; scorecard composition remains owned by #3056/#3058.",
-      "expected_population": ["workspace-attribution"],
+      "expected_population": [
+        "workspace-attribution"
+      ],
       "results": []
     }
   ]
