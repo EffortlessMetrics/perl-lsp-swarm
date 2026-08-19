@@ -93,7 +93,10 @@ void test('rejects non-canonical bytes and duplicate JSON keys', () => {
     "README.md": 2
   }
 }\n`;
-  assert.throws(() => parseInventoryDocument(duplicate, 'duplicate fixture'), /canonical two-space/);
+  assert.throws(
+    () => parseInventoryDocument(duplicate, 'duplicate fixture'),
+    /canonical two-space/,
+  );
 });
 
 void test('requires a closed canonical transition declaration', () => {

@@ -45,10 +45,7 @@ void test('classifies byte-only growth separately from structural package drift'
     ]),
     'size_only',
   );
-  assert.equal(
-    classifyInventoryViolations(['new packaged file: unexpected.exe']),
-    'structural',
-  );
+  assert.equal(classifyInventoryViolations(['new packaged file: unexpected.exe']), 'structural');
 });
 
 void test('classifies an unchanged inventory as pass', () => {

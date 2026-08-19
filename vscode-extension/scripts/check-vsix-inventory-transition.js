@@ -69,7 +69,9 @@ function runGit(args) {
     throw result.error;
   }
   if (result.status !== 0) {
-    throw new Error(`git ${args.join(' ')} failed: ${(result.stderr || result.stdout || '').trim()}`);
+    throw new Error(
+      `git ${args.join(' ')} failed: ${(result.stderr || result.stdout || '').trim()}`,
+    );
   }
   return result.stdout.trim();
 }
@@ -88,7 +90,10 @@ function runGitRaw(args) {
     throw result.error;
   }
   if (result.status !== 0) {
-    const message = Buffer.concat([result.stderr || Buffer.alloc(0), result.stdout || Buffer.alloc(0)])
+    const message = Buffer.concat([
+      result.stderr || Buffer.alloc(0),
+      result.stdout || Buffer.alloc(0),
+    ])
       .toString('utf8')
       .trim();
     throw new Error(`git ${args.join(' ')} failed: ${message}`);
@@ -140,7 +145,9 @@ function assertExactKeys(value, expected, label) {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
   if (JSON.stringify(actual) !== JSON.stringify(wanted)) {
-    throw new Error(`${label} has unsupported fields: expected ${wanted.join(', ')}, got ${actual.join(', ')}`);
+    throw new Error(
+      `${label} has unsupported fields: expected ${wanted.join(', ')}, got ${actual.join(', ')}`,
+    );
   }
 }
 
@@ -161,7 +168,9 @@ function assertCanonicalPackagePath(file) {
     path.posix.normalize(file) !== file ||
     file.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
   ) {
-    throw new Error(`inventory path is not a canonical relative package path: ${JSON.stringify(file)}`);
+    throw new Error(
+      `inventory path is not a canonical relative package path: ${JSON.stringify(file)}`,
+    );
   }
 }
 
@@ -292,7 +301,9 @@ function parseInventoryDocument(raw, source) {
   try {
     value = JSON.parse(text);
   } catch (error) {
-    throw new Error(`${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   validateInventoryObject(value, source);
   if (text !== canonicalJson(value)) {
@@ -322,7 +333,9 @@ function parseDeclarationDocument(raw, source = declarationPath) {
   try {
     value = JSON.parse(text);
   } catch (error) {
-    throw new Error(`${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `${source} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   assertExactKeys(value, DECLARATION_KEYS, source);
   if (text !== canonicalJson(value)) {
@@ -363,7 +376,9 @@ function validateDeclaration(declaration, baseDocument, candidateDocument) {
     }
   }
   if (declaration.base_baseline_file_sha256 !== baseDocument.file_sha256) {
-    violations.push('transition declaration base_baseline_file_sha256 does not match the exact base bytes');
+    violations.push(
+      'transition declaration base_baseline_file_sha256 does not match the exact base bytes',
+    );
   }
   if (declaration.candidate_baseline_file_sha256 !== candidateDocument.file_sha256) {
     violations.push(
@@ -535,7 +550,12 @@ function defaultReceiptPath(candidateSha) {
 
 function boundedError(error) {
   const text = error instanceof Error ? error.message : String(error);
-  return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 1024) || 'unknown error';
+  return (
+    text
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .trim()
+      .slice(0, 1024) || 'unknown error'
+  );
 }
 
 /**

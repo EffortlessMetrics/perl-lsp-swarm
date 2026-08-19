@@ -313,7 +313,9 @@ function interpretTransitionResult(
     identityViolations.push('transition receipt candidate SHA does not match the smoke subject');
   }
   if (report.platform !== expectedPlatform || report.architecture !== expectedArchitecture) {
-    identityViolations.push('transition receipt platform/architecture does not match the smoke host');
+    identityViolations.push(
+      'transition receipt platform/architecture does not match the smoke host',
+    );
   }
   if (identityViolations.length > 0) {
     return {
@@ -331,9 +333,7 @@ function interpretTransitionResult(
   const knownClassification = ['pass', 'size_only', 'structural', 'not_proven'].includes(
     classification,
   );
-  const policyViolations = Array.isArray(report.policy_violations)
-    ? report.policy_violations
-    : [];
+  const policyViolations = Array.isArray(report.policy_violations) ? report.policy_violations : [];
   const declarationViolations = Array.isArray(report.declaration_violations)
     ? report.declaration_violations
     : [];
@@ -479,7 +479,10 @@ function validateChildSmokeReceipt({
 
   const violations = [];
   const environment =
-    receipt && typeof receipt === 'object' && receipt.environment && typeof receipt.environment === 'object'
+    receipt &&
+    typeof receipt === 'object' &&
+    receipt.environment &&
+    typeof receipt.environment === 'object'
       ? receipt.environment
       : null;
   if (!environment) {
@@ -487,7 +490,9 @@ function validateChildSmokeReceipt({
   }
 
   if (receipt.outcome !== 'completed') {
-    violations.push(`first-hour receipt outcome is ${JSON.stringify(receipt.outcome)}, not completed`);
+    violations.push(
+      `first-hour receipt outcome is ${JSON.stringify(receipt.outcome)}, not completed`,
+    );
   }
   if (!Array.isArray(receipt.failures) || receipt.failures.length > 0) {
     violations.push('first-hour receipt reported failures');
