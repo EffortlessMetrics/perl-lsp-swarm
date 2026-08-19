@@ -334,9 +334,20 @@ fn dry_run_keeps_dirty_and_flags_clean_for_removal_without_deleting_either() -> 
         output.contains("KEEP") && output.contains("dirty"),
         "expected dirty worktree to be reported KEEP with a dirty reason: {output}"
     );
+    let clean_line = output
+        .lines()
+        .find(|line| line.contains("wt-clean"))
+        .unwrap_or("<no wt-clean entry in plan>");
     assert!(
         output.contains("REMOVE"),
-        "expected clean worktree to be reported REMOVE-eligible in dry-run: {output}"
+        "expected clean worktree to be reported REMOVE-eligible in dry-run; \
+         its classification line and following detail: {clean_line} | {:?}",
+        output
+            .lines()
+            .skip_while(|line| !line.contains("wt-clean"))
+            .take(4)
+            .collect::<Vec<_>>()
+            .join(" / ")
     );
     assert!(dirty_wt.exists(), "dry-run must never delete the dirty worktree");
     assert!(
