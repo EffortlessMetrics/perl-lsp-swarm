@@ -85,6 +85,20 @@ def _write_output_panel(window: sublime.Window, text: str) -> None:
     window.run_command("show_panel", {"panel": f"output.{_OUTPUT_PANEL}"})
 
 
+def _diag(message: str) -> None:
+    """Record a palette-dispatch decision on the Sublime console.
+
+    The command journey's silent failure modes (no session, a rejected
+    invocation, a dispatched request whose response never arrives) all
+    leave the output panel empty, so the real-host runner's failure
+    artifact — the recorded console log — is the only surface that can
+    distinguish them. One bounded line per decision keeps the console
+    useful without spamming normal usage: these commands are
+    user-initiated and low-frequency.
+    """
+    print(f"[perllsp-command] {message}")
+
+
 class PerllspPlugin(LspPlugin):
     @classmethod
     def on_pre_start_async(cls, context: OnPreStartContext) -> None:
@@ -139,10 +153,15 @@ class PerllspExecuteCommand(LspTextCommand):
         del event, point
         session = self.session_by_name(self.session_name)
         if session is None:
+            _diag(f"is_enabled action={action!r} enabled=False reason=session_none")
             return False
         try:
             self._prepare(action, session)
-        except CommandSurfaceError:
+        except CommandSurfaceError as error:
+            _diag(
+                f"is_enabled action={action!r} enabled=False "
+                f"reason={type(error).__name__}: {error}"
+            )
             return False
         return True
 
@@ -150,12 +169,17 @@ class PerllspExecuteCommand(LspTextCommand):
         del edit
         session = self.session_by_name(self.session_name)
         if session is None:
+            _diag(f"run action={action!r} dispatched=False reason=session_none")
             self._status("No active LSP-perllsp session owns the current Perl view.")
             return
 
         try:
             invocation = self._prepare(action, session)
         except CommandSurfaceError as error:
+            _diag(
+                f"run action={action!r} dispatched=False "
+                f"reason={type(error).__name__}: {error}"
+            )
             self._status(str(error))
             return
 
@@ -164,11 +188,19 @@ class PerllspExecuteCommand(LspTextCommand):
             params["arguments"] = invocation.arguments
 
         def handle_response(response: Any) -> None:
+            _diag(
+                f"response action={action!r} command={invocation.spec.command_id!r} "
+                f"kind={'error' if isinstance(response, Error) else 'result'}"
+            )
             if isinstance(response, Error):
                 sublime.set_timeout(lambda: self._show_error(invocation, response))
                 return
             sublime.set_timeout(lambda: self._show_success(invocation, response))
 
+        _diag(
+            f"run action={action!r} dispatched command={invocation.spec.command_id!r} "
+            f"arguments={invocation.arguments!r}"
+        )
         session.execute_command(params, progress=True, view=self.view).then(handle_response)
 
     def _prepare(self, action: str, session: Any) -> CommandInvocation:
