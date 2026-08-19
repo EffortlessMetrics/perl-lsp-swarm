@@ -11,6 +11,7 @@ import {
   resolveManagedCandidateForHost,
   validateManagedCurrentSelection,
   type ManagedCandidateCatalogEntry,
+  type ManagedHostReferenceState,
   type ManagedRetentionInput,
 } from '../managedCandidateSelection';
 
@@ -136,6 +137,20 @@ describe('managed candidate publication and selection', () => {
     ).toEqual({ kind: 'restart_required', candidate_id: newCandidate.manifest.candidate_id });
   });
 
+  test('selects the current candidate for a fresh host when it is usable', () => {
+    const candidate = entry('a');
+    const current = publishManagedCurrentSelection(candidate.manifest, null);
+
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [candidate],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'selected_current', candidate_id: candidate.manifest.candidate_id });
+  });
+
   test('lets an older client select a compatible retained candidate without downgrading global current', () => {
     const oldCandidate = entry('a');
     const newCandidate = entry('f');
@@ -150,6 +165,31 @@ describe('managed candidate publication and selection', () => {
       }),
     ).toEqual({ kind: 'selected_compatible', candidate_id: oldCandidate.manifest.candidate_id });
     expect(current.candidate_id).toBe(newCandidate.manifest.candidate_id);
+  });
+
+  test('refuses GC for a host reference carrying an unrecognized state', () => {
+    const currentCandidate = entry('a');
+    const referencedCandidate = entry('f');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    // A parseable reference record written by a newer extension version may
+    // carry a state this version does not know (mixed-VSIX install). Unknown
+    // evidence must never read as safe-to-delete.
+    const unrecognized = {
+      ...createManagedHostReference('session-future', referencedCandidate.manifest.candidate_id),
+      state: 'quarantined' as ManagedHostReferenceState,
+    };
+    const input = retention({
+      current,
+      catalog: [currentCandidate, referencedCandidate],
+      host_references: [unrecognized],
+    });
+
+    expect(
+      classifyManagedCandidateRetention(referencedCandidate.manifest.candidate_id, input),
+    ).toBe('unknown_reference');
+    expect(
+      mayGarbageCollectManagedCandidate(referencedCandidate.manifest.candidate_id, input),
+    ).toBe(false);
   });
 
   test('reports no compatible candidate rather than an incompatible fallback', () => {

@@ -220,7 +220,11 @@ export function classifyManagedCandidateRetention(
   if (references.some((reference) => reference.state === 'live')) {
     return 'live_referenced';
   }
-  if (references.some((reference) => reference.state === 'unknown')) {
+  // Any state that is not a proven release protects the candidate. A parseable
+  // reference record carrying an unrecognized state (for example written by a
+  // newer extension version in a mixed-VSIX install) is unknown evidence, not
+  // proof that nothing references the candidate.
+  if (references.some((reference) => reference.state !== 'released')) {
     return 'unknown_reference';
   }
   // Absence of a reference is only evidence when enumeration was exhaustive.
