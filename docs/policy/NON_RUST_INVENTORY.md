@@ -6,11 +6,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11127 |
+| Total tracked files | 11128 |
 | Rust-family files | 3392 |
-| Non-Rust files | 7735 |
+| Non-Rust files | 7736 |
 | Allowlisted | 5460 |
-| Unclassified | 2275 |
+| Unclassified | 2276 |
 
 ## Non-Rust files by category
 
@@ -22,7 +22,7 @@
 | production | 298 |
 | test | 1825 |
 | tooling | 460 |
-| unclassified | 2275 |
+| unclassified | 2276 |
 
 ## Unclassified files
 
@@ -126,6 +126,7 @@
 | `ci/unwrap_prod_baseline.txt` | `txt` |
 | `ci/unwrap_server_impl_baseline.txt` | `txt` |
 | `ci/xtask_wrapper.sh` | `sh` |
+| `clients/sublime/LSP-perllsp/tests/test_command_dispatch_contract.py` | `py` |
 | `contracts/actual_host_receipt.v1.schema.json` | `json` |
 | `crates/perl-corpus/concepts/incremental.toml` | `toml` |
 | `crates/perl-corpus/concepts/lexer.toml` | `toml` |
