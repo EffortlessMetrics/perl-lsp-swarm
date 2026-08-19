@@ -3077,6 +3077,16 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
         .clone()
         .unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
     let report = read_run_report(&report_path)?;
+    // An absent or nonzero legacy runner terminal status never proves process
+    // completion, however green the file and assertion counts look (#6884
+    // interim false-green block). Refuse to check or accept a baseline from it.
+    if report.harness_status != Some(0) {
+        bail!(
+            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven",
+            report_path.display(),
+            report.harness_status
+        );
+    }
     reject_v2_options_without_series(&config)?;
 
     if let Some(series_path) = config.series.as_ref() {
@@ -7153,6 +7163,43 @@ mod tests {
             accepted.file_results.iter().map(|result| result.path.as_str()).collect::<Vec<_>>();
         assert_eq!(paths, vec!["base/lex.t", "base/ok.t"]);
         assert!(raw.ends_with('\n'));
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_refuses_report_without_proven_zero_terminal_status() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        for (name, status) in [("missing-status.json", None), ("nonzero-status.json", Some(7))] {
+            let report_path = temp.path().join(name);
+            let mut report = sample_compile_report();
+            report.harness_status = status;
+            write_run_report(&report_path, &report)?;
+
+            let error = match baseline(BaselineConfig {
+                mode: HarnessMode::Compile,
+                profile: HarnessProfile::Base,
+                report: Some(report_path),
+                baseline: Some(temp.path().join("baseline.json")),
+                accept: false,
+                series: None,
+                previous_baseline: None,
+                boundary_retirements: None,
+                compiler_subject_identity: None,
+                invocation_identity: None,
+                capability_identity: None,
+                environment_identity: None,
+                accepted_transition_id: None,
+                evidence_bundle: None,
+            }) {
+                Ok(()) => {
+                    return Err(color_eyre::eyre::eyre!(
+                        "baseline accepted a report with terminal status {status:?}"
+                    ));
+                }
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("process completion is not proven"));
+        }
         Ok(())
     }
 
