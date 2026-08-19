@@ -985,7 +985,8 @@ use perl_semantic_facts::framework::{
     AdapterBudget, AdapterCancellation, AdapterDescriptor, AdapterDetectionInput,
     AdapterDetectionResult, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome,
     AdapterResult, AdapterSourceScope, DetectionAbsenceReason, DetectionOutcome, EmittedFact,
-    FactClass, FactLimitation, FactSink, FactSinkId, ModuleActivationIdentity, UnavailableReason,
+    FactClass, FactLimitation, FactSink, FactSinkId, ModuleActivationIdentity,
+    ModuleVersionEvidence, UnavailableReason,
 };
 
 fn arb_adapter_id() -> impl Strategy<Value = AdapterId> {
@@ -1018,14 +1019,25 @@ fn arb_adapter_descriptor() -> impl Strategy<Value = AdapterDescriptor> {
         })
 }
 
+fn arb_module_version_evidence() -> impl Strategy<Value = ModuleVersionEvidence> {
+    ("[0-9]+\\.[0-9]+(\\.[0-9]+)?", arb_source_generation())
+        .prop_map(|(version, generation)| ModuleVersionEvidence::new(version, generation))
+}
+
 fn arb_module_activation_identity() -> impl Strategy<Value = ModuleActivationIdentity> {
     (
         "[A-Z][a-z]{2,8}((::[A-Z][a-z]{2,6})?)",
         proptest::option::of(arb_file_id()),
         arb_source_generation(),
+        // Non-default `observed_version`, or a dropped serde field round-trips clean.
+        proptest::option::of(arb_module_version_evidence()),
     )
-        .prop_map(|(module_name, file_id, generation)| {
-            ModuleActivationIdentity::new(module_name, file_id, generation)
+        .prop_map(|(module_name, file_id, generation, observed)| {
+            let identity = ModuleActivationIdentity::new(module_name, file_id, generation);
+            match observed {
+                Some(evidence) => identity.with_observed_version(evidence),
+                None => identity,
+            }
         })
 }
 
@@ -1089,9 +1101,19 @@ fn arb_detection_outcome() -> impl Strategy<Value = DetectionOutcome> {
 }
 
 fn arb_adapter_detection_result() -> impl Strategy<Value = AdapterDetectionResult> {
-    (arb_adapter_descriptor(), arb_source_generation(), arb_detection_outcome()).prop_map(
-        |(desc, project_gen, outcome)| AdapterDetectionResult::new(desc, project_gen, outcome),
+    (
+        arb_adapter_descriptor(),
+        arb_source_generation(),
+        arb_detection_outcome(),
+        proptest::option::of(arb_module_version_evidence()),
     )
+        .prop_map(|(desc, project_gen, outcome, evidence)| {
+            let result = AdapterDetectionResult::new(desc, project_gen, outcome);
+            match evidence {
+                Some(evidence) => result.with_version_evidence(evidence),
+                None => result,
+            }
+        })
 }
 
 fn arb_fact_class() -> impl Strategy<Value = FactClass> {
@@ -1148,6 +1170,23 @@ fn arb_fact_sink_empty() -> impl Strategy<Value = FactSink> {
     (arb_fact_sink_id(), arb_adapter_id()).prop_map(|(sid, aid)| FactSink::new(sid, aid))
 }
 
+/// A sink that carries facts and the matching payload size.
+///
+/// Empty sinks never exercise the nested `facts` or `total_payload_bytes` wire
+/// fields, so an outcome built only from `arb_fact_sink_empty` round-trips
+/// clean even if either field is dropped.
+fn arb_fact_sink() -> impl Strategy<Value = FactSink> {
+    (arb_fact_sink_id(), arb_adapter_id(), proptest::collection::vec(arb_emitted_fact(), 1..3))
+        .prop_map(|(sid, aid, facts)| {
+            let mut sink = FactSink::new(sid, aid);
+            sink.facts = facts;
+            if let Some(bytes) = sink.serialized_payload_bytes() {
+                sink.total_payload_bytes = bytes;
+            }
+            sink
+        })
+}
+
 fn arb_emitted_fact() -> impl Strategy<Value = EmittedFact> {
     (
         arb_fact_sink_id(),
@@ -1169,13 +1208,17 @@ fn arb_adapter_outcome() -> impl Strategy<Value = AdapterOutcome> {
     prop_oneof![
         arb_fact_sink_empty()
             .prop_map(|sink| AdapterOutcome::Applied { sink, limitations: vec![] }),
-        ("[a-z ]{4,20}", Just(None::<FactSink>)).prop_map(|(reason, partial_sink)| {
-            AdapterOutcome::Dynamic { reason, partial_sink }
-        }),
+        // Result-level limitations and a populated sink are wire state too.
+        (arb_fact_sink(), proptest::collection::vec(arb_fact_limitation(), 0..3))
+            .prop_map(|(sink, limitations)| AdapterOutcome::Applied { sink, limitations }),
+        ("[a-z ]{4,20}", proptest::option::of(arb_fact_sink())).prop_map(
+            |(reason, partial_sink)| { AdapterOutcome::Dynamic { reason, partial_sink } }
+        ),
         "[a-z ]{4,20}".prop_map(|reason| AdapterOutcome::Unsupported { reason }),
         proptest::collection::vec("[a-z ]{4,20}", 1..3)
             .prop_map(|descs| AdapterOutcome::Conflict { conflict_descriptions: descs }),
-        Just(AdapterOutcome::BudgetExhausted { partial_sink: None }),
+        proptest::option::of(arb_fact_sink())
+            .prop_map(|partial_sink| AdapterOutcome::BudgetExhausted { partial_sink }),
         Just(AdapterOutcome::Cancelled),
     ]
 }
