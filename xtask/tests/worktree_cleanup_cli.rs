@@ -134,9 +134,9 @@ fn write_gh_stub(dir: &Path, exit_code: i32, stdout: &str) -> Result<PathBuf> {
     let path = dir.join("gh");
     let mut body = String::from("#!/bin/sh\n");
     if !stdout.is_empty() {
-        // printf with single quotes: a POSIX shell re-parses a double-quoted
-        // echo argument and strips the inner quotes of a JSON body.
-        body.push_str(&format!("printf '%s\\n' '{stdout}'\\n"));
+        // Single-quoted echo: the bodies carry no backslashes, and quoting
+        // keeps a POSIX shell from stripping the JSON's inner quotes.
+        body.push_str(&format!("echo '{stdout}'\n"));
     }
     body.push_str(&format!("exit {exit_code}\n"));
     fs::write(&path, body)?;
@@ -163,7 +163,7 @@ fn write_cwd_probe_gh_stub(dir: &Path, marker: &Path) -> Result<PathBuf> {
 fn write_cwd_probe_gh_stub(dir: &Path, marker: &Path) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("gh");
-    let body = format!("#!/bin/sh\npwd > \"{}\"\nprintf '%s\\n' '[]'\nexit 0\n", marker.display());
+    let body = format!("#!/bin/sh\npwd > \"{}\"\necho '[]'\nexit 0\n", marker.display());
     fs::write(&path, body)?;
     let mut perms = fs::metadata(&path)?.permissions();
     perms.set_mode(0o755);
@@ -224,14 +224,13 @@ fn write_gh_stub_by_state(dir: &Path, open: (i32, &str), merged: (i32, &str)) ->
     let (merged_exit, merged_stdout) = merged;
     let mut body = String::from("#!/bin/sh\ncase \"$*\" in\n  *\"--state merged\"*)\n");
     if !merged_stdout.is_empty() {
-        // printf with a single-quoted body: a POSIX shell re-parses a
-        // double-quoted echo argument and strips the inner quotes of a
-        // JSON body.
-        body.push_str(&format!("    printf '%s\\n' '{merged_stdout}'\\n"));
+        // Single-quoted echo: the bodies carry no backslashes, and quoting
+        // keeps a POSIX shell from stripping the JSON's inner quotes.
+        body.push_str(&format!("    echo '{merged_stdout}'\n"));
     }
     body.push_str(&format!("    exit {merged_exit}\n    ;;\n  *)\n"));
     if !open_stdout.is_empty() {
-        body.push_str(&format!("    printf '%s\\n' '{open_stdout}'\\n"));
+        body.push_str(&format!("    echo '{open_stdout}'\n"));
     }
     body.push_str(&format!("    exit {open_exit}\n    ;;\nesac\n"));
     fs::write(&path, body)?;
@@ -267,7 +266,7 @@ fn write_slow_decoy_gh_stub(dir: &Path, sleep_secs: u32) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("gh");
     let body = format!(
-        "#!/bin/sh\ncase \"$*\" in\n  *decoy*) sleep {sleep_secs} ;;\nesac\nprintf '%s\\n' '[]'\nexit 0\n"
+        "#!/bin/sh\ncase \"$*\" in\n  *decoy*) sleep {sleep_secs} ;;\nesac\necho '[]'\nexit 0\n"
     );
     fs::write(&path, body)?;
     let mut perms = fs::metadata(&path)?.permissions();
