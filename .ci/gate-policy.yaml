@@ -759,12 +759,24 @@ gates:
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
     required: true
-    # NOTE (#4642): this is the only pr_fast gate that RUNS `tests/` integration
-    # tests, and it is scope-aware (`{package_args}`): it only executes the
-    # `tests/` suite for crates whose source is touched by the PR diff. A
-    # regression in an untouched crate's `tests/` directory sails through pr_fast
-    # and is only caught at the merge-gate full suite. This deferral is the
-    # structural reason false-confidence patterns in `tests/` went undetected.
+    # NOTE (#4642, corrected #11694): this is the only pr_fast gate that RUNS
+    # `tests/` integration tests, and it is scope-aware (`{package_args}`): it
+    # only executes the `tests/` suite for crates whose source is touched by the
+    # PR diff. A regression in an untouched crate's `tests/` directory sails
+    # through pr_fast. This deferral is the structural reason false-confidence
+    # patterns in `tests/` went undetected.
+    #
+    # This NOTE previously said such a regression "is only caught at the
+    # merge-gate full suite". That is false for the five `--lib`-only merge
+    # gates listed under `tier: merge_gate` below -- `--lib` excludes `tests/`
+    # entirely, so for those crates NO gate executes the integration suite on
+    # any bounded schedule. Coverage depends on some future PR happening to
+    # touch the crate. There is no scheduled backstop either: ci-nightly runs
+    # four targeted commands and flake-detection is `--workspace --lib`.
+    #
+    # #11614 is the confirmed consequence -- `incremental_full_parse_equivalence`
+    # sat red on main until a diff finally touched its crate. See #11694 for the
+    # per-gate inventory and #11708 for the currently-red suites this exposed.
     # Build the server binary first: binary_version_test (and every suite
     # that spawns perllsp) resolves the binary through PERL_LSP_BIN ->
     # CARGO_BIN_EXE -> target/debug/perllsp -> PATH -> cargo-run fallback;
@@ -795,6 +807,22 @@ gates:
     tier: merge_gate
     description: "Foundation token/AST workspace library tests"
     required: true
+    # `--lib` excludes tests/. 103 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-ast                     14
+    #   perl-ast-v2                   2
+    #   perl-incremental-parsing      8
+    #   perl-line-index               4
+    #   perl-parser-pest              4
+    #   perl-pod                      2
+    #   perl-position-tracking        7
+    #   perl-pragma                   7
+    #   perl-regex                   16
+    #   perl-symbol                  19
+    #   perl-token                   12  (1 covered by explicit --test elsewhere)
+    #   perl-uri                      8
     command: >-
       cargo test --locked --lib
       -p perl-ast -p perl-ast-v2
@@ -906,6 +934,16 @@ gates:
     tier: merge_gate
     description: "Semantic analysis, workspace, diagnostics, and refactoring library tests"
     required: true
+    # `--lib` excludes tests/. 183 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-corpus                  14
+    #   perl-diagnostics             11
+    #   perl-module                  71
+    #   perl-semantic-analyzer       45
+    #   perl-semantic-facts           3
+    #   perl-workspace               39
     command: >-
       cargo test --locked --lib
       -p perl-corpus -p perl-diagnostics
@@ -959,6 +997,11 @@ gates:
     tier: merge_gate
     description: "LSP core library tests (heaviest single crate in the LSP surface)"
     required: true
+    # `--lib` excludes tests/. 82 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-lsp-rs-core             82
     command: >-
       cargo test --locked --lib
       -p perl-lsp-rs-core
@@ -977,6 +1020,15 @@ gates:
     tier: merge_gate
     description: "LSP server, editor UX, perltidy, and subprocess library tests"
     required: true
+    # `--lib` excludes tests/. 356 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-lsp-perltidy            10
+    #   perl-lsp-rs                 253  (19 covered by explicit --test elsewhere)
+    #   perl-lsp-ux-tests            82
+    #   perl-subprocess-runtime       3
+    #   perllsp                       8  (1 covered by explicit --test elsewhere)
     command: >-
       cargo test --locked --lib
       -p perl-lsp-perltidy -p perl-lsp-rs
@@ -997,6 +1049,17 @@ gates:
     tier: merge_gate
     description: "DAP, CI hygiene, test support, and tree-sitter workspace library tests"
     required: true
+    # `--lib` excludes tests/. 143 integration targets in these crates are
+    # executed by no gate on a bounded schedule -- only when a PR diff happens
+    # to touch the crate, via unit_routed_full. Recorded per #11694; flipping
+    # this to --tests is blocked on the red suites in #11708.
+    #   perl-ci-hygiene               6
+    #   perl-dap                    115
+    #   perl-tdd-support              4
+    #   perl-test-generators          2
+    #   perl-test-must                2
+    #   tree-sitter-perl-c            6
+    #   tree-sitter-perl-rs           8
     command: >-
       cargo test --locked --lib
       -p perl-ci-hygiene -p perl-dap

@@ -788,11 +788,12 @@ fn category_heredoc_tied_handle() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn category_version_incompat_feature_is_best_practices() -> Result<(), Box<dyn std::error::Error>> {
-    // VersionIncompatFeature maps to BestPractices per line 844 in codes/mod.rs
+fn category_version_incompat_feature_is_version_compatibility()
+-> Result<(), Box<dyn std::error::Error>> {
+    // VersionIncompatFeature maps to VersionCompatibility per codes/category.rs
     assert_eq!(
         DiagnosticCode::VersionIncompatFeature.category(),
-        DiagnosticCategory::BestPractices
+        DiagnosticCategory::VersionCompatibility
     );
     Ok(())
 }
