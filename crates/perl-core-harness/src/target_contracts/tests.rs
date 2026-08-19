@@ -334,6 +334,54 @@ fn selector_kind_grammar_accepts_valid_shapes() {
 }
 
 #[test]
+fn selector_grammar_rejects_empty_path_components() {
+    // A trailing slash or a repeated separator names the same path as its
+    // trimmed form. Admitting both spellings lets one selector enter the
+    // pinned authority twice under different fingerprints, so each is
+    // rejected rather than normalised.
+    for path in ["op/", "op//hook", "op/hook/"] {
+        assert!(
+            validate_selector_for_test(&TargetSelector::RecursiveRoot { path: path.to_string() })
+                .is_err_and(|error| error.contains("invalid t-relative selector")),
+            "recursive-root selector {path:?} must be rejected for an empty component"
+        );
+    }
+    for path in ["op/basic.t/", "op//basic.t"] {
+        assert!(
+            validate_selector_for_test(&TargetSelector::ExactFile { path: path.to_string() })
+                .is_err_and(|error| error.contains("invalid t-relative selector")),
+            "exact-file selector {path:?} must be rejected for an empty component"
+        );
+    }
+    assert!(
+        validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
+            pattern: "op//*.t".to_string()
+        })
+        .is_err_and(|error| error.contains("invalid t-relative selector")),
+        "non-recursive glob must be rejected for an empty component"
+    );
+    for pattern in ["../ext//re/t/*.t", "../ext/re/t/"] {
+        assert!(
+            validate_external_selector_for_test(pattern)
+                .is_err_and(|error| error.contains("invalid external selector")),
+            "external selector {pattern:?} must be rejected for an empty component"
+        );
+    }
+
+    // Positive controls: the trimmed spellings of the same paths stay valid,
+    // so the check rejects empty components rather than these paths.
+    assert!(
+        validate_selector_for_test(&TargetSelector::RecursiveRoot { path: "op/hook".to_string() })
+            .is_ok()
+    );
+    assert!(
+        validate_selector_for_test(&TargetSelector::ExactFile { path: "op/basic.t".to_string() })
+            .is_ok()
+    );
+    assert!(validate_external_selector_for_test("../ext/re/t/*.t").is_ok());
+}
+
+#[test]
 fn selector_kind_grammar_rejects_wrong_pattern_shapes() {
     assert!(
         validate_selector_for_test(&TargetSelector::ExactFile { path: "op/*.t".to_string() })

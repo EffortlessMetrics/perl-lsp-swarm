@@ -263,10 +263,16 @@ fn contains_glob_metacharacter(value: &str) -> bool {
 
 fn validate_local_selector(value: &str) -> Result<(), String> {
     validate_nonempty(value, "local selector")?;
+    // An empty component is a trailing slash (`op/`) or a repeated separator
+    // (`op//basic.t`). Both name the same path as their trimmed form, so
+    // admitting them lets one path enter the pinned authority under several
+    // spellings, each hashing to a different fingerprint.
     if value.starts_with('/')
         || value.starts_with("../")
         || value.contains('\\')
-        || value.split('/').any(|component| component == "." || component == "..")
+        || value
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
     {
         return Err(format!("invalid t-relative selector {value}"));
     }
@@ -281,7 +287,9 @@ fn validate_external_selector(value: &str) -> Result<(), String> {
     if rest.is_empty()
         || rest.starts_with('/')
         || rest.contains('\\')
-        || rest.split('/').any(|component| component == "." || component == "..")
+        || rest
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
     {
         return Err(format!("invalid external selector {value}"));
     }
