@@ -1717,6 +1717,7 @@ dependencies = [
  "perl-pragma",
  "perl-semantic-analyzer",
  "perl-semantic-facts",
+ "perl-source-identity",
  "perl-subprocess-runtime",
  "perl-symbol",
  "perl-tdd-support",
