@@ -85,6 +85,11 @@ fn bash_executable() -> PathBuf {
         if git_bash.is_file() {
             return git_bash;
         }
+        // 32-bit Git for Windows installs under Program Files (x86) on 64-bit hosts.
+        let git_bash_x86 = PathBuf::from(r"C:\Program Files (x86)\Git\bin\bash.exe");
+        if git_bash_x86.is_file() {
+            return git_bash_x86;
+        }
     }
     PathBuf::from("bash")
 }
