@@ -168,6 +168,13 @@ const MODULES: &[ModuleRow] = &[
         "#7392"
     ),
     module_row!(
+        "resolve_session",
+        GenericConnection,
+        "effortless-lsp",
+        "extract connection-bound resolve-session identity substrate",
+        "#8342"
+    ),
+    module_row!(
         "routing",
         ApplicationPolicy,
         "PerlLspAdapter",
@@ -301,6 +308,7 @@ const MIGRATING_DISPOSITIONS: [&str; 5] = ["split", "move", "replace", "extract"
 const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("anyhow", RetainGeneric, "#9291"),
     dependency!("assert_cmd", RetainGenericTest, "#9298"),
+    dependency!("chrono", RetainGenericTest, "#6739"),
     dependency!("clap", ProductOnly, "#7216"),
     dependency!("criterion", RetainGenericTest, "#1373"),
     dependency!("insta", RetainGenericTest, "#9298"),
@@ -325,9 +333,11 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("perl-ripr-facts", MoveToPerlAdapter, "#6957"),
     dependency!("perl-semantic-analyzer", MoveToPerlAdapter, "#6957"),
     dependency!("perl-semantic-facts", MoveToPerlAdapter, "#6957"),
+    dependency!("perl-source-identity", MoveToPerlAdapter, "#6967"),
     dependency!("perl-subprocess-runtime", ProductOnly, "#4836"),
     dependency!("perl-symbol", MoveToPerlAdapter, "#6957"),
     dependency!("perl-tdd-support", PerlTestOnly, "#7394"),
+    dependency!("perl-test-facts", PerlTestOnly, "#6943"),
     dependency!("perl-uri", MoveToPerlAdapter, "#8617"),
     dependency!("perl-workspace", MoveToPerlAdapter, "#6957"),
     dependency!("predicates", RetainGenericTest, "#9298"),
@@ -338,6 +348,7 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("serde", RetainGeneric, "#9291"),
     dependency!("serde_json", RetainGeneric, "#9291"),
     dependency!("serial_test", RetainGenericTest, "#9298"),
+    dependency!("sha2", RetainGenericTest, "#7113"),
     dependency!("static_assertions", RetainGenericTest, "#9298"),
     dependency!("tempfile", RetainGenericTest, "#9298"),
     dependency!("thiserror", RetainGeneric, "#9291"),
