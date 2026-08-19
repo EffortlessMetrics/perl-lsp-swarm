@@ -22,12 +22,43 @@ The parser-accuracy manifest and generated metric receipts are the sources for c
 
 The crate exposes:
 
+- distinct plain-source and sectioned-document loading contracts;
 - section loading and queries: `parse_file`, `parse_dir`, `find_by_tag`;
 - corpus discovery and inventory helpers;
 - fixture and sidecar expectation models;
 - deterministic Perl generators with explicit seeds;
 - focused helpers for heredocs, regexes, globs, tie interfaces, formats, and loop-control cases;
 - linting, metadata backfill, indexing, and snapshot support.
+
+### Typed source loading
+
+Ordinary Perl sources and sectioned corpus documents use different APIs:
+
+```rust,no_run
+use perl_corpus::{load_plain_perl_source, load_sectioned_corpus_document};
+
+let plain = load_plain_perl_source(
+    "test_corpus/example.pl",
+    "/absolute/root/test_corpus/example.pl",
+)?;
+let sectioned = load_sectioned_corpus_document(
+    "tree_sitter/corpus/expressions.txt",
+    "/absolute/root/tree-sitter-perl/test/corpus/expressions.txt",
+)?;
+assert!(!plain.source.is_empty());
+assert!(!sectioned.cases.is_empty());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+A `.txt` extension does not make an asset sectioned. The topology or consumer chooses the loader.
+
+Plain loading opens the selected leaf without following a symbolic link or Windows reparse point, verifies the opened handle is a regular file, and reads bytes from that same handle. It preserves exact UTF-8 text, BOM presence, and newline representation; delimiter-looking Perl content is never reinterpreted. Platforms without a reviewed no-follow open contract fail explicitly.
+
+Sectioned loading retains the same exact source but normalizes newlines only for its parser view. Every delimiter candidate must have a non-empty title and closing delimiter, the structurally declared and parsed populations must match exactly, and duplicate effective IDs fail the document.
+
+`SectionCaseId { asset_id, section_id }` is the stable case authority. The legacy `Section.id` fallback remains leaf-derived compatibility data and may collide across parent assets; it is not promoted as global corpus identity.
+
+Legacy `parse_file` and `parse_dir` remain compatibility APIs pending the topology migrations in #6985 and #6989. Intermediate-component containment also remains topology/path-authority work; the direct loader protects the selected leaf and opened bytes.
 
 Example:
 
@@ -55,7 +86,8 @@ assert!(!source.is_empty());
 From the repository root:
 
 ```bash
-# Inspect corpus commands and their current options
+# Inspect the current binary.
+cargo run -p perl-corpus -- --help
 cargo xtask --help
 
 # Inspect parser-accuracy commands
@@ -64,11 +96,11 @@ cargo xtask metrics --help
 # Run the parser's manifest-backed E2E surface
 cargo test -p perl-parser --test parser_accuracy_e2e
 
-# Run perl-corpus unit tests
+# Run perl-corpus unit and integration tests
 cargo test -p perl-corpus
 ```
 
-The exact command surface is owned by `xtask` and the workspace test targets; this README does not maintain a shadow CLI contract.
+The exact command surface is owned by the binary, `xtask`, and workspace test targets; this README does not maintain an independent shadow of every subcommand.
 
 For a new parser-accuracy fixture:
 

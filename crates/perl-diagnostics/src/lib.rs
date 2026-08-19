@@ -2,34 +2,39 @@
 #![warn(rust_2018_idioms)]
 #![warn(missing_docs)]
 
-//! Unified diagnostic codes, types, and catalog for Perl LSP.
+//! Unified diagnostic codes, transport-neutral byte spans, types, and catalog for Perl LSP.
 //!
 //! This crate consolidates three previously separate diagnostic crates:
-//! - `perl-diagnostics-codes` — stable diagnostic codes, severity, and tags (now `codes` module)
-//! - `perl-lsp-diagnostic-types` — diagnostic model types (Diagnostic, RelatedInformation) (now `types` module)
-//! - `perl-lsp-diagnostic-catalog` — LSP metadata builders for codes (now `catalog` module)
+//! - `perl-diagnostics-codes` — stable diagnostic codes, severity, and tags (now [`codes`])
+//! - `perl-lsp-diagnostic-types` — diagnostic model types (now [`types`])
+//! - `perl-lsp-diagnostic-catalog` — metadata builders for codes (now [`catalog`])
 //!
 //! # Modules
 //!
-//! - [`codes`] — canonical `DiagnosticCode`, `DiagnosticCategory`, `DiagnosticSeverity`, `DiagnosticTag`
-//! - [`types`] — `Diagnostic` and `RelatedInformation` structs; `DiagnosticSeverity` and `DiagnosticTag` are re-exported from [`codes`]
-//! - [`catalog`] — LSP metadata catalog functions
+//! - [`codes`] — canonical `DiagnosticCode`, `DiagnosticCategory`, `DiagnosticSeverity`, and
+//!   `DiagnosticTag`
+//! - [`types`] — validated [`ByteSpan`], [`Diagnostic`], and [`RelatedInformation`]
+//! - [`catalog`] — diagnostic metadata catalog functions
 //!
-//! # Type unification
+//! # Location contract
 //!
-//! `DiagnosticSeverity` and `DiagnosticTag` are single canonical types defined in [`codes`].
-//! The [`types`] module re-exports them so the legacy `types::DiagnosticSeverity` import
-//! path still resolves to the same underlying type.
+//! Diagnostic locations are half-open UTF-8 byte spans. The type validates interval ordering;
+//! source length, UTF-8 scalar boundaries, line/column projection, URI identity, and negotiated
+//! position encoding remain responsibilities of the exact source-snapshot and transport layers.
 //!
 //! # Re-exports
 //!
 //! The crate root re-exports all public items via [`api`].
+//!
+//! [`ByteSpan`]: crate::types::ByteSpan
+//! [`Diagnostic`]: crate::types::Diagnostic
+//! [`RelatedInformation`]: crate::types::RelatedInformation
 
 /// Diagnostic metadata catalog and LSP-facing helpers.
 pub mod catalog;
 /// Canonical diagnostic codes, categories, severities, and tags.
 pub mod codes;
-/// Diagnostic payload data structures and related information types.
+/// Transport-neutral diagnostic payload and byte-span types.
 pub mod types;
 
 mod api;

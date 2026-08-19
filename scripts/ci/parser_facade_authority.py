@@ -201,7 +201,18 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     if any(row.get("production_eligible") is True for row in module_rows.values()):
         raise ValueError("historical incremental modules cannot be production-eligible")
     production_exports = sorted(name for name, row in export_rows.items() if row.get("production_eligible") is True)
-    if production_exports != ["diagnostics::ReparseResult", "edit::Edit", "state::IncrementalState"]:
+    if production_exports != [
+        "diagnostics::LexRestartReport",
+        "diagnostics::LexRestartStrategy",
+        "diagnostics::ReparseResult",
+        "edit::Edit",
+        "snapshot::ParseGeneration",
+        "snapshot::ParseSnapshot",
+        "snapshot::ParseSnapshotStrategy",
+        "snapshot::ParseSnapshotValidationError",
+        "snapshot::ParseTerminalDisposition",
+        "state::IncrementalState",
+    ]:
         raise ValueError("canonical incremental export marker differs from reviewed authority")
     if expected_functions != {"apply_edits"}:
         raise ValueError("apply_edits must be the sole canonical public incremental function")

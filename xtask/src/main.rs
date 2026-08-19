@@ -18,19 +18,49 @@ mod tasks;
 mod test_support;
 mod types;
 mod utils;
-use tasks::check_test_wiring;
+#[cfg(feature = "legacy")]
+use tasks::corpus;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
+use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
 use tasks::issue_plan::IssuePlanOutputFormat;
 use tasks::methodology_gate::MethodologyOutputFormat;
-use tasks::metrics;
 use tasks::targeted_checks::CheckMode;
 use tasks::unwired_scan::UnwiredScanConfig;
 use tasks::ux_scorecard::UxScorecardFormat;
 use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
-use tasks::*;
+use tasks::{
+    active_goal_manifest, agent_capability_policy, agent_flow, agent_lease, agent_receipt,
+    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
+    check, check_agent_context, check_lint_policy, check_test_wiring, check_toolchain,
+    check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene,
+    ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope, clean, command_evidence,
+    compare, corpus_audit, count_ratchet, cpan_corpus, dead_code, debt_report, dependency_hygiene,
+    dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases, features,
+    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
+    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
+    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
+    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
+    merge_ready, methodology_gate, metrics, native_critic, native_format, native_product_surface,
+    native_tooling, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner, parse_rust,
+    parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness, perl_kwalitee,
+    populate_book, pre_push_plan, prep_crates_io_launch, provider_confidence_matrix,
+    provider_promotion_ledger, publication_facts, publish, publish_closure, publish_manifest_check,
+    publish_receipts, quality_baseline, quality_gate, queue_health, queue_snapshot, receipts,
+    release, release_artifact_check, release_evidence, release_notes, release_turnkey,
+    repo_hygiene, ripr_evidence, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    validate_workspace_exclusions, workflow_policy_lint, workflow_trigger_lint,
+    workspace_symbol_classes, worktree_allocator, worktrees, writer_admission,
+};
+#[cfg(feature = "parser-tasks")]
+use tasks::{bindings, compare_parsers, highlight};
 use types::TestSuite;
 #[cfg(any(feature = "legacy", feature = "parser-tasks"))]
 use types::*;
@@ -826,6 +856,22 @@ enum Commands {
         /// Strict mode: fail on any regression above baseline
         #[arg(long)]
         strict: bool,
+    },
+
+    /// Dependency hygiene: identify unused Cargo dependencies (authority: #9364).
+    ///
+    /// Uses cargo-machete as the V1 primary instrument. Produces typed
+    /// item-level findings with outcome vocabulary:
+    /// SUCCESS | POLICY_FINDING | NOT_PROVEN | NOT_APPLICABLE.
+    ///
+    /// Never installs tools as a side effect. cargo-udeps is removed from the
+    /// active hygiene path; see issue #9364 for re-introduction criteria.
+    #[command(name = "dependency-hygiene")]
+    DependencyHygiene {
+        /// Mode: check (default) fails closed on any finding; report writes JSON
+        /// and exits 0.
+        #[arg(value_enum, default_value = "check")]
+        mode: DependencyHygieneMode,
     },
 
     /// Run a developer environment smoke check.
@@ -2388,13 +2434,21 @@ enum CheckFilePolicyCliMode {
 #[derive(Subcommand)]
 enum NonRustCommand {
     /// Walk `git ls-files`, classify tracked files against the allowlist,
-    /// and emit `target/policy/non-rust-inventory.{md,json}` plus
+    /// and emit `target/policy/non-rust-inventory.{md,json}`.
+    ///
+    /// By default this is a read-only scan: no tracked file is modified.
+    /// Pass `--write` to also regenerate the committed snapshot at
     /// `docs/policy/NON_RUST_INVENTORY.md`.
     Inventory {
         /// Check classification and newly added files without rewriting outputs.
         /// The generated Markdown snapshot may be stale during concurrent merges.
         #[arg(long)]
         check: bool,
+
+        /// Also overwrite `docs/policy/NON_RUST_INVENTORY.md` with the
+        /// regenerated content.  Mutually exclusive with `--check`.
+        #[arg(long, conflicts_with = "check")]
+        write: bool,
     },
 
     /// Check non-Rust files against the allowlist and report violations.
@@ -4261,6 +4315,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Highlight { path, scanner } => highlight::run(path, scanner),
         Commands::Clean { all } => clean::run(all),
         Commands::DeadCode { mode, strict } => dead_code::run(DeadCodeConfig { mode, strict }),
+        Commands::DependencyHygiene { mode } => {
+            dependency_hygiene::run(DependencyHygieneConfig { mode })
+        }
         #[cfg(feature = "parser-tasks")]
         Commands::Bindings { header, output } => bindings::run(header, output),
         Commands::Dev { watch, port } => dev::run(watch, port),
@@ -5231,10 +5288,12 @@ fn run_cli(cli: Cli) -> Result<()> {
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
         Commands::NonRust { command } => match command {
-            NonRustCommand::Inventory { check } => {
+            NonRustCommand::Inventory { check, write } => {
                 let root = utils::project_root()?;
                 if check {
                     tasks::file_policy::non_rust_inventory_check(&root)
+                } else if write {
+                    tasks::file_policy::non_rust_inventory_write_docs(&root)
                 } else {
                     tasks::file_policy::non_rust_inventory(&root)
                 }
