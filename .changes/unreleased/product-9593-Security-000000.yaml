@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Security
+body: The post-publish smoke test now verifies the version the publish workflow actually published, taken from a receipt written only after the crates are confirmed on the crates.io index, instead of parsing a version out of the triggering ref's name. A branch merely named like a release tag can no longer produce a smoke result that reads as proof a version was published.
+time: 2026-08-19T00:00:00Z
+custom:
+  PR: 9593
+  Slug: post-publish-smoke-version-provenance
+  Breaking: "no"
