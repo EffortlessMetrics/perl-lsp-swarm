@@ -292,6 +292,25 @@ fn spawn_xtask_cleanup(root: &Path, gh_bin: &Path) -> Result<std::process::Child
     Ok(cmd.spawn()?)
 }
 
+/// The render block for the entry whose header line contains `needle`: the
+/// unindented `CLASSIFICATION path [id]` line plus its indented detail lines.
+///
+/// Assertions must be scoped to one block. `render_human` emits every entry
+/// into one stream, so a whole-output `contains` check is satisfied by any
+/// entry — including the primary worktree, which is always present and always
+/// `KEEP`.
+fn entry_block(output: &str, needle: &str) -> Result<String> {
+    let mut lines =
+        output.lines().skip_while(|line| !(line.contains(needle) && !line.starts_with(' ')));
+    let Some(header) = lines.next() else {
+        bail!("no entry header line containing {needle:?} in:\n{output}");
+    };
+    Ok(std::iter::once(header)
+        .chain(lines.take_while(|line| line.starts_with(' ')))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 fn run_xtask_cleanup(root: &Path, force: bool, gh_bin: Option<&Path>) -> Result<(bool, String)> {
     let mut cmd = cargo_bin_cmd!("xtask");
     cmd.arg("worktree-cleanup").arg("--root").arg(root);
@@ -329,24 +348,30 @@ fn dry_run_keeps_dirty_and_flags_clean_for_removal_without_deleting_either() -> 
 
     let (ok, output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
     assert!(ok, "dry-run must exit 0: {output}");
+    let dirty_block = entry_block(&output, "wt-dirty")?;
     assert!(
-        output.contains("KEEP") && output.contains("dirty"),
-        "expected dirty worktree to be reported KEEP with a dirty reason: {output}"
+        dirty_block.starts_with("SALVAGE"),
+        "dirty worktree must classify SALVAGE, not merely leave `KEEP` somewhere in the \
+         output (the primary worktree is always KEEP): {dirty_block}"
     );
-    let clean_line = output
-        .lines()
-        .find(|line| line.contains("wt-clean"))
-        .unwrap_or("<no wt-clean entry in plan>");
     assert!(
-        output.contains("REMOVE"),
-        "expected clean worktree to be reported REMOVE-eligible in dry-run; \
-         its classification line and following detail: {clean_line} | {:?}",
-        output
-            .lines()
-            .skip_while(|line| !line.contains("wt-clean"))
-            .take(8)
-            .collect::<Vec<_>>()
-            .join(" / ")
+        dirty_block.contains("reasons:") && dirty_block.contains("worktree_dirty"),
+        "dirty worktree must carry the worktree_dirty reason token; matching the bare word \
+         `dirty` also matches its own path: {dirty_block}"
+    );
+    assert!(
+        !dirty_block.contains("proposed:"),
+        "dirty worktree must not be given a proposed action: {dirty_block}"
+    );
+
+    let clean_block = entry_block(&output, "wt-clean")?;
+    assert!(
+        clean_block.starts_with("CACHE_ONLY"),
+        "clean pushed worktree must classify CACHE_ONLY: {clean_block}"
+    );
+    assert!(
+        clean_block.contains("proposed: REMOVE_REGISTERED_WORKTREE"),
+        "clean worktree must be proposed for registered-worktree removal: {clean_block}"
     );
     assert!(dirty_wt.exists(), "dry-run must never delete the dirty worktree");
     assert!(
@@ -846,6 +871,21 @@ fn no_agent_worktrees_reports_nothing_to_clean() -> Result<()> {
 
     let (ok, output) = run_xtask_cleanup(&repo, false, None)?;
     assert!(ok, "dry-run on a repo with no agent worktrees must exit 0: {output}");
-    assert!(!output.contains(".claude"), "expected an explicit nothing-to-clean message: {output}");
+    // Positive: the plan rendered and proposes nothing. `!contains(".claude")`
+    // alone also passes for empty or unrelated output, so it cannot stand as the
+    // whole assertion for a test named `reports_nothing_to_clean`.
+    assert!(
+        output.contains("worktree cleanup inspection"),
+        "expected the inspection plan to be rendered: {output}"
+    );
+    assert!(
+        output.contains("targetable_actions=0"),
+        "expected the summary to report no targetable actions: {output}"
+    );
+    assert!(
+        output.contains("cache_only=0 salvage=0 review=0 not_proven=0"),
+        "expected every non-primary classification to be empty: {output}"
+    );
+    assert!(!output.contains(".claude"), "expected no agent-worktree entry in the plan: {output}");
     Ok(())
 }
