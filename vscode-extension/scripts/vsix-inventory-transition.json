@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "owner_issue": 7041,
+  "reason": "The transition instrument measures the produced VSIX archive, and vsce normalizes the three metadata names inside the zip (README.md→readme.md, LICENSE→LICENSE.txt, CHANGELOG.md→changelog.md); the baseline adopts archive naming with identical bytes.",
+  "base_baseline_file_sha256": "6d067597af6ff136f9f1fecd9e3e5c81b6d4e2f8220ec3fd4ddf052a40a71f9b",
+  "candidate_baseline_file_sha256": "5997f644930ff332b40d1a660c8cb7b0819b437333bcaba6c9b50fdd021c024d",
+  "base_inventory_sha256": "ab9817192d383bf7ccb3fa70a282a0db6ba48643d1aed9a58b82ba583a89ccff",
+  "candidate_inventory_sha256": "70e33cf86adb72d9f407c4cb21f32eea5cc9c0eae061fc26d1c63ad925cd20a3"
+}

@@ -220,6 +220,92 @@ void test('accepts a declared exact candidate transition', () => {
   ]);
 });
 
+void test('declared vsce archive-name transition turns the rename delta green', () => {
+  // vsce normalizes the three metadata names inside the produced archive; the
+  // baseline adopts archive naming with identical bytes, and the declaration
+  // binds both baseline documents. This is the live #7041 transition.
+  const onDisk = { 'README.md': 2, LICENSE: 1, 'CHANGELOG.md': 3, 'out/extension.js': 8 };
+  const archiveNames = {
+    'readme.md': 2,
+    'LICENSE.txt': 1,
+    'changelog.md': 3,
+    'out/extension.js': 8,
+  };
+  const baseDocument = document(onDisk);
+  const candidateDocument = document(archiveNames);
+  const result = evaluateTransition({
+    actual: inventory(archiveNames),
+    baseDocument,
+    candidateDocument,
+    declaration: declaration(baseDocument, candidateDocument),
+    platform: 'linux',
+    arch: 'x64',
+  });
+
+  assert.equal(result.state, 'transition_candidate');
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.delta.removals.map((entry) => entry.file).sort(), [
+    'CHANGELOG.md',
+    'LICENSE',
+    'README.md',
+  ]);
+  assert.deepEqual(result.delta.additions.map((entry) => entry.file).sort(), [
+    'LICENSE.txt',
+    'changelog.md',
+    'readme.md',
+  ]);
+});
+
+void test('an archive-name rename without a declaration fails loudly', () => {
+  const onDisk = { 'README.md': 2, LICENSE: 1, 'CHANGELOG.md': 3, 'out/extension.js': 8 };
+  const archiveNames = {
+    'readme.md': 2,
+    'LICENSE.txt': 1,
+    'changelog.md': 3,
+    'out/extension.js': 8,
+  };
+  const baseDocument = document(onDisk);
+  const candidateDocument = document(archiveNames);
+  const result = evaluateTransition({
+    actual: inventory(archiveNames),
+    baseDocument,
+    candidateDocument,
+    declaration: null,
+    platform: 'linux',
+    arch: 'x64',
+  });
+
+  assert.equal(result.state, 'undeclared_transition');
+  // The gate stays red, but behavior evidence survives: the archive still
+  // matches the candidate baseline byte-for-byte, so the class is safe.
+  assert.equal(result.passed, false);
+  assert.equal(result.behavior_safe, true);
+});
+
+void test('a stale on-disk-name baseline against archive measurement stays red', () => {
+  // If a future vsce naming change moves the archive names again, the
+  // unchanged baseline must keep the transition red until re-declared.
+  const onDisk = { 'README.md': 2, LICENSE: 1, 'CHANGELOG.md': 3, 'out/extension.js': 8 };
+  const shiftedArchiveNames = {
+    'readme.markdown': 2,
+    'LICENSE.txt': 1,
+    'changelog.md': 3,
+    'out/extension.js': 8,
+  };
+  const baseDocument = document(onDisk);
+  const result = evaluateTransition({
+    actual: inventory(shiftedArchiveNames),
+    baseDocument,
+    candidateDocument: baseDocument,
+    declaration: null,
+    platform: 'linux',
+    arch: 'x64',
+  });
+
+  assert.equal(result.state, 'transition_required');
+  assert.equal(result.passed, false);
+});
+
 void test('ignores the staged current-source server while retaining ordinary package files', () => {
   const projected = projectInventory(
     inventory({
