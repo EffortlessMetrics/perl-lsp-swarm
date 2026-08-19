@@ -249,6 +249,22 @@ fn no_node_kind_variant_renders_debug_syntax() {
             !sexp.contains('{') && !sexp.contains('}'),
             "{label}: sexp must not contain Debug struct syntax, got: {sexp}"
         );
+
+        // The brace check alone is not enough: it only catches struct-like
+        // variants. A unit variant rendered through Debug is `(MissingBlock)`
+        // and a tuple variant is `(Missing(Semicolon))` -- neither has braces.
+        //
+        // Every correct tag is either snake_case (`variable_declaration`) or
+        // SCREAMING_SNAKE_CASE (`MISSING_BLOCK`). A Debug variant name is
+        // CamelCase. So a tag that starts uppercase must carry no lowercase.
+        let tag_end = sexp[1..].find([' ', ')']).map_or(sexp.len(), |i| i + 1);
+        let tag = &sexp[1..tag_end];
+        if tag.starts_with(char::is_uppercase) {
+            assert!(
+                !tag.chars().any(char::is_lowercase),
+                "{label}: tag {tag:?} is CamelCase, which means Debug rendering; got: {sexp}"
+            );
+        }
     }
 }
 
