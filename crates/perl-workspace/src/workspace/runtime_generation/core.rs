@@ -669,6 +669,22 @@ impl WorkspaceRuntimeController {
         Some(view)
     }
 
+    /// Whether the exact generation is the root's current one.
+    ///
+    /// Production currentness flows through the facade's gate-holding
+    /// `is_current`; only this module's own lifecycle tests exercise the
+    /// ungated core view.
+    #[cfg(test)]
+    fn is_current(&self, generation: WorkspaceRuntimeGeneration) -> bool {
+        if generation.session_id() != self.inner.session_id {
+            return false;
+        }
+        let roots = self.inner.roots.read();
+        roots
+            .get(&generation.root_id())
+            .is_some_and(|entry| entry.lock().context.generation == generation)
+    }
+
     /// Register one root-scoped task under the exact current generation.
     pub(crate) fn register_root_task(
         &self,
