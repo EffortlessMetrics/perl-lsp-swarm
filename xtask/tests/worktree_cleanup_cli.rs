@@ -292,6 +292,12 @@ fn spawn_xtask_cleanup(root: &Path, gh_bin: &Path) -> Result<std::process::Child
     Ok(cmd.spawn()?)
 }
 
+/// The classification line for `name` plus its detail lines, so assertions
+/// stay scoped to one worktree's entry instead of the whole plan render.
+fn entry_detail(output: &str, name: &str) -> String {
+    output.lines().skip_while(|line| !line.contains(name)).take(6).collect::<Vec<_>>().join(" / ")
+}
+
 fn run_xtask_cleanup(root: &Path, force: bool, gh_bin: Option<&Path>) -> Result<(bool, String)> {
     let mut cmd = cargo_bin_cmd!("xtask");
     cmd.arg("worktree-cleanup").arg("--root").arg(root);
@@ -329,24 +335,15 @@ fn dry_run_keeps_dirty_and_flags_clean_for_removal_without_deleting_either() -> 
 
     let (ok, output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
     assert!(ok, "dry-run must exit 0: {output}");
+    let dirty_detail = entry_detail(&output, "wt-dirty");
     assert!(
-        output.contains("KEEP") && output.contains("dirty"),
-        "expected dirty worktree to be reported KEEP with a dirty reason: {output}"
+        dirty_detail.contains("SALVAGE") && dirty_detail.contains("worktree_dirty"),
+        "expected the dirty worktree to be classified SALVAGE with a dirty reason: {dirty_detail}"
     );
-    let clean_line = output
-        .lines()
-        .find(|line| line.contains("wt-clean"))
-        .unwrap_or("<no wt-clean entry in plan>");
+    let clean_detail = entry_detail(&output, "wt-clean");
     assert!(
-        output.contains("REMOVE"),
-        "expected clean worktree to be reported REMOVE-eligible in dry-run; \
-         its classification line and following detail: {clean_line} | {:?}",
-        output
-            .lines()
-            .skip_while(|line| !line.contains("wt-clean"))
-            .take(8)
-            .collect::<Vec<_>>()
-            .join(" / ")
+        clean_detail.contains("REMOVE_REGISTERED_WORKTREE"),
+        "expected the clean worktree to be proposed for registered-worktree removal: {clean_detail}"
     );
     assert!(dirty_wt.exists(), "dry-run must never delete the dirty worktree");
     assert!(
@@ -846,6 +843,9 @@ fn no_agent_worktrees_reports_nothing_to_clean() -> Result<()> {
 
     let (ok, output) = run_xtask_cleanup(&repo, false, None)?;
     assert!(ok, "dry-run on a repo with no agent worktrees must exit 0: {output}");
-    assert!(!output.contains(".claude"), "expected an explicit nothing-to-clean message: {output}");
+    assert!(
+        output.contains("summary:") && !output.contains(".claude"),
+        "expected a rendered plan with no managed-worktree entries: {output}"
+    );
     Ok(())
 }
