@@ -374,18 +374,28 @@ void test('the orchestrator reads the child receipt where the child writes it', 
   // (firstHourReceipt.test.ts receiptsDir). A flat lookup here silently turns
   // every hosted run not_proven — the 0490e2962 smoke failure.
   const { childReceiptPath } = require('./run-local-vsix-smoke');
-  const resolved = childReceiptPath();
-  assert.ok(resolved.endsWith(path.join('first_hour_vscode_receipt.json')));
-  assert.match(
-    resolved,
-    /(hosted-linux-current-source|local-current-source|first-hour)/,
-    'child receipt path must include the source-label leg',
-  );
-  assert.match(
-    resolved,
-    /(linux|macos|windows)/,
-    'child receipt path must include the platform leg',
-  );
+  const priorRoot = process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+  const priorLabel = process.env.PERL_LSP_SMOKE_SOURCE_LABEL;
+  process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = '/fixture/receipts-root';
+  process.env.PERL_LSP_SMOKE_SOURCE_LABEL = 'unique-test-label';
+  try {
+    const platformLeg =
+      { win32: 'windows', darwin: 'macos', linux: 'linux' }[process.platform] ?? process.platform;
+    assert.equal(
+      childReceiptPath(),
+      path.join(
+        '/fixture/receipts-root',
+        'unique-test-label',
+        platformLeg,
+        'first_hour_vscode_receipt.json',
+      ),
+    );
+  } finally {
+    if (priorRoot === undefined) delete process.env.PERL_LSP_SMOKE_RECEIPTS_DIR;
+    else process.env.PERL_LSP_SMOKE_RECEIPTS_DIR = priorRoot;
+    if (priorLabel === undefined) delete process.env.PERL_LSP_SMOKE_SOURCE_LABEL;
+    else process.env.PERL_LSP_SMOKE_SOURCE_LABEL = priorLabel;
+  }
 });
 
 const CHILD_SUBJECT = {
