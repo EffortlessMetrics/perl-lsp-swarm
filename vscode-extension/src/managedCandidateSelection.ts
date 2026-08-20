@@ -54,6 +54,16 @@ export interface ManagedHostSelectionInput {
   running_candidate_id: string | null;
 }
 
+export type ManagedHostSelectionInputValidation =
+  | {
+      valid: true;
+      value: Pick<ManagedHostSelectionInput, 'running_candidate_id'>;
+    }
+  | {
+      valid: false;
+      errors: string[];
+    };
+
 /**
  * Why a host ended up on a candidate. `restart_required` and
  * `no_compatible_candidate` are the action-required outcomes: a bare candidate
@@ -90,6 +100,115 @@ function validateGeneration(generation: number): string[] {
     return ['selection generation must be a positive integer'];
   }
   return [];
+}
+
+function validateManagedCandidateManifestRecord(manifest: unknown): string[] {
+  if (typeof manifest !== 'object' || manifest === null) {
+    return ['candidate manifest must be an object'];
+  }
+
+  const record = manifest as Partial<ManagedCandidateManifest>;
+  const errors: string[] = [];
+  if (record.schema_version !== 'managed_candidate_manifest.v1') {
+    errors.push('candidate manifest carries an unsupported schema version');
+  }
+  if (typeof record.candidate_id !== 'string') {
+    errors.push('candidate manifest must carry a string candidate id');
+  }
+  const subject = record.subject;
+  if (typeof subject !== 'object' || subject === null) {
+    errors.push('candidate manifest subject must be an object');
+  } else {
+    const candidateSubject = subject as Partial<ManagedCandidateManifest['subject']>;
+    if (typeof candidateSubject.release !== 'string') {
+      errors.push('candidate manifest release must be a string');
+    }
+    if (typeof candidateSubject.version !== 'string') {
+      errors.push('candidate manifest version must be a string');
+    }
+    if (typeof candidateSubject.target !== 'string') {
+      errors.push('candidate manifest target must be a string');
+    }
+    if (typeof candidateSubject.topology_digest !== 'string') {
+      errors.push('candidate manifest topology digest must be a string');
+    }
+    if (typeof candidateSubject.perllsp_digest !== 'string') {
+      errors.push('candidate manifest perllsp digest must be a string');
+    }
+    if (
+      typeof candidateSubject.perl_dap_digest !== 'string' &&
+      candidateSubject.perl_dap_digest !== null
+    ) {
+      errors.push('candidate manifest perl-dap digest must be a string or null');
+    }
+  }
+  const verification = record.verification;
+  if (typeof verification !== 'object' || verification === null) {
+    errors.push('candidate manifest verification must be an object');
+  } else {
+    const candidateVerification = verification as Partial<ManagedCandidateManifest['verification']>;
+    if (typeof candidateVerification.perllsp !== 'string') {
+      errors.push('candidate manifest perllsp verification must be a string');
+    }
+    if (typeof candidateVerification.perl_dap !== 'string') {
+      errors.push('candidate manifest perl-dap verification must be a string');
+    }
+    if (typeof candidateVerification.topology !== 'string') {
+      errors.push('candidate manifest topology verification must be a string');
+    }
+    if (
+      candidateVerification.provenance !== 'verified' &&
+      candidateVerification.provenance !== 'not_proven'
+    ) {
+      errors.push('candidate manifest provenance verification must be verified or not_proven');
+    }
+  }
+
+  if (errors.length > 0) {
+    return errors;
+  }
+  try {
+    return validateManagedCandidateManifest(record as ManagedCandidateManifest);
+  } catch {
+    return ['candidate manifest is not structurally valid'];
+  }
+}
+
+function validateManagedCandidateCatalogEntry(entry: unknown): string[] {
+  if (typeof entry !== 'object' || entry === null) {
+    return ['candidate catalog entry must be an object'];
+  }
+  const record = entry as Partial<ManagedCandidateCatalogEntry>;
+  const errors = record.immutable === true ? [] : ['candidate catalog entry must be immutable'];
+  errors.push(...validateManagedCandidateManifestRecord(record.manifest));
+  return errors;
+}
+
+/**
+ * Validate the host-selection envelope before the resolver interprets any of
+ * its records. The running identity is an input contract, not a resolver
+ * ranking hint: malformed identities must never flow into restart/fallback
+ * paths as if they were a real candidate.
+ */
+export function validateManagedHostSelectionInput(
+  input: unknown,
+): ManagedHostSelectionInputValidation {
+  if (typeof input !== 'object' || input === null) {
+    return { valid: false, errors: ['managed host selection input must be an object'] };
+  }
+
+  const record = input as Partial<ManagedHostSelectionInput>;
+  const runningCandidateId = record.running_candidate_id;
+  if (
+    runningCandidateId !== null &&
+    (typeof runningCandidateId !== 'string' || !isCanonicalManagedCandidateId(runningCandidateId))
+  ) {
+    return {
+      valid: false,
+      errors: ['running candidate id must be null or a canonical managed candidate'],
+    };
+  }
+  return { valid: true, value: { running_candidate_id: runningCandidateId } };
 }
 
 function validateSessionId(sessionId: string): void {
@@ -154,30 +273,51 @@ export function validateManagedCurrentSelection(
   candidates: ManagedCandidateCatalogEntry[],
 ): string[] {
   const errors: string[] = [];
+  if (typeof selection !== 'object' || selection === null) {
+    return ['current selection must be an object'];
+  }
+  const record = selection as Partial<ManagedCurrentSelection>;
   // A record deserialized from disk may claim a schema this version cannot
   // interpret; reject it rather than reading known fields off unknown bytes.
-  if (selection.schema_version !== 'managed_current_selection.v1') {
+  if (record.schema_version !== 'managed_current_selection.v1') {
     errors.push('current selection carries an unsupported schema version');
   }
-  errors.push(...validateGeneration(selection.selection_generation));
+  if (typeof record.selection_generation !== 'number') {
+    errors.push('selection generation must be a positive integer');
+  } else {
+    errors.push(...validateGeneration(record.selection_generation));
+  }
   if (
-    typeof selection.candidate_id !== 'string' ||
-    !isCanonicalManagedCandidateId(selection.candidate_id)
+    typeof record.candidate_id !== 'string' ||
+    !isCanonicalManagedCandidateId(record.candidate_id)
   ) {
     errors.push('current selection must name a canonical managed candidate');
   }
 
-  const selected = candidates.find(
-    (entry) => entry.manifest.candidate_id === selection.candidate_id,
+  if (typeof record.candidate_id !== 'string') {
+    return errors;
+  }
+
+  const catalog = Array.isArray(candidates) ? candidates : [];
+  const selected = catalog.find(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof entry.manifest === 'object' &&
+      entry.manifest !== null &&
+      entry.manifest.candidate_id === record.candidate_id,
   );
   if (!selected) {
     errors.push('current selection references an unknown candidate manifest');
     return errors;
   }
-  if (!selected.immutable) {
-    errors.push('current selection candidate must be immutable');
-  }
-  errors.push(...validateManagedCandidateManifest(selected.manifest));
+  errors.push(
+    ...validateManagedCandidateCatalogEntry(selected).map((error) =>
+      error === 'candidate catalog entry must be immutable'
+        ? 'current selection candidate must be immutable'
+        : error,
+    ),
+  );
   return errors;
 }
 
@@ -224,24 +364,45 @@ export function releaseManagedHostReference(
 export function resolveManagedCandidateForHost(
   input: ManagedHostSelectionInput,
 ): ManagedHostSelectionOutcome {
-  const candidateIds = new Set(input.candidates.map((entry) => entry.manifest.candidate_id));
-  const compatible = new Set(input.compatible_candidate_ids);
+  const inputValidation = validateManagedHostSelectionInput(input);
+  if (!inputValidation.valid) {
+    return { kind: 'no_compatible_candidate' };
+  }
+  const runningCandidateId = inputValidation.value.running_candidate_id;
+  const candidates = Array.isArray(input.candidates) ? input.candidates : [];
+  const validCandidates = candidates.filter(
+    (entry) => validateManagedCandidateCatalogEntry(entry).length === 0,
+  );
+  const candidateIds = new Set(validCandidates.map((entry) => entry.manifest.candidate_id));
+  const compatible = new Set(
+    Array.isArray(input.compatible_candidate_ids) ? input.compatible_candidate_ids : [],
+  );
+  const currentErrors = validateManagedCurrentSelection(input.current, candidates);
+  const currentCandidateId =
+    typeof input.current === 'object' && input.current !== null
+      ? (input.current as Partial<ManagedCurrentSelection>).candidate_id
+      : undefined;
+  const validCurrentId =
+    currentErrors.length === 0 && typeof currentCandidateId === 'string'
+      ? currentCandidateId
+      : null;
   const usable = (candidateId: string): boolean =>
     candidateIds.has(candidateId) && compatible.has(candidateId);
 
   // A running host remains bound to the exact candidate it already launched.
   // Moving the shared default never hot-swaps its process identity.
-  if (input.running_candidate_id !== null && usable(input.running_candidate_id)) {
-    return { kind: 'bound_running', candidate_id: input.running_candidate_id };
+  if (runningCandidateId !== null && usable(runningCandidateId)) {
+    return { kind: 'bound_running', candidate_id: runningCandidateId };
   }
 
   // Side-by-side compatibility is host-local selection only. Do not mutate the
   // global current/default record merely because an older client needs another
   // retained candidate.
-  const replacement = usable(input.current.candidate_id)
-    ? input.current.candidate_id
-    : (input.candidates.find((entry) => compatible.has(entry.manifest.candidate_id))?.manifest
-        .candidate_id ?? null);
+  const replacement =
+    validCurrentId !== null && usable(validCurrentId)
+      ? validCurrentId
+      : (validCandidates.find((entry) => compatible.has(entry.manifest.candidate_id))?.manifest
+          .candidate_id ?? null);
 
   if (replacement === null) {
     return { kind: 'no_compatible_candidate' };
@@ -250,11 +411,11 @@ export function resolveManagedCandidateForHost(
   // The host launched a candidate that is no longer in the catalog or no
   // longer compatible. Report the replacement as action-required rather than
   // returning it as if the live process were already running it.
-  if (input.running_candidate_id !== null) {
+  if (runningCandidateId !== null) {
     return { kind: 'restart_required', candidate_id: replacement };
   }
 
-  return replacement === input.current.candidate_id
+  return replacement === validCurrentId
     ? { kind: 'selected_current', candidate_id: replacement }
     : { kind: 'selected_compatible', candidate_id: replacement };
 }
@@ -263,33 +424,57 @@ export function classifyManagedCandidateRetention(
   candidateId: string,
   input: ManagedRetentionInput,
 ): ManagedCandidateRetentionClass {
+  // These records are normally produced by deserializers, but this boundary
+  // is also called by cleanup code after partial I/O.  Normalize the
+  // containers before traversing them so malformed bytes can never turn a
+  // fail-closed cleanup decision into a throw.
+  if (typeof input !== 'object' || input === null) {
+    return 'unknown_not_safe_to_delete';
+  }
+  const rawInput = input as Partial<ManagedRetentionInput>;
+  if (
+    !Array.isArray(rawInput.catalog) ||
+    !Array.isArray(rawInput.host_references) ||
+    typeof rawInput.host_references_complete !== 'boolean' ||
+    !(rawInput.compatible_retained_ids instanceof Set)
+  ) {
+    return 'unknown_not_safe_to_delete';
+  }
+  const catalog = rawInput.catalog;
+  const hostReferences = rawInput.host_references;
+
+  if (hostReferences.some((reference) => validateManagedHostReference(reference).length > 0)) {
+    return 'unknown_not_safe_to_delete';
+  }
+
   // An unreadable current-selection record cannot prove this candidate is not
   // the current default, so nothing is collectible.
-  if (input.current === null) {
+  if (rawInput.current === null || rawInput.current === undefined) {
     return 'unknown_not_safe_to_delete';
   }
   // A non-null record is not automatically authoritative: validate its
   // schema, generation, canonical identity, and catalog membership before
   // allowing any other candidate to be classified as stale.
-  if (validateManagedCurrentSelection(input.current, input.catalog).length > 0) {
+  if (validateManagedCurrentSelection(rawInput.current, catalog).length > 0) {
     return 'unknown_not_safe_to_delete';
   }
-  if (candidateId === input.current.candidate_id) {
+  if (candidateId === rawInput.current.candidate_id) {
     return 'current_default';
+  }
+
+  // Every catalog entry participates in the evidence used to decide that a
+  // candidate is stale.  A malformed entry anywhere means the enumeration is
+  // not trustworthy, even when the malformed record names another candidate.
+  // Validate the full container before the stale path; a known-invalid
+  // catalog is partial product state, not deletion authority.
+  if (catalog.some((entry) => validateManagedCandidateCatalogEntry(entry).length > 0)) {
+    return 'partial_or_invalid';
   }
 
   // A structurally invalid record means enumeration is not trustworthy. Do
   // not let a forged `released` state turn an unvalidated reference into GC
   // authority, even if its candidate id happens to match this candidate.
-  if (
-    input.host_references.some((reference) => validateManagedHostReference(reference).length > 0)
-  ) {
-    return 'unknown_not_safe_to_delete';
-  }
-
-  const references = input.host_references.filter(
-    (reference) => reference.candidate_id === candidateId,
-  );
+  const references = hostReferences.filter((reference) => reference.candidate_id === candidateId);
   if (references.some((reference) => reference.state === 'live')) {
     return 'live_referenced';
   }
@@ -301,15 +486,15 @@ export function classifyManagedCandidateRetention(
     return 'unknown_reference';
   }
   // Absence of a reference is only evidence when enumeration was exhaustive.
-  if (!input.host_references_complete) {
+  if (!rawInput.host_references_complete) {
     return 'unknown_not_safe_to_delete';
   }
-  if (input.compatible_retained_ids.has(candidateId)) {
+  if (rawInput.compatible_retained_ids.has(candidateId)) {
     return 'compatible_retained';
   }
 
-  const entry = input.catalog.find((known) => known.manifest.candidate_id === candidateId);
-  if (!entry || validateManagedCandidateManifest(entry.manifest).length > 0) {
+  const entry = catalog.find((known) => known.manifest.candidate_id === candidateId);
+  if (!entry) {
     // Half-published or invalid bytes are not proven-stale product state.
     // Leave them for an explicit repair path rather than deleting blind.
     return 'partial_or_invalid';

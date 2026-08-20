@@ -10,10 +10,12 @@ import {
   releaseManagedHostReference,
   resolveManagedCandidateForHost,
   validateManagedCurrentSelection,
+  validateManagedHostSelectionInput,
   type ManagedCandidateCatalogEntry,
   type ManagedCurrentSelection,
   type ManagedHostCandidateReference,
   type ManagedHostReferenceState,
+  type ManagedHostSelectionInput,
   type ManagedRetentionInput,
 } from '../managedCandidateSelection';
 
@@ -173,6 +175,25 @@ describe('managed candidate publication and selection', () => {
     });
   });
 
+  test('rejects malformed running candidate identities at the input boundary', () => {
+    const candidate = entry('a');
+    const current = publishManagedCurrentSelection(candidate.manifest, null);
+    for (const runningCandidateId of ['not-a-candidate-id', 42, {}]) {
+      const input = {
+        current,
+        candidates: [candidate],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: runningCandidateId,
+      } as unknown as ManagedHostSelectionInput;
+
+      expect(validateManagedHostSelectionInput(input)).toEqual({
+        valid: false,
+        errors: ['running candidate id must be null or a canonical managed candidate'],
+      });
+      expect(resolveManagedCandidateForHost(input)).toEqual({ kind: 'no_compatible_candidate' });
+    }
+  });
+
   test('selects the current candidate for a fresh host when it is usable', () => {
     const candidate = entry('a');
     const current = publishManagedCurrentSelection(candidate.manifest, null);
@@ -185,6 +206,85 @@ describe('managed candidate publication and selection', () => {
         running_candidate_id: null,
       }),
     ).toEqual({ kind: 'selected_current', candidate_id: candidate.manifest.candidate_id });
+  });
+
+  test('does not treat a current selection with an invalid schema or generation as current', () => {
+    const candidate = entry('a');
+    const valid = publishManagedCurrentSelection(candidate.manifest, null);
+    const malformed = {
+      ...valid,
+      schema_version: 'managed_current_selection.v2',
+      selection_generation: 0,
+    } as unknown as ManagedCurrentSelection;
+
+    expect(
+      resolveManagedCandidateForHost({
+        current: malformed,
+        candidates: [candidate],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'selected_compatible', candidate_id: candidate.manifest.candidate_id });
+  });
+
+  test('does not select a catalog entry with an invalid manifest schema', () => {
+    const candidate = entry('a');
+    const current = publishManagedCurrentSelection(candidate.manifest, null);
+    const malformed = {
+      ...candidate,
+      manifest: { ...candidate.manifest, schema_version: 'managed_candidate_manifest.v2' },
+    } as unknown as ManagedCandidateCatalogEntry;
+
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [malformed],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'no_compatible_candidate' });
+  });
+
+  test('does not treat forged provenance as a current managed candidate', () => {
+    const candidate = entry('a');
+    const current = publishManagedCurrentSelection(candidate.manifest, null);
+    const forged = {
+      ...candidate,
+      manifest: {
+        ...candidate.manifest,
+        verification: {
+          ...candidate.manifest.verification,
+          provenance: 'forged',
+        },
+      },
+    } as unknown as ManagedCandidateCatalogEntry;
+
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [forged],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'no_compatible_candidate' });
+  });
+
+  test('does not select a catalog entry whose identity no longer matches its subject', () => {
+    const candidate = entry('a');
+    const current = publishManagedCurrentSelection(candidate.manifest, null);
+    const malformed = {
+      ...candidate,
+      manifest: { ...candidate.manifest, candidate_id: `candidate-${'0'.repeat(64)}` },
+    } as unknown as ManagedCandidateCatalogEntry;
+
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [malformed],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'no_compatible_candidate' });
   });
 
   test('lets an older client select a compatible retained candidate without downgrading global current', () => {
@@ -478,10 +578,63 @@ describe('managed candidate publication and selection', () => {
     );
     expect(mayGarbageCollectManagedCandidate(absent.manifest.candidate_id, input)).toBe(false);
 
-    // Catalogued but the manifest no longer matches its own subject.
+    // Catalogued but the manifest no longer matches its own subject. The
+    // malformed catalog is partial product state, not deletion authority.
     expect(classifyManagedCandidateRetention(corrupt.manifest.candidate_id, input)).toBe(
       'partial_or_invalid',
     );
     expect(mayGarbageCollectManagedCandidate(corrupt.manifest.candidate_id, input)).toBe(false);
+  });
+
+  test('fails closed for malformed retention containers without throwing', () => {
+    const currentCandidate = entry('a');
+    const staleCandidate = entry('f');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    const valid = retention({
+      current,
+      catalog: [currentCandidate, staleCandidate],
+    });
+    const malformedInputs = [
+      { ...valid, catalog: null },
+      { ...valid, catalog: [currentCandidate, null] },
+      { ...valid, host_references: null },
+      { ...valid, host_references: [null] },
+      { ...valid, compatible_retained_ids: null },
+      { ...valid, host_references_complete: 'yes' },
+    ] as unknown as ManagedRetentionInput[];
+
+    for (const input of malformedInputs) {
+      expect(() =>
+        classifyManagedCandidateRetention(staleCandidate.manifest.candidate_id, input),
+      ).not.toThrow();
+      expect(['unknown_not_safe_to_delete', 'partial_or_invalid']).toContain(
+        classifyManagedCandidateRetention(staleCandidate.manifest.candidate_id, input),
+      );
+      expect(mayGarbageCollectManagedCandidate(staleCandidate.manifest.candidate_id, input)).toBe(
+        false,
+      );
+    }
+  });
+
+  test('validates every catalog entry before allowing stale GC', () => {
+    const currentCandidate = entry('a');
+    const staleCandidate = entry('f');
+    const unrelatedCandidate = entry('1');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    const malformed = {
+      ...unrelatedCandidate,
+      manifest: { ...unrelatedCandidate.manifest, schema_version: 'managed_candidate_manifest.v2' },
+    } as unknown as ManagedCandidateCatalogEntry;
+    const input = retention({
+      current,
+      catalog: [currentCandidate, staleCandidate, malformed],
+    });
+
+    expect(classifyManagedCandidateRetention(staleCandidate.manifest.candidate_id, input)).toBe(
+      'partial_or_invalid',
+    );
+    expect(mayGarbageCollectManagedCandidate(staleCandidate.manifest.candidate_id, input)).toBe(
+      false,
+    );
   });
 });
