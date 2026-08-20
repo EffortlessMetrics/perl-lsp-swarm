@@ -46,7 +46,7 @@
 
 use std::collections::BTreeSet;
 
-use perl_parser_core::pir::LexicalExtractorReceipt;
+use perl_parser_core::pir::{LexicalBindingFact, LexicalExtractorReceipt, LexicalRole};
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
     ProviderFallbackState, ProviderSurface,
@@ -155,6 +155,23 @@ pub struct PirShadowCompareReceipt {
 /// Maximum byte distance between two range starts for them to be treated as a
 /// near-match (range disagreement) rather than independent missing/extra sites.
 const RANGE_NEAR_MATCH_BYTES: usize = 2;
+
+/// Return the source range for a lexical fact, narrowing declaration anchors
+/// that include the declarator keyword (for example `my $i` in a `for` loop)
+/// to the actual variable token.  The legacy reference provider reports token
+/// ranges, so carrying the wider declaration anchor into the comparison would
+/// look like a compiler-only reference even though it is the same binding.
+fn lexical_fact_range(fact: &LexicalBindingFact) -> Option<(usize, usize)> {
+    let range = fact.source_anchor.range.as_ref()?;
+    if fact.role != LexicalRole::Write {
+        return Some((range.start, range.end));
+    }
+
+    let token_len = fact.name.sigil.len().checked_add(fact.name.name.len())?;
+    let token_start = range.end.checked_sub(token_len)?;
+    let start = token_start.max(range.start);
+    Some((start, range.end))
+}
 
 impl PirShadowCompareReceipt {
     /// Construct a refusal receipt with all counts zeroed.
@@ -299,7 +316,7 @@ pub fn shadow_references_with_pir(
         .facts
         .iter()
         .filter(|f| f.name.name == target_name && f.source_anchor.is_anchored())
-        .filter_map(|f| f.source_anchor.range.as_ref().map(|r| (r.start, r.end)))
+        .filter_map(lexical_fact_range)
         .collect();
 
     let legacy_set: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
