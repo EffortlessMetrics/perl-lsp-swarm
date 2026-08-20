@@ -29,8 +29,8 @@ enum ControlTransfer {
     RedoLoop { label: Option<String> },
 }
 
-/// Whether a statement or block can reach its next sibling, plus the terminal
-/// transfers observed when it cannot.
+/// Whether a statement or block can reach its next sibling, plus the control
+/// transfers observed on any path through it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FlowSummary {
     can_fall_through: bool,
@@ -209,11 +209,14 @@ fn summarize_node(node: &Node, diagnostics: &mut Vec<Diagnostic>) -> FlowSummary
         }
 
         NodeKind::StatementModifier { statement, condition, .. } => {
-            let _ = summarize_node(statement, diagnostics);
+            let statement_summary = summarize_node(statement, diagnostics);
             let _ = summarize_expression(condition, diagnostics);
             // Without an accepted constant-value fact, a statement modifier
-            // always retains a path that skips the controlled statement.
-            FlowSummary::falls_through()
+            // always retains a path that skips the controlled statement. Keep
+            // the controlled transfer as an alternative so a later terminal
+            // transfer (for example `last if $cond; redo;`) cannot hide a
+            // possible exit from a surrounding bare block.
+            FlowSummary { can_fall_through: true, transfers: statement_summary.transfers }
         }
         NodeKind::LabeledStatement { label, statement } => {
             let summary = summarize_node(statement, diagnostics);
@@ -328,12 +331,16 @@ fn summarize_statement_list(stmts: &[Node], diagnostics: &mut Vec<Diagnostic>) -
         } else {
             summary
         };
+        // A fallthrough summary may still carry a conditional transfer. Keep
+        // it alongside later terminal transfers so bare-block demotion can
+        // distinguish `last if $cond; redo;` from an unconditional `redo`.
+        terminal_summary.transfers.extend(summary.transfers.iter().cloned());
         if summary.can_fall_through {
-            terminal_summary = FlowSummary::falls_through();
+            terminal_summary.can_fall_through = true;
         } else {
             pending_goto_labels = summary.goto_labels();
             can_fall_through = false;
-            terminal_summary = summary;
+            terminal_summary.can_fall_through = false;
         }
     }
 
@@ -865,6 +872,28 @@ mod tests {
         let source = "{ redo; } print \"y\";";
         let diags = unreachable_diags(source);
         assert_pl406_at(source, &diags, "print \"y\"");
+    }
+
+    /// A conditional `last` can become true after `redo` restarts the bare
+    /// block. The sibling after the block is therefore reachable.
+    #[test]
+    fn conditional_last_before_redo_preserves_reachable_fallthrough() {
+        let source = r#"my $i = 0; { ++$i; last if $i > 1; redo; } print "reachable";"#;
+        let diags = unreachable_diags(source);
+        assert_eq!(
+            count_pl406(&diags),
+            0,
+            "a later conditional last can exit after redo; the sibling must remain reachable: {diags:?}"
+        );
+    }
+
+    /// The repair must not demote an unconditional `redo` merely because
+    /// conditional loop-control transfers are now preserved.
+    #[test]
+    fn unconditional_redo_after_prefix_still_closes_following_sibling() {
+        let source = r#"my $i = 0; { ++$i; redo; } print "unreachable";"#;
+        let diags = unreachable_diags(source);
+        assert_pl406_at(source, &diags, "print \"unreachable\"");
     }
 
     /// `next OUTER` inside a bare block targets the outer loop's next
