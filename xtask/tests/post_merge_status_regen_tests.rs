@@ -11,8 +11,6 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-#[cfg(unix)]
-use std::path::Path;
 use std::path::PathBuf;
 
 use serde_yaml_ng::Value;
@@ -55,9 +53,9 @@ fn workflow_dispatch_trigger(workflow: &Value) -> bool {
 
 #[cfg(unix)]
 fn assert_dispatch_loop_behavior(
-    root: &Path,
     dispatch_run: &str,
     dispatch_order: &[String],
+    branch: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::{Command, Output};
 
@@ -69,12 +67,16 @@ fn assert_dispatch_loop_behavior(
         &stub_gh,
         "#!/usr/bin/env bash\n\
          printf '%s|%s|%s|%s|%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" >> \"$GH_LOG\"\n\
+         if [ \"$#\" -ne 5 ]; then exit 2; fi\n\
          if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
     )?;
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = fs::metadata(&stub_gh)?.permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&stub_gh, permissions)?;
+    let simulation_run =
+        dispatch_run.replacen("gh workflow run", &format!("{} workflow run", stub_gh.display()), 1);
+    assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
 
     let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
         let log_path = temp_dir.path().join(log_name);
@@ -82,21 +84,33 @@ fn assert_dispatch_loop_behavior(
         let path = std::env::join_paths(
             std::iter::once(stub_dir.clone()).chain(std::env::split_paths(&existing_path)),
         )?;
-        let mut command = Command::new("bash");
+        let mut command = Command::new("/bin/bash");
         command
             .arg("-c")
-            .arg(dispatch_run)
-            .current_dir(root)
+            .arg(&simulation_run)
             .env("PATH", path)
-            .env("BRANCH", "automation/post-merge-status")
+            .env("BRANCH", branch)
             .env("GH_LOG", &log_path);
         if let Some(fail_workflow) = fail_workflow {
             command.env("FAIL_WORKFLOW", fail_workflow);
         } else {
             command.env_remove("FAIL_WORKFLOW");
         }
-        let output: Output = command.output()?;
-        let calls = fs::read_to_string(log_path)?.lines().map(str::to_owned).collect::<Vec<_>>();
+        let output: Output = command.output().map_err(|error| {
+            format!("failed to execute dispatch shell for {}: {error}", log_path.display())
+        })?;
+        let calls = fs::read_to_string(&log_path)
+            .map_err(|error| {
+                format!(
+                    "failed to read {}: {error}; stdout={}; stderr={}",
+                    log_path.display(),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+            })?
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         Ok::<_, Box<dyn std::error::Error>>((output, calls))
     };
 
@@ -108,7 +122,7 @@ fn assert_dispatch_loop_behavior(
     );
     let expected_calls = dispatch_order
         .iter()
-        .map(|workflow| format!("workflow|run|{workflow}|--ref|automation/post-merge-status"))
+        .map(|workflow| format!("workflow|run|{workflow}|--ref|{branch}"))
         .collect::<Vec<_>>();
     assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
 
@@ -284,15 +298,32 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         .get("jobs")
         .and_then(Value::as_mapping)
         .ok_or("post-merge-status.yml must declare jobs")?;
-    let dispatch_run = jobs
+    let dispatch_step = jobs
         .values()
         .filter_map(|job| job.get("steps").and_then(Value::as_sequence))
         .flat_map(|steps| steps.iter())
         .find(|step| {
             step.get("name").and_then(Value::as_str) == Some("Raise CI on the generated PR")
         })
-        .and_then(|step| step.get("run").and_then(Value::as_str))
         .ok_or("post-merge-status.yml must define the generated-PR dispatch step")?;
+    let dispatch_run = dispatch_step
+        .get("run")
+        .and_then(Value::as_str)
+        .ok_or("generated-PR dispatch step must define a shell body")?;
+    let dispatch_branch = dispatch_step
+        .get("env")
+        .and_then(Value::as_mapping)
+        .and_then(|env| {
+            env.iter().find_map(|(key, value)| match key {
+                Value::String(key) if key == "BRANCH" => value.as_str(),
+                _ => None,
+            })
+        })
+        .ok_or("generated-PR dispatch step must define BRANCH")?;
+    assert_eq!(
+        dispatch_branch, "automation/post-merge-status",
+        "generated-PR dispatch must target its automation branch"
+    );
 
     let policy_path = root.join(".ci/policies/required-checks.toml");
     let policy_text = fs::read_to_string(policy_path)?;
@@ -334,7 +365,7 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
     );
 
     #[cfg(unix)]
-    assert_dispatch_loop_behavior(&root, dispatch_run, &dispatch_order)?;
+    assert_dispatch_loop_behavior(dispatch_run, &dispatch_order, dispatch_branch)?;
 
     Ok(())
 }
