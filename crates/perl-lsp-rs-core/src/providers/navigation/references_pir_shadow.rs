@@ -166,6 +166,7 @@ fn lexical_fact_range(
     sigil: &str,
     name: &str,
     range: Option<(usize, usize)>,
+    legacy_ranges: &BTreeSet<(usize, usize)>,
 ) -> Option<(usize, usize)> {
     let (range_start, range_end) = range?;
     if role != LexicalRole::Write {
@@ -173,18 +174,15 @@ fn lexical_fact_range(
     }
 
     let token_len = sigil.len().checked_add(name.len())?;
-    // The parser's widened declaration anchors have one of these stable
-    // prefixes: `my `, `our `, `state `, `local `, or `for my ` (the latter
-    // is anchored at `my`).  Refuse to infer a token start for any other
-    // anchor shape; in particular, an anchor whose end extends beyond the
-    // declaration token must remain unchanged rather than being truncated.
-    let prefix_len = range_end.checked_sub(range_start)?.checked_sub(token_len)?;
-    if !matches!(prefix_len, 3 | 4 | 6 | 7 | 11) {
-        return Some((range_start, range_end));
-    }
-    let token_start = range_end.checked_sub(token_len)?;
-    let start = token_start.max(range_start);
-    Some((start, range_end))
+    // Declaration anchors can include a declarator keyword, but the legacy
+    // provider supplies the authoritative token range for this comparison.
+    // Narrow only when that range has the same end and exact byte length as
+    // the named binding.  This avoids numeric-prefix guesses and leaves
+    // non-terminal or otherwise ambiguous anchors unchanged.
+    let token_range = legacy_ranges.iter().copied().find(|&(start, end)| {
+        end == range_end && start >= range_start && end.checked_sub(start) == Some(token_len)
+    });
+    token_range.or(Some((range_start, range_end)))
 }
 
 impl PirShadowCompareReceipt {
@@ -325,6 +323,8 @@ pub fn shadow_references_with_pir(
         return PirShadowCompareReceipt::refused(reason);
     }
 
+    let legacy_set: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
+
     // Build the compiler set: anchored facts for `target_name` (bare name) in the target body.
     let compiler_ranges: BTreeSet<(usize, usize)> = receipt.bodies[target_body_idx]
         .facts
@@ -336,11 +336,10 @@ pub fn shadow_references_with_pir(
                 &fact.name.sigil,
                 &fact.name.name,
                 fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)),
+                &legacy_set,
             )
         })
         .collect();
-
-    let legacy_set: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
 
     let compiler_candidate_count = compiler_ranges.len();
     let legacy_candidate_count = legacy_set.len();
@@ -1104,28 +1103,57 @@ mod promote_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{PirShadowRefusalReason, evaluate_refusal, lexical_fact_range};
+    use super::{
+        PirShadowRefusalReason, evaluate_refusal,
+        lexical_fact_range as production_lexical_fact_range,
+    };
     use perl_parser_core::pir::LexicalRole;
+    use std::collections::BTreeSet;
+
+    fn narrowed(
+        role: LexicalRole,
+        sigil: &str,
+        name: &str,
+        range: Option<(usize, usize)>,
+        legacy: &[(usize, usize)],
+    ) -> Option<(usize, usize)> {
+        let legacy_ranges = legacy.iter().copied().collect::<BTreeSet<_>>();
+        production_lexical_fact_range(role, sigil, name, range, &legacy_ranges)
+    }
+
+    // Compatibility adapter for the Unicode assertions below: it supplies
+    // the authoritative token range that a parser/provider oracle would emit.
+    fn lexical_fact_range(
+        role: LexicalRole,
+        sigil: &str,
+        name: &str,
+        range: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
+        let legacy = range.and_then(|(_, end)| {
+            end.checked_sub(sigil.len().checked_add(name.len())?).map(|start| (start, end))
+        });
+        narrowed(role, sigil, name, range, legacy.as_slice())
+    }
 
     #[test]
     fn declaration_anchor_narrows_for_my_state_and_bare_prefixes() {
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "i", Some((4, 9))), Some((7, 9)));
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "x", Some((0, 5))), Some((3, 5)));
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "s", Some((0, 8))), Some((6, 8)));
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "v", Some((0, 6))), Some((4, 6)));
+        assert_eq!(narrowed(LexicalRole::Write, "$", "i", Some((4, 9)), &[(7, 9)]), Some((7, 9)));
+        assert_eq!(narrowed(LexicalRole::Write, "$", "x", Some((0, 5)), &[(3, 5)]), Some((3, 5)));
+        assert_eq!(narrowed(LexicalRole::Write, "$", "s", Some((0, 8)), &[(6, 8)]), Some((6, 8)));
+        assert_eq!(narrowed(LexicalRole::Write, "$", "v", Some((0, 6)), &[(4, 6)]), Some((4, 6)));
     }
 
     #[test]
     fn declaration_anchor_handles_sigils_and_unicode_byte_lengths() {
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "@", "xs", Some((0, 6))), Some((3, 6)));
+        assert_eq!(narrowed(LexicalRole::Write, "@", "xs", Some((0, 6)), &[(3, 6)]), Some((3, 6)));
         assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "é", Some((0, 6))), Some((3, 6)));
         assert_eq!(lexical_fact_range(LexicalRole::Write, "%", "é", Some((0, 6))), Some((3, 6)));
     }
 
     #[test]
     fn non_terminal_anchor_end_is_not_truncated() {
-        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "x", Some((0, 20))), Some((0, 20)));
-        assert_eq!(lexical_fact_range(LexicalRole::Read, "$", "x", Some((0, 20))), Some((0, 20)));
+        assert_eq!(narrowed(LexicalRole::Write, "$", "x", Some((0, 20)), &[(3, 5)]), Some((0, 20)));
+        assert_eq!(narrowed(LexicalRole::Read, "$", "x", Some((0, 20)), &[(0, 20)]), Some((0, 20)));
     }
 
     // The five refusal guards, exercised with literal arguments so the two
