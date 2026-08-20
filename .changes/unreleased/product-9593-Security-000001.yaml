@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Security
+body: The post-publish smoke test now runs its verification scripts from the commit the publish workflow actually published, or the default branch, instead of whatever ref the operator selected when dispatching. Whoever can start the workflow no longer supplies the code that decides whether a published version is installable.
+time: 2026-08-20T00:00:00Z
+custom:
+  PR: 9593
+  Slug: post-publish-smoke-proof-subject
+  Breaking: "no"

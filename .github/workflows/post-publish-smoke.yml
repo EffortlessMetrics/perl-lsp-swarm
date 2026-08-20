@@ -43,6 +43,11 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       should_run: ${{ steps.version.outputs.should_run }}
+      # The ref the smoke scripts are executed from. Never the dispatch
+      # selection: whoever can dispatch this workflow would otherwise control
+      # the code that issues the "published version is installable" verdict
+      # (#9593 finding 2).
+      subject: ${{ steps.version.outputs.subject }}
 
     steps:
       # The publish workflow writes this only after verifying the crates are
@@ -67,9 +72,14 @@ jobs:
           DISPATCH_VERSION: ${{ github.event.inputs.version }}
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RECEIPT_PATH: receipt/publication-receipt.json
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             VERSION="$DISPATCH_VERSION"
+            # A dispatch supplies a version, not a ref. Run the proof from the
+            # default branch so the operator cannot also choose the code that
+            # decides whether the published version is installable.
+            SUBJECT="$DEFAULT_BRANCH"
             SHOULD_RUN="true"
           elif [ "$EVENT_NAME" = "workflow_run" ]; then
             # Only run when the upstream publish workflow succeeded
@@ -105,6 +115,22 @@ jobs:
               echo "version=unknown" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            # The receipt records the commit the publish actually ran from, so
+            # the proof executes the same subject it is certifying. Falling back
+            # to the default branch keeps older receipts usable rather than
+            # refusing a real publication over a missing field.
+            SUBJECT="$(python3 -c '
+          import json, sys
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  print(json.load(handle).get("subject_sha", ""))
+          except Exception:
+              print("")
+          ' "$RECEIPT_PATH")"
+            if ! [[ "$SUBJECT" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::warning::Receipt carries no usable subject SHA; running the proof from ${DEFAULT_BRANCH} instead."
+              SUBJECT="$DEFAULT_BRANCH"
+            fi
             SHOULD_RUN="true"
           else
             echo "Unrecognised event: $EVENT_NAME"
@@ -120,7 +146,8 @@ jobs:
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "should_run=${SHOULD_RUN}" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: ${VERSION}"
+          echo "subject=${SUBJECT}" >> "$GITHUB_OUTPUT"
+          printf 'Resolved version %s; proof executes from %s\n' "$VERSION" "$SUBJECT"
 
   smoke:
     name: Smoke test v${{ needs.resolve-version.outputs.version }}
@@ -130,8 +157,14 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # Pinned to the resolved subject. Without `ref:` this checks out whatever
+      # the operator selected at dispatch, and `scripts/post-publish-smoke.sh`
+      # from that branch is what produces the publication verdict (#9593).
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.resolve-version.outputs.subject }}
+          persist-credentials: false
 
       - name: Setup Rust (stable)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
