@@ -36,13 +36,18 @@ deliberate release-lineage syncs, and explicitly routed emergency release fixes.
 
 ## Verification
 
+This receipt records the checks used for the historical sync. The examples are
+direct Git and repository-script invocations; the retired command wrapper is
+intentionally omitted. They preserve the original verification meaning without
+establishing a current workflow requirement.
+
 ```bash
-rtk git fetch git@github.com:EffortlessMetrics/perl-lsp.git master:refs/remotes/source/master
-rtk git rev-parse source/master
-rtk bash -lc 'MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe xtask fmt'
-rtk bash -lc 'MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe test -p perl-parser --test dead_code_detector --profile agent --locked -- --nocapture'
-rtk bash -lc 'MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe check -p perl-parser --all-targets --profile agent --locked'
-rtk bash -lc 'MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe clippy -p perl-parser --profile agent --locked -- -D warnings -A missing_docs'
-rtk git diff --check
-rtk bash -lc './scripts/storage-doctor'
+git fetch git@github.com:EffortlessMetrics/perl-lsp.git master:refs/remotes/source/master
+git rev-parse source/master
+MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe xtask fmt
+MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe test -p perl-parser --test dead_code_detector --profile agent --locked -- --nocapture
+MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe check -p perl-parser --all-targets --profile agent --locked
+MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe clippy -p perl-parser --profile agent --locked -- -D warnings -A missing_docs
+git diff --check
+./scripts/storage-doctor
 ```
