@@ -681,10 +681,9 @@ mod tests {
         let poller = thread::spawn(move || {
             while !poll_stop.load(Ordering::SeqCst) {
                 // Only try to acquire the lock while formatting is in flight.
-                if poll_active.load(Ordering::SeqCst) {
-                    if server_clone.documents.try_lock().is_some() {
-                        poll_lock.store(true, Ordering::SeqCst);
-                    }
+                if poll_active.load(Ordering::SeqCst) && server_clone.documents.try_lock().is_some()
+                {
+                    poll_lock.store(true, Ordering::SeqCst);
                 }
                 thread::sleep(Duration::from_micros(50));
             }

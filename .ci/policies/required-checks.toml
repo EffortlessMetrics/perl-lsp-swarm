@@ -1,92 +1,201 @@
-version = 1
-source = "ruleset-conventional"
+version = 2
+source = "github-enforcement-union"
 
-# `[[check]]` entries are consumed by workflow-trigger-lint for required-style
-# workflow shape. `[[checks]]` entries are the merge-ready / branch-protection
-# status context inventory; only entries with `required = true` are treated as
-# required by `cargo xtask merge-ready`.
-
-[[check]]
-  name = "CI Gate"
-  workflow = ".github/workflows/ci.yml"
-  required = true
-
+# `[[check]]` is workflow-trigger-lint input. Its `required` bit means the
+# workflow receives the required-workflow trigger contract; it does not claim
+# GitHub branch protection or ruleset enforcement.
 
 [[check]]
-  name = "Methodology Gate"
-  workflow = ".github/workflows/methodology-gate.yml"
-  required = false
+name = "CI Gate"
+workflow = ".github/workflows/ci.yml"
+required = true
+contract_role = "required-workflow-shape"
+
+[[check]]
+name = "Methodology Gate"
+workflow = ".github/workflows/methodology-gate.yml"
+required = false
+contract_role = "advisory-workflow-shape"
+
+# `[[checks]]` is the emitted status-context inventory. The fields answer
+# different questions and must not be inferred from each other:
+#
+# - producer: repository-owned workflow job or external integration
+# - workflow_result: whether a repository job propagates or continues on failure
+# - events: workflow events on which this context is expected to be reachable
+# - policy_role / required: repository merge-policy role
+# - applicability: always, conditional, planned, or not applicable
+# - enforcement: claimed classic-protection/ruleset source
+# - classic_app_id: explicit classic-protection GitHub App binding
+# - ruleset_integration_id: explicit ruleset integration binding
+#
+# Producer and enforcement binding are separate axes. Neither binding is
+# inferred from the workflow, job, producer class, or context name.
 
 [[checks]]
-  name = "Perl LSP Rust Small Result"
-  workflow = ".github/workflows/em-ci-routed-rust.yml"
-  required = true
-  enforcement = "github-branch-protection"
-  reason = "Live main protection requires the routed Rust aggregate before merge."
+name = "Perl LSP Rust Small Result"
+producer = "repository-job"
+workflow = ".github/workflows/em-ci-routed-rust.yml"
+job = "rust-small-result"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "workflow_dispatch"]
+required = true
+policy_role = "required"
+applicability = "always-or-scoped-noop"
+enforcement = "github-branch-protection"
+classic_app_id = 15368
+reason = "Live main protection requires the routed Rust aggregate before merge."
 
 [[checks]]
-  name = "ripr+ New Gap Gate"
-  workflow = ".github/workflows/ripr.yml"
-  required = true
-  enforcement = "github-branch-protection"
-  reason = "Deterministic RIPR receipts are required; named new gaps in changed production files block, while sensor availability remains advisory."
+name = "ripr+ New Gap Gate"
+producer = "repository-job"
+workflow = ".github/workflows/ripr.yml"
+job = "ripr"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "workflow_dispatch"]
+required = true
+policy_role = "required"
+applicability = "always-or-scoped-noop"
+enforcement = "github-branch-protection"
+classic_app_id = 15368
+reason = "Deterministic RIPR receipts are required; named new gaps in changed production files block, while sensor availability remains advisory."
 
 [[checks]]
-  name = "Compile All Targets (bit-rot guard)"
-  workflow = ".github/workflows/ci.yml"
-  required = true
-  enforcement = "github-ruleset"
-  reason = "Live main ruleset (id 16664791) requires all targets to compile before merge, catching integration-test and bench bit-rot."
+name = "Compile All Targets (bit-rot guard)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "check-all-targets"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = true
+policy_role = "required"
+applicability = "conditional"
+enforcement = "github-ruleset"
+reason = "Live main ruleset (id 16664791) requires all targets to compile before merge; workflow prerequisites control when the job is selected."
 
 [[checks]]
-  name = "Conflict marker check"
-  workflow = ".github/workflows/ci.yml"
-  required = true
-  enforcement = "github-ruleset"
-  reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge."
+name = "Conflict marker check"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "conflict-markers"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = true
+policy_role = "required"
+applicability = "conditional"
+enforcement = "github-ruleset"
+reason = "Live main ruleset (id 16664791) requires the conflict-marker scan job before merge; workflow prerequisites control when the job is selected."
 
 [[checks]]
-  name = "validate-title"
-  workflow = ".github/workflows/pr-title-check.yml"
-  required = true
-  enforcement = "github-ruleset"
-  reason = "Live main ruleset (id 16664791) requires PR title validation before merge."
+name = "validate-title"
+producer = "repository-job"
+workflow = ".github/workflows/pr-title-check.yml"
+job = "validate-title"
+workflow_result = "propagate"
+events = ["pull_request_target", "workflow_dispatch"]
+required = true
+policy_role = "required"
+applicability = "always-or-scoped-noop"
+enforcement = "github-ruleset"
+reason = "Live main ruleset (id 16664791) requires PR title validation before merge."
 
 [[checks]]
-  name = "Rust formatting"
-  workflow = ".github/workflows/ci.yml"
-  required = false
-  enforcement = "advisory"
-  reason = "Post-merge promotion target tracked by #6202 and #7087; live ruleset promotion is deferred until the candidate lands and merge-group evidence is current."
+name = "Rust formatting"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "rust-formatting"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "Post-merge promotion target tracked by #6202 and #7087; live ruleset promotion is deferred until the candidate lands and merge-group evidence is current."
 
 [[checks]]
-  name = "Codecov / Patch 95"
-  workflow = ".github/workflows/ci-nightly.yml"
-  required = false
-  enforcement = "advisory-nightly-or-manual"
-  reason = "Coverage is advisory and expensive; RIPR+ plus focused tests are the required PR proof."
+name = "Codecov / Patch 95"
+producer = "repository-job"
+workflow = ".github/workflows/ci-nightly.yml"
+job = "test-coverage"
+workflow_result = "propagate"
+events = ["pull_request", "schedule", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "Coverage is advisory and expensive; the workflow selects it for scheduled, manual, or labelled coverage runs."
 
 [[checks]]
-  name = "codecov/patch"
-  workflow = "codecov"
-  required = false
-  enforcement = "advisory-nightly-or-manual"
-  reason = "External Codecov telemetry may report coverage, but it must not block normal PR or merge-queue flow."
+name = "codecov/patch"
+producer = "external"
+workflow = "codecov"
+required = false
+policy_role = "informational"
+applicability = "conditional"
+enforcement = "neither"
+reason = "External Codecov telemetry is not merge authority."
 
 [[checks]]
-  name = "tokmd Review Cockpit"
-  workflow = ".github/workflows/tokmd.yml"
-  # Phase 1: advisory-only (visibility gate, no merge blocking).
-  # Promotion to required = true tracked in #4993 (Phase 2/3).
+name = "tokmd Review Cockpit"
+producer = "repository-job"
+workflow = ".github/workflows/tokmd.yml"
+job = "analyze"
+workflow_result = "propagate"
+events = ["pull_request", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "Review cockpit visibility remains advisory and is selected by label or manual dispatch."
 
 [[checks]]
-  name = "PR Smoke"
-  workflow = ".github/workflows/ci.yml"
+name = "PR Smoke (Fast Feedback, advisory)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "pr-smoke"
+workflow_result = "continue"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "The pr_fast runner may fail selected inner gates, but its containing GitHub job continues on error and is not protected."
 
 [[checks]]
-  name = "UX Regression Tests"
-  workflow = ".github/workflows/ux-regression-gate.yml"
+name = "UX Regression Tests"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "ux-tests"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "UX regression evidence is visible and contributes to the advisory CI aggregate but is not itself protected."
 
 [[checks]]
-  name = "Merge Gate"
-  workflow = ".github/workflows/ci.yml"
+name = "CI Gate (Advisory Aggregate)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "merge-gate"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "Selected deterministic contexts are promoted separately from this advisory summary."
+
+[[checks]]
+name = "Gate Enforcement Contract"
+producer = "repository-job"
+workflow = ".github/workflows/gate-enforcement-contract.yml"
+job = "contract"
+workflow_result = "propagate"
+events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "The static contract reports repository policy drift but is not yet protected by GitHub."

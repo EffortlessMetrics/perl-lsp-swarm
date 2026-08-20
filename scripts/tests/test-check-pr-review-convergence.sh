@@ -86,20 +86,39 @@ expect_case "current-change-request-blocks" 1 \
     '.converged == false and .formal_review.classification == "FINDINGS_OPEN"' \
     "submitted change request blocks"
 
+# Zero submitted human reviews must not read as "review not required". Native
+# facts converge, but the wrapper reports that in terms that still demand a
+# separate subject-bound semantic verdict.
 expect_case "all-resolved-converges" 0 \
-    '.converged == true and .formal_review.classification == "NOT_APPLICABLE" and .exact_head_review_required == false' \
-    "no native review requirement converges without a receipt"
+    '.converged == true
+     and .formal_review.classification == "NO_SUBMITTED_HUMAN_REVIEW"
+     and .submitted_human_review_count == 0
+     and .review_currentness == "NOT_PROVEN"
+     and .semantic_currentness_required == true
+     and .exact_head_review_required == false' \
+    "zero-review convergence never claims semantic currentness"
 
+# A submitted human review is a GitHub fact. The wrapper records its presence
+# and explicitly declines to classify it as substantive.
 expect_case "formal-review-current" 0 \
-    '.converged == true and .formal_review.classification == "REVIEWED" and .material_claim_receipt_required == false' \
-    "submitted useful review is classified REVIEWED"
+    '.converged == true
+     and .formal_review.classification == "SUBMITTED_REVIEW_PRESENT"
+     and .formal_review.status == "present_unclassified"
+     and .formal_review.reason == "semantic_currentness_requires_subject_bound_marker"
+     and .review_currentness == "NOT_PROVEN"
+     and .material_claim_receipt_required == false' \
+    "submitted review is recorded as a fact, not a verdict"
 
 # The fixture contains a human review submitted on an earlier candidate head.
-# The earlier conclusion remains usable; changed-seam review decides whether a
-# focused refresh is needed, not the SHA mismatch by itself.
+# The SHA mismatch alone neither invalidates that review nor establishes it: the
+# submission stays a usable observation, and semantic currentness is still
+# decided by the subject-bound verifier.
 expect_case "formal-review-stale" 0 \
-    '.converged == true and .formal_review.classification == "REVIEWED" and (.legacy_receipt_observations.stale_reviews | length) >= 1' \
-    "earlier-head human review remains usable"
+    '.converged == true
+     and .formal_review.classification == "SUBMITTED_REVIEW_PRESENT"
+     and .review_currentness == "NOT_PROVEN"
+     and (.legacy_receipt_observations.stale_reviews | length) >= 1' \
+    "earlier-head review is neither invalidated nor promoted by its SHA"
 
 # Receipt-only compatibility state cannot create liveness or a blocker.
 expect_case "review-run-receipt-still-running-blocks" 0 \
@@ -167,11 +186,33 @@ else
     fail "state helper findings projection — exit=$STATE_EXIT output=$STATE_STDOUT"
 fi
 
+# The helper inherits its parent's limit: it may report that native facts
+# converged, and it may never promote that into a substantive-review verdict.
 run_state_case "formal-review-stale"
-if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '.state == "REVIEWED" and .review_currentness == "semantic_changed_seam"' >/dev/null <<<"$STATE_STDOUT"; then
-    pass "state helper preserves useful earlier-head review"
+if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '
+      .state == "NATIVE_FACTS_CONVERGED"
+      and .formal_review_classification == "SUBMITTED_REVIEW_PRESENT"
+      and .submitted_human_review_count >= 1
+      and .review_currentness == "NOT_PROVEN"
+      and .semantic_currentness_required == true
+    ' >/dev/null <<<"$STATE_STDOUT"; then
+    pass "state helper records an earlier-head review without claiming it current"
 else
-    fail "state helper should report REVIEWED — exit=$STATE_EXIT output=$STATE_STDOUT"
+    fail "state helper should report NATIVE_FACTS_CONVERGED — exit=$STATE_EXIT output=$STATE_STDOUT"
+fi
+
+# The retired REVIEWED verdict must not reappear in any projection.
+run_state_case "all-resolved-converges"
+if [[ "$STATE_EXIT" -eq 0 ]] && jq -e '
+      .state == "NATIVE_FACTS_CONVERGED"
+      and .state != "REVIEWED"
+      and .formal_review_classification == "NO_SUBMITTED_HUMAN_REVIEW"
+      and .submitted_human_review_count == 0
+      and .review_currentness == "NOT_PROVEN"
+    ' >/dev/null <<<"$STATE_STDOUT"; then
+    pass "zero-review projection never reports REVIEWED"
+else
+    fail "state helper zero-review projection — exit=$STATE_EXIT output=$STATE_STDOUT"
 fi
 
 # The retired writer must fail before discovering or invoking gh. This catches

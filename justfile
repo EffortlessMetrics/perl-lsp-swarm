@@ -2515,10 +2515,28 @@ changelog-append:
     fi
 
 # ============================================================================
+# Dependency Hygiene (Issue #9364)
+# ============================================================================
+# Identify unused Cargo dependencies using cargo-machete (primary, V1).
+# cargo-udeps removed from active path per #9364.
+# Produces typed item-level findings: SUCCESS | POLICY_FINDING | NOT_PROVEN.
+# Never installs tools as a side effect.
+
+# Check for unused dependencies (fail closed on any finding)
+dependency-hygiene:
+    @echo "🔍 Running dependency hygiene check..."
+    @cargo xtask dependency-hygiene check
+
+# Write machine-readable JSON report (exits 0 regardless of findings)
+dependency-hygiene-report:
+    @echo "📊 Generating dependency hygiene report..."
+    @cargo xtask dependency-hygiene report
+
+# ============================================================================
 # Dead Code Detection (Issue #284)
 # ============================================================================
 # Detect unused dependencies, dead code, and unused imports/variables.
-# Uses cargo-udeps and clippy dead_code lints.
+# NOTE: dependency-unused analysis is transitioning to dependency-hygiene (#9364).
 
 # Run dead code detection (local check)
 dead-code:

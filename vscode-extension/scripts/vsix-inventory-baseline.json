@@ -1,23 +1,20 @@
 {
   "schema_version": 1,
   "total_files": 31,
-  "total_bytes": 36529989,
+  "total_bytes": 36614890,
   "files": {
-    "README.md": 25290,
     "package.nls.json": 2110,
-    "package.json": 58153,
-    "LICENSE": 1069,
+    "package.json": 58611,
     "language-configuration.json": 1010,
     "icon.png": 8358,
     "gherkin-language-configuration.json": 510,
-    "CHANGELOG.md": 19046,
     ".oxlintrc.json": 559,
     ".oxfmtrc.json": 203,
     "syntaxes/perl.tmLanguage.json": 13346,
     "syntaxes/gherkin.tmLanguage.json": 1875,
     "snippets/perl.json": 12172,
     "snippets/launch.json": 1139,
-    "out/extension.js": 1380032,
+    "out/extension.js": 1463570,
     "media/walkthrough/welcome.svg": 756,
     "media/walkthrough/verify-perl.svg": 1189,
     "media/walkthrough/try-goto-definition.svg": 1852,
@@ -33,6 +30,9 @@
     "bin/win32-x64/perllsp.exe": 17979392,
     "assets/demo-project/main.pl": 203,
     "assets/demo-project/lib/Utils.pm": 485,
-    "assets/demo-project/lib/Database.pm": 298
+    "assets/demo-project/lib/Database.pm": 298,
+    "readme.md": 25290,
+    "LICENSE.txt": 1069,
+    "changelog.md": 19951
   }
 }

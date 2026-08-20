@@ -135,7 +135,7 @@ fn test_range_formatting_preserves_simple_block_trailing_comment_3_17() -> TestR
             "textDocument": { "uri": "file:///block-comment.pl" },
             "range": {
                 "start": { "line": 0, "character": 0 },
-                "end": { "line": 0, "character": 29 }
+                "end": { "line": 0, "character": 28 }
             },
             "options": {
                 "tabSize": 4,

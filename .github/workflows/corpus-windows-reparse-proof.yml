@@ -1,0 +1,58 @@
+name: Corpus Windows reparse proof
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "crates/perl-corpus/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/corpus-windows-reparse-proof.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corpus-windows-reparse-proof-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+
+jobs:
+  windows-reparse-proof:
+    name: Windows reparse rejection
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse 'HEAD^{commit}')"
+          test "$actual_sha" = "$CANDIDATE_SHA"
+          echo "Verified candidate SHA: $actual_sha"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+          shared-key: corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run non-skipping Windows reparse proof
+        run: >-
+          cargo test --locked -p perl-corpus
+          --test strict_sectioned_loading
+          public_plain_loader_rejects_windows_reparse_point
+          -- --exact --nocapture

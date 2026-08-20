@@ -44,6 +44,7 @@ lsp-types = { workspace = true, optional = true }
 url.workspace = true
 rustc-hash = "2.1.2"
 # Core dependencies for position mapping (unconditional, all targets)
+perl-source-identity.workspace = true
 ropey.workspace = true
 
 
@@ -125,6 +126,10 @@ harness = false
 
 [[example]]
 name = "test_incremental_v2"
+required-features = ["incremental"]
+
+[[test]]
+name = "incremental_parse_snapshot"
 required-features = ["incremental"]
 
 # Edge case test examples

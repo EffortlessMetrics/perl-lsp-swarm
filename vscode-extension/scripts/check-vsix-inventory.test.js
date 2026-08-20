@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const {
   baselineForPlatform,
+  classifyInventoryViolations,
   compareInventory,
   currentSourceBundleFile,
   platformForPackagedFile,
@@ -34,6 +35,35 @@ void test('rejects package growth and inventory drift', () => {
     'new packaged file: new.js',
     'baseline packaged file is missing: old.js',
   ]);
+});
+
+void test('classifies byte-only growth separately from structural package drift', () => {
+  assert.equal(
+    classifyInventoryViolations([
+      'total bytes grew from 10 to 12',
+      'file out/extension.js grew from 8 to 10 bytes',
+    ]),
+    'size_only',
+  );
+  assert.equal(classifyInventoryViolations(['new packaged file: unexpected.exe']), 'structural');
+});
+
+void test('near-miss size messages are never classified as size-only', () => {
+  // size_only admits installed behavior through behavior_safe, so messages
+  // that merely resemble the size pattern must stay structural.
+  assert.equal(
+    classifyInventoryViolations(['file out/extension.js grew from 8 to 10']),
+    'structural',
+  );
+  assert.equal(
+    classifyInventoryViolations(['file out/extension.js grew from 8 to 10 bytes; see receipt']),
+    'structural',
+  );
+  assert.equal(classifyInventoryViolations(['total bytes grew from 10 to 12 ']), 'structural');
+});
+
+void test('classifies an unchanged inventory as pass', () => {
+  assert.equal(classifyInventoryViolations([]), 'pass');
 });
 
 void test('uses only the current platform baseline entries', () => {

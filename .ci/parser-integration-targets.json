@@ -124,6 +124,132 @@
       "reason": "Keep the parser-to-semantic consumer seam executable in the bounded merge gate.",
       "disposition": "execute",
       "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.authority",
+      "package": "perl-parser",
+      "target": "incremental_authority_contract",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6701",
+      "reason": "Prove the single incremental authority ledger contract so parser incremental ownership cannot silently fork.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.parse_output",
+      "package": "perl-parser",
+      "target": "incremental_parse_output",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6710",
+      "reason": "Prove recovery-aware ParseOutput is retained across incremental edits; previously run by a hardcoded command in run_parser_integration.py.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.lexer_restart",
+      "package": "perl-parser",
+      "target": "incremental_lexer_restart",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#6704",
+      "reason": "Prove live lexer checkpoint restart preserves token and span parity across stateful edits.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.incremental.parse_snapshot",
+      "package": "perl-parser",
+      "target": "incremental_parse_snapshot",
+      "features": [
+        "incremental"
+      ],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#7001",
+      "reason": "Prove generation-bound ParseSnapshot identity, disposition, and validation across committed incremental generations.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.concepts.magic_token_arguments",
+      "package": "perl-parser-core",
+      "target": "concept_magic_token_arguments",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#11787",
+      "reason": "Prove magic-token (compile-time builtins __FILE__, __LINE__, __PACKAGE__, __SUB__, __CLASS__) argument-boundary contracts: they emit nullary FunctionCall nodes except in fat-arrow key position where the fat-arrow autoquotes them to String.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.concepts.magic_token_fat_arrow_pairs",
+      "package": "perl-parser-core",
+      "target": "concept_magic_token_fat_arrow_pairs",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#11787",
+      "reason": "Prove exact fat-arrow key/value node kinds and source-geometry for magic-token hash pairs: keys are autoquoted String nodes, values in value position remain nullary FunctionCall nodes.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.literals.structural",
+      "package": "perl-parser-core",
+      "target": "literal_structural_tests",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#11787",
+      "reason": "Prove numeric, string, array, and hash literals retain their structural AST children, node kinds, interpolation flags, and source spans.",
+      "disposition": "execute",
+      "boundedness": "focused"
+    },
+    {
+      "id": "parser.ripr.seam_proof",
+      "package": "perl-parser-core",
+      "target": "ripr_seam_proof_parser",
+      "features": [],
+      "no_default_features": false,
+      "cargo_args": [],
+      "test_args": [
+        "--test-threads=4"
+      ],
+      "owner": "#11787",
+      "reason": "Execute the full ripr seam-proof suite for the parser (seams 1-5): class version, builtin ternary, dollar-deref, substitution e-modifier, and related boundaries.",
+      "disposition": "execute",
+      "boundedness": "focused"
     }
   ]
 }
