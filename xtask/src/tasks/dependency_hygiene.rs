@@ -880,16 +880,16 @@ mod tests {
 
     // ── Negative control #6: intentional retention via tool-native ignores ─────
 
-    /// Documents the mechanism for intentionally retained dependencies.
-    ///
-    /// cargo-machete supports `.cargo-machete.toml` per-crate ignore files
-    /// as its official exception mechanism. Suppression does not occur in
-    /// this module — it occurs upstream in the tool configuration.
-    /// The limitation text in each finding documents the false-positive risk.
+    // Documents the mechanism for intentionally retained dependencies.
+    //
+    // cargo-machete supports `.cargo-machete.toml` per-crate ignore files
+    // as its official exception mechanism. Suppression does not occur in
+    // this module — it occurs upstream in the tool configuration.
+    // The limitation text in each finding documents the false-positive risk.
     // ── Primary instrument attribution ─────────────────────────────────────────
 
-    /// Every parsed finding identifies the primary cargo-machete instrument.
-    /// This does not exercise a cargo-udeps subprocess or override path.
+    // Every parsed finding identifies the primary cargo-machete instrument.
+    // This does not exercise a cargo-udeps subprocess or override path.
     // ── Missing-tool probe classification ─────────────────────────────────────
 
     /// A missing probe binary is never treated as an available instrument.

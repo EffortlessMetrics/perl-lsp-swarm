@@ -51,17 +51,6 @@ enum EvidenceStatus {
     NotProven,
 }
 
-impl EvidenceStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Pass => "pass",
-            Self::Limited => "limited",
-            Self::Blocked => "blocked",
-            Self::NotProven => "not_proven",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum FreezeRecommendation {

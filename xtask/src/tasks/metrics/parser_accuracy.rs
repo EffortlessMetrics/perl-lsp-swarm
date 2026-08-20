@@ -8341,9 +8341,11 @@ sub dynamic_boundary_case {
 
     #[test]
     fn symbol_metrics_emit_measured_kind_rows() {
-        let mut score = SymbolScore::default();
-        score.entity_expected_count = 1;
-        score.entity_true_positive_count = 1;
+        let mut score = SymbolScore {
+            entity_expected_count: 1,
+            entity_true_positive_count: 1,
+            ..Default::default()
+        };
         score.entity_by_kind.insert(
             "Package".to_string(),
             KindScore {

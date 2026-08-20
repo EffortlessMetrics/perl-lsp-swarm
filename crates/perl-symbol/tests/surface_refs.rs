@@ -561,15 +561,18 @@ fn static_typeglob_is_still_emitted_after_dynamic_fix() -> Result<()> {
 
 #[test]
 fn qualified_coderef_targets_preserve_full_symbol_identity() -> Result<()> {
+    // `goto &Package::method` is 21 bytes; the `&Package::method` target is 16.
+    // The coderef classifier recognises the parser's ampersand form by span
+    // length (name + 1), so a 17-byte target span is an ordinary call.
     let goto_package = Node::new(
         NodeKind::Goto {
             target: Box::new(Node::new(
                 NodeKind::FunctionCall { name: "Package::method".to_string(), args: vec![] },
-                loc(5, 22),
+                loc(5, 21),
             )),
             form: GotoTargetForm::Sub,
         },
-        loc(0, 22),
+        loc(0, 21),
     );
     let backslash_qualified = Node::new(
         NodeKind::Unary {
