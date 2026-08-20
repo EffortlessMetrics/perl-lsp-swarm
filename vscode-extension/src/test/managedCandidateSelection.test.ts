@@ -362,10 +362,7 @@ describe('managed candidate publication and selection', () => {
     const currentCandidate = entry('a');
     const staleCandidate = entry('f');
     const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
-    const valid = createManagedHostReference(
-      'session-valid',
-      staleCandidate.manifest.candidate_id,
-    );
+    const valid = createManagedHostReference('session-valid', staleCandidate.manifest.candidate_id);
     const badSession = { ...valid, session_id: '../escape' };
     const badCandidate = { ...valid, candidate_id: 'candidate-not-a-digest' };
 
