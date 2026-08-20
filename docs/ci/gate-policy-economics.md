@@ -75,7 +75,7 @@ Lanes without any gate mapping today: `pr_plan`, `draft_guard`, `preflight_lates
 `.ci/gate-policy.yaml` entry (workflow-level controls, not gates) or run under
 standalone workflows.
 
-The two lists above partition the lane set: 15 mapped + 9 unmapped = 24 lanes,
+The two lists above partition the lane set: 14 mapped + 10 unmapped = 24 lanes,
 matching the count block. Both are checkable against
 `scripts/ci/validate_gate_lane_mapping.py` and `policy/ci-lanes.toml`; if the
 arithmetic stops reconciling, this page has drifted from its stated authority.
