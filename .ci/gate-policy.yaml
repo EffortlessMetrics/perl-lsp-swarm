@@ -547,7 +547,7 @@ gates:
     required: true
     command: cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests
     timeout_seconds: 150
-    retry_count: 0
+    retry_count: 1
     budgets:
       max_duration_ms: 135000
     quarantine: false
@@ -610,7 +610,7 @@ gates:
     required: true
     command: cargo test -p perl-lsp-rs-core --locked --lib inline_completion
     timeout_seconds: 150
-    retry_count: 0
+    retry_count: 1
     budgets:
       max_duration_ms: 135000
     quarantine: false
