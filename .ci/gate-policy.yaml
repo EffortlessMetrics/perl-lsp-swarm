@@ -770,7 +770,8 @@ gates:
     # This gate covers a kernel cohort of crates confirmed clean under `--all-targets`
     # after addressing the concrete findings documented in #11736. The cohort is
     # additive: add crates here only after they pass the command below locally.
-    # Dirty crates (e.g. perl-parser-core, perl-pod, perl-dap) are tracked on #11736.
+    # This is a scoped cohort assertion, not an exhaustive workspace clean/dirty census.
+    # Other crates and the current measured census are tracked on #11736.
     #
     # This gate is executed by the advisory PR Smoke job, like the other pr_fast
     # gates. `required: true` makes the pr_fast runner fail on a violation; it
