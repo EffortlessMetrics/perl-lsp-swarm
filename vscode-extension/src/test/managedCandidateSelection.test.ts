@@ -557,10 +557,63 @@ describe('managed candidate publication and selection', () => {
     );
     expect(mayGarbageCollectManagedCandidate(absent.manifest.candidate_id, input)).toBe(false);
 
-    // Catalogued but the manifest no longer matches its own subject.
+    // Catalogued but the manifest no longer matches its own subject. The
+    // malformed catalog is partial product state, not deletion authority.
     expect(classifyManagedCandidateRetention(corrupt.manifest.candidate_id, input)).toBe(
       'partial_or_invalid',
     );
     expect(mayGarbageCollectManagedCandidate(corrupt.manifest.candidate_id, input)).toBe(false);
+  });
+
+  test('fails closed for malformed retention containers without throwing', () => {
+    const currentCandidate = entry('a');
+    const staleCandidate = entry('f');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    const valid = retention({
+      current,
+      catalog: [currentCandidate, staleCandidate],
+    });
+    const malformedInputs = [
+      { ...valid, catalog: null },
+      { ...valid, catalog: [currentCandidate, null] },
+      { ...valid, host_references: null },
+      { ...valid, host_references: [null] },
+      { ...valid, compatible_retained_ids: null },
+      { ...valid, host_references_complete: 'yes' },
+    ] as unknown as ManagedRetentionInput[];
+
+    for (const input of malformedInputs) {
+      expect(() =>
+        classifyManagedCandidateRetention(staleCandidate.manifest.candidate_id, input),
+      ).not.toThrow();
+      expect(['unknown_not_safe_to_delete', 'partial_or_invalid']).toContain(
+        classifyManagedCandidateRetention(staleCandidate.manifest.candidate_id, input),
+      );
+      expect(mayGarbageCollectManagedCandidate(staleCandidate.manifest.candidate_id, input)).toBe(
+        false,
+      );
+    }
+  });
+
+  test('validates every catalog entry before allowing stale GC', () => {
+    const currentCandidate = entry('a');
+    const staleCandidate = entry('f');
+    const unrelatedCandidate = entry('1');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    const malformed = {
+      ...unrelatedCandidate,
+      manifest: { ...unrelatedCandidate.manifest, schema_version: 'managed_candidate_manifest.v2' },
+    } as unknown as ManagedCandidateCatalogEntry;
+    const input = retention({
+      current,
+      catalog: [currentCandidate, staleCandidate, malformed],
+    });
+
+    expect(classifyManagedCandidateRetention(staleCandidate.manifest.candidate_id, input)).toBe(
+      'partial_or_invalid',
+    );
+    expect(mayGarbageCollectManagedCandidate(staleCandidate.manifest.candidate_id, input)).toBe(
+      false,
+    );
   });
 });

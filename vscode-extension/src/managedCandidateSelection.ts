@@ -382,33 +382,57 @@ export function classifyManagedCandidateRetention(
   candidateId: string,
   input: ManagedRetentionInput,
 ): ManagedCandidateRetentionClass {
+  // These records are normally produced by deserializers, but this boundary
+  // is also called by cleanup code after partial I/O.  Normalize the
+  // containers before traversing them so malformed bytes can never turn a
+  // fail-closed cleanup decision into a throw.
+  if (typeof input !== 'object' || input === null) {
+    return 'unknown_not_safe_to_delete';
+  }
+  const rawInput = input as Partial<ManagedRetentionInput>;
+  if (
+    !Array.isArray(rawInput.catalog) ||
+    !Array.isArray(rawInput.host_references) ||
+    typeof rawInput.host_references_complete !== 'boolean' ||
+    !(rawInput.compatible_retained_ids instanceof Set)
+  ) {
+    return 'unknown_not_safe_to_delete';
+  }
+  const catalog = rawInput.catalog;
+  const hostReferences = rawInput.host_references;
+
+  if (hostReferences.some((reference) => validateManagedHostReference(reference).length > 0)) {
+    return 'unknown_not_safe_to_delete';
+  }
+
   // An unreadable current-selection record cannot prove this candidate is not
   // the current default, so nothing is collectible.
-  if (input.current === null) {
+  if (rawInput.current === null || rawInput.current === undefined) {
     return 'unknown_not_safe_to_delete';
   }
   // A non-null record is not automatically authoritative: validate its
   // schema, generation, canonical identity, and catalog membership before
   // allowing any other candidate to be classified as stale.
-  if (validateManagedCurrentSelection(input.current, input.catalog).length > 0) {
+  if (validateManagedCurrentSelection(rawInput.current, catalog).length > 0) {
     return 'unknown_not_safe_to_delete';
   }
-  if (candidateId === input.current.candidate_id) {
+  if (candidateId === rawInput.current.candidate_id) {
     return 'current_default';
+  }
+
+  // Every catalog entry participates in the evidence used to decide that a
+  // candidate is stale.  A malformed entry anywhere means the enumeration is
+  // not trustworthy, even when the malformed record names another candidate.
+  // Validate the full container before the stale path; a known-invalid
+  // catalog is partial product state, not deletion authority.
+  if (catalog.some((entry) => validateManagedCandidateCatalogEntry(entry).length > 0)) {
+    return 'partial_or_invalid';
   }
 
   // A structurally invalid record means enumeration is not trustworthy. Do
   // not let a forged `released` state turn an unvalidated reference into GC
   // authority, even if its candidate id happens to match this candidate.
-  if (
-    input.host_references.some((reference) => validateManagedHostReference(reference).length > 0)
-  ) {
-    return 'unknown_not_safe_to_delete';
-  }
-
-  const references = input.host_references.filter(
-    (reference) => reference.candidate_id === candidateId,
-  );
+  const references = hostReferences.filter((reference) => reference.candidate_id === candidateId);
   if (references.some((reference) => reference.state === 'live')) {
     return 'live_referenced';
   }
@@ -420,15 +444,15 @@ export function classifyManagedCandidateRetention(
     return 'unknown_reference';
   }
   // Absence of a reference is only evidence when enumeration was exhaustive.
-  if (!input.host_references_complete) {
+  if (!rawInput.host_references_complete) {
     return 'unknown_not_safe_to_delete';
   }
-  if (input.compatible_retained_ids.has(candidateId)) {
+  if (rawInput.compatible_retained_ids.has(candidateId)) {
     return 'compatible_retained';
   }
 
-  const entry = input.catalog.find((known) => known.manifest.candidate_id === candidateId);
-  if (!entry || validateManagedCandidateManifest(entry.manifest).length > 0) {
+  const entry = catalog.find((known) => known.manifest.candidate_id === candidateId);
+  if (!entry) {
     // Half-published or invalid bytes are not proven-stale product state.
     // Leave them for an explicit repair path rather than deleting blind.
     return 'partial_or_invalid';
