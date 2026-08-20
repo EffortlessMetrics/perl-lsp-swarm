@@ -293,12 +293,15 @@ jobs:
 
       - name: Select PR Smoke Cargo target
         shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           if [ -d /mnt ] && sudo mkdir -p /mnt/perl-lsp-swarm && sudo chown "$USER" /mnt/perl-lsp-swarm; then
-            target_dir="/mnt/perl-lsp-swarm/pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            target_dir="/mnt/perl-lsp-swarm/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
           else
-            target_dir="${RUNNER_TEMP:-$PWD/target}/cargo-target/pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            target_dir="${RUNNER_TEMP:-$PWD/target}/cargo-target/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
           fi
           mkdir -p "$target_dir"
           echo "CARGO_TARGET_DIR=$target_dir" >> "$GITHUB_ENV"
@@ -311,9 +314,12 @@ jobs:
       - name: Determine inline-completion warm-up scope
         id: inline-completion-scope
         shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          scope_json="${RUNNER_TEMP}/pr-smoke-ci-scope-${{ github.run_id }}-${{ github.run_attempt }}.json"
+          scope_json="${RUNNER_TEMP}/pr-smoke-ci-scope-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}.json"
           warm_inline_completion=true
 
           if ! "$CARGO_TARGET_DIR/debug/xtask" ci-scope --base origin/main --format json > "$scope_json"; then
@@ -335,7 +341,7 @@ jobs:
                 warm_inline_completion=false
                 ;;
               code|mixed)
-                if ! relevant="$(jq -er '
+                if ! relevant="$(jq -r '
                   [
                     .direct_crates[]?.name,
                     .reverse_dep_closure[]?.name,

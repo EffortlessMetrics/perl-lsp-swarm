@@ -46,6 +46,12 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
         "PR Smoke must persist its cargo target for the shared gate runner"
     );
     assert!(
+        target_step.contains("PR_SMOKE_RUN_ID: ${{ github.run_id }}")
+            && target_step.contains("PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}")
+            && target_step.contains("pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"),
+        "PR Smoke must pass run identity through step env into the cargo target path"
+    );
+    assert!(
         smoke.contains("\"$CARGO_TARGET_DIR/debug/xtask\" gates --tier pr-fast"),
         "PR Smoke must invoke the warmed xtask from its selected cargo target"
     );
@@ -55,10 +61,24 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
             && scope_step.contains(
                 "\"$CARGO_TARGET_DIR/debug/xtask\" ci-scope --base origin/main --format json"
             )
-            && scope_step.contains("warm_inline_completion=true")
-            && scope_step.contains("warm_inline_completion=$warm_inline_completion\" >> \"$GITHUB_OUTPUT\"")
             && scope_step.contains("fail-closed"),
         "PR Smoke must use the warmed xtask's ci-scope JSON with fail-closed warm-up fallback"
+    );
+    assert!(
+        scope_step.contains("PR_SMOKE_RUN_ID: ${{ github.run_id }}")
+            && scope_step.contains("PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}")
+            && scope_step
+                .contains("pr-smoke-ci-scope-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}.json"),
+        "PR Smoke must pass run identity through step env into the temporary scope path"
+    );
+    assert!(
+        scope_step.contains("warm_inline_completion=true"),
+        "PR Smoke must default inline-completion warm-up to enabled"
+    );
+    assert!(
+        scope_step
+            .contains("warm_inline_completion=$warm_inline_completion\" >> \"$GITHUB_OUTPUT\""),
+        "PR Smoke must publish the inline-completion warm-up decision"
     );
     let warm_targets_start = must_some(smoke.find("- name: Warm inline-completion test targets"));
     let run_start = must_some(smoke.find("- name: Run PR-fast via shared xtask gate runner"));
@@ -72,7 +92,8 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
     );
     let warm_targets = must_some(workflow_step(smoke, "Warm inline-completion test targets"));
     assert!(
-        warm_targets.contains("if: steps.inline-completion-scope.outputs.warm_inline_completion == 'true'"),
+        warm_targets
+            .contains("if: steps.inline-completion-scope.outputs.warm_inline_completion == 'true'"),
         "PR Smoke must condition inline-completion warm-up on the fail-closed scope decision"
     );
     for command in [
