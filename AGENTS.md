@@ -236,6 +236,9 @@ Otherwise detect, explain, repair, and continue.
 
 ## Repository hygiene and local proof
 
+- use direct PowerShell, Git, GitHub, Cargo, and repository commands for local
+  work; do not require a token-saving command wrapper or wrapper initialization;
+- preserve the direct command and its relevant output in evidence and handoffs;
 - read nearest package-local owner guidance before modifying an owning crate;
 - production code must not use `unwrap`, `expect`, `panic!`, `todo!`,
   `unimplemented!`, `abort`, or `dbg!` outside documented narrow exceptions;
