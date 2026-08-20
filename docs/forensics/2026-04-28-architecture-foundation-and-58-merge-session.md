@@ -124,15 +124,15 @@ The session confirmed the pattern from `feedback_master_bitrot_cascade_8plus_pat
 
 Cross-reference: `docs/reference/FAILURE_MODES.md`, `docs/reference/CI_ARCHITECTURE.md`.
 
-### 7. rtk's `gh pr checks` masks aggregator failures
+### 7. Filtered check output masks aggregator failures
 
-During ops merge preparation, the `rtk gh pr checks` output showed all checks green for a PR that the raw GitHub API reported as having failing checks. The rtk wrapper was filtering the output to show only the most recent check result per check name, but it was applying that filter in a way that could show a stale passing result over a current failing one.
+During ops merge preparation, a filtered `gh pr checks` summary showed all checks green for a PR that the raw GitHub API reported as having failing checks. The command wrapper was filtering the output to show only the most recent check result per check name, but it was applying that filter in a way that could show a stale passing result over a current failing one.
 
 The PR was nearly merged in this state. The issue surfaced when the raw `gh pr view --json statusCheckRollup` was queried directly, which showed the correct current state.
 
-The operational fix: always verify mergeable state against the raw `statusCheckRollup` before merge, not against the rtk-filtered output. The rtk output is useful for navigating the check list but should not be trusted as the final word on go/no-go for merge.
+The operational fix: always verify mergeable state against the raw `statusCheckRollup` before merge, not against filtered output. The raw rollup is the only authoritative go/no-go evidence for merge.
 
-Issue #7127 was filed to track the rtk filter calibration problem.
+Issue #7127 was filed to track the filtered-check calibration problem.
 
 ### 8. Spec quality determines builder course-correction count
 
@@ -226,7 +226,7 @@ Seven BDD cluster PRs remain unmerged. The bundle-PR strategy from issue #7129 d
 
 Seven entries were added to project memory during or immediately after the session. Referenced by canonical name:
 
-- `feedback_rtk_gh_pr_checks_masks_failures` — rtk filter masks aggregator failures; always use raw statusCheckRollup for go/no-go
+- `feedback_filtered_gh_pr_checks_masks_failures` — filtered check output masks aggregator failures; always use raw statusCheckRollup for go/no-go
 - `feedback_spec_pseudocode_prevents_course_corrections` — pseudo-code + worked examples in specs prevent mid-implementation discoveries; quantified at 2-3x cost multiplier
 - `feedback_cascade_conflict_dominant_cost` — doc waves into shared files produce O(N) conflicts; sequence same-file PRs
 - `feedback_haiku_bounded_mission_framing` — haiku is capable on bounded verification; the six-element mission frame unlocks it
@@ -261,7 +261,7 @@ Follow-up issues filed (selected):
 - `#7113` — receipt schema `review` variant bug
 - `#7120` — reconciler SKIPPED check handling
 - `#7126` — cascade conflict hotspot sequencing
-- `#7127` — rtk `gh pr checks` aggregator masking
+- `#7127` — filtered `gh pr checks` aggregator masking
 - `#7128` — spec pseudo-code requirement for state-machine implementations
 - `#7129` — BDD cluster bundle-PR strategy
 - `#6847` — parser corpus ratchet parallelization (user-owned)

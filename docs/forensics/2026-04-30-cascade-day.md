@@ -57,7 +57,7 @@ PR #7611's first CI run literally proved its own feature: when PR Smoke got SIGT
 ## Friction encountered
 
 - **Windows MAX_PATH** blocked worktree spawn on `lsp_workspace_completion_tests__workspace_completion_qualified_data_processor.snap`. Forced gh-API-only path for nearly all agents; the few that needed a local checkout shared the main checkout and bumped into each other (concurrent branch-switching contamination).
-- **rtk-shimmed `gh pr checks`** masked aggregator failures — `UNSTABLE` mergeStateStatus + raw `statusCheckRollup` filter (excluding tokmd advisory) was the only reliable green-check predicate.
+- **Filtered `gh pr checks` output** masked aggregator failures — `UNSTABLE` mergeStateStatus + raw `statusCheckRollup` filter (excluding tokmd advisory) was the only reliable green-check predicate.
 - **Task tracker hooks** kept reverting status updates, so the in-conversation task list went stale. Worked around by reading PR labels directly.
 
 ## Substrate landed

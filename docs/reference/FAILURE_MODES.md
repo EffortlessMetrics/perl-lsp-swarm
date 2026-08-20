@@ -248,7 +248,7 @@ Memory references point to `C:\Users\<user>\.claude\projects\H--Code-Rust-perl-l
 
 **Prevention**: Ops agents must use direct rollup queries, not filtered summaries, for merge-readiness decisions. Document this in the ops prompt: summaries are for navigation, not merge gates.
 
-**Memory**: `feedback_rtk_pr_checks_masks_failures.md`
+**Memory**: historical filtered-check summary incident note
 
 **Example PRs**: #7016 (a filtered summary reported "Passed: 14, Failed: 0"; the raw rollup showed `CI Gate FAILURE` on the latest SHA)
 
