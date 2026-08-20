@@ -35,7 +35,10 @@ fn operational_docs_do_not_recommend_retired_command_wrapper()
                 continue;
             }
 
-            for (line_number, line) in fs::read_to_string(path)?.lines().enumerate() {
+            let contents = fs::read_to_string(path).map_err(|error| {
+                std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+            })?;
+            for (line_number, line) in contents.lines().enumerate() {
                 if contains_word(line, "rtk") {
                     violations.push(format!(
                         "{}:{}: {}",
@@ -48,6 +51,7 @@ fn operational_docs_do_not_recommend_retired_command_wrapper()
         }
     }
 
+    violations.sort();
     assert!(
         violations.is_empty(),
         "operational documentation must use direct commands and must not recommend the retired wrapper:\n{}",
@@ -60,4 +64,13 @@ fn operational_docs_do_not_recommend_retired_command_wrapper()
 fn contains_word(line: &str, word: &str) -> bool {
     line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
         .any(|token| token.eq_ignore_ascii_case(word))
+}
+
+#[test]
+fn contains_word_matches_standalone_case_insensitively() {
+    assert!(contains_word("rtk", "rtk"));
+    assert!(contains_word("RTK-command", "rtk"));
+    assert!(!contains_word("rtk_command", "rtk"));
+    assert!(!contains_word("rtk2", "rtk"));
+    assert!(!contains_word("myrtk", "rtk"));
 }
