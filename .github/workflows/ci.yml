@@ -327,9 +327,13 @@ jobs:
           elif ! diff_class="$(jq -er '
             if type != "object" or (.diff_class | type) != "string" or
                (.direct_crates | type) != "array" or
+               (any(.direct_crates[]?; type != "object" or (.name | type) != "string")) or
                (.reverse_dep_closure | type) != "array" or
+               (any(.reverse_dep_closure[]?; type != "object" or (.name | type) != "string")) or
                (.architecture_wideners | type) != "array" or
-               (.selected_lanes | type) != "array"
+               (any(.architecture_wideners[]?; type != "object" or (.name | type) != "string")) or
+               (.selected_lanes | type) != "array" or
+               (any(.selected_lanes[]?; type != "object" or (.scope | type) != "array" or any(.scope[]?; type != "string")))
             then error("invalid ci-scope JSON")
             else .diff_class
             end

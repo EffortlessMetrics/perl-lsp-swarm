@@ -64,6 +64,24 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
             && scope_step.contains("fail-closed"),
         "PR Smoke must use the warmed xtask's ci-scope JSON with fail-closed warm-up fallback"
     );
+    for validation in [
+        "any(.direct_crates[]?; type != \"object\" or (.name | type) != \"string\")",
+        "any(.reverse_dep_closure[]?; type != \"object\" or (.name | type) != \"string\")",
+        "any(.architecture_wideners[]?; type != \"object\" or (.name | type) != \"string\")",
+        "any(.selected_lanes[]?; type != \"object\" or (.scope | type) != \"array\" or any(.scope[]?; type != \"string\"))",
+    ] {
+        assert!(
+            scope_step.contains(validation),
+            "PR Smoke ci-scope schema must reject malformed nested data: {validation}"
+        );
+    }
+    assert!(
+        scope_step.contains("code|mixed")
+            && scope_step.contains("jq -r '")
+            && scope_step.contains("any(. == \"perl-lsp-rs\" or . == \"perl-lsp-rs-core\")")
+            && scope_step.contains("elif [ \"$relevant\" = \"false\" ]"),
+        "PR Smoke must evaluate code/mixed relevance while retaining fail-closed jq fallback"
+    );
     assert!(
         scope_step.contains("PR_SMOKE_RUN_ID: ${{ github.run_id }}")
             && scope_step.contains("PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}")
@@ -476,7 +494,11 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         })
         .find_map(
             |(offset, line)| {
-                if line.trim_start().starts_with("- name:") { Some(offset) } else { None }
+                if line.trim_start().starts_with("- name:") {
+                    Some(offset)
+                } else {
+                    None
+                }
             },
         )
         .unwrap_or(rest.len());
