@@ -224,6 +224,30 @@ describe('managed candidate publication and selection', () => {
     ).toEqual({ kind: 'no_compatible_candidate' });
   });
 
+  test('does not treat forged provenance as a current managed candidate', () => {
+    const candidate = entry('a');
+    const current = publishManagedCurrentSelection(candidate.manifest, null);
+    const forged = {
+      ...candidate,
+      manifest: {
+        ...candidate.manifest,
+        verification: {
+          ...candidate.manifest.verification,
+          provenance: 'forged',
+        },
+      },
+    } as unknown as ManagedCandidateCatalogEntry;
+
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [forged],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'no_compatible_candidate' });
+  });
+
   test('does not select a catalog entry whose identity no longer matches its subject', () => {
     const candidate = entry('a');
     const current = publishManagedCurrentSelection(candidate.manifest, null);

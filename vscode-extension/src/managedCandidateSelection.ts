@@ -146,8 +146,11 @@ function validateManagedCandidateManifestRecord(manifest: unknown): string[] {
     if (typeof candidateVerification.topology !== 'string') {
       errors.push('candidate manifest topology verification must be a string');
     }
-    if (typeof candidateVerification.provenance !== 'string') {
-      errors.push('candidate manifest provenance verification must be a string');
+    if (
+      candidateVerification.provenance !== 'verified' &&
+      candidateVerification.provenance !== 'not_proven'
+    ) {
+      errors.push('candidate manifest provenance verification must be verified or not_proven');
     }
   }
 
