@@ -26,17 +26,18 @@ use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
+const FRAME_ID_MODULUS: u64 = 100_000;
+
 /// Return the authoritative frame id for the current suspension.
 ///
 /// The output reader may observe a context line followed by a prompt for the
 /// same stop, so the prompt path must preserve the generation established by
 /// the context path. A prompt without a preceding context advances the
-/// generation itself.
 fn current_stopped_frame_id(session: &mut DebugSession, advance_generation: bool) -> i32 {
     if advance_generation {
         session.stopped_generation = session.stopped_generation.saturating_add(1);
     }
-    session.stopped_generation.clamp(1, i32::MAX as u64) as i32
+    (session.stopped_generation.max(1) % FRAME_ID_MODULUS) as i32
 }
 
 impl DebugAdapter {
@@ -2315,6 +2316,29 @@ mod tests {
             return Err("next suspension reused the previous frame id".to_string());
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn generation_frame_id_wraps_inside_scope_reference_range() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+        let session = guard.as_mut().ok_or("session was not installed")?;
+        session.stopped_generation = 99_999;
+        session.state = DebugState::Running;
+
+        let near_ceiling = current_stopped_frame_id(session, true);
+        if near_ceiling != 0 {
+            return Err(format!(
+                "generation 100000 must wrap to bounded frame id 0, got {near_ceiling}"
+            ));
+        }
+        session.stopped_generation = u64::MAX;
+        let saturated = current_stopped_frame_id(session, false);
+        if saturated >= 100_000 {
+            return Err(format!("wrapped generation escaped scope frame-id range: {saturated}"));
+        }
         Ok(())
     }
 
