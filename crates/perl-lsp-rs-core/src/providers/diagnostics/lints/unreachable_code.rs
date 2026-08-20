@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn last_outer_label_in_bare_block_closes_loop_body_fallthrough() {
         // last OUTER exits the while, so "dead" never executes.
-        let source = "OUTER: while (1) { { last OUTER; } print \"dead\"; last; }";
+        let source = "OUTER: while (1) { { last OUTER; } print \"dead\"; }";
         let diags = unreachable_diags(source);
         assert_pl406_at(source, &diags, "print \"dead\"");
     }
@@ -873,7 +873,7 @@ mod tests {
     /// unreachable.
     #[test]
     fn next_outer_label_in_bare_block_closes_loop_body_fallthrough() {
-        let source = "OUTER: while (1) { { next OUTER; } print \"dead\"; last; }";
+        let source = "OUTER: while (1) { { next OUTER; } print \"dead\"; }";
         let diags = unreachable_diags(source);
         assert_pl406_at(source, &diags, "print \"dead\"");
     }
