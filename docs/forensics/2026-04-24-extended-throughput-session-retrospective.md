@@ -205,11 +205,11 @@ The cost-per-outcome curve was not flat across the session.
 
 `TaskUpdate` commits but the UI display caches stale state. Multiple times this session a `TaskUpdate` returned success but the displayed list showed the old state. Do not loop retrying `TaskUpdate`; query with `TaskGet` to verify actual state.
 
-### Retired command-wrapper hook warnings are operational tax
+### Keep command output focused
 
-The retired command wrapper produced a repeated "no hook installed" warning in
-every Bash output block. This was low individual cost but cumulative
-distraction across 50+ commands; direct commands avoid that noise.
+Unrelated shell-hook warnings add little value to verification output. This was
+low individual cost but cumulative distraction across 50+ commands; direct
+commands keep the evidence focused.
 
 ### Branch name confusion in agent push
 
