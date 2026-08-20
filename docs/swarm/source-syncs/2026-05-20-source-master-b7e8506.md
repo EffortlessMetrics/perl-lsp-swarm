@@ -36,16 +36,14 @@ deliberate release-lineage syncs, and explicitly routed emergency release fixes.
 
 ## Verification
 
-The original sync recorded commands through a retired wrapper. That historical
-transcript is intentionally not reproduced here: the direct-command equivalent
-below is the only retained verification example.
+The original sync transcript is intentionally not reproduced here: the
+direct-command equivalent below is the only retained verification example.
 
 ### Modern direct-command equivalent
 
 This receipt records the checks used for the historical sync. The examples are
-direct Git and repository-script invocations; the retired command wrapper is
-intentionally omitted. They preserve the original verification meaning without
-establishing a current workflow requirement.
+direct Git and repository-script invocations. They preserve the original
+verification meaning without establishing a current workflow requirement.
 
 ```bash
 git fetch git@github.com:EffortlessMetrics/perl-lsp.git master:refs/remotes/source/master
