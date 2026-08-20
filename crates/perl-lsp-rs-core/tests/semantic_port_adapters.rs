@@ -398,6 +398,43 @@ fn exact_empty_authority_is_derived_from_actual_envelopes() -> Result<(), Box<dy
 }
 
 #[test]
+fn file_scoped_exact_empty_requires_requested_file_coverage() -> Result<(), Box<dyn Error>> {
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+
+    let out_of_scope_file = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::File(FileId(999))),
+    )?;
+    assert_eq!(out_of_scope_file.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!out_of_scope_file.is_exact_empty());
+
+    let out_of_scope_position = execute(
+        &port,
+        &request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Position { file_id: FileId(999), byte_offset: 0 },
+        ),
+    )?;
+    assert_eq!(out_of_scope_position.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!out_of_scope_position.is_exact_empty());
+
+    // A position with no matching fact in a represented file still has a
+    // truthful exact-empty denominator.
+    let covered_position = execute(
+        &port,
+        &request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 0 },
+        ),
+    )?;
+    assert!(covered_position.is_exact_empty());
+    Ok(())
+}
+
+#[test]
 fn two_file_shards_never_collide_fact_ids() -> Result<(), Box<dyn Error>> {
     let first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
     let second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);

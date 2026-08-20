@@ -1346,6 +1346,17 @@ fn issue_completeness_grant(
     {
         return None;
     }
+    let requested_file = match &request.subject {
+        ProviderQuerySubject::File(file_id) | ProviderQuerySubject::Position { file_id, .. } => {
+            Some(*file_id)
+        }
+        _ => None,
+    };
+    if requested_file.is_some_and(|file_id| {
+        !records.iter().any(|record| record.envelope.anchor.file_id == file_id)
+    }) {
+        return None;
+    }
     let units: Vec<_> =
         records.iter().filter(|record| capability_covers(capability, record)).collect();
     if units.is_empty() {
