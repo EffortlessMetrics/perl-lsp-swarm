@@ -2,7 +2,7 @@
 
 use super::{
     DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, HashMap, SetVariableArguments,
-    SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments, Write,
+    SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments,
     is_valid_set_variable_name, json, lock_or_recover, slice_variables,
 };
 

@@ -379,6 +379,7 @@ impl DebugAdapter {
     }
 
     #[cfg(any(test, feature = "test-helpers"))]
+    /// Return the number of framed debugger queries issued by this adapter.
     pub fn debugger_query_count_for_test(&self) -> u64 {
         self.debugger_query_count.load(Ordering::Relaxed)
     }
