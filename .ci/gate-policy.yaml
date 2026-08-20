@@ -541,15 +541,26 @@ gates:
   # Replaced with four independent gates so each contract has its own receipt
   # row, timing, result class, and narrow rerun.  The gate runner continues
   # after any single failure, so all four results are always recorded.
+  # inline_completion_registration/core budgets (#11797): every pr-smoke run
+  # sets a per-run CARGO_TARGET_DIR (`pr-smoke-${run_id}-${run_attempt}`) that
+  # the shared rust-cache never sees, so each PR job compiles perl-lsp-rs and
+  # perl-lsp-rs-core from cold. Observed cold-cache wall time for these two
+  # gates sat right at the former 150s / 135000ms ceiling, producing the
+  # exit-124 bursts #11797 documents. #10023's retry warms the same per-run
+  # target directory for a second attempt, so 240s / 210000ms is the tight
+  # budget that keeps a genuine hang bounded while giving a first attempt
+  # enough headroom to reach the test binary on a cold cache. See the
+  # `inline_completion_gates_size_budget_for_cold_cache_compilation` invariant
+  # test in `xtask/src/tasks/gates.rs`.
   - name: inline_completion_registration
     tier: pr_fast
     description: "Inline-completion provider registration tests (lsp_inline_completion_registration_tests)"
     required: true
     command: cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests
-    timeout_seconds: 150
+    timeout_seconds: 240
     retry_count: 1
     budgets:
-      max_duration_ms: 135000
+      max_duration_ms: 210000
     quarantine: false
     tags:
       - test
@@ -609,10 +620,10 @@ gates:
     description: "Core inline-completion provider lib tests (perl-lsp-rs-core::inline_completion)"
     required: true
     command: cargo test -p perl-lsp-rs-core --locked --lib inline_completion
-    timeout_seconds: 150
+    timeout_seconds: 240
     retry_count: 1
     budgets:
-      max_duration_ms: 135000
+      max_duration_ms: 210000
     quarantine: false
     tags:
       - test

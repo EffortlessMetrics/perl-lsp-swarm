@@ -356,6 +356,10 @@
           "type": "integer",
           "description": "Number of files that failed to parse",
           "minimum": 0
+        },
+        "test_execution_reached": {
+          "type": "boolean",
+          "description": "For cargo-test-class gates: whether the captured log contains a `running N tests` preamble or a `test result:` summary line, proving the linked test binary began executing. False on a compile-only timeout (#11797)."
         }
       }
     },

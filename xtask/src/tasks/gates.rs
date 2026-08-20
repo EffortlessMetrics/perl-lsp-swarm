@@ -508,6 +508,13 @@ pub struct GateMetrics {
     pub memory_peak_mb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files_checked: Option<u32>,
+    /// For `cargo test`-class gates: `Some(true)` when the log shows the
+    /// standard test-binary marker (`running N tests` or a `test result:`
+    /// summary line), `Some(false)` when the command was a cargo test but no
+    /// such marker was ever produced (compile-only budget spent — the shape
+    /// #11797 asks the receipt to make explicit), `None` for non-test gates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_execution_reached: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2011,12 +2018,20 @@ fn run_single_gate(
             // Extract output summary (last 10 lines or error message)
             let output_summary = extract_output_summary(&execution.stdout, 10);
 
-            // Parse metrics if this is a test gate
-            let metrics = if gate.tags.contains(&"test".to_string()) {
+            // Parse metrics if this is a test gate. Whether the test binary
+            // was reached (#11797) is orthogonal to whether the summary was
+            // parseable: a compile-timeout for a cargo test command produces
+            // no summary at all but still deserves an explicit false in the
+            // receipt so a reviewer can tell it from an intra-test hang.
+            let mut metrics = if gate.tags.contains(&"test".to_string()) {
                 parse_test_metrics(&execution.stdout)
             } else {
                 None
             };
+            if let Some(reached) = parse_test_execution_reached(command, &execution.stdout) {
+                metrics.get_or_insert_with(GateMetrics::default).test_execution_reached =
+                    Some(reached);
+            }
 
             // For failing cargo test gates, extract the first failure details
             let first_failure = if status == "fail" && is_cargo_test_command(command) {
@@ -2599,6 +2614,44 @@ fn parse_test_metrics(output: &str) -> Option<GateMetrics> {
     None
 }
 
+/// For a `cargo test`-class gate, report whether the captured log ever
+/// crossed from compilation into test-binary execution. Returns `Some(true)`
+/// when a `running N tests` marker or a `test result:` summary line is
+/// present, `Some(false)` when the command was a cargo test invocation but
+/// neither marker appears (the compile-overrun signature #11797 asks the
+/// receipt to distinguish from a real test failure), and `None` when the
+/// gate was not a cargo test invocation and the distinction does not apply.
+///
+/// The "running N tests" line is the libtest harness's own preamble printed
+/// once the linked test binary starts executing; a compile timeout — even
+/// one whose Cargo output includes an unrelated occurrence of the word
+/// "running" — will not produce that line. `test result:` is the harness
+/// footer; either marker alone proves the binary was reached.
+fn parse_test_execution_reached(command: &str, output: &str) -> Option<bool> {
+    if !is_cargo_test_command(command) {
+        return None;
+    }
+    Some(output.lines().any(is_test_binary_execution_marker))
+}
+
+/// A single line from cargo test output that proves the libtest binary
+/// began executing: either the harness preamble `running N tests` (any
+/// non-negative N, including 0 for empty binaries) or the summary footer
+/// `test result:`.
+fn is_test_binary_execution_marker(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("running ") {
+        // Require the token after "running " to be a bare integer so that
+        // e.g. "running:", "running ci", or a `println!` inside a test that
+        // happens to include the word "running" cannot false-positive.
+        let count_token = rest.split_whitespace().next().unwrap_or("");
+        return !count_token.is_empty()
+            && count_token.chars().all(|c| c.is_ascii_digit())
+            && rest.trim_start_matches(char::is_numeric).trim_start().starts_with("test");
+    }
+    trimmed.starts_with("test result:")
+}
+
 fn extract_number(line: &str, suffix: &str) -> Option<u32> {
     let pattern = format!(" {}", suffix);
     line.find(&pattern).and_then(|idx| {
@@ -3040,10 +3093,10 @@ mod tests {
         extend_plan_with_non_pr_fast_static_gates, extend_plan_with_static_tiers,
         extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
         is_cargo_test_command, is_latest_commit, load_policy_for_inspection, load_receipt,
-        output_diff, parse_first_failure, parse_test_metrics, plan_gates, read_gate_output,
-        run_gate_plan, run_internal_commit_check, run_internal_xtask_gate,
-        run_shell_command_with_timeout, run_single_gate, selects_commit_tier_gate,
-        staged_guard_violation, static_gate_plan, write_receipt,
+        output_diff, parse_first_failure, parse_test_execution_reached, parse_test_metrics,
+        plan_gates, read_gate_output, run_gate_plan, run_internal_commit_check,
+        run_internal_xtask_gate, run_shell_command_with_timeout, run_single_gate,
+        selects_commit_tier_gate, staged_guard_violation, static_gate_plan, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
@@ -4394,6 +4447,205 @@ gates:
         assert_eq!(metrics.tests_ignored, Some(3));
         assert_eq!(metrics.tests_total, Some(12));
         assert!(parse_test_metrics("no cargo summary here").is_none());
+    }
+
+    // =========================================================================
+    // parse_test_execution_reached tests (issue #11797)
+    //
+    // The receipt distinguishes a compile-overrun timeout (cargo never linked
+    // and started the test binary) from a real test-body failure. A retry
+    // that only warms the compile cache is defensible; a retry that hides
+    // an intra-test hang is not (#10023 §"why timeouts only"). Making the
+    // distinction visible in the receipt is the mechanism #11797 asks for.
+    // =========================================================================
+
+    const CARGO_COMMAND: &str = "cargo test -p perl-lsp-rs-core --locked --lib inline_completion";
+    const NON_CARGO_COMMAND: &str = "just doctor";
+
+    #[test]
+    fn parse_test_execution_reached_detects_running_marker() {
+        // The libtest harness prints "running N tests" once the linked test
+        // binary starts executing, regardless of whether any test passes.
+        let output = "   Compiling perl-lsp-rs-core v0.17.0\n\
+                      running 4 tests\n\
+                      test inline_completion::mod::tests::stub_a ... ok\n";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_detects_zero_tests_running_marker() {
+        // `running 0 tests` still proves the binary linked and started.
+        let output = "running 0 tests\n\
+                      test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_detects_summary_line_alone() {
+        // Some libtest configurations may buffer the preamble but still emit
+        // the summary; either marker alone proves the binary was reached.
+        let output = "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_is_false_when_only_compile_output_captured() {
+        // The exact #11797 signature: exit 124 with a log of compile
+        // progress and warnings, no libtest preamble or summary anywhere.
+        let output = "   Compiling perl-parser-core v0.17.0\n\
+                      warning: unused import: `foo::Bar`\n\
+                      warning: field is never read: `baz`\n\
+                      ==== gate inline_completion_core attempt 2/2: watchdog timeout ====";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(false));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_is_false_when_output_is_empty() {
+        // A watchdog kill during cargo's `Compiling` phase can leave the log
+        // essentially empty by the time the receipt is written.
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, ""), Some(false));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_ignores_running_substring_inside_test_stdout() {
+        // A test that prints "running" or a build script that says "still
+        // running" must not trip the marker — the harness preamble is a
+        // line prefix followed by an integer, not a substring anywhere.
+        let output = "gate command still running elapsed_ms=42000 timeout_seconds=150\n\
+                      warning: something running in background\n";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(false));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_ignores_non_cargo_test_commands() {
+        // The receipt field only makes a claim for cargo test invocations;
+        // returning a bare bool for `just doctor` or a shell script would
+        // mislabel any incidental "running" output in those logs.
+        let output = "running gates\ntest result: ok";
+        assert_eq!(parse_test_execution_reached(NON_CARGO_COMMAND, output), None);
+    }
+
+    #[test]
+    fn parse_test_execution_reached_recognizes_doc_tests_preamble() {
+        // The doc-test binary uses the same preamble shape.
+        let output = "   Doc-tests inline_completion\n\n\
+                      running 12 tests\n";
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, output), Some(true));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_marks_test_execution_reached_for_cargo_test_passes()
+    -> color_eyre::eyre::Result<()> {
+        // is_cargo_test_command inspects the last `&&`-separated segment of
+        // the command string (`.split("&&").last()`), so we shape the gate as
+        // a printf that emits libtest-style output, then a trailing
+        // `cargo test <bogus>` that never runs. The receipt's claim keys off
+        // that shape without touching the real Cargo toolchain.
+        let full_command =
+            "printf 'running 2 tests\\ntest inline_completion::mod::stub_a ... ok\\n\
+              test inline_completion::mod::stub_b ... ok\\n\\n\
+              test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured\\n' \
+              ; true && cargo test --lib --locked"
+                .to_string();
+        let mut gate = pr_gate("inline-fake", GatePlanningRole::AlwaysOn, &full_command);
+        gate.tags.push("test".to_string());
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        // Sanity: is_cargo_test_command must have accepted the shape, or the
+        // wiring under test never gets a chance to make its claim.
+        assert!(
+            is_cargo_test_command(&full_command),
+            "test precondition failed: command must be a cargo test invocation for the wiring to fire"
+        );
+        let metrics = result.metrics.expect("cargo test gate should populate metrics");
+        assert_eq!(
+            metrics.test_execution_reached,
+            Some(true),
+            "receipt must record that the libtest binary was reached; got {metrics:?}"
+        );
+        // Corollary: the same log line the harness reads must be parseable
+        // as a cargo summary, so tests_total matches what the log says.
+        assert_eq!(
+            metrics.tests_total,
+            Some(2),
+            "the same run must parse the summary line and count tests; got {metrics:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_marks_test_execution_not_reached_for_compile_only_output()
+    -> color_eyre::eyre::Result<()> {
+        // The #11797 signature: cargo-test-class command whose log holds
+        // only Compiling/warning lines, no libtest preamble anywhere. The
+        // false && cargo test suffix short-circuits so the real toolchain
+        // is not invoked, but the command STRING still qualifies for the
+        // test_execution_reached claim via is_cargo_test_command's tail
+        // segment rule.
+        let full_command = "printf '   Compiling perl-lsp-rs-core v0.17.0\\n\
+              warning: unused import: `foo::Bar`\\n\
+              warning: field is never read: `baz`\\n' \
+              ; false && cargo test --lib --locked"
+            .to_string();
+        let mut gate = pr_gate("inline-compile-only", GatePlanningRole::AlwaysOn, &full_command);
+        gate.tags.push("test".to_string());
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        assert!(
+            is_cargo_test_command(&full_command),
+            "test precondition failed: command must be a cargo test invocation for the wiring to fire"
+        );
+        let metrics =
+            result.metrics.expect("cargo-test-class gate should always carry a metrics envelope");
+        assert_eq!(
+            metrics.test_execution_reached,
+            Some(false),
+            "receipt must flag a compile-only log as test-execution-not-reached; got {metrics:?}"
+        );
+        // Corollary: no cargo test summary was emitted, so tests_total stays absent.
+        assert!(
+            metrics.tests_total.is_none(),
+            "compile-only log must not synthesize a tests_total; got {metrics:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_single_gate_omits_test_execution_reached_for_non_cargo_commands()
+    -> color_eyre::eyre::Result<()> {
+        // A non-cargo-test command (formatter, linter, shell script) leaves
+        // the field absent even when its output happens to contain "running"
+        // — the claim only applies where it could be evidenced.
+        let command = "printf 'running fmt\\ntest result: ok\\n'";
+        let gate = pr_gate("fmt-like", GatePlanningRole::AlwaysOn, command);
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result =
+            run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default(), None)?;
+
+        assert!(
+            !is_cargo_test_command(command),
+            "test precondition failed: command must NOT be a cargo test invocation"
+        );
+        assert!(
+            result.metrics.is_none()
+                || result.metrics.as_ref().unwrap().test_execution_reached.is_none(),
+            "non-cargo-test gate must not carry a test_execution_reached claim; got {:?}",
+            result.metrics,
+        );
+        Ok(())
     }
 
     #[test]
@@ -5978,6 +6230,86 @@ error: aborting due to previous error
             }
         }
 
+        Ok(())
+    }
+
+    /// (issue #11797) The pr-smoke job in `.github/workflows/ci.yml` sets a
+    /// per-run `CARGO_TARGET_DIR` (`pr-smoke-${run_id}-${run_attempt}`) that
+    /// the shared rust-cache never restores, so every PR job compiles
+    /// `perl-lsp-rs`/`perl-lsp-rs-core` from cold. The former 150s / 135000ms
+    /// budgets sat inside that cold-cache wall time and produced the exit-124
+    /// bursts documented in the issue. `retry_count: 1` (#10023) warms the
+    /// same per-run target for a second attempt but does not save the first
+    /// attempt when compile-time alone exceeds the budget. Lock the raised
+    /// floor here so a well-meaning future edit does not silently regress it.
+    #[test]
+    fn inline_completion_gates_size_budget_for_cold_cache_compilation()
+    -> color_eyre::eyre::Result<()> {
+        // Only the two gates whose command targets the perl-lsp-rs-core mega
+        // crate are covered here; the lsp_registration_contract / lsp_capability_snapshots
+        // pair compile a smaller subset of that crate's tests and their budgets
+        // are governed independently.
+        const COLD_COMPILE_GATES: &[&str] =
+            &["inline_completion_registration", "inline_completion_core"];
+        // These numbers are the tight floor: `retry_count: 1` still bounds the
+        // total wall time to 2x per gate, and the outer PR-smoke watchdog
+        // (2700s = 45m) has to absorb every pr-fast gate combined. Anything
+        // higher than 300s / 270000ms on a single gate would erode that
+        // outer envelope, so lock the floor and the ceiling.
+        const MIN_TIMEOUT_SECONDS: u64 = 240;
+        const MAX_TIMEOUT_SECONDS: u64 = 300;
+        const MIN_MAX_DURATION_MS: u64 = 210_000;
+        const MAX_MAX_DURATION_MS: u64 = 270_000;
+
+        let root = crate::utils::project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+
+        for &gate_name in COLD_COMPILE_GATES {
+            let gate = policy
+                .gates
+                .iter()
+                .find(|g| g.name == gate_name)
+                .ok_or_else(|| color_eyre::eyre::eyre!("gate '{gate_name}' not found"))?;
+            assert!(
+                gate.timeout_seconds >= MIN_TIMEOUT_SECONDS
+                    && gate.timeout_seconds <= MAX_TIMEOUT_SECONDS,
+                "Gate '{gate_name}' timeout_seconds={} must sit in [{MIN_TIMEOUT_SECONDS}, {MAX_TIMEOUT_SECONDS}] \
+                 to survive a cold-cache pr-smoke compile without eroding the outer 45m watchdog (#11797)",
+                gate.timeout_seconds,
+            );
+            let budget = gate.budgets.as_ref().ok_or_else(|| {
+                color_eyre::eyre::eyre!("Gate '{gate_name}' must declare a budget")
+            })?;
+            let max_ms = budget.max_duration_ms.ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Gate '{gate_name}' budget must declare max_duration_ms (#11797)"
+                )
+            })?;
+            assert!(
+                max_ms >= MIN_MAX_DURATION_MS && max_ms <= MAX_MAX_DURATION_MS,
+                "Gate '{gate_name}' budget.max_duration_ms={max_ms} must sit in \
+                 [{MIN_MAX_DURATION_MS}, {MAX_MAX_DURATION_MS}] (#11797)",
+            );
+            // max_duration_ms is an internal soft ceiling and must stay
+            // strictly less than the hard watchdog. A gate whose soft
+            // ceiling meets or exceeds the watchdog gains no visibility
+            // between the two — the watchdog fires first and the soft
+            // ceiling records nothing new.
+            assert!(
+                max_ms < gate.timeout_seconds * 1000,
+                "Gate '{gate_name}' budget.max_duration_ms={max_ms} must stay below \
+                 hard timeout_seconds={} * 1000 so the soft budget is observable before the watchdog",
+                gate.timeout_seconds,
+            );
+            // Retry-once is the compile-overrun remedy from #10023; drop it
+            // and a cold first attempt has no chance to warm the target dir
+            // for a second, and #11797 comes straight back.
+            assert_eq!(
+                gate.retry_count, 1,
+                "Gate '{gate_name}' must keep retry_count: 1 so a compile-overrun first attempt \
+                 warms the per-run CARGO_TARGET_DIR for the second (#10023, #11797)",
+            );
+        }
         Ok(())
     }
 
