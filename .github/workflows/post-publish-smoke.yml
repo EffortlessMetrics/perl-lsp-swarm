@@ -115,10 +115,15 @@ jobs:
               echo "version=unknown" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            # The receipt records the commit the publish actually ran from, so
-            # the proof executes the same subject it is certifying. Falling back
-            # to the default branch keeps older receipts usable rather than
-            # refusing a real publication over a missing field.
+            # The receipt records the commit the publish actually ran from, and
+            # the proof must execute that exact subject. Falling back to the
+            # default branch here would issue a publication verdict using code
+            # that changed after the release — the same class of false proof
+            # this workflow exists to prevent, just moved from "which version"
+            # to "which code". There are no receipts without this field: the
+            # producer has written `subject_sha` in the same printf as the
+            # version since the format was introduced, so its absence means a
+            # corrupt or tampered receipt, not an old one.
             SUBJECT="$(python3 -c '
           import json, sys
           try:
@@ -128,8 +133,10 @@ jobs:
               print("")
           ' "$RECEIPT_PATH")"
             if ! [[ "$SUBJECT" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::warning::Receipt carries no usable subject SHA; running the proof from ${DEFAULT_BRANCH} instead."
-              SUBJECT="$DEFAULT_BRANCH"
+              echo "::error::Publication receipt carries no usable subject SHA (got '${SUBJECT}'). Refusing to certify ${VERSION} using code that may postdate it."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "version=unknown" >> "$GITHUB_OUTPUT"
+              exit 1
             fi
             SHOULD_RUN="true"
           else
@@ -147,7 +154,14 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "should_run=${SHOULD_RUN}" >> "$GITHUB_OUTPUT"
           echo "subject=${SUBJECT}" >> "$GITHUB_OUTPUT"
-          printf 'Resolved version %s; proof executes from %s\n' "$VERSION" "$SUBJECT"
+          # Name which claim this run supports. A receipted run is bound to the
+          # published commit; a dispatch is an operator re-check against current
+          # default-branch scripts and is not publication proof for that release.
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            printf 'Bound publication proof: version %s from published subject %s\n' "$VERSION" "$SUBJECT"
+          else
+            printf 'Unbound manual re-check: version %s from %s (not publication proof)\n' "$VERSION" "$SUBJECT"
+          fi
 
   smoke:
     name: Smoke test v${{ needs.resolve-version.outputs.version }}

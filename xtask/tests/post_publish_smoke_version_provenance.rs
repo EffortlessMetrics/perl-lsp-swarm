@@ -325,43 +325,48 @@ fn receipted_run_executes_the_published_subject() -> Result<()> {
     Ok(())
 }
 
-/// A receipt predating the subject field must not strand a real publication,
-/// but it must fall back to an authoritative ref rather than to the dispatch
-/// selection.
+/// A receipted run without a usable subject must not be certified at all.
+///
+/// Falling back to the default branch here would issue a publication verdict
+/// using code that could have changed after the release — the same false-proof
+/// class as the original finding, moved from "which version" to "which code".
+/// No such receipt can exist in practice: the producer has written
+/// `subject_sha` in the same `printf` as the version since the format was
+/// introduced, so its absence means corruption, not age.
 #[test]
-fn receipt_without_a_subject_falls_back_to_the_default_branch() -> Result<()> {
-    let legacy = format!(r#"{{"version":"{PUBLISHED}","crate_count":34}}"#);
-    let resolved = resolve("workflow_run", "success", Some(&legacy))?;
-    resolved.assert_step_succeeded("receipt without a subject")?;
+fn a_receipted_run_without_a_subject_fails_closed() -> Result<()> {
+    let no_subject = format!(r#"{{"version":"{PUBLISHED}","crate_count":34}}"#);
+    let resolved = resolve("workflow_run", "success", Some(&no_subject))?;
 
-    if !resolved.runs() {
-        bail!("a receipt with a version but no subject must still be verified");
+    if resolved.output.status.success() {
+        bail!("a receipt with no subject must fail the step:\n{}", resolved.combined());
     }
-    if resolved.subject.as_deref() != Some(DEFAULT_BRANCH) {
-        bail!("expected the default branch, got {:?}", resolved.subject);
+    if resolved.runs() {
+        bail!("a receipt with no subject must not be smoke-tested:\n{}", resolved.combined());
+    }
+    if resolved.subject.as_deref() == Some(DEFAULT_BRANCH) {
+        bail!("the proof must not silently retarget the default branch");
     }
     Ok(())
 }
 
-/// A malformed subject is not a ref to trust. Anything that is not a full
-/// commit SHA falls back rather than being handed to `actions/checkout`.
+/// A malformed subject is a corrupt instrument. It must neither be handed to
+/// `actions/checkout` nor quietly replaced with a mutable branch.
 #[test]
-fn a_malformed_subject_is_not_trusted() -> Result<()> {
-    for bogus in ["refs/heads/attacker", "0123456", "../../etc", ""] {
+fn a_malformed_subject_fails_closed() -> Result<()> {
+    for bogus in ["refs/heads/attacker", "0123456", "../../etc", "", "main"] {
         let receipt =
             format!(r#"{{"version":"{PUBLISHED}","subject_sha":"{bogus}","crate_count":34}}"#);
         let resolved = resolve("workflow_run", "success", Some(&receipt))?;
-        // Falling back is a successful resolution, not a refusal — if it starts
-        // exiting nonzero the publication silently stops being verified.
-        resolved.assert_step_succeeded(&format!("malformed subject {bogus:?}"))?;
-        if !resolved.runs() {
-            bail!("a malformed subject must fall back, not skip the smoke test");
+
+        if resolved.output.status.success() {
+            bail!("subject {bogus:?} must fail the step:\n{}", resolved.combined());
         }
-        if resolved.subject.as_deref() != Some(DEFAULT_BRANCH) {
-            bail!(
-                "subject {bogus:?} must not be used as a checkout ref, got {:?}",
-                resolved.subject
-            );
+        if resolved.runs() {
+            bail!("subject {bogus:?} must not produce a verdict:\n{}", resolved.combined());
+        }
+        if resolved.subject.as_deref() == Some(bogus) {
+            bail!("subject {bogus:?} must never reach the checkout");
         }
     }
     Ok(())
@@ -400,6 +405,17 @@ fn dispatch_executes_the_default_branch() -> Result<()> {
     let rendered = fs::read_to_string(&github_output)?;
     if !rendered.contains(&format!("subject={DEFAULT_BRANCH}")) {
         bail!("dispatch must run the proof from the default branch, got:\n{rendered}");
+    }
+
+    // A dispatch re-check is not publication proof for that release, and the
+    // log has to say so — otherwise the two runs look identical in the UI.
+    let spoken = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !spoken.contains("not publication proof") {
+        bail!("a dispatch run must not present itself as publication proof:\n{spoken}");
     }
     Ok(())
 }
