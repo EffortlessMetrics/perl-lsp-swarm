@@ -8,6 +8,8 @@ on:
       - 'scripts/ci/aggregate_lane_history.py'
       - 'scripts/ci/test_aggregate_lane_history.py'
       - 'policy/ci-lanes.toml'
+      - '.ci/metrics/ci-lane-history.json'
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -23,7 +25,9 @@ jobs:
       - name: Checkout PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # pull_request: the PR head; workflow_dispatch (raised by the
+          # refresh automation on its generated branch): the dispatched ref.
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
           persist-credentials: false
 
       - name: Setup Python
@@ -33,6 +37,31 @@ jobs:
 
       - name: Run focused aggregation tests
         run: python3 scripts/ci/test_aggregate_lane_history.py
+
+      - name: Validate checked-in payload (independent oracle)
+        # Reads the checked-in .ci/metrics/ci-lane-history.json — unlike the
+        # empty-actuals derivation below, which only proves the aggregator
+        # runs. This is the reader-side gate that can go red on a payload
+        # defect (#11731): percentile ordering, sample/learned agreement,
+        # counter coherence, and lane-count identity.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path("scripts/ci").resolve()))
+          from aggregate_lane_history import validate_history_payload
+
+          payload = json.loads(Path(".ci/metrics/ci-lane-history.json").read_text(encoding="utf-8"))
+          violations = validate_history_payload(payload)
+          if violations:
+              for violation in violations:
+                  print(f"::error::{violation}")
+              raise SystemExit(1)
+          print("checked-in lane-history payload passes the structural oracle")
+          PY
 
       - name: Validate checked-in lane policy
         run: |

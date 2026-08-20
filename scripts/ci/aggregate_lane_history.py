@@ -458,6 +458,115 @@ def build_history(
     return history
 
 
+def validate_history_payload(data: Any) -> list[str]:
+    """Structurally validate a lane-history payload; return violations.
+
+    Independent oracle over the checked-in artifact (#11731): the producer's
+    own smoke check runs in the same context that generated the file, so the
+    repository also needs a reader-side gate that can go red on a payload
+    defect — percentile ordering, sample/learned agreement, counter
+    coherence, and lane-count identity are all asserted here.
+    """
+    violations: list[str] = []
+
+    def finite(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+    if not isinstance(data, dict):
+        return ["payload is not a JSON object"]
+    if data.get("schema_version") != SCHEMA_VERSION:
+        violations.append(f"schema_version must be {SCHEMA_VERSION}, got {data.get('schema_version')!r}")
+    if not isinstance(data.get("generated_at"), str) or not data.get("generated_at"):
+        violations.append("generated_at must be a non-empty string")
+    min_samples = data.get("min_samples_for_learned")
+    if not isinstance(min_samples, int) or isinstance(min_samples, bool) or min_samples < 1:
+        violations.append(f"min_samples_for_learned must be a positive int, got {min_samples!r}")
+
+    lanes = data.get("lanes")
+    if not isinstance(lanes, dict) or not lanes:
+        violations.append("lanes must be a non-empty object")
+        lanes = {}
+    if data.get("lane_count") != len(lanes):
+        violations.append(f"lane_count {data.get('lane_count')!r} != len(lanes) {len(lanes)}")
+
+    total_samples = 0
+    for lane_id, lane in lanes.items():
+        where = f"lane {lane_id!r}"
+        if not isinstance(lane, dict):
+            violations.append(f"{where} is not an object")
+            continue
+        samples = lane.get("samples")
+        if not isinstance(samples, int) or isinstance(samples, bool) or samples < 0:
+            violations.append(f"{where} samples must be a non-negative int, got {samples!r}")
+            samples = 0
+        total_samples += samples
+        floor = lane.get("static_floor")
+        if not finite(floor) or floor < 0:
+            violations.append(f"{where} static_floor must be finite and >= 0, got {floor!r}")
+        learned = lane.get("learned")
+        if not isinstance(learned, bool):
+            violations.append(f"{where} learned must be a bool, got {learned!r}")
+        elif isinstance(min_samples, int) and learned != (samples >= min_samples):
+            violations.append(
+                f"{where} learned={learned} disagrees with samples={samples} "
+                f"vs min_samples_for_learned={min_samples}"
+            )
+
+        percentile_keys = ("p50", "p90", "p95", "min", "max", "mean")
+        has_stats = any(k in lane for k in percentile_keys)
+        if samples == 0 and has_stats:
+            violations.append(f"{where} has percentile fields but samples == 0")
+        if samples > 0:
+            if not has_stats:
+                violations.append(f"{where} has samples={samples} but no percentile fields")
+            else:
+                values = {k: lane.get(k) for k in percentile_keys}
+                for k, v in values.items():
+                    if not finite(v):
+                        violations.append(f"{where} {k} must be finite, got {v!r}")
+                if all(finite(v) for v in values.values()):
+                    if not values["min"] <= values["p50"]:
+                        violations.append(f"{where} min > p50")
+                    if not values["p50"] <= values["p90"]:
+                        violations.append(f"{where} p50 > p90")
+                    if not values["p90"] <= values["p95"]:
+                        violations.append(f"{where} p90 > p95")
+                    if not values["p95"] <= values["max"]:
+                        violations.append(f"{where} p95 > max")
+                    if not values["min"] <= values["mean"] <= values["max"]:
+                        violations.append(f"{where} mean outside [min, max]")
+
+    validation = data.get("validation")
+    if not isinstance(validation, dict):
+        violations.append("validation summary must be an object")
+    else:
+        run_ids = validation.get("source_run_ids")
+        if not isinstance(run_ids, list) or not all(isinstance(r, int) for r in run_ids):
+            violations.append("validation.source_run_ids must be a list of ints")
+            run_ids = []
+        declared = validation.get("source_run_count")
+        if declared != len(run_ids):
+            violations.append(f"validation.source_run_count {declared!r} != len(source_run_ids) {len(run_ids)}")
+        for counter in ("files_seen", "files_accepted", "jobs_seen", "jobs_with_sample",
+                        "jobs_with_lane_id", "accepted_samples", "lane_executions"):
+            value = validation.get(counter)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                violations.append(f"validation.{counter} must be a non-negative int, got {value!r}")
+        if isinstance(validation.get("files_seen"), int) and isinstance(validation.get("files_accepted"), int):
+            if validation["files_accepted"] > validation["files_seen"]:
+                violations.append("validation.files_accepted > files_seen")
+        if isinstance(validation.get("jobs_with_sample"), int) and isinstance(validation.get("jobs_seen"), int):
+            if validation["jobs_with_sample"] > validation["jobs_seen"]:
+                violations.append("validation.jobs_with_sample > jobs_seen")
+        if isinstance(validation.get("lane_executions"), int):
+            if validation["lane_executions"] != total_samples:
+                violations.append(
+                    f"validation.lane_executions {validation['lane_executions']} != sum of lane samples {total_samples}"
+                )
+
+    return violations
+
+
 def attribution_verdict(
     stats: dict[str, Any],
     *,
