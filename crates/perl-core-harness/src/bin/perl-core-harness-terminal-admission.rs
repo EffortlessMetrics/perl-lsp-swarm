@@ -328,8 +328,12 @@ fn write_admitted_copies(evidence: &mut [ReportEvidence], admitted_dir: &Path) -
             admitted_dir.display()
         )
     })?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("creating admitted report parent {}", parent.display()))?;
+    // A bare relative path has an empty parent; creating "" fails with
+    // InvalidInput and the current directory already exists.
+    if !parent.as_os_str().is_empty() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating admitted report parent {}", parent.display()))?;
+    }
     fs::create_dir(admitted_dir).with_context(|| {
         format!("creating fresh admitted report directory {}", admitted_dir.display())
     })?;
@@ -452,7 +456,9 @@ fn read_receipt(path: &Path) -> Result<AdmissionReceipt> {
 }
 
 fn write_receipt(path: &Path, receipt: &AdmissionReceipt) -> Result<()> {
-    if let Some(parent) = path.parent() {
+    // A bare filename has an empty parent; creating "" fails with
+    // InvalidInput and the current directory already exists.
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating receipt directory {}", parent.display()))?;
     }
@@ -617,6 +623,68 @@ mod tests {
         assert!(
             error.to_string().contains("admitted report differs from the recorded receipt"),
             "verification must fail at the recorded-vs-recomputed comparison: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_mode_in_receipt_breaks_verification() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let parse = write_report(temp.path(), "parse.json", HarnessMode::Parse, Some(0), false)?;
+        let compile =
+            write_report(temp.path(), "compile.json", HarnessMode::Compile, Some(0), false)?;
+        let expected = expected_identity();
+        let mut receipt =
+            build_receipt(&[parse, compile], &expected, &temp.path().join("admitted"))?;
+        let parse_entry = receipt
+            .reports
+            .iter_mut()
+            .find(|report| report.mode == HarnessMode::Parse.to_string())
+            .ok_or_else(|| color_eyre::eyre::eyre!("parse admission missing"))?;
+        parse_entry.mode = HarnessMode::Compile.to_string();
+
+        let error = match verify_admitted_receipt(&receipt, &expected) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!("a receipt with duplicate modes was accepted"));
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("duplicate mode"),
+            "verification must fail at the duplicate-mode guard: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reused_admitted_path_breaks_verification() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let parse = write_report(temp.path(), "parse.json", HarnessMode::Parse, Some(0), false)?;
+        let compile =
+            write_report(temp.path(), "compile.json", HarnessMode::Compile, Some(0), false)?;
+        let expected = expected_identity();
+        let mut receipt =
+            build_receipt(&[parse, compile], &expected, &temp.path().join("admitted"))?;
+        let first = receipt
+            .reports
+            .first()
+            .and_then(|report| report.admitted_path.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("admitted path missing"))?;
+        for report in &mut receipt.reports {
+            report.admitted_path = Some(first.clone());
+        }
+
+        let error = match verify_admitted_receipt(&receipt, &expected) {
+            Ok(()) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "a receipt reusing one admitted path was accepted"
+                ));
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("reuses admitted path"),
+            "verification must fail at the admitted-path reuse guard: {error}"
         );
         Ok(())
     }
