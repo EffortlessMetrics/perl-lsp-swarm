@@ -737,27 +737,49 @@ mod tests {
 
     #[test]
     fn append_system_inc_paths_skips_dot_and_dedupes_normalized_variants() -> TestResult {
-        let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
-        config.use_system_inc = true;
-        config.include_paths = vec!["lib".to_string()];
-
+        // The probe behind `get_system_inc` is bounded by
+        // SYSTEM_INC_PROBE_TIMEOUT (1s) and fail-opens to an empty cached
+        // vector when the interpreter is slow. Under a full-suite parallel
+        // run — dozens of tests spawning interpreters — a cold perl start
+        // can transiently exceed that budget and this test false-failed
+        // with `inc_entries == 0` (reproduced 1-in-8 under the 5-package
+        // gate command). Retry the PROBE on a fresh config (the cache would
+        // otherwise short-circuit); the dedupe assertions stay strict on
+        // every successful probe, so a real regression fails all attempts —
+        // only environmental probe emptiness is retried.
         let temp = tempfile::tempdir()?;
         let inc_path = temp.path().join("site_perl");
         std::fs::create_dir_all(&inc_path)?;
-
         let perl_path = std::env::var("PERL").unwrap_or_else(|_| "perl".to_string());
-        config.perl_path = Some(perl_path);
-        config.perl_args = vec![
-            "-I".to_string(),
-            ".".to_string(),
-            "-I".to_string(),
-            inc_path.to_string_lossy().to_string(),
-            "-I".to_string(),
-            format!("{}{}", inc_path.to_string_lossy(), std::path::MAIN_SEPARATOR),
-        ];
 
-        let mut include_paths = vec!["lib".to_string(), ".".to_string()];
-        append_system_inc_paths(&mut config, &mut include_paths);
+        let mut include_paths = Vec::new();
+        for attempt in 1..=3u8 {
+            let mut config = perl_lsp_rs_core::config::WorkspaceConfig::default();
+            config.use_system_inc = true;
+            config.include_paths = vec!["lib".to_string()];
+            config.perl_path = Some(perl_path.clone());
+            config.perl_args = vec![
+                "-I".to_string(),
+                ".".to_string(),
+                "-I".to_string(),
+                inc_path.to_string_lossy().to_string(),
+                "-I".to_string(),
+                format!("{}{}", inc_path.to_string_lossy(), std::path::MAIN_SEPARATOR),
+            ];
+
+            include_paths = vec!["lib".to_string(), ".".to_string()];
+            append_system_inc_paths(&mut config, &mut include_paths);
+
+            if include_paths.len() > 2 {
+                break; // probe appended system paths; run the strict assertions
+            }
+            eprintln!("system @INC probe returned nothing (attempt {attempt}/3); retrying");
+        }
+        assert!(
+            include_paths.len() > 2,
+            "system @INC probe unavailable after 3 attempts — the dedupe oracle needs a \
+             working interpreter; failing loudly rather than asserting on an empty probe"
+        );
 
         let dot_count = include_paths.iter().filter(|path| path.as_str() == ".").count();
         assert_eq!(dot_count, 1, "dot entry should not be duplicated from system @INC");
