@@ -4575,8 +4575,10 @@ gates:
             std::thread::current().id()
         ));
         let _ = std::fs::remove_file(&marker);
-        let command =
-            format!("if [ -f {marker} ]; then echo rescued; else touch {marker}; sleep 3; fi");
+        let marker_display = marker.display().to_string();
+        let command = format!(
+            "if [ -f {marker_display} ]; then echo rescued; else touch {marker_display}; sleep 3; fi"
+        );
         let gate = GateDefinition {
             name: "synthetic_rescued_gate".to_string(),
             tier: "merge_gate".to_string(),
