@@ -3,7 +3,7 @@ use super::{
     FRAMEWORK_ADAPTER_SDK_VERSION, ModuleActivationIdentity, ModuleVersionEvidence,
 };
 use crate::{Confidence, SourceGeneration};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Current schema for checked detection input identities and receipts.
 pub const DETECTION_AUTHORITY_SCHEMA_VERSION: u32 = 1;
@@ -243,7 +243,7 @@ pub struct DetectionInputIdentity {
 
 /// Input to a checked framework-detection pass.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AdapterDetectionInput {
     /// Adapter descriptor.
     pub descriptor: AdapterDescriptor,
@@ -258,6 +258,94 @@ pub struct AdapterDetectionInput {
     pub budget: Option<AdapterBudget>,
     /// Admission-time cancellation snapshot.
     pub cancellation: AdapterCancellation,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AdapterDetectionInputWire {
+    Current(AdapterDetectionInputCurrent),
+    Legacy(AdapterDetectionInputLegacy),
+}
+
+#[derive(Deserialize)]
+struct AdapterDetectionInputCurrent {
+    descriptor: AdapterDescriptor,
+    module_observation: ModuleObservationReceipt,
+    #[serde(default)]
+    configuration_observations: Vec<DetectionConfigurationObservation>,
+    detector_policy_identity: String,
+    budget: Option<AdapterBudget>,
+    cancellation: AdapterCancellation,
+}
+
+#[derive(Deserialize)]
+struct AdapterDetectionInputLegacy {
+    descriptor: AdapterDescriptor,
+    available_modules: Vec<ModuleActivationIdentity>,
+    project_generation: SourceGeneration,
+    content_digest: Option<String>,
+    budget: Option<AdapterBudget>,
+    cancellation: AdapterCancellation,
+}
+
+impl<'de> Deserialize<'de> for AdapterDetectionInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match AdapterDetectionInputWire::deserialize(deserializer)? {
+            AdapterDetectionInputWire::Current(input) => Ok(Self {
+                descriptor: input.descriptor,
+                module_observation: input.module_observation,
+                configuration_observations: input.configuration_observations,
+                detector_policy_identity: input.detector_policy_identity,
+                budget: input.budget,
+                cancellation: input.cancellation,
+            }),
+            AdapterDetectionInputWire::Legacy(input) => Ok(Self::from_legacy(input)),
+        }
+    }
+}
+
+impl AdapterDetectionInput {
+    fn from_legacy(mut input: AdapterDetectionInputLegacy) -> Self {
+        if input.descriptor.required_module_selectors.is_empty() {
+            input.descriptor.required_module_selectors =
+                vec![input.descriptor.framework_name.clone()];
+        }
+
+        let evaluations = input
+            .available_modules
+            .into_iter()
+            .map(|activation| {
+                ModuleSelectorEvaluation::matched(
+                    activation.module_name.clone(),
+                    activation,
+                    DetectionEvidenceClass::ResolvedModule,
+                )
+            })
+            .collect();
+
+        Self {
+            descriptor: input.descriptor,
+            module_observation: ModuleObservationReceipt {
+                // Legacy payloads lack the receipt contract required by the
+                // current authority validator. Keep them loadable, but fail
+                // closed before they can be treated as current evidence.
+                schema_version: 0,
+                resolver_identity: "legacy:framework_adapter_sdk.v1".to_string(),
+                scope_identity: "legacy:framework_adapter_sdk.v1".to_string(),
+                environment_identity: "legacy:framework_adapter_sdk.v1".to_string(),
+                generation: input.project_generation,
+                content_digest: input.content_digest.unwrap_or_default(),
+                evaluations,
+            },
+            configuration_observations: Vec::new(),
+            detector_policy_identity: "legacy:framework_adapter_sdk.v1".to_string(),
+            budget: input.budget,
+            cancellation: input.cancellation,
+        }
+    }
 }
 
 impl AdapterDetectionInput {

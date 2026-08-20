@@ -58,6 +58,107 @@ fn input(evaluations: Vec<ModuleSelectorEvaluation>) -> AdapterDetectionInput {
     )
 }
 
+const LEGACY_ADAPTER_DETECTION_INPUT_JSON: &str = r#"
+{
+  "descriptor": {
+    "adapter_id": 1,
+    "name": "moo",
+    "framework_name": "Moo",
+    "framework_version_constraint": null,
+    "schema_version": 1,
+    "disposition": "Production"
+  },
+  "available_modules": [
+    {
+      "module_name": "Moo",
+      "file_id": 7,
+      "generation": {"Known": "project-1"},
+      "observed_version": null
+    }
+  ],
+  "project_generation": {"Known": "project-1"},
+  "content_digest": null,
+  "budget": null,
+  "cancellation": {"is_cancelled": false}
+}
+"#;
+
+const CURRENT_ADAPTER_DETECTION_INPUT_JSON: &str = r#"
+{
+  "descriptor": {
+    "adapter_id": 1,
+    "name": "moo",
+    "framework_name": "Moo",
+    "required_module_selectors": ["Moo"],
+    "framework_version_constraint": null,
+    "configuration_exclusion_key": null,
+    "configuration_exclusion_value": null,
+    "configuration_exclusion_rule": null,
+    "schema_version": 1,
+    "disposition": "Production"
+  },
+  "module_observation": {
+    "schema_version": 1,
+    "resolver_identity": "module-resolver.v1",
+    "scope_identity": "root:fixture",
+    "environment_identity": "project-environment.v1",
+    "generation": {"Known": "project-1"},
+    "content_digest": "sha256:input",
+    "evaluations": [
+      {
+        "selector": "Moo",
+        "outcome": {
+          "Matched": {
+            "activation": {
+              "module_name": "Moo",
+              "file_id": 7,
+              "generation": {"Known": "project-1"},
+              "observed_version": null
+            },
+            "evidence_class": "ResolvedModule"
+          }
+        }
+      }
+    ]
+  },
+  "configuration_observations": [],
+  "detector_policy_identity": "framework_adapter_sdk.v1",
+  "budget": null,
+  "cancellation": {"is_cancelled": false}
+}
+"#;
+
+#[test]
+fn current_sdk_json_fixture_loads_as_authority_input() -> Result<(), serde_json::Error> {
+    let input: AdapterDetectionInput = serde_json::from_str(CURRENT_ADAPTER_DETECTION_INPUT_JSON)?;
+
+    assert_eq!(input.module_observation.schema_version, 1);
+    assert_eq!(input.detector_policy_identity, "framework_adapter_sdk.v1");
+    assert_eq!(input.descriptor.required_module_selectors, vec!["Moo".to_string()]);
+    assert_eq!(input.module_observation.evaluations.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn legacy_sdk_json_fixture_loads_but_cannot_claim_current_authority()
+-> Result<(), serde_json::Error> {
+    let input: AdapterDetectionInput = serde_json::from_str(LEGACY_ADAPTER_DETECTION_INPUT_JSON)?;
+
+    assert_eq!(input.project_generation(), &SourceGeneration::known("project-1"));
+    assert_eq!(input.descriptor.required_module_selectors, vec!["Moo".to_string()]);
+    assert_eq!(input.module_observation.evaluations.len(), 1);
+
+    let result = AdapterDetectionResult::for_input(
+        &input,
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
+    );
+    assert_eq!(
+        result.validate_authority_against(&input),
+        Err(DetectionAuthorityError::UnsupportedSchema)
+    );
+    Ok(())
+}
+
 fn configuration_input(evaluations: Vec<ModuleSelectorEvaluation>) -> AdapterDetectionInput {
     AdapterDetectionInput::new(
         configuration_descriptor(),
