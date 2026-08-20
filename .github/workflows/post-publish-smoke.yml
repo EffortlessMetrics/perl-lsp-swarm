@@ -43,10 +43,20 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       should_run: ${{ steps.version.outputs.should_run }}
-      # The ref the smoke scripts are executed from. Never the dispatch
-      # selection: whoever can dispatch this workflow would otherwise control
-      # the code that issues the "published version is installable" verdict
+      # The ref the smoke scripts are executed from, never the dispatch
+      # selection: that would let whoever dispatches this workflow choose the
+      # code issuing the "published version is installable" verdict
       # (#9593 finding 2).
+      #
+      # This binds the checkout, not the workflow definition, and the two have
+      # different owners. A dispatch runs whichever copy of this file lives on
+      # the selected ref -- GITHUB_REF is "branch or tag that received
+      # dispatch" -- so a modified or simply pre-fix branch runs its own
+      # definition and nothing here applies to it. `workflow_run` is pinned by
+      # the platform: GITHUB_REF is the default branch, so the receipted path
+      # always executes the reviewed copy of this file. That asymmetry is why
+      # only `workflow_run` is ever labelled a bound proof below, and why the
+      # remaining dispatch exposure cannot be closed from inside this file.
       subject: ${{ steps.version.outputs.subject }}
 
     steps:
@@ -76,9 +86,12 @@ jobs:
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             VERSION="$DISPATCH_VERSION"
-            # A dispatch supplies a version, not a ref. Run the proof from the
-            # default branch so the operator cannot also choose the code that
-            # decides whether the published version is installable.
+            # A dispatch supplies a version, not a ref, so check out the
+            # default branch rather than the dispatch selection. This is a
+            # floor, not a boundary: the dispatcher already chose which copy of
+            # this file runs. It constrains an ordinary operator re-check; it
+            # does not constrain someone who edited this workflow. Dispatch
+            # results are labelled unbound below for exactly that reason.
             SUBJECT="$DEFAULT_BRANCH"
             SHOULD_RUN="true"
           elif [ "$EVENT_NAME" = "workflow_run" ]; then
