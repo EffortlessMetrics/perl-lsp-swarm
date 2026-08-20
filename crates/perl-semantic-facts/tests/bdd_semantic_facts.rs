@@ -1045,3 +1045,307 @@ fn given_mixed_provenance_facts_when_compared_then_exact_ast_most_reliable() {
     assert!(debug_strs.contains("ExactAst"));
     assert!(debug_strs.contains("NameHeuristic"));
 }
+
+// ── Scenario 19: Framework Adapter — Detection Pass ───────────────────────
+
+/// Given a project that contains Moo in its module activation list,
+/// when the adapter runs a detection pass,
+/// then the result carries `Detected` with the confidence the adapter chose.
+#[test]
+fn given_moo_module_in_activation_list_when_detection_runs_then_detected_with_confidence() {
+    use perl_semantic_facts::framework::{
+        AdapterBudget, AdapterCancellation, AdapterDescriptor, AdapterDetectionInput,
+        AdapterDetectionResult, AdapterDisposition, AdapterId, DetectionOutcome,
+        ModuleActivationIdentity,
+    };
+    use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
+
+    let descriptor =
+        AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, AdapterDisposition::Production);
+    let available_modules = vec![
+        ModuleActivationIdentity::new(
+            "Moo",
+            Some(FileId(10)),
+            SourceGeneration::known("sha256:moo-ver"),
+        ),
+        ModuleActivationIdentity::new(
+            "Moo::Role",
+            Some(FileId(11)),
+            SourceGeneration::known("sha256:moo-role-ver"),
+        ),
+    ];
+    let input = AdapterDetectionInput::new(
+        descriptor.clone(),
+        available_modules,
+        SourceGeneration::known("sha256:project"),
+        None,
+        Some(AdapterBudget::new(10, 65_536)),
+        AdapterCancellation::active(),
+    );
+
+    // Simulate a test adapter decision: Moo is in the list → Detected.
+    let outcome = if input.available_modules.iter().any(|m| m.module_name == "Moo") {
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None }
+    } else {
+        DetectionOutcome::Absent {
+            reason: perl_semantic_facts::framework::DetectionAbsenceReason::RequiredModulesMissing,
+        }
+    };
+    let result = AdapterDetectionResult::new(descriptor, input.project_generation.clone(), outcome);
+
+    assert!(result.is_detected());
+    assert!(result.is_authoritative());
+}
+
+// ── Scenario 20: Framework Adapter — Cancelled Detection ──────────────────
+
+/// Given a pre-cancelled token,
+/// when a detection pass checks the token before doing work,
+/// then the outcome is `Cancelled` and no partial state is produced.
+#[test]
+fn given_cancelled_token_when_detection_checked_then_outcome_is_cancelled() {
+    use perl_semantic_facts::SourceGeneration;
+    use perl_semantic_facts::framework::{
+        AdapterCancellation, AdapterDescriptor, AdapterDetectionResult, AdapterDisposition,
+        AdapterId, DetectionOutcome,
+    };
+
+    let descriptor =
+        AdapterDescriptor::new(AdapterId(2), "moose", "Moose", None, 1, AdapterDisposition::Shadow);
+    let cancellation = AdapterCancellation::cancelled();
+    assert!(cancellation.is_cancelled, "token must reflect cancellation request");
+
+    // Simulate adapter: bail out immediately if cancelled.
+    let outcome = if cancellation.is_cancelled {
+        DetectionOutcome::Cancelled
+    } else {
+        panic!("adapter must not run when cancelled")
+    };
+    let result =
+        AdapterDetectionResult::new(descriptor, SourceGeneration::known("sha256:project"), outcome);
+
+    assert!(!result.is_detected());
+    assert!(!result.is_authoritative(), "cancelled result must not be authoritative");
+}
+
+// ── Scenario 21: Framework Adapter — Explicit Declarations Win ────────────
+
+/// Given two facts for the same attribute — one synthesised and one explicit —
+/// when resolving conflicts in the provider,
+/// then the explicit fact (is_stronger_than_generated=true) takes precedence.
+#[test]
+fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
+    use perl_semantic_facts::framework::{AdapterId, EmittedFact, FactClass, FactSink, FactSinkId};
+    use perl_semantic_facts::{
+        AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance,
+        SemanticConfidence, SemanticFactEnvelope, SemanticFactKind, SemanticFreshness,
+        SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
+    };
+
+    let make_envelope = |entity_id: u64| {
+        SemanticFactEnvelope::new(
+            FactId(entity_id),
+            Some(EntityId(entity_id)),
+            SemanticFactKind::Declaration,
+            SourceAnchor::new(Some(AnchorId(1)), FileId(10), 10, 20),
+            SourceGeneration::known("sha256:aabbcc"),
+            None,
+            Some("My::Package".to_string()),
+            LifecyclePhase::Runtime,
+            SemanticProducer::FrameworkAdapter,
+            SemanticProvenance::Known(Provenance::FrameworkSynthesis),
+            SemanticConfidence::Known(Confidence::Medium),
+            SemanticFreshness::Fresh,
+            None,
+            vec![],
+            SemanticReasonCode::GeneratedFromSource,
+        )
+    };
+
+    // An explicit source declaration is source-backed: `can_override_generated`
+    // requires both a source provenance and `ExactSource`, so a fixture that only
+    // sets `is_stronger_than_generated` cannot stand in for one.
+    let make_source_envelope = |entity_id: u64| {
+        SemanticFactEnvelope::new(
+            FactId(entity_id),
+            Some(EntityId(entity_id)),
+            SemanticFactKind::Declaration,
+            SourceAnchor::new(Some(AnchorId(1)), FileId(10), 10, 20),
+            SourceGeneration::known("sha256:aabbcc"),
+            None,
+            Some("My::Package".to_string()),
+            LifecyclePhase::Runtime,
+            SemanticProducer::FrameworkAdapter,
+            SemanticProvenance::Known(Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticFreshness::Fresh,
+            None,
+            vec![],
+            SemanticReasonCode::ExactSource,
+        )
+    };
+
+    // Synthesised fact (lower priority).
+    let synthesised = EmittedFact::new(
+        FactSinkId(1),
+        AdapterId(1),
+        "Moo",
+        Provenance::FrameworkSynthesis,
+        Confidence::Medium,
+        make_envelope(1),
+        FactClass::GeneratedMembers,
+        None,
+        false, // NOT stronger than generated
+    );
+
+    // Explicit declaration fact (higher priority).
+    let explicit = EmittedFact::new(
+        FactSinkId(1),
+        AdapterId(1),
+        "Moo",
+        Provenance::ExactAst,
+        Confidence::High,
+        make_source_envelope(2),
+        FactClass::GeneratedMembers,
+        None,
+        true, // IS stronger than generated — explicit `reader => 'get_name'`
+    );
+
+    // Provider conflict resolution. `is_stronger_than_generated` is an untrusted
+    // producer hint, so selecting on it directly would assert the same field the
+    // fixture sets. Resolve through the validator that downstream code must use.
+    let winning_fact = if explicit.can_override_generated() { &explicit } else { &synthesised };
+
+    assert!(winning_fact.can_override_generated(), "the winner must be source-backed");
+    assert_eq!(winning_fact.confidence, Confidence::High);
+    assert!(
+        !synthesised.can_override_generated(),
+        "a synthesised fact never overrides a generated one, whatever its hint claims"
+    );
+
+    // The discriminating case: a synthesised fact that *claims* precedence. Only
+    // this shape separates "reads the validator" from "reads the hint", because
+    // for the two facts above the hint and the validator happen to agree.
+    let forged = EmittedFact::new(
+        FactSinkId(1),
+        AdapterId(1),
+        "Moo",
+        Provenance::FrameworkSynthesis,
+        Confidence::High,
+        make_envelope(3),
+        FactClass::GeneratedMembers,
+        None,
+        true, // claims precedence with no source backing
+    );
+    assert!(forged.is_stronger_than_generated, "the fixture must carry the untrusted claim");
+    assert!(
+        !forged.can_override_generated(),
+        "a precedence claim without source-backed provenance must not override a generated fact"
+    );
+
+    // Both facts round-trip cleanly through JSON.
+    for fact in [&synthesised, &explicit] {
+        let json = serde_json::to_string(fact).expect("serialize fact");
+        let decoded: EmittedFact = serde_json::from_str(&json).expect("deserialize fact");
+        assert_eq!(&decoded, fact);
+    }
+
+    // FactSink correctly partitions usable from blocked facts.
+    let mut sink = FactSink::new(FactSinkId(1), AdapterId(1));
+    sink.facts.push(synthesised);
+    sink.facts.push(explicit);
+    assert_eq!(sink.len(), 2);
+    assert_eq!(sink.usable_facts().count(), 2, "neither fact has a blocking limitation");
+    assert_eq!(sink.blocking_limited_facts().count(), 0);
+}
+
+// ── Scenario 22: Framework Adapter — Budget-Exhausted Partial Result ───────
+
+/// Given an adapter that exceeds its budget mid-run,
+/// when it returns `BudgetExhausted` with partial facts,
+/// then the caller can use the partial facts but must not treat them as complete.
+#[test]
+fn given_budget_exceeded_when_adapter_returns_then_partial_facts_accessible_but_not_authoritative()
+{
+    use perl_semantic_facts::framework::{
+        AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterId, AdapterInput,
+        AdapterOutcome, AdapterResult, AdapterSourceScope, EmittedFact, FactClass, FactSink,
+        FactSinkId,
+    };
+    use perl_semantic_facts::framework::{AdapterDescriptor, AdapterDisposition};
+    use perl_semantic_facts::{
+        AnchorId, Confidence, EntityId, FactId, FileId, LifecyclePhase, Provenance,
+        SemanticConfidence, SemanticFactEnvelope, SemanticFactKind, SemanticFreshness,
+        SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
+    };
+
+    let descriptor = AdapterDescriptor::new(
+        AdapterId(5),
+        "moose",
+        "Moose",
+        None,
+        1,
+        AdapterDisposition::Production,
+    );
+    let scope = AdapterSourceScope::new(
+        FileId(20),
+        SourceGeneration::known("sha256:source"),
+        None,
+        Some(AnchorId(99)),
+        Some("BigApp::Model".to_string()),
+    );
+
+    // Simulate: adapter emits one fact before budget is exhausted.
+    let mut partial = FactSink::new(FactSinkId(10), AdapterId(5));
+    partial.facts.push(EmittedFact::new(
+        FactSinkId(10),
+        AdapterId(5),
+        "Moose",
+        Provenance::FrameworkSynthesis,
+        Confidence::Low,
+        SemanticFactEnvelope::new(
+            FactId(10),
+            Some(EntityId(10)),
+            SemanticFactKind::Declaration,
+            SourceAnchor::new(Some(AnchorId(10)), FileId(20), 5, 15),
+            SourceGeneration::known("sha256:source"),
+            None,
+            Some("BigApp::Model".to_string()),
+            LifecyclePhase::Runtime,
+            SemanticProducer::FrameworkAdapter,
+            SemanticProvenance::Known(Provenance::FrameworkSynthesis),
+            SemanticConfidence::Known(Confidence::Low),
+            SemanticFreshness::Fresh,
+            None,
+            vec![],
+            SemanticReasonCode::GeneratedFromSource,
+        ),
+        FactClass::GeneratedMembers,
+        None,
+        false,
+    ));
+    partial.total_payload_bytes = AdapterBudget::new(1, 1_024).max_payload_bytes + 1;
+
+    let admitted = AdapterInput::new(
+        descriptor.clone(),
+        scope.clone(),
+        vec![FactClass::GeneratedMembers],
+        Vec::new(),
+        Some(AdapterBudget::new(1, 1_024)),
+        AdapterCancellation::active(),
+    );
+    let result = AdapterResult::new(
+        descriptor,
+        scope,
+        SourceGeneration::known("sha256:source"),
+        AdapterOutcome::BudgetExhausted { partial_sink: Some(partial) },
+    );
+
+    // Partial result is accessible but must not be authoritative.
+    assert!(result.has_facts(), "partial facts must still be accessible");
+    assert_eq!(
+        result.validate_authority_against(&admitted),
+        Err(AdapterAuthorityError::IncompleteOutcome),
+        "budget-exhausted result must not be authoritative"
+    );
+}
