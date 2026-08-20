@@ -48,20 +48,13 @@ impl DebugAdapter {
     /// frame merely because its id is numerically valid; the typed frame
     /// authority in #9045/#9046 will replace this compatibility floor.
     pub(super) fn exact_current_stopped_frame_id(&self, requested: i64) -> Option<i32> {
-        if requested < 0 || requested > i32::MAX as i64 {
-            return None;
-        }
-        let frame_id = requested as i32;
+        let frame_id = i32::try_from(requested).ok().filter(|id| *id >= 0)?;
         let session = lock_or_recover(&self.session, "debug_adapter.session");
         let session = session.as_ref()?;
         if session.state != crate::debug_adapter::DebugState::Stopped {
             return None;
         }
-        session
-            .stack_frames
-            .first()
-            .filter(|frame| frame.id >= 0 && frame.id == frame_id)
-            .map(|frame| frame.id)
+        session.stack_frames.first().filter(|frame| frame.id == frame_id).map(|frame| frame.id)
     }
 
     /// Handle stackTrace request
@@ -151,7 +144,7 @@ impl DebugAdapter {
             // Keep parsed frames as best-effort latest snapshot. IDs and
             // captured arguments were rebound together above so every visible
             // frame remains uniquely addressable within this suspension.
-            let bound_frames = parsed_frames.clone();
+            let bound_frames = parsed_frames;
             if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             {
                 session.stack_frames = bound_frames.clone();
@@ -233,7 +226,7 @@ impl DebugAdapter {
         // Use VariableReference codec to encode scope refs into disjoint wire bands.
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
         let Some(locals_ref) =
-            (VariableReference::Scope { frame_id, kind: ScopeKind::Locals }).encode()
+            VariableReference::Scope { frame_id, kind: ScopeKind::Locals }.encode()
         else {
             return DapMessage::Response {
                 seq,

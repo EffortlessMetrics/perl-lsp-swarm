@@ -36,7 +36,7 @@ fn current_stopped_frame_id(session: &mut DebugSession, advance_generation: bool
     if advance_generation {
         session.stopped_generation = session.stopped_generation.saturating_add(1);
     }
-    session.stopped_generation.min(i32::MAX as u64).max(1) as i32
+    session.stopped_generation.clamp(1, i32::MAX as u64) as i32
 }
 
 impl DebugAdapter {
