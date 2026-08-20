@@ -110,7 +110,9 @@ $h2 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$tmp.2").Hash
 if ($h1 -ne $h2) { throw 'second run is not deterministic' }
 'SPEC_10894_SECOND_RUN=PASS'
 git diff --check
+if ($LASTEXITCODE -ne 0) { throw 'working tree diff --check failed' }
 git diff --cached --check
+if ($LASTEXITCODE -ne 0) { throw 'staged diff --check failed' }
 if (git status --short -- .spec/10894-editor-host-reliability | Select-String '^...\.spec/10894-editor-host-reliability/(?!context|acceptance|checklist)') { throw 'unexpected spec artifact' }
 ```
 
