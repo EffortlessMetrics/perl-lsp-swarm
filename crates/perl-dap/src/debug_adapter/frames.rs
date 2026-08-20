@@ -295,6 +295,7 @@ impl DebugAdapter {
 #[cfg(test)]
 mod pagination_tests {
     use super::*;
+    use crate::debug_adapter::DebugState;
 
     fn make_frame(id: i32, name: &str) -> StackFrame {
         StackFrame {
@@ -465,6 +466,24 @@ mod pagination_tests {
         let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": 7 })));
         let DapMessage::Response { body: Some(body), .. } = response else {
             return Err("running-session response did not contain a body".into());
+        };
+        assert_eq!(body.get("scopes"), Some(&json!([])));
+        Ok(())
+    }
+
+    #[test]
+    fn scopes_from_terminated_session_are_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::run")]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.terminated_session");
+            let session = guard.as_mut().ok_or("test session was not seeded")?;
+            session.state = DebugState::Terminated;
+        }
+
+        let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": 1 })));
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("terminated-session response did not contain a body".into());
         };
         assert_eq!(body.get("scopes"), Some(&json!([])));
         Ok(())

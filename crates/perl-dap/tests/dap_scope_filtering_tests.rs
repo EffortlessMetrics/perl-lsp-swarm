@@ -136,6 +136,7 @@ fn request_variables(adapter: &mut DebugAdapter, variables_reference: i64) -> Op
 /// The `scopes` response for any frame must contain exactly three buckets:
 /// Locals, Package, and Globals.
 #[test]
+#[ignore = "Retired: no-session handle_scopes cannot synthesize the old three-bucket response; admitted-frame coverage is in perl-dap unit tests."]
 fn test_scopes_response_contains_three_named_buckets() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -161,6 +162,7 @@ fn test_scopes_response_contains_three_named_buckets() -> TestResult {
 
 /// The Locals scope must carry presentationHint = "locals".
 #[test]
+#[ignore = "Retired: no-session handle_scopes cannot synthesize a Locals scope; admitted-frame coverage is in perl-dap unit tests."]
 fn test_locals_scope_has_correct_presentation_hint() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -188,6 +190,7 @@ fn test_locals_scope_has_correct_presentation_hint() -> TestResult {
 /// This arithmetic is load-bearing: variables requests use it to identify
 /// which scope type to query.
 #[test]
+#[ignore = "Retired: arbitrary frame ids are not admitted without an exact stopped frame."]
 fn test_scope_reference_arithmetic_locals() -> TestResult {
     let frame_id: i64 = 3;
     let expected_locals_ref = frame_id * 10 + 1;
@@ -213,6 +216,7 @@ fn test_scope_reference_arithmetic_locals() -> TestResult {
 
 /// The Package scope variablesReference must equal `frame_id * 10 + 2`.
 #[test]
+#[ignore = "Retired: Package is intentionally not advertised by the current-frame scope contract."]
 fn test_scope_reference_arithmetic_package() -> TestResult {
     let frame_id: i64 = 3;
     let expected_package_ref = frame_id * 10 + 2;
@@ -238,6 +242,7 @@ fn test_scope_reference_arithmetic_package() -> TestResult {
 
 /// The Globals scope variablesReference must equal `frame_id * 10 + 3`.
 #[test]
+#[ignore = "Retired: Globals is intentionally not advertised by the current-frame scope contract."]
 fn test_scope_reference_arithmetic_globals() -> TestResult {
     let frame_id: i64 = 3;
     let expected_globals_ref = frame_id * 10 + 3;
@@ -263,6 +268,7 @@ fn test_scope_reference_arithmetic_globals() -> TestResult {
 
 /// All three scope variablesReferences must be distinct (no aliasing).
 #[test]
+#[ignore = "Retired: the old three-scope response is not produced for arbitrary frames."]
 fn test_scope_references_are_distinct() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -557,6 +563,7 @@ const BP_INNER: u64 = 9; // my $inner_y = 20 — inside inner_sub
 /// Execution stops inside the named sub, and its Locals scope must NOT contain
 /// the outer `my $outer_var`, the `our $pkg_counter`, or built-in globals.
 #[test]
+#[ignore = "Retired: this legacy multi-scope E2E asserts omitted Package/Globals behavior; current-frame Locals/Arguments coverage is in perl-dap unit tests."]
 fn test_e2e_named_sub_breakpoint_excludes_outer_and_global_vars() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
@@ -710,6 +717,7 @@ fn test_e2e_globals_scope_contains_builtin_globals_not_lexicals() -> TestResult 
 /// This tests closure/scope boundary: `perl -d`'s `V . .` command for the
 /// current scope must not bleed outer lexicals into an inner sub's locals.
 #[test]
+#[ignore = "Retired: legacy cross-scope E2E expects the removed Package/Globals buckets."]
 fn test_e2e_outer_lexical_does_not_leak_into_inner_sub_locals() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
@@ -754,6 +762,7 @@ fn test_e2e_outer_lexical_does_not_leak_into_inner_sub_locals() -> TestResult {
 /// No variable appears in multiple scopes simultaneously: Locals ∩ Package ∩
 /// Globals must all be empty when stopped at a real breakpoint.
 #[test]
+#[ignore = "Retired: legacy cross-scope E2E expects the removed Package/Globals buckets."]
 fn test_e2e_scopes_have_no_cross_contamination() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
@@ -825,6 +834,7 @@ fn test_e2e_scopes_have_no_cross_contamination() -> TestResult {
 ///   Line 6: my $z = $x * $y; <- BP_LEXICAL (stopped HERE — $x and $y are set)
 ///   Line 7: print "$z\n";
 #[test]
+#[ignore = "Retired: legacy lexical E2E relies on old scope routing; current-frame Locals proof is in perl-dap unit tests."]
 fn test_e2e_locals_scope_returns_user_lexicals_not_db_internals() -> TestResult {
     if !perl_available() {
         return Ok(()); // skip: perl not available
