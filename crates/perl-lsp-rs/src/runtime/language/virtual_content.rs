@@ -224,6 +224,16 @@ fn collect_simple_pod_module_links(line: &str, current_module: &str, uris: &mut 
     }
 }
 
+/// Classify perldoc stdout as documentation content or unavailable.
+///
+/// Returns `false` when the output is empty, whitespace-only, or begins with a
+/// "No documentation found" notice that some `perldoc` implementations
+/// (notably `perldoc.bat` on Windows) emit to stdout on exit-0.
+fn is_useful_perldoc_output(content: &str) -> bool {
+    let trimmed = content.trim();
+    !trimmed.is_empty() && !trimmed.starts_with("No documentation found")
+}
+
 /// Fetch Perl documentation using perldoc
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_perldoc(module: &str, config: &WorkspaceConfig) -> Option<String> {
@@ -247,6 +257,7 @@ fn fetch_perldoc(module: &str, config: &WorkspaceConfig) -> Option<String> {
         String::from_utf8(output.stdout)
             .map_err(|e| tracing::warn!(module, error = %e, "Invalid UTF-8 in perldoc output"))
             .ok()
+            .filter(|content| is_useful_perldoc_output(content))
     } else {
         None
     }
@@ -260,14 +271,40 @@ fn fetch_perldoc(_module: &str, _config: &WorkspaceConfig) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    // Test assertions favor `expect_err()` with a descriptive message over
-    // silent unwraps; the workspace-wide deny is a production-code rule.
-    #![allow(clippy::expect_used)]
     use super::*;
     use perl_tdd_support::must;
     use std::fs;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn parser_fetch_perldoc_classifies_empty_stdout_as_unavailable() {
+        assert!(!is_useful_perldoc_output(""), "empty stdout must be classified as unavailable");
+        assert!(
+            !is_useful_perldoc_output("   "),
+            "whitespace-only stdout must be classified as unavailable"
+        );
+        assert!(
+            !is_useful_perldoc_output("\n\n"),
+            "newline-only stdout must be classified as unavailable"
+        );
+    }
+
+    #[test]
+    fn parser_fetch_perldoc_classifies_no_doc_notice_as_unavailable() {
+        assert!(
+            !is_useful_perldoc_output("No documentation found for NonExistent.\n"),
+            "perldoc.bat exit-0 no-doc notice must be classified as unavailable"
+        );
+        assert!(
+            !is_useful_perldoc_output("No documentation found.\n"),
+            "short no-doc notice must be classified as unavailable"
+        );
+        assert!(
+            is_useful_perldoc_output("NAME\n    strict\n"),
+            "real documentation content must be classified as available"
+        );
+    }
 
     #[test]
     fn parser_fetch_perldoc_strict() {
