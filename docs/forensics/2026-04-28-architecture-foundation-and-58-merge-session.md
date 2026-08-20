@@ -232,7 +232,7 @@ Seven BDD cluster PRs remain unmerged. The bundle-PR strategy from issue #7129 d
 
 Seven entries were added to project memory during or immediately after the session. Referenced by canonical name:
 
-- `feedback_rtk_gh_pr_checks_masks_failures` — filtered check summary masks aggregator failures; always use raw statusCheckRollup for go/no-go
+- `feedback_filtered_check_summary_masks_failures` — filtered check summary masks aggregator failures; always use raw statusCheckRollup for go/no-go
 - `feedback_spec_pseudocode_prevents_course_corrections` — pseudo-code + worked examples in specs prevent mid-implementation discoveries; quantified at 2-3x cost multiplier
 - `feedback_cascade_conflict_dominant_cost` — doc waves into shared files produce O(N) conflicts; sequence same-file PRs
 - `feedback_haiku_bounded_mission_framing` — haiku is capable on bounded verification; the six-element mission frame unlocks it
