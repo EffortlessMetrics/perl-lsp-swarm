@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11128 |
-| Rust-family files | 3392 |
-| Non-Rust files | 7736 |
-| Allowlisted | 5461 |
+| Total tracked files | 11130 |
+| Rust-family files | 3395 |
+| Non-Rust files | 7735 |
+| Allowlisted | 5460 |
 | Unclassified | 2275 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 338 |
-| documentation | 2537 |
+| config | 342 |
+| documentation | 2541 |
 | generated | 2 |
 | production | 298 |
-| test | 1826 |
+| test | 1817 |
 | tooling | 460 |
 | unclassified | 2275 |
 
@@ -2348,6 +2348,7 @@
 | `.changes/unreleased/product-10532-Added-121200.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-10533-Fixed-121500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11613-Fixed-181500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-11739-Fixed-001500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2489,6 +2490,7 @@
 | `.changes/unreleased/product-8250-Added-223800.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9103-Added-211500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9450-Added-125043.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-9593-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9597-Security-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9677-Fixed-195900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-9768-Fixed-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2653,6 +2655,7 @@
 | `.ci/schemas/agent-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-client-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/editor-ux.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/generated-status-cell.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/parser-accuracy.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/receipt.schema.yaml` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/ux-flakes.schema.json` | config | `non-rust-ci-config` | release/ci |
@@ -2793,6 +2796,7 @@
 | `.github/workflows/em-ci-routed-rust.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/flake-detection.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/gate-enforcement-contract.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/generated-status-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-bootstrap-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-checksum-contract.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/installer-powershell-checksum-contract.yml` | config | `non-rust-github-workflows` | release/ci |
@@ -3627,7 +3631,6 @@
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_foreach_keys_iteration.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_hash_operations.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_hash_slice_and_exists_delete_flow.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
-| `crates/perl-parser/tests/snapshots/ast_snap__ast_hash_slice_and_exists_delete_flow.snap.new` | test | `non-rust-insta-pending-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_here_doc_assignment.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_if_elsif_else.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_lexical_filehandles_and_chomp_loop.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
@@ -3649,18 +3652,12 @@
 | `crates/perl-parser/tests/snapshots/ast_snap__ast_while_loop.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__errors_broken_open_arguments_then_followup.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__errors_broken_regex_delimiter.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
-| `crates/perl-parser/tests/snapshots/ast_snap__errors_broken_regex_delimiter.snap.new` | test | `non-rust-insta-pending-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__errors_missing_rhs.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
-| `crates/perl-parser/tests/snapshots/ast_snap__errors_missing_rhs.snap.new` | test | `non-rust-insta-pending-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__errors_multiple_statements_errors.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
-| `crates/perl-parser/tests/snapshots/ast_snap__errors_multiple_statements_errors.snap.new` | test | `non-rust-insta-pending-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__errors_truncated_hash.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__errors_unclosed_block.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
-| `crates/perl-parser/tests/snapshots/ast_snap__errors_unclosed_block.snap.new` | test | `non-rust-insta-pending-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__errors_unclosed_hash_subscript_and_followup.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
-| `crates/perl-parser/tests/snapshots/ast_snap__errors_unclosed_hash_subscript_and_followup.snap.new` | test | `non-rust-insta-pending-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__errors_unterminated_heredoc.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
-| `crates/perl-parser/tests/snapshots/ast_snap__errors_unterminated_heredoc.snap.new` | test | `non-rust-insta-pending-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__errors_unterminated_string_and_followup.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__recovery_broken_open_arguments_then_followup_statement.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__recovery_broken_regex_then_followup_statement.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
@@ -3676,9 +3673,7 @@
 | `crates/perl-parser/tests/snapshots/ast_snap__recovery_unclosed_hash_subscript_then_followup_statement.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__recovery_unclosed_paren.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__recovery_unclosed_quote_then_valid_statement.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
-| `crates/perl-parser/tests/snapshots/ast_snap__recovery_unclosed_quote_then_valid_statement.snap.new` | test | `non-rust-insta-pending-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__recovery_unterminated_quote_like_operator.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
-| `crates/perl-parser/tests/snapshots/ast_snap__recovery_unterminated_quote_like_operator.snap.new` | test | `non-rust-insta-pending-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__semantic_token_legend_index_mapping.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__semantic_token_legend_modifiers.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
 | `crates/perl-parser/tests/snapshots/ast_snap__semantic_token_legend_types.snap` | test | `non-rust-insta-snapshots` | parser/snapshots |
@@ -4671,6 +4666,8 @@
 | `docs/project/status/editor_ux.schema.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/first_hour_vscode_receipt.json` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/first_hour_vscode_receipt.md` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/generated-status-cells.json` | documentation | `non-rust-docs-tree` | docs |
+| `docs/project/status/generated-status-cells.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/hir_lowering.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/index.md` | documentation | `non-rust-docs-tree` | docs |
 | `docs/project/status/lsp.md` | documentation | `non-rust-docs-tree` | docs |
@@ -5648,6 +5645,8 @@
 | `policy/clippy-debt.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/clippy-lints.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/framework-adapters.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/generated-status-contract.toml` | config | `non-rust-policy-ledgers` | release/ci |
+| `policy/generated-status-evidence.json` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/install-surface-registry.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/lsp-client-support.toml` | config | `non-rust-policy-ledgers` | release/ci |
 | `policy/non-rust-allowlist.toml` | config | `non-rust-policy-ledgers` | release/ci |
