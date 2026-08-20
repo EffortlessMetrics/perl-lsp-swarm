@@ -963,3 +963,54 @@ fn identical_duplicate_rows_collapse_to_one_record() -> Result<(), Box<dyn Error
     assert_eq!(result.value_facts().count(), 1);
     Ok(())
 }
+
+#[test]
+fn contradictory_occurrence_kinds_fail_closed_in_both_orders() -> Result<(), Box<dyn Error>> {
+    // Same OccurrenceId with contradictory kinds (Definition vs Call) produces
+    // EQUAL envelopes because occurrence_kind lives outside the envelope.
+    // Collapsing them would make include_declaration=false order-dependent
+    // and could mint an exact-empty grant hiding the real call reference.
+    let references = |port: &FileFactShardPort| -> Result<ProviderQueryResult, Box<dyn Error>> {
+        Ok(execute(
+            port,
+            &request(
+                ProviderQueryKind::References { include_declaration: false },
+                ProviderQuerySubject::Entity(EntityId(30)),
+            ),
+        )?)
+    };
+
+    let mut def_first = shard(Provenance::ExactAst, Confidence::High);
+    def_first.occurrences[0].kind = OccurrenceKind::Definition;
+    let mut call_row = def_first.occurrences[0].clone();
+    call_row.kind = OccurrenceKind::Call;
+    def_first.occurrences.push(call_row);
+
+    let mut call_first = shard(Provenance::ExactAst, Confidence::High);
+    call_first.occurrences[0].kind = OccurrenceKind::Call;
+    let mut def_row = call_first.occurrences[0].clone();
+    def_row.kind = OccurrenceKind::Definition;
+    call_first.occurrences.push(def_row);
+
+    let first = parser_port(&[def_first], ProviderSnapshotCompleteness::Complete)?;
+    let second = parser_port(&[call_first], ProviderSnapshotCompleteness::Complete)?;
+    let first_result = references(&first)?;
+    let second_result = references(&second)?;
+
+    // Both orders agree: the contested occurrence is tombstoned, the
+    // capability is downgraded, and no exact-empty grant hides the reference.
+    for result in [&first_result, &second_result] {
+        assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+        assert_eq!(result.value_facts().count(), 0);
+        assert!(!result.is_exact_empty());
+        assert!(
+            result
+                .evidence()
+                .limitations()
+                .iter()
+                .any(|limitation| limitation.contains("occurrence:40:conflicting_duplicate"))
+        );
+    }
+    assert_eq!(serde_json::to_string(&first_result)?, serde_json::to_string(&second_result)?);
+    Ok(())
+}

@@ -38,11 +38,11 @@ use super::semantic_port::{
 };
 use perl_semantic_facts::{
     AnchorFact, AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, EntityFact,
-    EntityId, FactId, FileId, LifecyclePhase, OccurrenceFact, OccurrenceKind, Provenance,
-    ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace, ProviderFallbackState,
-    SemanticConfidence, SemanticFactEnvelope, SemanticFactKind, SemanticFactStatus,
-    SemanticFreshness, SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor,
-    SourceGeneration,
+    EntityId, FactId, FileId, LifecyclePhase, OccurrenceFact, OccurrenceId, OccurrenceKind,
+    Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
+    ProviderFallbackState, SemanticConfidence, SemanticFactEnvelope, SemanticFactKind,
+    SemanticFactStatus, SemanticFreshness, SemanticProducer, SemanticProvenance,
+    SemanticReasonCode, SourceAnchor, SourceGeneration,
 };
 use perl_workspace::workspace::workspace_index::FileFactShard;
 use serde::Serialize;
@@ -302,10 +302,25 @@ impl FileFactShardPort {
         }
         kept.sort_by_key(|record| record.envelope.fact_id);
         // Identical duplicate shard rows collapse to the one canonical record,
-        // matching the documented decision and CanonicalEnvelopePort; the
-        // conflicting case is rejected below.
-        kept.dedup_by(|left, right| left.envelope == right.envelope);
-        reject_conflicting_fact_ids(kept.iter().map(|record| &record.envelope))?;
+        // matching the documented decision and CanonicalEnvelopePort. The key
+        // is the whole record: occurrence_kind lives outside the envelope and
+        // drives reference filtering, so envelope equality alone is not
+        // identity.
+        kept.dedup_by(|left, right| {
+            left.envelope == right.envelope
+                && left.names == right.names
+                && left.occurrence_kind == right.occurrence_kind
+        });
+        // After the full-record collapse, any surviving same-identity pair is
+        // contradictory producer data and fails closed. The per-row
+        // tombstones in adapt_shard degrade the common cases with named
+        // limitations before this backstop is needed.
+        for window in kept.windows(2) {
+            let [left, right] = window else { continue };
+            if left.envelope.fact_id == right.envelope.fact_id {
+                return Err(ProviderAdapterError::ConflictingFactId(right.envelope.fact_id));
+            }
+        }
         limitations.sort();
         limitations.dedup();
         let denominator_scope = file_scope(file_ids.iter().copied());
@@ -601,7 +616,46 @@ fn adapt_shard(
         records.push(record_from_entity(entity, anchor, producer, trace_source, snapshot, shard));
     }
 
+    // Occurrence identities tombstone on the same terms as anchors and
+    // entities: two rows sharing one OccurrenceId with different content
+    // (e.g. Definition vs Call) are contradictory producer data. Their
+    // adapted envelopes can be EQUAL because occurrence_kind lives outside
+    // the envelope, so the conflict must be settled here — collapsing them
+    // would make the include_declaration filter order-dependent and could
+    // false-empty a references query.
+    let mut occurrences_by_id: BTreeMap<OccurrenceId, &OccurrenceFact> = BTreeMap::new();
+    let mut rejected_occurrences: BTreeSet<OccurrenceId> = BTreeSet::new();
     for occurrence in &shard.occurrences {
+        if rejected_occurrences.contains(&occurrence.id) {
+            continue;
+        }
+        match occurrences_by_id.get(&occurrence.id) {
+            Some(existing) if *existing != occurrence => {
+                occurrences_by_id.remove(&occurrence.id);
+                rejected_occurrences.insert(occurrence.id);
+                limitations.push(format!(
+                    "occurrence:{}:conflicting_duplicate:{}",
+                    occurrence.id.0, shard.file_id.0
+                ));
+                incomplete.extend([
+                    ProviderQueryCapability::References,
+                    ProviderQueryCapability::Visibility,
+                    ProviderQueryCapability::ScopeBindings,
+                    ProviderQueryCapability::Boundaries,
+                ]);
+            }
+            Some(_) => {}
+            None => {
+                occurrences_by_id.insert(occurrence.id, occurrence);
+            }
+        }
+    }
+
+    for occurrence in &shard.occurrences {
+        if occurrences_by_id.get(&occurrence.id) != Some(&occurrence) {
+            // Conflicting duplicate identity; already limited above.
+            continue;
+        }
         let Some(anchor) = anchors.get(&occurrence.anchor_id).copied() else {
             limitations.push(format!(
                 "occurrence:{}:unresolved_source_anchor:{}",
