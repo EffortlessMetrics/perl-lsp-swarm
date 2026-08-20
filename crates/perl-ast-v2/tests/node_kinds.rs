@@ -317,7 +317,7 @@ fn test_error_sexp_ignores_recovery_metadata_but_equality_keeps_it() {
 }
 
 #[test]
-fn variable_declaration_sexp_includes_declarator_and_initializer() {
+fn variable_declaration_sexp_includes_declarator_attributes_and_initializer() {
     let mut id_gen = NodeIdGenerator::new();
     let var =
         make_node(&mut id_gen, NodeKind::Variable { sigil: "$".into(), name: "count".into() });
@@ -332,15 +332,14 @@ fn variable_declaration_sexp_includes_declarator_and_initializer() {
         },
     );
 
-    assert_eq!(node.to_sexp(), "(variable_declaration state (variable $ count) (number 1))");
-
-    // NOTE: `attributes` is deliberately absent above, and that is what the
-    // code does today -- the `VariableDeclaration` and `VariableListDeclaration`
-    // arms of `to_sexp_depth` both destructure with `..`, discarding it. This
-    // test previously asserted `sexp.contains("shared")` and could not have
-    // passed; it never ran, so the omission was never surfaced. Whether the
-    // s-expression should carry attributes is an open question recorded in
-    // #11708, not something this test decides.
+    // The `(attrs ...)` group sits between the declarand and the initializer,
+    // matching Perl source order (`state $count :shared = 1`). The omission this
+    // test used to document -- both declaration arms destructured with `..` and
+    // discarded `attributes` -- was fixed under #11734.
+    assert_eq!(
+        node.to_sexp(),
+        "(variable_declaration state (variable $ count) (attrs shared) (number 1))"
+    );
 }
 
 #[test]

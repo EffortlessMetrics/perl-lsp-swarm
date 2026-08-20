@@ -435,7 +435,11 @@ fn streaming_completion_missing_params_returns_error() -> TestResult {
 #[test]
 fn streaming_completion_capability_advertised() -> TestResult {
     let mut harness = LspHarness::new();
-    let init_result = harness.initialize(None)?;
+    // The experimental custom request is advertised only to clients that
+    // declared the standard inline-completion capability (#7682).
+    let init_result = harness.initialize(Some(json!({
+        "textDocument": { "inlineCompletion": { "dynamicRegistration": false } }
+    })))?;
 
     let experimental = init_result
         .pointer("/capabilities/experimental")
@@ -775,6 +779,60 @@ mod mock_streaming_completion_tests {
         }
     }
 
+    /// Backend that counts invocations so tests can prove a route never
+    /// reached the backend.
+    struct CountingChunkBackend {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        chunks: Vec<&'static str>,
+    }
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for CountingChunkBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            for (idx, chunk) in self.chunks.iter().enumerate() {
+                let _ = sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
+                    text: (*chunk).to_string(),
+                    is_final: idx + 1 == self.chunks.len(),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    /// Variant of `request_streaming_completion` that carries an explicit
+    /// `context` object, so tests can drive trigger-kind and
+    /// selected-completion policy through the stream route.
+    fn request_streaming_completion_with_context(
+        server: &LspServer,
+        uri: &str,
+        character: u32,
+        token: &str,
+        context: Value,
+    ) -> Value {
+        let request = JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: Some(perl_lsp::protocol::JsonRpcId::Integer(2_i64)),
+            method: "textDocument/perlInlineCompletionStream".into(),
+            params: Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 0, "character": character },
+                "partialResultToken": token,
+                "context": context,
+            })),
+        };
+
+        server.handle_request(request).and_then(|response| response.result).unwrap_or(json!(null))
+    }
+
     #[test]
     fn streaming_completion_mock_backend_cumulative_chunks() {
         let (server, capture) = create_server();
@@ -810,6 +868,10 @@ mod mock_streaming_completion_tests {
     #[test]
     fn streaming_completion_filters_parse_unsafe_final_chunk() {
         let (server, capture) = create_server();
+        // fallback=false: a filtered final is a typed final-empty decision
+        // (#10246); with fallback enabled the deterministic route would own
+        // the final content instead.
+        server.test_configure_ai_completion(true, false);
         let backend = MockChunkBackend { chunks: vec!["my $value = ;"], delays_ms: vec![0] };
         server.test_install_ai_backend(Some(Arc::new(backend)));
 
@@ -1073,6 +1135,222 @@ mod mock_streaming_completion_tests {
                 .count(),
             2,
             "one-shot and streaming paths should share the reset deduplication key"
+        );
+    }
+
+    /// An automatic custom-stream request is invoked-only policy: it must be
+    /// delegated to the deterministic-only standard route before any session or
+    /// backend work, making zero backend calls and emitting no stream progress.
+    #[test]
+    fn streaming_completion_automatic_trigger_makes_zero_backend_calls() {
+        let (server, capture) = create_server();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend = CountingChunkBackend { calls: Arc::clone(&calls), chunks: vec!["1"] };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-automatic.pl";
+        open_doc(&server, uri, "use str");
+        let result = request_streaming_completion_with_context(
+            &server,
+            uri,
+            7,
+            "stream-automatic",
+            json!({ "triggerKind": 2 }),
+        );
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an automatic custom-stream request must never reach the AI backend"
+        );
+        assert!(
+            !result.is_null(),
+            "an automatic request delegates to the standard inline-completion route"
+        );
+        let texts: Vec<&str> = result["items"]
+            .as_array()
+            .map(|items| items.iter().filter_map(|item| item["insertText"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            texts,
+            vec!["strict;"],
+            "the delegated answer must be the deterministic standard-route candidate"
+        );
+        let progress: Vec<_> = capture
+            .messages()
+            .into_iter()
+            .filter(|message| {
+                message.pointer("/params/token").and_then(Value::as_str) == Some("stream-automatic")
+            })
+            .collect();
+        assert!(progress.is_empty(), "a delegated request must not emit stream progress");
+    }
+
+    /// The actual `selectedCompletionInfo` reaches the stream route: a selected
+    /// completion the external candidate does not extend suppresses it, exactly
+    /// as the buffered route would.
+    #[test]
+    fn streaming_completion_selected_completion_info_mismatch_filters_candidate() {
+        let (server, capture) = create_server();
+        // fallback=false: the filtered final is a typed final-empty decision.
+        server.test_configure_ai_completion(true, false);
+        let backend = MockChunkBackend { chunks: vec!["strict;"], delays_ms: vec![0] };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-selected-mismatch.pl";
+        open_doc(&server, uri, "use ");
+        let result = request_streaming_completion_with_context(
+            &server,
+            uri,
+            4,
+            "stream-selected-mismatch",
+            json!({
+                "triggerKind": 1,
+                "selectedCompletionInfo": {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 4 }
+                    },
+                    "text": "strictlyDifferent"
+                }
+            }),
+        );
+        assert!(result.is_null());
+
+        let progress = wait_for_progress_messages(
+            &capture,
+            "stream-selected-mismatch",
+            Duration::from_millis(500),
+        );
+        assert_eq!(progress.len(), 1);
+        let value = &progress[0]["params"]["value"];
+        assert!(value["isFinal"].as_bool().unwrap_or(false));
+        assert!(
+            value["items"].as_array().is_some_and(Vec::is_empty),
+            "a candidate that does not extend the selected completion must be filtered"
+        );
+    }
+
+    /// A compatible selected completion preserves the exact accepted
+    /// replacement range through the stream route, matching the buffered
+    /// route's contract.
+    #[test]
+    fn streaming_completion_selected_completion_info_match_preserves_range() {
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        let backend = MockChunkBackend { chunks: vec!["strict;"], delays_ms: vec![0] };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-selected-match.pl";
+        open_doc(&server, uri, "use str");
+        let result = request_streaming_completion_with_context(
+            &server,
+            uri,
+            7,
+            "stream-selected-match",
+            json!({
+                "triggerKind": 1,
+                "selectedCompletionInfo": {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    "text": "strict"
+                }
+            }),
+        );
+        assert!(result.is_null());
+
+        let progress = wait_for_progress_messages(
+            &capture,
+            "stream-selected-match",
+            Duration::from_millis(500),
+        );
+        assert_eq!(progress.len(), 1);
+        let value = &progress[0]["params"]["value"];
+        assert!(value["isFinal"].as_bool().unwrap_or(false));
+        let item = &value["items"][0];
+        assert_eq!(item["insertText"], "strict;");
+        assert_eq!(
+            item["range"],
+            json!({
+                "start": { "line": 0, "character": 4 },
+                "end": { "line": 0, "character": 7 }
+            }),
+            "a compatible selected completion must keep the exact accepted replacement range"
+        );
+    }
+
+    /// A filtered final with `fallback=true` is a typed fallback decision: the
+    /// deterministic route owns the final content instead of the unsafe
+    /// external text.
+    #[test]
+    fn streaming_completion_filtered_final_with_fallback_returns_deterministic() {
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, true);
+        let backend = MockChunkBackend { chunks: vec!["strict; my $x = ;"], delays_ms: vec![0] };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-filtered-fallback.pl";
+        open_doc(&server, uri, "use str");
+        let result = request_streaming_completion_with_context(
+            &server,
+            uri,
+            7,
+            "stream-filtered-fallback",
+            json!({ "triggerKind": 1 }),
+        );
+        assert!(result.is_null());
+
+        let progress = wait_for_progress_messages(
+            &capture,
+            "stream-filtered-fallback",
+            Duration::from_millis(500),
+        );
+        assert_eq!(progress.len(), 1);
+        let value = &progress[0]["params"]["value"];
+        assert!(value["isFinal"].as_bool().unwrap_or(false));
+        let texts: Vec<&str> = value["items"]
+            .as_array()
+            .map(|items| items.iter().filter_map(|item| item["insertText"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            texts,
+            vec!["strict;"],
+            "a filtered final with fallback must hand content to the deterministic route"
+        );
+    }
+
+    /// A filtered final with `fallback=false` is a typed final-empty decision.
+    #[test]
+    fn streaming_completion_filtered_final_without_fallback_returns_empty() {
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        let backend = MockChunkBackend { chunks: vec!["strict; my $x = ;"], delays_ms: vec![0] };
+        server.test_install_ai_backend(Some(Arc::new(backend)));
+
+        let uri = "file:///streaming-filtered-no-fallback.pl";
+        open_doc(&server, uri, "use str");
+        let result = request_streaming_completion_with_context(
+            &server,
+            uri,
+            7,
+            "stream-filtered-no-fallback",
+            json!({ "triggerKind": 1 }),
+        );
+        assert!(result.is_null());
+
+        let progress = wait_for_progress_messages(
+            &capture,
+            "stream-filtered-no-fallback",
+            Duration::from_millis(500),
+        );
+        assert_eq!(progress.len(), 1);
+        let value = &progress[0]["params"]["value"];
+        assert!(value["isFinal"].as_bool().unwrap_or(false));
+        assert!(
+            value["items"].as_array().is_some_and(Vec::is_empty),
+            "a filtered final without fallback must be final and empty"
         );
     }
 }

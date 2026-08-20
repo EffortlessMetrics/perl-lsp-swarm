@@ -128,4 +128,8 @@ harness = false
 name = "test_incremental_v2"
 required-features = ["incremental"]
 
+[[test]]
+name = "incremental_parse_snapshot"
+required-features = ["incremental"]
+
 # Edge case test examples
