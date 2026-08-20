@@ -55,6 +55,8 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
             && scope_step.contains(
                 "\"$CARGO_TARGET_DIR/debug/xtask\" ci-scope --base origin/main --format json"
             )
+            && scope_step.contains("warm_inline_completion=true")
+            && scope_step.contains("warm_inline_completion=$warm_inline_completion\" >> \"$GITHUB_OUTPUT\"")
             && scope_step.contains("fail-closed"),
         "PR Smoke must use the warmed xtask's ci-scope JSON with fail-closed warm-up fallback"
     );
