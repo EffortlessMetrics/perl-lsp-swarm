@@ -152,6 +152,27 @@ describe('managed candidate publication and selection', () => {
     ).toEqual({ kind: 'restart_required', candidate_id: newCandidate.manifest.candidate_id });
   });
 
+  test('requires restart when a running catalog candidate is no longer compatible', () => {
+    const runningCandidate = entry('a');
+    const replacementCandidate = entry('f');
+    const current = publishManagedCurrentSelection(replacementCandidate.manifest, null);
+
+    // The candidate is still catalogued, but the host can no longer use it.
+    // Returning a replacement as if it were already running would authorize
+    // a silent process rebinding across an incompatible candidate boundary.
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [runningCandidate, replacementCandidate],
+        compatible_candidate_ids: [replacementCandidate.manifest.candidate_id],
+        running_candidate_id: runningCandidate.manifest.candidate_id,
+      }),
+    ).toEqual({
+      kind: 'restart_required',
+      candidate_id: replacementCandidate.manifest.candidate_id,
+    });
+  });
+
   test('selects the current candidate for a fresh host when it is usable', () => {
     const candidate = entry('a');
     const current = publishManagedCurrentSelection(candidate.manifest, null);
