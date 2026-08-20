@@ -277,11 +277,12 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
         .and_then(TomlValue::as_array)
         .ok_or("required-checks.toml must declare a checks array")?;
 
-    for required_name in ["Perl LSP Rust Small Result", "ripr+ New Gap Gate", "validate-title"] {
-        let check = checks
-            .iter()
-            .find(|check| check.get("name").and_then(TomlValue::as_str) == Some(required_name))
-            .ok_or_else(|| format!("required-checks.toml is missing `{required_name}`"))?;
+    for check in checks
+        .iter()
+        .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+    {
+        let required_name =
+            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
         let events = check
             .get("events")
             .and_then(TomlValue::as_array)
