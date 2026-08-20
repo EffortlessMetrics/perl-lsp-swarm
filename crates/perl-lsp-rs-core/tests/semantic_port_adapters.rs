@@ -867,3 +867,99 @@ fn tombstoned_duplicate_identities_cannot_be_resurrected() -> Result<(), Box<dyn
     assert_eq!(result.value_facts().count(), 1);
     Ok(())
 }
+
+#[test]
+fn imperfect_shard_degrades_instead_of_hard_erroring_exact() -> Result<(), Box<dyn Error>> {
+    // One good anchored entity beside a limitation-bearing entity: the good
+    // query must degrade with the limitation named, never hard-error.
+    let mut mixed = shard(Provenance::ExactAst, Confidence::High);
+    mixed.entities.push(EntityFact {
+        id: EntityId(31),
+        kind: EntityKind::Subroutine,
+        canonical_name: "Other::broken".to_string(),
+        anchor_id: None,
+        scope_id: Some(ScopeId(2)),
+        provenance: Provenance::ExactAst,
+        confidence: Confidence::High,
+    });
+    let port = parser_port(&[mixed], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string())),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Degraded);
+    assert_eq!(result.value_facts().count(), 1);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("missing_source_anchor"))
+    );
+
+    // Cross-shard blast radius: a tombstoned anchor in shard 1 must not kill
+    // exact-eligible answers built only from shard 2; they degrade instead.
+    let mut poisoned = shard(Provenance::ExactAst, Confidence::High);
+    let mut conflicting = poisoned.anchors[0].clone();
+    conflicting.span_start_byte = 6;
+    poisoned.anchors.push(conflicting);
+    let clean = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
+    let port = parser_port(&[poisoned, clean], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::File(FileId(11))),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Degraded);
+    assert_eq!(result.value_facts().count(), 1);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("conflicting_duplicate"))
+    );
+
+    // Control: with no limitations anywhere, the same shapes stay exact.
+    let clean_first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
+    let clean_second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
+    let port = parser_port(&[clean_first, clean_second], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::File(FileId(11))),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(result.value_facts().count(), 1);
+    Ok(())
+}
+
+#[test]
+fn identical_duplicate_rows_collapse_to_one_record() -> Result<(), Box<dyn Error>> {
+    // Identical entity rows [A, A] carry no new information: one canonical
+    // fact answers the query, not a duplicate-identity contract error.
+    let mut dup_entity = shard(Provenance::ExactAst, Confidence::High);
+    let duplicate = dup_entity.entities[0].clone();
+    dup_entity.entities.push(duplicate);
+    let port = parser_port(&[dup_entity], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string())),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(result.value_facts().count(), 1);
+
+    // Identical occurrence rows [A, A] collapse on the same terms.
+    let mut dup_occurrence = shard(Provenance::ExactAst, Confidence::High);
+    let duplicate = dup_occurrence.occurrences[0].clone();
+    dup_occurrence.occurrences.push(duplicate);
+    let port = parser_port(&[dup_occurrence], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(
+            ProviderQueryKind::References { include_declaration: false },
+            ProviderQuerySubject::Entity(EntityId(30)),
+        ),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(result.value_facts().count(), 1);
+    Ok(())
+}

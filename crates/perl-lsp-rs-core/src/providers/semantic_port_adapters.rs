@@ -301,6 +301,10 @@ impl FileFactShardPort {
             }
         }
         kept.sort_by_key(|record| record.envelope.fact_id);
+        // Identical duplicate shard rows collapse to the one canonical record,
+        // matching the documented decision and CanonicalEnvelopePort; the
+        // conflicting case is rejected below.
+        kept.dedup_by(|left, right| left.envelope == right.envelope);
         reject_conflicting_fact_ids(kept.iter().map(|record| &record.envelope))?;
         limitations.sort();
         limitations.dedup();
@@ -1157,7 +1161,10 @@ fn query_records(
     let exact_eligible = snapshot.facts_can_be_exact()
         && request.context.is_exact_ready()
         && exact_grade
-        && uniform_provenance.is_some();
+        && uniform_provenance.is_some()
+        // The checked boundary rejects Exact-with-limitations; an imperfect
+        // shard degrades with its limitations named instead.
+        && limitations.is_empty();
     if exact_eligible {
         let facts = selection_facts(&selection)?;
         let traces = traces_for(request, &facts, records);
