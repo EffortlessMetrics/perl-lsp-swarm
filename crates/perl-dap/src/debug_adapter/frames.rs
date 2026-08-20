@@ -194,16 +194,14 @@ impl DebugAdapter {
             .cloned()
             .unwrap_or_default();
 
-        let mut scopes = vec![
-            Scope {
-                name: "Locals".to_string(),
-                presentation_hint: Some("locals".to_string()),
-                variables_reference: i64::from(locals_ref),
-                expensive: false,
-                named_variables: None,
-                indexed_variables: None,
-            },
-        ];
+        let mut scopes = vec![Scope {
+            name: "Locals".to_string(),
+            presentation_hint: Some("locals".to_string()),
+            variables_reference: i64::from(locals_ref),
+            expensive: false,
+            named_variables: None,
+            indexed_variables: None,
+        }];
         if !arguments.is_empty() {
             let arguments_ref = VariableReference::Scope { frame_id, kind: ScopeKind::Arguments }
                 .encode()
@@ -362,7 +360,8 @@ mod pagination_tests {
     }
 
     #[test]
-    fn scopes_without_exact_current_stopped_frame_are_empty() -> Result<(), Box<dyn std::error::Error>> {
+    fn scopes_without_exact_current_stopped_frame_are_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
         let adapter = DebugAdapter::new();
 
         for frame_id in [-1_i64, 8, i64::from(i32::MAX) + 1] {
