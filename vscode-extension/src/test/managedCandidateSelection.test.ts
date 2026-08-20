@@ -333,6 +333,57 @@ describe('managed candidate publication and selection', () => {
     );
   });
 
+  test('a forged record naming another candidate still stalls GC globally', () => {
+    const currentCandidate = entry('a');
+    const forgedTarget = entry('f');
+    const uninvolved = entry('1');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    // The forged record names a different candidate than the one being
+    // classified: a structurally invalid record poisons the enumeration
+    // itself, so protection is not scoped to the forged record's subject.
+    const forgedElsewhere = {
+      ...createManagedHostReference('session-forged', forgedTarget.manifest.candidate_id),
+      schema_version: 'managed_host_candidate_reference.v2',
+      state: 'released' as const,
+    } as unknown as ManagedHostCandidateReference;
+    const input = retention({
+      current,
+      catalog: [currentCandidate, forgedTarget, uninvolved],
+      host_references: [forgedElsewhere],
+    });
+
+    expect(classifyManagedCandidateRetention(uninvolved.manifest.candidate_id, input)).toBe(
+      'unknown_not_safe_to_delete',
+    );
+    expect(mayGarbageCollectManagedCandidate(uninvolved.manifest.candidate_id, input)).toBe(false);
+  });
+
+  test('forged session ids and non-canonical candidate ids are invalid host references', () => {
+    const currentCandidate = entry('a');
+    const staleCandidate = entry('f');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    const valid = createManagedHostReference(
+      'session-valid',
+      staleCandidate.manifest.candidate_id,
+    );
+    const badSession = { ...valid, session_id: '../escape' };
+    const badCandidate = { ...valid, candidate_id: 'candidate-not-a-digest' };
+
+    for (const forged of [badSession, badCandidate]) {
+      expect(() => releaseManagedHostReference(forged)).toThrow(
+        'cannot release invalid managed host reference',
+      );
+      const input = retention({
+        current,
+        catalog: [currentCandidate, staleCandidate],
+        host_references: [forged],
+      });
+      expect(classifyManagedCandidateRetention(staleCandidate.manifest.candidate_id, input)).toBe(
+        'unknown_not_safe_to_delete',
+      );
+    }
+  });
+
   test('refuses GC when host-reference enumeration was not proven exhaustive', () => {
     const currentCandidate = entry('a');
     const staleLookingCandidate = entry('f');
