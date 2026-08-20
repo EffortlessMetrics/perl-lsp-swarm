@@ -6,17 +6,17 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11131 |
-| Rust-family files | 3395 |
-| Non-Rust files | 7736 |
-| Allowlisted | 5461 |
+| Total tracked files | 11133 |
+| Rust-family files | 3396 |
+| Non-Rust files | 7737 |
+| Allowlisted | 5462 |
 | Unclassified | 2275 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 342 |
+| config | 343 |
 | documentation | 2542 |
 | generated | 2 |
 | production | 298 |
@@ -2783,6 +2783,7 @@
 | `.github/workflows/ci-security.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/ci.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/composite-action-contracts.yml` | config | `non-rust-github-workflows` | release/ci |
+| `.github/workflows/corpus-windows-reparse-proof.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-protocol-authority.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dap-scorecard.yml` | config | `non-rust-github-workflows` | release/ci |
 | `.github/workflows/dependency-review.yml` | config | `non-rust-github-workflows` | release/ci |
