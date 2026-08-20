@@ -134,7 +134,8 @@ fn test_post_merge_workflow_triggers_on_push_to_master() -> Result<(), Box<dyn s
 fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let policy_path = root.join(".ci/policies/required-checks.toml");
-    let policy: TomlValue = fs::read_to_string(policy_path)?.parse()?;
+    let policy_text = fs::read_to_string(policy_path)?;
+    let policy: TomlValue = toml::from_str(&policy_text)?;
     let checks = policy
         .get("checks")
         .and_then(TomlValue::as_array)
