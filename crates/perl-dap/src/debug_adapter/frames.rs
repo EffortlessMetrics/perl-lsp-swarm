@@ -9,17 +9,24 @@ use std::collections::HashSet;
 
 const FRAME_ID_MODULUS: i32 = 100_000;
 
+fn clear_rejected_framed_snapshot(session: &mut Option<super::DebugSession>) {
+    if let Some(session) = session {
+        session.stack_frames.clear();
+        session.stack_frame_arguments.clear();
+    }
+}
+
 impl DebugAdapter {
     fn rebind_generation_frame_ids(
         frames: Vec<StackFrame>,
         arguments: HashMap<i32, Vec<String>>,
         current_frame_id: Option<i32>,
-    ) -> (Vec<StackFrame>, HashMap<i32, Vec<String>>) {
+    ) -> Option<(Vec<StackFrame>, HashMap<i32, Vec<String>>)> {
         let base_id = current_frame_id.or_else(|| frames.first().map(|frame| frame.id));
         if base_id.is_some_and(|id| !(0..FRAME_ID_MODULUS).contains(&id))
             || frames.len() > FRAME_ID_MODULUS as usize
         {
-            return (Vec::new(), HashMap::new());
+            return None;
         }
         let mut used_ids = HashSet::new();
         let mut rebound_arguments = HashMap::new();
@@ -46,7 +53,7 @@ impl DebugAdapter {
                 candidate = (candidate + 1).rem_euclid(FRAME_ID_MODULUS);
                 attempts += 1;
                 if attempts >= FRAME_ID_MODULUS {
-                    return (Vec::new(), HashMap::new());
+                    return None;
                 }
             }
             frame.id = candidate;
@@ -56,7 +63,7 @@ impl DebugAdapter {
             rebound_frames.push(frame);
         }
 
-        (rebound_frames, rebound_arguments)
+        Some((rebound_frames, rebound_arguments))
     }
 
     /// Return the only frame the native scope path may inspect.
@@ -119,11 +126,29 @@ impl DebugAdapter {
             let current_frame_id = lock_or_recover(&self.session, "debug_adapter.session")
                 .as_ref()
                 .and_then(|session| session.stack_frames.first().map(|frame| frame.id));
-            let (framed_frames, frame_arguments) = Self::rebind_generation_frame_ids(
+            let rebound = Self::rebind_generation_frame_ids(
                 visible_frames,
                 frame_arguments,
                 current_frame_id,
             );
+            let Some((framed_frames, frame_arguments)) = rebound else {
+                // An unencodable generation or exhausted frame namespace is a
+                // hard rejection, not an empty debugger snapshot. Clear both
+                // authorities so the later fallback cannot resurrect prior
+                // frames or their captured arguments.
+                clear_rejected_framed_snapshot(&mut *lock_or_recover(
+                    &self.session,
+                    "debug_adapter.session",
+                ));
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "stackTrace".to_string(),
+                    body: Some(json!({ "stackFrames": [], "totalFrames": 0 })),
+                    message: None,
+                };
+            };
             if framed_frames.is_empty() {
                 // The framed T output contained only internal debugger frames (e.g.
                 // `@ = DB::DB called from file '...' line N` at top-level stops) or
@@ -364,7 +389,8 @@ mod pagination_tests {
         // second frame id; rebinding must repair that collision as well as
         // preserve each frame's captured arguments.
         let (rebound, rebound_arguments) =
-            DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(2));
+            DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(2))
+                .ok_or("valid generation rebinding unexpectedly rejected")?;
 
         let ids = rebound.iter().map(|frame| frame.id).collect::<Vec<_>>();
         assert_eq!(ids, vec![2, 3], "every visible frame needs a unique stop-bound id");
@@ -383,16 +409,30 @@ mod pagination_tests {
             frames.clone(),
             arguments.clone(),
             Some(99_999),
-        );
+        )
+        .ok_or("near-ceiling generation rebinding unexpectedly rejected")?;
         let near_ids = near_ceiling.iter().map(|frame| frame.id).collect::<Vec<_>>();
         assert_eq!(near_ids, vec![99_999, 0]);
         assert_eq!(near_arguments.get(&0), Some(&vec!["outer_arg".to_string()]));
 
-        let (rebound, rebound_arguments) =
-            DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(100_000));
+        let rejected = DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(100_000));
+        assert!(rejected.is_none());
+        Ok(())
+    }
 
-        assert!(rebound.is_empty());
-        assert!(rebound_arguments.is_empty());
+    #[test]
+    fn rejected_framed_snapshot_clears_prior_frames_and_arguments()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "prior")]);
+        adapter.seed_stack_frame_arguments_for_test(1, vec!["prior_arg".to_string()]);
+        let mut session = lock_or_recover(&adapter.session, "test.rejected_snapshot");
+
+        clear_rejected_framed_snapshot(&mut session);
+
+        let session = session.as_ref().ok_or("test session was cleared unexpectedly")?;
+        assert!(session.stack_frames.is_empty());
+        assert!(session.stack_frame_arguments.is_empty());
         Ok(())
     }
 
