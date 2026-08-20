@@ -1000,6 +1000,11 @@ jobs:
       - name: Emacs docs contract (required merge surface)
         run: cargo test -p xtask --test emacs_docs_contract --locked -- --nocapture
 
+      # Keep the direct-command guidance guard load-bearing on the required
+      # merge surface, including the tracked root AGENTS.md instructions.
+      - name: Direct command guidance contract (required merge surface)
+        run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture
+
       # Same reasoning as the Emacs contract above: the merge gate runs
       # `cargo test --workspace --lib`, so this integration test would otherwise
       # only execute via advisory pr-smoke. It guards the publish path that can

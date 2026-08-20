@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
@@ -24,6 +24,25 @@ fn operational_docs_do_not_recommend_retired_command_wrapper()
         "docs/swarm/source-syncs",
     ];
     let mut violations = Vec::new();
+    let mut scan_file = |path: &Path| -> Result<(), Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(path).map_err(|error| {
+            std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        for (line_number, line) in contents.lines().enumerate() {
+            if contains_word(line, "rtk") {
+                violations.push(format!(
+                    "{}:{}: {}",
+                    path.strip_prefix(&root).unwrap_or(path).display(),
+                    line_number + 1,
+                    line.trim()
+                ));
+            }
+        }
+        Ok(())
+    };
+
+    // The tracked root instructions are an operational copy/paste surface too.
+    scan_file(&root.join("AGENTS.md"))?;
 
     for relative_root in operational_doc_roots {
         for entry in WalkDir::new(root.join(relative_root)) {
@@ -34,20 +53,7 @@ fn operational_docs_do_not_recommend_retired_command_wrapper()
             {
                 continue;
             }
-
-            let contents = fs::read_to_string(path).map_err(|error| {
-                std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
-            })?;
-            for (line_number, line) in contents.lines().enumerate() {
-                if contains_word(line, "rtk") {
-                    violations.push(format!(
-                        "{}:{}: {}",
-                        path.strip_prefix(&root).unwrap_or(path).display(),
-                        line_number + 1,
-                        line.trim()
-                    ));
-                }
-            }
+            scan_file(path)?;
         }
     }
 
