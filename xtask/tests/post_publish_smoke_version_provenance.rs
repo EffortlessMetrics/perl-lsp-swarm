@@ -351,6 +351,12 @@ fn a_malformed_subject_is_not_trusted() -> Result<()> {
         let receipt =
             format!(r#"{{"version":"{PUBLISHED}","subject_sha":"{bogus}","crate_count":34}}"#);
         let resolved = resolve("workflow_run", "success", Some(&receipt))?;
+        // Falling back is a successful resolution, not a refusal — if it starts
+        // exiting nonzero the publication silently stops being verified.
+        resolved.assert_step_succeeded(&format!("malformed subject {bogus:?}"))?;
+        if !resolved.runs() {
+            bail!("a malformed subject must fall back, not skip the smoke test");
+        }
         if resolved.subject.as_deref() != Some(DEFAULT_BRANCH) {
             bail!(
                 "subject {bogus:?} must not be used as a checkout ref, got {:?}",
@@ -370,7 +376,7 @@ fn dispatch_executes_the_default_branch() -> Result<()> {
     fs::write(&github_output, "")?;
 
     let run = resolve_run_block()?;
-    Command::new(bash_executable())
+    let output = Command::new(bash_executable())
         .args(["--noprofile", "--norc", "-c", &run])
         .current_dir(dir.path())
         .env("EVENT_NAME", "workflow_dispatch")
@@ -381,6 +387,15 @@ fn dispatch_executes_the_default_branch() -> Result<()> {
         .env("DEFAULT_BRANCH", DEFAULT_BRANCH)
         .env("GITHUB_OUTPUT", &github_output)
         .output()?;
+
+    if !output.status.success() {
+        bail!(
+            "dispatch must resolve successfully, got exit {:?}\n{}{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     let rendered = fs::read_to_string(&github_output)?;
     if !rendered.contains(&format!("subject={DEFAULT_BRANCH}")) {
