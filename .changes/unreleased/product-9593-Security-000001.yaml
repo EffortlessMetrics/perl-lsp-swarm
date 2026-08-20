@@ -1,7 +1,7 @@
 project: product
 component: Packaging and distribution
 kind: Security
-body: The post-publish smoke test now runs its verification scripts from the commit the publish workflow actually published, or the default branch, instead of whatever ref the operator selected when dispatching. Whoever can start the workflow no longer supplies the code that decides whether a published version is installable.
+body: The post-publish smoke test now runs its verification scripts from the commit the publish workflow actually published, taken from the publication receipt, and refuses to certify a publication it cannot bind to a commit. Automatic post-publish runs are bound end to end, since GitHub executes them from the default branch and the receipted subject is therefore the code that issues the verdict. A manual dispatch stays unbound, because it runs whichever copy of the workflow its selected ref carries, and the run log now labels it an operator re-check rather than publication proof.
 time: 2026-08-20T00:00:00Z
 custom:
   PR: 9593
