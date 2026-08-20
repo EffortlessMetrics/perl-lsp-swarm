@@ -10,10 +10,12 @@ import {
   releaseManagedHostReference,
   resolveManagedCandidateForHost,
   validateManagedCurrentSelection,
+  validateManagedHostSelectionInput,
   type ManagedCandidateCatalogEntry,
   type ManagedCurrentSelection,
   type ManagedHostCandidateReference,
   type ManagedHostReferenceState,
+  type ManagedHostSelectionInput,
   type ManagedRetentionInput,
 } from '../managedCandidateSelection';
 
@@ -171,6 +173,24 @@ describe('managed candidate publication and selection', () => {
       kind: 'restart_required',
       candidate_id: replacementCandidate.manifest.candidate_id,
     });
+  });
+
+  test('rejects malformed running candidate identities at the input boundary', () => {
+    const candidate = entry('a');
+    const current = publishManagedCurrentSelection(candidate.manifest, null);
+    for (const runningCandidateId of ['not-a-candidate-id', 42, {}]) {
+      const input = {
+        current,
+        candidates: [candidate],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: runningCandidateId,
+      } as unknown as ManagedHostSelectionInput;
+
+      expect(validateManagedHostSelectionInput(input)).toEqual([
+        'running candidate id must be null or a canonical managed candidate',
+      ]);
+      expect(resolveManagedCandidateForHost(input)).toEqual({ kind: 'no_compatible_candidate' });
+    }
   });
 
   test('selects the current candidate for a fresh host when it is usable', () => {

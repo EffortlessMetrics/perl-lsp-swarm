@@ -174,6 +174,28 @@ function validateManagedCandidateCatalogEntry(entry: unknown): string[] {
   return errors;
 }
 
+/**
+ * Validate the host-selection envelope before the resolver interprets any of
+ * its records. The running identity is an input contract, not a resolver
+ * ranking hint: malformed identities must never flow into restart/fallback
+ * paths as if they were a real candidate.
+ */
+export function validateManagedHostSelectionInput(input: unknown): string[] {
+  if (typeof input !== 'object' || input === null) {
+    return ['managed host selection input must be an object'];
+  }
+
+  const record = input as Partial<ManagedHostSelectionInput>;
+  const runningCandidateId = record.running_candidate_id;
+  if (
+    runningCandidateId !== null &&
+    (typeof runningCandidateId !== 'string' || !isCanonicalManagedCandidateId(runningCandidateId))
+  ) {
+    return ['running candidate id must be null or a canonical managed candidate'];
+  }
+  return [];
+}
+
 function validateSessionId(sessionId: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(sessionId)) {
     throw new Error('host session id must be bounded and path-independent');
@@ -327,6 +349,9 @@ export function releaseManagedHostReference(
 export function resolveManagedCandidateForHost(
   input: ManagedHostSelectionInput,
 ): ManagedHostSelectionOutcome {
+  if (validateManagedHostSelectionInput(input).length > 0) {
+    return { kind: 'no_compatible_candidate' };
+  }
   const candidates = Array.isArray(input.candidates) ? input.candidates : [];
   const validCandidates = candidates.filter(
     (entry) => validateManagedCandidateCatalogEntry(entry).length === 0,
