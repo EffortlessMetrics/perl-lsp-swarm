@@ -36,23 +36,9 @@ deliberate release-lineage syncs, and explicitly routed emergency release fixes.
 
 ## Verification
 
-### Historical execution capture (archival; do not execute)
-
-The following block preserves the exact command text captured during this
-historical sync, including the wrapper used at the time. It is archival
-evidence only and is not current runnable guidance; the wrapper has since been
-retired.
-
-```text
-rtk git fetch git@github.com:EffortlessMetrics/perl-lsp.git master:refs/remotes/source/master
-rtk git rev-parse source/master
-rtk bash -lc 'MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe xtask fmt'
-rtk bash -lc 'MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe test -p perl-parser --test dead_code_detector --profile agent --locked -- --nocapture'
-rtk bash -lc 'MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe check -p perl-parser --all-targets --profile agent --locked'
-rtk bash -lc 'MIN_FREE_GB=20 MAX_USED_PCT=95 CARGO_LOCK_WAIT=900 ./scripts/cargo-safe clippy -p perl-parser --profile agent --locked -- -D warnings -A missing_docs'
-rtk git diff --check
-rtk bash -lc './scripts/storage-doctor'
-```
+The original sync recorded commands through a retired wrapper. That historical
+transcript is intentionally not reproduced here: the direct-command equivalent
+below is the only retained verification example.
 
 ### Modern direct-command equivalent
 
