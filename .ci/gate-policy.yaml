@@ -541,17 +541,15 @@ gates:
   # Replaced with four independent gates so each contract has its own receipt
   # row, timing, result class, and narrow rerun.  The gate runner continues
   # after any single failure, so all four results are always recorded.
-  # inline_completion_registration/core budgets (#11797): every pr-smoke run
-  # sets a per-run CARGO_TARGET_DIR (`pr-smoke-${run_id}-${run_attempt}`) that
-  # the shared rust-cache never sees, so each PR job compiles perl-lsp-rs and
-  # perl-lsp-rs-core from cold. Observed cold-cache wall time for these two
-  # gates sat right at the former 150s / 135000ms ceiling, producing the
-  # exit-124 bursts #11797 documents. #10023's retry warms the same per-run
-  # target directory for a second attempt, so 240s / 210000ms is the tight
-  # budget that keeps a genuine hang bounded while giving a first attempt
-  # enough headroom to reach the test binary on a cold cache. See the
-  # `inline_completion_gates_size_budget_for_cold_cache_compilation` invariant
-  # test in `xtask/src/tasks/gates.rs`.
+  # inline_completion_registration/core budgets (#11797): PR Smoke uses a
+  # per-run CARGO_TARGET_DIR (`pr-smoke-${run_id}-${run_attempt}`), while the
+  # shared Rust cache covers dependencies rather than reusing target artifacts
+  # across runs. The separate "Warm xtask" step prebuilds xtask only; it is
+  # not a cold-cache acceptance receipt for these package tests. The raised
+  # 240s / 210000ms values are policy bounds informed by the reported timeout
+  # family, and retry_count: 1 permits a second attempt to reuse artifacts
+  # created in the same run. Hosted receipts remain authoritative for whether
+  # a current PR reaches the test binary within those bounds.
   - name: inline_completion_registration
     tier: pr_fast
     description: "Inline-completion provider registration tests (lsp_inline_completion_registration_tests)"

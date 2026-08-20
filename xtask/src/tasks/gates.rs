@@ -2639,15 +2639,24 @@ fn parse_test_execution_reached(command: &str, output: &str) -> Option<bool> {
 /// non-negative N, including 0 for empty binaries) or the summary footer
 /// `test result:`.
 fn is_test_binary_execution_marker(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("running ") {
-        // Require the token after "running " to be a bare integer so that
-        // e.g. "running:", "running ci", or a `println!` inside a test that
-        // happens to include the word "running" cannot false-positive.
-        let count_token = rest.split_whitespace().next().unwrap_or("");
-        return !count_token.is_empty()
-            && count_token.chars().all(|c| c.is_ascii_digit())
-            && rest.trim_start_matches(char::is_numeric).trim_start().starts_with("test");
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("running") {
+        // Require whitespace after `running`, then an integer and the exact
+        // libtest noun. This accepts repeated spaces/tabs while rejecting
+        // near-misses such as `running 4 testing` or `running4 tests`.
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            return false;
+        }
+        let mut fields = rest.split_whitespace();
+        let Some(count_token) = fields.next() else {
+            return false;
+        };
+        let Some(test_token) = fields.next() else {
+            return false;
+        };
+        return count_token.chars().all(|c| c.is_ascii_digit())
+            && matches!(test_token, "test" | "tests")
+            && fields.next().is_none();
     }
     trimmed.starts_with("test result:")
 }
@@ -4473,6 +4482,23 @@ gates:
     }
 
     #[test]
+    fn parse_test_execution_reached_accepts_repeated_and_tab_whitespace() {
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, "running  4 tests"), Some(true));
+        assert_eq!(parse_test_execution_reached(CARGO_COMMAND, "running\t4\ttests"), Some(true));
+    }
+
+    #[test]
+    fn parse_test_execution_reached_rejects_nearby_running_tokens() {
+        for output in ["running 4 testing", "running4 tests", "running 4 tests extra"] {
+            assert_eq!(
+                parse_test_execution_reached(CARGO_COMMAND, output),
+                Some(false),
+                "nearby text must not count as a libtest marker: {output:?}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_test_execution_reached_detects_zero_tests_running_marker() {
         // `running 0 tests` still proves the binary linked and started.
         let output = "running 0 tests\n\
@@ -4562,7 +4588,10 @@ gates:
             is_cargo_test_command(&full_command),
             "test precondition failed: command must be a cargo test invocation for the wiring to fire"
         );
-        let metrics = result.metrics.expect("cargo test gate should populate metrics");
+        let metrics = result
+            .metrics
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("cargo test gate should populate metrics"))?;
         assert_eq!(
             metrics.test_execution_reached,
             Some(true),
@@ -4605,8 +4634,9 @@ gates:
             is_cargo_test_command(&full_command),
             "test precondition failed: command must be a cargo test invocation for the wiring to fire"
         );
-        let metrics =
-            result.metrics.expect("cargo-test-class gate should always carry a metrics envelope");
+        let metrics = result.metrics.as_ref().ok_or_else(|| {
+            color_eyre::eyre::eyre!("cargo-test-class gate should always carry a metrics envelope")
+        })?;
         assert_eq!(
             metrics.test_execution_reached,
             Some(false),
@@ -6233,15 +6263,14 @@ error: aborting due to previous error
         Ok(())
     }
 
-    /// (issue #11797) The pr-smoke job in `.github/workflows/ci.yml` sets a
-    /// per-run `CARGO_TARGET_DIR` (`pr-smoke-${run_id}-${run_attempt}`) that
-    /// the shared rust-cache never restores, so every PR job compiles
-    /// `perl-lsp-rs`/`perl-lsp-rs-core` from cold. The former 150s / 135000ms
-    /// budgets sat inside that cold-cache wall time and produced the exit-124
-    /// bursts documented in the issue. `retry_count: 1` (#10023) warms the
-    /// same per-run target for a second attempt but does not save the first
-    /// attempt when compile-time alone exceeds the budget. Lock the raised
-    /// floor here so a well-meaning future edit does not silently regress it.
+    /// (issue #11797) PR Smoke selects a per-run `CARGO_TARGET_DIR`
+    /// (`pr-smoke-${run_id}-${run_attempt}`); the shared Rust cache covers
+    /// dependencies, not target artifacts across runs, and the separate
+    /// "Warm xtask" step prebuilds xtask only. These bounds are policy
+    /// protection informed by the reported timeout family, not a cold-cache
+    /// acceptance receipt. `retry_count: 1` permits a second attempt to reuse
+    /// artifacts created in the same run. Current hosted receipts remain the
+    /// authority for whether a PR reaches the test binary within the bounds.
     #[test]
     fn inline_completion_gates_size_budget_for_cold_cache_compilation()
     -> color_eyre::eyre::Result<()> {
@@ -6251,11 +6280,11 @@ error: aborting due to previous error
         // are governed independently.
         const COLD_COMPILE_GATES: &[&str] =
             &["inline_completion_registration", "inline_completion_core"];
-        // These numbers are the tight floor: `retry_count: 1` still bounds the
-        // total wall time to 2x per gate, and the outer PR-smoke watchdog
-        // (2700s = 45m) has to absorb every pr-fast gate combined. Anything
-        // higher than 300s / 270000ms on a single gate would erode that
-        // outer envelope, so lock the floor and the ceiling.
+        // These numbers are the policy floor/ceiling: `retry_count: 1` still
+        // bounds the total wall time to 2x per gate, and the outer PR-smoke
+        // watchdog (2700s = 45m) has to absorb every pr-fast gate combined.
+        // This invariant constrains configuration; it does not establish a
+        // cold-cache performance result.
         const MIN_TIMEOUT_SECONDS: u64 = 240;
         const MAX_TIMEOUT_SECONDS: u64 = 300;
         const MIN_MAX_DURATION_MS: u64 = 210_000;
@@ -6274,7 +6303,7 @@ error: aborting due to previous error
                 gate.timeout_seconds >= MIN_TIMEOUT_SECONDS
                     && gate.timeout_seconds <= MAX_TIMEOUT_SECONDS,
                 "Gate '{gate_name}' timeout_seconds={} must sit in [{MIN_TIMEOUT_SECONDS}, {MAX_TIMEOUT_SECONDS}] \
-                 to survive a cold-cache pr-smoke compile without eroding the outer 45m watchdog (#11797)",
+                 to keep the configured PR Smoke policy within its outer 45m watchdog (#11797)",
                 gate.timeout_seconds,
             );
             let budget = gate.budgets.as_ref().ok_or_else(|| {
