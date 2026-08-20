@@ -497,18 +497,26 @@ fn generation_label(generation: &SourceGeneration) -> String {
 }
 
 fn downgrade_for_kind(snapshot: &mut ProviderAdapterSnapshot, kind: SemanticFactKind) {
+    // Every suppressed record downgrades both its own capability family and
+    // the sibling that uses its records for cursor resolution: declaration
+    // records select position references, occurrence-derived records select
+    // position declarations (and references, via their entity binding).
     match kind {
         SemanticFactKind::Declaration | SemanticFactKind::Module => {
             snapshot.downgrade(ProviderQueryCapability::Declarations);
+            snapshot.downgrade(ProviderQueryCapability::References);
             snapshot.downgrade(ProviderQueryCapability::Visibility);
             snapshot.downgrade(ProviderQueryCapability::ScopeBindings);
         }
         SemanticFactKind::Occurrence => {
+            snapshot.downgrade(ProviderQueryCapability::Declarations);
             snapshot.downgrade(ProviderQueryCapability::References);
             snapshot.downgrade(ProviderQueryCapability::Visibility);
             snapshot.downgrade(ProviderQueryCapability::ScopeBindings);
         }
         SemanticFactKind::Import => {
+            snapshot.downgrade(ProviderQueryCapability::Declarations);
+            snapshot.downgrade(ProviderQueryCapability::References);
             snapshot.downgrade(ProviderQueryCapability::Visibility);
         }
         SemanticFactKind::Boundary => {
@@ -597,7 +605,12 @@ fn adapt_shard(
         let Some(anchor_id) = entity.anchor_id else {
             limitations.push(format!("entity:{}:missing_source_anchor", entity.id.0));
             incomplete.extend([
+                // References is included because declaration records are
+                // cursor selectors for position-subject references queries;
+                // a suppressed declaration must not leave a Complete
+                // references denominator that could grant exact-empty there.
                 ProviderQueryCapability::Declarations,
+                ProviderQueryCapability::References,
                 ProviderQueryCapability::Visibility,
                 ProviderQueryCapability::ScopeBindings,
             ]);
@@ -608,6 +621,7 @@ fn adapt_shard(
                 .push(format!("entity:{}:unresolved_source_anchor:{}", entity.id.0, anchor_id.0));
             incomplete.extend([
                 ProviderQueryCapability::Declarations,
+                ProviderQueryCapability::References,
                 ProviderQueryCapability::Visibility,
                 ProviderQueryCapability::ScopeBindings,
             ]);
@@ -668,6 +682,11 @@ fn adapt_shard(
                 occurrence.id.0, occurrence.anchor_id.0
             ));
             incomplete.extend([
+                // Declarations is included because occurrence records are
+                // cursor selectors for position-subject declaration queries;
+                // a suppressed occurrence must not leave a Complete
+                // declarations denominator that could grant exact-empty there.
+                ProviderQueryCapability::Declarations,
                 ProviderQueryCapability::References,
                 ProviderQueryCapability::Visibility,
                 ProviderQueryCapability::ScopeBindings,

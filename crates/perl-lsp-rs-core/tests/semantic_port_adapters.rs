@@ -1075,3 +1075,92 @@ fn contested_occurrence_cannot_grant_exact_empty_declaration_at_cursor()
     assert_eq!(result.value_facts().count(), 1);
     Ok(())
 }
+
+#[test]
+fn suppressed_occurrence_cannot_grant_exact_empty_declaration_at_cursor()
+-> Result<(), Box<dyn Error>> {
+    // M11: an occurrence whose anchor cannot resolve is suppressed, but it
+    // was the cursor selector for position declaration queries — the
+    // declarations denominator must downgrade with it.
+    let mut broken = shard(Provenance::ExactAst, Confidence::High);
+    broken.occurrences[0].anchor_id = AnchorId(99);
+    let port = parser_port(&[broken], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 21 },
+        ),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert_eq!(result.value_facts().count(), 0);
+    assert!(!result.is_exact_empty());
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("occurrence:40:unresolved_source_anchor:99"))
+    );
+
+    // Clean control: the same cursor resolves the declaration exactly.
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+    let result = execute(
+        &port,
+        &request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 21 },
+        ),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(result.value_facts().count(), 1);
+    Ok(())
+}
+
+#[test]
+fn suppressed_declaration_cannot_grant_exact_empty_references_at_cursor()
+-> Result<(), Box<dyn Error>> {
+    // M12: an entity with a missing anchor is suppressed (the primary
+    // documented partial-extraction path), but its declaration record was
+    // the cursor selector for position references queries — the references
+    // denominator must downgrade with it.
+    let mut broken = shard(Provenance::ExactAst, Confidence::High);
+    broken.entities[0].anchor_id = None;
+    let port = parser_port(&[broken], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(
+            ProviderQueryKind::References { include_declaration: false },
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 5 },
+        ),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert_eq!(result.value_facts().count(), 0);
+    assert!(!result.is_exact_empty());
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("entity:30:missing_source_anchor"))
+    );
+
+    // Clean control: the same cursor resolves the reference set exactly.
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+    let result = execute(
+        &port,
+        &request(
+            ProviderQueryKind::References { include_declaration: false },
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 5 },
+        ),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(result.value_facts().count(), 1);
+    Ok(())
+}
