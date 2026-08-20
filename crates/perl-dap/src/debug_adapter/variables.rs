@@ -2,7 +2,7 @@
 
 use super::{
     DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, HashMap, SetVariableArguments,
-    SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments, Write,
+    SetVariableResponseBody, Value, VariableCacheKind, VariablesArguments,
     is_valid_set_variable_name, json, lock_or_recover, slice_variables,
 };
 
@@ -96,6 +96,46 @@ impl DebugAdapter {
                     body: Some(json!({ "variables": [] })),
                     message: None,
                 };
+            }
+
+            // Once the active session has been cleared, every non-cache
+            // reference is stale.  Do not consult recent debugger output: it
+            // belongs to an older session and can make an unknown reference
+            // appear to have live children.
+            if session_guard.is_none() {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "variables".to_string(),
+                    body: Some(json!({ "variables": [] })),
+                    message: None,
+                };
+            }
+        }
+
+        // Scope references are bound to the exact current stopped frame.  Check
+        // this before cache lookup, parsing, or debugger I/O so old, wrong-frame,
+        // Package, and Globals references cannot be revived by representative
+        // data or a stale cache entry.
+        {
+            use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+            if let Some(VariableReference::Scope { frame_id, kind }) =
+                VariableReference::decode(variables_ref)
+            {
+                let exact_current = self.exact_current_stopped_frame_id(i64::from(frame_id));
+                if exact_current != Some(frame_id)
+                    || matches!(kind, ScopeKind::Package | ScopeKind::Globals)
+                {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: true,
+                        command: "variables".to_string(),
+                        body: Some(json!({ "variables": [] })),
+                        message: None,
+                    };
+                }
             }
         }
 
@@ -223,9 +263,9 @@ impl DebugAdapter {
                     };
                 }
 
-                let (scope_frame_id, scope_kind) = match VariableReference::decode(variables_ref) {
-                    Some(VariableReference::Scope { frame_id, kind }) => (frame_id, Some(kind)),
-                    _ => (0, None),
+                let scope_kind = match VariableReference::decode(variables_ref) {
+                    Some(VariableReference::Scope { kind, .. }) => Some(kind),
+                    _ => None,
                 };
                 match scope_kind {
                     Some(ScopeKind::Locals) => {
@@ -250,10 +290,13 @@ impl DebugAdapter {
                         //      package variables — fully compatible with `parse_scope_variables_from_lines`.
                         //
                         // The outer `eval {}` absorbs any errors (e.g. B not loadable) and
-                        // returns an empty string, so the framed output will be empty and
-                        // the adapter falls through to `parse_scope_variables_from_output`.
+                        // returns an empty string. An empty framed response is unavailable;
+                        // it must not be reconstructed from unrelated session history.
                         if let Some(stdin) = session.process.stdin.as_mut() {
-                            let cmd = Self::build_locals_b_eval_cmd(scope_frame_id);
+                            // Locals are admitted only for the exact current frame. The
+                            // B pad-list offset is a lexical depth, not a DAP frame id;
+                            // current-frame inspection must always use the innermost pad.
+                            let cmd = Self::build_locals_b_eval_cmd();
                             let commands = vec![cmd];
                             match self.send_framed_debugger_commands(stdin, &commands) {
                                 Ok((begin, end)) => {
@@ -269,45 +312,10 @@ impl DebugAdapter {
                             }
                         }
                     }
-                    Some(ScopeKind::Package) => {
-                        if let Some(stdin) = session.process.stdin.as_mut() {
-                            let commands = vec![format!("V {} ::", scope_frame_id)];
-                            match self.send_framed_debugger_commands(stdin, &commands) {
-                                Ok((begin, end)) => {
-                                    framed_scope_lines = self.capture_framed_debugger_output(
-                                        &begin,
-                                        &end,
-                                        DEBUGGER_QUERY_WAIT_MS * 8,
-                                    );
-                                }
-                                Err(error) => {
-                                    tracing::warn!(%error, "Failed to send framed variables command, falling back");
-                                    let cmd = format!("V {} ::\n", scope_frame_id);
-                                    let _ = stdin.write_all(cmd.as_bytes());
-                                    let _ = stdin.flush();
-                                }
-                            }
-                        }
-                    }
-                    Some(ScopeKind::Globals) => {
-                        if let Some(stdin) = session.process.stdin.as_mut() {
-                            let commands = vec![format!("V {} *", scope_frame_id)];
-                            match self.send_framed_debugger_commands(stdin, &commands) {
-                                Ok((begin, end)) => {
-                                    framed_scope_lines = self.capture_framed_debugger_output(
-                                        &begin,
-                                        &end,
-                                        DEBUGGER_QUERY_WAIT_MS * 8,
-                                    );
-                                }
-                                Err(error) => {
-                                    tracing::warn!(%error, "Failed to send framed variables command, falling back");
-                                    let cmd = format!("V {} *\n", scope_frame_id);
-                                    let _ = stdin.write_all(cmd.as_bytes());
-                                    let _ = stdin.flush();
-                                }
-                            }
-                        }
+                    Some(ScopeKind::Package | ScopeKind::Globals) => {
+                        // Rejected before entering this query path. Keep this
+                        // arm explicit so future scope kinds cannot restore the
+                        // numeric-frame V-command behavior.
                     }
                     Some(ScopeKind::Arguments) => {
                         // Handled by the early return above. Keep this arm explicit so
@@ -315,12 +323,19 @@ impl DebugAdapter {
                         // debugger fallback path.
                     }
                     None => {
-                        // Non-Scope variablesReference — no framed output to fetch.
                         // Cache hits were already returned via variable_cache above.
                         // Stale EvalResult and Child refs both short-circuit to an
-                        // honest-empty response before reaching this branch (see the
-                        // early returns above). This arm is now a true fallthrough for
-                        // unrecognised or gap wire values only.
+                        // honest-empty response before reaching this branch. Any
+                        // remaining non-Scope wire value is unknown, so it must not
+                        // be correlated with recent output from this or another stop.
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: true,
+                            command: "variables".to_string(),
+                            body: Some(json!({ "variables": [] })),
+                            message: None,
+                        };
                     }
                 }
 
@@ -328,11 +343,18 @@ impl DebugAdapter {
                     let (framed_vars, framed_child_cache) =
                         Self::parse_scope_variables_from_lines(lines, variables_ref, 0, 1024);
                     if framed_vars.is_empty() {
-                        Self::wait_for_debugger_output_window(DEBUGGER_QUERY_WAIT_MS as u32);
-                        self.parse_scope_variables_from_output(variables_ref, 0, 1024)
+                        // A failed or empty framed locals response is unavailable;
+                        // never reinterpret unrelated session history as this
+                        // suspension's variables.
+                        (Vec::new(), HashMap::new())
                     } else {
                         (framed_vars, framed_child_cache)
                     }
+                } else if scope_kind.is_some() {
+                    // Scope admission is current-frame-only.  Without a framed
+                    // response, return unavailable rather than querying or
+                    // parsing the uncorrelated recent-output buffer.
+                    (Vec::new(), HashMap::new())
                 } else {
                     Self::wait_for_debugger_output_window(DEBUGGER_QUERY_WAIT_MS as u32);
                     self.parse_scope_variables_from_output(variables_ref, 0, 1024)
@@ -405,11 +427,6 @@ impl DebugAdapter {
     /// Build the Perl eval command used to introspect lexical (`my`) variables
     /// via the B module.
     ///
-    /// `frame_id` selects which PADLIST slot to inspect: 0 = innermost frame
-    /// (`$va[-1]`), N = N pads back (`$va[-(1+N)]`).  For recursive calls of the
-    /// same sub each invocation has its own pad slot; for non-recursive frames from
-    /// different subs, frame_id=0 is the only meaningful choice.
-    ///
     /// Arrays (`@foo`) and hashes (`%foo`) are emitted as opaque `ARRAY(0x0)` /
     /// `HASH(0x0)` markers — the same format the `V` command uses for package
     /// variables. They are deliberately *not* expanded here.
@@ -422,7 +439,7 @@ impl DebugAdapter {
     /// bound cumulative nodes, bytes, or query duration. Safe bounded lexical
     /// collection snapshots are owned by #7358; until that contract exists this
     /// path stays honest about not having observed the contents.
-    pub(super) fn build_locals_b_eval_cmd(frame_id: i32) -> String {
+    pub(super) fn build_locals_b_eval_cmd() -> String {
         format!(
             concat!(
                 "p eval {{ require B; ",
@@ -448,7 +465,7 @@ impl DebugAdapter {
                 "  $o.=\"$pv = $v\\n\" ",
                 "}} $o }}",
             ),
-            frame = frame_id,
+            frame = 0,
         )
     }
 
@@ -892,6 +909,81 @@ mod hazard_invariant_tests {
         }
     }
 
+    #[test]
+    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query() {
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+        use crate::types::StackFrame;
+
+        let mut a = adapter();
+        a.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+            7,
+            "main::run",
+            crate::types::Source {
+                name: Some("test.pl".to_string()),
+                path: "/tmp/test.pl".to_string(),
+                source_reference: None,
+            },
+            1,
+        )]);
+
+        let before_queries = a.debugger_query_count_for_test();
+        for (frame_id, kind) in [
+            (7, ScopeKind::Package),
+            (7, ScopeKind::Globals),
+            (8, ScopeKind::Locals),
+            (8, ScopeKind::Arguments),
+        ] {
+            let wire = VariableReference::Scope { frame_id, kind }
+                .encode()
+                .expect("test scope reference must encode");
+            assert!(
+                variables_body_is_empty(&mut a, i64::from(wire)),
+                "unadmitted {kind:?} scope for frame {frame_id} must be honest empty"
+            );
+        }
+        assert_eq!(
+            a.debugger_query_count_for_test(),
+            before_queries,
+            "unadmitted scope references must perform zero framed debugger queries"
+        );
+    }
+
+    #[test]
+    fn cleared_session_does_not_revive_stale_scope_from_recent_output() {
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        let mut a = adapter();
+        a.seed_stopped_session_with_frames_for_test(vec![]);
+        a.push_recent_output_line_for_test("$stale = from-an-older-session");
+        a.clear_active_session_state();
+
+        assert!(
+            variables_body_is_empty(&mut a, 11),
+            "a scope ref must stay empty after its session is cleared"
+        );
+    }
+
+    #[test]
+    fn unknown_reference_does_not_parse_recent_output() {
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        let mut a = adapter();
+        a.seed_stopped_session_with_frames_for_test(vec![]);
+        a.push_recent_output_line_for_test("$stale = from-an-unknown-reference");
+
+        // 999_999 is in the valid wire range but is not a cache or scope
+        // reference, so recent output must not be treated as its children.
+        assert!(
+            variables_body_is_empty(&mut a, 999_999),
+            "an unknown reference must not be correlated with recent output"
+        );
+    }
+
     // --- Fix #1338: stale EvalResult ref with Stopped session -> early short-circuit ---
     //
     // This lib test covers the new early-return branch in handle_variables() added by
@@ -1002,17 +1094,17 @@ mod hazard_invariant_tests {
 
     // --- build_locals_b_eval_cmd: Perl command template tests ---
     //
-    // These tests verify that the B-module eval command embeds the frame_id correctly
-    // and includes B::AV / B::HV type detection for array and hash variables.
+    // These tests verify that the B-module eval command always uses the
+    // innermost lexical pad and includes B::AV / B::HV type detection.
     // No live Perl or debugger session is needed — these are pure string tests.
 
     #[test]
     fn build_locals_b_eval_cmd_frame0_uses_innermost_pad() {
-        let cmd = DebugAdapter::build_locals_b_eval_cmd(0);
+        let cmd = DebugAdapter::build_locals_b_eval_cmd();
         // The Perl code uses a $fi variable and falls back to $va[-1] when the PADLIST
-        // has no slot N pads back.  For frame_id=0, $fi=0 and the primary index is
+        // has no slot N pads back.  The current-frame offset is always zero and the primary index is
         // $va[-(1+0)] = $va[-1], which is the innermost pad.
-        assert!(cmd.contains("my $fi=0;"), "frame_id=0 must embed $fi=0 in Perl code: {cmd}");
+        assert!(cmd.contains("my $fi=0;"), "current-frame locals must embed $fi=0: {cmd}");
         assert!(
             cmd.contains("$va[-(1+$fi)]"),
             "Perl code must use $va[-(1+$fi)] for frame-offset indexing: {cmd}"
@@ -1020,14 +1112,8 @@ mod hazard_invariant_tests {
     }
 
     #[test]
-    fn build_locals_b_eval_cmd_nonzero_frame_embeds_offset() {
-        let cmd = DebugAdapter::build_locals_b_eval_cmd(3);
-        assert!(cmd.contains("my $fi=3;"), "frame_id=3 must embed $fi=3 in Perl code: {cmd}");
-    }
-
-    #[test]
     fn build_locals_b_eval_cmd_contains_av_hv_detection() {
-        let cmd = DebugAdapter::build_locals_b_eval_cmd(0);
+        let cmd = DebugAdapter::build_locals_b_eval_cmd();
         // B::AV detection for array variables (@foo).
         assert!(cmd.contains("'B::AV'"), "Perl code must check for B::AV (array variables): {cmd}");
         // B::HV detection for hash variables (%foo).
@@ -1047,7 +1133,7 @@ mod hazard_invariant_tests {
     /// regression, so the command template must stay free of it.
     #[test]
     fn build_locals_b_eval_cmd_does_not_enumerate_live_collections() {
-        let cmd = DebugAdapter::build_locals_b_eval_cmd(0);
+        let cmd = DebugAdapter::build_locals_b_eval_cmd();
         for forbidden in ["object_2svref", "Data::Dumper", "Dumper(", "keys %$", "@$r"] {
             assert!(
                 !cmd.contains(forbidden),
@@ -1089,7 +1175,7 @@ mod hazard_invariant_tests {
         // The Perl code emits "$name = value\n" lines.  Verify the template
         // contains both the "= $v" assignment format and the double-quote for Perl
         // variable interpolation (both are required for parse_assignment to succeed).
-        let cmd = DebugAdapter::build_locals_b_eval_cmd(0);
+        let cmd = DebugAdapter::build_locals_b_eval_cmd();
         assert!(cmd.contains("$o.="), "Perl code must append to $o for each variable: {cmd}");
         // The variable/value format string uses double-quote interpolation.
         assert!(
