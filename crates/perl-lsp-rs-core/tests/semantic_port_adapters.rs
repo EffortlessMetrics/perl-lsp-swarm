@@ -679,3 +679,191 @@ fn adapter_results_are_deterministic_under_input_reorder() -> Result<(), Box<dyn
     assert_eq!(serde_json::to_string(&left)?, serde_json::to_string(&right)?);
     Ok(())
 }
+
+fn snapshot_with_fallback(
+    fallback: ProviderFallbackState,
+    completeness: ProviderSnapshotCompleteness,
+) -> ProviderAdapterSnapshot {
+    ProviderAdapterSnapshot::new(
+        SourceGeneration::known("document-7"),
+        SourceGeneration::known("workspace-3"),
+        SemanticFreshness::Fresh,
+        LifecyclePhase::Runtime,
+        fallback,
+        Some(1),
+        [
+            (ProviderQueryCapability::Declarations, completeness),
+            (ProviderQueryCapability::References, completeness),
+            (ProviderQueryCapability::Visibility, completeness),
+            (ProviderQueryCapability::ScopeBindings, completeness),
+            (ProviderQueryCapability::Boundaries, completeness),
+            (ProviderQueryCapability::Readiness, completeness),
+        ],
+    )
+}
+
+#[test]
+fn non_exact_denominator_units_cannot_authorize_exact_empty() -> Result<(), Box<dyn Error>> {
+    let missing = || {
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("missing".to_string()))
+    };
+
+    // Stale freshness: the unit is stale, whatever the snapshot claims.
+    let stale = CanonicalEnvelopePort::new(
+        &[compiler_envelope(SemanticFreshness::Stale, "old-document")],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let result = execute(&stale, &missing())?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!result.is_exact_empty());
+
+    // Fresh but out of generation for the request: currentness is
+    // request-relative, so the unit cannot vouch for emptiness.
+    let old_generation = CanonicalEnvelopePort::new(
+        &[compiler_envelope(SemanticFreshness::Fresh, "old-document")],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let result = execute(&old_generation, &missing())?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!result.is_exact_empty());
+
+    // Refused unit: a refused fact cannot vouch for its capability family.
+    let mut refused_envelope = compiler_envelope(SemanticFreshness::Fresh, "document-7");
+    refused_envelope.reason_code = SemanticReasonCode::UnsupportedEffect;
+    let refused = CanonicalEnvelopePort::new(
+        &[refused_envelope],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let result = execute(&refused, &missing())?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!result.is_exact_empty());
+
+    // Control: an exact-grade, request-current denominator still issues the grant.
+    let exact = CanonicalEnvelopePort::new(
+        &[compiler_envelope(SemanticFreshness::Fresh, "document-7")],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let result = execute(&exact, &missing())?;
+    assert!(result.is_exact_empty());
+    Ok(())
+}
+
+#[test]
+fn non_primary_snapshot_cannot_produce_exact_answers() -> Result<(), Box<dyn Error>> {
+    let present = || {
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string()))
+    };
+    let missing = || {
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("missing".to_string()))
+    };
+    let port_with =
+        |fallback: ProviderFallbackState| -> Result<FileFactShardPort, ProviderAdapterError> {
+            FileFactShardPort::new(
+                &[shard(Provenance::ExactAst, Confidence::High)],
+                SemanticProducer::Parser,
+                ProviderFactSourceKind::ParserSyntax,
+                snapshot_with_fallback(fallback, ProviderSnapshotCompleteness::Complete),
+            )
+        };
+
+    // A shadow snapshot corroborates but never originates exactness.
+    let shadow = port_with(ProviderFallbackState::Shadow)?;
+    let value = execute(&shadow, &present())?;
+    assert_eq!(value.outcome(), ProviderQueryOutcome::Degraded);
+    assert_eq!(value.value_facts().count(), 1);
+    assert!(
+        value.evidence().limitations().iter().any(|note| note.contains("snapshot_not_exact_grade"))
+    );
+    let empty = execute(&shadow, &missing())?;
+    assert_eq!(empty.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!empty.is_exact_empty());
+
+    // An observational snapshot degrades on the same terms.
+    let observational = port_with(ProviderFallbackState::Unavailable)?;
+    let value = execute(&observational, &present())?;
+    assert_eq!(value.outcome(), ProviderQueryOutcome::Degraded);
+    let empty = execute(&observational, &missing())?;
+    assert!(!empty.is_exact_empty());
+
+    // A fallback snapshot stays on the fallback path for both shapes.
+    let fallback = port_with(ProviderFallbackState::Fallback)?;
+    let value = execute(&fallback, &present())?;
+    assert_eq!(value.outcome(), ProviderQueryOutcome::Fallback);
+    let empty = execute(&fallback, &missing())?;
+    assert!(!empty.is_exact_empty());
+
+    // Control: the primary snapshot keeps its exact answers.
+    let primary = port_with(ProviderFallbackState::Primary)?;
+    let value = execute(&primary, &present())?;
+    assert_eq!(value.outcome(), ProviderQueryOutcome::Exact);
+    let empty = execute(&primary, &missing())?;
+    assert!(empty.is_exact_empty());
+    Ok(())
+}
+
+#[test]
+fn tombstoned_duplicate_identities_cannot_be_resurrected() -> Result<(), Box<dyn Error>> {
+    let present = || {
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string()))
+    };
+
+    // [A, B, A]: the third row must not re-bind the contested anchor.
+    let mut triple = shard(Provenance::ExactAst, Confidence::High);
+    let mut conflicting = triple.anchors[0].clone();
+    conflicting.span_start_byte = 6;
+    let original = triple.anchors[0].clone();
+    triple.anchors.push(conflicting);
+    triple.anchors.push(original);
+    let port = parser_port(&[triple], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(&port, &present())?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert_eq!(result.value_facts().count(), 0);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("conflicting_duplicate"))
+    );
+
+    // [A, B, B]: agreement between later rows cannot outvote the tombstone.
+    let mut triple = shard(Provenance::ExactAst, Confidence::High);
+    let mut conflicting = triple.anchors[0].clone();
+    conflicting.span_start_byte = 6;
+    triple.anchors.push(conflicting.clone());
+    triple.anchors.push(conflicting);
+    let port = parser_port(&[triple], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(&port, &present())?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert_eq!(result.value_facts().count(), 0);
+
+    // Entity identities tombstone on the same terms: [nameA, nameB, nameA].
+    let mut triple = shard(Provenance::ExactAst, Confidence::High);
+    let mut conflicting = triple.entities[0].clone();
+    conflicting.canonical_name = "Other::work".to_string();
+    let original = triple.entities[0].clone();
+    triple.entities.push(conflicting);
+    triple.entities.push(original);
+    let port = parser_port(&[triple], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(&port, &present())?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert_eq!(result.value_facts().count(), 0);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("conflicting_duplicate"))
+    );
+
+    // Control: identical duplicate rows carry no new information and collapse,
+    // so an [A, A] shard keeps its exact answer.
+    let mut identical = shard(Provenance::ExactAst, Confidence::High);
+    let duplicate = identical.anchors[0].clone();
+    identical.anchors.push(duplicate);
+    let port = parser_port(&[identical], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(&port, &present())?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(result.value_facts().count(), 1);
+    Ok(())
+}

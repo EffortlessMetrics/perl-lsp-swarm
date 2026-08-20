@@ -14,10 +14,14 @@
 //! - a request is answered exactly only when the snapshot generations equal the
 //!   request generations and the request context is exact-ready;
 //! - exact-empty additionally requires a request-bound completeness grant issued
-//!   from the adapter's concrete denominator (validated producer, covered units,
-//!   snapshot identity), never from caller-predeclared labels;
-//! - conflicting duplicate identities fail closed at construction, and shard
-//!   fact ids are bound to the owning file so two shards cannot collide;
+//!   from the adapter's concrete denominator (validated producer, covered units
+//!   that are each exact-grade and current for the request, snapshot identity),
+//!   never from caller-predeclared labels;
+//! - conflicting duplicate identities fail closed: canonical inputs are rejected
+//!   at construction, shard identities are tombstoned so no later row can
+//!   resurrect a contested binding (identical duplicate shard rows carry no new
+//!   information and collapse to the first row), and shard fact ids are bound
+//!   to the owning file so two shards cannot collide;
 //! - position queries resolve the cursor record to its entity before selecting
 //!   declarations or references, so a cursor on a reference cannot false-empty;
 //! - no adapter outcome authorizes edits: edit-authorizing requests stay at or
@@ -131,13 +135,17 @@ impl ProviderAdapterSnapshot {
             && self.fallback_state == ProviderFallbackState::Primary
     }
 
-    /// Whether the snapshot carries exact-grade fact metadata (fresh, known
-    /// lifecycle, known generations) for non-empty exact answers.
+    /// Whether the snapshot carries exact-grade fact metadata (fresh, primary,
+    /// known lifecycle, known generations) for non-empty exact answers.
+    ///
+    /// A non-primary (shadow/observational) snapshot can corroborate but never
+    /// originates an exact answer, same as for the exact-empty grant.
     fn facts_can_be_exact(&self) -> bool {
         self.freshness == SemanticFreshness::Fresh
             && self.lifecycle != LifecyclePhase::Unknown
             && generation_is_known(&self.document_generation)
             && generation_is_known(&self.workspace_generation)
+            && self.fallback_state == ProviderFallbackState::Primary
     }
 }
 
@@ -500,13 +508,19 @@ fn adapt_shard(
     limitations: &mut Vec<String>,
     incomplete: &mut BTreeSet<ProviderQueryCapability>,
 ) {
-    // Conflicting duplicate anchor identities are unresolvable: no row may bind
-    // to them, so they are removed rather than silently overwriting each other.
+    // Identical duplicate rows carry no new information and collapse to the
+    // first row. A contradictory pair tombstones the identity for the rest of
+    // the shard: no later row may resurrect a contested binding.
     let mut anchors: BTreeMap<AnchorId, &AnchorFact> = BTreeMap::new();
+    let mut rejected_anchors: BTreeSet<AnchorId> = BTreeSet::new();
     for anchor in &shard.anchors {
+        if rejected_anchors.contains(&anchor.id) {
+            continue;
+        }
         match anchors.get(&anchor.id) {
             Some(existing) if *existing != anchor => {
                 anchors.remove(&anchor.id);
+                rejected_anchors.insert(anchor.id);
                 limitations.push(format!(
                     "anchor:{}:conflicting_duplicate:{}",
                     anchor.id.0, shard.file_id.0
@@ -526,12 +540,18 @@ fn adapt_shard(
         }
     }
 
-    // Conflicting duplicate entity identities cannot bind a truthful name.
+    // Conflicting duplicate entity identities cannot bind a truthful name and
+    // are tombstoned on the same terms as anchors.
     let mut entity_names: BTreeMap<EntityId, String> = BTreeMap::new();
+    let mut rejected_entities: BTreeSet<EntityId> = BTreeSet::new();
     for entity in &shard.entities {
+        if rejected_entities.contains(&entity.id) {
+            continue;
+        }
         match entity_names.get(&entity.id) {
             Some(existing) if *existing != entity.canonical_name => {
                 entity_names.remove(&entity.id);
+                rejected_entities.insert(entity.id);
                 limitations.push(format!(
                     "entity:{}:conflicting_duplicate:{}",
                     entity.id.0, shard.file_id.0
@@ -1146,7 +1166,7 @@ fn query_records(
             facts,
             None,
             traces,
-            Vec::new(),
+            limitations.to_vec(),
             ProviderResultPath::Primary,
         ));
     }
@@ -1243,6 +1263,14 @@ fn issue_completeness_grant(
     let units: Vec<_> =
         records.iter().filter(|record| capability_covers(capability, record)).collect();
     if units.is_empty() {
+        return None;
+    }
+    // Every denominator unit must itself be exact-grade and current for this
+    // request: a stale, refused, or out-of-generation fact cannot vouch for
+    // the emptiness of its capability family.
+    if !units.iter().all(|record| {
+        record.envelope.status() == SemanticFactStatus::Exact && record_is_current(record, request)
+    }) {
         return None;
     }
     let provenance = uniform_exact_provenance(units.iter().map(|record| &record.envelope))?;
