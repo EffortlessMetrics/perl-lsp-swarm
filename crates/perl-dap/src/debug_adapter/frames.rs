@@ -1,11 +1,46 @@
 //! Stack frame management: stack trace parsing, scopes.
 
 use super::{
-    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, Scope, ScopesArguments, ScopesResponseBody,
-    Source, StackFrame, StackTraceArguments, Value, Write, json, lock_or_recover,
+    DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, HashMap, Scope, ScopesArguments,
+    ScopesResponseBody, Source, StackFrame, StackTraceArguments, Value, Write, json,
+    lock_or_recover,
 };
+use std::collections::HashSet;
 
 impl DebugAdapter {
+    fn rebind_generation_frame_ids(
+        frames: Vec<StackFrame>,
+        arguments: HashMap<i32, Vec<String>>,
+        current_frame_id: Option<i32>,
+    ) -> (Vec<StackFrame>, HashMap<i32, Vec<String>>) {
+        let base_id = current_frame_id.or_else(|| frames.first().map(|frame| frame.id));
+        let mut used_ids = HashSet::new();
+        let mut rebound_arguments = HashMap::new();
+        let mut rebound_frames = Vec::with_capacity(frames.len());
+
+        for (index, mut frame) in frames.into_iter().enumerate() {
+            let original_id = frame.id;
+            let index = i32::try_from(index).unwrap_or(i32::MAX);
+            let mut candidate = if index == 0 {
+                base_id.unwrap_or(original_id)
+            } else {
+                base_id
+                    .and_then(|base| base.checked_add(index))
+                    .unwrap_or_else(|| i32::MIN.saturating_add(index))
+            };
+            while !used_ids.insert(candidate) {
+                candidate = candidate.wrapping_add(1);
+            }
+            frame.id = candidate;
+            if let Some(values) = arguments.get(&original_id) {
+                rebound_arguments.insert(candidate, values.clone());
+            }
+            rebound_frames.push(frame);
+        }
+
+        (rebound_frames, rebound_arguments)
+    }
+
     /// Return the only frame the native scope path may inspect.
     ///
     /// `stack_frames[0]` is the frame captured for the current stopped
@@ -69,7 +104,15 @@ impl DebugAdapter {
         let parsed_frames = if let Some(lines) = framed_output_lines.as_ref() {
             let output = lines.join("\n");
             let (parsed_frames, frame_arguments) = Self::parse_stack_frames_from_text(&output);
-            let framed_frames = Self::filter_user_visible_frames(parsed_frames);
+            let visible_frames = Self::filter_user_visible_frames(parsed_frames);
+            let current_frame_id = lock_or_recover(&self.session, "debug_adapter.session")
+                .as_ref()
+                .and_then(|session| session.stack_frames.first().map(|frame| frame.id));
+            let (framed_frames, frame_arguments) = Self::rebind_generation_frame_ids(
+                visible_frames,
+                frame_arguments,
+                current_frame_id,
+            );
             if framed_frames.is_empty() {
                 // The framed T output contained only internal debugger frames (e.g.
                 // `@ = DB::DB called from file '...' line N` at top-level stops) or
@@ -105,18 +148,12 @@ impl DebugAdapter {
         };
 
         let stack_frames = if !parsed_frames.is_empty() {
-            // Keep parsed frames as best-effort latest snapshot.
-            let mut bound_frames = parsed_frames.clone();
+            // Keep parsed frames as best-effort latest snapshot. IDs and
+            // captured arguments were rebound together above so every visible
+            // frame remains uniquely addressable within this suspension.
+            let bound_frames = parsed_frames.clone();
             if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             {
-                // Preserve the process reader's generation-derived id for the
-                // current executable frame when the framed parser supplies a
-                // reused numeric id (typically 0/1).
-                if let (Some(authoritative), Some(parsed_current)) =
-                    (session.stack_frames.first(), bound_frames.first_mut())
-                {
-                    parsed_current.id = authoritative.id;
-                }
                 session.stack_frames = bound_frames.clone();
             }
             bound_frames
@@ -302,6 +339,26 @@ mod pagination_tests {
             "total_frames ({total_before}) must be >= paginated len ({})",
             paginated.len()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn generation_rebinding_keeps_multi_frame_ids_and_arguments_aligned()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let frames = vec![make_frame(0, "inner"), make_frame(1, "outer")];
+        let arguments =
+            HashMap::from([(0, vec!["inner_arg".to_string()]), (1, vec!["outer_arg".to_string()])]);
+
+        // The generation id (2) intentionally collides with the parser's
+        // second frame id; rebinding must repair that collision as well as
+        // preserve each frame's captured arguments.
+        let (rebound, rebound_arguments) =
+            DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(2));
+
+        let ids = rebound.iter().map(|frame| frame.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec![2, 3], "every visible frame needs a unique stop-bound id");
+        assert_eq!(rebound_arguments.get(&2), Some(&vec!["inner_arg".to_string()]));
+        assert_eq!(rebound_arguments.get(&3), Some(&vec!["outer_arg".to_string()]));
         Ok(())
     }
 
