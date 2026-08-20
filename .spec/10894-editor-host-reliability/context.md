@@ -11,6 +11,17 @@ from #10894 into one checked, platform-neutral repository contract. It changes n
 host runner, editor adapter, receipt implementation, CI route, support state, or
 product behavior.
 
+## Why this approach
+
+The contract is projected as a spec-only bundle so the shared authority can be
+reviewed before any host implementation or consumer migration is attempted. A
+single platform-neutral contract keeps identity, freshness, process ownership,
+cleanup observation, artifact integrity, and terminal-plane semantics stable
+across consumers while leaving editor/client behavior with its actual owners.
+This boundary is preferred over implementing one consumer first because a
+consumer-first implementation would make its local mechanics an accidental
+generic authority and could hide unsupported capability behind a green result.
+
 ## Authority and ownership
 
 ### Shared authority: #10894
@@ -182,7 +193,17 @@ Running that read-only checker twice against an unchanged tree must produce the
 same ordered output and a byte-clean second run. A missing checker/tool is
 `NOT_PROVEN`, not a green result.
 
-## Prior art and links
+## Prior art / duplicates
+
+The prior-art scan found the accepted shared architecture authority in #10894,
+the generic receipt authorities in #7777 and #10527, the parent controller and
+recurrence work in #9800 and #10899, and the reference runner in #8024. Those
+surfaces are intentionally referenced rather than duplicated: this bundle
+projects the host-run contract, while generic receipts, orchestration,
+consumer semantics, and implementation remain owned by their respective
+issues. No second generic receipt framework or consumer-local copy is introduced.
+
+## Links
 
 - Issue: [#11766](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11766)
 - Parent controller: [#9800](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/9800)

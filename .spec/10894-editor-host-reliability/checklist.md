@@ -38,6 +38,9 @@ falsifiers in the `acceptance.md` `§Test-Grid` table. It enforces fixed order,
 uniqueness, table membership, and a non-empty required verdict for every row;
 presence of a marker elsewhere in the bundle is insufficient. Redirecting the
 output to a temporary file is local proof only; no temporary file belongs in the PR.
+Its changed-path assertion is intentionally unscoped: it unions the committed
+candidate patch from the merge base to `HEAD`, the unstaged worktree, and the
+staged index, then requires that union to equal the exact three-file set.
 
 ```powershell
 function Invoke-Spec10894Check {
@@ -71,12 +74,19 @@ foreach ($row in $rows) {
   if ($kind -eq 'negative' -and $verdict -notmatch '(?i)\breject\b') { throw "falsifier $($row.Groups['id'].Value) is not rejectable" }
 }
 $base = git merge-base HEAD origin/main
+$candidateDiffCheck = git diff --check $base HEAD
+if ($LASTEXITCODE -ne 0) { throw "candidate diff --check failed for $base..HEAD" }
 $changed = @(
-  git diff --name-only $base HEAD -- .spec/10894-editor-host-reliability
-  git diff --name-only HEAD -- .spec/10894-editor-host-reliability
-  git diff --cached --name-only HEAD -- .spec/10894-editor-host-reliability
+  git diff --name-only $base HEAD
+  git diff --name-only
+  git diff --cached --name-only HEAD
 ) | Sort-Object -Unique
-if ($changed.Count -ne 3) { throw 'unexpected changed paths' }
+$expected = @(
+  '.spec/10894-editor-host-reliability/acceptance.md'
+  '.spec/10894-editor-host-reliability/checklist.md'
+  '.spec/10894-editor-host-reliability/context.md'
+)
+if ($changed.Count -ne $expected.Count -or (Compare-Object $changed $expected)) { throw 'unexpected changed paths' }
 'SPEC_10894_STRUCTURAL_CHECK=PASS'
 }
 ```
@@ -100,6 +110,7 @@ $h2 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$tmp.2").Hash
 if ($h1 -ne $h2) { throw 'second run is not deterministic' }
 'SPEC_10894_SECOND_RUN=PASS'
 git diff --check
+git diff --cached --check
 if (git status --short -- .spec/10894-editor-host-reliability | Select-String '^...\.spec/10894-editor-host-reliability/(?!context|acceptance|checklist)') { throw 'unexpected spec artifact' }
 ```
 
