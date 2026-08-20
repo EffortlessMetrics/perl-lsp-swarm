@@ -71,7 +71,6 @@ recovery diagnostics. A complete parse-artifact store is future work.
 | Nightly workspace-symbol churn | 300 files, 10 changes, strict plateau |
 | POD cache | Soft cap 1024 entries, prune target 512 |
 | Semantic analyzer cache | 50 entries before clear |
-| Runtime AST cache | 100 entries, 300 second TTL, explicit remove on close/delete |
 | Workspace index caches | Use configured workspace resource limits; delete/reindex must not duplicate secondary indexes |
 
 ## Regression Surfaces
