@@ -20,15 +20,14 @@
 //! ## Test layers
 //!
 //! 1. **Protocol-shape tests** (no Perl required): codec arithmetic remains
-//!    covered, while handler admission is tested with an explicitly seeded stop.
+//!    covered; handler admission and captured-value behavior are covered by
+//!    focused perl-dap unit tests.
 //!
 //! 2. **Rejection tests** (no Perl required): unadmitted references return empty
 //!    without querying the debugger or parsing unrelated history.
 //!
-//! 3. **Scope-filter unit tests** (no Perl required): exercise
-//!    `parse_scope_variables_from_lines` indirectly via `handle_request` with
-//!    simulated debugger output lines injected through the recent-output ring
-//!    buffer — confirming the real filter accepts/rejects names correctly.
+//! 3. **Scope-filter unit tests** live beside the adapter implementation, where
+//!    framed debugger output and query counters can be controlled directly.
 //!
 //! 4. **E2E content-level tests** (Perl required, skipped gracefully otherwise):
 //!    retained cases document the current-frame contract; legacy multi-scope
@@ -36,16 +35,13 @@
 //!
 //! # Limitations
 //!
-//! The "outer-lexical var does NOT appear in inner sub's locals" test drives a
-//! live `perl -d` session.  When Perl is unavailable in CI the test is skipped.
-//! The filter logic itself is covered by layer 3 (no live Perl needed).
+//! Legacy live multi-scope tests remain ignored because Package/Globals and
+//! arbitrary-frame admission are no longer part of this contract.
 
 mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};
 use perl_dap::{DapMessage, DebugAdapter};
-#[cfg(feature = "test-helpers")]
-use perl_dap::{Source, StackFrame};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs::write;
@@ -135,8 +131,8 @@ fn request_variables(adapter: &mut DebugAdapter, variables_reference: i64) -> Op
 
 // ── 1. Protocol shape and exact current-frame admission ─────────────────────
 
-/// The `scopes` response for any frame must contain exactly three buckets:
-/// Locals, Package, and Globals.
+/// Legacy three-bucket response shape; retained only as a named historical
+/// regression because handler admission now requires a stopped frame.
 #[test]
 #[ignore = "Retired: no-session handle_scopes cannot synthesize the old three-bucket response; admitted-frame coverage is in perl-dap unit tests."]
 fn test_scopes_response_contains_three_named_buckets() -> TestResult {
@@ -295,6 +291,7 @@ fn test_scope_references_are_distinct() -> TestResult {
 
 /// Scope references must all be positive integers (non-zero per DAP spec).
 #[test]
+#[ignore = "Retired: no-session scopes are intentionally empty, so this assertion is vacuous; codec positivity is covered by var_ref tests."]
 fn test_scope_references_are_positive() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -319,14 +316,11 @@ fn test_scope_references_are_positive() -> TestResult {
     Ok(())
 }
 
-// ── 2. Fallback variable tests (no live session) ──────────────────────────────
+// ── 2. Legacy fallback cases (retired) ───────────────────────────────────────
 
-/// Without a live session the adapter returns an honest empty list for Locals.
-///
-/// When the B module is unavailable (fallback mode), we have no reliable way to
-/// enumerate `my` variables, so we return nothing rather than fake `$self`/`@_`
-/// placeholders that do not reflect the real program state (issue #1006).
+/// Historical fallback assertion retained only to document the retired shape.
 #[test]
+#[ignore = "Retired: reference 11 is an unadmitted no-session scope; zero-query rejection is covered by focused variables unit tests."]
 fn test_fallback_locals_scope_contains_no_package_or_global_names() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -349,12 +343,10 @@ fn test_fallback_locals_scope_contains_no_package_or_global_names() -> TestResul
     Ok(())
 }
 
-/// Without a live session the adapter returns an honest empty list for Globals.
-///
-/// The scope kind alone does not tell the adapter what `$_` or `%ENV` currently
-/// hold, so a representative `$_ = undef` is a guess the client renders exactly
-/// like an observed value. This extends the #1006 Locals rule to Globals (#7275).
+/// Historical Globals fallback assertion retained only to document the retired
+/// shape; Globals is no longer handler-admitted.
 #[test]
+#[ignore = "Retired: reference 13 is an unadmitted Globals scope; omission and zero-query rejection are covered by focused variables/frames tests."]
 fn test_fallback_globals_scope_is_empty() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -376,9 +368,9 @@ fn test_fallback_globals_scope_is_empty() -> TestResult {
     Ok(())
 }
 
-/// The three fallback scopes must not share any variable names (no cross-scope
-/// contamination in the fallback path).
+/// Historical three-way fallback overlap assertion; now vacuous by contract.
 #[test]
+#[ignore = "Retired: three-way empty-set overlap is vacuous once no-session references are rejected before fallback routing."]
 fn test_fallback_scopes_have_no_overlapping_variable_names() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
@@ -600,37 +592,6 @@ fn test_e2e_named_sub_breakpoint_excludes_outer_and_global_vars() -> TestResult 
     );
 
     session.disconnect()?;
-    Ok(())
-}
-
-/// A seeded stopped frame supplies the admitted current frame.  The Locals
-/// scope reference returned for that frame must be consumable as a variables
-/// request; an unavailable debugger payload is still an honest empty list.
-#[test]
-#[cfg(feature = "test-helpers")]
-#[ignore = "Seeded helper proves admission shape but does not provide a live debugger response; request semantics are covered by perl-dap unit tests."]
-fn test_admitted_current_frame_locals_request() -> TestResult {
-    let mut adapter = DebugAdapter::new();
-    let (tx, _rx) = sync_channel(64);
-    adapter.set_event_sender(tx);
-    adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
-        7,
-        "main::run",
-        Source::new("/tmp/test.pl"),
-        10,
-    )]);
-
-    let response = adapter.handle_request(1, "scopes", Some(json!({ "frameId": 7 })));
-    let body = match response {
-        DapMessage::Response { success: true, body: Some(body), .. } => body,
-        _ => return Err("admitted scopes request failed".into()),
-    };
-    let locals_ref = scope_ref_by_name(&body, "Locals").ok_or("Locals scope was not admitted")?;
-    assert!(scope_ref_by_name(&body, "Package").is_none());
-    assert!(scope_ref_by_name(&body, "Globals").is_none());
-    let locals = request_variables(&mut adapter, locals_ref)
-        .ok_or("admitted Locals variables request failed")?;
-    assert!(locals.get("variables").is_some());
     Ok(())
 }
 
