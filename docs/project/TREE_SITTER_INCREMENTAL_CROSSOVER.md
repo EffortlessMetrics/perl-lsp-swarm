@@ -14,10 +14,11 @@ promise and not evidence for AST-subtree reuse.
 
 The historical receipts for all three profiles were produced from commit
 `085c09bb8c8b9950264d9e8322ca263228860daf` with `rustc 1.95.0
-(59807616e 2026-04-14)` through the repository's now-retired command wrapper.
-The direct commands below are retained as reproduction context only; they are
-not a current workflow, implementation, or routing instruction, and they are
-not a claim that the historical receipts were produced by these exact commands:
+(59807616e 2026-04-14)` through the repository's proof command. The command
+remains a supported proof workflow; the receipts and the replay/AST routing
+conclusions below are historical and do not establish current routing policy.
+The direct commands below preserve that workflow's provenance and are not a
+claim that the historical receipts were produced by these exact commands:
 
 ```text
 cargo xtask tree-sitter-incremental-proof --profile pr
