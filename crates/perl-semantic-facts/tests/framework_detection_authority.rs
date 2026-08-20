@@ -19,8 +19,11 @@ fn descriptor(constraint: Option<&str>) -> AdapterDescriptor {
 }
 
 fn configuration_descriptor() -> AdapterDescriptor {
-    descriptor(None)
-        .with_configuration_exclusion("frameworks.moo.disabled", "exclude-moo-when-disabled.v1")
+    descriptor(None).with_configuration_exclusion(
+        "frameworks.moo.disabled",
+        DetectionConfigurationValue::Boolean(true),
+        "exclude-moo-when-disabled.v1",
+    )
 }
 
 fn module(name: &str, generation: &str, version: Option<&str>) -> ModuleActivationIdentity {
@@ -330,6 +333,27 @@ fn matching_key_with_nonexcluding_value_cannot_prove_exclusion() {
     assert_eq!(
         result.validate_authority_against(&observed),
         Err(DetectionAuthorityError::ConfigurationRuleNotSatisfied)
+    );
+}
+
+#[test]
+fn descriptor_owned_excluding_value_rejects_result_override() {
+    let observation = configuration_observation(false);
+    let observed = configuration_input(vec![ModuleSelectorEvaluation::absent("Moo")])
+        .with_configuration_observations(vec![observation.clone()]);
+    let evidence = DetectionConfigurationEvidence::new(
+        observation,
+        DetectionConfigurationValue::Boolean(false),
+        "exclude-moo-when-disabled.v1",
+    );
+    let result = AdapterDetectionResult::for_input(
+        &observed,
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::ExcludedByConfiguration },
+    )
+    .with_configuration_evidence(evidence);
+    assert_eq!(
+        result.validate_authority_against(&observed),
+        Err(DetectionAuthorityError::InvalidConfigurationEvidence)
     );
 }
 

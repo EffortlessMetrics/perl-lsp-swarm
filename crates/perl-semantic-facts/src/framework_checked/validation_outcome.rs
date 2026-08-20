@@ -109,12 +109,18 @@ pub(super) fn validate_configuration_absence(
         .configuration_exclusion_key
         .as_deref()
         .ok_or(DetectionAuthorityError::InvalidConfigurationEvidence)?;
+    let expected_value = input
+        .descriptor
+        .configuration_exclusion_value
+        .as_ref()
+        .ok_or(DetectionAuthorityError::InvalidConfigurationEvidence)?;
     let expected_rule = input
         .descriptor
         .configuration_exclusion_rule
         .as_deref()
         .ok_or(DetectionAuthorityError::InvalidConfigurationEvidence)?;
     if evidence.rule_identity.trim().is_empty()
+        || &evidence.excluding_value != expected_value
         || !input.configuration_observations.contains(&evidence.observation)
         || evidence.observation.generation != input.module_observation.generation
         || evidence.observation.key != expected_key
@@ -122,7 +128,7 @@ pub(super) fn validate_configuration_absence(
     {
         return Err(DetectionAuthorityError::InvalidConfigurationEvidence);
     }
-    if evidence.observation.value != evidence.excluding_value {
+    if &evidence.observation.value != expected_value {
         return Err(DetectionAuthorityError::ConfigurationRuleNotSatisfied);
     }
     Ok(())

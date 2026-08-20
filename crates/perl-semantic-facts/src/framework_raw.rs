@@ -18,6 +18,8 @@ use crate::{
     SemanticProvenance, SourceGeneration,
 };
 
+use super::model::DetectionConfigurationValue;
+
 /// Current framework-adapter SDK wire version.
 pub const FRAMEWORK_ADAPTER_SDK_VERSION: &str = "framework_adapter_sdk.v1";
 
@@ -62,6 +64,9 @@ pub struct AdapterDescriptor {
     /// Exact configuration key whose reviewed value can exclude this adapter.
     #[serde(default)]
     pub configuration_exclusion_key: Option<String>,
+    /// Typed configuration value that excludes this adapter under the rule.
+    #[serde(default)]
+    pub configuration_exclusion_value: Option<DetectionConfigurationValue>,
     /// Versioned rule identity that interprets the exclusion key and value.
     #[serde(default)]
     pub configuration_exclusion_rule: Option<String>,
@@ -90,20 +95,23 @@ impl AdapterDescriptor {
             required_module_selectors: vec![framework_name],
             framework_version_constraint,
             configuration_exclusion_key: None,
+            configuration_exclusion_value: None,
             configuration_exclusion_rule: None,
             schema_version,
             disposition,
         }
     }
 
-    /// Bind configuration exclusion evidence to one descriptor-owned key/rule.
+    /// Bind configuration exclusion evidence to one descriptor-owned key/value/rule.
     #[must_use]
     pub fn with_configuration_exclusion(
         mut self,
         key: impl Into<String>,
+        value: DetectionConfigurationValue,
         rule: impl Into<String>,
     ) -> Self {
         self.configuration_exclusion_key = Some(key.into());
+        self.configuration_exclusion_value = Some(value);
         self.configuration_exclusion_rule = Some(rule.into());
         self
     }
