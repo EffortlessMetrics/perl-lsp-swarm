@@ -6,8 +6,11 @@ not a universal performance promise and not evidence for AST-subtree reuse.
 
 ## Receipt identity
 
-All three profiles were run from commit `085c09bb8c8b9950264d9e8322ca263228860daf`
-with `rustc 1.95.0 (59807616e 2026-04-14)`:
+The historical receipts for all three profiles were produced from commit
+`085c09bb8c8b9950264d9e8322ca263228860daf` with `rustc 1.95.0
+(59807616e 2026-04-14)` through the repository's now-retired command wrapper.
+The commands below are direct reproduction/current-rerun equivalents; they are
+not a claim that the historical receipts were produced by these exact commands:
 
 ```text
 cargo xtask tree-sitter-incremental-proof --profile pr
