@@ -28,6 +28,26 @@ const invalidExternalConfigurations: Array<[Record<string, unknown>, string]> = 
     },
     'Only mirror control',
   ],
+  [
+    {
+      debuggerBackend: 'external',
+      externalDebugger: { kind: 'ptkdb2', mode: 'connect', control: 'mirror', port: 13604 },
+    },
+    'Unsupported externalDebugger.kind',
+  ],
+  [
+    {
+      debuggerBackend: 'external',
+      externalDebugger: {
+        kind: 'ptkdb',
+        mode: 'listen',
+        control: 'mirror',
+        host: '192.0.2.10',
+        port: 0,
+      },
+    },
+    'listen mode requires a loopback host',
+  ],
   [{ debuggerBackend: 'ptkdb-bootstrap' }, 'does not yet wire'],
 ];
 
@@ -48,6 +68,7 @@ describe('external debugger claim boundary', () => {
         asDebugConfiguration({
           debuggerBackend: 'external',
           externalDebugger: {
+            kind: 'ptkdb',
             mode: 'connect',
             control: 'mirror',
             host: '127.0.0.1',

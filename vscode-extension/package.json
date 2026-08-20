@@ -223,15 +223,15 @@
                 ],
                 "enumDescriptions": [
                   "Native perl -d adapter (default)",
-                  "External debugger peer (e.g. Devel::ptkdb) over the Perl Debugger Peer Protocol",
-                  "Generate a .ptkdbrc bootstrap and launch perl -d:ptkdb (no live bridge)"
+                  "Experimental external live peer (e.g. a peer implementation; stock Devel::ptkdb compatibility is not proven) over the Perl Debugger Peer Protocol",
+                  "Generate a .ptkdbrc best-effort bootstrap helper and launch perl -d:ptkdb (no live bridge)"
                 ],
                 "description": "Which debug backend perl-dap should drive",
                 "default": "native"
               },
               "externalDebugger": {
                 "type": "object",
-                "description": "Configuration for debuggerBackend=external (the Perl Debugger Peer Protocol)",
+                "description": "Experimental live-peer configuration; fake/reference-peer proof only; stock Devel::ptkdb compatibility is not proven",
                 "properties": {
                   "kind": {
                     "type": "string",
@@ -239,7 +239,7 @@
                       "ptkdb",
                       "custom"
                     ],
-                    "description": "The external debugger engine to cooperate with",
+                    "description": "Peer implementation kind for the experimental protocol; stock Devel::ptkdb compatibility is not proven",
                     "default": "ptkdb"
                   },
                   "mode": {
@@ -250,11 +250,11 @@
                       "launchPeer"
                     ],
                     "enumDescriptions": [
-                      "perl-dap connects out to a peer already listening at host:port (the supported rendezvous)",
-                      "perl-dap listens for the peer to connect (not yet implemented)",
-                      "perl-dap launches the peer itself (not yet implemented)"
+                      "Experimental mirror rendezvous: perl-dap connects to a peer already listening at host:port; stock ptkdb compatibility is not proven",
+                      "Experimental mirror rendezvous: perl-dap listens on a loopback host for the peer to connect; stock ptkdb compatibility is not proven",
+                      "Launching a peer is not implemented and is rejected"
                     ],
-                    "description": "How perl-dap rendezvous with the peer. 'connect' is the supported mode; 'listen'/'launchPeer' are future work.",
+                    "description": "How the experimental live peer rendezvous occurs. Connect and loopback listen are mirror-only; launchPeer is rejected.",
                     "default": "connect"
                   },
                   "control": {
@@ -264,12 +264,12 @@
                       "cooperative",
                       "dapControlled"
                     ],
-                    "description": "Who owns stepping/control. 'mirror' (the peer's UI stays authoritative) is the supported default",
+                    "description": "Experimental mirror only: the peer UI stays authoritative; cooperative and dapControlled are rejected until separately proven",
                     "default": "mirror"
                   },
                   "host": {
                     "type": "string",
-                    "description": "Host for the peer socket",
+                    "description": "Peer host for connect mode; listen mode requires a loopback host",
                     "default": "127.0.0.1"
                   },
                   "port": {
@@ -324,7 +324,7 @@
           {
             "type": "perl",
             "request": "launch",
-            "name": "Perl: ptkdb peer (mirror)",
+            "name": "Perl: ptkdb live peer (experimental mirror)",
             "program": "${workspaceFolder}/script.pl",
             "debuggerBackend": "external",
             "externalDebugger": {

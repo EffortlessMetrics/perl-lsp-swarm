@@ -418,6 +418,11 @@ function isConnectablePort(port: unknown): port is number {
   return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535;
 }
 
+function isLoopbackListenHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === 'localhost' || normalized === '127.0.0.1';
+}
+
 function hasOwn(object: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(object, key);
 }
@@ -486,9 +491,16 @@ export function externalDebuggerConfigurationError(
   const external = config.externalDebugger as {
     control?: unknown;
     host?: unknown;
+    kind?: unknown;
     mode?: unknown;
     port?: unknown;
   };
+  if (
+    external.kind !== undefined &&
+    (typeof external.kind !== 'string' || !['ptkdb', 'custom'].includes(external.kind))
+  ) {
+    return `Unsupported externalDebugger.kind value: ${String(external.kind)} (expected "ptkdb" or "custom")`;
+  }
   const mode = typeof external.mode === 'string' ? external.mode : 'connect';
   const control = typeof external.control === 'string' ? external.control : 'mirror';
   const host =
@@ -509,6 +521,9 @@ export function externalDebuggerConfigurationError(
   }
 
   if (mode === 'listen') {
+    if (!isLoopbackListenHost(host)) {
+      return 'externalDebugger listen mode requires a loopback host (localhost or 127.0.0.1)';
+    }
     if (external.port !== undefined && external.port !== 0 && !isConnectablePort(external.port)) {
       return 'externalDebugger listen mode requires port 0 or a port in 1..=65535';
     }
