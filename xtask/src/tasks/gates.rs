@@ -2121,14 +2121,16 @@ fn run_shell_command_with_retries(
         } else if timeouts_seen > 0 {
             // `run_shell_command_with_timeout` reads the log back as `stdout`
             // before this trailer exists, so mirror it into the returned
-            // stdout — the receipt's output summary must show the rescue.
-            let trailer = append_retry_trailer(
-                log_path,
-                gate_name,
-                attempt,
-                total_attempts,
-                "passed after earlier watchdog timeout(s)",
-            )?;
+            // stdout — the receipt's output summary must show the retry. The
+            // label reflects the FINAL attempt's own outcome: a nonzero exit
+            // after an earlier timeout is still a failure, never "passed".
+            let outcome = if execution.exit_code == 0 {
+                "passed after earlier watchdog timeout(s)".to_string()
+            } else {
+                format!("exited {} after earlier watchdog timeout(s)", execution.exit_code)
+            };
+            let trailer =
+                append_retry_trailer(log_path, gate_name, attempt, total_attempts, &outcome)?;
             execution.stdout.push_str(&trailer);
         }
         return Ok(execution);
@@ -2284,6 +2286,17 @@ fn shell_command_process(command: &str, timeout_secs: u64) -> Command {
 
 #[cfg(windows)]
 fn terminate_shell_command(child: &mut Child) {
+    // Kill the whole tree: the gate command runs under `cmd /C`, whose
+    // cargo/rustc grandchildren survive a plain kill() of the shell and keep
+    // holding target/ locks a retry attempt would then contend with
+    // (#11825 review). taskkill /T walks the descendants; /F forces.
+    let pid = child.id().to_string();
+    Command::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok();
     child.kill().ok();
 }
 
@@ -4616,6 +4629,61 @@ gates:
         assert!(
             summary.contains("passed after earlier watchdog timeout(s)"),
             "receipt summary must surface the rescue; got: {summary}"
+        );
+        Ok(())
+    }
+
+    /// A first-attempt timeout rescued by a NONZERO second exit must report
+    /// `fail` with a label that does not claim a pass (#11825 review: the
+    /// trailer previously read "passed after earlier watchdog timeout(s)"
+    /// regardless of the final attempt's exit code).
+    #[test]
+    #[cfg(unix)]
+    fn timeout_gate_failing_retry_labels_the_failure_not_a_pass() -> color_eyre::eyre::Result<()> {
+        static MARKER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = MARKER_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let marker = std::env::temp_dir()
+            .join(format!("gate-retry-fail-marker-{}-{seq}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let marker_display = marker.display().to_string();
+        let command = format!(
+            "if [ -f {marker_display} ]; then exit 3; else touch {marker_display}; sleep 3; fi"
+        );
+        let gate = GateDefinition {
+            name: "synthetic_retry_fail_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Times out once, exits nonzero on retry".to_string(),
+            required: true,
+            command,
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+        let _ = std::fs::remove_file(&marker);
+
+        assert_eq!(result.status, "fail", "second attempt exits 3; the gate must stay red");
+        assert_eq!(result.exit_code, Some(3));
+        let summary = result.output_summary.unwrap_or_default();
+        assert!(
+            summary.contains("exited 3 after earlier watchdog timeout(s)"),
+            "receipt summary must label the failed retry honestly; got: {summary}"
+        );
+        assert!(
+            !summary.contains("passed after earlier"),
+            "a failed retry must never be labeled a pass; got: {summary}"
         );
         Ok(())
     }
