@@ -44,7 +44,7 @@ Current state — regenerate with `python3 scripts/ci/validate_gate_lane_mapping
 which is the authority for these counts. Last refreshed 2026-08-20 (#11742):
 
 - 76 gates in `.ci/gate-policy.yaml`
-- 25 lanes in `policy/ci-lanes.toml`
+- 24 lanes in `policy/ci-lanes.toml`
 - 76 / 76 gates have at least one lane mapping
 - 0 gates point at a non-existent lane
 
@@ -54,8 +54,7 @@ which is the authority for these counts. Last refreshed 2026-08-20 (#11742):
 
 | Lane | Gates |
 |---|---|
-| `pr_smoke` | `fmt`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `policy_checks`, `workflow_audit`, `nested_lock_check`, `unit_routed_full`, `inline_completion_registration`, `lsp_registration_contract`, `lsp_capability_snapshots`, `inline_completion_core`, `inline_completion_quality_receipt`, `ignored_tests_check_refs` |
-| `clippy_tests_kernel` | `clippy_tests_kernel` |
+| `pr_smoke` | `fmt`, `release_history`, `readme_heading_check`, `publish_closure`, `publish_manifest_check`, `layer_check`, `published_crate_count_pr_fast`, `release_history_check`, `clippy_scoped`, `unit_scoped`, `check_tests_scoped`, `policy_checks`, `workflow_audit`, `nested_lock_check`, `unit_routed_full`, `clippy_tests_kernel`, `inline_completion_registration`, `lsp_registration_contract`, `lsp_capability_snapshots`, `inline_completion_core`, `inline_completion_quality_receipt`, `ignored_tests_check_refs` |
 | `merge_gate_shards` | `clippy_core`, `unit_core`, `perl_token_leaf_contract`, `clippy_full`, `unit_foundation_full`, `unit_parser_stack_full`, `parser_integration`, `parser_behavior_proof`, `unit_analysis_full`, `unit_lsp_core_full`, `unit_lsp_full`, `unit_dap_support_full`, `common_corpus_clean`, `parser_corpus_ratchet`, `cpan_corpus_ratchet`, `parser_audit_closeout`, `v2_parity`, `v2_bundle_sync`, `agent_context_coverage`, `non_rust_inventory_check`, `msrv_authority_sync`, `compiler_concept_ledger`, `compiler_proof_policy`, `compiler_concept_proof` |
 | `check_all_targets` | `compile_all_targets` |
 | `conflict_markers` | `check_conflict_markers` |
@@ -76,7 +75,7 @@ Lanes without any gate mapping today: `pr_plan`, `draft_guard`, `preflight_lates
 `.ci/gate-policy.yaml` entry (workflow-level controls, not gates) or run under
 standalone workflows.
 
-The two lists above partition the lane set: 15 mapped + 10 unmapped = 25 lanes,
+The two lists above partition the lane set: 15 mapped + 9 unmapped = 24 lanes,
 matching the count block. Both are checkable against
 `scripts/ci/validate_gate_lane_mapping.py` and `policy/ci-lanes.toml`; if the
 arithmetic stops reconciling, this page has drifted from its stated authority.
@@ -87,8 +86,10 @@ arithmetic stops reconciling, this page has drifted from its stated authority.
 
 - Does **not** add fields to `.ci/gate-policy.yaml`. The mapping table lives in the
   validator script so the policy file's existing schema and parser are unchanged.
-- Does **not** change CI behavior. The validator is informational; PR 11 (workflow
-  policy lint extension) will optionally enforce it once the mapping has stabilized.
+- Does **not** create a separate workflow or branch-protection context for
+  `clippy_tests_kernel`. The gate runs inside the existing advisory `pr-smoke`
+  invocation; its `required: true` setting is enforced by the pr-fast runner,
+  not by GitHub branch protection.
 - Does **not** require running the validator in CI yet. Run it locally if you change
   gate-policy or lanes; it will catch drift in seconds.
 
@@ -105,6 +106,7 @@ When you add a new gate to `.ci/gate-policy.yaml`:
    ```
 3. Run `python3 scripts/ci/validate_gate_lane_mapping.py` to confirm.
 
-When you add a new lane to `policy/ci-lanes.toml` and want one or more gates to roll up
-under it, update the validator's mapping table. The lane key in `ci-lanes.toml` is the
-`lanes:` value in the validator.
+When a gate runs inside an existing workflow lane, map it to that lane rather than
+creating a duplicate economics row. When you add a new lane to `policy/ci-lanes.toml`
+and want one or more gates to roll up under it, update the validator's mapping table.
+The lane key in `ci-lanes.toml` is the `lanes:` value in the validator.

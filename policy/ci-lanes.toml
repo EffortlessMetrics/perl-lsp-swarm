@@ -120,24 +120,6 @@ blocking = true
 paths = ["docs/**", "**/*.md", "README*", "CHANGELOG*", "RELEASE_HISTORY*"]
 duplicate_of = []
 
-[lane.clippy_tests_kernel]
-description = "Lint the known-clean kernel cohort across all Rust targets."
-intent = "test-target lint correctness"
-runner = "ubuntu_24_04"
-base_lem = 8
-default_pr = true
-blocking = true
-paths = [
-  "crates/perl-token/**",
-  "crates/perl-position-tracking/**",
-  "crates/perl-uri/**",
-  "crates/perl-tdd-support/**",
-  "crates/perl-test-must/**",
-  "crates/perl-ast-v2/**",
-  "crates/perl-symbol/**",
-]
-duplicate_of = []
-
 # -----------------------------------------------------------------------------
 # UX / memory / platform default lanes
 # -----------------------------------------------------------------------------

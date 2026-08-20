@@ -761,7 +761,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean kernel cohort: enforces -D warnings in test/bench/example code for these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean kernel cohort: required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -771,6 +771,10 @@ gates:
     # after addressing the concrete findings documented in #11736. The cohort is
     # additive: add crates here only after they pass the command below locally.
     # Dirty crates (e.g. perl-parser-core, perl-pod, perl-dap) are tracked on #11736.
+    #
+    # This gate is executed by the advisory PR Smoke job, like the other pr_fast
+    # gates. `required: true` makes the pr_fast runner fail on a violation; it
+    # is not itself a branch-protection context.
     #
     # Cohort confirmed clean on 2026-08-19 (post-fix):
     #   perl-token, perl-position-tracking, perl-uri, perl-tdd-support,

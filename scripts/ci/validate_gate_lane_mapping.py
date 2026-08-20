@@ -60,7 +60,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_scoped": {"lanes": ["pr_smoke"]},
     "check_tests_scoped": {"lanes": ["pr_smoke"]},
     "unit_routed_full": {"lanes": ["pr_smoke"]},
-    "clippy_tests_kernel": {"lanes": ["clippy_tests_kernel"]},
+    # The gate runs inside the existing pr-fast invocation in advisory
+    # `pr-smoke`; it is not a separate workflow or receipt-producing lane.
+    "clippy_tests_kernel": {"lanes": ["pr_smoke"]},
     # Former `inline_completion_contract` (&&-composite, issue #6845) split
     # into four independent gates.  All four remain in the pr_smoke tier lane.
     "inline_completion_registration": {"lanes": ["pr_smoke"]},
