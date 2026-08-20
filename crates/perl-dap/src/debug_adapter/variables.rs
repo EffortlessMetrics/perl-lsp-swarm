@@ -882,6 +882,42 @@ mod hazard_invariant_tests {
         }
     }
 
+    #[test]
+    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query() {
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+        use crate::types::StackFrame;
+
+        let mut a = adapter();
+        a.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+            7,
+            "main::run",
+            crate::types::Source {
+                name: Some("test.pl".to_string()),
+                path: "/tmp/test.pl".to_string(),
+                source_reference: None,
+            },
+            1,
+        )]);
+
+        for (frame_id, kind) in [
+            (7, ScopeKind::Package),
+            (7, ScopeKind::Globals),
+            (8, ScopeKind::Locals),
+            (8, ScopeKind::Arguments),
+        ] {
+            let wire = VariableReference::Scope { frame_id, kind }
+                .encode()
+                .expect("test scope reference must encode");
+            assert!(
+                variables_body_is_empty(&mut a, i64::from(wire)),
+                "unadmitted {kind:?} scope for frame {frame_id} must be honest empty"
+            );
+        }
+    }
+
     // --- Fix #1338: stale EvalResult ref with Stopped session -> early short-circuit ---
     //
     // This lib test covers the new early-return branch in handle_variables() added by
