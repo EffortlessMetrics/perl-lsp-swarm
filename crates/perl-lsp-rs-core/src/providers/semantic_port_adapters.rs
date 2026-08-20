@@ -638,6 +638,12 @@ fn adapt_shard(
                     occurrence.id.0, shard.file_id.0
                 ));
                 incomplete.extend([
+                    // Declarations is included because position-subject
+                    // declaration queries resolve the cursor through
+                    // occurrence records; a contested occurrence must not
+                    // leave a Complete declarations denominator that could
+                    // grant exact-empty at that cursor.
+                    ProviderQueryCapability::Declarations,
                     ProviderQueryCapability::References,
                     ProviderQueryCapability::Visibility,
                     ProviderQueryCapability::ScopeBindings,

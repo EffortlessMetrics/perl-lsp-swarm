@@ -1014,3 +1014,64 @@ fn contradictory_occurrence_kinds_fail_closed_in_both_orders() -> Result<(), Box
     assert_eq!(serde_json::to_string(&first_result)?, serde_json::to_string(&second_result)?);
     Ok(())
 }
+
+#[test]
+fn contested_occurrence_cannot_grant_exact_empty_declaration_at_cursor()
+-> Result<(), Box<dyn Error>> {
+    let contested = || {
+        let mut shard = shard(Provenance::ExactAst, Confidence::High);
+        shard.occurrences[0].kind = OccurrenceKind::Definition;
+        let mut call_row = shard.occurrences[0].clone();
+        call_row.kind = OccurrenceKind::Call;
+        shard.occurrences.push(call_row);
+        shard
+    };
+    let cursor = || {
+        request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 21 },
+        )
+    };
+
+    // M10f: with the contested occurrence tombstoned there is no cursor
+    // selector; Declarations must be downgraded so no grant claims "no
+    // declaration here" over contradictory bindings.
+    let port = parser_port(&[contested()], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(&port, &cursor())?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert_eq!(result.value_facts().count(), 0);
+    assert!(!result.is_exact_empty());
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("occurrence:40:conflicting_duplicate"))
+    );
+
+    // M10e: a declaration value query on the same contested shard degrades
+    // with the limitation named rather than answering exactly.
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string())),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Degraded);
+    assert_eq!(result.value_facts().count(), 1);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("occurrence:40:conflicting_duplicate"))
+    );
+
+    // M10g control: on a clean shard the same cursor resolves the declaration.
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+    let result = execute(&port, &cursor())?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(result.value_facts().count(), 1);
+    Ok(())
+}
