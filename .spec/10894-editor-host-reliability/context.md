@@ -51,11 +51,25 @@ same contract, not copies of generic receipt policy.
 
 ### Identity and freshness
 
-Every run carries an exact repository, host, candidate, and run identity. A
-receipt is valid only for its `FreshReceiptTarget` (subject, run, and current
-generation where applicable). Pre-existing output, a mutable branch name, a
-matching filename, or a client event cannot satisfy a current-run requirement.
-Identity mismatch before or after execution is stale evidence, not success.
+Every run carries an exact repository, host, candidate, driver, schema, and run
+identity. The accepted #10894 identity tuple is deliberately more specific than
+names or paths selected by a caller. It includes, at minimum:
+
+- the host and candidate executable path, content hash, and version;
+- the run ID, start time, current stage, run-bound nonce, and subject digest;
+- the exact schema identity, candidate identity, and driver identity; and
+- a write-after-start marker proving that the receipt was produced by this run,
+  rather than inherited from a previous attempt.
+
+`FreshReceiptTarget` binds those fields to the current subject, run, and
+generation. A receipt is valid only when every required field matches the
+current target and its write-after-start condition. Pre-existing output, a
+mutable branch name, a matching filename, a stale run ID, or a client event
+cannot satisfy a current-run requirement. A receipt from the wrong executable
+path, hash, or version is mismatched evidence even when its schema and run
+stage look plausible. Identity mismatch before or after execution is stale
+evidence, not success; the stale-receipt and wrong-executable cases are explicit
+negative controls in `acceptance.md`.
 
 ### Parent-owned deadline
 

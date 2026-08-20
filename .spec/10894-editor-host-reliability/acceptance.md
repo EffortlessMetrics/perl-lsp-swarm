@@ -70,7 +70,7 @@ discriminating rather than implementation tests.
 |---:|---|---|---|
 | 1 | Exit status 0 or client `shutdown_completed` is used as OS cleanup proof | negative | reject; cleanup requires independent observation |
 | 2 | Only direct editor PID is killed while known descendant survives | negative | reject; surviving run-owned identity fails cleanup |
-| 3 | Stale pre-existing output is reused for current run | negative | reject as stale/mismatched freshness |
+| 3 | A stale receipt lacks the current run ID, start marker, nonce/subject digest, or write-after-start proof | negative | reject as stale/mismatched freshness |
 | 4 | Missing host/capability is skipped or treated as pass in required lane | negative | reject; emit `not_proven` |
 | 5 | Timeout loses last completed barrier or failure artifacts | negative | reject; preserve barrier/artifacts and distinguish forced settlement |
 | 6 | Numeric PID sorting is compared as lexicographic strings | negative | reject; ledger comparison is typed/canonical, not accidental string order |
@@ -81,6 +81,7 @@ discriminating rather than implementation tests.
 | 11 | #10894 defines Eglot, lsp-mode, Coc, LSP4IJ, Lite XL, Vim, or DAP semantics | negative | reject; named consumer owns client semantics |
 | 12 | Consumer must copy generic receipt rules from #7777/#10527 | negative | reject; generic receipts remain one authority |
 | 13 | Same unchanged spec tree is checked twice | determinism | identical ordered output and byte-clean second run |
+| 14 | Receipt names a different host/candidate executable path, hash, or version | negative | reject as wrong-executable evidence |
 
 ## §Blast-Radius
 

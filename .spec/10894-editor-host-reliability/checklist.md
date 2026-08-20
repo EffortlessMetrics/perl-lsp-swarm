@@ -16,7 +16,7 @@ building or executing a host/editor process.
 ### Step 2: Create acceptance and negative controls
 
 - **File:** `.spec/10894-editor-host-reliability/acceptance.md`
-- **Change:** Include all canonical `SPEC_TEMPLATE.md` sections, all twelve issue
+- **Change:** Include all canonical `SPEC_TEMPLATE.md` sections, all fourteen issue
   falsifiers, representative consumers, adoption dispositions, and explicit
   non-goals.
 - **Verify:** Structural heading and falsifier-count checks below; `git diff --check`.
@@ -32,12 +32,15 @@ building or executing a host/editor process.
 
 The repository has no executable `.spec` graph validator. Do not invent a generated
 receipt or claim a missing tool passed. From the candidate worktree, run the following
-PowerShell check twice after the files are complete. The command checks the exact
-three files, required canonical headings, required terms, and twelve numbered
-falsifiers in fixed order. Redirecting the output to a temporary file is local proof
-only; no temporary file belongs in the PR.
+PowerShell 7 check twice after the files are complete. The command checks the exact
+three files, required canonical headings, required terms, and all fourteen numbered
+falsifiers in the `acceptance.md` `§Test-Grid` table. It enforces fixed order,
+uniqueness, table membership, and a non-empty required verdict for every row;
+presence of a marker elsewhere in the bundle is insufficient. Redirecting the
+output to a temporary file is local proof only; no temporary file belongs in the PR.
 
 ```powershell
+function Invoke-Spec10894Check {
 $root = '.spec/10894-editor-host-reliability'
 $paths = @("$root/context.md", "$root/acceptance.md", "$root/checklist.md")
 $required = @(
@@ -45,15 +48,28 @@ $required = @(
   'process domain', 'complete process ledger', 'independent cleanup',
   'bounded artifact', 'product, instrument, reporting, and cleanup',
   'not_proven', '#7777', '#10527', 'Emacs', 'LSP4IJ', 'Coc', 'Lite XL',
-  'Vim', 'rollback', 'transfer', 'legacy', 'Stop', 'deterministic'
+  'Vim', 'rollback', 'transfer', 'legacy', 'Stop', 'deterministic',
+  'executable path', 'content hash', 'version', 'run ID', 'start time',
+  'stage', 'run-bound nonce', 'subject digest', 'write-after-start',
+  'schema identity', 'candidate identity', 'driver identity'
 )
 $headings = @('§Behavior', '§Hazards', '§Contracts', '§API-Shape', '§Test-Grid', '§Blast-Radius')
-$falsifiers = 1..12 | ForEach-Object { "| $_ |" }
 $text = $paths | ForEach-Object { Get-Content -Raw $_ }
 if ($text.Count -ne 3) { throw 'expected exactly three spec files' }
 foreach ($term in $required) { if (-not ($text -match [regex]::Escape($term))) { throw "missing term: $term" } }
 foreach ($heading in $headings) { if (-not ($text -match [regex]::Escape($heading))) { throw "missing heading: $heading" } }
-foreach ($marker in $falsifiers) { if (-not ($text -match [regex]::Escape($marker))) { throw "missing falsifier: $marker" } }
+$grid = [regex]::Match($text[1], '(?ms)^## §Test-Grid\s*(?<body>.*?)(?=^## |\z)').Groups['body'].Value
+$rows = [regex]::Matches($grid, '(?m)^\|\s*(?<id>\d+)\s*\|\s*(?<scenario>[^|]+?)\s*\|\s*(?<kind>[^|]+?)\s*\|\s*(?<verdict>[^|]+?)\s*\|')
+if ($rows.Count -ne 14) { throw "expected exactly fourteen falsifier rows, found $($rows.Count)" }
+$ids = @($rows | ForEach-Object { [int]$_.Groups['id'].Value })
+if (($ids | Sort-Object -Unique).Count -ne $ids.Count) { throw 'falsifier IDs are not unique' }
+if (($ids -join ',') -ne ((1..14) -join ',')) { throw 'falsifier IDs are not in fixed order' }
+foreach ($row in $rows) {
+  $kind = $row.Groups['kind'].Value.Trim()
+  $verdict = $row.Groups['verdict'].Value.Trim()
+  if (-not $verdict) { throw "falsifier $($row.Groups['id'].Value) has no required verdict" }
+  if ($kind -eq 'negative' -and $verdict -notmatch '(?i)\breject\b') { throw "falsifier $($row.Groups['id'].Value) is not rejectable" }
+}
 $base = git merge-base HEAD origin/main
 $changed = @(
   git diff --name-only $base HEAD -- .spec/10894-editor-host-reliability
@@ -62,25 +78,35 @@ $changed = @(
 ) | Sort-Object -Unique
 if ($changed.Count -ne 3) { throw 'unexpected changed paths' }
 'SPEC_10894_STRUCTURAL_CHECK=PASS'
+}
 ```
 
-Run it twice, capture stdout separately, and compare the two outputs byte-for-byte:
+The proof must execute the checker twice. Do not create two copies of one output
+and hash those copies. Use this wrapper around the exact checker body above (the
+body is exposed as `Invoke-Spec10894Check` only to make the execution boundary
+explicit):
 
 ```powershell
 $tmp = Join-Path $env:TEMP 'spec-10894-check'
 Remove-Item -LiteralPath "$tmp.1","$tmp.2" -Force -ErrorAction SilentlyContinue
-<# save the exact command output above to $tmp.1 #>
-<# repeat the exact command without edits and save output to $tmp.2 #>
+$tree1 = git status --short -- .spec/10894-editor-host-reliability
+Invoke-Spec10894Check | Set-Content -LiteralPath "$tmp.1" -Encoding utf8NoBOM
+$tree2 = git status --short -- .spec/10894-editor-host-reliability
+Invoke-Spec10894Check | Set-Content -LiteralPath "$tmp.2" -Encoding utf8NoBOM
+$tree3 = git status --short -- .spec/10894-editor-host-reliability
+if (($tree1 -join "`n") -ne ($tree2 -join "`n") -or ($tree2 -join "`n") -ne ($tree3 -join "`n")) { throw 'checker changed the spec tree' }
 $h1 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$tmp.1").Hash
 $h2 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$tmp.2").Hash
 if ($h1 -ne $h2) { throw 'second run is not deterministic' }
+'SPEC_10894_SECOND_RUN=PASS'
 git diff --check
 if (git status --short -- .spec/10894-editor-host-reliability | Select-String '^...\.spec/10894-editor-host-reliability/(?!context|acceptance|checklist)') { throw 'unexpected spec artifact' }
 ```
 
-The comments above intentionally require the operator to capture the exact
-read-only command rather than hiding an invented script. A future repository-owned
-checker may replace this proof only through a separate tooling claim.
+The `Invoke-Spec10894Check` function is the exact command body above, not a copied output;
+the two invocations each reread the files and revalidate the table. A future
+repository-owned checker may replace this proof only through a separate tooling
+claim.
 
 ## Acceptance gates
 
@@ -90,7 +116,8 @@ checker may replace this proof only through a separate tooling claim.
       cleanup, artifact integrity, and four-plane laws are platform-neutral.
 - [ ] Missing capability/instrumentation is `not_proven`; no status-0/client-event
       cleanup inference is allowed.
-- [ ] All twelve issue falsifiers are present as rejectable designs.
+- [ ] All fourteen issue falsifiers are present as rejectable designs in fixed order,
+      unique, table-bound, and carrying a required verdict.
 - [ ] #7777/#10527 remain generic receipt authority; no copied receipt framework exists.
 - [ ] Emacs/Eglot/lsp-mode, LSP4IJ, Coc, Lite XL, and Vim/DAP can reference one
       contract without local generic-policy copies.
@@ -98,6 +125,35 @@ checker may replace this proof only through a separate tooling claim.
 - [ ] Deterministic structural proof passes twice and the second run is byte-clean.
 - [ ] No host execution, editor behavior, CI route, support promotion, or external
       mutation is claimed or changed.
+
+## Callers and consumers
+
+- The future #10894 shared substrate is the sole owner of `HostRunSubject`,
+  `FreshReceiptTarget`, the identity tuple, process ledger, cleanup observation,
+  and four terminal planes; its implementation and proof are tracked by #10894.
+- The parent controller and recurrence owners (#9800 and #10899) consume the
+  run-level contract without redefining it.
+- Emacs/Eglot and lsp-mode, LSP4IJ, Coc, Lite XL, and Vim/DAP host leaves are
+  representative consumers. Their client/provider actions, fixtures, and
+  user-facing receipt mappings remain consumer-owned; each may reference this
+  bundle but must not copy its generic freshness or cleanup policy.
+- #7777 and #10527 remain the generic receipt consumers/authorities. This
+  checklist introduces no receipt call site or replacement schema.
+
+## Flags for builder
+
+- Resolve the representation of executable path/hash/version and the
+  run-ID/start/stage/nonce/subject-digest tuple without weakening exact identity.
+- Prove write-after-start and exact schema/candidate/driver identity before
+  accepting a receipt; stale receipts and wrong-executable receipts must fail
+  closed, including when filenames and schema versions match.
+- Select platform ownership mechanisms independently. Missing capability or
+  instrumentation remains `not_proven`; do not infer cleanup from exit status or
+  a client event.
+- Preserve four terminal planes and bounded-artifact evidence separately. Do not
+  turn this spec-only claim into host, editor, CI, support, or release work.
+- Explicitly inventory untouched legacy drivers and record reviewed exceptions
+  when modified drivers cannot migrate. No legacy inventory is a support claim.
 
 ## Scope boundary
 
