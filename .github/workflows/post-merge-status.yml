@@ -59,6 +59,14 @@ jobs:
       - name: Regenerate status subsystem files and roadmap
         run: cargo run -p xtask -- update-status --write
 
+      # Merge-time non-Rust inventory refresh (#11731): any merge that changes
+      # tracked file counts drifts docs/policy/NON_RUST_INVENTORY.md, and the
+      # next branch cut from main then fails non_rust_inventory_check in
+      # unit_routed_full. Regenerating here lands the drift with the same
+      # reviewable PR as the status documents instead of on an unlucky branch.
+      - name: Regenerate the non-Rust inventory
+        run: cargo run -p xtask -- non-rust inventory --write
+
       - name: Validate and stage exact generated payload
         id: payload
         run: |
@@ -81,6 +89,7 @@ jobs:
               "docs/project/status/parser.md",
               "docs/project/status/quality.md",
               "docs/project/ROADMAP.md",
+              "docs/policy/NON_RUST_INVENTORY.md",
           ]
           # `update-status --write` regenerates six subsystems, not four: it also
           # owns docs/project/status/{dap,workspace}.md, editor_ux.json, and the
@@ -89,7 +98,7 @@ jobs:
           # rest, so the abort below is scoped to writes that escape the
           # generator-owned surface entirely (source, workflows, scripts, ...).
           owned_prefixes = ("docs/project/status/",)
-          owned_paths = {"docs/project/ROADMAP.md"}
+          owned_paths = {"docs/project/ROADMAP.md", "docs/policy/NON_RUST_INVENTORY.md"}
           root = Path.cwd().resolve()
           payload_root = root / "target" / "post-merge-status-payload"
           files_root = payload_root / "files"
@@ -209,7 +218,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      actions: read
+      actions: write
       contents: write
       pull-requests: write
     steps:
@@ -252,6 +261,7 @@ jobs:
               "docs/project/status/parser.md",
               "docs/project/status/quality.md",
               "docs/project/ROADMAP.md",
+              "docs/policy/NON_RUST_INVENTORY.md",
           ]
           expected_paths = set(canonical)
           # Re-declared here on purpose. The generator enforces the same limits,
@@ -365,31 +375,48 @@ jobs:
           PY
 
       # Established peter-evans/create-pull-request pattern (see
-      # post-merge-corpus-ratchet.yml, version-bump.yml). NOTE: a PR opened by
-      # GITHUB_TOKEN does not trigger the required checks (GitHub loop
-      # prevention), so it lands via ops override; a bot token or GitHub App for
-      # full self-merge is the #1004 follow-up. This is still strictly better
-      # than the former direct push, which branch protection always rejected.
+      # post-merge-corpus-ratchet.yml, version-bump.yml). A PR opened by
+      # GITHUB_TOKEN raises no pull_request events (GitHub loop prevention),
+      # so the next step explicitly dispatches CI on the branch —
+      # workflow_dispatch is the documented GITHUB_TOKEN exception — and the
+      # required checks populate on the PR head without any manual
+      # credential-backed touch (#11731; the twice-confirmed empty-commit
+      # remedy is the baseline this replaces).
       - name: Create generated status PR
+        id: create-pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ github.token }}
           branch: automation/post-merge-status
           base: ${{ github.event.repository.default_branch }}
           delete-branch: true
-          title: "chore(docs): regenerate post-merge status (#6012)"
-          commit-message: "chore(docs): regenerate post-merge status (#6012)"
+          title: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
+          commit-message: "chore(docs): regenerate post-merge status and inventory (#6012, #11731)"
           body: |
-            Regenerates the five canonical status documents from the trusted
-            default-branch source at `${{ github.sha }}`.
+            Regenerates the five canonical status documents and the non-Rust
+            inventory from the trusted default-branch source at
+            `${{ github.sha }}`.
 
             Generation ran without repository write authority. The writer
             verified the source SHA and every path, size, and SHA-256 digest.
 
-            Refs #6012.
+            Refs #6012. Refs #11731.
           add-paths: |
             docs/project/status/lsp.md
             docs/project/status/tests.md
             docs/project/status/parser.md
             docs/project/status/quality.md
             docs/project/ROADMAP.md
+            docs/policy/NON_RUST_INVENTORY.md
+
+      - name: Raise CI on the generated PR
+        # GITHUB_TOKEN-created PRs raise no pull_request events, so ci.yml
+        # never fires and the PR sits at one GitHub-App check (#11481,
+        # #11707, twice-confirmed on #11731). workflow_dispatch is the
+        # documented GITHUB_TOKEN exception to loop prevention: dispatching
+        # CI on the branch attaches its check runs to the PR head commit.
+        if: steps.create-pr.outputs.pull-request-number != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: automation/post-merge-status
+        run: gh workflow run ci.yml --ref "$BRANCH"
