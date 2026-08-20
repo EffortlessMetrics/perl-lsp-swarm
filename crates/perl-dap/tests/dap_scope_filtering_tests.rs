@@ -1,29 +1,29 @@
-//! Content-level tests for DAP scope filtering: locals / package / globals.
+//! Content-level tests for DAP scope admission and filtering.
 //!
 //! Perl-requiring tests skip silently (return Ok(())) rather than printing to
 //! stderr, keeping this file clean under `clippy::print_stderr`.
 //!
 //! # What is tested
 //!
-//! The DAP `scopes` response returns three named scope buckets with distinct
-//! `variablesReference` values. When the adapter fetches variables for each
-//! reference it must filter the debugger output to the correct variable set:
+//! The current contract admits scopes only for the exact current stopped frame.
+//! That response contains Locals and, when captured, Arguments; Package and
+//! Globals are intentionally omitted. Stale, unknown, running, terminated,
+//! cleared-session, and no-session references are honest empty responses.
 //!
-//! | Scope   | ref encoding      | should contain                        | must NOT contain |
-//! |---------|-------------------|---------------------------------------|------------------|
-//! | Locals  | frame_id * 10 + 1 | `my` vars (no `::`)                   | package/globals  |
-//! | Package | frame_id * 10 + 2 | `our` / fully-qualified (`::`) vars   | lexicals/globals |
-//! | Globals | frame_id * 10 + 3 | `%ENV`, `@ARGV`, `$_`, `$^W`, …      | lexicals         |
+//! | Scope     | admission                         | contract                         |
+//! |-----------|-----------------------------------|----------------------------------|
+//! | Locals    | exact current stopped frame      | captured lexical values          |
+//! | Arguments | exact current stopped frame      | actually captured arguments only |
+//! | Package   | never admitted by this contract  | omitted                           |
+//! | Globals   | never admitted by this contract  | omitted                           |
 //!
 //! ## Test layers
 //!
-//! 1. **Protocol-shape tests** (no Perl required): the three scope buckets are
-//!    present, correctly named, and use the documented reference arithmetic.
+//! 1. **Protocol-shape tests** (no Perl required): codec arithmetic remains
+//!    covered, while handler admission is tested with an explicitly seeded stop.
 //!
-//! 2. **Fallback-variable tests** (no Perl required): without a live session
-//!    the adapter returns deterministic placeholder variables; verify those
-//!    placeholders are themselves scope-appropriate (no cross-scope contamination
-//!    in the fallback path).
+//! 2. **Rejection tests** (no Perl required): unadmitted references return empty
+//!    without querying the debugger or parsing unrelated history.
 //!
 //! 3. **Scope-filter unit tests** (no Perl required): exercise
 //!    `parse_scope_variables_from_lines` indirectly via `handle_request` with
@@ -31,8 +31,8 @@
 //!    buffer — confirming the real filter accepts/rejects names correctly.
 //!
 //! 4. **E2E content-level tests** (Perl required, skipped gracefully otherwise):
-//!    launch a multi-scope fixture, hit a breakpoint, and assert the variable
-//!    name sets for each scope with no cross-scope contamination.
+//!    retained cases document the current-frame contract; legacy multi-scope
+//!    cases remain explicitly retired below.
 //!
 //! # Limitations
 //!
@@ -44,6 +44,8 @@ mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};
 use perl_dap::{DapMessage, DebugAdapter};
+#[cfg(feature = "test-helpers")]
+use perl_dap::{Source, StackFrame};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs::write;
@@ -131,7 +133,7 @@ fn request_variables(adapter: &mut DebugAdapter, variables_reference: i64) -> Op
     }
 }
 
-// ── 1. Protocol shape: three scopes, correct names, correct reference arithmetic ─
+// ── 1. Protocol shape and exact current-frame admission ─────────────────────
 
 /// The `scopes` response for any frame must contain exactly three buckets:
 /// Locals, Package, and Globals.
@@ -423,96 +425,55 @@ fn test_fallback_scopes_have_no_overlapping_variable_names() -> TestResult {
 
 // ── 3. Scope-filter unit tests via handle_request + simulated output ──────────
 
-/// When debugger output contains mixed variable kinds (lexicals, package-qualified,
-/// built-in globals), the Locals scope must only surface lexical-style names.
-///
-/// This exercises the fallback path via the full `handle_request("variables", …)` path.
-///
-/// NOTE: `push_recent_output_line_for_test` is `#[cfg(test)]` and private to
-/// the crate, so we use the variables fallback path here.  The Locals fallback
-/// returns empty (issue #1006 — no fake $self/@_ placeholders); we verify the
-/// reference arithmetic and that the request succeeds with an empty-but-valid
-/// response.  Actual variable content is verified by the Perl-requiring e2e tests.
+/// An unadmitted Locals-shaped reference is rejected without a session.  This
+/// deliberately proves the zero-query boundary rather than codec arithmetic.
 #[test]
-fn test_locals_scope_reference_routes_to_scope_type_1() -> TestResult {
+fn test_unadmitted_locals_reference_is_empty_without_session() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
-    // frame_id=5 → locals_ref = 51 (ends in 1 → scope_type=1)
-    let frame_id: i64 = 5;
-    let locals_ref = frame_id * 10 + 1;
-
-    // Verify the scope reference encodes scope_type=1 correctly.
-    assert_eq!(
-        locals_ref % 10,
-        1,
-        "locals ref {locals_ref} must have remainder 1 (scope_type=locals)"
-    );
-
-    // The variables request must succeed (success=true, variables key present).
+    let locals_ref = 51;
     let body = request_variables(&mut adapter, locals_ref)
-        .ok_or("locals variables request for frame 5 failed")?;
-    assert!(body.get("variables").is_some(), "locals scope response must include 'variables' key");
-
-    // Fallback Locals is empty (no B module, no fake placeholders — issue #1006).
-    let names = var_names(&body);
-    assert!(names.is_empty(), "#1006: Locals fallback must be empty; got: {names:?}");
+        .ok_or("unadmitted locals variables request failed")?;
+    assert!(var_names(&body).is_empty());
 
     Ok(())
 }
 
-/// When variables request is issued for scope_type=2 (Package), the reference
-/// correctly encodes scope_type=2 and the response succeeds.
+/// Package references are never admitted, including when their wire shape is
+/// otherwise well-formed.
 #[test]
-fn test_package_scope_reference_routes_to_scope_type_2() -> TestResult {
+fn test_unadmitted_package_reference_is_empty_without_session() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
-    let frame_id: i64 = 5;
-    let package_ref = frame_id * 10 + 2;
-
-    assert_eq!(
-        package_ref % 10,
-        2,
-        "package ref {package_ref} must have remainder 2 (scope_type=package)"
-    );
-
+    let package_ref = 52;
     let body = request_variables(&mut adapter, package_ref)
-        .ok_or("package variables request for frame 5 failed")?;
-    // The response body must at least have the variables array (may be empty).
-    assert!(body.get("variables").is_some(), "package scope response must include 'variables' key");
+        .ok_or("unadmitted package variables request failed")?;
+    assert!(var_names(&body).is_empty());
 
     Ok(())
 }
 
-/// When variables request is issued for scope_type=3 (Globals), the reference
-/// correctly encodes scope_type=3 and the response succeeds.
+/// Globals references are never admitted and cannot fall through to history.
 #[test]
-fn test_globals_scope_reference_routes_to_scope_type_3() -> TestResult {
+fn test_unadmitted_globals_reference_is_empty_without_session() -> TestResult {
     let mut adapter = DebugAdapter::new();
     let (tx, _rx) = sync_channel(64);
     adapter.set_event_sender(tx);
 
-    let frame_id: i64 = 5;
-    let globals_ref = frame_id * 10 + 3;
-
-    assert_eq!(
-        globals_ref % 10,
-        3,
-        "globals ref {globals_ref} must have remainder 3 (scope_type=globals)"
-    );
-
+    let globals_ref = 53;
     let body = request_variables(&mut adapter, globals_ref)
-        .ok_or("globals variables request for frame 5 failed")?;
-    assert!(body.get("variables").is_some(), "globals scope response must include 'variables' key");
+        .ok_or("unadmitted globals variables request failed")?;
+    assert!(var_names(&body).is_empty());
 
     Ok(())
 }
 
-/// The scope reference modulo-10 encoding is self-consistent across all three
-/// scopes for a given frame: each scope type is unique and predictable.
+/// The scope reference modulo-10 encoding remains self-consistent for the
+/// protocol codec, even though Package/Globals are not handler-admitted.
 #[test]
 fn test_scope_type_encoding_is_self_consistent() -> TestResult {
     // For any frame_id, the three scope refs must have distinct moduli 1, 2, 3.
@@ -639,6 +600,37 @@ fn test_e2e_named_sub_breakpoint_excludes_outer_and_global_vars() -> TestResult 
     );
 
     session.disconnect()?;
+    Ok(())
+}
+
+/// A seeded stopped frame supplies the admitted current frame.  The Locals
+/// scope reference returned for that frame must be consumable as a variables
+/// request; an unavailable debugger payload is still an honest empty list.
+#[test]
+#[cfg(feature = "test-helpers")]
+#[ignore = "Seeded helper proves admission shape but does not provide a live debugger response; request semantics are covered by perl-dap unit tests."]
+fn test_admitted_current_frame_locals_request() -> TestResult {
+    let mut adapter = DebugAdapter::new();
+    let (tx, _rx) = sync_channel(64);
+    adapter.set_event_sender(tx);
+    adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
+        7,
+        "main::run",
+        Source::new("/tmp/test.pl"),
+        10,
+    )]);
+
+    let response = adapter.handle_request(1, "scopes", Some(json!({ "frameId": 7 })));
+    let body = match response {
+        DapMessage::Response { success: true, body: Some(body), .. } => body,
+        _ => return Err("admitted scopes request failed".into()),
+    };
+    let locals_ref = scope_ref_by_name(&body, "Locals").ok_or("Locals scope was not admitted")?;
+    assert!(scope_ref_by_name(&body, "Package").is_none());
+    assert!(scope_ref_by_name(&body, "Globals").is_none());
+    let locals = request_variables(&mut adapter, locals_ref)
+        .ok_or("admitted Locals variables request failed")?;
+    assert!(locals.get("variables").is_some());
     Ok(())
 }
 
