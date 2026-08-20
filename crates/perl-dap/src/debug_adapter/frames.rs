@@ -6,6 +6,29 @@ use super::{
 };
 
 impl DebugAdapter {
+    /// Return the only frame the native scope path may inspect.
+    ///
+    /// `stack_frames[0]` is the frame captured for the current stopped
+    /// suspension.  Do not infer identity from source/line or accept another
+    /// frame merely because its id is numerically valid; the typed frame
+    /// authority in #9045/#9046 will replace this compatibility floor.
+    pub(super) fn exact_current_stopped_frame_id(&self, requested: i64) -> Option<i32> {
+        if requested < 0 || requested > i32::MAX as i64 {
+            return None;
+        }
+        let frame_id = requested as i32;
+        let session = lock_or_recover(&self.session, "debug_adapter.session");
+        let session = session.as_ref()?;
+        if session.state != crate::debug_adapter::DebugState::Stopped {
+            return None;
+        }
+        session
+            .stack_frames
+            .first()
+            .filter(|frame| frame.id >= 0 && frame.id == frame_id)
+            .map(|frame| frame.id)
+    }
+
     /// Handle stackTrace request
     pub(super) fn handle_stack_trace(
         &self,
@@ -149,17 +172,22 @@ impl DebugAdapter {
             }
         };
 
-        let frame_id = Self::i64_to_i32_saturating(args.frame_id);
+        let Some(frame_id) = self.exact_current_stopped_frame_id(args.frame_id) else {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: true,
+                command: "scopes".to_string(),
+                body: Some(json!({ "scopes": [] })),
+                message: None,
+            };
+        };
 
         // AC8.3: Hierarchical scope inspection
         // Use VariableReference codec to encode scope refs into disjoint wire bands.
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
         let locals_ref =
             VariableReference::Scope { frame_id, kind: ScopeKind::Locals }.encode().unwrap_or(0);
-        let package_ref =
-            VariableReference::Scope { frame_id, kind: ScopeKind::Package }.encode().unwrap_or(0);
-        let globals_ref =
-            VariableReference::Scope { frame_id, kind: ScopeKind::Globals }.encode().unwrap_or(0);
         let arguments = lock_or_recover(&self.session, "debug_adapter.session")
             .as_ref()
             .and_then(|session| session.stack_frame_arguments.get(&frame_id))
@@ -172,22 +200,6 @@ impl DebugAdapter {
                 presentation_hint: Some("locals".to_string()),
                 variables_reference: i64::from(locals_ref),
                 expensive: false,
-                named_variables: None,
-                indexed_variables: None,
-            },
-            Scope {
-                name: "Package".to_string(),
-                presentation_hint: None,
-                variables_reference: i64::from(package_ref),
-                expensive: true,
-                named_variables: None,
-                indexed_variables: None,
-            },
-            Scope {
-                name: "Globals".to_string(),
-                presentation_hint: None,
-                variables_reference: i64::from(globals_ref),
-                expensive: true,
                 named_variables: None,
                 indexed_variables: None,
             },
@@ -317,7 +329,11 @@ mod pagination_tests {
         };
         let scope_values =
             body.get("scopes").and_then(Value::as_array).ok_or("scopes body was not an array")?;
-        assert_eq!(scope_values.len(), 4);
+        assert_eq!(scope_values.len(), 2);
+        assert!(scope_values.iter().all(|scope| {
+            scope.get("name") != Some(&json!("Package"))
+                && scope.get("name") != Some(&json!("Globals"))
+        }));
         let arguments_scope = scope_values
             .iter()
             .find(|scope| scope.get("name") == Some(&json!("Arguments")))
@@ -342,6 +358,47 @@ mod pagination_tests {
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].get("name"), Some(&json!("arg1")));
         assert_eq!(values[0].get("value"), Some(&json!("[1, 2]")));
+        Ok(())
+    }
+
+    #[test]
+    fn scopes_without_exact_current_stopped_frame_are_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+
+        for frame_id in [-1_i64, 8, i64::from(i32::MAX) + 1] {
+            let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": frame_id })));
+            let DapMessage::Response { body: Some(body), .. } = response else {
+                return Err("invalid frame response did not contain a body".into());
+            };
+            assert_eq!(body.get("scopes"), Some(&json!([])));
+        }
+
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(7, "main::run")]);
+        for frame_id in [6_i64, 8] {
+            let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": frame_id })));
+            let DapMessage::Response { body: Some(body), .. } = response else {
+                return Err("non-current frame response did not contain a body".into());
+            };
+            assert_eq!(body.get("scopes"), Some(&json!([])));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scopes_without_a_stopped_session_are_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": 7 })));
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("no-session response did not contain a body".into());
+        };
+        assert_eq!(body.get("scopes"), Some(&json!([])));
+
+        adapter.seed_running_session_for_test();
+        let response = adapter.handle_scopes(1, 1, Some(json!({ "frameId": 7 })));
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err("running-session response did not contain a body".into());
+        };
+        assert_eq!(body.get("scopes"), Some(&json!([])));
         Ok(())
     }
 }

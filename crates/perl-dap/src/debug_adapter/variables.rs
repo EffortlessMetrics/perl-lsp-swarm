@@ -99,6 +99,31 @@ impl DebugAdapter {
             }
         }
 
+        // Scope references are bound to the exact current stopped frame.  Check
+        // this before cache lookup, parsing, or debugger I/O so old, wrong-frame,
+        // Package, and Globals references cannot be revived by representative
+        // data or a stale cache entry.
+        {
+            use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+            if let Some(VariableReference::Scope { frame_id, kind }) =
+                VariableReference::decode(variables_ref)
+            {
+                let exact_current = self.exact_current_stopped_frame_id(i64::from(frame_id));
+                if exact_current != Some(frame_id)
+                    || matches!(kind, ScopeKind::Package | ScopeKind::Globals)
+                {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: true,
+                        command: "variables".to_string(),
+                        body: Some(json!({ "variables": [] })),
+                        message: None,
+                    };
+                }
+            }
+        }
+
         // Arguments are captured from the verbose stack trace, not queried from the
         // debugger.  Keep this path before the generic scope routing so a client cannot
         // accidentally turn an Arguments reference into a package/global query.
@@ -269,45 +294,10 @@ impl DebugAdapter {
                             }
                         }
                     }
-                    Some(ScopeKind::Package) => {
-                        if let Some(stdin) = session.process.stdin.as_mut() {
-                            let commands = vec![format!("V {} ::", scope_frame_id)];
-                            match self.send_framed_debugger_commands(stdin, &commands) {
-                                Ok((begin, end)) => {
-                                    framed_scope_lines = self.capture_framed_debugger_output(
-                                        &begin,
-                                        &end,
-                                        DEBUGGER_QUERY_WAIT_MS * 8,
-                                    );
-                                }
-                                Err(error) => {
-                                    tracing::warn!(%error, "Failed to send framed variables command, falling back");
-                                    let cmd = format!("V {} ::\n", scope_frame_id);
-                                    let _ = stdin.write_all(cmd.as_bytes());
-                                    let _ = stdin.flush();
-                                }
-                            }
-                        }
-                    }
-                    Some(ScopeKind::Globals) => {
-                        if let Some(stdin) = session.process.stdin.as_mut() {
-                            let commands = vec![format!("V {} *", scope_frame_id)];
-                            match self.send_framed_debugger_commands(stdin, &commands) {
-                                Ok((begin, end)) => {
-                                    framed_scope_lines = self.capture_framed_debugger_output(
-                                        &begin,
-                                        &end,
-                                        DEBUGGER_QUERY_WAIT_MS * 8,
-                                    );
-                                }
-                                Err(error) => {
-                                    tracing::warn!(%error, "Failed to send framed variables command, falling back");
-                                    let cmd = format!("V {} *\n", scope_frame_id);
-                                    let _ = stdin.write_all(cmd.as_bytes());
-                                    let _ = stdin.flush();
-                                }
-                            }
-                        }
+                    Some(ScopeKind::Package | ScopeKind::Globals) => {
+                        // Rejected before entering this query path. Keep this
+                        // arm explicit so future scope kinds cannot restore the
+                        // numeric-frame V-command behavior.
                     }
                     Some(ScopeKind::Arguments) => {
                         // Handled by the early return above. Keep this arm explicit so
