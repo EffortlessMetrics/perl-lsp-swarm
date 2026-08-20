@@ -54,6 +54,16 @@ export interface ManagedHostSelectionInput {
   running_candidate_id: string | null;
 }
 
+export type ManagedHostSelectionInputValidation =
+  | {
+      valid: true;
+      value: Pick<ManagedHostSelectionInput, 'running_candidate_id'>;
+    }
+  | {
+      valid: false;
+      errors: string[];
+    };
+
 /**
  * Why a host ended up on a candidate. `restart_required` and
  * `no_compatible_candidate` are the action-required outcomes: a bare candidate
@@ -180,9 +190,11 @@ function validateManagedCandidateCatalogEntry(entry: unknown): string[] {
  * ranking hint: malformed identities must never flow into restart/fallback
  * paths as if they were a real candidate.
  */
-export function validateManagedHostSelectionInput(input: unknown): string[] {
+export function validateManagedHostSelectionInput(
+  input: unknown,
+): ManagedHostSelectionInputValidation {
   if (typeof input !== 'object' || input === null) {
-    return ['managed host selection input must be an object'];
+    return { valid: false, errors: ['managed host selection input must be an object'] };
   }
 
   const record = input as Partial<ManagedHostSelectionInput>;
@@ -191,9 +203,12 @@ export function validateManagedHostSelectionInput(input: unknown): string[] {
     runningCandidateId !== null &&
     (typeof runningCandidateId !== 'string' || !isCanonicalManagedCandidateId(runningCandidateId))
   ) {
-    return ['running candidate id must be null or a canonical managed candidate'];
+    return {
+      valid: false,
+      errors: ['running candidate id must be null or a canonical managed candidate'],
+    };
   }
-  return [];
+  return { valid: true, value: { running_candidate_id: runningCandidateId } };
 }
 
 function validateSessionId(sessionId: string): void {
@@ -349,9 +364,11 @@ export function releaseManagedHostReference(
 export function resolveManagedCandidateForHost(
   input: ManagedHostSelectionInput,
 ): ManagedHostSelectionOutcome {
-  if (validateManagedHostSelectionInput(input).length > 0) {
+  const inputValidation = validateManagedHostSelectionInput(input);
+  if (!inputValidation.valid) {
     return { kind: 'no_compatible_candidate' };
   }
+  const runningCandidateId = inputValidation.value.running_candidate_id;
   const candidates = Array.isArray(input.candidates) ? input.candidates : [];
   const validCandidates = candidates.filter(
     (entry) => validateManagedCandidateCatalogEntry(entry).length === 0,
@@ -374,8 +391,8 @@ export function resolveManagedCandidateForHost(
 
   // A running host remains bound to the exact candidate it already launched.
   // Moving the shared default never hot-swaps its process identity.
-  if (typeof input.running_candidate_id === 'string' && usable(input.running_candidate_id)) {
-    return { kind: 'bound_running', candidate_id: input.running_candidate_id };
+  if (runningCandidateId !== null && usable(runningCandidateId)) {
+    return { kind: 'bound_running', candidate_id: runningCandidateId };
   }
 
   // Side-by-side compatibility is host-local selection only. Do not mutate the
@@ -394,7 +411,7 @@ export function resolveManagedCandidateForHost(
   // The host launched a candidate that is no longer in the catalog or no
   // longer compatible. Report the replacement as action-required rather than
   // returning it as if the live process were already running it.
-  if (input.running_candidate_id !== null) {
+  if (runningCandidateId !== null) {
     return { kind: 'restart_required', candidate_id: replacement };
   }
 

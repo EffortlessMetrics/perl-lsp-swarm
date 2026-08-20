@@ -186,9 +186,10 @@ describe('managed candidate publication and selection', () => {
         running_candidate_id: runningCandidateId,
       } as unknown as ManagedHostSelectionInput;
 
-      expect(validateManagedHostSelectionInput(input)).toEqual([
-        'running candidate id must be null or a canonical managed candidate',
-      ]);
+      expect(validateManagedHostSelectionInput(input)).toEqual({
+        valid: false,
+        errors: ['running candidate id must be null or a canonical managed candidate'],
+      });
       expect(resolveManagedCandidateForHost(input)).toEqual({ kind: 'no_compatible_candidate' });
     }
   });
