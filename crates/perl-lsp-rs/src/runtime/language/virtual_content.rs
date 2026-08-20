@@ -250,7 +250,7 @@ fn classify_perldoc_stdout(stdout: Vec<u8>, module: &str) -> Option<String> {
     String::from_utf8(stdout)
         .map_err(|e| tracing::warn!(module, error = %e, "Invalid UTF-8 in perldoc output"))
         .ok()
-        .filter(|content| !content.is_empty())
+        .filter(|content| !content.trim().is_empty())
 }
 
 /// Fetch Perl documentation using perldoc.
@@ -294,9 +294,12 @@ mod tests {
     #[test]
     fn parser_fetch_perldoc_empty_success_is_unavailable() {
         assert!(classify_perldoc_stdout(Vec::new(), "missing-module").is_none());
+        assert!(classify_perldoc_stdout(b" \t\r\n ".to_vec(), "whitespace-module").is_none());
+
+        let documentation = " \ndocumentation\n\t ".to_string();
         assert_eq!(
-            classify_perldoc_stdout(b"documentation".to_vec(), "documented-module"),
-            Some("documentation".to_string())
+            classify_perldoc_stdout(documentation.as_bytes().to_vec(), "documented-module"),
+            Some(documentation)
         );
     }
 
