@@ -220,7 +220,7 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
     let stub_gh = stub_dir.join("gh");
     fs::write(
         &stub_gh,
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$2\" >> \"$GH_LOG\"\nif [ \"${FAIL_WORKFLOW:-}\" = \"$2\" ]; then exit 1; fi\n",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$3\" >> \"$GH_LOG\"\nif [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
     )?;
     #[cfg(unix)]
     {
