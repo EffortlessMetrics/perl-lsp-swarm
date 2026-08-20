@@ -1,9 +1,10 @@
 use perl_lsp_rs_core::providers::{
-    CanonicalEnvelopePort, FileFactShardPort, ProviderAdapterError, ProviderAdapterSnapshot,
-    ProviderCancellationState, ProviderIdentity, ProviderProofClass, ProviderQueryCapability,
+    CanonicalEnvelopePort, FileFactShardPort, NoopProviderQueryControl, ProviderAdapterError,
+    ProviderAdapterSnapshot, ProviderCancellationState, ProviderIdentity, ProviderQueryCapability,
     ProviderQueryContext, ProviderQueryDeadline, ProviderQueryKind, ProviderQueryOutcome,
-    ProviderQueryRequest, ProviderQuerySubject, ProviderReadinessRequirement,
+    ProviderQueryRequest, ProviderQueryResult, ProviderQuerySubject, ProviderReadinessRequirement,
     ProviderReadinessState, ProviderSemanticPort, ProviderSnapshotCompleteness,
+    execute_provider_query,
 };
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EntityFact, EntityId, EntityKind, FactId, FileId,
@@ -15,20 +16,14 @@ use perl_semantic_facts::{
 use perl_workspace::workspace::workspace_index::FileFactShard;
 use std::error::Error;
 
-fn snapshot(
-    proof_ceiling: ProviderProofClass,
-    completeness: ProviderSnapshotCompleteness,
-    authorities: Vec<SemanticProducer>,
-) -> ProviderAdapterSnapshot {
+fn snapshot(completeness: ProviderSnapshotCompleteness) -> ProviderAdapterSnapshot {
     ProviderAdapterSnapshot::new(
         SourceGeneration::known("document-7"),
         SourceGeneration::known("workspace-3"),
         SemanticFreshness::Fresh,
         LifecyclePhase::Runtime,
-        proof_ceiling,
         ProviderFallbackState::Primary,
         Some(1),
-        authorities,
         [
             (ProviderQueryCapability::Declarations, completeness),
             (ProviderQueryCapability::References, completeness),
@@ -54,19 +49,23 @@ fn context() -> ProviderQueryContext {
 }
 
 fn request(kind: ProviderQueryKind, subject: ProviderQuerySubject) -> ProviderQueryRequest {
-    ProviderQueryRequest::new(
-        ProviderSurface::Definition,
-        "test/request",
-        kind,
-        subject,
-        context(),
-    )
+    ProviderQueryRequest::new(ProviderSurface::Definition, "test/request", kind, subject, context())
+}
+
+fn execute(
+    port: &dyn ProviderSemanticPort,
+    request: &ProviderQueryRequest,
+) -> Result<ProviderQueryResult, perl_lsp_rs_core::providers::ProviderQueryContractError> {
+    execute_provider_query(port, request, &NoopProviderQueryControl)
 }
 
 fn shard(provenance: Provenance, confidence: Confidence) -> FileFactShard {
-    let file_id = FileId(10);
+    shard_in_file(FileId(10), provenance, confidence)
+}
+
+fn shard_in_file(file_id: FileId, provenance: Provenance, confidence: Confidence) -> FileFactShard {
     FileFactShard {
-        source_uri: "file:///example.pl".to_string(),
+        source_uri: format!("file:///example-{}.pl", file_id.0),
         file_id,
         content_hash: 77,
         producer_schema_version: 1,
@@ -116,113 +115,99 @@ fn shard(provenance: Provenance, confidence: Confidence) -> FileFactShard {
     }
 }
 
+fn parser_port(
+    shards: &[FileFactShard],
+    completeness: ProviderSnapshotCompleteness,
+) -> Result<FileFactShardPort, ProviderAdapterError> {
+    FileFactShardPort::new(
+        shards,
+        SemanticProducer::Parser,
+        ProviderFactSourceKind::ParserSyntax,
+        snapshot(completeness),
+    )
+}
+
 #[test]
 fn exact_shard_queries_preserve_workspace_producer() -> Result<(), Box<dyn Error>> {
     let port = FileFactShardPort::new(
         &[shard(Provenance::ExactAst, Confidence::High)],
         SemanticProducer::WorkspaceIndex,
         ProviderFactSourceKind::LegacyWorkspace,
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
-        ),
+        snapshot(ProviderSnapshotCompleteness::Complete),
     )?;
 
-    let definition = port.query(&request(
-        ProviderQueryKind::Declaration,
-        ProviderQuerySubject::Symbol("work".to_string()),
-    ));
+    let definition = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string())),
+    )?;
     assert_eq!(definition.outcome(), ProviderQueryOutcome::Exact);
-    assert_eq!(definition.values().map(|values| values.len()), Some(1));
-    assert_eq!(
-        definition.evidence().producers(),
-        &[SemanticProducer::WorkspaceIndex]
-    );
-    assert!(definition.is_consistent());
+    assert_eq!(definition.value_facts().count(), 1);
+    assert_eq!(definition.evidence().producers(), &[SemanticProducer::WorkspaceIndex]);
 
-    let references = port.query(&request(
-        ProviderQueryKind::References {
-            include_declaration: false,
-        },
-        ProviderQuerySubject::Entity(EntityId(30)),
-    ));
+    let references = execute(
+        &port,
+        &request(
+            ProviderQueryKind::References { include_declaration: false },
+            ProviderQuerySubject::Entity(EntityId(30)),
+        ),
+    )?;
     assert_eq!(references.outcome(), ProviderQueryOutcome::Exact);
-    assert_eq!(references.values().map(|values| values.len()), Some(1));
-    assert!(references.is_consistent());
+    assert_eq!(references.value_facts().count(), 1);
     Ok(())
 }
 
 #[test]
 fn complete_and_partial_empty_results_stay_distinct() -> Result<(), Box<dyn Error>> {
-    let complete = FileFactShardPort::new(
+    let complete = parser_port(
         &[shard(Provenance::ExactAst, Confidence::High)],
-        SemanticProducer::Parser,
-        ProviderFactSourceKind::ParserSyntax,
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
-        ),
+        ProviderSnapshotCompleteness::Complete,
     )?;
-    let complete_result = complete.query(&request(
+    let missing = request(
         ProviderQueryKind::Declaration,
         ProviderQuerySubject::Symbol("missing".to_string()),
-    ));
-    assert!(complete_result.is_exact_empty());
-    assert_eq!(
-        complete_result.evidence().producers(),
-        &[SemanticProducer::Parser]
     );
+    let complete_result = execute(&complete, &missing)?;
+    assert!(complete_result.is_exact_empty());
+    // Exact-empty authority is derived from the concrete denominator, and the
+    // fact producers stay empty: completeness never manufactures attribution.
+    assert!(complete_result.evidence().producers().is_empty());
+    let authority = complete_result
+        .evidence()
+        .completeness_authority()
+        .ok_or("exact empty must retain its denominator receipt")?;
+    assert_eq!(authority.producer(), SemanticProducer::Parser);
+    assert_eq!(authority.capability(), ProviderQueryCapability::Declarations);
+    assert!(authority.covered_unit_count() > 0);
+    complete_result.validate_against(&missing)?;
 
-    let partial = FileFactShardPort::new(
+    let partial = parser_port(
         &[shard(Provenance::ExactAst, Confidence::High)],
-        SemanticProducer::Parser,
-        ProviderFactSourceKind::ParserSyntax,
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Partial,
-            Vec::new(),
-        ),
+        ProviderSnapshotCompleteness::Partial,
     )?;
-    let partial_result = partial.query(&request(
-        ProviderQueryKind::Declaration,
-        ProviderQuerySubject::Symbol("missing".to_string()),
-    ));
+    let partial_result = execute(&partial, &missing)?;
     assert_eq!(partial_result.outcome(), ProviderQueryOutcome::Unavailable);
-    assert_eq!(partial_result.values(), None);
-    assert!(partial_result.is_consistent());
+    assert_eq!(partial_result.value_facts().count(), 0);
     Ok(())
 }
 
 #[test]
-fn shard_adapter_rejects_false_producer_trace_and_edit_authority() {
+fn shard_adapter_rejects_false_producer_and_trace() {
     let compiler = FileFactShardPort::new(
         &[shard(Provenance::ExactAst, Confidence::High)],
         SemanticProducer::PirA,
         ProviderFactSourceKind::CompilerFact,
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
-        ),
+        snapshot(ProviderSnapshotCompleteness::Complete),
     );
     assert_eq!(
         compiler.err(),
-        Some(ProviderAdapterError::UnsupportedShardProducer(
-            SemanticProducer::PirA
-        ))
+        Some(ProviderAdapterError::UnsupportedShardProducer(SemanticProducer::PirA))
     );
 
     let bad_trace = FileFactShardPort::new(
         &[shard(Provenance::ExactAst, Confidence::High)],
         SemanticProducer::Parser,
         ProviderFactSourceKind::CompilerFact,
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
-        ),
+        snapshot(ProviderSnapshotCompleteness::Complete),
     );
     assert_eq!(
         bad_trace.err(),
@@ -231,45 +216,23 @@ fn shard_adapter_rejects_false_producer_trace_and_edit_authority() {
             source: ProviderFactSourceKind::CompilerFact,
         })
     );
-
-    let edits = FileFactShardPort::new(
-        &[shard(Provenance::ExactAst, Confidence::High)],
-        SemanticProducer::WorkspaceIndex,
-        ProviderFactSourceKind::LegacyWorkspace,
-        snapshot(
-            ProviderProofClass::EditAuthorizing,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
-        ),
-    );
-    assert_eq!(
-        edits.err(),
-        Some(ProviderAdapterError::EditAuthorizationRequiresPlan)
-    );
 }
 
 #[test]
 fn generated_and_dynamic_facts_do_not_become_exact() -> Result<(), Box<dyn Error>> {
     let generated = FileFactShardPort::new(
-        &[shard(
-            Provenance::FrameworkSynthesis,
-            Confidence::Medium,
-        )],
+        &[shard(Provenance::FrameworkSynthesis, Confidence::Medium)],
         SemanticProducer::SemanticAnalyzer,
         ProviderFactSourceKind::SemanticFact,
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
-        ),
+        snapshot(ProviderSnapshotCompleteness::Complete),
     )?;
-    let generated_result = generated.query(&request(
-        ProviderQueryKind::Declaration,
-        ProviderQuerySubject::Symbol("work".to_string()),
-    ));
+    let generated_result = execute(
+        &generated,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string())),
+    )?;
     assert_eq!(generated_result.outcome(), ProviderQueryOutcome::Degraded);
     assert_eq!(
-        generated_result.evidence().reason_code(),
+        generated_result.evidence().semantic_reason(),
         SemanticReasonCode::GeneratedFromSource
     );
 
@@ -279,56 +242,51 @@ fn generated_and_dynamic_facts_do_not_become_exact() -> Result<(), Box<dyn Error
         &[dynamic_shard],
         SemanticProducer::SemanticAnalyzer,
         ProviderFactSourceKind::DynamicBoundary,
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let dynamic_result = execute(
+        &dynamic,
+        &request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 21 },
         ),
     )?;
-    let dynamic_result = dynamic.query(&request(
-        ProviderQueryKind::Declaration,
-        ProviderQuerySubject::Position {
-            file_id: FileId(10),
-            byte_offset: 21,
-        },
-    ));
     assert_eq!(dynamic_result.outcome(), ProviderQueryOutcome::Dynamic);
-    assert_eq!(dynamic_result.values(), None);
-    assert_eq!(
-        dynamic_result.evidence().reason_code(),
-        SemanticReasonCode::DynamicValue
-    );
-    assert!(dynamic_result.is_consistent());
+    assert_eq!(dynamic_result.value_facts().count(), 0);
+    assert_eq!(dynamic_result.evidence().semantic_reason(), SemanticReasonCode::DynamicValue);
     Ok(())
 }
 
 #[test]
-fn missing_anchor_downgrades_completeness_instead_of_fabricating_exact_empty(
-) -> Result<(), Box<dyn Error>> {
+fn missing_anchor_downgrades_completeness_instead_of_fabricating_exact_empty()
+-> Result<(), Box<dyn Error>> {
     let mut broken = shard(Provenance::ExactAst, Confidence::High);
     broken.entities[0].anchor_id = None;
-    let port = FileFactShardPort::new(
-        &[broken],
-        SemanticProducer::Parser,
-        ProviderFactSourceKind::ParserSyntax,
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
+    let port = parser_port(&[broken], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string())),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert_eq!(result.value_facts().count(), 0);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("missing_source_anchor"))
+    );
+
+    // The downgraded capability also cannot claim an exact-empty denominator.
+    let missing = execute(
+        &port,
+        &request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Symbol("missing".to_string()),
         ),
     )?;
-    let result = port.query(&request(
-        ProviderQueryKind::Declaration,
-        ProviderQuerySubject::Symbol("work".to_string()),
-    ));
-    assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
-    assert_eq!(result.values(), None);
-    assert!(result
-        .evidence()
-        .limitations()
-        .iter()
-        .any(|limitation| limitation.contains("missing_source_anchor")));
-    assert!(result.is_consistent());
+    assert_eq!(missing.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!missing.is_exact_empty());
     Ok(())
 }
 
@@ -357,59 +315,367 @@ fn compiler_envelope(freshness: SemanticFreshness, generation: &str) -> Semantic
 }
 
 #[test]
-fn canonical_envelopes_preserve_real_compiler_producer_and_staleness() {
+fn canonical_envelopes_preserve_real_compiler_producer_and_staleness() -> Result<(), Box<dyn Error>>
+{
     let exact_port = CanonicalEnvelopePort::new(
         &[compiler_envelope(SemanticFreshness::Fresh, "document-7")],
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
-        ),
-    );
-    let exact_result = exact_port.query(&request(
-        ProviderQueryKind::Declaration,
-        ProviderQuerySubject::Entity(EntityId(30)),
-    ));
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let exact_result = execute(
+        &exact_port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Entity(EntityId(30))),
+    )?;
     assert_eq!(exact_result.outcome(), ProviderQueryOutcome::Exact);
-    assert_eq!(
-        exact_result.evidence().producers(),
-        &[SemanticProducer::PirA]
-    );
-    assert!(exact_result.is_consistent());
+    assert_eq!(exact_result.evidence().producers(), &[SemanticProducer::PirA]);
 
     let stale_port = CanonicalEnvelopePort::new(
         &[compiler_envelope(SemanticFreshness::Stale, "old-document")],
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            Vec::new(),
-        ),
-    );
-    let stale_result = stale_port.query(&request(
-        ProviderQueryKind::Declaration,
-        ProviderQuerySubject::Entity(EntityId(30)),
-    ));
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let stale_result = execute(
+        &stale_port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Entity(EntityId(30))),
+    )?;
     assert_eq!(stale_result.outcome(), ProviderQueryOutcome::Stale);
-    assert_eq!(stale_result.values(), None);
-    assert!(stale_result.is_consistent());
+    assert_eq!(stale_result.value_facts().count(), 0);
+    Ok(())
 }
 
 #[test]
-fn absent_compiler_envelopes_strip_unsubstantiated_compiler_authority() {
-    let port = CanonicalEnvelopePort::new(
-        &[],
-        snapshot(
-            ProviderProofClass::ExactRead,
-            ProviderSnapshotCompleteness::Complete,
-            vec![SemanticProducer::PirA],
-        ),
+fn exact_empty_authority_is_derived_from_actual_envelopes() -> Result<(), Box<dyn Error>> {
+    // An empty canonical set has no denominator units and cannot claim exact
+    // emptiness, regardless of the caller's completeness label.
+    let empty_port =
+        CanonicalEnvelopePort::new(&[], snapshot(ProviderSnapshotCompleteness::Complete))?;
+    let missing = request(ProviderQueryKind::Declaration, ProviderQuerySubject::Workspace);
+    let empty_result = execute(&empty_port, &missing)?;
+    assert_eq!(empty_result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(empty_result.evidence().producers().is_empty());
+
+    // A uniform producer set derives grant authority from its actual envelopes.
+    let parser_envelope = SemanticFactEnvelope::new(
+        FactId(901),
+        Some(EntityId(30)),
+        SemanticFactKind::Declaration,
+        SourceAnchor::new(Some(AnchorId(20)), FileId(10), 4, 12),
+        SourceGeneration::known("document-7"),
+        Some(ScopeId(1)),
+        Some("Example".to_string()),
+        LifecyclePhase::Runtime,
+        SemanticProducer::Parser,
+        SemanticProvenance::Known(Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticFreshness::Fresh,
+        None,
+        Vec::new(),
+        SemanticReasonCode::ExactSource,
     );
-    let result = port.query(&request(
+    let uniform_port = CanonicalEnvelopePort::new(
+        std::slice::from_ref(&parser_envelope),
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let missing_symbol = request(
         ProviderQueryKind::Declaration,
-        ProviderQuerySubject::Workspace,
-    ));
+        ProviderQuerySubject::Symbol("missing".to_string()),
+    );
+    let uniform_result = execute(&uniform_port, &missing_symbol)?;
+    assert!(uniform_result.is_exact_empty());
+    let authority = uniform_result
+        .evidence()
+        .completeness_authority()
+        .ok_or("exact empty must retain its denominator receipt")?;
+    assert_eq!(authority.producer(), SemanticProducer::Parser);
+
+    // A mixed-producer set has no single truthful denominator authority.
+    let mixed_port = CanonicalEnvelopePort::new(
+        &[parser_envelope, compiler_envelope(SemanticFreshness::Fresh, "document-7")],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let mixed_result = execute(&mixed_port, &missing_symbol)?;
+    assert_eq!(mixed_result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!mixed_result.is_exact_empty());
+    Ok(())
+}
+
+#[test]
+fn two_file_shards_never_collide_fact_ids() -> Result<(), Box<dyn Error>> {
+    let first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
+    let second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
+    let port = parser_port(&[first, second], ProviderSnapshotCompleteness::Complete)?;
+    let result =
+        execute(&port, &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Workspace))?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    let values: Vec<_> = result.value_facts().collect();
+    assert_eq!(values.len(), 2, "both file shards keep their entity facts");
+    assert_ne!(values[0].fact_id, values[1].fact_id);
+    let mut files: Vec<_> = values.iter().map(|value| value.anchor.file_id).collect();
+    files.sort();
+    assert_eq!(files, vec![FileId(10), FileId(11)]);
+    Ok(())
+}
+
+#[test]
+fn cross_generation_snapshot_cannot_answer_exact() -> Result<(), Box<dyn Error>> {
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+
+    // The request moved to document-8 while the snapshot still describes
+    // document-7: values are stale for this request, never exact.
+    let mut newer =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string()));
+    newer.context.document_generation = SourceGeneration::known("document-8");
+    let newer_result = execute(&port, &newer)?;
+    assert_eq!(newer_result.outcome(), ProviderQueryOutcome::Stale);
+    assert_eq!(newer_result.value_facts().count(), 0);
+    assert!(newer_result.supporting_facts().any(|fact| fact.freshness == SemanticFreshness::Stale));
+
+    // With no subject-matching facts the same mismatch cannot mint exact-empty.
+    let mut newer_missing = request(
+        ProviderQueryKind::Declaration,
+        ProviderQuerySubject::Symbol("missing".to_string()),
+    );
+    newer_missing.context.document_generation = SourceGeneration::known("document-8");
+    let empty_result = execute(&port, &newer_missing)?;
+    assert_eq!(empty_result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!empty_result.is_exact_empty());
+    assert!(
+        empty_result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("generation_mismatch"))
+    );
+
+    // A request admitted as stale is stale even when the snapshot is fresh.
+    let mut stale_context =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string()));
+    stale_context.context.readiness_state = ProviderReadinessState::Stale;
+    let stale_result = execute(&port, &stale_context)?;
+    assert_eq!(stale_result.outcome(), ProviderQueryOutcome::Stale);
+    assert_eq!(stale_result.value_facts().count(), 0);
+    Ok(())
+}
+
+#[test]
+fn limited_building_or_failed_readiness_cannot_be_exact() -> Result<(), Box<dyn Error>> {
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+
+    let mut limited =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string()));
+    limited.context.readiness_state = ProviderReadinessState::ReadyLimited;
+    let limited_result = execute(&port, &limited)?;
+    assert_eq!(limited_result.outcome(), ProviderQueryOutcome::Degraded);
+    assert_eq!(limited_result.value_facts().count(), 1);
+
+    let mut building =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string()));
+    building.context.readiness_state = ProviderReadinessState::Building;
+    let building_result = execute(&port, &building)?;
+    assert_eq!(building_result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert_eq!(building_result.value_facts().count(), 0);
+
+    let mut failed =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string()));
+    failed.context.readiness_state = ProviderReadinessState::Failed;
+    let failed_result = execute(&port, &failed)?;
+    assert_eq!(failed_result.outcome(), ProviderQueryOutcome::Error);
+
+    let mut unavailable =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string()));
+    unavailable.context.readiness_state = ProviderReadinessState::Unavailable;
+    let unavailable_result = execute(&port, &unavailable)?;
+    assert_eq!(unavailable_result.outcome(), ProviderQueryOutcome::Unavailable);
+    Ok(())
+}
+
+#[test]
+fn edit_authorizing_requests_stay_below_exact() -> Result<(), Box<dyn Error>> {
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+
+    let mut edit =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string()));
+    edit.context.readiness_requirement = ProviderReadinessRequirement::EditAuthorizing;
+    let edit_result = execute(&port, &edit)?;
+    assert_eq!(edit_result.outcome(), ProviderQueryOutcome::Degraded);
+    assert!(
+        edit_result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("edit_authorization"))
+    );
+
+    // No adapter path issues an edit-authorizing exact-empty grant either.
+    let mut edit_missing = request(
+        ProviderQueryKind::Declaration,
+        ProviderQuerySubject::Symbol("missing".to_string()),
+    );
+    edit_missing.context.readiness_requirement = ProviderReadinessRequirement::EditAuthorizing;
+    let empty_result = execute(&port, &edit_missing)?;
+    assert!(!empty_result.is_exact_empty());
+    assert_eq!(empty_result.outcome(), ProviderQueryOutcome::Unavailable);
+    Ok(())
+}
+
+#[test]
+fn conflicting_duplicate_fact_ids_fail_closed() -> Result<(), Box<dyn Error>> {
+    let conflicting = SemanticFactEnvelope::new(
+        FactId(900),
+        Some(EntityId(31)),
+        SemanticFactKind::Declaration,
+        SourceAnchor::new(Some(AnchorId(21)), FileId(10), 20, 24),
+        SourceGeneration::known("document-7"),
+        Some(ScopeId(1)),
+        Some("Other".to_string()),
+        LifecyclePhase::Runtime,
+        SemanticProducer::PirA,
+        SemanticProvenance::Known(Provenance::ExactAst),
+        SemanticConfidence::Known(Confidence::High),
+        SemanticFreshness::Fresh,
+        None,
+        Vec::new(),
+        SemanticReasonCode::ExactSource,
+    );
+    let base = compiler_envelope(SemanticFreshness::Fresh, "document-7");
+    let forward = CanonicalEnvelopePort::new(
+        &[base.clone(), conflicting.clone()],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    );
+    let reversed = CanonicalEnvelopePort::new(
+        &[conflicting, base.clone()],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    );
+    assert_eq!(forward.err(), Some(ProviderAdapterError::ConflictingFactId(FactId(900))));
+    assert_eq!(reversed.err(), Some(ProviderAdapterError::ConflictingFactId(FactId(900))));
+
+    // Byte-for-byte identical duplicates collapse to the one canonical fact.
+    let deduped = CanonicalEnvelopePort::new(
+        &[base.clone(), base],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let result = execute(
+        &deduped,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Entity(EntityId(30))),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(result.value_facts().count(), 1);
+    Ok(())
+}
+
+#[test]
+fn conflicting_duplicate_shard_identities_downgrade() -> Result<(), Box<dyn Error>> {
+    // A conflicting duplicate anchor cannot bind any row truthfully.
+    let mut dup_anchor = shard(Provenance::ExactAst, Confidence::High);
+    let mut conflicting_anchor = dup_anchor.anchors[0].clone();
+    conflicting_anchor.span_start_byte = 6;
+    dup_anchor.anchors.push(conflicting_anchor);
+    let port = parser_port(&[dup_anchor], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string())),
+    )?;
     assert_eq!(result.outcome(), ProviderQueryOutcome::Unavailable);
-    assert!(result.evidence().producers().is_empty());
-    assert_eq!(result.values(), None);
-    assert!(result.is_consistent());
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation.contains("conflicting_duplicate"))
+    );
+
+    // A conflicting duplicate entity identity cannot bind a truthful name, so
+    // references through it lose exact-empty authority as well.
+    let mut dup_entity = shard(Provenance::ExactAst, Confidence::High);
+    let mut conflicting_entity = dup_entity.entities[0].clone();
+    conflicting_entity.canonical_name = "Other::work".to_string();
+    dup_entity.entities.push(conflicting_entity);
+    let port = parser_port(&[dup_entity], ProviderSnapshotCompleteness::Complete)?;
+    let missing = execute(
+        &port,
+        &request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Symbol("missing".to_string()),
+        ),
+    )?;
+    assert_eq!(missing.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!missing.is_exact_empty());
+    Ok(())
+}
+
+#[test]
+fn position_queries_resolve_through_the_cursor_occurrence() -> Result<(), Box<dyn Error>> {
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+
+    // Definition at a reference position resolves the occurrence's entity.
+    let definition = execute(
+        &port,
+        &request(
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 21 },
+        ),
+    )?;
+    assert_eq!(definition.outcome(), ProviderQueryOutcome::Exact);
+    let values: Vec<_> = definition.value_facts().collect();
+    assert_eq!(values.len(), 1, "declaration at a reference position must not false-empty");
+    assert_eq!(values[0].anchor.start_byte, 4);
+    assert_eq!(values[0].anchor.end_byte, 12);
+
+    // References at the same position return the occurrence set.
+    let references = execute(
+        &port,
+        &request(
+            ProviderQueryKind::References { include_declaration: false },
+            ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 21 },
+        ),
+    )?;
+    assert_eq!(references.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(references.value_facts().count(), 1);
+    Ok(())
+}
+
+#[test]
+fn ambiguous_symbol_declarations_are_blocked() -> Result<(), Box<dyn Error>> {
+    let mut ambiguous = shard(Provenance::ExactAst, Confidence::High);
+    ambiguous.entities.push(EntityFact {
+        id: EntityId(31),
+        kind: EntityKind::Subroutine,
+        canonical_name: "Other::work".to_string(),
+        anchor_id: Some(AnchorId(21)),
+        scope_id: Some(ScopeId(2)),
+        provenance: Provenance::ExactAst,
+        confidence: Confidence::High,
+    });
+    let port = parser_port(&[ambiguous], ProviderSnapshotCompleteness::Complete)?;
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".to_string())),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Ambiguous);
+    assert_eq!(result.value_facts().count(), 0);
+    Ok(())
+}
+
+#[test]
+fn adapter_results_are_deterministic_under_input_reorder() -> Result<(), Box<dyn Error>> {
+    let first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
+    let second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
+    let forward =
+        parser_port(&[first.clone(), second.clone()], ProviderSnapshotCompleteness::Complete)?;
+    let reversed = parser_port(&[second, first], ProviderSnapshotCompleteness::Complete)?;
+    let query = request(ProviderQueryKind::Declaration, ProviderQuerySubject::Workspace);
+    let left = execute(&forward, &query)?;
+    let right = execute(&reversed, &query)?;
+    assert_eq!(serde_json::to_string(&left)?, serde_json::to_string(&right)?);
+    Ok(())
 }

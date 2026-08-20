@@ -540,22 +540,24 @@ impl ProviderCompletenessAuthorityReceipt {
     }
 }
 
-/// Test-only verified completeness snapshot. Production issuance is intentionally
-/// absent until an owning adapter supplies a concrete denominator in #6817.
-#[cfg(test)]
+/// Verified completeness snapshot bound to one request.
+///
+/// Production issuance flows through the crate-owned provider adapters in
+/// [`super::super::semantic_port_adapters`] (#6817), which supply a concrete
+/// producer denominator. Public provider implementations still cannot
+/// manufacture a grant from labels or exact-looking enums.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct VerifiedProviderCompletenessSnapshot {
+pub(crate) struct VerifiedProviderCompletenessSnapshot {
     authority: ProviderCompletenessAuthorityReceipt,
     provenance: SemanticProvenance,
     confidence: SemanticConfidence,
     freshness: SemanticFreshness,
 }
 
-#[cfg(test)]
 impl VerifiedProviderCompletenessSnapshot {
     /// Validate a concrete denominator snapshot before it can issue a grant.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn try_new(
+    pub(crate) fn try_new(
         request: &ProviderQueryRequest,
         capability: ProviderQueryCapability,
         producer: SemanticProducer,
@@ -605,8 +607,9 @@ impl VerifiedProviderCompletenessSnapshot {
 /// Exact supported-denominator authority for one request family.
 ///
 /// The type is public so checked results can expose its evidence, but it has no
-/// public constructor. This PR exposes no production issuer: #6817 must add a
-/// crate-owned adapter from a concrete producer denominator snapshot.
+/// public constructor. Crate-owned adapters (#6817) issue grants through
+/// [`ProviderCompletenessGrant::issue_for_request`] from a concrete producer
+/// denominator snapshot; external code cannot manufacture one.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProviderCompletenessGrant {
@@ -617,8 +620,36 @@ pub struct ProviderCompletenessGrant {
 }
 
 impl ProviderCompletenessGrant {
-    #[cfg(test)]
-    pub(super) fn from_verified_snapshot(snapshot: VerifiedProviderCompletenessSnapshot) -> Self {
+    /// Issue a request-bound grant from a concrete producer denominator snapshot.
+    ///
+    /// Crate-internal: only owning adapters can supply the denominator evidence.
+    /// The snapshot is validated against the request before a grant exists.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn issue_for_request(
+        request: &ProviderQueryRequest,
+        producer: SemanticProducer,
+        denominator_id: impl Into<String>,
+        snapshot_id: impl Into<String>,
+        covered_unit_count: u64,
+        provenance: SemanticProvenance,
+        confidence: SemanticConfidence,
+        freshness: SemanticFreshness,
+    ) -> Result<Self, ProviderQueryContractError> {
+        let snapshot = VerifiedProviderCompletenessSnapshot::try_new(
+            request,
+            ProviderQueryCapability::from_query(&request.kind),
+            producer,
+            denominator_id,
+            snapshot_id,
+            covered_unit_count,
+            provenance,
+            confidence,
+            freshness,
+        )?;
+        Ok(Self::from_verified_snapshot(snapshot))
+    }
+
+    pub(crate) fn from_verified_snapshot(snapshot: VerifiedProviderCompletenessSnapshot) -> Self {
         Self {
             authority: snapshot.authority,
             provenance: snapshot.provenance,
@@ -689,7 +720,7 @@ fn range_contains(envelope: &SemanticFactEnvelope, byte_offset: u32) -> bool {
     }
 }
 
-fn validate_envelope_structure(
+pub(crate) fn validate_envelope_structure(
     envelope: &SemanticFactEnvelope,
 ) -> Result<(), ProviderQueryContractError> {
     if envelope.anchor.start_byte > envelope.anchor.end_byte
