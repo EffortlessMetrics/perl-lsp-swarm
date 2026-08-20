@@ -269,7 +269,9 @@ export function classifyManagedCandidateRetention(
   // A structurally invalid record means enumeration is not trustworthy. Do
   // not let a forged `released` state turn an unvalidated reference into GC
   // authority, even if its candidate id happens to match this candidate.
-  if (input.host_references.some((reference) => validateManagedHostReference(reference).length > 0)) {
+  if (
+    input.host_references.some((reference) => validateManagedHostReference(reference).length > 0)
+  ) {
     return 'unknown_not_safe_to_delete';
   }
 

@@ -12,6 +12,7 @@ import {
   validateManagedCurrentSelection,
   type ManagedCandidateCatalogEntry,
   type ManagedCurrentSelection,
+  type ManagedHostCandidateReference,
   type ManagedHostReferenceState,
   type ManagedRetentionInput,
 } from '../managedCandidateSelection';
