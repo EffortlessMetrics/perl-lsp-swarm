@@ -4,6 +4,6 @@ kind: Fixed
 body: Fixed apply_patch broken-pipe race in merge_integration — git apply exiting early on malformed input now surfaces the authoritative "git apply failed" error instead of an OS-level BrokenPipe. Completed the actions/checkout v7.0.1 pin sweep across four straggler workflow files.
 time: 2026-08-19T20:09:00Z
 custom:
-  PR: "11695"
+  PR: "11740"
   Slug: merge-integration-broken-pipe-and-checkout-pin-sweep
   Breaking: "no"
