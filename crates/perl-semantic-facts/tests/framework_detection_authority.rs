@@ -504,3 +504,38 @@ fn wrong_configuration_key_or_rule_cannot_prove_exclusion() {
         Err(DetectionAuthorityError::InvalidConfigurationEvidence)
     );
 }
+
+#[test]
+fn authority_receipt_parity_tracks_success_and_failure() {
+    let (evaluation, activation) = matched_moo(Some("2.1"), DetectionEvidenceClass::ResolvedModule);
+    let mut observed = input(vec![evaluation]);
+    observed.descriptor = descriptor(Some(">=2"));
+    let successful = AdapterDetectionResult::for_input(
+        &observed,
+        DetectionOutcome::Detected {
+            confidence: Confidence::High,
+            framework_version: Some("2.1".into()),
+        },
+    )
+    .with_contributing_modules(vec![activation])
+    .with_version_evidence(ModuleVersionEvidence::new("2.1", SourceGeneration::known("project-1")));
+
+    let success_error = successful.validate_authority_against(&observed).err();
+    let success_receipt = successful.authority_receipt_against(&observed);
+    assert_eq!(success_error, None);
+    assert!(success_receipt.authoritative);
+    assert_eq!(success_receipt.error, success_error);
+    assert_eq!(success_receipt.input_identity, observed.identity());
+    assert_eq!(success_receipt.descriptor, successful.descriptor);
+    assert_eq!(success_receipt.outcome, successful.outcome);
+
+    // A result copied across inputs must fail closed, and the receipt must carry
+    // the same reason rather than merely reporting a generic non-authority.
+    let mismatched_input = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
+    let failure_error = successful.validate_authority_against(&mismatched_input).err();
+    let failure_receipt = successful.authority_receipt_against(&mismatched_input);
+    assert_eq!(failure_error, Some(DetectionAuthorityError::InputIdentityMismatch));
+    assert!(!failure_receipt.authoritative);
+    assert_eq!(failure_receipt.error, failure_error);
+    assert_eq!(failure_receipt.input_identity, mismatched_input.identity());
+}
