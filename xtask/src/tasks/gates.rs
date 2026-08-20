@@ -4569,11 +4569,13 @@ gates:
     #[cfg(unix)]
     fn timeout_gate_rescued_on_retry_reports_pass_with_rescue_trailer()
     -> color_eyre::eyre::Result<()> {
-        let marker = std::env::temp_dir().join(format!(
-            "gate-retry-marker-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        // The marker is interpolated into a shell command, so its name must
+        // stay shell-safe: ThreadId's Debug output (`ThreadId(2)`) carries
+        // parentheses that break the `if [ -f ... ]` syntax on Linux.
+        static MARKER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = MARKER_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let marker =
+            std::env::temp_dir().join(format!("gate-retry-marker-{}-{seq}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
         let marker_display = marker.display().to_string();
         let command = format!(
