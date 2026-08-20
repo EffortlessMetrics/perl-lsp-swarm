@@ -6,9 +6,10 @@ use crate::io::{read_drift, read_matrix};
 use crate::model::{
     CompositeOverlapPolicy, ManifestPopulation, TARGET_MATRIX_SCHEMA_VERSION,
     TARGET_SELECTION_SCHEMA_VERSION, TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetAuthority,
-    TargetAuthorityKind, TargetDisposition, TargetKind, TargetMatrixEntry, TargetPerlRuntime,
-    TargetPreparation, TargetScriptForm, TargetSelectionContract, TargetSelector,
-    TargetTerminalPolicy, TargetTopologyDrift, TargetTopologyDriftStatus, UpstreamTargetMatrix,
+    TargetAuthorityKind, TargetDisposition, TargetExclusion, TargetKind, TargetMatrixEntry,
+    TargetPerlRuntime, TargetPreparation, TargetScriptForm, TargetSelectionContract,
+    TargetSelector, TargetTerminalPolicy, TargetTopologyDrift, TargetTopologyDriftStatus,
+    UpstreamTargetMatrix,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -549,117 +550,552 @@ fn canonical_contract_serialization_keeps_presentation_fields() -> Result<(), St
 }
 
 // --- Exact error-variant tests for the `validate()` return seams -------------
-// Each of these targets one `Err(format!(...))` return path inside
-// `TargetSelectionContract::validate()` and asserts the exact error string, so
-// a wording change to a rejection reason is caught rather than silently
-// shifting the contract surface.
+// Every fixture below keeps earlier guards valid and changes one input at a
+// time.  This makes each assertion load-bearing: a mutation that removes or
+// changes the targeted rejection cannot fall through to a different error.
 
-#[test]
-fn validate_rejects_unsupported_schema_version_with_exact_message() -> Result<(), String> {
-    let mut contract = physical_contract();
-    contract.schema_version = "perl_core_harness.target_selection.v0".to_string();
-    let Err(error) = contract.validate() else {
-        return Err("an unsupported schema version was accepted".to_string());
-    };
-    assert_eq!(
-        error,
-        "target component_base uses unsupported schema perl_core_harness.target_selection.v0"
-    );
-    Ok(())
+fn expect_exact_error(result: Result<(), String>, expected: &str) -> Result<(), String> {
+    match result {
+        Ok(()) => Err(format!("expected rejection {expected:?}, but validation succeeded")),
+        Err(actual) if actual == expected => Ok(()),
+        Err(actual) => Err(format!("expected {expected:?}, got {actual:?}")),
+    }
 }
 
 #[test]
-fn validate_rejects_alias_repeating_upstream_name_with_exact_message() -> Result<(), String> {
-    let mut contract = physical_contract();
-    contract.aliases = vec![contract.upstream_name.clone()];
-    let Err(error) = contract.validate() else {
-        return Err("an alias repeating the upstream name was accepted".to_string());
-    };
-    assert_eq!(error, "target component_base repeats its upstream name as an alias");
-    Ok(())
-}
-
-#[test]
-fn validate_rejects_make_selection_authority_with_exact_message() -> Result<(), String> {
-    let mut contract = physical_contract();
-    contract.selection_authority =
-        Some(TargetAuthority { kind: TargetAuthorityKind::Make, entrypoint: "t/TEST".to_string() });
-    let Err(error) = contract.validate() else {
-        return Err("a Make selection authority was accepted".to_string());
-    };
-    assert_eq!(
-        error,
-        "target component_base selection authority must name a test scheduler, not a Make target"
-    );
-    Ok(())
-}
-
-#[test]
-fn validate_rejects_replacement_without_change_reason_with_exact_message() -> Result<(), String> {
-    let mut contract = physical_contract();
-    contract.replaces_target_id = Some("component_comp".to_string());
-    contract.change_reason = None;
-    let Err(error) = contract.validate() else {
-        return Err("a replacement without a change reason was accepted".to_string());
-    };
-    assert_eq!(error, "target component_base replaces another target without a change reason");
-    Ok(())
-}
-
-#[test]
-fn validate_rejects_duplicate_selector_with_exact_message() -> Result<(), String> {
-    let mut contract = physical_contract();
-    contract.selectors = vec![
-        TargetSelector::RecursiveRoot { path: "base".to_string() },
-        TargetSelector::RecursiveRoot { path: "base".to_string() },
-    ];
-    let Err(error) = contract.validate() else {
-        return Err("a duplicate selector was accepted".to_string());
-    };
-    assert_eq!(error, "target component_base contains a duplicate selector");
-    Ok(())
-}
-
-#[test]
-fn validate_exact_error_variant() -> Result<(), String> {
+fn validate_exact_error_variants_for_common_fields() -> Result<(), String> {
     let mut schema = physical_contract();
     schema.schema_version = "perl_core_harness.target_selection.v0".to_string();
-    assert_eq!(
-        schema.validate().expect_err("unsupported schema must be rejected"),
-        "target component_base uses unsupported schema perl_core_harness.target_selection.v0"
-    );
+    expect_exact_error(
+        schema.validate(),
+        "target component_base uses unsupported schema perl_core_harness.target_selection.v0",
+    )?;
 
-    let mut alias = physical_contract();
-    alias.aliases = vec![alias.upstream_name.clone()];
-    assert_eq!(
-        alias.validate().expect_err("repeated upstream alias must be rejected"),
-        "target component_base repeats its upstream name as an alias"
-    );
+    let mut target_id = physical_contract();
+    target_id.target_id = "component-base".to_string();
+    expect_exact_error(target_id.validate(), "target ID must match [a-z0-9_]+: component-base")?;
+
+    let mut upstream_name = physical_contract();
+    upstream_name.upstream_name.clear();
+    expect_exact_error(upstream_name.validate(), "upstream name cannot be empty")?;
+
+    let mut aliases = physical_contract();
+    aliases.aliases = vec!["duplicate".to_string(), "duplicate".to_string()];
+    expect_exact_error(
+        aliases.validate(),
+        "target alias values must be strictly sorted and unique",
+    )?;
+
+    let mut repeated_alias = physical_contract();
+    repeated_alias.aliases = vec![repeated_alias.upstream_name.clone()];
+    expect_exact_error(
+        repeated_alias.validate(),
+        "target component_base repeats its upstream name as an alias",
+    )?;
+
+    let mut display_name = physical_contract();
+    display_name.display_name.clear();
+    expect_exact_error(display_name.validate(), "display name cannot be empty")?;
+
+    let mut perl_version = physical_contract();
+    perl_version.perl_version_row.clear();
+    expect_exact_error(perl_version.validate(), "Perl version row cannot be empty")?;
 
     let mut authority = physical_contract();
-    authority.selection_authority =
-        Some(TargetAuthority { kind: TargetAuthorityKind::Make, entrypoint: "t/TEST".to_string() });
-    assert_eq!(
-        authority.validate().expect_err("Make selection authority must be rejected"),
-        "target component_base selection authority must name a test scheduler, not a Make target"
-    );
+    authority.authority.entrypoint.clear();
+    expect_exact_error(authority.validate(), "authority entrypoint cannot be empty")?;
 
-    let mut replacement = physical_contract();
-    replacement.replaces_target_id = Some("component_comp".to_string());
-    replacement.change_reason = None;
-    assert_eq!(
-        replacement.validate().expect_err("replacement without a reason must be rejected"),
-        "target component_base replaces another target without a change reason"
-    );
+    let mut selection_authority = physical_contract();
+    selection_authority.selection_authority =
+        Some(TargetAuthority { kind: TargetAuthorityKind::Test, entrypoint: String::new() });
+    expect_exact_error(
+        selection_authority.validate(),
+        "selection authority entrypoint cannot be empty",
+    )?;
+
+    let mut make_authority = physical_contract();
+    make_authority.selection_authority =
+        Some(TargetAuthority { kind: TargetAuthorityKind::Make, entrypoint: "t/TEST".to_string() });
+    expect_exact_error(
+        make_authority.validate(),
+        "target component_base selection authority must name a test scheduler, not a Make target",
+    )?;
+
+    let mut variant_id = physical_contract();
+    variant_id.variant_of = Some("component-base".to_string());
+    expect_exact_error(
+        variant_id.validate(),
+        "variant target ID must match [a-z0-9_]+: component-base",
+    )?;
+
+    let mut replacement_id = physical_contract();
+    replacement_id.replaces_target_id = Some("component-base".to_string());
+    expect_exact_error(
+        replacement_id.validate(),
+        "replaced target ID must match [a-z0-9_]+: component-base",
+    )?;
+
+    let mut replacement_reason = physical_contract();
+    replacement_reason.replaces_target_id = Some("component_comp".to_string());
+    replacement_reason.change_reason = None;
+    expect_exact_error(
+        replacement_reason.validate(),
+        "target component_base replaces another target without a change reason",
+    )?;
+
+    let mut empty_reason = physical_contract();
+    empty_reason.change_reason = Some(String::new());
+    expect_exact_error(empty_reason.validate(), "change reason cannot be empty")?;
 
     let mut duplicate_selector = physical_contract();
     duplicate_selector.selectors = vec![
         TargetSelector::RecursiveRoot { path: "base".to_string() },
         TargetSelector::RecursiveRoot { path: "base".to_string() },
     ];
-    assert_eq!(
-        duplicate_selector.validate().expect_err("duplicate selectors must be rejected"),
-        "target component_base contains a duplicate selector"
-    );
+    expect_exact_error(
+        duplicate_selector.validate(),
+        "target component_base contains a duplicate selector",
+    )?;
+
+    let mut script_forms = physical_contract();
+    script_forms.script_forms = vec![TargetScriptForm::TestPl, TargetScriptForm::DotT];
+    expect_exact_error(
+        script_forms.validate(),
+        "target component_base script forms must be strictly sorted and unique",
+    )?;
+
+    let mut composite_members = physical_contract();
+    composite_members.composite_members =
+        vec!["component_b".to_string(), "component_a".to_string()];
+    expect_exact_error(
+        composite_members.validate(),
+        "composite member values must be strictly sorted and unique",
+    )?;
+
+    let mut runner_switches = physical_contract();
+    runner_switches.runner_switches = vec!["--core".to_string(), "--core".to_string()];
+    expect_exact_error(runner_switches.validate(), "runner switch values must be unique")?;
+
+    let mut capability_predicates = physical_contract();
+    capability_predicates.capability_predicates = vec!["cap_b".to_string(), "cap_a".to_string()];
+    expect_exact_error(
+        capability_predicates.validate(),
+        "capability predicate values must be strictly sorted and unique",
+    )?;
+
+    let mut required_products = physical_contract();
+    required_products.preparation.required_products = vec!["b".to_string(), "a".to_string()];
+    expect_exact_error(
+        required_products.validate(),
+        "required product values must be strictly sorted and unique",
+    )?;
+
+    let mut variant_parameters = physical_contract();
+    variant_parameters.variant_parameters.insert(String::new(), "value".to_string());
+    expect_exact_error(variant_parameters.validate(), "variant parameter key cannot be empty")?;
+
+    let mut environment = physical_contract();
+    environment.environment.insert("MODE".to_string(), String::new());
+    expect_exact_error(environment.validate(), "environment value cannot be empty")?;
+
+    let mut exclusion_subject = physical_contract();
+    exclusion_subject.exclusions.push(TargetExclusion {
+        subject: String::new(),
+        reason_code: "known_gap".to_string(),
+        claim_impact: "not counted".to_string(),
+    });
+    expect_exact_error(exclusion_subject.validate(), "exclusion subject cannot be empty")?;
+
+    let mut exclusion_reason = physical_contract();
+    exclusion_reason.exclusions.push(TargetExclusion {
+        subject: "fixture".to_string(),
+        reason_code: "known-gap".to_string(),
+        claim_impact: "not counted".to_string(),
+    });
+    expect_exact_error(
+        exclusion_reason.validate(),
+        "exclusion reason must match [a-z0-9_]+: known-gap",
+    )?;
+
+    let mut exclusion_impact = physical_contract();
+    exclusion_impact.exclusions.push(TargetExclusion {
+        subject: "fixture".to_string(),
+        reason_code: "known_gap".to_string(),
+        claim_impact: String::new(),
+    });
+    expect_exact_error(exclusion_impact.validate(), "exclusion claim impact cannot be empty")?;
+
+    Ok(())
+}
+
+#[test]
+fn validate_exact_error_variants_for_target_kinds() -> Result<(), String> {
+    let mut physical_authority = physical_contract();
+    physical_authority.selection_authority = None;
+    expect_exact_error(
+        physical_authority.validate(),
+        "physical target component_base requires a selection authority, selectors, and script forms",
+    )?;
+
+    let mut physical_selectors = physical_contract();
+    physical_selectors.selectors.clear();
+    expect_exact_error(
+        physical_selectors.validate(),
+        "physical target component_base requires a selection authority, selectors, and script forms",
+    )?;
+
+    let mut physical_scripts = physical_contract();
+    physical_scripts.script_forms.clear();
+    expect_exact_error(
+        physical_scripts.validate(),
+        "physical target component_base requires a selection authority, selectors, and script forms",
+    )?;
+
+    let mut physical_variant = physical_contract();
+    physical_variant.variant_of = Some("component_parent".to_string());
+    expect_exact_error(
+        physical_variant.validate(),
+        "physical target component_base cannot be a variant or composite",
+    )?;
+
+    let mut physical_composite = physical_contract();
+    physical_composite.composite_members = vec!["component_parent".to_string()];
+    expect_exact_error(
+        physical_composite.validate(),
+        "physical target component_base cannot be a variant or composite",
+    )?;
+
+    let mut physical_overlap = physical_contract();
+    physical_overlap.composite_overlap_policy = Some(CompositeOverlapPolicy::RejectOverlap);
+    expect_exact_error(
+        physical_overlap.validate(),
+        "physical target component_base cannot be a variant or composite",
+    )?;
+
+    let mut physical_parameters = physical_contract();
+    physical_parameters.variant_parameters.insert("mode".to_string(), "fast".to_string());
+    expect_exact_error(
+        physical_parameters.validate(),
+        "physical target component_base cannot define variant parameters",
+    )?;
+
+    let mut selector_base = physical_contract();
+    selector_base.target_kind = TargetKind::SelectorVariant;
+    selector_base.variant_of = None;
+    expect_exact_error(
+        selector_base.validate(),
+        "selector variant component_base requires a base target, selection authority, selectors, and script forms",
+    )?;
+
+    let mut selector_selectors = physical_contract();
+    selector_selectors.target_kind = TargetKind::SelectorVariant;
+    selector_selectors.variant_of = Some("component_parent".to_string());
+    selector_selectors.selectors.clear();
+    expect_exact_error(
+        selector_selectors.validate(),
+        "selector variant component_base requires a base target, selection authority, selectors, and script forms",
+    )?;
+
+    let mut selector_scripts = physical_contract();
+    selector_scripts.target_kind = TargetKind::SelectorVariant;
+    selector_scripts.variant_of = Some("component_parent".to_string());
+    selector_scripts.script_forms.clear();
+    expect_exact_error(
+        selector_scripts.validate(),
+        "selector variant component_base requires a base target, selection authority, selectors, and script forms",
+    )?;
+
+    let mut selector_authority = physical_contract();
+    selector_authority.target_kind = TargetKind::SelectorVariant;
+    selector_authority.variant_of = Some("component_parent".to_string());
+    selector_authority.selection_authority = None;
+    expect_exact_error(
+        selector_authority.validate(),
+        "selector variant component_base requires a base target, selection authority, selectors, and script forms",
+    )?;
+
+    let mut selector_members = physical_contract();
+    selector_members.target_kind = TargetKind::SelectorVariant;
+    selector_members.variant_of = Some("component_parent".to_string());
+    selector_members.composite_members = vec!["component_child".to_string()];
+    expect_exact_error(
+        selector_members.validate(),
+        "selector variant component_base cannot contain composite state",
+    )?;
+
+    let mut selector_overlap = physical_contract();
+    selector_overlap.target_kind = TargetKind::SelectorVariant;
+    selector_overlap.variant_of = Some("component_parent".to_string());
+    selector_overlap.composite_overlap_policy = Some(CompositeOverlapPolicy::RejectOverlap);
+    expect_exact_error(
+        selector_overlap.validate(),
+        "selector variant component_base cannot contain composite state",
+    )?;
+
+    let mut environment_base = environment_variant("environment_child", "component_base");
+    environment_base.variant_of = None;
+    expect_exact_error(
+        environment_base.validate(),
+        "environment variant environment_child must inherit one target without new selectors",
+    )?;
+
+    let mut environment_selectors = environment_variant("environment_child", "component_base");
+    environment_selectors.selectors =
+        vec![TargetSelector::ExactFile { path: "base/if.t".to_string() }];
+    expect_exact_error(
+        environment_selectors.validate(),
+        "environment variant environment_child must inherit one target without new selectors",
+    )?;
+
+    let mut environment_members = environment_variant("environment_child", "component_base");
+    environment_members.composite_members = vec!["component_child".to_string()];
+    expect_exact_error(
+        environment_members.validate(),
+        "environment variant environment_child cannot contain composite state",
+    )?;
+
+    let mut environment_overlap = environment_variant("environment_child", "component_base");
+    environment_overlap.composite_overlap_policy = Some(CompositeOverlapPolicy::RejectOverlap);
+    expect_exact_error(
+        environment_overlap.validate(),
+        "environment variant environment_child cannot contain composite state",
+    )?;
+
+    let mut environment_no_change = environment_variant("environment_child", "component_base");
+    environment_no_change.environment.clear();
+    environment_no_change.terminal_policy = TargetTerminalPolicy::Inherited;
+    expect_exact_error(
+        environment_no_change.validate(),
+        "environment variant environment_child does not change any declared invocation input",
+    )?;
+
+    let mut preparation_selectors = preparation_contract("prepare");
+    preparation_selectors.selectors =
+        vec![TargetSelector::ExactFile { path: "base/if.t".to_string() }];
+    expect_exact_error(
+        preparation_selectors.validate(),
+        "preparation target prepare cannot define selectors",
+    )?;
+
+    let mut preparation_scripts = preparation_contract("prepare");
+    preparation_scripts.script_forms = vec![TargetScriptForm::DotT];
+    expect_exact_error(
+        preparation_scripts.validate(),
+        "preparation target prepare cannot define script forms",
+    )?;
+
+    let mut preparation_make = preparation_contract("prepare");
+    preparation_make.preparation.make_target = None;
+    expect_exact_error(
+        preparation_make.validate(),
+        "preparation target prepare requires a Make target",
+    )?;
+
+    let mut preparation_authority = preparation_contract("prepare");
+    preparation_authority.selection_authority =
+        Some(TargetAuthority { kind: TargetAuthorityKind::Test, entrypoint: "t/TEST".to_string() });
+    expect_exact_error(
+        preparation_authority.validate(),
+        "preparation target prepare cannot define a selection authority",
+    )?;
+
+    let mut preparation_variant = preparation_contract("prepare");
+    preparation_variant.variant_of = Some("component_base".to_string());
+    expect_exact_error(
+        preparation_variant.validate(),
+        "preparation target prepare cannot define a variant base",
+    )?;
+
+    let mut preparation_members = preparation_contract("prepare");
+    preparation_members.composite_members = vec!["component_base".to_string()];
+    expect_exact_error(
+        preparation_members.validate(),
+        "preparation target prepare cannot define composite members",
+    )?;
+
+    let mut preparation_overlap = preparation_contract("prepare");
+    preparation_overlap.composite_overlap_policy = Some(CompositeOverlapPolicy::RejectOverlap);
+    expect_exact_error(
+        preparation_overlap.validate(),
+        "preparation target prepare cannot define an overlap policy",
+    )?;
+
+    let mut preparation_parameters = preparation_contract("prepare");
+    preparation_parameters.variant_parameters.insert("mode".to_string(), "fast".to_string());
+    expect_exact_error(
+        preparation_parameters.validate(),
+        "preparation target prepare cannot define variant parameters",
+    )?;
+
+    let composite_members = composite_contract("composite", &[]);
+    expect_exact_error(
+        composite_members.validate(),
+        "composite target composite requires at least one member",
+    )?;
+
+    let mut composite_selectors = composite_contract("composite", &["component_base"]);
+    composite_selectors.selectors =
+        vec![TargetSelector::ExactFile { path: "base/if.t".to_string() }];
+    expect_exact_error(
+        composite_selectors.validate(),
+        "composite target composite cannot declare selectors",
+    )?;
+
+    let mut composite_scripts = composite_contract("composite", &["component_base"]);
+    composite_scripts.script_forms = vec![TargetScriptForm::DotT];
+    expect_exact_error(
+        composite_scripts.validate(),
+        "composite target composite cannot declare script forms",
+    )?;
+
+    let mut composite_variant = composite_contract("composite", &["component_base"]);
+    composite_variant.variant_of = Some("component_parent".to_string());
+    expect_exact_error(
+        composite_variant.validate(),
+        "composite target composite cannot declare a variant base",
+    )?;
+
+    let mut composite_authority = composite_contract("composite", &["component_base"]);
+    composite_authority.selection_authority =
+        Some(TargetAuthority { kind: TargetAuthorityKind::Test, entrypoint: "t/TEST".to_string() });
+    expect_exact_error(
+        composite_authority.validate(),
+        "composite target composite cannot declare a selection authority",
+    )?;
+
+    let mut composite_overlap = composite_contract("composite", &["component_base"]);
+    composite_overlap.composite_overlap_policy = None;
+    expect_exact_error(
+        composite_overlap.validate(),
+        "composite target composite requires an explicit overlap policy",
+    )?;
+
+    let mut composite_parameters = composite_contract("composite", &["component_base"]);
+    composite_parameters.variant_parameters.insert("mode".to_string(), "fast".to_string());
+    expect_exact_error(
+        composite_parameters.validate(),
+        "composite target composite cannot declare variant parameters",
+    )?;
+
+    let mut instrumentation_base = instrumentation_contract("instrumented", "component_base");
+    instrumentation_base.variant_of = None;
+    expect_exact_error(
+        instrumentation_base.validate(),
+        "instrumentation target instrumented must reference one existing target",
+    )?;
+
+    let mut instrumentation_selectors = instrumentation_contract("instrumented", "component_base");
+    instrumentation_selectors.selectors =
+        vec![TargetSelector::ExactFile { path: "base/if.t".to_string() }];
+    expect_exact_error(
+        instrumentation_selectors.validate(),
+        "instrumentation target instrumented must reference one existing target",
+    )?;
+
+    let mut instrumentation_scripts = instrumentation_contract("instrumented", "component_base");
+    instrumentation_scripts.script_forms = vec![TargetScriptForm::DotT];
+    expect_exact_error(
+        instrumentation_scripts.validate(),
+        "instrumentation target instrumented must reference one existing target",
+    )?;
+
+    let mut instrumentation_members = instrumentation_contract("instrumented", "component_base");
+    instrumentation_members.composite_members = vec!["component_base".to_string()];
+    expect_exact_error(
+        instrumentation_members.validate(),
+        "instrumentation target instrumented must reference one existing target",
+    )?;
+
+    let mut instrumentation_overlap = instrumentation_contract("instrumented", "component_base");
+    instrumentation_overlap.composite_overlap_policy = Some(CompositeOverlapPolicy::RejectOverlap);
+    expect_exact_error(
+        instrumentation_overlap.validate(),
+        "instrumentation target instrumented must reference one existing target",
+    )?;
+
+    let mut instrumentation_authority = instrumentation_contract("instrumented", "component_base");
+    instrumentation_authority.selection_authority =
+        Some(TargetAuthority { kind: TargetAuthorityKind::Test, entrypoint: "t/TEST".to_string() });
+    expect_exact_error(
+        instrumentation_authority.validate(),
+        "instrumentation target instrumented must reference one existing target",
+    )?;
+
+    let mut instrumentation_none = instrumentation_contract("instrumented", "component_base");
+    instrumentation_none.environment.clear();
+    instrumentation_none.capability_predicates.clear();
+    instrumentation_none.runner_switches.clear();
+    instrumentation_none.variant_parameters.clear();
+    expect_exact_error(
+        instrumentation_none.validate(),
+        "instrumentation target instrumented does not declare any instrument",
+    )?;
+
+    Ok(())
+}
+
+#[test]
+fn selector_and_collection_errors_are_exact_and_load_bearing() -> Result<(), String> {
+    expect_exact_error(
+        validate_selector_for_test(&TargetSelector::RecursiveRoot { path: String::new() }),
+        "local selector cannot be empty",
+    )?;
+    expect_exact_error(
+        validate_selector_for_test(&TargetSelector::RecursiveRoot { path: "op/*.t".to_string() }),
+        "recursive-root selector cannot contain glob metacharacters: op/*.t",
+    )?;
+    expect_exact_error(
+        validate_selector_for_test(&TargetSelector::ExactFile { path: "op//basic.t".to_string() }),
+        "invalid t-relative selector op//basic.t",
+    )?;
+    expect_exact_error(
+        validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
+            pattern: "op/**/*.t".to_string(),
+        }),
+        "non-recursive glob cannot contain **: op/**/*.t",
+    )?;
+    expect_exact_error(
+        validate_selector_for_test(&TargetSelector::NonRecursiveGlob {
+            pattern: "op/basic.t".to_string(),
+        }),
+        "non-recursive glob must contain a glob pattern: op/basic.t",
+    )?;
+    expect_exact_error(
+        validate_external_selector_for_test("ext/*.t"),
+        "external selector must begin with ../: ext/*.t",
+    )?;
+    expect_exact_error(
+        validate_external_selector_for_test("../"),
+        "invalid external selector ../",
+    )?;
+    expect_exact_error(
+        validate_external_selector_for_test("../ext//re/*.t"),
+        "invalid external selector ../ext//re/*.t",
+    )?;
+
+    let mut empty_runner_switch = physical_contract();
+    empty_runner_switch.runner_switches = vec![String::new()];
+    expect_exact_error(empty_runner_switch.validate(), "runner switch cannot be empty")?;
+
+    let mut empty_capability = physical_contract();
+    empty_capability.capability_predicates = vec![String::new()];
+    expect_exact_error(empty_capability.validate(), "capability predicate cannot be empty")?;
+
+    let mut empty_composite_member = physical_contract();
+    empty_composite_member.composite_members = vec![String::new()];
+    expect_exact_error(empty_composite_member.validate(), "composite member cannot be empty")?;
+
+    let mut empty_required_product = physical_contract();
+    empty_required_product.preparation.required_products = vec![String::new()];
+    expect_exact_error(empty_required_product.validate(), "required product cannot be empty")?;
+
+    let mut duplicate_capability = physical_contract();
+    duplicate_capability.capability_predicates =
+        vec!["capability".to_string(), "capability".to_string()];
+    expect_exact_error(
+        duplicate_capability.validate(),
+        "capability predicate values must be strictly sorted and unique",
+    )?;
+
     Ok(())
 }
