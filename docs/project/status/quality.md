@@ -33,7 +33,7 @@
 | perl-line-index | — | 40 |
 | perl-lsp | — | 1588 |
 | perl-lsp-perltidy | — | 34 |
-| perl-lsp-rs-core | — | 3236 |
+| perl-lsp-rs-core | — | 3240 |
 | perl-lsp-ux-tests | — | 78 |
 | perl-module | — | 20 |
 | perl-parser | — | 355 |
