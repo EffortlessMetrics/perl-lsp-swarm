@@ -1232,14 +1232,41 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
     assert!(!synthesised.can_override_generated());
     assert!(explicit.can_override_generated());
 
-    // Provider conflict resolution: pick the source-backed explicit fact.
-    let winning_fact = if explicit.can_override_generated() { &explicit } else { &synthesised };
+    // A forged precedence hint with generated provenance must not be eligible.
+    let forged_explicit = EmittedFact::new(
+        FactSinkId(1),
+        AdapterId(1),
+        "Moo",
+        Provenance::FrameworkSynthesis,
+        Confidence::High,
+        make_envelope(3, Provenance::FrameworkSynthesis, SemanticReasonCode::GeneratedFromSource),
+        FactClass::GeneratedMembers,
+        None,
+        true,
+    );
+    assert!(forged_explicit.is_stronger_than_generated);
+    assert!(!forged_explicit.can_override_generated());
 
-    assert!(winning_fact.can_override_generated());
-    assert_eq!(winning_fact.confidence, Confidence::High);
+    // Provider conflict resolution must select the source-backed fact regardless
+    // of candidate order, while excluding the forged precedence hint.
+    for candidates in [
+        vec![synthesised.clone(), explicit.clone(), forged_explicit.clone()],
+        vec![explicit.clone(), synthesised.clone(), forged_explicit.clone()],
+    ] {
+        let mut candidate_sink = FactSink::new(FactSinkId(1), AdapterId(1));
+        candidate_sink.facts = candidates;
+        let winning_facts: Vec<_> = candidate_sink.source_precedence_facts().collect();
+
+        assert_eq!(winning_facts.len(), 1);
+        let winning_fact = winning_facts[0];
+        assert_eq!(winning_fact.envelope.fact_id, FactId(2));
+        assert_eq!(winning_fact.provenance, Provenance::ExactAst);
+        assert_eq!(winning_fact.envelope.reason_code, SemanticReasonCode::ExactSource);
+        assert_eq!(winning_fact.confidence, Confidence::High);
+    }
 
     // Both facts round-trip cleanly through JSON.
-    for fact in [&synthesised, &explicit] {
+    for fact in [&synthesised, &explicit, &forged_explicit] {
         let json = serde_json::to_string(fact).expect("serialize fact");
         let decoded: EmittedFact = serde_json::from_str(&json).expect("deserialize fact");
         assert_eq!(&decoded, fact);
