@@ -420,4 +420,3 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BRANCH: automation/post-merge-status
         run: gh workflow run ci.yml --ref "$BRANCH"
-
