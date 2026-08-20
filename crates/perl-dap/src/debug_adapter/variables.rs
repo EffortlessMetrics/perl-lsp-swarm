@@ -97,6 +97,21 @@ impl DebugAdapter {
                     message: None,
                 };
             }
+
+            // Once the active session has been cleared, every non-cache
+            // reference is stale.  Do not consult recent debugger output: it
+            // belongs to an older session and can make an unknown reference
+            // appear to have live children.
+            if session_guard.is_none() {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "variables".to_string(),
+                    body: Some(json!({ "variables": [] })),
+                    message: None,
+                };
+            }
         }
 
         // Scope references are bound to the exact current stopped frame.  Check
@@ -305,12 +320,19 @@ impl DebugAdapter {
                         // debugger fallback path.
                     }
                     None => {
-                        // Non-Scope variablesReference — no framed output to fetch.
                         // Cache hits were already returned via variable_cache above.
                         // Stale EvalResult and Child refs both short-circuit to an
-                        // honest-empty response before reaching this branch (see the
-                        // early returns above). This arm is now a true fallthrough for
-                        // unrecognised or gap wire values only.
+                        // honest-empty response before reaching this branch. Any
+                        // remaining non-Scope wire value is unknown, so it must not
+                        // be correlated with recent output from this or another stop.
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: true,
+                            command: "variables".to_string(),
+                            body: Some(json!({ "variables": [] })),
+                            message: None,
+                        };
                     }
                 }
 
@@ -928,6 +950,39 @@ mod hazard_invariant_tests {
             a.debugger_query_count_for_test(),
             before_queries,
             "unadmitted scope references must perform zero framed debugger queries"
+        );
+    }
+
+    #[test]
+    fn cleared_session_does_not_revive_stale_scope_from_recent_output() {
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        let mut a = adapter();
+        a.seed_stopped_session_with_frames_for_test(vec![]);
+        a.push_recent_output_line_for_test("$stale = from-an-older-session");
+        a.clear_active_session_state();
+
+        assert!(
+            variables_body_is_empty(&mut a, 11),
+            "a scope ref must stay empty after its session is cleared"
+        );
+    }
+
+    #[test]
+    fn unknown_reference_does_not_parse_recent_output() {
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        let mut a = adapter();
+        a.seed_stopped_session_with_frames_for_test(vec![]);
+        a.push_recent_output_line_for_test("$stale = from-an-unknown-reference");
+
+        // 999_999 is in the valid wire range but is not a cache or scope
+        // reference, so recent output must not be treated as its children.
+        assert!(
+            variables_body_is_empty(&mut a, 999_999),
+            "an unknown reference must not be correlated with recent output"
         );
     }
 
