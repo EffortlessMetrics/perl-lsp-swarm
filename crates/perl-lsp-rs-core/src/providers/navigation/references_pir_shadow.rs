@@ -168,6 +168,15 @@ fn lexical_fact_range(fact: &LexicalBindingFact) -> Option<(usize, usize)> {
     }
 
     let token_len = fact.name.sigil.len().checked_add(fact.name.name.len())?;
+    // The parser's widened declaration anchors have one of these stable
+    // prefixes: `my `, `our `, `state `, `local `, or `for my ` (the latter
+    // is anchored at `my`).  Refuse to infer a token start for any other
+    // anchor shape; in particular, an anchor whose end extends beyond the
+    // declaration token must remain unchanged rather than being truncated.
+    let prefix_len = range.end.checked_sub(range.start)?.checked_sub(token_len)?;
+    if !matches!(prefix_len, 3 | 4 | 6 | 7 | 11) {
+        return Some((range.start, range.end));
+    }
     let token_start = range.end.checked_sub(token_len)?;
     let start = token_start.max(range.start);
     Some((start, range.end))
@@ -1083,7 +1092,54 @@ mod promote_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{PirShadowRefusalReason, evaluate_refusal};
+    use super::{PirShadowRefusalReason, evaluate_refusal, lexical_fact_range};
+    use perl_parser_core::{
+        SourceLocation,
+        hir::{BodyOwnerKind, HirId},
+        pir::{LexicalBindingFact, LexicalName, LexicalRole, PirSourceAnchor},
+    };
+
+    fn fact(
+        start: usize,
+        end: usize,
+        sigil: &str,
+        name: &str,
+        role: LexicalRole,
+    ) -> LexicalBindingFact {
+        LexicalBindingFact {
+            name: LexicalName { sigil: sigil.to_owned(), name: name.to_owned() },
+            role,
+            source_anchor: PirSourceAnchor::explicit(
+                SourceLocation { start, end },
+                HirId::from_index(0),
+            ),
+            body_idx: 0,
+            body_owner: BodyOwnerKind::ProgramRoot,
+        }
+    }
+
+    #[test]
+    fn declaration_anchor_narrows_for_my_state_and_bare_prefixes() {
+        assert_eq!(lexical_fact_range(&fact(4, 9, "$", "i", LexicalRole::Write)), Some((7, 9)));
+        assert_eq!(lexical_fact_range(&fact(0, 5, "$", "x", LexicalRole::Write)), Some((3, 5)));
+        assert_eq!(lexical_fact_range(&fact(0, 8, "$", "s", LexicalRole::Write)), Some((6, 8)));
+        assert_eq!(lexical_fact_range(&fact(0, 6, "$", "v", LexicalRole::Write)), Some((4, 6)));
+    }
+
+    #[test]
+    fn declaration_anchor_handles_sigils_and_unicode_byte_lengths() {
+        assert_eq!(lexical_fact_range(&fact(0, 6, "@", "xs", LexicalRole::Write)), Some((3, 6)));
+        assert_eq!(lexical_fact_range(&fact(0, 6, "$", "é", LexicalRole::Write)), Some((3, 6)));
+        assert_eq!(lexical_fact_range(&fact(0, 6, "%", "é", LexicalRole::Write)), Some((3, 6)));
+    }
+
+    #[test]
+    fn non_terminal_anchor_end_is_not_truncated() {
+        let declaration = fact(0, 20, "$", "x", LexicalRole::Write);
+        let read = fact(0, 20, "$", "x", LexicalRole::Read);
+        assert_eq!(lexical_fact_range(&declaration), Some((0, 20)));
+        assert_eq!(lexical_fact_range(&read), Some((0, 20)));
+    }
 
     // The five refusal guards, exercised with literal arguments so the two
     // guards the real PR1 pipeline never reaches (empty bodies, behavior change)
