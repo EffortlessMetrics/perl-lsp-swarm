@@ -22,7 +22,7 @@
 | perl-ast | — | 38 |
 | perl-ast-v2 | — | 10 |
 | perl-ci-hygiene | — | 93 |
-| perl-core-harness | — | 216 |
+| perl-core-harness | — | 218 |
 | perl-core-harness-types | — | 6 |
 | perl-corpus | — | 208 |
 | perl-dap | — | 689 |
@@ -45,7 +45,7 @@
 | perl-regex | — | 80 |
 | perl-ripr-facts | — | 149 |
 | perl-semantic-analyzer | — | 431 |
-| perl-semantic-facts | — | 73 |
+| perl-semantic-facts | — | 83 |
 | perl-source-identity | — | 63 |
 | perl-subprocess-runtime | — | 38 |
 | perl-symbol | — | 77 |
