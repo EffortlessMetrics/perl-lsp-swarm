@@ -53,7 +53,7 @@ fn magic_tokens_keep_exact_hash_key_and_value_positions() -> Result<(), String> 
         // "file" before `=>` is also autoquoted.
         let (second_key, second_value) = &pairs[1];
         assert!(
-            matches!(&second_key.kind, NodeKind::String { value, .. } if value == "file"),
+            matches!(&second_key.kind, NodeKind::String { value, interpolated } if value == "file" && !*interpolated),
             "second key (file before =>) must be an autoquoted String node; got {:?}",
             second_key.kind.kind_name()
         );
@@ -68,7 +68,7 @@ fn magic_tokens_keep_exact_hash_key_and_value_positions() -> Result<(), String> 
         // "line" before `=>` is also autoquoted; __LINE__ in value position stays FunctionCall.
         let (third_key, third_value) = &pairs[2];
         assert!(
-            matches!(&third_key.kind, NodeKind::String { value, .. } if value == "line"),
+            matches!(&third_key.kind, NodeKind::String { value, interpolated } if value == "line" && !*interpolated),
             "third key (line before =>) must be an autoquoted String node; got {:?}",
             third_key.kind.kind_name()
         );
