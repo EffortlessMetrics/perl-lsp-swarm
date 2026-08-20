@@ -98,6 +98,34 @@ function validateSessionId(sessionId: string): void {
   }
 }
 
+function validateManagedHostReference(reference: unknown): string[] {
+  if (typeof reference !== 'object' || reference === null) {
+    return ['host reference must be an object'];
+  }
+
+  const candidate = reference as Partial<ManagedHostCandidateReference>;
+  const errors: string[] = [];
+  if (candidate.schema_version !== 'managed_host_candidate_reference.v1') {
+    errors.push('host reference carries an unsupported schema version');
+  }
+  if (typeof candidate.session_id !== 'string') {
+    errors.push('host reference session id must be a string');
+  } else {
+    try {
+      validateSessionId(candidate.session_id);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : 'host session id is invalid');
+    }
+  }
+  if (
+    typeof candidate.candidate_id !== 'string' ||
+    !isCanonicalManagedCandidateId(candidate.candidate_id)
+  ) {
+    errors.push('host reference must name a canonical managed candidate');
+  }
+  return errors;
+}
+
 export function publishManagedCurrentSelection(
   manifest: ManagedCandidateManifest,
   prior: ManagedCurrentSelection | null,
@@ -166,6 +194,21 @@ export function createManagedHostReference(
 export function releaseManagedHostReference(
   reference: ManagedHostCandidateReference,
 ): ManagedHostCandidateReference {
+  const errors = validateManagedHostReference(reference);
+  const state =
+    typeof reference === 'object' && reference !== null
+      ? (reference as Partial<ManagedHostCandidateReference>).state
+      : undefined;
+  if (errors.length > 0 || (state !== 'live' && state !== 'released')) {
+    throw new Error(
+      `cannot release invalid managed host reference: ${[
+        ...errors,
+        ...(state !== 'live' && state !== 'released'
+          ? ['host reference carries an unsupported state']
+          : []),
+      ].join('; ')}`,
+    );
+  }
   return {
     ...reference,
     state: 'released',
@@ -221,6 +264,13 @@ export function classifyManagedCandidateRetention(
   }
   if (candidateId === input.current.candidate_id) {
     return 'current_default';
+  }
+
+  // A structurally invalid record means enumeration is not trustworthy. Do
+  // not let a forged `released` state turn an unvalidated reference into GC
+  // authority, even if its candidate id happens to match this candidate.
+  if (input.host_references.some((reference) => validateManagedHostReference(reference).length > 0)) {
+    return 'unknown_not_safe_to_delete';
   }
 
   const references = input.host_references.filter(

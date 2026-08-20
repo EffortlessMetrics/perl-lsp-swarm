@@ -305,6 +305,33 @@ describe('managed candidate publication and selection', () => {
     ).toBe(true);
   });
 
+  test('does not let an unsupported released reference authorize GC', () => {
+    const currentCandidate = entry('a');
+    const staleCandidate = entry('f');
+    const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    const forgedReleased = {
+      ...createManagedHostReference('session-forged', staleCandidate.manifest.candidate_id),
+      schema_version: 'managed_host_candidate_reference.v2',
+      state: 'released' as const,
+    } as unknown as ManagedHostCandidateReference;
+
+    expect(() => releaseManagedHostReference(forgedReleased)).toThrow(
+      'cannot release invalid managed host reference',
+    );
+    const input = retention({
+      current,
+      catalog: [currentCandidate, staleCandidate],
+      host_references: [forgedReleased],
+    });
+
+    expect(classifyManagedCandidateRetention(staleCandidate.manifest.candidate_id, input)).toBe(
+      'unknown_not_safe_to_delete',
+    );
+    expect(mayGarbageCollectManagedCandidate(staleCandidate.manifest.candidate_id, input)).toBe(
+      false,
+    );
+  });
+
   test('refuses GC when host-reference enumeration was not proven exhaustive', () => {
     const currentCandidate = entry('a');
     const staleLookingCandidate = entry('f');
