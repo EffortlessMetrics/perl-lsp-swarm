@@ -990,5 +990,184 @@ base_lem = 2.5
         )
 
 
+class PayloadOracleTests(unittest.TestCase):
+    """Negative controls for the checked-in payload oracle (#11731).
+
+    The validator must go red on each defect class the issue names; a gate
+    that cannot fail is not an oracle.
+    """
+
+    @staticmethod
+    def clean_payload() -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "generated_at": "2026-08-20T05:23:25Z",
+            "window_days": 14,
+            "min_samples_for_learned": 5,
+            "lane_count": 2,
+            "lanes": {
+                "merge_gate_shards": {
+                    "samples": 6,
+                    "static_floor": 24.0,
+                    "learned": True,
+                    "p50": 24.6,
+                    "p90": 26.0,
+                    "p95": 26.5,
+                    "min": 21.7,
+                    "max": 28.4,
+                    "mean": 24.7,
+                },
+                "conflict_markers": {"samples": 0, "static_floor": 1.0, "learned": False},
+            },
+            "validation": {
+                "files_seen": 10,
+                "files_accepted": 10,
+                "jobs_seen": 40,
+                "accepted_samples": 6,
+                "jobs_with_sample": 6,
+                "jobs_with_lane_id": 6,
+                "lane_executions": 6,
+                "unmapped_samples": 0,
+                "unmapped_keys": {},
+                "rejected": {},
+                "source_run_count": 2,
+                "source_run_ids": [111, 222],
+            },
+        }
+
+    def test_clean_payload_validates(self) -> None:
+        self.assertEqual([], aggregate_lane_history.validate_history_payload(self.clean_payload()))
+
+    def test_builder_output_validates(self) -> None:
+        history = aggregate_lane_history.build_history(
+            samples={"merge_gate_shards": [24.0, 25.0, 26.0, 27.0, 28.0, 24.5]},
+            floors={"merge_gate_shards": 24.0, "conflict_markers": 1.0},
+            window_days=14,
+            validation={
+                "files_seen": 1,
+                "files_accepted": 1,
+                "jobs_seen": 6,
+                "accepted_samples": 6,
+                "jobs_with_sample": 6,
+                "jobs_with_lane_id": 6,
+                "lane_executions": 6,
+                "unmapped_samples": 0,
+                "unmapped_keys": {},
+                "rejected": {},
+                "source_run_count": 1,
+                "source_run_ids": [111],
+            },
+        )
+        self.assertEqual([], aggregate_lane_history.validate_history_payload(history))
+
+    def test_corrupt_percentile_ordering_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["lanes"]["merge_gate_shards"]["p95"] = 24.0  # below p50
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("p90 > p95" in v for v in violations), violations)
+
+    def test_learned_disagrees_with_samples_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["min_samples_for_learned"] = 5
+        payload["lanes"]["merge_gate_shards"]["samples"] = 2
+        payload["lanes"]["merge_gate_shards"]["learned"] = True
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("learned=True disagrees" in v for v in violations), violations)
+
+    def test_counter_identity_mismatch_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["validation"]["source_run_count"] = 3
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("source_run_count" in v for v in violations), violations)
+
+    def test_bool_source_run_id_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["validation"]["source_run_ids"] = [True, 222]
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("source_run_ids must be a list of ints" in v for v in violations), violations)
+
+    def test_bool_source_run_count_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["validation"]["source_run_count"] = True
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("source_run_count must be a non-negative int" in v for v in violations), violations)
+
+    def test_lane_count_identity_mismatch_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["lane_count"] = 3
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("lane_count" in v for v in violations), violations)
+
+    def test_bool_lane_count_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["lane_count"] = True
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("lane_count must be a non-negative int" in v for v in violations), violations)
+
+    def test_unknown_lane_identity_fails_against_explicit_set(self) -> None:
+        payload = self.clean_payload()
+        payload["lanes"]["spoofed_lane"] = payload["lanes"].pop("merge_gate_shards")
+        violations = aggregate_lane_history.validate_history_payload(
+            payload,
+            expected_lane_ids={"merge_gate_shards", "conflict_markers"},
+        )
+        self.assertTrue(any("unknown lane ids" in v for v in violations), violations)
+        self.assertTrue(any("missing expected lane ids" in v for v in violations), violations)
+
+    def test_percentile_fields_without_samples_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["lanes"]["conflict_markers"]["p50"] = 1.0
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("percentile fields but samples == 0" in v for v in violations), violations)
+
+    def test_non_finite_statistic_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["lanes"]["merge_gate_shards"]["mean"] = float("inf")
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("mean must be finite" in v for v in violations), violations)
+
+    def test_lane_executions_disagree_with_sample_sum_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["validation"]["lane_executions"] = 7
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("lane_executions" in v and "sum of lane samples" in v for v in violations), violations)
+
+    def test_capped_executions_validate_and_mismatch_fails(self) -> None:
+        # Executions dropped by the per-lane sample cap still count in
+        # lane_executions; the identity must include the capped count
+        # (#11817 review).
+        payload = self.clean_payload()
+        payload["validation"]["rejected"] = {"lane_sample_cap": 2}
+        payload["validation"]["lane_executions"] = 8
+        self.assertEqual([], aggregate_lane_history.validate_history_payload(payload))
+
+        payload["validation"]["lane_executions"] = 6  # forgot the capped 2
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("+ capped" in v for v in violations), violations)
+
+    def test_negative_capped_count_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["validation"]["rejected"] = {"lane_sample_cap": -1}
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("lane_sample_cap" in v for v in violations), violations)
+
+    def test_checked_in_history_validates(self) -> None:
+        """The current committed payload must pass its own oracle."""
+        repo_root = SCRIPT_PATH.parent.parent.parent
+        checked_in = repo_root / ".ci" / "metrics" / "ci-lane-history.json"
+        if not checked_in.exists():
+            self.skipTest(f"{checked_in} not present")
+        data = json.loads(checked_in.read_text(encoding="utf-8"))
+        expected_lane_ids = set(
+            aggregate_lane_history.static_floors(repo_root / "policy" / "ci-lanes.toml")
+        )
+        self.assertEqual(
+            [],
+            aggregate_lane_history.validate_history_payload(
+                data, expected_lane_ids=expected_lane_ids
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
