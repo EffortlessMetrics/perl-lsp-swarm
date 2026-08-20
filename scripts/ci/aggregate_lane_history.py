@@ -458,7 +458,9 @@ def build_history(
     return history
 
 
-def validate_history_payload(data: Any) -> list[str]:
+def validate_history_payload(
+    data: Any, *, expected_lane_ids: set[str] | None = None
+) -> list[str]:
     """Structurally validate a lane-history payload; return violations.
 
     Independent oracle over the checked-in artifact (#11731): the producer's
@@ -486,8 +488,20 @@ def validate_history_payload(data: Any) -> list[str]:
     if not isinstance(lanes, dict) or not lanes:
         violations.append("lanes must be a non-empty object")
         lanes = {}
-    if data.get("lane_count") != len(lanes):
-        violations.append(f"lane_count {data.get('lane_count')!r} != len(lanes) {len(lanes)}")
+    lane_count = data.get("lane_count")
+    if not isinstance(lane_count, int) or isinstance(lane_count, bool) or lane_count < 0:
+        violations.append(f"lane_count must be a non-negative int, got {lane_count!r}")
+    elif lane_count != len(lanes):
+        violations.append(f"lane_count {lane_count!r} != len(lanes) {len(lanes)}")
+
+    if expected_lane_ids is not None:
+        actual_lane_ids = set(lanes)
+        unknown_lane_ids = sorted(actual_lane_ids - expected_lane_ids)
+        missing_lane_ids = sorted(expected_lane_ids - actual_lane_ids)
+        if unknown_lane_ids:
+            violations.append(f"lanes contain unknown lane ids: {unknown_lane_ids!r}")
+        if missing_lane_ids:
+            violations.append(f"lanes are missing expected lane ids: {missing_lane_ids!r}")
 
     total_samples = 0
     for lane_id, lane in lanes.items():
@@ -541,11 +555,17 @@ def validate_history_payload(data: Any) -> list[str]:
         violations.append("validation summary must be an object")
     else:
         run_ids = validation.get("source_run_ids")
-        if not isinstance(run_ids, list) or not all(isinstance(r, int) for r in run_ids):
+        if not isinstance(run_ids, list) or not all(
+            isinstance(r, int) and not isinstance(r, bool) for r in run_ids
+        ):
             violations.append("validation.source_run_ids must be a list of ints")
             run_ids = []
         declared = validation.get("source_run_count")
-        if declared != len(run_ids):
+        if not isinstance(declared, int) or isinstance(declared, bool) or declared < 0:
+            violations.append(
+                f"validation.source_run_count must be a non-negative int, got {declared!r}"
+            )
+        elif declared != len(run_ids):
             violations.append(f"validation.source_run_count {declared!r} != len(source_run_ids) {len(run_ids)}")
         for counter in ("files_seen", "files_accepted", "jobs_seen", "jobs_with_sample",
                         "jobs_with_lane_id", "accepted_samples", "lane_executions"):

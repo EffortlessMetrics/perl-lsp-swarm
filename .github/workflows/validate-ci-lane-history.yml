@@ -43,7 +43,7 @@ jobs:
         # empty-actuals derivation below, which only proves the aggregator
         # runs. This is the reader-side gate that can go red on a payload
         # defect (#11731): percentile ordering, sample/learned agreement,
-        # counter coherence, and lane-count identity.
+        # counter coherence, lane-count identity, and canonical lane identity.
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -52,10 +52,11 @@ jobs:
           from pathlib import Path
 
           sys.path.insert(0, str(Path("scripts/ci").resolve()))
-          from aggregate_lane_history import validate_history_payload
+          from aggregate_lane_history import static_floors, validate_history_payload
 
           payload = json.loads(Path(".ci/metrics/ci-lane-history.json").read_text(encoding="utf-8"))
-          violations = validate_history_payload(payload)
+          expected_lane_ids = set(static_floors(Path("policy/ci-lanes.toml")))
+          violations = validate_history_payload(payload, expected_lane_ids=expected_lane_ids)
           if violations:
               for violation in violations:
                   print(f"::error::{violation}")

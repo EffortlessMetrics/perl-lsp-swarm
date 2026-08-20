@@ -1080,11 +1080,39 @@ class PayloadOracleTests(unittest.TestCase):
         violations = aggregate_lane_history.validate_history_payload(payload)
         self.assertTrue(any("source_run_count" in v for v in violations), violations)
 
+    def test_bool_source_run_id_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["validation"]["source_run_ids"] = [True, 222]
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("source_run_ids must be a list of ints" in v for v in violations), violations)
+
+    def test_bool_source_run_count_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["validation"]["source_run_count"] = True
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("source_run_count must be a non-negative int" in v for v in violations), violations)
+
     def test_lane_count_identity_mismatch_fails(self) -> None:
         payload = self.clean_payload()
         payload["lane_count"] = 3
         violations = aggregate_lane_history.validate_history_payload(payload)
         self.assertTrue(any("lane_count" in v for v in violations), violations)
+
+    def test_bool_lane_count_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["lane_count"] = True
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("lane_count must be a non-negative int" in v for v in violations), violations)
+
+    def test_unknown_lane_identity_fails_against_explicit_set(self) -> None:
+        payload = self.clean_payload()
+        payload["lanes"]["spoofed_lane"] = payload["lanes"].pop("merge_gate_shards")
+        violations = aggregate_lane_history.validate_history_payload(
+            payload,
+            expected_lane_ids={"merge_gate_shards", "conflict_markers"},
+        )
+        self.assertTrue(any("unknown lane ids" in v for v in violations), violations)
+        self.assertTrue(any("missing expected lane ids" in v for v in violations), violations)
 
     def test_percentile_fields_without_samples_fails(self) -> None:
         payload = self.clean_payload()
@@ -1111,7 +1139,15 @@ class PayloadOracleTests(unittest.TestCase):
         if not checked_in.exists():
             self.skipTest(f"{checked_in} not present")
         data = json.loads(checked_in.read_text(encoding="utf-8"))
-        self.assertEqual([], aggregate_lane_history.validate_history_payload(data))
+        expected_lane_ids = set(
+            aggregate_lane_history.static_floors(repo_root / "policy" / "ci-lanes.toml")
+        )
+        self.assertEqual(
+            [],
+            aggregate_lane_history.validate_history_payload(
+                data, expected_lane_ids=expected_lane_ids
+            ),
+        )
 
 
 if __name__ == "__main__":
