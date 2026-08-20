@@ -160,6 +160,12 @@ export function validateManagedCurrentSelection(
     errors.push('current selection carries an unsupported schema version');
   }
   errors.push(...validateGeneration(selection.selection_generation));
+  if (
+    typeof selection.candidate_id !== 'string' ||
+    !isCanonicalManagedCandidateId(selection.candidate_id)
+  ) {
+    errors.push('current selection must name a canonical managed candidate');
+  }
 
   const selected = candidates.find(
     (entry) => entry.manifest.candidate_id === selection.candidate_id,
@@ -260,6 +266,12 @@ export function classifyManagedCandidateRetention(
   // An unreadable current-selection record cannot prove this candidate is not
   // the current default, so nothing is collectible.
   if (input.current === null) {
+    return 'unknown_not_safe_to_delete';
+  }
+  // A non-null record is not automatically authoritative: validate its
+  // schema, generation, canonical identity, and catalog membership before
+  // allowing any other candidate to be classified as stale.
+  if (validateManagedCurrentSelection(input.current, input.catalog).length > 0) {
     return 'unknown_not_safe_to_delete';
   }
   if (candidateId === input.current.candidate_id) {

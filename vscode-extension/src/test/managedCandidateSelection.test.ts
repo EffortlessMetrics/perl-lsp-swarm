@@ -412,6 +412,33 @@ describe('managed candidate publication and selection', () => {
     expect(mayGarbageCollectManagedCandidate(candidate.manifest.candidate_id, input)).toBe(false);
   });
 
+  test('refuses GC when a non-null current selection is malformed or absent from the catalog', () => {
+    const currentCandidate = entry('a');
+    const staleCandidate = entry('f');
+    const missingCandidate = entry('1');
+    const validCurrent = publishManagedCurrentSelection(currentCandidate.manifest, null);
+    const malformedSelections = [
+      { ...validCurrent, schema_version: 'managed_current_selection.v2' },
+      { ...validCurrent, selection_generation: 0 },
+      { ...validCurrent, candidate_id: 'candidate-not-a-digest' },
+      { ...validCurrent, candidate_id: missingCandidate.manifest.candidate_id },
+    ] as unknown as ManagedCurrentSelection[];
+
+    for (const current of malformedSelections) {
+      const input = retention({
+        current,
+        catalog: [currentCandidate, staleCandidate],
+      });
+
+      expect(classifyManagedCandidateRetention(staleCandidate.manifest.candidate_id, input)).toBe(
+        'unknown_not_safe_to_delete',
+      );
+      expect(mayGarbageCollectManagedCandidate(staleCandidate.manifest.candidate_id, input)).toBe(
+        false,
+      );
+    }
+  });
+
   test('refuses GC for half-published or identity-mismatched candidate bytes', () => {
     const currentCandidate = entry('a');
     const current = publishManagedCurrentSelection(currentCandidate.manifest, null);
