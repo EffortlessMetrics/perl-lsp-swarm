@@ -26,18 +26,22 @@ use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
-const FRAME_ID_MODULUS: u64 = 100_000;
+const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 
 /// Return the authoritative frame id for the current suspension.
 ///
 /// The output reader may observe a context line followed by a prompt for the
 /// same stop, so the prompt path must preserve the generation established by
 /// the context path. A prompt without a preceding context advances the
+/// generation itself. Scope references have a bounded frame-id wire space; once
+/// the generation exceeds it, return an unencodable sentinel rather than
+/// reusing an older frame id and reviving stale references.
 fn current_stopped_frame_id(session: &mut DebugSession, advance_generation: bool) -> i32 {
     if advance_generation {
         session.stopped_generation = session.stopped_generation.saturating_add(1);
     }
-    (session.stopped_generation.max(1) % FRAME_ID_MODULUS) as i32
+    let generation = session.stopped_generation.max(1);
+    if generation <= SCOPE_FRAME_ID_MAX { generation as i32 } else { i32::MAX }
 }
 
 impl DebugAdapter {
@@ -2320,7 +2324,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_frame_id_wraps_inside_scope_reference_range() -> Result<(), String> {
+    fn generation_frame_id_fails_closed_at_scope_reference_ceiling() -> Result<(), String> {
         let adapter = DebugAdapter::new();
         adapter.seed_session_for_test().map_err(|error| error.to_string())?;
         let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
@@ -2328,16 +2332,66 @@ mod tests {
         session.stopped_generation = 99_999;
         session.state = DebugState::Running;
 
-        let near_ceiling = current_stopped_frame_id(session, true);
-        if near_ceiling != 0 {
-            return Err(format!(
-                "generation 100000 must wrap to bounded frame id 0, got {near_ceiling}"
-            ));
+        let exhausted = current_stopped_frame_id(session, true);
+        if exhausted != i32::MAX {
+            return Err(format!("generation 100000 must fail closed, got {exhausted}"));
         }
         session.stopped_generation = u64::MAX;
-        let saturated = current_stopped_frame_id(session, false);
-        if saturated >= 100_000 {
-            return Err(format!("wrapped generation escaped scope frame-id range: {saturated}"));
+        let still_exhausted = current_stopped_frame_id(session, false);
+        if still_exhausted != i32::MAX {
+            return Err(format!("exhausted generation revived a scope frame: {still_exhausted}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exhausted_generation_rejects_old_scope_reference_without_query() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+        let session = guard.as_mut().ok_or("session was not installed")?;
+        session.state = DebugState::Stopped;
+        session.stopped_generation = 1;
+        session.stack_frames = vec![super::StackFrame {
+            id: 1,
+            name: "main".to_string(),
+            source: super::Source {
+                name: Some("test.pl".to_string()),
+                path: "test.pl".to_string(),
+                source_reference: None,
+            },
+            line: 1,
+            column: 1,
+            end_line: None,
+            end_column: None,
+        }];
+        drop(guard);
+
+        let old_scope =
+            adapter.handle_variables(1, 1, Some(serde_json::json!({ "variablesReference": 11 })));
+        match old_scope {
+            super::DapMessage::Response { .. } => {}
+            other => return Err(format!("old scope returned unexpected response: {other:?}")),
+        }
+        let before_stale = adapter.debugger_query_count_for_test();
+
+        let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+        let session = guard.as_mut().ok_or("session was not installed")?;
+        session.stopped_generation = 100_001;
+        session.stack_frames =
+            vec![super::StackFrame { id: i32::MAX, ..session.stack_frames[0].clone() }];
+        drop(guard);
+
+        let stale =
+            adapter.handle_variables(1, 1, Some(serde_json::json!({ "variablesReference": 11 })));
+        let stale_body = match stale {
+            super::DapMessage::Response { body: Some(body), .. } => body,
+            other => return Err(format!("stale scope returned unexpected response: {other:?}")),
+        };
+        if stale_body.get("variables") != Some(&serde_json::json!([]))
+            || adapter.debugger_query_count_for_test() != before_stale
+        {
+            return Err(format!("stale scope revived or queried: {stale_body}"));
         }
         Ok(())
     }

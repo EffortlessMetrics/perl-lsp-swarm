@@ -16,6 +16,11 @@ impl DebugAdapter {
         current_frame_id: Option<i32>,
     ) -> (Vec<StackFrame>, HashMap<i32, Vec<String>>) {
         let base_id = current_frame_id.or_else(|| frames.first().map(|frame| frame.id));
+        if base_id.is_some_and(|id| !(0..FRAME_ID_MODULUS).contains(&id))
+            || frames.len() > FRAME_ID_MODULUS as usize
+        {
+            return (Vec::new(), HashMap::new());
+        }
         let mut used_ids = HashSet::new();
         let mut rebound_arguments = HashMap::new();
         let mut rebound_frames = Vec::with_capacity(frames.len());
@@ -36,8 +41,13 @@ impl DebugAdapter {
                     })
                     .unwrap_or_else(|| original_id.rem_euclid(FRAME_ID_MODULUS))
             };
+            let mut attempts = 0;
             while !used_ids.insert(candidate) {
                 candidate = (candidate + 1).rem_euclid(FRAME_ID_MODULUS);
+                attempts += 1;
+                if attempts >= FRAME_ID_MODULUS {
+                    return (Vec::new(), HashMap::new());
+                }
             }
             frame.id = candidate;
             if let Some(values) = arguments.get(&original_id) {
@@ -364,19 +374,25 @@ mod pagination_tests {
     }
 
     #[test]
-    fn generation_rebinding_wraps_near_scope_frame_id_ceiling()
+    fn generation_rebinding_fails_closed_past_scope_frame_id_ceiling()
     -> Result<(), Box<dyn std::error::Error>> {
         let frames = vec![make_frame(7, "inner"), make_frame(8, "outer")];
         let arguments =
             HashMap::from([(7, vec!["inner_arg".to_string()]), (8, vec!["outer_arg".to_string()])]);
-        let (rebound, rebound_arguments) =
-            DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(99_999));
+        let (near_ceiling, near_arguments) = DebugAdapter::rebind_generation_frame_ids(
+            frames.clone(),
+            arguments.clone(),
+            Some(99_999),
+        );
+        let near_ids = near_ceiling.iter().map(|frame| frame.id).collect::<Vec<_>>();
+        assert_eq!(near_ids, vec![99_999, 0]);
+        assert_eq!(near_arguments.get(&0), Some(&vec!["outer_arg".to_string()]));
 
-        let ids = rebound.iter().map(|frame| frame.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec![99_999, 0]);
-        assert!(ids.iter().all(|id| (0..100_000).contains(id)));
-        assert_eq!(rebound_arguments.get(&99_999), Some(&vec!["inner_arg".to_string()]));
-        assert_eq!(rebound_arguments.get(&0), Some(&vec!["outer_arg".to_string()]));
+        let (rebound, rebound_arguments) =
+            DebugAdapter::rebind_generation_frame_ids(frames, arguments, Some(100_000));
+
+        assert!(rebound.is_empty());
+        assert!(rebound_arguments.is_empty());
         Ok(())
     }
 
