@@ -1989,7 +1989,13 @@ fn run_single_gate(
         });
     }
 
-    let execution = run_shell_command_with_timeout(command, &log_path, timeout_secs);
+    let execution = run_shell_command_with_retries(
+        command,
+        &log_path,
+        timeout_secs,
+        gate.retry_count,
+        &gate.name,
+    );
     let duration_ms = start.elapsed().as_millis() as u64;
 
     match execution {
@@ -2062,6 +2068,91 @@ struct ShellExecutionResult {
     stdout: String,
     exit_code: i32,
     timed_out: bool,
+}
+
+/// Run a gate command, retrying only when an attempt is killed by the
+/// watchdog (`timed_out`), up to `retry_count` additional attempts.
+///
+/// Why timeouts only, and why this is not masking (#10023): the four
+/// observed race-family gates (`unit_lsp_full` 420s, `unit_parser_stack_full`
+/// 180s, `inline_completion_registration`/`core` 150s, `unit_dap_support_full`
+/// 300s) all failed with exit 124 at the exact budget while their captured
+/// logs held compiler warnings and zero test output — the budget was
+/// consumed by a cold-cache dependency rebuild, not by a test. Genuine test
+/// hangs remain bounded by the in-test ceilings (e.g. the parse-worker
+/// barrier's 1-minute labeled assert, #3812), so a watchdog timeout retried
+/// once is a compile-overrun remedy, not a hang hider. A non-zero test
+/// exit (`fail`) is never retried — a real assertion failure must stay red.
+///
+/// Each attempt truncates the gate log; when more than one attempt ran, a
+/// trailer records the attempt count so receipts stay honest about what the
+/// single visible log represents.
+fn run_shell_command_with_retries(
+    command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+    retry_count: u32,
+    gate_name: &str,
+) -> Result<ShellExecutionResult> {
+    let total_attempts = 1u32 + retry_count;
+    let mut attempt = 1u32;
+    let mut timeouts_seen = 0u32;
+    loop {
+        let mut execution = run_shell_command_with_timeout(command, log_path, timeout_secs)?;
+        if execution.timed_out {
+            timeouts_seen += 1;
+            let trailer = append_retry_trailer(
+                log_path,
+                gate_name,
+                attempt,
+                total_attempts,
+                "watchdog timeout",
+            )?;
+            execution.stdout.push_str(&trailer);
+            if attempt < total_attempts {
+                eprintln!(
+                    "gate {gate_name} timed out after {timeout_secs}s on attempt {attempt}; \
+                     retrying ({}/{total_attempts})",
+                    attempt + 1
+                );
+                attempt += 1;
+                continue;
+            }
+        } else if timeouts_seen > 0 {
+            // `run_shell_command_with_timeout` reads the log back as `stdout`
+            // before this trailer exists, so mirror it into the returned
+            // stdout — the receipt's output summary must show the rescue.
+            let trailer = append_retry_trailer(
+                log_path,
+                gate_name,
+                attempt,
+                total_attempts,
+                "passed after earlier watchdog timeout(s)",
+            )?;
+            execution.stdout.push_str(&trailer);
+        }
+        return Ok(execution);
+    }
+}
+
+/// Append an attempt trailer to the gate log. Each fresh attempt truncates
+/// the file, so the trailer on the FINAL attempt's log is the only durable
+/// record of the retry history that produced it.
+fn append_retry_trailer(
+    log_path: &Path,
+    gate_name: &str,
+    attempt: u32,
+    total_attempts: u32,
+    outcome: &str,
+) -> Result<String> {
+    use std::io::Write as _;
+    let mut file = fs::OpenOptions::new().append(true).open(log_path).with_context(|| {
+        format!("Failed to open gate log for retry trailer: {}", log_path.display())
+    })?;
+    let trailer =
+        format!("\n==== gate {gate_name} attempt {attempt}/{total_attempts}: {outcome} ====\n");
+    file.write_all(trailer.as_bytes()).context("Failed to write gate log retry trailer")?;
+    Ok(trailer)
 }
 
 const MAX_GATE_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
@@ -4417,6 +4508,110 @@ gates:
         assert!(
             diff.metric_changes.iter().any(|change| change.metric_name == "tests_total"),
             "diff should include the changed metric rendered above"
+        );
+        Ok(())
+    }
+
+    /// #10023 race family: a gate whose attempt hits the watchdog must retry
+    /// when policy declares retry_count, and the final log must record the
+    /// attempt history. The family gates' budgets are dominated by cold-cache
+    /// dependency rebuilds (exit 124 with zero test output), so one retry is a
+    /// compile-overrun remedy, not a hang hider.
+    #[test]
+    fn timeout_gate_with_retry_count_runs_both_attempts_and_trails_the_log()
+    -> color_eyre::eyre::Result<()> {
+        let gate = GateDefinition {
+            name: "synthetic_retry_timeout_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Always times out; proves retry_count is honored".to_string(),
+            required: true,
+            command: if cfg!(windows) {
+                "ping -n 4 127.0.0.1".to_string()
+            } else {
+                "sleep 3".to_string()
+            },
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+
+        assert_eq!(result.status, "timeout", "both attempts time out; final status stays timeout");
+        assert!(
+            result.duration_ms >= 2_000,
+            "duration {:?} should cover two 1s attempts",
+            result.duration_ms
+        );
+        let log = std::fs::read_to_string(tmp.path().join("synthetic_retry_timeout_gate.log"))?;
+        assert!(
+            log.contains("attempt 2/2: watchdog timeout"),
+            "final log must trail the attempt history; got: {log}"
+        );
+        Ok(())
+    }
+
+    /// A rescued gate (first attempt times out, second passes) must report
+    /// `pass` with the rescue visible in the receipt's output summary.
+    /// POSIX-only: the marker-file dance needs a shell.
+    #[test]
+    #[cfg(unix)]
+    fn timeout_gate_rescued_on_retry_reports_pass_with_rescue_trailer()
+    -> color_eyre::eyre::Result<()> {
+        let marker = std::env::temp_dir().join(format!(
+            "gate-retry-marker-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let command =
+            format!("if [ -f {marker} ]; then echo rescued; else touch {marker}; sleep 3; fi");
+        let gate = GateDefinition {
+            name: "synthetic_rescued_gate".to_string(),
+            tier: "merge_gate".to_string(),
+            description: "Times out once, passes on retry".to_string(),
+            required: true,
+            command,
+            timeout_seconds: 1,
+            retry_count: 1,
+            budgets: None,
+            quarantine: false,
+            tags: Vec::new(),
+            artifacts: Vec::new(),
+            matrix: None,
+            planning: Some(GatePlanningConfig {
+                role: GatePlanningRole::AlwaysOn,
+                packages: Vec::new(),
+            }),
+        };
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let config = GateRunnerConfig::default();
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &config, None)?;
+        let _ = std::fs::remove_file(&marker);
+
+        assert_eq!(result.status, "pass", "second attempt exits 0 before its sleep");
+        assert!(
+            result.duration_ms >= 1_000,
+            "duration {:?} should include the timed-out first attempt",
+            result.duration_ms
+        );
+        let summary = result.output_summary.unwrap_or_default();
+        assert!(
+            summary.contains("passed after earlier watchdog timeout(s)"),
+            "receipt summary must surface the rescue; got: {summary}"
         );
         Ok(())
     }
