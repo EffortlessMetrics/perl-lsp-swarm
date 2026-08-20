@@ -8,7 +8,7 @@ use crate::Confidence;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn descriptor_selectors(input: &AdapterDetectionInput) -> Vec<&str> {
-    vec![input.descriptor.framework_name.as_str()]
+    input.descriptor.required_module_selectors.iter().map(String::as_str).collect()
 }
 
 pub(super) fn selector_evaluation<'a>(
@@ -61,7 +61,9 @@ pub(super) fn validate_input(input: &AdapterDetectionInput) -> Result<(), Detect
     if input.descriptor.disposition != AdapterDisposition::Production {
         return Err(DetectionAuthorityError::NonProduction);
     }
-    if input.descriptor.framework_name.trim().is_empty() {
+    if input.descriptor.framework_name.trim().is_empty()
+        || input.descriptor.required_module_selectors.is_empty()
+    {
         return Err(DetectionAuthorityError::InvalidSelectorEvidence);
     }
     if !input.module_observation.generation.is_known() {

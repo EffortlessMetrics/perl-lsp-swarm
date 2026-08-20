@@ -268,21 +268,33 @@ fn empty_content_digest_has_its_own_failure_class() {
 }
 
 #[test]
-fn descriptor_owned_selector_cannot_be_substituted() {
+fn descriptor_owned_required_selectors_control_authority() {
     let foo = module("Foo", "project-1", None);
-    let observed = input(vec![ModuleSelectorEvaluation::matched(
+    let evaluation = ModuleSelectorEvaluation::matched(
         "Foo",
-        foo,
+        foo.clone(),
         DetectionEvidenceClass::ResolvedModule,
-    )]);
+    );
+
+    let mut empty = input(vec![evaluation.clone()]);
+    empty.descriptor.required_module_selectors.clear();
     let result = AdapterDetectionResult::for_input(
-        &observed,
+        &empty,
         DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
     );
     assert_eq!(
-        result.validate_authority_against(&observed),
+        result.validate_authority_against(&empty),
         Err(DetectionAuthorityError::InvalidSelectorEvidence)
     );
+
+    let mut observed = input(vec![evaluation]);
+    observed.descriptor.required_module_selectors = vec!["Foo".into()];
+    let result = AdapterDetectionResult::for_input(
+        &observed,
+        DetectionOutcome::Detected { confidence: Confidence::High, framework_version: None },
+    )
+    .with_contributing_modules(vec![foo]);
+    assert!(result.is_authoritative_against(&observed));
 }
 
 #[test]

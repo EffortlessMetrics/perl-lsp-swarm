@@ -54,6 +54,9 @@ pub struct AdapterDescriptor {
     pub name: String,
     /// Framework or module family handled by the adapter.
     pub framework_name: String,
+    /// Required module selectors owned by this descriptor.
+    #[serde(default)]
+    pub required_module_selectors: Vec<String>,
     /// Optional registry-level framework-version constraint.
     pub framework_version_constraint: Option<String>,
     /// Exact configuration key whose reviewed value can exclude this adapter.
@@ -79,10 +82,12 @@ impl AdapterDescriptor {
         schema_version: u32,
         disposition: AdapterDisposition,
     ) -> Self {
+        let framework_name = framework_name.into();
         Self {
             adapter_id,
             name: name.into(),
-            framework_name: framework_name.into(),
+            framework_name: framework_name.clone(),
+            required_module_selectors: vec![framework_name],
             framework_version_constraint,
             configuration_exclusion_key: None,
             configuration_exclusion_rule: None,
