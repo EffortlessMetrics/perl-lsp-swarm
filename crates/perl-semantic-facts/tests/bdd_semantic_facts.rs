@@ -1170,7 +1170,7 @@ fn given_cancelled_token_when_detection_checked_then_outcome_is_cancelled() {
 
 /// Given two facts for the same attribute — one synthesised and one explicit —
 /// when resolving conflicts in the provider,
-/// then the explicit fact (is_stronger_than_generated=true) takes precedence.
+/// then the source-backed explicit fact takes precedence.
 #[test]
 fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
     use perl_semantic_facts::framework::{AdapterId, EmittedFact, FactClass, FactSink, FactSinkId};
@@ -1180,25 +1180,26 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
         SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
     };
 
-    let make_envelope = |entity_id: u64| {
-        SemanticFactEnvelope::new(
-            FactId(entity_id),
-            Some(EntityId(entity_id)),
-            SemanticFactKind::Declaration,
-            SourceAnchor::new(Some(AnchorId(1)), FileId(10), 10, 20),
-            SourceGeneration::known("sha256:aabbcc"),
-            None,
-            Some("My::Package".to_string()),
-            LifecyclePhase::Runtime,
-            SemanticProducer::FrameworkAdapter,
-            SemanticProvenance::Known(Provenance::FrameworkSynthesis),
-            SemanticConfidence::Known(Confidence::Medium),
-            SemanticFreshness::Fresh,
-            None,
-            vec![],
-            SemanticReasonCode::GeneratedFromSource,
-        )
-    };
+    let make_envelope =
+        |entity_id: u64, provenance: Provenance, reason_code: SemanticReasonCode| {
+            SemanticFactEnvelope::new(
+                FactId(entity_id),
+                Some(EntityId(entity_id)),
+                SemanticFactKind::Declaration,
+                SourceAnchor::new(Some(AnchorId(1)), FileId(10), 10, 20),
+                SourceGeneration::known("sha256:aabbcc"),
+                None,
+                Some("My::Package".to_string()),
+                LifecyclePhase::Runtime,
+                SemanticProducer::FrameworkAdapter,
+                SemanticProvenance::Known(provenance),
+                SemanticConfidence::Known(Confidence::Medium),
+                SemanticFreshness::Fresh,
+                None,
+                vec![],
+                reason_code,
+            )
+        };
 
     // Synthesised fact (lower priority).
     let synthesised = EmittedFact::new(
@@ -1207,7 +1208,7 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
         "Moo",
         Provenance::FrameworkSynthesis,
         Confidence::Medium,
-        make_envelope(1),
+        make_envelope(1, Provenance::FrameworkSynthesis, SemanticReasonCode::GeneratedFromSource),
         FactClass::GeneratedMembers,
         None,
         false, // NOT stronger than generated
@@ -1218,18 +1219,23 @@ fn given_synthesised_and_explicit_facts_when_resolving_then_explicit_wins() {
         FactSinkId(1),
         AdapterId(1),
         "Moo",
-        Provenance::FrameworkSynthesis,
+        Provenance::ExactAst,
         Confidence::High,
-        make_envelope(2),
+        make_envelope(2, Provenance::ExactAst, SemanticReasonCode::ExactSource),
         FactClass::GeneratedMembers,
         None,
-        true, // IS stronger than generated — explicit `reader => 'get_name'`
+        true, // Source-backed explicit declaration: `reader => 'get_name'`.
     );
 
-    // Provider conflict resolution: pick the explicit fact.
-    let winning_fact = if explicit.is_stronger_than_generated { &explicit } else { &synthesised };
+    // The synthesized fact cannot override generated output, while the
+    // source-backed explicit fact can.
+    assert!(!synthesised.can_override_generated());
+    assert!(explicit.can_override_generated());
 
-    assert!(winning_fact.is_stronger_than_generated);
+    // Provider conflict resolution: pick the source-backed explicit fact.
+    let winning_fact = if explicit.can_override_generated() { &explicit } else { &synthesised };
+
+    assert!(winning_fact.can_override_generated());
     assert_eq!(winning_fact.confidence, Confidence::High);
 
     // Both facts round-trip cleanly through JSON.
