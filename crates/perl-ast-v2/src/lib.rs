@@ -320,6 +320,9 @@ impl NodeKind {
 
             VariableDeclaration { declarator, variable, attributes, initializer } => {
                 let var_sexp = variable.kind.to_sexp_depth(depth + 1);
+                // `String::new()` does not compile here: the `use NodeKind::*`
+                // above brings the `String` *variant* into scope, shadowing
+                // `std::string::String` for the rest of this function body.
                 let attrs_part = if attributes.is_empty() {
                     "".to_string()
                 } else {
@@ -345,6 +348,9 @@ impl NodeKind {
                     .map(|v| v.kind.to_sexp_depth(depth + 1))
                     .collect::<Vec<_>>()
                     .join(" ");
+                // `String::new()` does not compile here: the `use NodeKind::*`
+                // above brings the `String` *variant* into scope, shadowing
+                // `std::string::String` for the rest of this function body.
                 let attrs_part = if attributes.is_empty() {
                     "".to_string()
                 } else {
