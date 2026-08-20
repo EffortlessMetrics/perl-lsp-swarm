@@ -5,6 +5,8 @@
 #[cfg(test)]
 use super::super::*;
 use super::super::{LspServer, MessageType, md5, normalize_package_separator};
+#[cfg(test)]
+use perl_lsp_rs_core::config::SystemIncProbeOutcome;
 use perl_module::resolution::use_lib::{UseLibPath, resolve_use_lib_paths_from_source};
 use perl_module::resolution::{
     ModuleUriResolution, build_effective_inc_roots,
@@ -412,12 +414,16 @@ fn append_system_inc_paths(
         return;
     }
 
+    append_system_inc_paths_from(config.get_system_inc(), include_paths);
+}
+
+fn append_system_inc_paths_from(system_paths: &[PathBuf], include_paths: &mut Vec<String>) {
     let mut seen: HashSet<String> = include_paths
         .iter()
         .map(|existing| normalized_inc_key(std::path::Path::new(existing)))
         .collect();
 
-    for path in config.get_system_inc() {
+    for path in system_paths {
         let normalized = normalized_inc_key(path);
         if normalized == "." {
             continue;
@@ -738,15 +744,14 @@ mod tests {
     #[test]
     fn append_system_inc_paths_skips_dot_and_dedupes_normalized_variants() -> TestResult {
         // The probe behind `get_system_inc` is bounded by
-        // SYSTEM_INC_PROBE_TIMEOUT (1s) and fail-opens to an empty cached
-        // vector when the interpreter is slow. Under a full-suite parallel
-        // run — dozens of tests spawning interpreters — a cold perl start
-        // can transiently exceed that budget and this test false-failed
-        // with `inc_entries == 0` (reproduced 1-in-8 under the 5-package
-        // gate command). Retry the PROBE on a fresh config (the cache would
-        // otherwise short-circuit); the dedupe assertions stay strict on
-        // every successful probe, so a real regression fails all attempts —
-        // only environmental probe emptiness is retried.
+        // SYSTEM_INC_PROBE_TIMEOUT (1s). Under a full-suite parallel run —
+        // dozens of tests spawning interpreters — a cold perl start can
+        // transiently exceed that budget and this test false-failed with
+        // `inc_entries == 0` (reproduced 1-in-8 under the 5-package gate
+        // command). Retry only that transient timeout on a fresh config (the
+        // cache would otherwise short-circuit); all other probe outcomes fail
+        // loudly, and the dedupe assertions stay strict on every successful
+        // probe.
         let temp = tempfile::tempdir()?;
         let inc_path = temp.path().join("site_perl");
         std::fs::create_dir_all(&inc_path)?;
@@ -768,21 +773,49 @@ mod tests {
             ];
 
             include_paths = vec!["lib".to_string(), ".".to_string()];
-            append_system_inc_paths(&mut config, &mut include_paths);
-
-            if include_paths.len() > 2 {
-                break; // probe appended system paths; run the strict assertions
+            match config.get_system_inc_probe_outcome() {
+                SystemIncProbeOutcome::TimedOut if attempt < 3 => {
+                    eprintln!("system @INC probe timed out (attempt {attempt}/3); retrying");
+                }
+                SystemIncProbeOutcome::TimedOut => {
+                    return Err("system @INC probe timed out after 3 attempts".into());
+                }
+                SystemIncProbeOutcome::Paths(system_paths) => {
+                    append_system_inc_paths_from(&system_paths, &mut include_paths);
+                    break;
+                }
+                outcome => {
+                    return Err(format!(
+                        "system @INC probe failed with non-retryable outcome: {outcome:?}"
+                    )
+                    .into());
+                }
             }
-            eprintln!("system @INC probe returned nothing (attempt {attempt}/3); retrying");
         }
-        assert!(
-            include_paths.len() > 2,
-            "system @INC probe unavailable after 3 attempts — the dedupe oracle needs a \
-             working interpreter; failing loudly rather than asserting on an empty probe"
-        );
 
         let dot_count = include_paths.iter().filter(|path| path.as_str() == ".").count();
         assert_eq!(dot_count, 1, "dot entry should not be duplicated from system @INC");
+
+        let inc_entries = include_paths
+            .iter()
+            .filter(|path| {
+                normalized_inc_key(std::path::Path::new(path)) == normalized_inc_key(&inc_path)
+            })
+            .count();
+        assert_eq!(inc_entries, 1, "normalized include path should be deduplicated");
+        Ok(())
+    }
+
+    #[test]
+    fn append_system_inc_paths_from_skips_dot_and_dedupes_normalized_variants() -> TestResult {
+        let inc_path = PathBuf::from("site_perl");
+        let system_paths = vec![PathBuf::from("."), inc_path.clone(), PathBuf::from("site_perl/")];
+        let mut include_paths = vec!["lib".to_string(), ".".to_string()];
+
+        append_system_inc_paths_from(&system_paths, &mut include_paths);
+
+        let dot_count = include_paths.iter().filter(|path| path.as_str() == ".").count();
+        assert_eq!(dot_count, 1, "dot entry should not be duplicated");
 
         let inc_entries = include_paths
             .iter()
