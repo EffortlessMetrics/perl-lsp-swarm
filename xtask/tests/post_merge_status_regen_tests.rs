@@ -213,6 +213,26 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         dispatched_workflows, required_workflows,
         "generated-PR dispatch set must equal the unique workflow paths for required checks"
     );
+    for workflow_name in &required_workflows {
+        let workflow_path = root.join(".github/workflows").join(workflow_name);
+        let workflow_text = fs::read_to_string(&workflow_path)?;
+        let workflow: Value = serde_yaml_ng::from_str(&workflow_text)?;
+        let triggers = workflow
+            .as_mapping()
+            .and_then(|mapping| {
+                mapping.iter().find_map(|(key, value)| match key {
+                    Value::String(key) if key == "on" => Some(value),
+                    Value::Bool(true) => Some(value),
+                    _ => None,
+                })
+            })
+            .and_then(Value::as_mapping)
+            .ok_or_else(|| format!("{workflow_name} must declare an `on` mapping"))?;
+        assert!(
+            triggers.keys().any(|key| key == &Value::String("workflow_dispatch".to_owned())),
+            "{workflow_name} must declare an on.workflow_dispatch trigger"
+        );
+    }
 
     let temp_dir = tempfile::tempdir()?;
     let stub_dir = temp_dir.path().join("bin");
@@ -220,7 +240,9 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
     let stub_gh = stub_dir.join("gh");
     fs::write(
         &stub_gh,
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$3\" >> \"$GH_LOG\"\nif [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
+        "#!/usr/bin/env bash\n\
+         printf '%s|%s|%s|%s|%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" >> \"$GH_LOG\"\n\
+         if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
     )?;
     #[cfg(unix)]
     {
@@ -243,6 +265,7 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
             .arg(dispatch_run)
             .current_dir(&root)
             .env("PATH", path)
+            .env("BRANCH", "automation/post-merge-status")
             .env("GH_LOG", &log_path);
         if let Some(fail_workflow) = fail_workflow {
             command.env("FAIL_WORKFLOW", fail_workflow);
@@ -260,17 +283,18 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         "all-success dispatch run failed: {}",
         String::from_utf8_lossy(&success_output.stderr)
     );
-    assert_eq!(
-        success_calls,
-        ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml", "pr-title-check.yml"],
-        "all required dispatches must run in workflow order"
-    );
+    let expected_calls = vec![
+        "workflow|run|ci.yml|--ref|automation/post-merge-status".to_owned(),
+        "workflow|run|em-ci-routed-rust.yml|--ref|automation/post-merge-status".to_owned(),
+        "workflow|run|ripr.yml|--ref|automation/post-merge-status".to_owned(),
+        "workflow|run|pr-title-check.yml|--ref|automation/post-merge-status".to_owned(),
+    ];
+    assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
 
     let (failure_output, failure_calls) = run_dispatch(Some("ripr.yml"), "middle-failure.log")?;
     assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
     assert_eq!(
-        failure_calls,
-        ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml", "pr-title-check.yml"],
+        failure_calls, expected_calls,
         "a middle dispatch failure must not skip later required workflows"
     );
 
