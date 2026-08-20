@@ -178,7 +178,7 @@ mod dap_phase2_tests {
 
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac8-stack-and-variables
     #[tokio::test]
-    #[ignore = "Retired: no-session scopes are now empty; current-frame admission is covered by perl-dap unit tests."]
+    #[ignore = "#10563: Retired: no-session scopes are now empty; current-frame admission is covered by perl-dap unit tests."]
     // AC:8
     async fn test_stack_trace_and_scopes() -> Result<()> {
         let mut adapter = DebugAdapter::new();

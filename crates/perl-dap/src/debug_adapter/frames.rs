@@ -136,7 +136,7 @@ impl DebugAdapter {
                 // hard rejection, not an empty debugger snapshot. Clear both
                 // authorities so the later fallback cannot resurrect prior
                 // frames or their captured arguments.
-                clear_rejected_framed_snapshot(&mut *lock_or_recover(
+                clear_rejected_framed_snapshot(&mut lock_or_recover(
                     &self.session,
                     "debug_adapter.session",
                 ));

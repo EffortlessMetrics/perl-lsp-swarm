@@ -238,7 +238,7 @@ fn test_dap_stack_trace_edge_cases() -> TestResult {
 }
 
 #[test]
-#[ignore = "Retired: arbitrary frame ids are not admitted without an exact stopped frame; overflow returns empty scopes."]
+#[ignore = "#10563: Retired: arbitrary frame ids are not admitted without an exact stopped frame; overflow returns empty scopes."]
 fn test_dap_scopes_edge_cases() -> TestResult {
     let mut adapter = DebugAdapter::new();
 
@@ -289,7 +289,7 @@ fn test_dap_scopes_edge_cases() -> TestResult {
 }
 
 #[test]
-#[ignore = "Retired: arbitrary frame ids are not admitted without an exact stopped frame; overflow returns empty scopes."]
+#[ignore = "#10563: Retired: arbitrary frame ids are not admitted without an exact stopped frame; overflow returns empty scopes."]
 fn test_dap_scopes_overflow_boundary() -> TestResult {
     let mut adapter = DebugAdapter::new();
 
