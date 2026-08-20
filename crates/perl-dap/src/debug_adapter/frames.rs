@@ -106,11 +106,20 @@ impl DebugAdapter {
 
         let stack_frames = if !parsed_frames.is_empty() {
             // Keep parsed frames as best-effort latest snapshot.
+            let mut bound_frames = parsed_frames.clone();
             if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             {
-                session.stack_frames = parsed_frames.clone();
+                // Preserve the process reader's generation-derived id for the
+                // current executable frame when the framed parser supplies a
+                // reused numeric id (typically 0/1).
+                if let (Some(authoritative), Some(parsed_current)) =
+                    (session.stack_frames.first(), bound_frames.first_mut())
+                {
+                    parsed_current.id = authoritative.id;
+                }
+                session.stack_frames = bound_frames.clone();
             }
-            parsed_frames
+            bound_frames
         } else if let Some(ref session) = *lock_or_recover(&self.session, "debug_adapter.session") {
             Self::filter_user_visible_frames(session.stack_frames.clone())
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
@@ -186,8 +195,18 @@ impl DebugAdapter {
         // AC8.3: Hierarchical scope inspection
         // Use VariableReference codec to encode scope refs into disjoint wire bands.
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
-        let locals_ref =
-            VariableReference::Scope { frame_id, kind: ScopeKind::Locals }.encode().unwrap_or(0);
+        let Some(locals_ref) =
+            (VariableReference::Scope { frame_id, kind: ScopeKind::Locals }).encode()
+        else {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: true,
+                command: "scopes".to_string(),
+                body: Some(json!({ "scopes": [] })),
+                message: None,
+            };
+        };
         let arguments = lock_or_recover(&self.session, "debug_adapter.session")
             .as_ref()
             .and_then(|session| session.stack_frame_arguments.get(&frame_id))
@@ -203,17 +222,18 @@ impl DebugAdapter {
             indexed_variables: None,
         }];
         if !arguments.is_empty() {
-            let arguments_ref = VariableReference::Scope { frame_id, kind: ScopeKind::Arguments }
-                .encode()
-                .unwrap_or(0);
-            scopes.push(Scope {
-                name: "Arguments".to_string(),
-                presentation_hint: Some("arguments".to_string()),
-                variables_reference: i64::from(arguments_ref),
-                expensive: false,
-                named_variables: None,
-                indexed_variables: Some(arguments.len() as i64),
-            });
+            if let Some(arguments_ref) =
+                (VariableReference::Scope { frame_id, kind: ScopeKind::Arguments }).encode()
+            {
+                scopes.push(Scope {
+                    name: "Arguments".to_string(),
+                    presentation_hint: Some("arguments".to_string()),
+                    variables_reference: i64::from(arguments_ref),
+                    expensive: false,
+                    named_variables: None,
+                    indexed_variables: Some(arguments.len() as i64),
+                });
+            }
         }
 
         let scopes_body = ScopesResponseBody { scopes };
@@ -398,6 +418,35 @@ mod pagination_tests {
             return Err("running-session response did not contain a body".into());
         };
         assert_eq!(body.get("scopes"), Some(&json!([])));
+        Ok(())
+    }
+
+    #[test]
+    fn prior_suspension_scope_reference_cannot_revive_after_new_stop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(vec![make_frame(1, "main::run")]);
+        let old_scope = VariableReference::Scope { frame_id: 1, kind: ScopeKind::Locals }
+            .encode()
+            .ok_or("old scope reference did not encode")?;
+
+        // The next stop has a new generation-derived frame id, even when the
+        // visible source/line and logical frame are otherwise unchanged.
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.new_stop_generation");
+            let session = guard.as_mut().ok_or("test session was not seeded")?;
+            session.stopped_generation = 2;
+            session.stack_frames = vec![make_frame(2, "main::run")];
+        }
+
+        let stale =
+            adapter.handle_variables(1, 1, Some(json!({ "variablesReference": old_scope })));
+        let DapMessage::Response { body: Some(body), .. } = stale else {
+            return Err("stale scope response did not contain a body".into());
+        };
+        assert_eq!(body.get("variables"), Some(&json!([])));
         Ok(())
     }
 }

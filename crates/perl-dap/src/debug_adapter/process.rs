@@ -521,6 +521,7 @@ impl DebugAdapter {
                     variable_cache: VariableCache::default(),
                     thread_id,
                     last_resume_mode: ResumeMode::Unknown,
+                    stopped_generation: 0,
                 };
 
                 if let Ok(mut guard) = self.session.lock() {
@@ -980,9 +981,16 @@ impl DebugAdapter {
                                 };
 
                                 if let Some(ref mut s) = *guard {
+                                    let was_running = matches!(s.state, DebugState::Running);
+                                    if was_running {
+                                        s.stopped_generation =
+                                            s.stopped_generation.saturating_add(1);
+                                    }
+                                    let current_frame_id =
+                                        s.stopped_generation.min(i32::MAX as u64).max(1) as i32;
                                     if !current_file.is_empty() && current_line > 0 {
                                         s.stack_frames = vec![StackFrame {
-                                            id: 1,
+                                            id: current_frame_id,
                                             name: if current_func.is_empty() {
                                                 "main".to_string()
                                             } else {
@@ -1007,7 +1015,7 @@ impl DebugAdapter {
                                         s.stack_frame_arguments.clear();
                                     }
 
-                                    if matches!(s.state, DebugState::Running) {
+                                    if was_running {
                                         should_emit_stopped = true;
                                         let resume_mode = s.last_resume_mode.clone();
 
@@ -2862,6 +2870,7 @@ mod tests {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
@@ -2966,6 +2975,7 @@ mod tests {
             variable_cache: VariableCache::default(),
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
+            stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 

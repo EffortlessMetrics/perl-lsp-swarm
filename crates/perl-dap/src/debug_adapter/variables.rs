@@ -318,11 +318,18 @@ impl DebugAdapter {
                     let (framed_vars, framed_child_cache) =
                         Self::parse_scope_variables_from_lines(lines, variables_ref, 0, 1024);
                     if framed_vars.is_empty() {
-                        Self::wait_for_debugger_output_window(DEBUGGER_QUERY_WAIT_MS as u32);
-                        self.parse_scope_variables_from_output(variables_ref, 0, 1024)
+                        // A failed or empty framed locals response is unavailable;
+                        // never reinterpret unrelated session history as this
+                        // suspension's variables.
+                        (Vec::new(), HashMap::new())
                     } else {
                         (framed_vars, framed_child_cache)
                     }
+                } else if scope_kind.is_some() {
+                    // Scope admission is current-frame-only.  Without a framed
+                    // response, return unavailable rather than querying or
+                    // parsing the uncorrelated recent-output buffer.
+                    (Vec::new(), HashMap::new())
                 } else {
                     Self::wait_for_debugger_output_window(DEBUGGER_QUERY_WAIT_MS as u32);
                     self.parse_scope_variables_from_output(variables_ref, 0, 1024)
@@ -902,6 +909,7 @@ mod hazard_invariant_tests {
             1,
         )]);
 
+        let before_queries = a.debugger_query_count_for_test();
         for (frame_id, kind) in [
             (7, ScopeKind::Package),
             (7, ScopeKind::Globals),
@@ -916,6 +924,11 @@ mod hazard_invariant_tests {
                 "unadmitted {kind:?} scope for frame {frame_id} must be honest empty"
             );
         }
+        assert_eq!(
+            a.debugger_query_count_for_test(),
+            before_queries,
+            "unadmitted scope references must perform zero framed debugger queries"
+        );
     }
 
     // --- Fix #1338: stale EvalResult ref with Stopped session -> early short-circuit ---
