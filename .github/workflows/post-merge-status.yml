@@ -423,7 +423,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BRANCH: automation/post-merge-status
         run: |
-          gh workflow run ci.yml --ref "$BRANCH"
-          gh workflow run em-ci-routed-rust.yml --ref "$BRANCH"
-          gh workflow run ripr.yml --ref "$BRANCH"
-          gh workflow run pr-title-check.yml --ref "$BRANCH"
+          # Keep attempting every required workflow so one transient dispatch
+          # failure cannot strand the later required checks. The final status
+          # remains failing when any dispatch failed.
+          set +e
+          failed=0
+          for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml; do
+            if gh workflow run "$workflow" --ref "$BRANCH"; then
+              continue
+            fi
+            echo "::error::Failed to dispatch $workflow"
+            failed=1
+          done
+          exit "$failed"

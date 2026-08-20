@@ -13,6 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde_yaml_ng::Value;
+use toml::Value as TomlValue;
 
 fn project_root() -> PathBuf {
     // Walk up from the manifest directory to the workspace root.
@@ -124,6 +125,76 @@ fn test_post_merge_workflow_triggers_on_push_to_master() -> Result<(), Box<dyn s
         content.contains("master"),
         "post-merge-status.yml push trigger must include master branch"
     );
+    Ok(())
+}
+
+/// Required contexts raised on a generated PR must be represented as reachable
+/// through the workflow-dispatch route used by the post-merge writer (#11731).
+#[test]
+fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let policy_path = root.join(".ci/policies/required-checks.toml");
+    let policy: TomlValue = fs::read_to_string(policy_path)?.parse()?;
+    let checks = policy
+        .get("checks")
+        .and_then(TomlValue::as_array)
+        .ok_or("required-checks.toml must declare a checks array")?;
+
+    for required_name in ["Perl LSP Rust Small Result", "ripr+ New Gap Gate", "validate-title"] {
+        let check = checks
+            .iter()
+            .find(|check| check.get("name").and_then(TomlValue::as_str) == Some(required_name))
+            .ok_or_else(|| format!("required-checks.toml is missing `{required_name}`"))?;
+        let events = check
+            .get("events")
+            .and_then(TomlValue::as_array)
+            .ok_or_else(|| format!("`{required_name}` must declare events"))?;
+        assert!(
+            events.iter().any(|event| event.as_str() == Some("workflow_dispatch")),
+            "`{required_name}` must record workflow_dispatch as a supported route"
+        );
+    }
+
+    Ok(())
+}
+
+/// The generated-PR workflow must attempt every required dispatch and retain a
+/// failing step result when any individual dispatch fails (#11731).
+#[test]
+fn test_post_merge_workflow_dispatches_all_required_checks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root();
+    let workflow_path = root.join(".github/workflows/post-merge-status.yml");
+    let content = fs::read_to_string(&workflow_path)?;
+    let workflow: Value = serde_yaml_ng::from_str(&content)?;
+    let jobs = workflow
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("post-merge-status.yml must declare jobs")?;
+    let dispatch_run = jobs
+        .values()
+        .filter_map(|job| job.get("steps").and_then(Value::as_sequence))
+        .flat_map(|steps| steps.iter())
+        .find(|step| {
+            step.get("name").and_then(Value::as_str) == Some("Raise CI on the generated PR")
+        })
+        .and_then(|step| step.get("run").and_then(Value::as_str))
+        .ok_or("post-merge-status.yml must define the generated-PR dispatch step")?;
+
+    for workflow_name in ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml", "pr-title-check.yml"] {
+        assert!(
+            dispatch_run.contains(workflow_name),
+            "generated-PR dispatch step must attempt {workflow_name}"
+        );
+    }
+    assert!(
+        dispatch_run.contains("set +e")
+            && dispatch_run.contains("for workflow in")
+            && dispatch_run.contains("failed=1")
+            && dispatch_run.contains("exit \"$failed\""),
+        "generated-PR dispatch step must continue after an individual failure and fail overall"
+    );
+
     Ok(())
 }
 
