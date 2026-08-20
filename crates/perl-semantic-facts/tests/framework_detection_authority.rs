@@ -531,7 +531,8 @@ fn authority_receipt_parity_tracks_success_and_failure() {
 
     // A result copied across inputs must fail closed, and the receipt must carry
     // the same reason rather than merely reporting a generic non-authority.
-    let mismatched_input = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
+    let mut mismatched_input = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
+    mismatched_input.descriptor = observed.descriptor.clone();
     let failure_error = successful.validate_authority_against(&mismatched_input).err();
     let failure_receipt = successful.authority_receipt_against(&mismatched_input);
     assert_eq!(failure_error, Some(DetectionAuthorityError::InputIdentityMismatch));
