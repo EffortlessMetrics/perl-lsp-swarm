@@ -243,13 +243,14 @@ fn fetch_perldoc(module: &str, config: &WorkspaceConfig) -> Option<String> {
         }
     };
 
-    if output.status.success() {
-        String::from_utf8(output.stdout)
-            .map_err(|e| tracing::warn!(module, error = %e, "Invalid UTF-8 in perldoc output"))
-            .ok()
-    } else {
-        None
-    }
+    if output.status.success() { classify_perldoc_stdout(output.stdout, module) } else { None }
+}
+
+fn classify_perldoc_stdout(stdout: Vec<u8>, module: &str) -> Option<String> {
+    String::from_utf8(stdout)
+        .map_err(|e| tracing::warn!(module, error = %e, "Invalid UTF-8 in perldoc output"))
+        .ok()
+        .filter(|content| !content.is_empty())
 }
 
 /// Fetch Perl documentation using perldoc.
@@ -288,6 +289,15 @@ mod tests {
         let config = WorkspaceConfig::default();
         let result = fetch_perldoc("ThisModuleDefinitelyDoesNotExist12345", &config);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn parser_fetch_perldoc_empty_success_is_unavailable() {
+        assert!(classify_perldoc_stdout(Vec::new(), "missing-module").is_none());
+        assert_eq!(
+            classify_perldoc_stdout(b"documentation".to_vec(), "documented-module"),
+            Some("documentation".to_string())
+        );
     }
 
     #[test]
