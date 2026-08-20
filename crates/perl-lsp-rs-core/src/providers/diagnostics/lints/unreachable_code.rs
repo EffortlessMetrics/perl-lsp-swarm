@@ -503,6 +503,21 @@ mod tests {
         diags.iter().filter(|diagnostic| diagnostic.code.as_deref() == Some("PL406")).count()
     }
 
+    fn assert_pl406_at(source: &str, diags: &[Diagnostic], anchor: &str) {
+        assert_eq!(
+            count_pl406(diags),
+            1,
+            "the scenario should produce exactly one PL406: {diags:?}"
+        );
+        let start = must_some(source.find(anchor));
+        let pl406 = must_some(diags.iter().find(|d| d.code.as_deref() == Some("PL406")));
+        assert_eq!(
+            pl406.range,
+            (start, start + anchor.len()),
+            "PL406 must identify the intended unreachable statement {anchor:?}: {diags:?}"
+        );
+    }
+
     #[test]
     fn return_then_statement_is_flagged() {
         let source = "sub f { return 1; my $x = 2; }";
@@ -827,12 +842,9 @@ mod tests {
     #[test]
     fn last_outer_label_in_bare_block_closes_loop_body_fallthrough() {
         // last OUTER exits the while, so "dead" never executes.
-        let diags = unreachable_diags("OUTER: while (1) { { last OUTER; } print \"dead\"; last; }");
-        assert!(
-            has_pl406(&diags),
-            "last OUTER escapes the bare block; the sibling inside the loop body \
-             must be PL406: {diags:?}"
-        );
+        let source = "OUTER: while (1) { { last OUTER; } print \"dead\"; last; }";
+        let diags = unreachable_diags(source);
+        assert_pl406_at(source, &diags, "print \"dead\"");
     }
 
     /// `redo LABEL` targeting a labeled bare block restarts the block from the
@@ -840,11 +852,9 @@ mod tests {
     /// block is unreachable.
     #[test]
     fn redo_own_label_bare_block_closes_following_sibling() {
-        let diags = unreachable_diags("R: { redo R; } print \"x\";");
-        assert!(
-            has_pl406(&diags),
-            "redo R restarts the R block forever; the sibling after it must be PL406: {diags:?}"
-        );
+        let source = "R: { redo R; } print \"x\";";
+        let diags = unreachable_diags(source);
+        assert_pl406_at(source, &diags, "print \"x\"");
     }
 
     /// `redo` without a label in a bare block also creates an infinite loop
@@ -852,12 +862,9 @@ mod tests {
     /// themselves). The following sibling is unreachable.
     #[test]
     fn redo_unlabeled_bare_block_closes_following_sibling() {
-        let diags = unreachable_diags("{ redo; } print \"y\";");
-        assert!(
-            has_pl406(&diags),
-            "redo in an unlabeled bare block is an infinite loop; the following \
-             sibling must be PL406: {diags:?}"
-        );
+        let source = "{ redo; } print \"y\";";
+        let diags = unreachable_diags(source);
+        assert_pl406_at(source, &diags, "print \"y\"");
     }
 
     /// `next OUTER` inside a bare block targets the outer loop's next
@@ -866,12 +873,9 @@ mod tests {
     /// unreachable.
     #[test]
     fn next_outer_label_in_bare_block_closes_loop_body_fallthrough() {
-        let diags = unreachable_diags("OUTER: while (1) { { next OUTER; } print \"dead\"; last; }");
-        assert!(
-            has_pl406(&diags),
-            "next OUTER escapes the bare block; the sibling inside the loop body \
-             must be PL406: {diags:?}"
-        );
+        let source = "OUTER: while (1) { { next OUTER; } print \"dead\"; last; }";
+        let diags = unreachable_diags(source);
+        assert_pl406_at(source, &diags, "print \"dead\"");
     }
 
     /// `last DONE` inside a labeled bare block `DONE: { … }` exits the block
@@ -879,11 +883,12 @@ mod tests {
     /// the same as unlabeled `last` in an anonymous bare block.
     #[test]
     fn last_matching_label_in_bare_block_keeps_parent_fallthrough() {
-        let diags = unreachable_diags("DONE: { last DONE; } print \"after\";");
-        assert!(
-            !has_pl406(&diags),
-            "last DONE exits the DONE block itself; the sibling after it must \
-             remain reachable: {diags:?}"
+        let source = "DONE: { last DONE; } print \"after\";";
+        let diags = unreachable_diags(source);
+        assert_eq!(
+            count_pl406(&diags),
+            0,
+            "last DONE exits the DONE block itself; no sibling should be PL406: {diags:?}"
         );
     }
 
@@ -892,11 +897,12 @@ mod tests {
     /// the parent falls through — same as unlabeled `next`.
     #[test]
     fn next_matching_label_in_bare_block_keeps_parent_fallthrough() {
-        let diags = unreachable_diags("DONE: { next DONE; } print \"after\";");
-        assert!(
-            !has_pl406(&diags),
-            "next DONE exits the DONE block itself; the sibling after it must \
-             remain reachable: {diags:?}"
+        let source = "DONE: { next DONE; } print \"after\";";
+        let diags = unreachable_diags(source);
+        assert_eq!(
+            count_pl406(&diags),
+            0,
+            "next DONE exits the DONE block itself; no sibling should be PL406: {diags:?}"
         );
     }
 }
