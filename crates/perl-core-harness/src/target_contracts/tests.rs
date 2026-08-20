@@ -619,3 +619,47 @@ fn validate_rejects_duplicate_selector_with_exact_message() -> Result<(), String
     assert_eq!(error, "target component_base contains a duplicate selector");
     Ok(())
 }
+
+#[test]
+fn validate_exact_error_variant() -> Result<(), String> {
+    let mut schema = physical_contract();
+    schema.schema_version = "perl_core_harness.target_selection.v0".to_string();
+    assert_eq!(
+        schema.validate().expect_err("unsupported schema must be rejected"),
+        "target component_base uses unsupported schema perl_core_harness.target_selection.v0"
+    );
+
+    let mut alias = physical_contract();
+    alias.aliases = vec![alias.upstream_name.clone()];
+    assert_eq!(
+        alias.validate().expect_err("repeated upstream alias must be rejected"),
+        "target component_base repeats its upstream name as an alias"
+    );
+
+    let mut authority = physical_contract();
+    authority.selection_authority =
+        Some(TargetAuthority { kind: TargetAuthorityKind::Make, entrypoint: "t/TEST".to_string() });
+    assert_eq!(
+        authority.validate().expect_err("Make selection authority must be rejected"),
+        "target component_base selection authority must name a test scheduler, not a Make target"
+    );
+
+    let mut replacement = physical_contract();
+    replacement.replaces_target_id = Some("component_comp".to_string());
+    replacement.change_reason = None;
+    assert_eq!(
+        replacement.validate().expect_err("replacement without a reason must be rejected"),
+        "target component_base replaces another target without a change reason"
+    );
+
+    let mut duplicate_selector = physical_contract();
+    duplicate_selector.selectors = vec![
+        TargetSelector::RecursiveRoot { path: "base".to_string() },
+        TargetSelector::RecursiveRoot { path: "base".to_string() },
+    ];
+    assert_eq!(
+        duplicate_selector.validate().expect_err("duplicate selectors must be rejected"),
+        "target component_base contains a duplicate selector"
+    );
+    Ok(())
+}
