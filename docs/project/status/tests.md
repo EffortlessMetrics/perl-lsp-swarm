@@ -6,13 +6,13 @@
 ## Test Counts
 
 <!-- BEGIN: TESTS_TABLE_ROWS -->
-| **Tier A Tests** | 10161 lib tests (discovered), 15 ignores (tracked) | 100% pass | PASS |
+| **Tier A Tests** | 10284 lib tests (discovered), 15 ignores (tracked) | 100% pass | PASS |
 | **Tracked Test Debt** | 1 (0 bug, 1 manual) | 0 | Near-zero |
 <!-- END: TESTS_TABLE_ROWS -->
 
 ## Computed Metrics
 
 <!-- BEGIN: TESTS_METRICS_BULLETS -->
-- **Test Status**: 10161 lib tests (Tier A), 15 ignores tracked (1 total tracked debt: 0 bug, 1 manual)
-- **Docs (perl-parser)**: missing_docs warnings = 0 (baseline 0)
+- **Test Status**: 10284 lib tests (Tier A), 15 ignores tracked (1 total tracked debt: 0 bug, 1 manual)
+- **Docs (perl-parser)**: missing_docs warnings = UNVERIFIED
 <!-- END: TESTS_METRICS_BULLETS -->

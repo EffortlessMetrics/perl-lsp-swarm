@@ -1,0 +1,25 @@
+schema_version = 1
+policy = "generated-status-contract"
+
+[[surface]]
+id = "lsp.protocol_compliance"
+kind = "ratio_projection"
+path = "docs/project/status/lsp.md"
+headline_label = "Protocol Compliance"
+table_label = "Overall"
+claim_boundary = "Checks arithmetic and projection consistency for the declared protocol-support population. Behavior-backed GA/compliance maturity remains owned by #6731."
+
+[[surface]]
+id = "tests.tier_a"
+kind = "evidence_verdict"
+path = "docs/project/status/tests.md"
+row_label = "Tier A Tests"
+claim_boundary = "Checks that a Tier A pass has a known current test denominator and that unknown discovery evidence cannot retain a passing verdict."
+
+[[surface]]
+id = "quality.per_crate_attribution"
+kind = "attribution_table"
+path = "docs/project/status/quality.md"
+begin_marker = "<!-- BEGIN: QUALITY_CRATE_TABLE -->"
+end_marker = "<!-- END: QUALITY_CRATE_TABLE -->"
+claim_boundary = "Checks whether per-crate test attribution is complete, explicitly limited, or missing. Aggregate discovery does not become per-crate quality proof."

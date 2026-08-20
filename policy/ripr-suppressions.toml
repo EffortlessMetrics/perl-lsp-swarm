@@ -2504,6 +2504,38 @@ review_after = "2026-09-18"
 expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
+# Workspace runtime-generation boundary contract tests: diff-scoped RIPR treats
+# the source-grepping contract-test plumbing as a production seam.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-workspace-runtime-generation-boundary-tests"
+kind = "test_receipt_surface"
+paths = ["xtask/tests/workspace_runtime_generation_boundary.rs"]
+classification = ["weakly_exposed", "reachable_unrevealed", "call_deletion", "return_value", "predicate"]
+owner = "devex"
+issue = "#10013"
+reason = "The W02 candidate (#10080) hardens the runtime-generation architecture boundary tests per review: the read-gate requirement is bound to the wrapper's public method surface, the doc-hidden module check normalizes line endings, and the generation-allocation linearization point gets its own ratchet. ripr's diff-scoped tracer reports the tests' own ensure!/matches plumbing (Ok(()) markers, forbidden-token predicates, marker-string returns) as unobserved seams. These tests ARE the discriminator: each ensure! observes the workspace/runtime_generation sources directly, and mutating the guarded sources flips them. Same ripr#1428 test-surface class as ripr-suppress-agent-capability-workflow-contract-test. The production seams the boundary guards are separately covered by the runtime_generation unit tests (same-root linearization, session mint ABA) in perl-workspace. Remove when RIPR distinguishes contract-test plumbing from production seams."
+created = "2026-08-19"
+review_after = "2026-09-19"
+expires = "2026-11-19"
+
+# -----------------------------------------------------------------------------
+# Workspace runtime ownership ledger validator: same ripr#1428 class as the
+# boundary tests above, one file, one PR.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-workspace-runtime-ownership-ledger-test"
+kind = "test_receipt_surface"
+paths = ["xtask/tests/workspace_runtime_ownership_ledger.rs"]
+classification = ["weakly_exposed", "reachable_unrevealed", "call_deletion", "return_value", "field_construction", "match_arm"]
+owner = "devex"
+issue = "#10011"
+reason = "The ledger validator's diff-scoped gaps flagged by ripr for the W02 candidate (#10080) are the validator's own row-parsing plumbing: TSV field match arms, per-field emptiness ensures added in review repair, and the Result-returning test body. The validator observes the policy ledger and generated reviewer projection directly (duplicate ids, dispositions, live-source markers, reviewer-projection freshness), so its assertions are the discriminator for the sources it guards; the tracer cannot see test-harness plumbing as its own oracle. Same ripr#1428 test-surface class as ripr-suppress-agent-capability-workflow-contract-test. Remove when RIPR distinguishes contract-test plumbing from production seams."
+created = "2026-08-19"
+review_after = "2026-09-19"
+expires = "2026-11-19"
+
+# -----------------------------------------------------------------------------
 # perl-semantic-facts property round-trip test surface (PR #6842 / issue
 # #6820): proptest macro bodies in a newly added test file misclassified as
 # new production seams (ripr#1428).

@@ -72,3 +72,21 @@ fn public_section_loader_preserves_crlf_source_but_normalizes_case_body()
     assert_eq!(document.cases[0].section.body, "my $value = 1;");
     Ok(())
 }
+
+#[cfg(windows)]
+#[test]
+fn public_plain_loader_rejects_windows_reparse_point() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::windows::fs::symlink_file;
+
+    let directory = tempfile::tempdir()?;
+    let target = directory.path().join("source.pl");
+    let link = directory.path().join("source-link.pl");
+    fs::write(&target, "my $value = 1;\n")?;
+    symlink_file(&target, &link)?;
+
+    assert!(matches!(
+        load_plain_perl_source("fixtures/source-link.pl", &link),
+        Err(CorpusLoadError::SymlinkUnsupported { path }) if path == link
+    ));
+    Ok(())
+}

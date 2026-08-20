@@ -11,7 +11,7 @@ import sublime_plugin
 from LSP.plugin import LspPlugin, OnPreStartContext, PluginStartError
 from LSP.plugin.core.open import open_file
 from LSP.plugin.core.protocol import Error
-from LSP.plugin.core.registry import LspTextCommand
+from LSP.plugin.core.registry import LspTextCommand, windows
 from LSP.plugin.core.url import filename_to_uri
 
 from .command_surface import (
@@ -85,6 +85,20 @@ def _write_output_panel(window: sublime.Window, text: str) -> None:
     window.run_command("show_panel", {"panel": f"output.{_OUTPUT_PANEL}"})
 
 
+def _diag(message: str) -> None:
+    """Record a palette-dispatch decision on the Sublime console.
+
+    The command journey's silent failure modes (no session, a rejected
+    invocation, a dispatched request whose response never arrives) all
+    leave the output panel empty, so the real-host runner's failure
+    artifact — the recorded console log — is the only surface that can
+    distinguish them. One bounded line per decision keeps the console
+    useful without spamming normal usage: these commands are
+    user-initiated and low-frequency.
+    """
+    print(f"[perllsp-command] {message}")
+
+
 class PerllspPlugin(LspPlugin):
     @classmethod
     def on_pre_start_async(cls, context: OnPreStartContext) -> None:
@@ -137,25 +151,53 @@ class PerllspExecuteCommand(LspTextCommand):
         point: int | None = None,
     ) -> bool:
         del event, point
+        # Deliberately not gated on session presence or invocation
+        # readiness: Sublime queries is_enabled during palette and menu
+        # refresh, before a session has registered, caches the disabled
+        # verdict, and then suppresses run_command outright — the
+        # macOS-only seam evidenced on #9610 (an is_enabled
+        # reason=session_none line with no dispatch that followed).
+        # run() owns the no-session and rejected-invocation UX (status
+        # message plus console diagnostic) at actual dispatch time.
+        known = action in COMMAND_SPECS
+        if not known:
+            _diag(f"is_enabled action={action!r} enabled=False reason=unknown_action")
+        return known
+
+    def _resolve_session(self) -> Any:
+        """Resolve the perllsp session owning this view.
+
+        session_by_name alone proved insufficient on macOS (#9610): the
+        command journey verified the session READY through the window
+        manager while session_by_name still returned None at dispatch
+        time, so the command never fired. Try the canonical text-command
+        lookup first, then the window-manager path the host verifies
+        with.
+        """
         session = self.session_by_name(self.session_name)
-        if session is None:
-            return False
-        try:
-            self._prepare(action, session)
-        except CommandSurfaceError:
-            return False
-        return True
+        if session is not None:
+            return session
+        window = self.view.window()
+        file_name = self.view.file_name()
+        if window is None or file_name is None:
+            return None
+        return windows.lookup(window).get_session(self.session_name, file_name)
 
     def run(self, edit: sublime.Edit, action: str = "") -> None:
         del edit
-        session = self.session_by_name(self.session_name)
+        session = self._resolve_session()
         if session is None:
+            _diag(f"run action={action!r} dispatched=False reason=session_none")
             self._status("No active LSP-perllsp session owns the current Perl view.")
             return
 
         try:
             invocation = self._prepare(action, session)
         except CommandSurfaceError as error:
+            _diag(
+                f"run action={action!r} dispatched=False "
+                f"reason={type(error).__name__}: {error}"
+            )
             self._status(str(error))
             return
 
@@ -164,12 +206,42 @@ class PerllspExecuteCommand(LspTextCommand):
             params["arguments"] = invocation.arguments
 
         def handle_response(response: Any) -> None:
+            _diag(
+                f"response action={action!r} command={invocation.spec.command_id!r} "
+                f"kind={'error' if isinstance(response, Error) else 'result'}"
+            )
             if isinstance(response, Error):
                 sublime.set_timeout(lambda: self._show_error(invocation, response))
                 return
             sublime.set_timeout(lambda: self._show_success(invocation, response))
 
-        session.execute_command(params, progress=True, view=self.view).then(handle_response)
+        def handle_rejection(error: Any) -> None:
+            _diag(
+                f"response action={action!r} command={invocation.spec.command_id!r} "
+                f"kind=promise_rejected: {error!r}"
+            )
+
+        try:
+            promise = session.execute_command(params, progress=True, view=self.view)
+        except Exception as error:
+            _diag(
+                f"run action={action!r} dispatched=False "
+                f"reason={type(error).__name__}: {error}"
+            )
+            self._status(f"Dispatching {invocation.spec.command_id} failed: {error}")
+            return
+        _diag(
+            f"run action={action!r} dispatched command={invocation.spec.command_id!r} "
+            f"arguments={invocation.arguments!r}"
+        )
+        promise.then(handle_response)
+        # Server-side failures arrive as Error values inside .then; a
+        # transport-level rejection would otherwise vanish without a
+        # response line. The promise API carries .catch when it supports
+        # it, so attach defensively rather than assume.
+        attach_catch = getattr(promise, "catch", None)
+        if attach_catch is not None:
+            attach_catch(handle_rejection)
 
     def _prepare(self, action: str, session: Any) -> CommandInvocation:
         selection = self.view.sel()

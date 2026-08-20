@@ -19,6 +19,11 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use serde_yaml_ng::Value;
 
+#[path = "support/workflow_bash.rs"]
+mod workflow_bash;
+
+use workflow_bash::bash_executable;
+
 const WORKFLOW: &str = "publish-extension.yml";
 const JOB: &str = "github-release-asset";
 const GUARD_STEP: &str = "Verify release tag resolves to the built subject";
@@ -73,25 +78,6 @@ fn guard_run_block() -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("step `{GUARD_STEP}` must have a run block"))
-}
-
-fn bash_executable() -> PathBuf {
-    if let Some(path) = env::var_os("BASH") {
-        return path.into();
-    }
-    #[cfg(windows)]
-    {
-        let git_bash = PathBuf::from(r"C:\Program Files\Git\bin\bash.exe");
-        if git_bash.is_file() {
-            return git_bash;
-        }
-        // 32-bit Git for Windows installs under Program Files (x86) on 64-bit hosts.
-        let git_bash_x86 = PathBuf::from(r"C:\Program Files (x86)\Git\bin\bash.exe");
-        if git_bash_x86.is_file() {
-            return git_bash_x86;
-        }
-    }
-    PathBuf::from("bash")
 }
 
 /// Execute the guard with a stubbed `gh` so the tag resolution is controlled.
