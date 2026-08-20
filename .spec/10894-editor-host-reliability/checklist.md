@@ -54,7 +54,13 @@ if ($text.Count -ne 3) { throw 'expected exactly three spec files' }
 foreach ($term in $required) { if (-not ($text -match [regex]::Escape($term))) { throw "missing term: $term" } }
 foreach ($heading in $headings) { if (-not ($text -match [regex]::Escape($heading))) { throw "missing heading: $heading" } }
 foreach ($marker in $falsifiers) { if (-not ($text -match [regex]::Escape($marker))) { throw "missing falsifier: $marker" } }
-if ((git diff --name-only -- .spec/10894-editor-host-reliability | Measure-Object).Count -ne 3) { throw 'unexpected changed paths' }
+$base = git merge-base HEAD origin/main
+$changed = @(
+  git diff --name-only $base HEAD -- .spec/10894-editor-host-reliability
+  git diff --name-only HEAD -- .spec/10894-editor-host-reliability
+  git diff --cached --name-only HEAD -- .spec/10894-editor-host-reliability
+) | Sort-Object -Unique
+if ($changed.Count -ne 3) { throw 'unexpected changed paths' }
 'SPEC_10894_STRUCTURAL_CHECK=PASS'
 ```
 
@@ -65,12 +71,11 @@ $tmp = Join-Path $env:TEMP 'spec-10894-check'
 Remove-Item -LiteralPath "$tmp.1","$tmp.2" -Force -ErrorAction SilentlyContinue
 <# save the exact command output above to $tmp.1 #>
 <# repeat the exact command without edits and save output to $tmp.2 #>
-$sha256 = [Security.Cryptography.SHA256]::Create()
-$h1 = (($sha256.ComputeHash([IO.File]::ReadAllBytes("$tmp.1")) | ForEach-Object { $_.ToString('x2') }) -join '')
-$h2 = (($sha256.ComputeHash([IO.File]::ReadAllBytes("$tmp.2")) | ForEach-Object { $_.ToString('x2') }) -join '')
+$h1 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$tmp.1").Hash
+$h2 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$tmp.2").Hash
 if ($h1 -ne $h2) { throw 'second run is not deterministic' }
 git diff --check
-if (git status --short -- .spec/10894-editor-host-reliability | Select-String '^.\.spec/10894-editor-host-reliability/(?!context|acceptance|checklist)') { throw 'unexpected spec artifact' }
+if (git status --short -- .spec/10894-editor-host-reliability | Select-String '^...\.spec/10894-editor-host-reliability/(?!context|acceptance|checklist)') { throw 'unexpected spec artifact' }
 ```
 
 The comments above intentionally require the operator to capture the exact
