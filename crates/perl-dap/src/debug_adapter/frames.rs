@@ -258,19 +258,18 @@ impl DebugAdapter {
             named_variables: None,
             indexed_variables: None,
         }];
-        if !arguments.is_empty() {
-            if let Some(arguments_ref) =
+        if !arguments.is_empty()
+            && let Some(arguments_ref) =
                 (VariableReference::Scope { frame_id, kind: ScopeKind::Arguments }).encode()
-            {
-                scopes.push(Scope {
-                    name: "Arguments".to_string(),
-                    presentation_hint: Some("arguments".to_string()),
-                    variables_reference: i64::from(arguments_ref),
-                    expensive: false,
-                    named_variables: None,
-                    indexed_variables: Some(arguments.len() as i64),
-                });
-            }
+        {
+            scopes.push(Scope {
+                name: "Arguments".to_string(),
+                presentation_hint: Some("arguments".to_string()),
+                variables_reference: i64::from(arguments_ref),
+                expensive: false,
+                named_variables: None,
+                indexed_variables: Some(arguments.len() as i64),
+            });
         }
 
         let scopes_body = ScopesResponseBody { scopes };
