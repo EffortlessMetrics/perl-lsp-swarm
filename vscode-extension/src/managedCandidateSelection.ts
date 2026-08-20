@@ -122,7 +122,13 @@ export function validateManagedCurrentSelection(
   selection: ManagedCurrentSelection,
   candidates: ManagedCandidateCatalogEntry[],
 ): string[] {
-  const errors: string[] = [...validateGeneration(selection.selection_generation)];
+  const errors: string[] = [];
+  // A record deserialized from disk may claim a schema this version cannot
+  // interpret; reject it rather than reading known fields off unknown bytes.
+  if (selection.schema_version !== 'managed_current_selection.v1') {
+    errors.push('current selection carries an unsupported schema version');
+  }
+  errors.push(...validateGeneration(selection.selection_generation));
 
   const selected = candidates.find(
     (entry) => entry.manifest.candidate_id === selection.candidate_id,

@@ -11,6 +11,7 @@ import {
   resolveManagedCandidateForHost,
   validateManagedCurrentSelection,
   type ManagedCandidateCatalogEntry,
+  type ManagedCurrentSelection,
   type ManagedHostReferenceState,
   type ManagedRetentionInput,
 } from '../managedCandidateSelection';
@@ -94,6 +95,19 @@ describe('managed candidate publication and selection', () => {
 
     expect(validateManagedCurrentSelection(selection, [mutableEntry])).toContain(
       'current selection candidate must be immutable',
+    );
+  });
+
+  test('rejects a current selection carrying an unsupported schema version', () => {
+    const candidate = entry('a');
+    const selection = publishManagedCurrentSelection(candidate.manifest, null);
+    const foreign = {
+      ...selection,
+      schema_version: 'managed_current_selection.v2',
+    } as unknown as ManagedCurrentSelection;
+
+    expect(validateManagedCurrentSelection(foreign, [candidate])).toContain(
+      'current selection carries an unsupported schema version',
     );
   });
 
