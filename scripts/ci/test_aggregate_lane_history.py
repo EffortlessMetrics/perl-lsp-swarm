@@ -1132,6 +1132,25 @@ class PayloadOracleTests(unittest.TestCase):
         violations = aggregate_lane_history.validate_history_payload(payload)
         self.assertTrue(any("lane_executions" in v and "sum of lane samples" in v for v in violations), violations)
 
+    def test_capped_executions_validate_and_mismatch_fails(self) -> None:
+        # Executions dropped by the per-lane sample cap still count in
+        # lane_executions; the identity must include the capped count
+        # (#11817 review).
+        payload = self.clean_payload()
+        payload["validation"]["rejected"] = {"lane_sample_cap": 2}
+        payload["validation"]["lane_executions"] = 8
+        self.assertEqual([], aggregate_lane_history.validate_history_payload(payload))
+
+        payload["validation"]["lane_executions"] = 6  # forgot the capped 2
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("+ capped" in v for v in violations), violations)
+
+    def test_negative_capped_count_fails(self) -> None:
+        payload = self.clean_payload()
+        payload["validation"]["rejected"] = {"lane_sample_cap": -1}
+        violations = aggregate_lane_history.validate_history_payload(payload)
+        self.assertTrue(any("lane_sample_cap" in v for v in violations), violations)
+
     def test_checked_in_history_validates(self) -> None:
         """The current committed payload must pass its own oracle."""
         repo_root = SCRIPT_PATH.parent.parent.parent

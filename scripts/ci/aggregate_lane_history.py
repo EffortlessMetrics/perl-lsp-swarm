@@ -579,9 +579,21 @@ def validate_history_payload(
             if validation["jobs_with_sample"] > validation["jobs_seen"]:
                 violations.append("validation.jobs_with_sample > jobs_seen")
         if isinstance(validation.get("lane_executions"), int):
-            if validation["lane_executions"] != total_samples:
+            # Executions dropped by MAX_SAMPLES_PER_LANE are excluded from the
+            # per-lane samples but still counted in lane_executions, recorded
+            # under rejected["lane_sample_cap"] — the identity must sum both
+            # (#11817 review: a capped payload is structurally valid).
+            rejected = validation.get("rejected")
+            capped = rejected.get("lane_sample_cap", 0) if isinstance(rejected, dict) else 0
+            if not isinstance(capped, int) or isinstance(capped, bool) or capped < 0:
                 violations.append(
-                    f"validation.lane_executions {validation['lane_executions']} != sum of lane samples {total_samples}"
+                    f"validation.rejected.lane_sample_cap must be a non-negative int, got {capped!r}"
+                )
+                capped = 0
+            if validation["lane_executions"] != total_samples + capped:
+                violations.append(
+                    f"validation.lane_executions {validation['lane_executions']} != "
+                    f"sum of lane samples {total_samples} + capped {capped}"
                 )
 
     return violations
