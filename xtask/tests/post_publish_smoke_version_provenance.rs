@@ -43,6 +43,10 @@ const RESOLVE_STEP: &str = "Determine version";
 const FABRICATED: &str = "9.9.9";
 /// A version a receipt legitimately attests to.
 const PUBLISHED: &str = "0.18.0";
+/// The repository's default branch, the authoritative fallback subject.
+const DEFAULT_BRANCH: &str = "main";
+/// The commit a publication receipt attests to.
+const PUBLISHED_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
 fn project_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -91,6 +95,7 @@ struct Resolution {
     output: Output,
     version: Option<String>,
     should_run: Option<String>,
+    subject: Option<String>,
 }
 
 impl Resolution {
@@ -151,6 +156,7 @@ fn resolve(event: &str, conclusion: &str, receipt: Option<&str>) -> Result<Resol
         // simply because the variable was absent, and would prove nothing.
         .env("WORKFLOW_RUN_HEAD_BRANCH", format!("v{FABRICATED}"))
         .env("RECEIPT_PATH", &receipt_path)
+        .env("DEFAULT_BRANCH", DEFAULT_BRANCH)
         .env("GITHUB_OUTPUT", &github_output)
         .output()
         .context("executing the resolver under Actions bash semantics")?;
@@ -170,12 +176,17 @@ fn resolve(event: &str, conclusion: &str, receipt: Option<&str>) -> Result<Resol
             .next_back()
     };
 
-    Ok(Resolution { version: read("version"), should_run: read("should_run"), output })
+    Ok(Resolution {
+        version: read("version"),
+        should_run: read("should_run"),
+        subject: read("subject"),
+        output,
+    })
 }
 
 fn receipt_for(version: &str) -> String {
     format!(
-        r#"{{"version":"{version}","subject_sha":"0123456789abcdef0123456789abcdef01234567","crate_count":34,"publish_run_id":"42"}}"#
+        r#"{{"version":"{version}","subject_sha":"{PUBLISHED_SHA}","crate_count":34,"publish_run_id":"42"}}"#
     )
 }
 
@@ -270,6 +281,145 @@ fn unusable_receipt_fails_closed() -> Result<()> {
     Ok(())
 }
 
+/// Finding 2 of #9593: whoever can dispatch this workflow must not also supply
+/// the code that issues the verdict. The smoke job executes
+/// `scripts/post-publish-smoke.sh`, so the ref it checks out *is* the authority
+/// deciding whether a published version is installable.
+#[test]
+fn the_proof_never_executes_the_dispatch_selection() -> Result<()> {
+    let workflow = workflow(SMOKE_WORKFLOW)?;
+    let steps = steps(&workflow, "smoke")?;
+    let checkout = steps
+        .iter()
+        .find(|step| {
+            step.get("uses").and_then(Value::as_str).is_some_and(|u| u.contains("actions/checkout"))
+        })
+        .ok_or_else(|| anyhow!("the smoke job must check out something"))?;
+
+    // No `ref:` means "whatever the operator selected", which is the defect.
+    let declared =
+        checkout.get("with").and_then(|with| with.get("ref")).and_then(Value::as_str).ok_or_else(
+            || anyhow!("the smoke checkout must pin a ref, not take the dispatch default"),
+        )?;
+
+    if !declared.contains("resolve-version.outputs.subject") {
+        bail!("the smoke checkout must use the resolved subject, found `{declared}`");
+    }
+    Ok(())
+}
+
+/// The subject is taken from the same receipt as the version, so the proof runs
+/// against the commit it is certifying rather than a ref chosen later.
+#[test]
+fn receipted_run_executes_the_published_subject() -> Result<()> {
+    let resolved = resolve("workflow_run", "success", Some(&receipt_for(PUBLISHED)))?;
+    resolved.assert_step_succeeded("receipted subject")?;
+
+    if resolved.subject.as_deref() != Some(PUBLISHED_SHA) {
+        bail!(
+            "expected the receipt's subject {PUBLISHED_SHA}, got {:?}\n{}",
+            resolved.subject,
+            resolved.combined()
+        );
+    }
+    Ok(())
+}
+
+/// A receipted run without a usable subject must not be certified at all.
+///
+/// Falling back to the default branch here would issue a publication verdict
+/// using code that could have changed after the release — the same false-proof
+/// class as the original finding, moved from "which version" to "which code".
+/// No such receipt can exist in practice: the producer has written
+/// `subject_sha` in the same `printf` as the version since the format was
+/// introduced, so its absence means corruption, not age.
+#[test]
+fn a_receipted_run_without_a_subject_fails_closed() -> Result<()> {
+    let no_subject = format!(r#"{{"version":"{PUBLISHED}","crate_count":34}}"#);
+    let resolved = resolve("workflow_run", "success", Some(&no_subject))?;
+
+    if resolved.output.status.success() {
+        bail!("a receipt with no subject must fail the step:\n{}", resolved.combined());
+    }
+    if resolved.runs() {
+        bail!("a receipt with no subject must not be smoke-tested:\n{}", resolved.combined());
+    }
+    if resolved.subject.as_deref() == Some(DEFAULT_BRANCH) {
+        bail!("the proof must not silently retarget the default branch");
+    }
+    Ok(())
+}
+
+/// A malformed subject is a corrupt instrument. It must neither be handed to
+/// `actions/checkout` nor quietly replaced with a mutable branch.
+#[test]
+fn a_malformed_subject_fails_closed() -> Result<()> {
+    for bogus in ["refs/heads/attacker", "0123456", "../../etc", "", "main"] {
+        let receipt =
+            format!(r#"{{"version":"{PUBLISHED}","subject_sha":"{bogus}","crate_count":34}}"#);
+        let resolved = resolve("workflow_run", "success", Some(&receipt))?;
+
+        if resolved.output.status.success() {
+            bail!("subject {bogus:?} must fail the step:\n{}", resolved.combined());
+        }
+        if resolved.runs() {
+            bail!("subject {bogus:?} must not produce a verdict:\n{}", resolved.combined());
+        }
+        if resolved.subject.as_deref() == Some(bogus) {
+            bail!("subject {bogus:?} must never reach the checkout");
+        }
+    }
+    Ok(())
+}
+
+/// Dispatch supplies a version, not a ref — the proof still comes from the
+/// default branch.
+#[test]
+fn dispatch_executes_the_default_branch() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let github_output = dir.path().join("github_output");
+    fs::write(&github_output, "")?;
+
+    let run = resolve_run_block()?;
+    let output = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-c", &run])
+        .current_dir(dir.path())
+        .env("EVENT_NAME", "workflow_dispatch")
+        .env("DISPATCH_VERSION", PUBLISHED)
+        .env("WORKFLOW_RUN_CONCLUSION", "")
+        .env("WORKFLOW_RUN_HEAD_BRANCH", format!("v{FABRICATED}"))
+        .env("RECEIPT_PATH", dir.path().join("absent.json"))
+        .env("DEFAULT_BRANCH", DEFAULT_BRANCH)
+        .env("GITHUB_OUTPUT", &github_output)
+        .output()?;
+
+    if !output.status.success() {
+        bail!(
+            "dispatch must resolve successfully, got exit {:?}\n{}{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let rendered = fs::read_to_string(&github_output)?;
+    if !rendered.contains(&format!("subject={DEFAULT_BRANCH}")) {
+        bail!("dispatch must run the proof from the default branch, got:\n{rendered}");
+    }
+
+    // A dispatch re-check is not publication proof for that release, and the
+    // log has to say so — otherwise the two runs look identical in the UI.
+    let spoken = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !spoken.contains("not publication proof") {
+        bail!("a dispatch run must not present itself as publication proof:\n{spoken}");
+    }
+    Ok(())
+}
+
 /// A receipt whose version is not a version is a corrupt instrument, and the
 /// only path here that must fail the step rather than skip it. Skipping would
 /// hide a broken publish workflow behind a quiet "nothing to verify"; the
@@ -316,6 +466,7 @@ fn manual_dispatch_still_resolves_its_input() -> Result<()> {
         .env("WORKFLOW_RUN_CONCLUSION", "")
         .env("WORKFLOW_RUN_HEAD_BRANCH", format!("v{FABRICATED}"))
         .env("RECEIPT_PATH", dir.path().join("absent.json"))
+        .env("DEFAULT_BRANCH", DEFAULT_BRANCH)
         .env("GITHUB_OUTPUT", &github_output)
         .output()?;
 
