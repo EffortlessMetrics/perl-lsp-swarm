@@ -42,7 +42,13 @@ fn send_initialize_with_timeout(
     common::read_response_matching(
         server,
         &id,
-        common::adaptive_timeout().max(Duration::from_secs(15)),
+        // 45s floor: these are the suite's coldest server starts — the
+        // binary spawns while the rest of the suite contends for CPU, and
+        // the previous 15s floor proved too tight on loaded runners (two
+        // PR-Smoke reds on unrelated candidates the same day, both
+        // "initialize request timed out"). Still bounded: a genuinely hung
+        // server fails the test instead of hanging it forever.
+        common::adaptive_timeout().max(Duration::from_secs(45)),
     )
     .ok_or_else(|| "initialize request timed out before the server returned serverInfo".to_owned())
 }
