@@ -81,6 +81,7 @@ pub fn check(repo_root: &Path) -> Result<()> {
     check_with_resolved_repository_context(repo_root, repository_context.as_ref())
 }
 
+#[cfg(test)]
 fn check_with_repository_context(repo_root: &Path, repository_context: Option<&str>) -> Result<()> {
     let repository_context = repository_context.map(|repository| RepositoryContext {
         repository: repository.to_string(),
@@ -502,7 +503,19 @@ pub(crate) fn cargo_binary_names(
         .and_then(toml::Value::as_table)
         .ok_or_else(|| eyre!("Cargo manifest has no [package] table"))?;
     let autobins = package.get("autobins").and_then(toml::Value::as_bool).unwrap_or(true);
-    if autobins {
+    // Cargo autodiscovers src/main.rs and src/bin/* unless suppressed:
+    // explicit `autobins = false` always suppresses, and an explicit
+    // [[bin]] list suppresses discovery only for edition-2015 manifests
+    // (the default when the edition is unspecified). From edition 2018
+    // onward an explicit [[bin]] coexists with autodiscovery - verified
+    // against cargo metadata: an edition-2015 manifest with [[bin]] plus
+    // src/main.rs and src/bin/extra.rs reports one binary, while the same
+    // manifest at edition 2018/2024 reports all three.
+    let edition_2015 = package
+        .get("edition")
+        .and_then(toml::Value::as_str)
+        .is_none_or(|edition| edition == "2015");
+    if autobins && (names.is_empty() || !edition_2015) {
         let manifest_dir = repo_root.join(
             manifest_path.parent().ok_or_else(|| eyre!("Cargo manifest path has no parent"))?,
         );
@@ -521,10 +534,11 @@ pub(crate) fn cargo_binary_names(
                     if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
                         names.insert(stem.to_string());
                     }
-                } else if path.is_dir() && path.join("main.rs").is_file() {
-                    if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
-                        names.insert(name.to_string());
-                    }
+                } else if path.is_dir()
+                    && path.join("main.rs").is_file()
+                    && let Some(name) = path.file_name().and_then(|value| value.to_str())
+                {
+                    names.insert(name.to_string());
                 }
             }
         }

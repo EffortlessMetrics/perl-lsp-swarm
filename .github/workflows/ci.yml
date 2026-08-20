@@ -41,7 +41,7 @@ jobs:
     steps:
       - name: Checkout for docs-only detection
         if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 1
 
@@ -156,7 +156,7 @@ jobs:
       CONTRACT_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       CONTRACT_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ env.CONTRACT_HEAD }}
@@ -220,7 +220,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
       - name: Check for conflict markers
@@ -258,7 +258,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -279,7 +279,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -348,7 +348,7 @@ jobs:
       - name: Upload PR-fast test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -385,7 +385,7 @@ jobs:
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
-            gates: unit_parser_stack_full parser_integration
+            gates: unit_parser_stack_full parser_integration parser_behavior_proof
           - name: analysis
             gates: unit_analysis_full
           - name: lsp
@@ -395,20 +395,17 @@ jobs:
           - name: corpus
             gates: common_corpus_clean
           - name: policy
-            # msrv_authority_sync runs first: it is the cheapest gate here (~1s
-            # against a warm xtask) and the shard aborts on first failure, so
-            # ordering it behind the 137s non_rust_inventory_check would leave
-            # it unexecuted whenever that gate is red — which is chronic while
-            # #6229 stands, since the committed inventory count is invalidated
-            # by every merge that adds or removes a file.
-            gates: msrv_authority_sync docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check published_crate_count version_sync
+            # The cheapest control remains first for fast diagnosis, but the
+            # shard runner now records every independent member before it
+            # returns the aggregate failure verdict.
+            gates: msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof docs_build adr_link_check non_rust_inventory_check v2_bundle_sync nested_lock_check version_sync
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
     # Earlier gating > label-gated gating (see #4675)
     # Frequent commits will queue; preflight skips superseded SHAs.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -437,7 +434,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -452,24 +449,44 @@ jobs:
       - name: Warm xtask
         run: cargo build -p xtask --locked
 
+      - name: Verify complete shard runner falsifiers
+        if: matrix.name == 'meta'
+        run: python3 -m unittest scripts/ci/test_run_gate_shard.py
+
       - name: Run merge-gate shard with receipts
         shell: bash
+        env:
+          SHARD_NAME: ${{ matrix.name }}
+          SHARD_GATES: ${{ matrix.gates }}
         run: |
-          set -euo pipefail
+          set +e
           (
             while true; do
               sleep 30
-              printf 'ci-gate shard %s still running at %s\n' "${{ matrix.name }}" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              printf 'ci-gate shard %s still running at %s\n' "$SHARD_NAME" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             done
           ) &
           heartbeat_pid=$!
           trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
-          mkdir -p target/receipts/shards
-          for gate in ${{ matrix.gates }}; do
-            printf '::group::gate %s\n' "$gate"
-            cargo xtask gates --gate "$gate" --receipt --receipt-path "target/receipts/shards/${gate}.json"
-            printf '::endgroup::\n'
-          done
+          subject_sha="$(git rev-parse 'HEAD^{commit}')"
+          mkdir -p target/receipts/shards target/receipts/shard-summaries
+          timeout --signal=TERM --kill-after=30s 1200s \
+            python3 scripts/ci/run_gate_shard.py \
+              --xtask target/debug/xtask \
+              --receipt-dir target/receipts/shards \
+              --summary "target/receipts/shard-summaries/${SHARD_NAME}.json" \
+              --subject-sha "$subject_sha" \
+              $SHARD_GATES
+          status=$?
+          case "$status" in
+            124)
+              echo "::error::Shard hit the 20m inner watchdog; completed receipts and the partial shard summary remain available"
+              ;;
+            137|143)
+              echo "::error::Shard was cancelled by the runner or process group (exit $status)"
+              ;;
+          esac
+          exit "$status"
 
       - name: Verify parser integration receipt subject
         if: always() && matrix.name == 'parser_stack'
@@ -496,6 +513,7 @@ jobs:
           name: gate-receipt-${{ matrix.name }}-${{ github.sha }}
           path: |
             target/receipts/shards/*.json
+            target/receipts/shard-summaries/*.json
             target/receipts/logs/*.log
             target/receipts/artifacts/*
           if-no-files-found: warn
@@ -547,7 +565,7 @@ jobs:
       - name: Upload gate shard test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -558,8 +576,10 @@ jobs:
       - name: Dump gate failures on error
         if: failure()
         run: |
-          echo "=== receipt.json (tail) ==="
+          echo "=== gate receipts (tail) ==="
           find target/receipts/shards -name '*.json' -maxdepth 1 -print -exec tail -120 {} \; || true
+          echo "=== shard summary ==="
+          find target/receipts/shard-summaries -name '*.json' -maxdepth 1 -print -exec cat {} \; || true
           echo "=== failed gates ==="
           python3 - <<'PY' || true
           import json, pathlib
@@ -579,30 +599,32 @@ jobs:
           import os
           from pathlib import Path
 
-          receipt_paths = sorted(Path("target/receipts/shards").glob("*.json"))
+          shard_name = os.environ.get("SHARD_NAME", "")
+          shard_summary = Path("target/receipts/shard-summaries") / f"{shard_name}.json"
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
 
           if not summary_path:
               raise SystemExit(0)
 
-          lines = [f"### CI Gate shard: {os.environ.get('SHARD_NAME', '')}", ""]
-          if not receipt_paths:
-              lines.append("Receipt not found.")
+          lines = [f"### CI Gate shard: {shard_name}", ""]
+          if not shard_summary.is_file():
+              lines.append("Shard summary not found.")
               Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
               raise SystemExit(0)
 
-          lines.append("| Gate | Status | Exit | Duration (s) |")
-          lines.append("| --- | --- | --- | --- |")
-          for receipt_path in receipt_paths:
-              data = json.loads(receipt_path.read_text(encoding="utf-8"))
-              for gate in data.get("gates", []):
-                  gate_label = gate.get('gate_name', gate.get('name', ''))
-                  dur_ms = gate.get('duration_ms')
-                  dur_s = f"{dur_ms / 1000:.1f}" if dur_ms is not None else str(gate.get('duration_seconds', ''))
-                  lines.append(
-                      f"| {gate_label} | {gate.get('status', '')} | "
-                      f"{gate.get('exit_code', '')} | {dur_s} |"
-                  )
+          payload = json.loads(shard_summary.read_text(encoding="utf-8"))
+          lines.append("| Gate | Result | Receipt status | Exit | Duration (s) |")
+          lines.append("| --- | --- | --- | --- | --- |")
+          for gate in payload.get("gates", []):
+              dur_ms = gate.get("duration_ms")
+              dur_s = f"{dur_ms / 1000:.1f}" if isinstance(dur_ms, int) else ""
+              lines.append(
+                  f"| {gate.get('gate_name', '')} | {gate.get('result', '')} | "
+                  f"{gate.get('receipt_status') or ''} | {gate.get('exit_code') if gate.get('exit_code') is not None else ''} | {dur_s} |"
+              )
+          non_success = payload.get("summary", {}).get("non_success_gates", [])
+          if non_success:
+              lines.extend(["", f"Non-success gates: {', '.join(non_success)}"])
 
           Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
@@ -730,7 +752,7 @@ jobs:
     # fails this job fails and merge-gate blocks. Quarantine enforcement (reading the
     # registry to generate --skip flags) is a follow-up; see .ci/ux-flakes.json.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
@@ -754,7 +776,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -869,7 +891,7 @@ jobs:
       - name: Upload UX regression test results to Codecov
         if: always() && env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         with:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -929,10 +951,24 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      # INTENTIONAL: no `ref:` override here — see #9594.
+      #
+      # For a pull_request event the workflow *definition* comes from the base
+      # branch, so pinning the head SHA runs base's step list against the
+      # candidate's tree. When one commit adds a required step and the file it
+      # depends on together (as d5064c4d did for the Emacs docs contract), every
+      # PR branched before it inherits the step without the file, and this
+      # required check fails on branch age rather than on content.
+      #
+      # Omitting `ref` checks out the event's own ref — the merge ref for a
+      # pull_request — so the definition and the tree stay one coherent
+      # integration subject. That is also what a bit-rot guard should measure:
+      # whether what would actually land still compiles. Other jobs in this
+      # workflow deliberately keep exact-head checkout for head-pinned receipts;
+      # this one is a merge-surface gate and must not.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
@@ -940,7 +976,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install just
-        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
@@ -961,6 +997,13 @@ jobs:
       - name: Emacs docs contract (required merge surface)
         run: cargo test -p xtask --test emacs_docs_contract --locked -- --nocapture
 
+      # Same reasoning as the Emacs contract above: the merge gate runs
+      # `cargo test --workspace --lib`, so this integration test would otherwise
+      # only execute via advisory pr-smoke. It guards the publish path that can
+      # overwrite a shipped release asset (#9597), so keep it required here.
+      - name: Release-asset identity contract (required merge surface)
+        run: cargo test -p xtask --test publish_extension_release_identity --locked -- --nocapture
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
@@ -968,7 +1011,7 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
@@ -1076,7 +1119,7 @@ jobs:
       RECEIPT_PATH: target/receipts/rustfmt/rustfmt-check.json
     steps:
       - name: Checkout exact formatter subject
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ env.SUBJECT_SHA }}
           fetch-depth: 1

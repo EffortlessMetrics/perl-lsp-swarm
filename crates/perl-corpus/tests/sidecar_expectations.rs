@@ -1,10 +1,14 @@
 use perl_corpus::{
-    ConceptRegistry, SidecarValidation, discover_sidecars, load_and_validate_sidecar, parse_sidecar,
+    ConceptRegistry, SidecarValidation, SidecarValidationContext, load_and_validate_sidecar,
+    parse_sidecar,
 };
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Root-relative sidecar identity used by every fixture in this file.
+const SIDECAR_RELATIVE: &str = "tests/perl-corpus/recovery/missing_brace.meta.toml";
 
 fn temp_dir(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
     let mut path = std::env::temp_dir();
@@ -54,10 +58,11 @@ fn sidecar_parse_and_validate_succeeds_without_registry() -> Result<(), Box<dyn 
     write_file(&fixture, "sub x { my $v = 1;\n")?;
     write_file(&meta, &valid_sidecar("parser.recovery.missing_closing_brace"))?;
 
-    let parsed = parse_sidecar(&meta)?;
+    let context = SidecarValidationContext::bind(&root)?;
+    let parsed = parse_sidecar(&context, Path::new(SIDECAR_RELATIVE))?;
     assert_eq!(parsed.concept.id, "parser.recovery.missing_closing_brace");
 
-    let validation = load_and_validate_sidecar(&meta, None)?;
+    let validation = load_and_validate_sidecar(&context, Path::new(SIDECAR_RELATIVE), None)?;
     assert!(validation.is_ok());
     assert_eq!(validation.warnings.len(), 1);
 
@@ -72,9 +77,23 @@ fn sidecar_requires_fixture_file_to_exist() -> Result<(), Box<dyn Error>> {
 
     write_file(&meta, &valid_sidecar("parser.recovery.missing_closing_brace"))?;
 
-    let validation = load_and_validate_sidecar(&meta, None)?;
-    assert!(!validation.is_ok());
-    assert!(validation.errors.iter().any(|item| item.contains("fixture file does not exist")));
+    let context = SidecarValidationContext::bind(&root)?;
+    let outcome = load_and_validate_sidecar(&context, Path::new(SIDECAR_RELATIVE), None);
+    let Err(error) = outcome else {
+        return Err("a sidecar without its paired fixture must not resolve".into());
+    };
+    // The loader renders the member path with `Path::display`, and it rebuilds
+    // that path from components, so the separator is the platform's: this text
+    // is backslash-separated on Windows. The control is that the failure names
+    // the paired *fixture member*, not how the separator is spelled, so compare
+    // on a separator-normalized rendering rather than pinning one platform's.
+    let rendered = format!("{error:#}");
+    let normalized = rendered.replace('\\', "/");
+    assert!(
+        normalized.contains("fixture member")
+            && normalized.contains("tests/perl-corpus/recovery/missing_brace.pl"),
+        "missing fixture must be reported against the paired fixture member: {rendered}",
+    );
 
     fs::remove_dir_all(&root)?;
     Ok(())
@@ -92,7 +111,9 @@ fn sidecar_validates_concept_id_when_registry_is_present() -> Result<(), Box<dyn
     write_file(&registry_path, "[[concepts]]\nid = \"parser.recovery.missing_closing_brace\"\n")?;
 
     let registry = ConceptRegistry::load(&registry_path)?;
-    let validation = load_and_validate_sidecar(&meta, Some(&registry))?;
+    let context = SidecarValidationContext::bind(&root)?;
+    let validation =
+        load_and_validate_sidecar(&context, Path::new(SIDECAR_RELATIVE), Some(&registry))?;
     assert_eq!(validation, SidecarValidation::default());
 
     fs::remove_dir_all(&root)?;
@@ -100,19 +121,29 @@ fn sidecar_validates_concept_id_when_registry_is_present() -> Result<(), Box<dyn
 }
 
 #[test]
-fn discover_sidecars_finds_nested_meta_files() -> Result<(), Box<dyn Error>> {
+fn discovery_finds_nested_meta_files() -> Result<(), Box<dyn Error>> {
     let root = temp_dir("perl_corpus_sidecar_discovery")?;
     write_file(
         &root.join("tests/perl-corpus/recovery/one.meta.toml"),
         &valid_sidecar("parser.recovery.missing_closing_brace"),
     )?;
+    write_file(&root.join("tests/perl-corpus/recovery/one.pl"), "sub x { my $v = 1;\n")?;
     write_file(
         &root.join("tests/perl-corpus/recovery/two.meta.toml"),
         &valid_sidecar("parser.recovery.missing_delimiter"),
     )?;
+    write_file(&root.join("tests/perl-corpus/recovery/two.pl"), "my $v = qq{unterminated;\n")?;
 
-    let sidecars = discover_sidecars(&root)?;
+    let context = SidecarValidationContext::discover(&root)?;
+    let sidecars: Vec<&Path> = context.sidecars().collect();
     assert_eq!(sidecars.len(), 2);
+    assert_eq!(
+        sidecars,
+        vec![
+            Path::new("tests/perl-corpus/recovery/one.meta.toml"),
+            Path::new("tests/perl-corpus/recovery/two.meta.toml"),
+        ],
+    );
 
     fs::remove_dir_all(&root)?;
     Ok(())

@@ -228,8 +228,8 @@ impl PerlTidyFormatter {
     #[must_use]
     pub fn with_os_runtime(config: PerlTidyConfig) -> Self {
         use perl_subprocess_runtime::OsSubprocessRuntime;
-        // OsSubprocessRuntime::with_timeout panics on zero; clamp to 1s so
-        // misconfigured clients do not crash the language server process.
+        // OsSubprocessRuntime::with_timeout normalizes zero to 1s; clamp here
+        // as well so the formatter's floor is explicit at its own seam.
         let timeout = config.timeout_secs.max(1);
         Self::new(config, Arc::new(OsSubprocessRuntime::with_timeout(timeout)))
     }

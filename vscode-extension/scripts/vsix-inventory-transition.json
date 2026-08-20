@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "owner_issue": 7041,
+  "reason": "The transition instrument measures the produced VSIX archive: vsce normalizes the three metadata names (README.md→readme.md, LICENSE→LICENSE.txt, CHANGELOG.md→changelog.md) and its ChangelogProcessor rewrites relative links and issue references during packaging (changelog.md 19046→19951 bytes, verified with the processor). The baseline adopts archive naming and packaged bytes; all other entries are byte-identical.",
+  "base_baseline_file_sha256": "6d067597af6ff136f9f1fecd9e3e5c81b6d4e2f8220ec3fd4ddf052a40a71f9b",
+  "candidate_baseline_file_sha256": "f0878ed4a946e4dbe0edc5c9e488a0b9a25d0dbff96afcd8c7a22e99b85d94a4",
+  "base_inventory_sha256": "b461cfa70541bb4d60a0c6fdc3c5a3e693b3b09f8beda39b40a014df79667513",
+  "candidate_inventory_sha256": "7b76e6f3fd1b9ef84bfb828897805940087541cf89e7514d7e1a9316b8ab7ac2"
+}

@@ -1,0 +1,11 @@
+project: product
+component: Editor Integrations
+kind: Added
+body: >-
+  Add a receipt-producing real Sublime Text interoperability journey for the
+  exact-source helper package and current-source perllsp candidate.
+time: 2026-08-13T10:44:00Z
+custom:
+  PR: "7872"
+  Slug: sublime-real-host-proof
+  Breaking: "no"

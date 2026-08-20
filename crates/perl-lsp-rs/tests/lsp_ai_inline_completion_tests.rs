@@ -384,3 +384,250 @@ fn test_ai_provider_error_with_fallback_returns_deterministic()
     );
     Ok(())
 }
+
+// ── Automatic requests are local-first ──────────────────────────────────────
+
+/// Mock backend that counts how many times it was consulted and blocks for the
+/// caller's whole timeout budget, standing in for a slow or unreachable remote.
+struct CountingSlowBackend {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+    for CountingSlowBackend
+{
+    fn stream(
+        &self,
+        req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+        _sink: &mut dyn FnMut(
+            perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+        )
+            -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+    ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(req.timeout_ms.min(200)));
+        Err(perl_lsp_rs_core::providers::inline_completion::BackendError::Timeout)
+    }
+}
+
+/// An automatic request is triggered by a keystroke, so it must not pay for a
+/// remote round trip: the backend is never consulted and the deterministic
+/// answer is returned without waiting on it.
+#[test]
+fn test_automatic_request_makes_no_backend_call() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_automatic_local_first.pl";
+    open_doc(&server, uri, "use str");
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    server.test_configure_ai_completion(true, true);
+    server
+        .test_install_ai_backend(Some(Arc::new(CountingSlowBackend { calls: Arc::clone(&calls) })));
+
+    let started = std::time::Instant::now();
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": { "triggerKind": 2 }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let elapsed = started.elapsed();
+    let result = response.result.ok_or("result field present")?;
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an automatic request must not consult the AI backend"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(200),
+        "the deterministic answer must not wait behind the backend budget: {elapsed:?}"
+    );
+
+    let texts: Vec<&str> = result["items"]
+        .as_array()
+        .ok_or("items array")?
+        .iter()
+        .filter_map(|item| item["insertText"].as_str())
+        .collect();
+    assert_eq!(texts, vec!["strict;"], "expected the deterministic candidate");
+    Ok(())
+}
+
+/// An explicitly invoked request keeps the remote budget: the backend is
+/// consulted, and its failure still falls back to the deterministic answer.
+#[test]
+fn test_invoked_request_still_consults_backend() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_invoked_consults_backend.pl";
+    open_doc(&server, uri, "use str");
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    server.test_configure_ai_completion(true, true);
+    server
+        .test_install_ai_backend(Some(Arc::new(CountingSlowBackend { calls: Arc::clone(&calls) })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": { "triggerKind": 1 }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an invoked request must still consult the AI backend"
+    );
+    let texts: Vec<&str> = result["items"]
+        .as_array()
+        .ok_or("items array")?
+        .iter()
+        .filter_map(|item| item["insertText"].as_str())
+        .collect();
+    assert!(texts.contains(&"strict;"), "expected deterministic fallback, got: {texts:?}");
+    Ok(())
+}
+
+/// External backend text carries no local supporting fact. Even when the
+/// backend answers instantly with clean single-line Perl, an automatic request
+/// shows the deterministic candidate instead.
+#[test]
+fn test_automatic_request_never_shows_backend_text() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_automatic_no_backend_text.pl";
+    open_doc(&server, uri, "use str");
+
+    server.test_configure_ai_completion(true, true);
+    server.test_install_ai_backend(Some(Arc::new(MockSuccessBackend { response: "ict;".into() })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": { "triggerKind": 2 }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    let texts: Vec<&str> = result["items"]
+        .as_array()
+        .ok_or("items array")?
+        .iter()
+        .filter_map(|item| item["insertText"].as_str())
+        .collect();
+    assert_eq!(texts, vec!["strict;"], "automatic ghost text must come from local evidence");
+    Ok(())
+}
+
+/// Issue #10246 parity: the buffered route and the custom stream route share
+/// one evaluated finalization seam, so the same external candidate must
+/// receive the same selected-completion verdict in both modes. A compatible
+/// selected completion keeps the exact accepted replacement range.
+#[test]
+fn test_invoked_ai_candidate_respects_selected_completion_info_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_selected_completion_match.pl";
+    open_doc(&server, uri, "use str");
+
+    server.test_configure_ai_completion(true, true);
+    server
+        .test_install_ai_backend(Some(Arc::new(MockSuccessBackend { response: "strict;".into() })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": {
+                "triggerKind": 1,
+                "selectedCompletionInfo": {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    "text": "strict"
+                }
+            }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    let items = result["items"].as_array().ok_or("items array")?;
+    let item = items
+        .iter()
+        .find(|item| item["insertText"].as_str() == Some("strict;"))
+        .ok_or("external candidate must survive a compatible selected completion")?;
+    assert_eq!(
+        item["range"],
+        json!({
+            "start": { "line": 0, "character": 4 },
+            "end": { "line": 0, "character": 7 }
+        }),
+        "a compatible selected completion must keep the exact accepted replacement range"
+    );
+    Ok(())
+}
+
+/// Issue #10246 parity: an incompatible `selectedCompletionInfo` suppresses
+/// the external candidate in the buffered route exactly as in the stream
+/// route; with fallback disabled the result is final and empty.
+#[test]
+fn test_invoked_ai_candidate_suppressed_by_mismatched_selected_completion_info()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_selected_completion_mismatch.pl";
+    open_doc(&server, uri, "use ");
+
+    server.test_configure_ai_completion(true, false);
+    server
+        .test_install_ai_backend(Some(Arc::new(MockSuccessBackend { response: "strict;".into() })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 4 },
+            "context": {
+                "triggerKind": 1,
+                "selectedCompletionInfo": {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 4 }
+                    },
+                    "text": "strictlyDifferent"
+                }
+            }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    let items = result["items"].as_array().ok_or("items array")?;
+    assert!(
+        items.is_empty(),
+        "a candidate that does not extend the selected completion must be filtered, got: {items:?}"
+    );
+    Ok(())
+}

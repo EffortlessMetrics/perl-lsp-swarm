@@ -12,6 +12,7 @@
 
 /** User-visible workspace lifecycle states owned by the v0.18 experience contract. */
 export type WorkspaceLifecycleState =
+  | 'dormant'
   | 'starting'
   | 'resolving_environment'
   | 'indexing_active_context'
@@ -107,15 +108,19 @@ function detailTooltip(
   return `${details.join(' — ')} (${affordance})`;
 }
 
+/** Count a countable noun without emitting "1 files" in the status bar. */
+function countLabel(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? '' : 's'}`;
+}
+
 function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
   const label = telemetry.version ? `perl-lsp v${telemetry.version}` : 'perl-lsp';
   const parts: string[] = [];
   if (telemetry.fileCount !== undefined) {
-    parts.push(`${telemetry.fileCount} files`);
+    parts.push(countLabel(telemetry.fileCount, 'file'));
   }
   if ((telemetry.errorCount ?? 0) > 0) {
-    const errorCount = telemetry.errorCount ?? 0;
-    parts.push(`${errorCount} error${errorCount === 1 ? '' : 's'}`);
+    parts.push(countLabel(telemetry.errorCount ?? 0, 'error'));
   }
   return parts.length > 0 ? `${label}: ${parts.join(' | ')}` : label;
 }
@@ -123,7 +128,7 @@ function readyLabel(telemetry: WorkspaceExperienceTelemetry): string {
 function indexingLabel(telemetry: WorkspaceExperienceTelemetry): string {
   let message = telemetry.indexingMessage ?? 'Indexing…';
   if ((telemetry.fileCount ?? 0) > 0) {
-    message = `Indexing… (${telemetry.fileCount} files)`;
+    message = `Indexing… (${countLabel(telemetry.fileCount ?? 0, 'file')})`;
   }
   if ((telemetry.indexingPercentage ?? 0) > 0) {
     message += ` ${Math.round(telemetry.indexingPercentage ?? 0)}%`;
@@ -191,6 +196,19 @@ export function presentWorkspaceExperience(
   telemetry: WorkspaceExperienceTelemetry = {},
 ): WorkspaceExperiencePresentation {
   switch (snapshot.lifecycle) {
+    case 'dormant':
+      // Not an error and not a slow start: the server has simply not been
+      // asked for yet. Reporting this as `starting` (the pre-#8180 behaviour)
+      // is indistinguishable from a server that hung.
+      return {
+        mode: 'stopped',
+        text: '$(circle-outline) perl-lsp: not started',
+        tooltip: detailTooltip(
+          snapshot,
+          'Perl Language Server starts when you open a Perl file or run a server command',
+        ),
+        background: undefined,
+      };
     case 'starting':
       return {
         mode: 'starting',

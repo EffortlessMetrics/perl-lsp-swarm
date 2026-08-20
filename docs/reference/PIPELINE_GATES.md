@@ -1,6 +1,10 @@
 # Pipeline Gates — Gate Model Reference
 
-**Status**: Active doctrine (introduced 2026-04-27; authority model reconciled 2026-07-13 for the #4005 subtraction)
+<!-- authority-status:v1 -->
+> **Status: superseded.** Current authority: [Development method](../agents/DEVELOPMENT_METHOD.md).
+> Retained as historical design or mechanism evidence. Internal wording below that calls this document accepted, active doctrine, a north star, current instruction, or lifecycle authority is historical and must not route current work. See [Agent and maintainer authority status](../agents/AUTHORITY_STATUS.md).
+
+**Status**: Superseded historical doctrine (introduced 2026-04-27; superseded by the provider-native method)
 **Related**: [CLAUDE.md](../../CLAUDE.md) | [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md) | [SKILL_AND_AGENT_DESIGN.md](./SKILL_AND_AGENT_DESIGN.md) | [ISSUE_PLAN_DOCTRINE.md](./ISSUE_PLAN_DOCTRINE.md)
 
 ---

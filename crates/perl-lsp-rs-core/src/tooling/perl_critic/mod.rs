@@ -7,7 +7,10 @@ mod analyzer;
 mod built_in;
 mod identity;
 mod native;
+mod normalized;
 mod quick_fix;
+mod remediation;
+mod result_identity;
 mod types;
 
 pub use analyzer::{CriticAnalyzer, hash_content};
@@ -27,7 +30,17 @@ pub use native::{
     RequireUseStrictRule, RequireUseWarningsRule, ShadowedLexicalVariableRule, StaleDollarAtRule,
     UndefComparisonRule, UnreachableCodeRule, UnusedLexicalVariableRule, UnusedParameterRule,
 };
+pub use normalized::{
+    CriticFindingCandidate, CriticFindingContributor, CriticSourceIdentity,
+    NormalizedCriticFinding, OwnedCriticObservedIdentity, normalize_critic_findings,
+};
 pub use quick_fix::{QuickFix, TextEdit};
+pub use remediation::{CriticRemediationClass, CriticRemediationEligibility};
+pub use result_identity::{
+    CriticPolicyIdentity, CriticPolicyIdentityError, DIAGNOSTIC_RESULT_IDENTITY_SCHEMA_VERSION,
+    DiagnosticFactIdentity, DiagnosticResultIdentity, DiagnosticResultIdentityInput,
+    DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
+};
 pub use types::{CriticConfig, Severity, Violation};
 
 /// Error returned when an external native-critic profile token is not recognized.

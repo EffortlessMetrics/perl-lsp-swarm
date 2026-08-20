@@ -1,10 +1,12 @@
 //! Typed results for bounded static regex analysis.
 //!
 //! These types keep machine identity, source ranges, reusable facts, and
-//! completeness separate from presentation text. Ranges are byte offsets
-//! relative to the regex body supplied to [`super::RegexValidator::analyze`].
+//! completeness separate from presentation text. [`RegexRange`] uses the
+//! coordinate space declared by the producing API: [`super::RegexValidator::analyze`]
+//! emits regex-body-relative ranges, while modifier analysis preserves the
+//! caller-supplied source range of its [`crate::analyzer::ModifierSequence`].
 
-/// A half-open byte range relative to an analyzed regex body.
+/// A half-open byte range in the coordinate space declared by its producing API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RegexRange {
     /// Inclusive byte offset where the range starts.
@@ -96,6 +98,20 @@ pub enum RegexDiagnosticCode {
     BranchResetNestingLimit,
     /// Configured branch count inside a branch-reset group was exceeded.
     BranchResetBranchLimit,
+    /// A modifier character is not recognized by the static model.
+    UnknownModifier,
+    /// A known modifier is not valid for the selected operator family.
+    ModifierNotAllowedForOperator,
+    /// More than one effective `/a`, `/d`, `/l`, or `/u` mode was requested.
+    ConflictingCharacterSetModifiers,
+    /// A character-set modifier was repeated more often than Perl allows.
+    RepeatedCharacterSetModifier,
+    /// The modifier is accepted by Perl here but has no effect.
+    ModifierHasNoEffect,
+    /// The modifier form requires a newer Perl language version.
+    ModifierRequiresPerlVersion,
+    /// The requested feature-qualified behavior is unavailable for the profile.
+    ModifierRequiresFeature,
 }
 
 impl RegexDiagnosticCode {
@@ -110,6 +126,13 @@ impl RegexDiagnosticCode {
             Self::LookbehindNestingLimit => "lookbehind_nesting_limit",
             Self::BranchResetNestingLimit => "branch_reset_nesting_limit",
             Self::BranchResetBranchLimit => "branch_reset_branch_limit",
+            Self::UnknownModifier => "unknown_modifier",
+            Self::ModifierNotAllowedForOperator => "modifier_not_allowed_for_operator",
+            Self::ConflictingCharacterSetModifiers => "conflicting_character_set_modifiers",
+            Self::RepeatedCharacterSetModifier => "repeated_character_set_modifier",
+            Self::ModifierHasNoEffect => "modifier_has_no_effect",
+            Self::ModifierRequiresPerlVersion => "modifier_requires_perl_version",
+            Self::ModifierRequiresFeature => "modifier_requires_feature",
         }
     }
 
@@ -123,6 +146,14 @@ impl RegexDiagnosticCode {
             | Self::LookbehindNestingLimit
             | Self::BranchResetNestingLimit
             | Self::BranchResetBranchLimit => RegexDiagnosticClass::PolicyLimit,
+            Self::UnknownModifier
+            | Self::ModifierNotAllowedForOperator
+            | Self::ConflictingCharacterSetModifiers
+            | Self::RepeatedCharacterSetModifier
+            | Self::ModifierRequiresPerlVersion
+            | Self::ModifierRequiresFeature => RegexDiagnosticClass::Syntax,
+            // Perl compiles these forms and only warns, so they stay advisory.
+            Self::ModifierHasNoEffect => RegexDiagnosticClass::RiskAdvisory,
         }
     }
 }
@@ -180,6 +211,25 @@ impl RegexDiagnostic {
                 "Too many branches in branch reset group (max {})",
                 self.limit.unwrap_or_default()
             ),
+            RegexDiagnosticCode::UnknownModifier => "Unknown regex modifier".to_string(),
+            RegexDiagnosticCode::ModifierNotAllowedForOperator => {
+                "Regex modifier is not valid for this operator".to_string()
+            }
+            RegexDiagnosticCode::ConflictingCharacterSetModifiers => {
+                "Character-set regex modifiers are mutually exclusive".to_string()
+            }
+            RegexDiagnosticCode::RepeatedCharacterSetModifier => {
+                "Character-set regex modifier is repeated too many times".to_string()
+            }
+            RegexDiagnosticCode::ModifierHasNoEffect => {
+                "Regex modifier has no effect here".to_string()
+            }
+            RegexDiagnosticCode::ModifierRequiresPerlVersion => {
+                "Regex modifier requires a newer Perl version".to_string()
+            }
+            RegexDiagnosticCode::ModifierRequiresFeature => {
+                "Regex modifier requires an unavailable Perl feature".to_string()
+            }
         }
     }
 }
@@ -214,8 +264,8 @@ pub enum RegexDynamicRegionKind {
     EmbeddedCodeDeferred,
     /// Source interpolation such as `$name`, `${expr}`, or `@values`.
     ///
-    /// Reserved for a follow-up scanner slice; this PR only populates embedded-code
-    /// dynamic regions so hosted ripr stays within the new-gap budget.
+    /// Interpolated text is not knowable from this source alone, so its presence is
+    /// reported as a dynamic boundary rather than folded into a static interpretation.
     Interpolation,
 }
 
@@ -235,7 +285,7 @@ pub struct RegexDynamicRegionFact {
 pub struct RegexFacts {
     /// Embedded executable or runtime-supplied regions in source order.
     pub embedded_code: Vec<EmbeddedCodeFact>,
-    /// Dynamic regions in source order (embedded code in this slice).
+    /// Dynamic regions in source order (embedded code and source interpolation).
     pub dynamic_regions: Vec<RegexDynamicRegionFact>,
     /// Nested-quantifier advisory ranges in source order.
     pub nested_quantifiers: Vec<RegexRange>,
@@ -284,6 +334,18 @@ impl RegexAnalysisCompleteness {
     }
 }
 
+/// Deterministic event-stream budget that prevented complete structural analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegexAnalysisBudget {
+    /// Maximum event count was reached.
+    Events,
+    /// Maximum structural nesting depth was reached.
+    Nesting,
+    /// Maximum deterministic scan-step count was reached.
+    Steps,
+}
+
 /// Complete typed result of one bounded static regex analysis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -294,6 +356,10 @@ pub struct RegexAnalysis {
     pub facts: RegexFacts,
     /// Local completeness classification.
     pub completeness: RegexAnalysisCompleteness,
+    /// Event-stream budget that stopped analysis, when any.
+    pub exhausted: Option<RegexAnalysisBudget>,
+    /// Whether malformed or truncated structure was observed by the bounded event stream.
+    pub malformed: bool,
 }
 
 impl RegexAnalysis {
@@ -301,5 +367,11 @@ impl RegexAnalysis {
     #[must_use]
     pub fn is_clean(&self) -> bool {
         self.diagnostics.is_empty()
+    }
+
+    /// Whether deterministic event production stopped at a configured budget.
+    #[must_use]
+    pub const fn is_exhausted(&self) -> bool {
+        self.exhausted.is_some()
     }
 }
