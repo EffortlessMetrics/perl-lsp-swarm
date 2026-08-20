@@ -92,6 +92,8 @@
 //! rejected regardless of what generation number the new instance happens
 //! to be at.
 
+#[cfg(test)]
+use crate::state::DegradationTier;
 use crate::state::{DocumentState, ParsedSnapshot};
 use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -2597,6 +2599,25 @@ mod tests {
 
     // ---- AST-only cache retirement (#11215) ---------------------------------
 
+    /// The stable outcome surface for repeated parses. Debug formatting is
+    /// intentional here: `ParseError` is the parser-owned diagnostic type and
+    /// its debug representation includes every identity-bearing field and
+    /// preserves the vector's order, unlike a count-only assertion.
+    #[derive(Debug, PartialEq, Eq)]
+    struct ParseOutcome {
+        diagnostics: Vec<String>,
+        degradation_tier: DegradationTier,
+        has_ast: bool,
+    }
+
+    fn parse_outcome(snapshot: &ParsedSnapshot) -> ParseOutcome {
+        ParseOutcome {
+            diagnostics: snapshot.parse_errors().iter().map(|error| format!("{error:?}")).collect(),
+            degradation_tier: snapshot.degradation_tier(),
+            has_ast: snapshot.ast().is_some(),
+        }
+    }
+
     /// **Falsifier** (fails on pre-fix main): recovery-bearing source parsed
     /// twice through the async worker route must carry its parse errors on
     /// BOTH publications.
@@ -2638,14 +2659,15 @@ mod tests {
             wait_for(|| !calls.lock().is_empty(), TEST_TIMEOUT),
             "first job must publish within timeout"
         );
-        let first_errors: Vec<_> = {
+        let first_outcome = {
             let docs = documents.lock();
             let doc = must_some(docs.get(uri));
             let snapshot = must_some(doc.current_parsed());
-            snapshot.parse_errors().to_vec()
+            assert_eq!(snapshot.generation(), 1, "first publication must be for generation 1");
+            parse_outcome(&snapshot)
         };
         assert!(
-            !first_errors.is_empty(),
+            !first_outcome.diagnostics.is_empty(),
             "recovery-bearing source must produce parse errors on the first worker parse; \
              got zero errors -- the source may have changed or the parser may have improved"
         );
@@ -2670,19 +2692,18 @@ mod tests {
             wait_for(|| calls.lock().len() >= 2, TEST_TIMEOUT),
             "second job must publish within timeout"
         );
-        let second_errors: Vec<_> = {
+        let second_outcome = {
             let docs = documents.lock();
             let doc = must_some(docs.get(uri));
             let snapshot = must_some(doc.current_parsed());
             assert_eq!(snapshot.generation(), 2, "second publication must be for generation 2");
-            snapshot.parse_errors().to_vec()
+            parse_outcome(&snapshot)
         };
         assert_eq!(
-            second_errors.len(),
-            first_errors.len(),
-            "repeat parse of identical recovery-bearing source must preserve the same error \
-             count — a cache hit that synthesises Vec::new() would fail this assertion; \
-             first_errors={first_errors:?} second_errors={second_errors:?}"
+            second_outcome, first_outcome,
+            "repeat parse of identical recovery-bearing source must preserve the complete \
+             diagnostic sequence, degradation tier, and AST/result class — a cache hit that \
+             synthesises Vec::new() would fail this assertion"
         );
     }
 
@@ -2725,30 +2746,41 @@ mod tests {
         }
     }
 
-    /// Architecture control (#11215): no production `process_job` or live parse
-    /// path calls `ast_cache.get(` -- the AST-only cache lookup is fully retired
-    /// from the worker's parse path. This catches any future regression that
-    /// re-introduces the cache hit without also storing parse errors.
+    /// Architecture control (#11215): no production worker or synchronous live
+    /// parse path calls `ast_cache.get/put` -- the AST-only cache lookup is
+    /// fully retired from both runtime routes. This catches any future
+    /// regression that re-introduces the cache hit without also storing parse
+    /// errors.
     #[test]
     fn process_job_source_contains_no_ast_cache_lookup() {
-        // Read the source of this file and extract just the `process_job`
-        // function body (everything from the `fn process_job(` line until the
-        // matching closing brace at the same nesting level).
-        let source = include_str!("parse_worker.rs");
-        // Strip the test module so its own string literals don't interfere.
-        let production = source.split("\n#[cfg(test)]").next().unwrap_or(source);
-        assert!(
-            !production.contains("ast_cache.get("),
-            "production process_job must not call ast_cache.get() -- \
-             AST-only cache lookup was retired by #11215 because it synthesised \
-             Vec::new() for parse errors on a cache hit, corrupting recovery-bearing \
-             results. Re-introducing it requires also caching the complete parse errors."
-        );
-        assert!(
-            !production.contains("ast_cache.put("),
-            "production process_job must not call ast_cache.put() -- \
-             if the lookup is removed there is nothing to populate. A future complete \
-             parse-artifact cache (#7371) will own this seam."
-        );
+        fn production_section(source: &str) -> &str {
+            // `parse_worker.rs` has a test-only `spawn` helper before
+            // `process_job`; use the final test-module boundary, not the
+            // first `#[cfg(test)]` marker. The same rule applies to
+            // `text_sync.rs`, whose tests live in a sibling module.
+            source
+                .rfind("\n#[cfg(test)]")
+                .map_or(source, |test_module_start| &source[..test_module_start])
+        }
+
+        for (path, source) in [
+            ("parse_worker.rs", include_str!("parse_worker.rs")),
+            ("text_sync.rs", include_str!("text_sync.rs")),
+        ] {
+            let production = production_section(source);
+            assert!(
+                !production.contains("ast_cache.get("),
+                "production {path} must not call ast_cache.get() -- AST-only cache lookup was \
+                 retired by #11215 because it synthesised Vec::new() for parse errors on a \
+                 cache hit, corrupting recovery-bearing results. Re-introducing it requires \
+                 also caching the complete parse errors."
+            );
+            assert!(
+                !production.contains("ast_cache.put("),
+                "production {path} must not call ast_cache.put() -- if the lookup is removed \
+                 there is nothing to populate. A future complete parse-artifact cache (#7371) \
+                 will own this seam."
+            );
+        }
     }
 }
