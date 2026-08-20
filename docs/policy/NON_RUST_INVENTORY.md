@@ -6,21 +6,21 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11119 |
-| Rust-family files | 3388 |
-| Non-Rust files | 7731 |
-| Allowlisted | 5456 |
+| Total tracked files | 11128 |
+| Rust-family files | 3392 |
+| Non-Rust files | 7736 |
+| Allowlisted | 5461 |
 | Unclassified | 2275 |
 
 ## Non-Rust files by category
 
 | Category | Count |
 |---|---|
-| config | 337 |
+| config | 338 |
 | documentation | 2537 |
 | generated | 2 |
-| production | 295 |
-| test | 1825 |
+| production | 298 |
+| test | 1826 |
 | tooling | 460 |
 | unclassified | 2275 |
 
@@ -2658,6 +2658,7 @@
 | `.ci/schemas/ux-flakes.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/ux-regression.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/ux-scenario-run.schema.json` | config | `non-rust-ci-config` | release/ci |
+| `.ci/schemas/vsix-inventory-transition.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/zed-host-compat.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/schemas/zed-managed-asset-receipt.v1.schema.json` | config | `non-rust-ci-config` | release/ci |
 | `.ci/scope.d/parser-ratchet.toml` | config | `non-rust-ci-config` | release/ci |
@@ -3217,6 +3218,7 @@
 | `clients/sublime/LSP-perllsp/release.py` | production | `non-rust-sublime-release-installer` | editor/sublime |
 | `clients/sublime/LSP-perllsp/server-manifest.json` | documentation | `non-rust-sublime-server-manifest` | editor/sublime |
 | `clients/sublime/LSP-perllsp/sublime-package.json` | documentation | `non-rust-sublime-package-manifest` | editor/sublime |
+| `clients/sublime/LSP-perllsp/tests/test_command_dispatch_contract.py` | test | `non-rust-sublime-dispatch-contract-test` | editor/sublime |
 | `clients/sublime/LSP-perllsp/tests/test_command_receipt.py` | test | `non-rust-test-command-receipt` | editor/sublime |
 | `clients/sublime/LSP-perllsp/tests/test_command_surface.py` | test | `non-rust-test-command-surface` | editor/sublime |
 | `clients/sublime/LSP-perllsp/tests/test_compatibility.py` | test | `non-rust-sublime-compatibility-test` | editor/sublime |
@@ -7510,6 +7512,8 @@
 | `vscode-extension/scripts/check-typescript-authority.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/check-typescript-authority.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/check-typescript-config-inventory.js` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/scripts/check-vsix-inventory-transition.js` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/scripts/check-vsix-inventory-transition.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/check-vsix-inventory.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/check-vsix-inventory.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/lint-canary.js` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -7527,6 +7531,7 @@
 | `vscode-extension/scripts/typescript-config-inventory.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/vscode-toolchain-workflows.test.js` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/scripts/vsix-inventory-baseline.json` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/scripts/vsix-inventory-transition.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/snippets/launch.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/snippets/perl.json` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/accessibilityInventory.ts` | production | `non-rust-vscode-extension` | editor/vscode |

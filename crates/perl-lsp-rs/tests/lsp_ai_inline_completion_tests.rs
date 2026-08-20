@@ -534,3 +534,100 @@ fn test_automatic_request_never_shows_backend_text() -> Result<(), Box<dyn std::
     assert_eq!(texts, vec!["strict;"], "automatic ghost text must come from local evidence");
     Ok(())
 }
+
+/// Issue #10246 parity: the buffered route and the custom stream route share
+/// one evaluated finalization seam, so the same external candidate must
+/// receive the same selected-completion verdict in both modes. A compatible
+/// selected completion keeps the exact accepted replacement range.
+#[test]
+fn test_invoked_ai_candidate_respects_selected_completion_info_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_selected_completion_match.pl";
+    open_doc(&server, uri, "use str");
+
+    server.test_configure_ai_completion(true, true);
+    server
+        .test_install_ai_backend(Some(Arc::new(MockSuccessBackend { response: "strict;".into() })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 7 },
+            "context": {
+                "triggerKind": 1,
+                "selectedCompletionInfo": {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 7 }
+                    },
+                    "text": "strict"
+                }
+            }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    let items = result["items"].as_array().ok_or("items array")?;
+    let item = items
+        .iter()
+        .find(|item| item["insertText"].as_str() == Some("strict;"))
+        .ok_or("external candidate must survive a compatible selected completion")?;
+    assert_eq!(
+        item["range"],
+        json!({
+            "start": { "line": 0, "character": 4 },
+            "end": { "line": 0, "character": 7 }
+        }),
+        "a compatible selected completion must keep the exact accepted replacement range"
+    );
+    Ok(())
+}
+
+/// Issue #10246 parity: an incompatible `selectedCompletionInfo` suppresses
+/// the external candidate in the buffered route exactly as in the stream
+/// route; with fallback disabled the result is final and empty.
+#[test]
+fn test_invoked_ai_candidate_suppressed_by_mismatched_selected_completion_info()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///ai_selected_completion_mismatch.pl";
+    open_doc(&server, uri, "use ");
+
+    server.test_configure_ai_completion(true, false);
+    server
+        .test_install_ai_backend(Some(Arc::new(MockSuccessBackend { response: "strict;".into() })));
+
+    let request = JsonRpcRequest {
+        _jsonrpc: "2.0".into(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "textDocument/inlineCompletion".into(),
+        params: Some(json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 4 },
+            "context": {
+                "triggerKind": 1,
+                "selectedCompletionInfo": {
+                    "range": {
+                        "start": { "line": 0, "character": 4 },
+                        "end": { "line": 0, "character": 4 }
+                    },
+                    "text": "strictlyDifferent"
+                }
+            }
+        })),
+    };
+    let response = server.handle_request(request).ok_or("inline completion response")?;
+    let result = response.result.ok_or("result field present")?;
+
+    let items = result["items"].as_array().ok_or("items array")?;
+    assert!(
+        items.is_empty(),
+        "a candidate that does not extend the selected completion must be filtered, got: {items:?}"
+    );
+    Ok(())
+}
