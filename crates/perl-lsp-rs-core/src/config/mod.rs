@@ -4867,6 +4867,47 @@ profile = "recommended"
         Ok(())
     }
 
+    /// A second lookup must reuse the first probe result rather than launch a
+    /// new interpreter. The missing path makes a reprobe observably fail with
+    /// `SpawnFailed`, so a fast second process cannot satisfy this oracle.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        };
+        let missing_perl = tempfile::tempdir()?.path().join("missing-perl");
+        let mut config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            perl_args: vec!["-e".into(), "print \"cache-sentinel\\n\"".into()],
+            ..WorkspaceConfig::default()
+        };
+
+        let cached = config.get_system_inc_probe_outcome();
+        let cached_paths = match &cached {
+            SystemIncProbeOutcome::Paths(paths)
+                if paths.iter().any(|path| path == Path::new("cache-sentinel")) =>
+            {
+                paths.clone()
+            }
+            other => {
+                return Err(
+                    format!("expected the sentinel probe to produce Paths, got {other:?}").into()
+                );
+            }
+        };
+
+        // Changing the public probe input after the first lookup is only a
+        // test discriminator; normal settings updates invalidate the cache.
+        config.perl_path = Some(missing_perl.to_string_lossy().into_owned());
+        let reused = config.get_system_inc_probe_outcome();
+        assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
+        assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+        Ok(())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn synthetic_exit_status(code: i32) -> std::process::ExitStatus {
         #[cfg(unix)]
