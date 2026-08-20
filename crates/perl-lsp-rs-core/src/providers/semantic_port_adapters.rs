@@ -970,6 +970,25 @@ struct Selection<'a> {
     values: Vec<&'a AdapterFactRecord>,
 }
 
+enum EntityTargets {
+    Unqualified(BTreeSet<EntityId>),
+    FileQualified(BTreeSet<(FileId, EntityId)>),
+}
+
+impl EntityTargets {
+    fn contains(&self, record: &AdapterFactRecord) -> bool {
+        let Some(entity_id) = record.envelope.entity_id else {
+            return false;
+        };
+        match self {
+            Self::Unqualified(targets) => targets.contains(&entity_id),
+            Self::FileQualified(targets) => {
+                targets.contains(&(record.envelope.anchor.file_id, entity_id))
+            }
+        }
+    }
+}
+
 impl Selection<'_> {
     fn is_empty(&self) -> bool {
         self.selectors.is_empty() && self.values.is_empty()
@@ -1506,7 +1525,9 @@ fn select_declaration_records<'a>(
                 matches!(
                     record.envelope.kind,
                     SemanticFactKind::Declaration | SemanticFactKind::Module
-                ) && record.envelope.entity_id.is_some_and(|entity_id| targets.contains(&entity_id))
+                ) && record.envelope.entity_id.is_some_and(|entity_id| {
+                    targets.contains(&(record.envelope.anchor.file_id, entity_id))
+                })
             })
             .collect();
         return Selection { selectors, values };
@@ -1531,8 +1552,13 @@ fn select_reference_records<'a>(
     include_declaration: bool,
 ) -> Selection<'a> {
     let (selectors, targets) = match &request.subject {
-        ProviderQuerySubject::Entity(entity_id) => (Vec::new(), BTreeSet::from([*entity_id])),
-        ProviderQuerySubject::Position { .. } => cursor_targets(request, records),
+        ProviderQuerySubject::Entity(entity_id) => {
+            (Vec::new(), EntityTargets::Unqualified(BTreeSet::from([*entity_id])))
+        }
+        ProviderQuerySubject::Position { .. } => {
+            let (selectors, targets) = cursor_targets(request, records);
+            (selectors, EntityTargets::FileQualified(targets))
+        }
         _ => {
             let selectors: Vec<_> = records
                 .iter()
@@ -1540,7 +1566,7 @@ fn select_reference_records<'a>(
                 .filter(|record| record.envelope.entity_id.is_some())
                 .collect();
             let targets = selectors.iter().filter_map(|record| record.envelope.entity_id).collect();
-            (selectors, targets)
+            (selectors, EntityTargets::Unqualified(targets))
         }
     };
     let values = records
@@ -1554,8 +1580,7 @@ fn select_reference_records<'a>(
                     record.envelope.kind,
                     SemanticFactKind::Declaration | SemanticFactKind::Module
                 );
-            (occurrence || declaration)
-                && record.envelope.entity_id.is_some_and(|entity_id| targets.contains(&entity_id))
+            (occurrence || declaration) && targets.contains(record)
         })
         .collect();
     Selection { selectors, values }
@@ -1571,14 +1596,19 @@ fn select_reference_records<'a>(
 fn cursor_targets<'a>(
     request: &ProviderQueryRequest,
     records: &'a [AdapterFactRecord],
-) -> (Vec<&'a AdapterFactRecord>, BTreeSet<EntityId>) {
+) -> (Vec<&'a AdapterFactRecord>, BTreeSet<(FileId, EntityId)>) {
     let selectors: Vec<_> = records
         .iter()
         .filter(|record| subject_matches(&request.subject, record))
         .filter(|record| record.envelope.kind != SemanticFactKind::Boundary)
         .filter(|record| record.envelope.entity_id.is_some())
         .collect();
-    let targets = selectors.iter().filter_map(|record| record.envelope.entity_id).collect();
+    let targets = selectors
+        .iter()
+        .filter_map(|record| {
+            record.envelope.entity_id.map(|entity_id| (record.envelope.anchor.file_id, entity_id))
+        })
+        .collect();
     (selectors, targets)
 }
 

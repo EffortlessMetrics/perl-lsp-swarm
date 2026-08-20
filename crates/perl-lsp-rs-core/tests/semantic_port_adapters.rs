@@ -682,6 +682,32 @@ fn position_queries_resolve_through_the_cursor_occurrence() -> Result<(), Box<dy
 }
 
 #[test]
+fn position_queries_do_not_cross_file_entity_id_collisions() -> Result<(), Box<dyn Error>> {
+    let first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
+    // Fact IDs are only meaningful within their owning file for this adapter:
+    // the second shard intentionally reuses the same entity and occurrence IDs.
+    let second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
+    let port = parser_port(&[first, second], ProviderSnapshotCompleteness::Complete)?;
+    let subject = ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 21 };
+
+    let definition = execute(&port, &request(ProviderQueryKind::Declaration, subject.clone()))?;
+    assert_eq!(definition.outcome(), ProviderQueryOutcome::Exact);
+    let definition_values: Vec<_> = definition.value_facts().collect();
+    assert_eq!(definition_values.len(), 1);
+    assert_eq!(definition_values[0].anchor.file_id, FileId(10));
+
+    let references = execute(
+        &port,
+        &request(ProviderQueryKind::References { include_declaration: false }, subject),
+    )?;
+    assert_eq!(references.outcome(), ProviderQueryOutcome::Exact);
+    let reference_values: Vec<_> = references.value_facts().collect();
+    assert_eq!(reference_values.len(), 1);
+    assert_eq!(reference_values[0].anchor.file_id, FileId(10));
+    Ok(())
+}
+
+#[test]
 fn ambiguous_symbol_declarations_are_blocked() -> Result<(), Box<dyn Error>> {
     let mut ambiguous = shard(Provenance::ExactAst, Confidence::High);
     ambiguous.entities.push(EntityFact {
