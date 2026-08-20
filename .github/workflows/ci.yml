@@ -293,12 +293,15 @@ jobs:
 
       - name: Select PR Smoke Cargo target
         shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           if [ -d /mnt ] && sudo mkdir -p /mnt/perl-lsp-swarm && sudo chown "$USER" /mnt/perl-lsp-swarm; then
-            target_dir="/mnt/perl-lsp-swarm/pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            target_dir="/mnt/perl-lsp-swarm/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
           else
-            target_dir="${RUNNER_TEMP:-$PWD/target}/cargo-target/pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            target_dir="${RUNNER_TEMP:-$PWD/target}/cargo-target/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
           fi
           mkdir -p "$target_dir"
           echo "CARGO_TARGET_DIR=$target_dir" >> "$GITHUB_ENV"
@@ -307,6 +310,74 @@ jobs:
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
+
+      - name: Determine inline-completion warm-up scope
+        id: inline-completion-scope
+        shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          scope_json="${RUNNER_TEMP}/pr-smoke-ci-scope-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}.json"
+          warm_inline_completion=true
+
+          if ! "$CARGO_TARGET_DIR/debug/xtask" ci-scope --base origin/main --format json > "$scope_json"; then
+            echo "::warning::ci-scope failed; retaining inline-completion warm-up (fail-closed)"
+          elif ! diff_class="$(jq -er '
+            if type != "object" or (.diff_class | type) != "string" or
+               (.direct_crates | type) != "array" or
+               (any(.direct_crates[]?; type != "object" or (.name | type) != "string")) or
+               (.reverse_dep_closure | type) != "array" or
+               (any(.reverse_dep_closure[]?; type != "object" or (.name | type) != "string")) or
+               (.architecture_wideners | type) != "array" or
+               (any(.architecture_wideners[]?; type != "object" or (.name | type) != "string")) or
+               (.selected_lanes | type) != "array" or
+               (any(.selected_lanes[]?; type != "object" or (.scope | type) != "array" or any(.scope[]?; type != "string")))
+            then error("invalid ci-scope JSON")
+            else .diff_class
+            end
+          ' "$scope_json")"; then
+            echo "::warning::ci-scope returned invalid JSON; retaining inline-completion warm-up (fail-closed)"
+          else
+            case "$diff_class" in
+              prose_only|docs_as_code|ci_config)
+                warm_inline_completion=false
+                ;;
+              code|mixed)
+                if ! relevant="$(jq -r '
+                  [
+                    .direct_crates[]?.name,
+                    .reverse_dep_closure[]?.name,
+                    .architecture_wideners[]?.name,
+                    .selected_lanes[]?.scope[]?
+                  ]
+                  | any(. == "perl-lsp-rs" or . == "perl-lsp-rs-core")
+                ' "$scope_json")"; then
+                  echo "::warning::ci-scope package analysis failed; retaining inline-completion warm-up (fail-closed)"
+                elif [ "$relevant" = "false" ]; then
+                  warm_inline_completion=false
+                fi
+                ;;
+              *)
+                echo "::warning::ci-scope returned unknown diff_class '$diff_class'; retaining inline-completion warm-up (fail-closed)"
+                ;;
+            esac
+          fi
+
+          echo "diff_class=${diff_class:-unknown}"
+          echo "warm_inline_completion=$warm_inline_completion"
+          echo "warm_inline_completion=$warm_inline_completion" >> "$GITHUB_OUTPUT"
+
+      # Build the two cold inline-completion test targets before the independent
+      # pr-fast gates start when ci-scope identifies a relevant package change.
+      # The gates retain their separate 150s budgets and still execute the tests;
+      # scope failure intentionally keeps this warm-up enabled.
+      - name: Warm inline-completion test targets
+        if: steps.inline-completion-scope.outputs.warm_inline_completion == 'true'
+        run: |
+          cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run
+          cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run
 
       - name: Run PR-fast via shared xtask gate runner
         run: |
