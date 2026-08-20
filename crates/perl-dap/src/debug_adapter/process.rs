@@ -26,6 +26,19 @@ use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
+/// Return the authoritative frame id for the current suspension.
+///
+/// The output reader may observe a context line followed by a prompt for the
+/// same stop, so the prompt path must preserve the generation established by
+/// the context path. A prompt without a preceding context advances the
+/// generation itself.
+fn current_stopped_frame_id(session: &mut DebugSession, advance_generation: bool) -> i32 {
+    if advance_generation {
+        session.stopped_generation = session.stopped_generation.saturating_add(1);
+    }
+    session.stopped_generation.min(i32::MAX as u64).max(1) as i32
+}
+
 impl DebugAdapter {
     /// Handle initialize request
     pub(super) fn handle_initialize(
@@ -982,12 +995,7 @@ impl DebugAdapter {
 
                                 if let Some(ref mut s) = *guard {
                                     let was_running = matches!(s.state, DebugState::Running);
-                                    if was_running {
-                                        s.stopped_generation =
-                                            s.stopped_generation.saturating_add(1);
-                                    }
-                                    let current_frame_id =
-                                        s.stopped_generation.min(i32::MAX as u64).max(1) as i32;
+                                    let current_frame_id = current_stopped_frame_id(s, was_running);
                                     if !current_file.is_empty() && current_line > 0 {
                                         s.stack_frames = vec![StackFrame {
                                             id: current_frame_id,
@@ -1198,10 +1206,21 @@ impl DebugAdapter {
                                     continue;
                                 };
                                 if let Some(ref mut s) = *guard {
+                                    // A prompt can be observed after the context
+                                    // branch (which already advanced the
+                                    // suspension generation), or without a
+                                    // parseable context. Preserve the existing
+                                    // generation in the former case and advance
+                                    // it in the latter; never reset the frame id
+                                    // to the historical constant 1.
+                                    let current_frame_id = current_stopped_frame_id(
+                                        s,
+                                        matches!(s.state, DebugState::Running),
+                                    );
                                     // Create stack frame with enhanced context validation
                                     if !current_file.is_empty() && current_line > 0 {
                                         let frame = StackFrame {
-                                            id: 1,
+                                            id: current_frame_id,
                                             name: if current_func.is_empty() {
                                                 "main".to_string()
                                             } else {
@@ -1228,7 +1247,7 @@ impl DebugAdapter {
                                     } else {
                                         // Provide a fallback frame for when we don't have perfect context
                                         let frame = StackFrame {
-                                            id: 1,
+                                            id: current_frame_id,
                                             name: "main".to_string(),
                                             source: Source {
                                                 name: Some("<unknown>".to_string()),
@@ -2258,12 +2277,46 @@ fn emit_terminated_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        DebugAdapter, detect_perl_info, emit_terminated_event, format_perl_spawn_error,
-        is_valid_perl_interpreter,
+        DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
+        emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
     };
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn context_then_prompt_preserves_current_suspension_frame_id() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+
+        let mut guard = adapter.session.lock().map_err(|_| "session lock poisoned".to_string())?;
+        let session = guard.as_mut().ok_or("test session was not installed")?;
+
+        // The context branch sees the running session and establishes the
+        // generation that the stopped event exposes.
+        session.state = DebugState::Running;
+        let context_frame_id = current_stopped_frame_id(session, true);
+        session.state = DebugState::Stopped;
+
+        // The prompt branch follows that same stop. It must retain the id
+        // rather than reviving the historical constant frame id 1.
+        let prompt_frame_id = current_stopped_frame_id(session, false);
+        if prompt_frame_id != context_frame_id {
+            return Err(format!(
+                "prompt changed the current frame id: context={context_frame_id}, prompt={prompt_frame_id}"
+            ));
+        }
+
+        // A subsequent context starts a fresh suspension and receives a new
+        // authority, preventing the old scope reference from reviving.
+        session.state = DebugState::Running;
+        let next_context_frame_id = current_stopped_frame_id(session, true);
+        if next_context_frame_id == context_frame_id {
+            return Err("next suspension reused the previous frame id".to_string());
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn competing_termination_sources_emit_one_structured_event() -> Result<(), String> {
