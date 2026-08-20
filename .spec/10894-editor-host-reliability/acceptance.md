@@ -43,7 +43,7 @@ editor adapter, receipt, workflow, support claim, or product behavior.
 | Generic durable receipts | #7777 / #10527 | Explicitly preserved; this bundle does not create or copy a receipt schema |
 | Parent controller and recurrence | #9800 / #10899 | Links the parent and leaves recurrence/adoption to their owners |
 | Consumer semantics | Emacs/Eglot/lsp-mode, LSP4IJ, Coc, Lite XL, Vim/DAP leaves | Names representative consumers without absorbing their client/provider contracts |
-| Currentness and exact-head evidence | repository review/currentness method | Requires exact subject/run identity and treats stale/missing evidence as non-success |
+| Currentness and exact-head evidence | repository review/currentness method | Requires current subject/run identity and exact-head evidence; treats stale/missing evidence as non-success |
 
 ## §API-Shape
 

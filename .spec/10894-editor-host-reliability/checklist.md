@@ -96,11 +96,53 @@ $text = @($paths | ForEach-Object { Get-Content -Raw $_ })
 if ($text.Count -ne 3) { throw 'expected exactly three spec files' }
 # Contract assertions deliberately exclude checklist.md. Its checker source is
 # self-covered below, but it must not be able to supply missing contract laws.
-$contractText = @($paths[0..1] | ForEach-Object { Get-Content -Raw $_ })
-foreach ($term in $required) { if (-not ($contractText -match [regex]::Escape($term))) { throw "missing contract term: $term" } }
-foreach ($heading in $headings) { if (-not ($contractText -match [regex]::Escape($heading))) { throw "missing contract heading: $heading" } }
+$contextText = $text[0]
+$acceptanceText = $text[1]
+$contractText = @($contextText, $acceptanceText)
+function Get-SectionBody {
+  param([string]$Document, [string]$HeadingPattern)
+  $match = [regex]::Match($Document, "(?ms)^${HeadingPattern}\s*\r?\n(?<body>.*?)(?=^#{1,3}\s|\z)")
+  if (-not $match.Success) { throw "missing contract section: $HeadingPattern" }
+  return $match.Groups['body'].Value
+}
+$identitySection = Get-SectionBody $contextText '### Identity and freshness'
+$adoptionSection = Get-SectionBody $contextText '## Consumer reachability and adoption'
+$cleanupSection = Get-SectionBody $contextText '### Cleanup denominator declaration'
+$acceptanceBehaviorSection = Get-SectionBody $acceptanceText '## §Behavior'
+$acceptanceHazardsSection = Get-SectionBody $acceptanceText '## §Hazards'
+$acceptanceContractsSection = Get-SectionBody $acceptanceText '## .*Contracts'
+$contextRequired = @(
+  'HostRunSubject', 'FreshReceiptTarget', 'parent-owned deadline',
+  'process domain', 'complete process ledger', 'independent cleanup',
+  'bounded artifact', 'product, instrument, reporting, and cleanup',
+  'not_proven', 'rollback', 'transfer', 'legacy', 'Stop', 'deterministic',
+  'executable path', 'content hash', 'version', 'run ID', 'start time',
+  'stage', 'run-bound nonce', 'subject digest', 'write-after-start',
+  'schema identity', 'candidate identity', 'driver identity',
+  'direct-host', 'candidate', 'descendant', 'replacement', 'ambient',
+  'required denominator', 'representative subset is insufficient'
+)
+foreach ($term in $contextRequired) {
+  if (-not ($contextText -match [regex]::Escape($term))) { throw "missing context contract term: $term" }
+}
+foreach ($term in @('HostRunSubject', 'FreshReceiptTarget', 'exact repository', 'host and candidate executable path', 'content hash', 'version', 'run ID', 'start time', 'current stage', 'run-bound nonce', 'subject digest', 'schema identity', 'candidate identity', 'driver identity', 'write-after-start')) {
+  if (-not ($identitySection -match [regex]::Escape($term))) { throw "missing identity/freshness law: $term" }
+}
+foreach ($term in @('Adoption disposition', 'new driver', 'modified active driver', 'untouched legacy driver', 'shared substrate required', 'migrate or explicit reviewed exception', 'inventoried debt until touched')) {
+  if (-not ($adoptionSection -match [regex]::Escape($term))) { throw "missing adoption law: $term" }
+}
 foreach ($term in @('exact repository', 'current-generation', 'Adoption disposition', 'new driver', 'modified active driver', 'untouched legacy driver')) {
   if (-not ($contractText -match [regex]::Escape($term))) { throw "missing contract identity/adoption term: $term" }
+}
+foreach ($heading in $headings) {
+  if (-not ($acceptanceText -match [regex]::Escape($heading))) { throw "missing acceptance heading: $heading" }
+}
+foreach ($term in @('Exact repository, host, candidate, and run identity', 'Subject/run/current-generation freshness')) {
+  if (-not ($acceptanceBehaviorSection -match [regex]::Escape($term))) { throw "missing acceptance behavior contract term: $term" }
+}
+if (-not ($acceptanceHazardsSection -match [regex]::Escape('Adoption drift'))) { throw 'missing acceptance adoption hazard' }
+foreach ($term in @('#10894', 'Host identity/freshness/deadline/process/cleanup/artifact contract', '#7777 / #10527', 'Emacs/Eglot/lsp-mode, LSP4IJ, Coc, Lite XL, Vim/DAP', 'current subject/run identity')) {
+  if (-not ($acceptanceContractsSection -match [regex]::Escape($term))) { throw "missing acceptance contract term: $term" }
 }
 
 # Self-cover the checker literals and validation loops. This prevents a local
@@ -109,7 +151,7 @@ $checkerSource = Get-Content -Raw "$root/checklist.md"
 $checkerLiterals = @(
   'foreach ($term in $required)', 'foreach ($heading in $headings)',
   '$cleanupDomains = @(', 'git status --porcelain=v1 -z',
-  '$candidateBaseRef', '$candidateHeadRef', '$rows = [regex]::Matches',
+  '$candidateBaseRef', '$candidateHeadRef', '$rows = [regex]::Matches', '$expectedCleanupRows', '$acceptanceBehaviorSection', '$acceptanceHazardsSection', '$acceptanceContractsSection',
   'Compare-Object $changed $expected', 'Get-SpecFingerprints',
   'SPEC_10894_STRUCTURAL_CHECK=PASS'
 )
@@ -152,17 +194,24 @@ for ($i = 0; $i -lt $expectedRows.Count; $i++) {
     if ($actual -ne $expectedRow[$field]) { throw "falsifier $($expectedRow.id) has unexpected $field" }
   }
 }
-$cleanup = [regex]::Match($contractText[0], '(?ms)^### Cleanup denominator declaration\s*(?<body>.*?)(?=^### |\z)').Groups['body'].Value
+$cleanup = $cleanupSection
 $domainRows = [regex]::Matches($cleanup, '(?m)^\|\s*`(?<domain>[^`]+)`\s*\|\s*(?<observation>[^|]+?)\s*\|\s*(?<rule>[^|]+?)\s*\|')
 if ($domainRows.Count -ne $cleanupDomains.Count) { throw "cleanup denominator declares $($domainRows.Count) domains, expected $($cleanupDomains.Count)" }
 $actualDomains = @($domainRows | ForEach-Object { $_.Groups['domain'].Value.Trim() })
 if (($actualDomains -join ',') -ne ($cleanupDomains -join ',')) { throw 'cleanup denominator domains are incomplete or reordered' }
+$expectedCleanupRows = @(
+  @{ domain = 'direct-host'; observation = 'host identity and terminal/absent observation'; rule = 'always included' }
+  @{ domain = 'candidate'; observation = 'candidate identity and terminal/absent observation'; rule = 'always included when launched' }
+  @{ domain = 'descendant'; observation = 'each known descendant identity and terminal/absent observation'; rule = 'include every known member, not one sample' }
+  @{ domain = 'replacement'; observation = 'each run-owned replacement identity and terminal/absent observation'; rule = 'include when the run creates/adopts one' }
+  @{ domain = 'ambient'; observation = 'diagnostic identity only'; rule = 'excluded unless explicitly adopted as run-owned' }
+)
 for ($i = 0; $i -lt $cleanupDomains.Count; $i++) {
+  $expectedCleanup = $expectedCleanupRows[$i]
+  if ($domainRows[$i].Groups['domain'].Value.Trim() -ne $expectedCleanup.domain) { throw "cleanup domain $($expectedCleanup.domain) is not in the declared slot" }
   $observation = $domainRows[$i].Groups['observation'].Value.Trim()
   $rule = $domainRows[$i].Groups['rule'].Value.Trim()
-  if (-not $observation -or -not $rule -or $observation -notmatch '(?i)identity|observation|diagnostic' -or $rule -notmatch '(?i)include|excluded|denominator') {
-    throw "cleanup domain $($cleanupDomains[$i]) lacks observation/denominator rule"
-  }
+  if ($observation -ne $expectedCleanup.observation -or $rule -ne $expectedCleanup.rule) { throw "cleanup domain $($expectedCleanup.domain) has unexpected observation/denominator semantics" }
 }
 if (($cleanup -notmatch 'include every known member') -or ($cleanup -notmatch 'ambient.*excluded') -or ($cleanup -notmatch '(?i)replacement.*(terminal|absent)')) { throw 'cleanup denominator coverage is not fail-closed' }
 

@@ -62,7 +62,8 @@ same contract, not copies of generic receipt policy.
 
 ### Identity and freshness
 
-Every run carries an exact repository, host, candidate, driver, schema, and run
+`HostRunSubject` carries every run's exact repository, host, candidate, driver,
+schema, and run identity. Every run therefore carries an exact repository, host, candidate, driver, schema, and run
 identity. The accepted #10894 identity tuple is deliberately more specific than
 names or paths selected by a caller. It includes, at minimum:
 
@@ -100,7 +101,8 @@ process, the candidate process, every known candidate descendant, and any run-ow
 replacement process. Ambient processes are recorded for diagnosis but are explicitly
 outside that denominator unless the run has adopted them as owned. A checker or
 consumer that observes only one representative path, only the direct host, or only a
-single descendant is incomplete and cannot establish cleanup.
+single descendant is incomplete and cannot establish cleanup. A representative subset is insufficient:
+the required denominator must account for every known run-owned member in each declared domain.
 
 The declaration is therefore a set of exact ownership paths, not a convenient
 subset:
