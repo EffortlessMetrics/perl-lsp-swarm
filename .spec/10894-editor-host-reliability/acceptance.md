@@ -57,6 +57,7 @@ separate reviewed #10894 implementation plan.
 | `FreshReceiptTarget` | semantic identity | current subject/run/generation target | #10894; #7777/#10527 remain receipt authority |
 | Process ledger | evidence model | direct-host, candidate, ambient, replacement, descendant, surviving identities | #10894; no consumer copy |
 | Four terminal planes | result model | product / instrument / reporting / cleanup independently retained | #10894; provider semantics remain consumer-owned |
+| Cleanup denominator | ownership evidence | every declared direct-host, candidate, descendant, and run-owned replacement path is independently observed; ambient is excluded unless adopted | #10894; a representative subset is insufficient |
 
 N/A — no public function, type, protocol field, crate, dependency, or support
 surface changes in this spec-only PR.

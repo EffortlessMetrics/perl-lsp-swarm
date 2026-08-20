@@ -94,8 +94,26 @@ artifacts. A forced settlement is never reported as a clean normal shutdown.
 
 The run owns a process domain, not merely a direct editor PID. The ledger retains
 direct-host, candidate, ambient, replacement, descendant, and surviving identities
-separately, including one or multiple candidate descendants. The denominator is
-the exact run-owned host/candidate/descendant set required by the contract.
+separately, including one or multiple candidate descendants. The cleanup denominator
+is declared before execution and covers every run-owned domain: the direct host
+process, the candidate process, every known candidate descendant, and any run-owned
+replacement process. Ambient processes are recorded for diagnosis but are explicitly
+outside that denominator unless the run has adopted them as owned. A checker or
+consumer that observes only one representative path, only the direct host, or only a
+single descendant is incomplete and cannot establish cleanup.
+
+The declaration is therefore a set of exact ownership paths, not a convenient
+subset:
+
+### Cleanup denominator declaration
+
+| Domain | Required cleanup observation | Denominator rule |
+| --- | --- | --- |
+| `direct-host` | host identity and terminal/absent observation | always included |
+| `candidate` | candidate identity and terminal/absent observation | always included when launched |
+| `descendant` | each known descendant identity and terminal/absent observation | include every known member, not one sample |
+| `replacement` | each run-owned replacement identity and terminal/absent observation | include when the run creates/adopts one |
+| `ambient` | diagnostic identity only | excluded unless explicitly adopted as run-owned |
 
 The platform-neutral cleanup law is:
 
