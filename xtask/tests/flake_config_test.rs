@@ -1,3 +1,6 @@
+// Integration test: assertion helpers (`expect`/`unwrap`/`panic!`) carry the
+// failure message. The workspace-wide deny is a production-code rule.
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 //! Tests to verify flake.nix configuration is correct.
 //!
 //! These tests verify the acceptance criteria from work-24c7cfb5:
@@ -105,32 +108,6 @@ fn check_perl_in_build_inputs(flake_content: &str) -> bool {
         }
     }
     false
-}
-
-/// Extracts the Latest Release version from CLAUDE.md.
-///
-/// The version is on a line like:
-///   **Latest Release**: 0.12.4 | **Metrics**: ...
-fn extract_latest_release_from_claude_md(claude_content: &str) -> Option<String> {
-    for line in claude_content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("**Latest Release**:") {
-            // Extract version from "**Latest Release**: 0.12.4 | ..."
-            if let Some(start) = trimmed.find("**Latest Release**:") {
-                let after_label = &trimmed[start + 19..].trim();
-                if let Some(end) = after_label.find('|') {
-                    let version = after_label[..end].trim().to_string();
-                    return Some(version);
-                } else if let Some(end) = after_label.find(' ') {
-                    let version = after_label[..end].trim().to_string();
-                    return Some(version);
-                } else {
-                    return Some(after_label.to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 #[test]

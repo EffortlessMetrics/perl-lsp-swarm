@@ -10,7 +10,7 @@
 //! Rust source-compatibility tool, not an unknown-variant wire fallback.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     AnchorId, Confidence, FileId, InvalidationDependency, Provenance, SemanticConfidence,
@@ -56,6 +56,12 @@ pub struct AdapterDescriptor {
     pub framework_name: String,
     /// Optional registry-level framework-version constraint.
     pub framework_version_constraint: Option<String>,
+    /// Exact configuration key whose reviewed value can exclude this adapter.
+    #[serde(default)]
+    pub configuration_exclusion_key: Option<String>,
+    /// Versioned rule identity that interprets the exclusion key and value.
+    #[serde(default)]
+    pub configuration_exclusion_rule: Option<String>,
     /// Descriptor schema version.
     pub schema_version: u32,
     /// Deployment disposition.
@@ -78,9 +84,23 @@ impl AdapterDescriptor {
             name: name.into(),
             framework_name: framework_name.into(),
             framework_version_constraint,
+            configuration_exclusion_key: None,
+            configuration_exclusion_rule: None,
             schema_version,
             disposition,
         }
+    }
+
+    /// Bind configuration exclusion evidence to one descriptor-owned key/rule.
+    #[must_use]
+    pub fn with_configuration_exclusion(
+        mut self,
+        key: impl Into<String>,
+        rule: impl Into<String>,
+    ) -> Self {
+        self.configuration_exclusion_key = Some(key.into());
+        self.configuration_exclusion_rule = Some(rule.into());
+        self
     }
 }
 
@@ -757,12 +777,6 @@ impl AdapterResult {
         Ok(())
     }
 
-    /// Whether this result passed the complete authority contract.
-    #[must_use]
-    pub fn is_authoritative(&self) -> bool {
-        false
-    }
-
     /// Whether this result passed the complete authority contract for `input`.
     #[must_use]
     pub fn is_authoritative_against(&self, input: &AdapterInput) -> bool {
@@ -806,8 +820,16 @@ fn dependencies_are_coherent(dependencies: &[InvalidationDependency]) -> bool {
     }) {
         return false;
     }
-    dependencies.windows(2).all(|pair| {
-        pair[0].dependency_key != pair[1].dependency_key || pair[0].generation == pair[1].generation
+    // Adjacency is not the invariant. `dependencies_match` happens to sort before
+    // calling this, but the envelope path in `EmittedFact::is_coherent` validates
+    // dependencies in stored order, where `[a@g1, b@g1, a@g2]` has no adjacent pair
+    // that can observe `a` carrying two generations. Compare every occurrence of a
+    // key instead, so the result does not depend on the caller having sorted.
+    let mut generations: BTreeMap<&str, &SourceGeneration> = BTreeMap::new();
+    dependencies.iter().all(|dependency| {
+        generations
+            .insert(dependency.dependency_key.as_str(), &dependency.generation)
+            .is_none_or(|previous| previous == &dependency.generation)
     })
 }
 
@@ -819,11 +841,6 @@ mod tests {
     use crate::{
         EntityId, FactId, LifecyclePhase, SemanticFactKind, SemanticReasonCode, SourceAnchor,
     };
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-
     fn descriptor(disposition: AdapterDisposition) -> AdapterDescriptor {
         AdapterDescriptor::new(AdapterId(1), "moo", "Moo", None, 1, disposition)
     }
@@ -868,6 +885,44 @@ mod tests {
         )
     }
 
+    fn dependency(key: &str, generation: &str) -> InvalidationDependency {
+        InvalidationDependency::new(key, SourceGeneration::known(generation))
+    }
+
+    #[test]
+    fn dependency_coherence_rejects_non_adjacent_contradictions() {
+        // Adjacent contradiction: caught by an adjacency scan as well.
+        assert!(
+            !dependencies_are_coherent(&[
+                dependency("module:A", "generation-1"),
+                dependency("module:A", "generation-2"),
+            ]),
+            "one key carrying two generations is never coherent"
+        );
+
+        // The same contradiction with an unrelated key between the occurrences. No
+        // adjacent pair shares a key, so an adjacency scan accepts it.
+        assert!(
+            !dependencies_are_coherent(&[
+                dependency("module:A", "generation-1"),
+                dependency("module:B", "generation-1"),
+                dependency("module:A", "generation-2"),
+            ]),
+            "a contradiction separated by another key must still be rejected"
+        );
+
+        // Positive control: repetition that agrees stays coherent at any distance,
+        // so the check rejects contradiction rather than repetition.
+        assert!(
+            dependencies_are_coherent(&[
+                dependency("module:A", "generation-1"),
+                dependency("module:B", "generation-1"),
+                dependency("module:A", "generation-1"),
+            ]),
+            "agreeing duplicates remain coherent"
+        );
+    }
+
     fn applied(disposition: AdapterDisposition, fact: EmittedFact) -> AdapterResult {
         let mut sink = FactSink::new(FactSinkId(7), AdapterId(1));
         sink.facts.push(fact);
@@ -880,23 +935,6 @@ mod tests {
             SourceGeneration::known("generation-1"),
             AdapterOutcome::Applied { sink, limitations: Vec::new() },
         )
-    }
-
-    struct AtomicControl(Arc<AtomicBool>);
-
-    impl AdapterCancellationControl for AtomicControl {
-        fn is_cancelled(&self) -> bool {
-            self.0.load(Ordering::SeqCst)
-        }
-    }
-
-    #[test]
-    fn live_cancellation_can_change_after_dispatch() {
-        let flag = Arc::new(AtomicBool::new(false));
-        let control = AtomicControl(Arc::clone(&flag));
-        assert!(!control.is_cancelled());
-        flag.store(true, Ordering::SeqCst);
-        assert!(control.is_cancelled());
     }
 
     #[test]
@@ -967,7 +1005,6 @@ mod tests {
         );
         let result = applied(AdapterDisposition::Production, fact);
         assert_eq!(result.validate_authority(), Err(AdapterAuthorityError::InputRequired));
-        assert!(!result.is_authoritative());
         assert!(result.is_authoritative_against(&input()));
     }
 

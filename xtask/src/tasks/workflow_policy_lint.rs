@@ -11,6 +11,17 @@ const ALLOWLIST_PR_CONTENTS_WRITE: &[&str] = &["ci.yml", "ci-nightly.yml", "droi
 const POLICY_WARN_UNPINNED_ACTIONS: bool = true;
 const ALLOWLIST_BLANKET_CANCEL_IN_PROGRESS: &[&str] = &["docs-deploy.yml", "post-merge-status.yml"];
 
+/// Multi-job workflows whose jobs may inherit workflow-default write authority
+/// without declaring their own `permissions:`. Add an entry only with a
+/// documented reason and a tracking issue.
+const ALLOWLIST_INHERITED_JOB_WRITE: &[&str] = &[
+    // Every job builds or publishes images against GHCR, so `packages: write`
+    // is load-bearing for the build jobs and not merely inherited. Narrowing
+    // `init`/`summary` to `contents: read` needs a release-time verification
+    // pass rather than a static edit. Tracked by #5989 follow-up.
+    "docker-publish.yml",
+];
+
 /// Workflow files that intentionally have no `policy/ci-lane-whitelist.toml`
 /// entry. Add an entry here only when there's a documented reason — e.g. a
 /// release/publish workflow that's release-time-only and not part of
@@ -248,6 +259,20 @@ fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>
         });
     }
 
+    if !is_inherited_write_allowlisted(&workflow_name) {
+        for (job, scopes) in jobs_inheriting_write_permissions(&workflow) {
+            issues.push(LintIssue {
+                level: "error",
+                code: "INHERITED_JOB_WRITE",
+                workflow: workflow_name.clone(),
+                message: format!(
+                    "job '{job}' declares no permissions and silently inherits workflow-default write authority: {}",
+                    scopes.join(", ")
+                ),
+            });
+        }
+    }
+
     if POLICY_WARN_UNPINNED_ACTIONS {
         for action in collect_unpinned_actions(&workflow) {
             issues.push(LintIssue {
@@ -266,8 +291,70 @@ fn is_contents_write_allowlisted(workflow_name: &str) -> bool {
     ALLOWLIST_PR_CONTENTS_WRITE.contains(&workflow_name)
 }
 
+fn is_inherited_write_allowlisted(workflow_name: &str) -> bool {
+    ALLOWLIST_INHERITED_JOB_WRITE.contains(&workflow_name)
+}
+
+/// Jobs that declare no `permissions:` of their own in a multi-job workflow
+/// whose top-level `permissions:` grants at least one `write` scope.
+///
+/// Such a job runs with every workflow-default write scope whether or not it
+/// needs any of them — the shape that gave `release-orchestration.yml`'s
+/// read-only validation job contents, Actions, OIDC and attestation authority
+/// (#5989). Single-job workflows are exempt: the workflow default and the only
+/// job's effective authority are the same declaration, so nothing is silently
+/// widened.
+fn jobs_inheriting_write_permissions(workflow: &Value) -> Vec<(String, Vec<String>)> {
+    let write_scopes = default_write_scopes(workflow);
+    if write_scopes.is_empty() {
+        return Vec::new();
+    }
+
+    let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
+        return Vec::new();
+    };
+    if jobs.len() < 2 {
+        return Vec::new();
+    }
+
+    jobs.iter()
+        .filter_map(|(name, job)| {
+            let job = job.as_mapping()?;
+            if job.contains_key(Value::String("permissions".to_string())) {
+                return None;
+            }
+            let name = name.as_str()?.to_string();
+            Some((name, write_scopes.clone()))
+        })
+        .collect()
+}
+
+/// Write scopes granted by the workflow-level `permissions:` declaration.
+///
+/// `permissions: write-all` is reported separately by `WRITE_ALL_PERMISSIONS`
+/// and is normalized here so a job inheriting it is still named.
+fn default_write_scopes(workflow: &Value) -> Vec<String> {
+    match workflow.get("permissions") {
+        Some(Value::String(value)) if value == "write-all" => vec!["write-all".to_string()],
+        Some(Value::Mapping(mapping)) => mapping
+            .iter()
+            .filter(|(_, value)| value.as_str() == Some("write"))
+            .filter_map(|(scope, _)| scope.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn workflow_on(workflow: &Value) -> Option<&Value> {
+    workflow.as_mapping()?.iter().find_map(|(key, value)| match key {
+        Value::String(key) if key == "on" => Some(value),
+        Value::Bool(true) => Some(value),
+        _ => None,
+    })
+}
+
 fn triggers(workflow: &Value) -> Vec<String> {
-    let Some(on) = workflow.get("on") else {
+    let Some(on) = workflow_on(workflow) else {
         return Vec::new();
     };
     match on {
@@ -300,8 +387,7 @@ fn is_required_style(workflow: &Value) -> bool {
 }
 
 fn pull_request_has_paths_filter(workflow: &Value) -> bool {
-    workflow
-        .get("on")
+    workflow_on(workflow)
         .and_then(Value::as_mapping)
         .and_then(|mapping| mapping.get(Value::String("pull_request".to_string())))
         .and_then(Value::as_mapping)
@@ -618,8 +704,7 @@ fn map_contains_secrets(value: &Value) -> bool {
 fn blanket_cancel_in_progress(workflow: &Value) -> bool {
     let trigger_names = triggers(workflow);
     let has_truth_runs = trigger_names.iter().any(|trigger| trigger == "merge_group")
-        || workflow
-            .get("on")
+        || workflow_on(workflow)
             .and_then(Value::as_mapping)
             .and_then(|mapping| mapping.get(Value::String("push".to_string())))
             .and_then(Value::as_mapping)
@@ -654,8 +739,7 @@ fn blanket_cancel_in_progress(workflow: &Value) -> bool {
 }
 
 fn pull_request_has_label_triggers(workflow: &Value) -> bool {
-    workflow
-        .get("on")
+    workflow_on(workflow)
         .and_then(Value::as_mapping)
         .and_then(|mapping| mapping.get(Value::String("pull_request".to_string())))
         .and_then(Value::as_mapping)
@@ -1042,6 +1126,111 @@ mod tests {
         let mut issues = Vec::new();
         lint_workflow_file(&path, true, &mut issues)?;
         assert!(issues.iter().any(|issue| issue.code == "PR_TARGET_CHECKOUT_HEAD"));
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_inherited_job_write_fails() -> Result<()> {
+        let path = fixture_path("inherited_job_write.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        let inherited: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "INHERITED_JOB_WRITE").collect();
+        assert_eq!(inherited.len(), 1, "only the job without its own permissions is reported");
+        let message = &inherited[0].message;
+        assert!(message.contains("validate"), "names the inheriting job: {message}");
+        for scope in ["contents", "actions", "id-token", "attestations"] {
+            assert!(message.contains(scope), "names inherited scope {scope}: {message}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_inherited_job_write_scoped_passes() -> Result<()> {
+        let path = fixture_path("inherited_job_write_scoped.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        assert!(
+            issues.iter().all(|issue| issue.level != "error"),
+            "per-job least privilege is accepted: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fixture_inherited_job_write_single_job_passes() -> Result<()> {
+        let path = fixture_path("inherited_job_write_single_job.yml")?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        assert!(issues.iter().all(|issue| issue.code != "INHERITED_JOB_WRITE"));
+        Ok(())
+    }
+
+    /// The claim #5989 actually makes, asserted against the shipped workflow
+    /// rather than a fixture: validation and dispatch must not be able to
+    /// write repository contents, and no job may inherit write authority.
+    #[test]
+    fn release_orchestration_grants_least_privilege() -> Result<()> {
+        let path = project_root()?.join(".github/workflows/release-orchestration.yml");
+        let raw = fs::read_to_string(&path)?;
+        let workflow: Value = serde_yaml_ng::from_str(&raw)?;
+
+        assert!(
+            jobs_inheriting_write_permissions(&workflow).is_empty(),
+            "no release-orchestration job may inherit workflow-default write authority"
+        );
+        assert!(
+            default_write_scopes(&workflow).is_empty(),
+            "release orchestration must default to read-only"
+        );
+
+        let jobs = workflow.get("jobs").and_then(Value::as_mapping).expect("jobs mapping");
+        let scopes = |job: &str| -> Vec<(String, String)> {
+            jobs.get(Value::String(job.to_string()))
+                .and_then(Value::as_mapping)
+                .and_then(|job| job.get(Value::String("permissions".to_string())))
+                .and_then(Value::as_mapping)
+                .map(|mapping| {
+                    mapping
+                        .iter()
+                        .filter_map(|(key, value)| {
+                            Some((key.as_str()?.to_string(), value.as_str()?.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        assert!(
+            scopes("validate").iter().all(|(_, level)| level == "read"),
+            "validation must be read-only: {:?}",
+            scopes("validate")
+        );
+        assert_eq!(
+            scopes("create-tag"),
+            vec![("contents".to_string(), "write".to_string())],
+            "only tag creation writes repository contents"
+        );
+        assert_eq!(
+            scopes("trigger-release"),
+            vec![("actions".to_string(), "write".to_string())],
+            "only dispatch writes Actions state"
+        );
+
+        for job in jobs.values() {
+            let Some(job) = job.as_mapping() else { continue };
+            let declared = job
+                .get(Value::String("permissions".to_string()))
+                .and_then(Value::as_mapping)
+                .map(|mapping| mapping.iter().filter_map(|(key, _)| key.as_str()).collect())
+                .unwrap_or_else(Vec::new);
+            for unused in ["id-token", "attestations"] {
+                assert!(
+                    !declared.contains(&unused),
+                    "{unused} authority is unused by release orchestration"
+                );
+            }
+        }
         Ok(())
     }
 

@@ -104,9 +104,21 @@ pub(super) fn validate_configuration_absence(
         .configuration_evidence
         .as_ref()
         .ok_or(DetectionAuthorityError::MissingConfigurationEvidence)?;
+    let expected_key = input
+        .descriptor
+        .configuration_exclusion_key
+        .as_deref()
+        .ok_or(DetectionAuthorityError::InvalidConfigurationEvidence)?;
+    let expected_rule = input
+        .descriptor
+        .configuration_exclusion_rule
+        .as_deref()
+        .ok_or(DetectionAuthorityError::InvalidConfigurationEvidence)?;
     if evidence.rule_identity.trim().is_empty()
         || !input.configuration_observations.contains(&evidence.observation)
         || evidence.observation.generation != input.module_observation.generation
+        || evidence.observation.key != expected_key
+        || evidence.rule_identity != expected_rule
     {
         return Err(DetectionAuthorityError::InvalidConfigurationEvidence);
     }

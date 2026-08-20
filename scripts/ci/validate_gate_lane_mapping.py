@@ -60,6 +60,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_scoped": {"lanes": ["pr_smoke"]},
     "check_tests_scoped": {"lanes": ["pr_smoke"]},
     "unit_routed_full": {"lanes": ["pr_smoke"]},
+    # The gate runs inside the existing pr-fast invocation in advisory
+    # `pr-smoke`; it is not a separate workflow or receipt-producing lane.
+    "clippy_tests_kernel": {"lanes": ["pr_smoke"]},
     # Former `inline_completion_contract` (&&-composite, issue #6845) split
     # into four independent gates.  All four remain in the pr_smoke tier lane.
     "inline_completion_registration": {"lanes": ["pr_smoke"]},
@@ -76,6 +79,7 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_foundation_full": {"lanes": ["merge_gate_shards"]},
     "unit_parser_stack_full": {"lanes": ["merge_gate_shards"]},
     "parser_integration": {"lanes": ["merge_gate_shards"]},
+    "parser_behavior_proof": {"lanes": ["merge_gate_shards"]},
     "unit_analysis_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_core_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_full": {"lanes": ["merge_gate_shards"]},
@@ -99,6 +103,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "agent_context_coverage": {"lanes": ["merge_gate_shards"]},
     "non_rust_inventory_check": {"lanes": ["merge_gate_shards"]},
     "msrv_authority_sync": {"lanes": ["merge_gate_shards"]},
+    "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
+    "compiler_proof_policy": {"lanes": ["merge_gate_shards"]},
+    "compiler_concept_proof": {"lanes": ["merge_gate_shards"]},
 
     # commit-tier staged-tree hygiene (local pre-commit; not CI)
     "staged_tree_identity": {"lanes": ["commit_checks"]},

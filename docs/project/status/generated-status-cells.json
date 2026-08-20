@@ -1,0 +1,57 @@
+{
+  "schema_version": "generated_status_projection.v1",
+  "source": {
+    "subject_sha": "379d0bb0b4c9079a03f4efd89ae2aaaa91c8347a",
+    "run_id": "checked-in-6909-379d0bb",
+    "observed_at": "2026-08-12T00:00:00Z"
+  },
+  "cells": [
+    {
+      "id": "lsp.protocol_compliance",
+      "subject_sha": "379d0bb0b4c9079a03f4efd89ae2aaaa91c8347a",
+      "run_id": "checked-in-6909-379d0bb",
+      "observed_at": "2026-08-12T00:00:00Z",
+      "expected": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0,
+      "completeness": "complete",
+      "verdict": "proven",
+      "claim_boundary": "Projection arithmetic only; LSP maturity remains owned by #6731.",
+      "limitations": []
+    },
+    {
+      "id": "tests.tier_a",
+      "subject_sha": "379d0bb0b4c9079a03f4efd89ae2aaaa91c8347a",
+      "run_id": "checked-in-6909-379d0bb",
+      "observed_at": "2026-08-12T00:00:00Z",
+      "expected": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 0,
+      "completeness": "complete",
+      "verdict": "proven",
+      "claim_boundary": "Tier A execution evidence only; test-domain authority remains with its generator.",
+      "limitations": []
+    },
+    {
+      "id": "quality.per_crate_attribution",
+      "subject_sha": "379d0bb0b4c9079a03f4efd89ae2aaaa91c8347a",
+      "run_id": "checked-in-6909-379d0bb",
+      "observed_at": "2026-08-12T00:00:00Z",
+      "expected": 1,
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "not_run": 1,
+      "completeness": "limited",
+      "verdict": "limited",
+      "claim_boundary": "Attribution completeness only; scorecard composition remains owned by #3056/#3058.",
+      "limitations": [
+        "1 expected population member(s) have incomplete attribution"
+      ]
+    }
+  ]
+}

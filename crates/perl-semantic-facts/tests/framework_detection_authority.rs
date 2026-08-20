@@ -18,6 +18,11 @@ fn descriptor(constraint: Option<&str>) -> AdapterDescriptor {
     )
 }
 
+fn configuration_descriptor() -> AdapterDescriptor {
+    descriptor(None)
+        .with_configuration_exclusion("frameworks.moo.disabled", "exclude-moo-when-disabled.v1")
+}
+
 fn module(name: &str, generation: &str, version: Option<&str>) -> ModuleActivationIdentity {
     let row =
         ModuleActivationIdentity::new(name, Some(FileId(7)), SourceGeneration::known(generation));
@@ -44,6 +49,15 @@ fn observation(evaluations: Vec<ModuleSelectorEvaluation>) -> ModuleObservationR
 fn input(evaluations: Vec<ModuleSelectorEvaluation>) -> AdapterDetectionInput {
     AdapterDetectionInput::new(
         descriptor(None),
+        observation(evaluations),
+        None,
+        AdapterCancellation::active(),
+    )
+}
+
+fn configuration_input(evaluations: Vec<ModuleSelectorEvaluation>) -> AdapterDetectionInput {
+    AdapterDetectionInput::new(
+        configuration_descriptor(),
         observation(evaluations),
         None,
         AdapterCancellation::active(),
@@ -153,7 +167,7 @@ fn version_string_without_observed_module_evidence_is_not_authority() {
 
 #[test]
 fn configuration_exclusion_requires_matching_typed_fact() {
-    let observed = input(vec![ModuleSelectorEvaluation::absent("Moo")]);
+    let observed = configuration_input(vec![ModuleSelectorEvaluation::absent("Moo")]);
     let result = AdapterDetectionResult::for_input(
         &observed,
         DetectionOutcome::Absent { reason: DetectionAbsenceReason::ExcludedByConfiguration },
@@ -194,7 +208,7 @@ fn exact_complete_missing_module_result_is_authoritative() {
 #[test]
 fn exact_configuration_exclusion_is_authoritative() {
     let observation = configuration_observation(true);
-    let observed = input(vec![ModuleSelectorEvaluation::absent("Moo")])
+    let observed = configuration_input(vec![ModuleSelectorEvaluation::absent("Moo")])
         .with_configuration_observations(vec![observation.clone()]);
     let evidence = DetectionConfigurationEvidence::new(
         observation,
@@ -289,7 +303,7 @@ fn asserted_high_confidence_cannot_upgrade_probable_evidence() {
 #[test]
 fn matching_key_with_nonexcluding_value_cannot_prove_exclusion() {
     let observation = configuration_observation(false);
-    let observed = input(vec![ModuleSelectorEvaluation::absent("Moo")])
+    let observed = configuration_input(vec![ModuleSelectorEvaluation::absent("Moo")])
         .with_configuration_observations(vec![observation.clone()]);
     let evidence = DetectionConfigurationEvidence::new(
         observation,
@@ -304,5 +318,52 @@ fn matching_key_with_nonexcluding_value_cannot_prove_exclusion() {
     assert_eq!(
         result.validate_authority_against(&observed),
         Err(DetectionAuthorityError::ConfigurationRuleNotSatisfied)
+    );
+}
+
+#[test]
+fn wrong_configuration_key_or_rule_cannot_prove_exclusion() {
+    let expected_observation = configuration_observation(true);
+    let expected_input = configuration_input(vec![ModuleSelectorEvaluation::absent("Moo")])
+        .with_configuration_observations(vec![expected_observation.clone()]);
+
+    let wrong_key_observation = DetectionConfigurationObservation::new(
+        "workspace-config:perl-lsp.toml",
+        "sha256:configuration",
+        "frameworks.other.disabled",
+        DetectionConfigurationValue::Boolean(true),
+        "root:fixture",
+        SourceGeneration::known("project-1"),
+        "project-environment-config.v1",
+        "framework-config.v1",
+    );
+    let wrong_key_input = configuration_input(vec![ModuleSelectorEvaluation::absent("Moo")])
+        .with_configuration_observations(vec![wrong_key_observation.clone()]);
+    let wrong_key = AdapterDetectionResult::for_input(
+        &wrong_key_input,
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::ExcludedByConfiguration },
+    )
+    .with_configuration_evidence(DetectionConfigurationEvidence::new(
+        wrong_key_observation,
+        DetectionConfigurationValue::Boolean(true),
+        "exclude-moo-when-disabled.v1",
+    ));
+    assert_eq!(
+        wrong_key.validate_authority_against(&wrong_key_input),
+        Err(DetectionAuthorityError::InvalidConfigurationEvidence)
+    );
+
+    let wrong_rule = AdapterDetectionResult::for_input(
+        &expected_input,
+        DetectionOutcome::Absent { reason: DetectionAbsenceReason::ExcludedByConfiguration },
+    )
+    .with_configuration_evidence(DetectionConfigurationEvidence::new(
+        expected_observation,
+        DetectionConfigurationValue::Boolean(true),
+        "exclude-other-framework.v1",
+    ));
+    assert_eq!(
+        wrong_rule.validate_authority_against(&expected_input),
+        Err(DetectionAuthorityError::InvalidConfigurationEvidence)
     );
 }

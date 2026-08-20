@@ -164,14 +164,97 @@ function parseBlocks(lines: string[]): Block[] {
 // Step 3: render blocks to HTML
 // ---------------------------------------------------------------------------
 
+/** Emitted for `=over` and rewritten once the first `=item` fixes the list type. */
+const LIST_PLACEHOLDER = '<!-- over -->';
+
+/** An `=item` marker that opens an ordered list: `1.`, `2)`, or a bare `1`. */
+const ORDERED_ITEM_MARKER = /^\d+(?:[.)](?:\s|$)|$)/;
+
+/** An `=item` marker that opens a bullet list: `*` or `-`. */
+const UNORDERED_ITEM_MARKER = /^[*-](?:\s|$)/;
+
+/** One open `=over` list level. */
+interface ListFrame {
+  tag: 'ul' | 'ol';
+  /** Index in `parts` holding this list's opening tag or its placeholder. */
+  openIdx: number;
+  /** True once the opening tag reflects a real `=item` marker. */
+  decided: boolean;
+  /** True while an `<li>` is open and can still absorb the item's body. */
+  itemOpen: boolean;
+  /** Index in `parts` of the currently open `<li>`, or -1 when none. */
+  itemIdx: number;
+  /** True once this list has emitted at least one `=item`. */
+  hasItems: boolean;
+}
+
 function renderBlocks(blocks: Block[]): string {
   const parts: string[] = [];
-  let listStack: Array<'ul' | 'ol'> = [];
+  const listStack: ListFrame[] = [];
+
+  /**
+   * Close the open `<li>`.
+   *
+   * An item with no body keeps its original single-element `<li>…</li>` shape;
+   * an item that absorbed paragraphs or verbatim blocks gets its own closing
+   * tag after them, so the body stays inside the item rather than terminating
+   * the list.
+   */
+  function closeItem(frame: ListFrame): void {
+    if (!frame.itemOpen) {
+      return;
+    }
+    const openTag = parts[frame.itemIdx];
+    if (frame.itemIdx === parts.length - 1 && openTag !== undefined) {
+      parts[frame.itemIdx] = `${openTag}</li>`;
+    } else {
+      parts.push('</li>');
+    }
+    frame.itemOpen = false;
+    frame.itemIdx = -1;
+  }
+
+  function closeList(): void {
+    const frame = listStack.pop();
+    if (!frame) {
+      return;
+    }
+    closeItem(frame);
+    if (!frame.hasItems) {
+      // `=over` with no `=item` contributes no list; the placeholder is
+      // dropped below rather than emitted as an empty `<ul></ul>`.
+      return;
+    }
+    if (!frame.decided) {
+      parts[frame.openIdx] = `<${frame.tag}>`;
+      frame.decided = true;
+    }
+    parts.push(`</${frame.tag}>`);
+  }
 
   function closeAllLists(): void {
     while (listStack.length > 0) {
-      parts.push(`</${listStack.pop()}>`);
+      closeList();
     }
+  }
+
+  /** The innermost list item that a body block belongs to, when one is open. */
+  function openItemFrame(): ListFrame | undefined {
+    const frame = listStack[listStack.length - 1];
+    return frame?.itemOpen === true ? frame : undefined;
+  }
+
+  /**
+   * Render an item body (paragraph or verbatim block).
+   *
+   * POD item text and its explanatory paragraphs are one list item. Closing the
+   * list here would split every `=item` into its own single-entry list.
+   */
+  function pushBodyBlock(html: string): void {
+    if (!openItemFrame()) {
+      closeAllLists();
+    }
+    parts.push(html);
   }
 
   for (const block of blocks) {
@@ -182,7 +265,7 @@ function renderBlocks(blocks: Block[]): string {
       if (/^head[1-4]$/.test(cmd)) {
         closeAllLists();
         const level = cmd[4];
-        parts.push(`<h${level}>${escapeHtml(text)}</h${level}>`);
+        parts.push(`<h${level}>${renderInline(text)}</h${level}>`);
         continue;
       }
 
@@ -194,55 +277,64 @@ function renderBlocks(blocks: Block[]): string {
       // =over: begin a list
       if (cmd === 'over') {
         // defer list type until we see the first =item
-        listStack.push('ul'); // placeholder; corrected on first =item
-        parts.push('<!-- over -->'); // placeholder index for replacement
+        listStack.push({
+          tag: 'ul',
+          openIdx: parts.length,
+          decided: false,
+          itemOpen: false,
+          itemIdx: -1,
+          hasItems: false,
+        });
+        parts.push(LIST_PLACEHOLDER);
         continue;
       }
 
       // =item: list item
       if (cmd === 'item') {
         // Determine / correct list type from item marker
-        const isOrdered = /^\d+[.)]\s/.test(text);
-        const isUnordered = /^[*\-]\s/.test(text) || text === '*' || text === '-';
+        const isOrdered = ORDERED_ITEM_MARKER.test(text);
+        const isUnordered = UNORDERED_ITEM_MARKER.test(text);
 
         // If we are not inside any list context, open one
-        if (listStack.length === 0) {
-          const listTag: 'ul' | 'ol' = isOrdered ? 'ol' : 'ul';
-          listStack.push(listTag);
-          parts.push(`<${listTag}>`);
-        } else {
-          // Fix the placeholder if this is the first item
-          const expectedTag: 'ul' | 'ol' = isOrdered ? 'ol' : 'ul';
-          const placeholderIdx = parts.lastIndexOf('<!-- over -->');
-          if (placeholderIdx !== -1) {
-            parts[placeholderIdx] = `<${expectedTag}>`;
-            listStack[listStack.length - 1] = expectedTag;
-          }
+        let frame = listStack[listStack.length - 1];
+        if (!frame) {
+          frame = {
+            tag: isOrdered ? 'ol' : 'ul',
+            openIdx: parts.length,
+            decided: true,
+            itemOpen: false,
+            itemIdx: -1,
+            hasItems: false,
+          };
+          listStack.push(frame);
+          parts.push(`<${frame.tag}>`);
+        } else if (!frame.decided) {
+          // Fix the placeholder now that the first item names the list type
+          frame.tag = isOrdered ? 'ol' : 'ul';
+          parts[frame.openIdx] = `<${frame.tag}>`;
+          frame.decided = true;
         }
+
+        closeItem(frame);
 
         // Strip leading marker
         let itemText = text;
         if (isOrdered) {
-          itemText = text.replace(/^\d+[.)]\s*/, '').trim();
+          itemText = text.replace(/^\d+[.)]?\s*/, '').trim();
         } else if (isUnordered) {
-          itemText = text.replace(/^[*\-]\s*/, '').trim();
+          itemText = text.replace(/^[*-]\s*/, '').trim();
         }
 
-        parts.push(`<li>${renderInline(itemText)}</li>`);
+        frame.itemIdx = parts.length;
+        frame.itemOpen = true;
+        frame.hasItems = true;
+        parts.push(`<li>${renderInline(itemText)}`);
         continue;
       }
 
       // =back: end a list
       if (cmd === 'back') {
-        if (listStack.length > 0) {
-          const tag = listStack.pop();
-          // Remove the placeholder if it was never replaced
-          const placeholderIdx = parts.lastIndexOf('<!-- over -->');
-          if (placeholderIdx !== -1) {
-            parts[placeholderIdx] = `<${tag ?? 'ul'}>`;
-          }
-          parts.push(`</${tag ?? 'ul'}>`);
-        }
+        closeList();
         continue;
       }
 
@@ -253,22 +345,20 @@ function renderBlocks(blocks: Block[]): string {
 
       // Unknown command: treat as paragraph
       if (text) {
-        parts.push(`<p>${renderInline(text)}</p>`);
+        pushBodyBlock(`<p>${renderInline(text)}</p>`);
       }
       continue;
     }
 
     if (block.kind === 'verbatim') {
-      closeAllLists();
       // Compute common indentation to strip
       const stripped = stripCommonIndent(block.lines);
-      parts.push(`<pre><code>${escapeHtml(stripped.join('\n'))}</code></pre>`);
+      pushBodyBlock(`<pre><code>${escapeHtml(stripped.join('\n'))}</code></pre>`);
       continue;
     }
 
     if (block.kind === 'para') {
-      closeAllLists();
-      parts.push(`<p>${renderInline(block.text)}</p>`);
+      pushBodyBlock(`<p>${renderInline(block.text)}</p>`);
       continue;
     }
   }
@@ -276,35 +366,126 @@ function renderBlocks(blocks: Block[]): string {
   closeAllLists();
 
   // Remove any remaining placeholder comments (e.g. =over with no =item)
-  return parts.filter((p) => p !== '<!-- over -->').join('\n');
+  return parts.filter((p) => p !== LIST_PLACEHOLDER).join('\n');
 }
 
 // ---------------------------------------------------------------------------
 // Inline formatting: B<>, I<>, C<>, L<>, E<>, S<>, X<>
 // ---------------------------------------------------------------------------
 
+/** Letters that introduce a POD formatting code. */
+const INLINE_CODE_LETTERS = 'BICLESFZX';
+
+/** One located formatting code: `C<…>`, `C<< … >>`, `C<<< … >>>`, … */
+interface InlineSequence {
+  /** The code letter, e.g. `B`. */
+  code: string;
+  /** Content between the delimiters, with the required padding removed. */
+  inner: string;
+  /** Index just past the closing delimiter. */
+  end: number;
+}
+
+/**
+ * Find the `>` that closes a single-angle code, skipping nested codes.
+ *
+ * `B<C<fetch>>` closes at the second `>`, not the first: the first belongs to
+ * the nested `C<…>`. Stopping at the first `>` splits the sequence and leaves
+ * the remainder as prose.
+ */
+function findSingleAngleEnd(text: string, from: number): number {
+  let depth = 1;
+  for (let i = from; i < text.length; i += 1) {
+    const ch = text[i] ?? '';
+    if (INLINE_CODE_LETTERS.includes(ch) && text[i + 1] === '<') {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (ch === '>') {
+      depth -= 1;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+/**
+ * Match a formatting code starting at `at`, or return undefined.
+ *
+ * perlpodspec allows any number of angle brackets so long as the counts match,
+ * and requires whitespace just inside both delimiters once there are two or
+ * more. That whitespace is padding, not content, so it is stripped here.
+ */
+function matchInlineSequence(text: string, at: number): InlineSequence | undefined {
+  const code = text[at] ?? '';
+  if (!INLINE_CODE_LETTERS.includes(code) || text[at + 1] !== '<') {
+    return undefined;
+  }
+
+  let opening = 0;
+  while (text[at + 1 + opening] === '<') {
+    opening += 1;
+  }
+  const contentStart = at + 1 + opening;
+
+  if (opening === 1) {
+    const close = findSingleAngleEnd(text, contentStart);
+    return close === -1
+      ? undefined
+      : { code, inner: text.slice(contentStart, close), end: close + 1 };
+  }
+
+  // Two or more angles: padding whitespace is mandatory on both sides.
+  if (!/\s/.test(text[contentStart] ?? '')) {
+    return undefined;
+  }
+  const closer = '>'.repeat(opening);
+  for (let i = contentStart + 1; i + opening <= text.length; i += 1) {
+    if (text.startsWith(closer, i) && /\s/.test(text[i - 1] ?? '')) {
+      return { code, inner: text.slice(contentStart, i).trim(), end: i + opening };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Render POD inline formatting codes and escape everything else.
+ *
+ * Literal text between sequences is escaped as it is scanned. Escaping cannot
+ * run over the finished output instead: the rendered codes are real HTML by
+ * then, so any pattern that spares them also spares prose that happens to look
+ * like a tag — `Use <angle> markers` would reach the webview as markup and its
+ * text would silently vanish from the preview.
+ */
 function renderInline(text: string): string {
-  // Process inline codes. POD allows extended delimiters (B<< >> etc.) but
-  // we handle the common single-delimiter case for practicality.
-  return (
-    text
-      // Extended double-angle delimiters first
-      .replace(/([BICLESFZX])<<\s+(.*?)\s+>>/g, (_m, code, inner) => renderInlineCode(code, inner))
-      // Single-angle delimiters
-      .replace(/([BICLESFZX])<([^>]*)>/g, (_m, code, inner) => renderInlineCode(code, inner))
-      // Finally escape any remaining bare HTML
-      .replace(/&(?!(?:[a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;')
-      .replace(/<(?![a-zA-Z/])/g, '&lt;')
-      .replace(/(?<![a-zA-Z"])>/g, '&gt;')
-  );
+  let out = '';
+  let i = 0;
+
+  while (i < text.length) {
+    const sequence = matchInlineSequence(text, i);
+    if (sequence === undefined) {
+      out += escapeHtml(text[i] ?? '');
+      i += 1;
+      continue;
+    }
+    out += renderInlineCode(sequence.code, sequence.inner);
+    i = sequence.end;
+  }
+
+  return out;
 }
 
 function renderInlineCode(code: string, inner: string): string {
   switch (code) {
+    // B, I and S may contain further formatting codes, so their content is
+    // rendered rather than escaped. C and F are literal text by definition.
     case 'B':
-      return `<strong>${escapeHtml(inner)}</strong>`;
+      return `<strong>${renderInline(inner)}</strong>`;
     case 'I':
-      return `<em>${escapeHtml(inner)}</em>`;
+      return `<em>${renderInline(inner)}</em>`;
     case 'C':
       return `<code>${escapeHtml(inner)}</code>`;
     case 'F':
@@ -314,7 +495,7 @@ function renderInlineCode(code: string, inner: string): string {
     case 'E':
       return renderEscapeCode(inner);
     case 'S':
-      return `<span class="no-break">${escapeHtml(inner)}</span>`;
+      return `<span class="no-break">${renderInline(inner)}</span>`;
     case 'Z':
       return ''; // zero-width
     case 'X':
@@ -331,9 +512,9 @@ function renderLinkCode(inner: string): string {
     const label = inner.slice(0, pipeIdx).trim();
     const target = inner.slice(pipeIdx + 1).trim();
     if (/^https?:\/\//.test(target)) {
-      return `<a href="${escapeAttr(target)}">${escapeHtml(label)}</a>`;
+      return `<a href="${escapeAttr(target)}">${renderInline(label)}</a>`;
     }
-    return `<a href="#${escapeAttr(target.replace(/\s+/g, '-').toLowerCase())}">${escapeHtml(label)}</a>`;
+    return `<a href="#${escapeAttr(target.replace(/\s+/g, '-').toLowerCase())}">${renderInline(label)}</a>`;
   }
 
   if (/^https?:\/\//.test(inner)) {

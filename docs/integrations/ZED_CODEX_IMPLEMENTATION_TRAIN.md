@@ -30,11 +30,12 @@ The train was reconciled against GitHub on August 16, 2026.
 |---|---|---|
 | P00 — #7975 / PR #8023 | merged; issue closed | historical substrate only |
 | P01 — #7980 / PR #8365 | authority merged; executable evidence not proven | do not rebuild; proceed to P06 |
-| P02 — #7984 / PR #8369 | authority merged; executable evidence not proven | do not rebuild; P03 is now unblocked |
+| P02 — #7984 / PR #8369 | authority merged; executable evidence not proven | do not rebuild; P03 and P07 are now unblocked |
 | P03 — #8647 | ready | add the deterministic fixture and expectation contract from current `main` |
 | P04 — #7990 / PR #8373 | authority merged; executable evidence not proven | do not rebuild; execution is owned by P12 |
 | P05 — #7992 / PR #8379 | authority merged; executable evidence not proven | do not rebuild; execution is owned by P13 |
 | P06 — #8661 | ready | add the read-only public-asset workflow from current `main` |
+| P07 — #8753 | ready | add the managed-route and cache-recovery authority from current `main` |
 | P09 — #9468 | ready | add the fail-closed support projection substrate from current `main` |
 | C01 — #9483 | ready | add stable checks, semantic routing, and receipt invalidation from current `main` |
 | D01 — #9485 | ready, non-blocking | add the static `perl-dap` adapter authority independently of the LSP train |
@@ -44,8 +45,9 @@ The first core wave is therefore:
 ```text
 Codex A -> P03 / #8647
 Codex B -> P06 / #8661
-Codex C -> P09 / #9468
-Codex D -> C01 / #9483
+Codex C -> P07 / #8753
+Codex D -> P09 / #9468
+Codex E -> C01 / #9483
 ```
 
 The first non-blocking debugger wave is D01 / #9485. DA01 / #9516 and D02 / #9486 stay closed until D01 establishes the exact adapter/configuration/target subject.
@@ -136,6 +138,8 @@ Add one pinned, read-only Windows/Linux/macOS workflow that invokes the merged P
 ### P07 — #8753: managed route and cache-recovery authority
 
 **Depends on:** P01 + P02.
+**State:** ready now; both dependencies landed their authority increments.
+
 Define managed first-mile, restart, disable/shutdown, exact known-good selection, recovery scenarios, cleanup boundaries, shared validator, bounded host seam, and `not_run` template. Keep explicit/PATH and managed routes independent.
 
 ### P08 — #9467: official-registry host-driver authority
