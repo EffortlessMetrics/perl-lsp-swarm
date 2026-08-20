@@ -563,14 +563,31 @@ fn expect_exact_error(result: Result<(), String>, expected: &str) -> Result<(), 
 }
 
 #[test]
-fn validate_exact_error_variants_for_common_fields() -> Result<(), String> {
-    let mut schema = physical_contract();
-    schema.schema_version = "perl_core_harness.target_selection.v0".to_string();
-    expect_exact_error(
-        schema.validate(),
-        "target component_base uses unsupported schema perl_core_harness.target_selection.v0",
-    )?;
+fn validate_rejects_unsupported_schema_version_with_exact_message() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.schema_version = "perl_core_harness.target_selection.v0".to_string();
 
+    assert_eq!(
+        contract.validate().expect_err("unsupported schema must be rejected"),
+        "target component_base uses unsupported schema perl_core_harness.target_selection.v0"
+    );
+    Ok(())
+}
+
+#[test]
+fn validate_rejects_repeated_upstream_alias_with_exact_message() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.aliases = vec![contract.upstream_name.clone()];
+
+    assert_eq!(
+        contract.validate().expect_err("repeated upstream alias must be rejected"),
+        "target component_base repeats its upstream name as an alias"
+    );
+    Ok(())
+}
+
+#[test]
+fn validate_exact_error_variants_for_common_fields() -> Result<(), String> {
     let mut target_id = physical_contract();
     target_id.target_id = "component-base".to_string();
     expect_exact_error(target_id.validate(), "target ID must match [a-z0-9_]+: component-base")?;
@@ -584,13 +601,6 @@ fn validate_exact_error_variants_for_common_fields() -> Result<(), String> {
     expect_exact_error(
         aliases.validate(),
         "target alias values must be strictly sorted and unique",
-    )?;
-
-    let mut repeated_alias = physical_contract();
-    repeated_alias.aliases = vec![repeated_alias.upstream_name.clone()];
-    expect_exact_error(
-        repeated_alias.validate(),
-        "target component_base repeats its upstream name as an alias",
     )?;
 
     let mut display_name = physical_contract();
