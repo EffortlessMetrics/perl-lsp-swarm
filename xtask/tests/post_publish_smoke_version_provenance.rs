@@ -105,6 +105,22 @@ impl Resolution {
     fn runs(&self) -> bool {
         self.should_run.as_deref() == Some("true")
     }
+
+    /// Every refusal here is a deliberate `exit 0` with `should_run=false`, so
+    /// the smoke job *skips*. Asserting only the outputs would let a resolver
+    /// that writes them and then exits nonzero pass — turning an intended skip
+    /// into a red workflow step, which reads as a broken release lane rather
+    /// than an absent receipt.
+    fn assert_step_succeeded(&self, context: &str) -> Result<()> {
+        if !self.output.status.success() {
+            bail!(
+                "{context}: the resolver step must exit 0, got {:?}\n{}",
+                self.output.status.code(),
+                self.combined()
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Execute the resolver with a controlled receipt.
@@ -168,6 +184,7 @@ fn receipt_for(version: &str) -> String {
 #[test]
 fn release_shaped_ref_without_a_receipt_yields_no_verdict() -> Result<()> {
     let resolved = resolve("workflow_run", "success", None)?;
+    resolved.assert_step_succeeded("absent receipt")?;
 
     if resolved.runs() {
         bail!(
@@ -191,6 +208,7 @@ fn release_shaped_ref_without_a_receipt_yields_no_verdict() -> Result<()> {
 #[test]
 fn receipt_version_is_used() -> Result<()> {
     let resolved = resolve("workflow_run", "success", Some(&receipt_for(PUBLISHED)))?;
+    resolved.assert_step_succeeded("receipted publication")?;
 
     if !resolved.runs() {
         bail!("a receipted publication must be smoke-tested:\n{}", resolved.combined());
@@ -211,6 +229,7 @@ fn receipt_version_is_used() -> Result<()> {
 #[test]
 fn the_ref_cannot_override_the_receipt() -> Result<()> {
     let resolved = resolve("workflow_run", "success", Some(&receipt_for(PUBLISHED)))?;
+    resolved.assert_step_succeeded("receipt versus ref")?;
 
     if resolved.version.as_deref() == Some(FABRICATED) {
         bail!("the ref name outranked the receipt:\n{}", resolved.combined());
@@ -239,6 +258,7 @@ fn the_ref_cannot_override_the_receipt() -> Result<()> {
 fn unusable_receipt_fails_closed() -> Result<()> {
     for body in [r#"{"subject_sha":"abc"}"#, "not json at all", "{}"] {
         let resolved = resolve("workflow_run", "success", Some(body))?;
+        resolved.assert_step_succeeded(&format!("unusable receipt {body:?}"))?;
         if resolved.runs() {
             bail!(
                 "receipt {body:?} must not produce a verdict, got version={:?}\n{}",
@@ -250,11 +270,29 @@ fn unusable_receipt_fails_closed() -> Result<()> {
     Ok(())
 }
 
+/// A receipt whose version is not a version is a corrupt instrument, and the
+/// only path here that must fail the step rather than skip it. Skipping would
+/// hide a broken publish workflow behind a quiet "nothing to verify"; the
+/// operator needs to see it.
+#[test]
+fn receipt_carrying_a_malformed_version_fails_the_step() -> Result<()> {
+    let resolved = resolve("workflow_run", "success", Some(&receipt_for("banana")))?;
+
+    if resolved.output.status.success() {
+        bail!("a corrupt receipt version must fail the step:\n{}", resolved.combined());
+    }
+    if resolved.runs() {
+        bail!("a corrupt receipt version must not be smoke-tested:\n{}", resolved.combined());
+    }
+    Ok(())
+}
+
 /// A failed publish must not be smoke-tested even if a receipt is somehow
 /// present, since the receipt would predate the failure.
 #[test]
 fn unsuccessful_upstream_run_is_skipped() -> Result<()> {
     let resolved = resolve("workflow_run", "failure", Some(&receipt_for(PUBLISHED)))?;
+    resolved.assert_step_succeeded("failed upstream run")?;
     if resolved.runs() {
         bail!("a failed publish must not be smoke-tested:\n{}", resolved.combined());
     }
