@@ -4830,7 +4830,24 @@ profile = "recommended"
         let paths = config.get_system_inc().to_vec();
         let elapsed = start.elapsed();
 
-        assert_eq!(outcome, SystemIncProbeOutcome::TimedOut);
+        // The contract under test is bounded, empty, and cached — NOT which
+        // failure class the runner's perl produces. The resolved interpreter
+        // varies by environment (msys-vs-Strawberry on Windows, shimmed
+        // perls on CI) and a `-e "sleep 10"` program can exit nonzero or
+        // fail to spawn before the 1s timeout fires; both were observed
+        // (CI red with NonZeroExit where the author saw TimedOut locally).
+        // SuccessfulEmpty/Paths WOULD be failures here: the sleep program
+        // must never produce paths.
+        assert!(
+            matches!(
+                outcome,
+                SystemIncProbeOutcome::TimedOut
+                    | SystemIncProbeOutcome::NonZeroExit
+                    | SystemIncProbeOutcome::SpawnFailed
+                    | SystemIncProbeOutcome::Unavailable
+            ),
+            "expected a bounded failure outcome, got {outcome:?}"
+        );
         assert!(paths.is_empty(), "expected empty @INC on timeout, got {paths:?}");
         // Generous bound: SYSTEM_INC_PROBE_TIMEOUT (1s) + spawn + poll overhead.
         assert!(
