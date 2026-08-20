@@ -16,26 +16,40 @@ use std::path::PathBuf;
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
 
-fn required_workflows(policy: &TomlValue) -> BTreeSet<String> {
-    ["check", "checks"]
+fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+    let mut workflows = BTreeSet::new();
+    for check in ["check", "checks"]
         .into_iter()
         .filter_map(|table| policy.get(table).and_then(TomlValue::as_array))
         .flatten()
         .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
-        .filter_map(|check| check.get("workflow").and_then(TomlValue::as_str))
-        .filter_map(|workflow| workflow.rsplit('/').next())
-        .map(str::to_owned)
-        .collect()
+    {
+        let name =
+            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+        let workflow = check
+            .get("workflow")
+            .and_then(TomlValue::as_str)
+            .ok_or_else(|| format!("required check `{name}` must declare a workflow path"))?;
+        let workflow_name = workflow
+            .rsplit('/')
+            .next()
+            .filter(|workflow_name| !workflow_name.is_empty())
+            .ok_or_else(|| format!("required check `{name}` has an empty workflow path"))?;
+        workflows.insert(workflow_name.to_owned());
+    }
+    Ok(workflows)
+}
+
+fn workflow_on(workflow: &Value) -> Option<&Value> {
+    workflow.as_mapping()?.iter().find_map(|(key, value)| match key {
+        Value::String(key) if key == "on" => Some(value),
+        Value::Bool(true) => Some(value),
+        _ => None,
+    })
 }
 
 fn workflow_dispatch_trigger(workflow: &Value) -> bool {
-    let Some(triggers) = workflow.as_mapping().and_then(|mapping| {
-        mapping.iter().find_map(|(key, value)| match key {
-            Value::String(key) if key == "on" => Some(value),
-            Value::Bool(true) => Some(value),
-            _ => None,
-        })
-    }) else {
+    let Some(triggers) = workflow_on(workflow) else {
         return false;
     };
 
@@ -126,15 +140,12 @@ fn assert_dispatch_loop_behavior(
         .collect::<Vec<_>>();
     assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
 
-    let middle_workflow = dispatch_order
-        .get(dispatch_order.len() / 2)
-        .ok_or("required workflow set must not be empty")?;
-    let (failure_output, failure_calls) =
-        run_dispatch(Some(middle_workflow), "middle-failure.log")?;
+    let first_workflow = dispatch_order.first().ok_or("required workflow set must not be empty")?;
+    let (failure_output, failure_calls) = run_dispatch(Some(first_workflow), "first-failure.log")?;
     assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
     assert_eq!(
         failure_calls, expected_calls,
-        "a middle dispatch failure must not skip later required workflows"
+        "a failed dispatch must not skip later required workflows"
     );
 
     Ok(())
@@ -328,7 +339,7 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
     let policy_path = root.join(".ci/policies/required-checks.toml");
     let policy_text = fs::read_to_string(policy_path)?;
     let policy: TomlValue = toml::from_str(&policy_text)?;
-    let required_workflows = required_workflows(&policy);
+    let required_workflows = required_workflows(&policy)?;
     assert!(
         !required_workflows.is_empty(),
         "required-checks.toml must declare at least one required workflow"
