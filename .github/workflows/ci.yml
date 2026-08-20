@@ -308,6 +308,15 @@ jobs:
       - name: Warm xtask
         run: cargo build -p xtask --locked
 
+      # Build the two cold inline-completion test targets before the independent
+      # pr-fast gates start.  The gates retain their separate 150s budgets and
+      # still execute the tests; this warm-up keeps those budgets from measuring
+      # an unrelated first build on a clean runner.
+      - name: Warm inline-completion test targets
+        run: |
+          cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run
+          cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run
+
       - name: Run PR-fast via shared xtask gate runner
         run: |
           set +e

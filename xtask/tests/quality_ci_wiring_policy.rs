@@ -49,6 +49,21 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
         smoke.contains("\"$CARGO_TARGET_DIR/debug/xtask\" gates --tier pr-fast"),
         "PR Smoke must invoke the warmed xtask from its selected cargo target"
     );
+    let warm_targets_start = must_some(smoke.find("- name: Warm inline-completion test targets"));
+    assert!(
+        warm_start < warm_targets_start,
+        "PR Smoke must warm inline-completion targets after warming xtask"
+    );
+    let warm_targets = must_some(workflow_step(smoke, "Warm inline-completion test targets"));
+    for command in [
+        "cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run",
+        "cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run",
+    ] {
+        assert!(
+            warm_targets.contains(command),
+            "PR Smoke must prebuild `{command}` before running independent gates"
+        );
+    }
 }
 
 #[test]
