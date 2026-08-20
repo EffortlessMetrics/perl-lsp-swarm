@@ -92,6 +92,85 @@ function validateGeneration(generation: number): string[] {
   return [];
 }
 
+function validateManagedCandidateManifestRecord(manifest: unknown): string[] {
+  if (typeof manifest !== 'object' || manifest === null) {
+    return ['candidate manifest must be an object'];
+  }
+
+  const record = manifest as Partial<ManagedCandidateManifest>;
+  const errors: string[] = [];
+  if (record.schema_version !== 'managed_candidate_manifest.v1') {
+    errors.push('candidate manifest carries an unsupported schema version');
+  }
+  if (typeof record.candidate_id !== 'string') {
+    errors.push('candidate manifest must carry a string candidate id');
+  }
+  const subject = record.subject;
+  if (typeof subject !== 'object' || subject === null) {
+    errors.push('candidate manifest subject must be an object');
+  } else {
+    const candidateSubject = subject as Partial<ManagedCandidateManifest['subject']>;
+    if (typeof candidateSubject.release !== 'string') {
+      errors.push('candidate manifest release must be a string');
+    }
+    if (typeof candidateSubject.version !== 'string') {
+      errors.push('candidate manifest version must be a string');
+    }
+    if (typeof candidateSubject.target !== 'string') {
+      errors.push('candidate manifest target must be a string');
+    }
+    if (typeof candidateSubject.topology_digest !== 'string') {
+      errors.push('candidate manifest topology digest must be a string');
+    }
+    if (typeof candidateSubject.perllsp_digest !== 'string') {
+      errors.push('candidate manifest perllsp digest must be a string');
+    }
+    if (
+      typeof candidateSubject.perl_dap_digest !== 'string' &&
+      candidateSubject.perl_dap_digest !== null
+    ) {
+      errors.push('candidate manifest perl-dap digest must be a string or null');
+    }
+  }
+  const verification = record.verification;
+  if (typeof verification !== 'object' || verification === null) {
+    errors.push('candidate manifest verification must be an object');
+  } else {
+    const candidateVerification = verification as Partial<ManagedCandidateManifest['verification']>;
+    if (typeof candidateVerification.perllsp !== 'string') {
+      errors.push('candidate manifest perllsp verification must be a string');
+    }
+    if (typeof candidateVerification.perl_dap !== 'string') {
+      errors.push('candidate manifest perl-dap verification must be a string');
+    }
+    if (typeof candidateVerification.topology !== 'string') {
+      errors.push('candidate manifest topology verification must be a string');
+    }
+    if (typeof candidateVerification.provenance !== 'string') {
+      errors.push('candidate manifest provenance verification must be a string');
+    }
+  }
+
+  if (errors.length > 0) {
+    return errors;
+  }
+  try {
+    return validateManagedCandidateManifest(record as ManagedCandidateManifest);
+  } catch {
+    return ['candidate manifest is not structurally valid'];
+  }
+}
+
+function validateManagedCandidateCatalogEntry(entry: unknown): string[] {
+  if (typeof entry !== 'object' || entry === null) {
+    return ['candidate catalog entry must be an object'];
+  }
+  const record = entry as Partial<ManagedCandidateCatalogEntry>;
+  const errors = record.immutable === true ? [] : ['candidate catalog entry must be immutable'];
+  errors.push(...validateManagedCandidateManifestRecord(record.manifest));
+  return errors;
+}
+
 function validateSessionId(sessionId: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(sessionId)) {
     throw new Error('host session id must be bounded and path-independent');
@@ -154,30 +233,51 @@ export function validateManagedCurrentSelection(
   candidates: ManagedCandidateCatalogEntry[],
 ): string[] {
   const errors: string[] = [];
+  if (typeof selection !== 'object' || selection === null) {
+    return ['current selection must be an object'];
+  }
+  const record = selection as Partial<ManagedCurrentSelection>;
   // A record deserialized from disk may claim a schema this version cannot
   // interpret; reject it rather than reading known fields off unknown bytes.
-  if (selection.schema_version !== 'managed_current_selection.v1') {
+  if (record.schema_version !== 'managed_current_selection.v1') {
     errors.push('current selection carries an unsupported schema version');
   }
-  errors.push(...validateGeneration(selection.selection_generation));
+  if (typeof record.selection_generation !== 'number') {
+    errors.push('selection generation must be a positive integer');
+  } else {
+    errors.push(...validateGeneration(record.selection_generation));
+  }
   if (
-    typeof selection.candidate_id !== 'string' ||
-    !isCanonicalManagedCandidateId(selection.candidate_id)
+    typeof record.candidate_id !== 'string' ||
+    !isCanonicalManagedCandidateId(record.candidate_id)
   ) {
     errors.push('current selection must name a canonical managed candidate');
   }
 
-  const selected = candidates.find(
-    (entry) => entry.manifest.candidate_id === selection.candidate_id,
+  if (typeof record.candidate_id !== 'string') {
+    return errors;
+  }
+
+  const catalog = Array.isArray(candidates) ? candidates : [];
+  const selected = catalog.find(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof entry.manifest === 'object' &&
+      entry.manifest !== null &&
+      entry.manifest.candidate_id === record.candidate_id,
   );
   if (!selected) {
     errors.push('current selection references an unknown candidate manifest');
     return errors;
   }
-  if (!selected.immutable) {
-    errors.push('current selection candidate must be immutable');
-  }
-  errors.push(...validateManagedCandidateManifest(selected.manifest));
+  errors.push(
+    ...validateManagedCandidateCatalogEntry(selected).map((error) =>
+      error === 'candidate catalog entry must be immutable'
+        ? 'current selection candidate must be immutable'
+        : error,
+    ),
+  );
   return errors;
 }
 
@@ -224,24 +324,40 @@ export function releaseManagedHostReference(
 export function resolveManagedCandidateForHost(
   input: ManagedHostSelectionInput,
 ): ManagedHostSelectionOutcome {
-  const candidateIds = new Set(input.candidates.map((entry) => entry.manifest.candidate_id));
-  const compatible = new Set(input.compatible_candidate_ids);
+  const candidates = Array.isArray(input.candidates) ? input.candidates : [];
+  const validCandidates = candidates.filter(
+    (entry) => validateManagedCandidateCatalogEntry(entry).length === 0,
+  );
+  const candidateIds = new Set(validCandidates.map((entry) => entry.manifest.candidate_id));
+  const compatible = new Set(
+    Array.isArray(input.compatible_candidate_ids) ? input.compatible_candidate_ids : [],
+  );
+  const currentErrors = validateManagedCurrentSelection(input.current, candidates);
+  const currentCandidateId =
+    typeof input.current === 'object' && input.current !== null
+      ? (input.current as Partial<ManagedCurrentSelection>).candidate_id
+      : undefined;
+  const validCurrentId =
+    currentErrors.length === 0 && typeof currentCandidateId === 'string'
+      ? currentCandidateId
+      : null;
   const usable = (candidateId: string): boolean =>
     candidateIds.has(candidateId) && compatible.has(candidateId);
 
   // A running host remains bound to the exact candidate it already launched.
   // Moving the shared default never hot-swaps its process identity.
-  if (input.running_candidate_id !== null && usable(input.running_candidate_id)) {
+  if (typeof input.running_candidate_id === 'string' && usable(input.running_candidate_id)) {
     return { kind: 'bound_running', candidate_id: input.running_candidate_id };
   }
 
   // Side-by-side compatibility is host-local selection only. Do not mutate the
   // global current/default record merely because an older client needs another
   // retained candidate.
-  const replacement = usable(input.current.candidate_id)
-    ? input.current.candidate_id
-    : (input.candidates.find((entry) => compatible.has(entry.manifest.candidate_id))?.manifest
-        .candidate_id ?? null);
+  const replacement =
+    validCurrentId !== null && usable(validCurrentId)
+      ? validCurrentId
+      : (validCandidates.find((entry) => compatible.has(entry.manifest.candidate_id))?.manifest
+          .candidate_id ?? null);
 
   if (replacement === null) {
     return { kind: 'no_compatible_candidate' };
@@ -254,7 +370,7 @@ export function resolveManagedCandidateForHost(
     return { kind: 'restart_required', candidate_id: replacement };
   }
 
-  return replacement === input.current.candidate_id
+  return replacement === validCurrentId
     ? { kind: 'selected_current', candidate_id: replacement }
     : { kind: 'selected_compatible', candidate_id: replacement };
 }

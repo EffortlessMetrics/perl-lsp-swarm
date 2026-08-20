@@ -187,6 +187,61 @@ describe('managed candidate publication and selection', () => {
     ).toEqual({ kind: 'selected_current', candidate_id: candidate.manifest.candidate_id });
   });
 
+  test('does not treat a current selection with an invalid schema or generation as current', () => {
+    const candidate = entry('a');
+    const valid = publishManagedCurrentSelection(candidate.manifest, null);
+    const malformed = {
+      ...valid,
+      schema_version: 'managed_current_selection.v2',
+      selection_generation: 0,
+    } as unknown as ManagedCurrentSelection;
+
+    expect(
+      resolveManagedCandidateForHost({
+        current: malformed,
+        candidates: [candidate],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'selected_compatible', candidate_id: candidate.manifest.candidate_id });
+  });
+
+  test('does not select a catalog entry with an invalid manifest schema', () => {
+    const candidate = entry('a');
+    const current = publishManagedCurrentSelection(candidate.manifest, null);
+    const malformed = {
+      ...candidate,
+      manifest: { ...candidate.manifest, schema_version: 'managed_candidate_manifest.v2' },
+    } as unknown as ManagedCandidateCatalogEntry;
+
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [malformed],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'no_compatible_candidate' });
+  });
+
+  test('does not select a catalog entry whose identity no longer matches its subject', () => {
+    const candidate = entry('a');
+    const current = publishManagedCurrentSelection(candidate.manifest, null);
+    const malformed = {
+      ...candidate,
+      manifest: { ...candidate.manifest, candidate_id: `candidate-${'0'.repeat(64)}` },
+    } as unknown as ManagedCandidateCatalogEntry;
+
+    expect(
+      resolveManagedCandidateForHost({
+        current,
+        candidates: [malformed],
+        compatible_candidate_ids: [candidate.manifest.candidate_id],
+        running_candidate_id: null,
+      }),
+    ).toEqual({ kind: 'no_compatible_candidate' });
+  });
+
   test('lets an older client select a compatible retained candidate without downgrading global current', () => {
     const oldCandidate = entry('a');
     const newCandidate = entry('f');
