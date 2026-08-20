@@ -90,7 +90,9 @@ fn array_and_hash_literals_retain_structural_children() {
         NodeKind::HashLiteral { pairs } => {
             hash_pairs = Some(pairs.len());
         }
-        NodeKind::String { value, interpolated } if value == "\"beta\"" && !*interpolated => {
+        // "beta" is a double-quoted string — interpolated: true in the AST.
+        // The value field retains the surrounding double-quote characters.
+        NodeKind::String { value, interpolated } if value == "\"beta\"" && *interpolated => {
             hash_value = true;
         }
         _ => {}
