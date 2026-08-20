@@ -25,7 +25,7 @@
 | perl-core-harness | — | 218 |
 | perl-core-harness-types | — | 6 |
 | perl-corpus | — | 208 |
-| perl-dap | — | 689 |
+| perl-dap | — | 701 |
 | perl-diagnostics | — | 17 |
 | perl-incremental-parsing | — | 13 |
 | perl-kwalitee | — | 82 |
