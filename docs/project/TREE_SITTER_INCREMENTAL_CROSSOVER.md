@@ -10,9 +10,9 @@ All three profiles were run from commit `085c09bb8c8b9950264d9e8322ca263228860da
 with `rustc 1.95.0 (59807616e 2026-04-14)`:
 
 ```text
-rtk cargo xtask tree-sitter-incremental-proof --profile pr
-rtk cargo xtask tree-sitter-incremental-proof --profile nightly
-rtk cargo xtask tree-sitter-incremental-proof --profile release
+cargo xtask tree-sitter-incremental-proof --profile pr
+cargo xtask tree-sitter-incremental-proof --profile nightly
+cargo xtask tree-sitter-incremental-proof --profile release
 ```
 
 The machine-readable receipts are written to
