@@ -1004,6 +1004,12 @@ jobs:
       - name: Release-asset identity contract (required merge surface)
         run: cargo test -p xtask --test publish_extension_release_identity --locked -- --nocapture
 
+      # Same reasoning for the publication receipt the post-publish smoke test
+      # consumes (#9593). If this drifts unobserved the smoke lane silently
+      # goes back to certifying a version from a ref shape.
+      - name: Publish-provenance contract (required merge surface)
+        run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
+
   lsp-memory-smoke:
     name: LSP Memory Smoke
     runs-on: ubuntu-24.04
