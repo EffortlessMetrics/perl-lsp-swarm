@@ -46,7 +46,7 @@
 
 use std::collections::BTreeSet;
 
-use perl_parser_core::pir::{LexicalBindingFact, LexicalExtractorReceipt, LexicalRole};
+use perl_parser_core::pir::{LexicalExtractorReceipt, LexicalRole};
 use perl_semantic_facts::{
     Confidence, Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
     ProviderFallbackState, ProviderSurface,
@@ -161,25 +161,30 @@ const RANGE_NEAR_MATCH_BYTES: usize = 2;
 /// to the actual variable token.  The legacy reference provider reports token
 /// ranges, so carrying the wider declaration anchor into the comparison would
 /// look like a compiler-only reference even though it is the same binding.
-fn lexical_fact_range(fact: &LexicalBindingFact) -> Option<(usize, usize)> {
-    let range = fact.source_anchor.range.as_ref()?;
-    if fact.role != LexicalRole::Write {
-        return Some((range.start, range.end));
+fn lexical_fact_range(
+    role: LexicalRole,
+    sigil: &str,
+    name: &str,
+    range: Option<(usize, usize)>,
+) -> Option<(usize, usize)> {
+    let (range_start, range_end) = range?;
+    if role != LexicalRole::Write {
+        return Some((range_start, range_end));
     }
 
-    let token_len = fact.name.sigil.len().checked_add(fact.name.name.len())?;
+    let token_len = sigil.len().checked_add(name.len())?;
     // The parser's widened declaration anchors have one of these stable
     // prefixes: `my `, `our `, `state `, `local `, or `for my ` (the latter
     // is anchored at `my`).  Refuse to infer a token start for any other
     // anchor shape; in particular, an anchor whose end extends beyond the
     // declaration token must remain unchanged rather than being truncated.
-    let prefix_len = range.end.checked_sub(range.start)?.checked_sub(token_len)?;
+    let prefix_len = range_end.checked_sub(range_start)?.checked_sub(token_len)?;
     if !matches!(prefix_len, 3 | 4 | 6 | 7 | 11) {
-        return Some((range.start, range.end));
+        return Some((range_start, range_end));
     }
-    let token_start = range.end.checked_sub(token_len)?;
-    let start = token_start.max(range.start);
-    Some((start, range.end))
+    let token_start = range_end.checked_sub(token_len)?;
+    let start = token_start.max(range_start);
+    Some((start, range_end))
 }
 
 impl PirShadowCompareReceipt {
@@ -325,7 +330,14 @@ pub fn shadow_references_with_pir(
         .facts
         .iter()
         .filter(|f| f.name.name == target_name && f.source_anchor.is_anchored())
-        .filter_map(lexical_fact_range)
+        .filter_map(|fact| {
+            lexical_fact_range(
+                fact.role,
+                &fact.name.sigil,
+                &fact.name.name,
+                fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)),
+            )
+        })
         .collect();
 
     let legacy_set: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
@@ -1093,52 +1105,27 @@ mod promote_tests {
 #[cfg(test)]
 mod tests {
     use super::{PirShadowRefusalReason, evaluate_refusal, lexical_fact_range};
-    use perl_parser_core::{
-        SourceLocation,
-        hir::{BodyOwnerKind, HirId},
-        pir::{LexicalBindingFact, LexicalName, LexicalRole, PirSourceAnchor},
-    };
-
-    fn fact(
-        start: usize,
-        end: usize,
-        sigil: &str,
-        name: &str,
-        role: LexicalRole,
-    ) -> LexicalBindingFact {
-        LexicalBindingFact {
-            name: LexicalName { sigil: sigil.to_owned(), name: name.to_owned() },
-            role,
-            source_anchor: PirSourceAnchor::explicit(
-                SourceLocation { start, end },
-                HirId::from_index(0),
-            ),
-            body_idx: 0,
-            body_owner: BodyOwnerKind::ProgramRoot,
-        }
-    }
+    use perl_parser_core::pir::LexicalRole;
 
     #[test]
     fn declaration_anchor_narrows_for_my_state_and_bare_prefixes() {
-        assert_eq!(lexical_fact_range(&fact(4, 9, "$", "i", LexicalRole::Write)), Some((7, 9)));
-        assert_eq!(lexical_fact_range(&fact(0, 5, "$", "x", LexicalRole::Write)), Some((3, 5)));
-        assert_eq!(lexical_fact_range(&fact(0, 8, "$", "s", LexicalRole::Write)), Some((6, 8)));
-        assert_eq!(lexical_fact_range(&fact(0, 6, "$", "v", LexicalRole::Write)), Some((4, 6)));
+        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "i", Some((4, 9))), Some((7, 9)));
+        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "x", Some((0, 5))), Some((3, 5)));
+        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "s", Some((0, 8))), Some((6, 8)));
+        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "v", Some((0, 6))), Some((4, 6)));
     }
 
     #[test]
     fn declaration_anchor_handles_sigils_and_unicode_byte_lengths() {
-        assert_eq!(lexical_fact_range(&fact(0, 6, "@", "xs", LexicalRole::Write)), Some((3, 6)));
-        assert_eq!(lexical_fact_range(&fact(0, 6, "$", "é", LexicalRole::Write)), Some((3, 6)));
-        assert_eq!(lexical_fact_range(&fact(0, 6, "%", "é", LexicalRole::Write)), Some((3, 6)));
+        assert_eq!(lexical_fact_range(LexicalRole::Write, "@", "xs", Some((0, 6))), Some((3, 6)));
+        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "é", Some((0, 6))), Some((3, 6)));
+        assert_eq!(lexical_fact_range(LexicalRole::Write, "%", "é", Some((0, 6))), Some((3, 6)));
     }
 
     #[test]
     fn non_terminal_anchor_end_is_not_truncated() {
-        let declaration = fact(0, 20, "$", "x", LexicalRole::Write);
-        let read = fact(0, 20, "$", "x", LexicalRole::Read);
-        assert_eq!(lexical_fact_range(&declaration), Some((0, 20)));
-        assert_eq!(lexical_fact_range(&read), Some((0, 20)));
+        assert_eq!(lexical_fact_range(LexicalRole::Write, "$", "x", Some((0, 20))), Some((0, 20)));
+        assert_eq!(lexical_fact_range(LexicalRole::Read, "$", "x", Some((0, 20))), Some((0, 20)));
     }
 
     // The five refusal guards, exercised with literal arguments so the two
