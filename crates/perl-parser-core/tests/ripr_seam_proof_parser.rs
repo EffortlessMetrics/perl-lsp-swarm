@@ -644,7 +644,10 @@ fn seam4_plain_scalar_unchanged() {
 // The current parser emits `ambiguous_function_call_expression` for unknown
 // lowercase barewords followed by sigiled arguments separated by a comma, because
 // `is_unknown_lowercase_bareword_call_pattern` returns false when the third token
-// after the function name is a comma (a guard against false positives).  The seam
+// after the function name is a comma (a guard against false positives).  This is
+// the accepted conservative contract from #1788 and PARSER_CONTRACTS.md: preserving
+// the ambiguous shape avoids classifying an unknown user-defined call as an
+// `IndirectCall`, whose downstream consumers assign different semantics.  The seam
 // boundary being protected here is that the deref of `$$self` is correctly
 // represented as `(unary_${} (variable $ self))` rather than being split into `$$`
 // (PID) and `self`, and that the comma-separated second argument `$_` is retained.
@@ -655,10 +658,11 @@ fn seam4_plain_scalar_unchanged() {
 fn seam4_indirect_call_with_deref_keeps_both_args() {
     let s = sexp("catfile $$self, $_;");
     assert!(
-        s.contains("(unary_${} (variable $ self))"),
-        "catfile first arg must be unary_${{}} deref (not split PID + ident); got: {s}"
+        s.contains(
+            "(ambiguous_function_call_expression (function) (unary_${} (variable $ self)) (variable $ _))"
+        ),
+        "catfile call must retain both args in one ambiguous call shape; got: {s}"
     );
-    assert!(s.contains("(variable $ _)"), "catfile second arg $_ must be present; got: {s}");
 }
 
 /// `catfile $$self, $_` — exact current sexp.
@@ -669,16 +673,13 @@ fn seam4_indirect_call_with_deref_keeps_both_args() {
 #[test]
 fn seam4_indirect_call_exact_sexp() {
     let s = sexp("catfile $$self, $_;");
-    // Current parser output: ambiguous_function_call_expression with both args intact.
+    // Current parser output: one ambiguous call node with both args intact.
     assert!(
-        s.contains("(ambiguous_function_call_expression"),
-        "catfile sexp should be ambiguous_function_call_expression; got: {s}"
+        s.contains(
+            "(ambiguous_function_call_expression (function) (unary_${} (variable $ self)) (variable $ _))"
+        ),
+        "catfile sexp must retain both args in one ambiguous call shape; got: {s}"
     );
-    assert!(
-        s.contains("(unary_${} (variable $ self))"),
-        "first arg ($$self deref) must be present; got: {s}"
-    );
-    assert!(s.contains("(variable $ _)"), "second arg ($_ ) must be present; got: {s}");
 }
 
 // ── NodeKind-level checks for deref ──────────────────────────────────────────
