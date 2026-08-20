@@ -207,7 +207,7 @@ The cost-per-outcome curve was not flat across the session.
 
 ### Keep command output focused
 
-Unrelated shell-hook warnings add little value to verification output. This was
+Unrelated shell-hook warnings add little value to verification output. They have
 low individual cost but cumulative distraction across 50+ commands; direct
 commands keep the evidence focused.
 
