@@ -1,5 +1,8 @@
 import type { ManagedCandidateManifest } from './managedCacheProtocol';
-import { validateManagedCandidateManifest } from './managedCacheProtocol';
+import {
+  isCanonicalManagedCandidateId,
+  validateManagedCandidateManifest,
+} from './managedCacheProtocol';
 
 export interface ManagedCurrentSelection {
   schema_version: 'managed_current_selection.v1';
@@ -149,7 +152,7 @@ export function createManagedHostReference(
   candidateId: string,
 ): ManagedHostCandidateReference {
   validateSessionId(sessionId);
-  if (!candidateId.startsWith('candidate-')) {
+  if (!isCanonicalManagedCandidateId(candidateId)) {
     throw new Error('host reference must name a canonical managed candidate');
   }
   return {

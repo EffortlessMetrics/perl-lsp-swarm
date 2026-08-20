@@ -206,6 +206,28 @@ describe('managed candidate publication and selection', () => {
     ).toBe(false);
   });
 
+  test('host references require the complete canonical candidate identity, not only the prefix', () => {
+    const canonical = entry('a').manifest.candidate_id;
+
+    expect(createManagedHostReference('session-ok', canonical).candidate_id).toBe(canonical);
+
+    const malformed = [
+      'candidate-', // prefix only, no digest
+      `candidate-${'a'.repeat(63)}`, // short digest
+      `candidate-${'a'.repeat(65)}`, // long digest
+      `candidate-${'g'.repeat(64)}`, // non-hex digest
+      'candidate-../../etc/passwd', // path-shaped suffix
+      `candidate-${'a'.repeat(32)}/${'a'.repeat(31)}`, // slash payload
+      `candidate-${'a'.repeat(32)}\\${'a'.repeat(31)}`, // backslash payload
+      `candidate-${'A'.repeat(64)}`, // minted identity is lowercase-only
+    ];
+    for (const candidateId of malformed) {
+      expect(() => createManagedHostReference('session-bad', candidateId)).toThrow(
+        'host reference must name a canonical managed candidate',
+      );
+    }
+  });
+
   test('reports no compatible candidate rather than an incompatible fallback', () => {
     const newCandidate = entry('f');
     const current = publishManagedCurrentSelection(newCandidate.manifest, null);
