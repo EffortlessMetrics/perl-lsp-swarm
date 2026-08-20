@@ -459,15 +459,7 @@ fn validate_global_target_namespace(entries: &[TargetMatrixEntry]) -> Result<(),
                 ));
             }
             parents.insert(parent);
-            parameter_sets.insert(
-                entry
-                    .contract
-                    .variant_parameters
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
+            parameter_sets.insert(entry.contract.variant_parameters.clone());
         }
         if parents.len() != 1 {
             return Err(format!(
@@ -592,19 +584,28 @@ fn visit_target(
     visiting: &mut BTreeSet<String>,
     visited: &mut BTreeSet<String>,
 ) -> Result<(), String> {
-    if visited.contains(target_id) {
-        return Ok(());
-    }
-    if !visiting.insert(target_id.to_string()) {
-        return Err(format!("target reference graph contains a cycle at {target_id}"));
-    }
-    if let Some(references) = edges.get(target_id) {
-        for reference in references {
-            visit_target(reference, edges, visiting, visited)?;
+    let mut stack = vec![(target_id.to_string(), false)];
+    while let Some((current, leaving)) = stack.pop() {
+        if leaving {
+            visiting.remove(&current);
+            visited.insert(current);
+            continue;
+        }
+        if visited.contains(&current) {
+            continue;
+        }
+        if !visiting.insert(current.clone()) {
+            return Err(format!("target reference graph contains a cycle at {current}"));
+        }
+        stack.push((current.clone(), true));
+        if let Some(references) = edges.get(&current) {
+            for reference in references.iter().rev() {
+                if !visited.contains(reference) {
+                    stack.push((reference.clone(), false));
+                }
+            }
         }
     }
-    visiting.remove(target_id);
-    visited.insert(target_id.to_string());
     Ok(())
 }
 
@@ -640,10 +641,14 @@ fn compute_topology_drift(
 
 fn target_topology_digest(contract: &TargetSelectionContract) -> Result<String, String> {
     let mut normalized = contract.clone();
-    normalized.display_name = "<display-name>".to_string();
     normalized.perl_version_row = "<version-row>".to_string();
     normalized.change_reason = None;
-    let bytes = serde_json::to_vec(&normalized)
+    let mut projection = serde_json::to_value(&normalized)
+        .map_err(|error| format!("serializing target topology: {error}"))?;
+    if let serde_json::Value::Object(fields) = &mut projection {
+        fields.remove("display_name");
+    }
+    let bytes = serde_json::to_vec(&projection)
         .map_err(|error| format!("serializing target topology: {error}"))?;
     Ok(sha256_hex(&bytes))
 }

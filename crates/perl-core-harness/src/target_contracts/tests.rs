@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::contract::{validate_external_selector_for_test, validate_selector_for_test};
+use crate::io::{read_drift, read_matrix};
 use crate::model::{
     CompositeOverlapPolicy, ManifestPopulation, TARGET_MATRIX_SCHEMA_VERSION,
     TARGET_SELECTION_SCHEMA_VERSION, TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetAuthority,
@@ -410,7 +411,11 @@ fn matrix_rejects_missing_variant_parent() {
     let mut contract = environment_variant("variant_utf8", "missing_target");
     contract.runner_switches = vec!["--utf8".to_string()];
     let matrix = matrix_fixture(vec![entry(contract, TargetDisposition::Planned)]);
-    assert!(matrix.validate().is_err());
+    let error = matrix.validate().expect_err("missing variant parent must be rejected");
+    assert!(
+        error.contains("references missing or self base target"),
+        "unexpected rejection: {error}"
+    );
 }
 
 #[test]
@@ -419,7 +424,8 @@ fn environment_variant_cannot_inherit_from_preparation() {
         entry(preparation_contract("prep_target"), TargetDisposition::PreparationOnly),
         entry(environment_variant("variant_target", "prep_target"), TargetDisposition::Planned),
     ]);
-    assert!(matrix.validate().is_err());
+    let error = matrix.validate().expect_err("preparation inheritance must be rejected");
+    assert!(error.contains("cannot inherit"), "unexpected rejection: {error}");
 }
 
 #[test]
@@ -435,7 +441,8 @@ fn instrumentation_cannot_inherit_from_instrumentation() {
             TargetDisposition::InstrumentationOnly,
         ),
     ]);
-    assert!(matrix.validate().is_err());
+    let error = matrix.validate().expect_err("instrumentation inheritance must be rejected");
+    assert!(error.contains("cannot inherit"), "unexpected rejection: {error}");
 }
 
 #[test]
@@ -479,7 +486,11 @@ fn replacement_requires_a_real_predecessor() {
     successor.replaces_target_id = Some("missing_predecessor".to_string());
     successor.change_reason = Some("fixture replacement".to_string());
     let matrix = matrix_fixture(vec![entry(successor, TargetDisposition::Implemented)]);
-    assert!(matrix.validate().is_err());
+    let error = matrix.validate().expect_err("missing replacement predecessor must be rejected");
+    assert!(
+        error.contains("missing or self replacement predecessor"),
+        "unexpected rejection: {error}"
+    );
 }
 
 #[test]
@@ -487,7 +498,8 @@ fn replacement_requires_a_change_reason() {
     let mut successor = physical_contract_with_id("component_base", "base");
     successor.replaces_target_id = Some("component_comp".to_string());
     successor.change_reason = None;
-    assert!(successor.validate().is_err());
+    let error = successor.validate().expect_err("replacement reason must be required");
+    assert!(error.contains("without a change reason"), "unexpected rejection: {error}");
 }
 
 #[test]
@@ -502,7 +514,8 @@ fn replacement_graph_must_be_acyclic() {
         entry(first, TargetDisposition::Implemented),
         entry(second, TargetDisposition::Implemented),
     ]);
-    assert!(matrix.validate().is_err());
+    let error = matrix.validate().expect_err("replacement cycle must be rejected");
+    assert!(error.contains("cycle"), "unexpected rejection: {error}");
 }
 
 #[test]
@@ -516,6 +529,22 @@ fn runner_switch_order_is_part_of_identity() -> Result<(), String> {
     reordered.targets[0].contract.runner_switches.reverse();
     let second = reordered.fingerprint()?;
     assert_ne!(first, second);
+    Ok(())
+}
+
+#[test]
+fn canonical_contract_serialization_keeps_presentation_fields() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.perl_version_row = "<version-row>".to_string();
+    let value = serde_json::to_value(&contract).map_err(|error| error.to_string())?;
+    if !value.as_object().is_some_and(|fields| fields.contains_key("display_name")) {
+        return Err("canonical serialization omitted display_name".to_string());
+    }
+    let decoded: TargetSelectionContract =
+        serde_json::from_value(value).map_err(|error| error.to_string())?;
+    if decoded != contract {
+        return Err("canonical contract serialization did not round-trip".to_string());
+    }
     Ok(())
 }
 

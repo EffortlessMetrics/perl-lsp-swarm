@@ -1,14 +1,5 @@
 //! Review falsifiers for target-selector decoding and legacy composite partitioning.
 
-#[path = "../src/target_contracts/contract.rs"]
-mod contract;
-#[path = "../src/target_contracts/io.rs"]
-mod io;
-#[path = "../src/target_contracts/matrix.rs"]
-mod matrix;
-#[path = "../src/target_contracts/model.rs"]
-mod model;
-
 use model::{
     CompositeOverlapPolicy, TARGET_MATRIX_SCHEMA_VERSION, TARGET_SELECTION_SCHEMA_VERSION,
     TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetAuthority, TargetAuthorityKind, TargetDisposition,
@@ -16,6 +7,7 @@ use model::{
     TargetSelectionContract, TargetSelector, TargetTerminalPolicy, TargetTopologyDrift,
     TargetTopologyDriftStatus, UpstreamTargetMatrix,
 };
+use perl_core_harness::target_contracts::{io, model};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -197,7 +189,10 @@ fn target_names_are_globally_unambiguous() -> TestResult {
         claim_boundary: "second fixture topology only".to_string(),
     });
 
-    assert!(matrix.validate().is_err());
+    let Err(error) = matrix.validate() else {
+        return Err("ambiguous target names were accepted".into());
+    };
+    assert!(error.contains("is ambiguous between"), "unexpected rejection: {error}");
     Ok(())
 }
 

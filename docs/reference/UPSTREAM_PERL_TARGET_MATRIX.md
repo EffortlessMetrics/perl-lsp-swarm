@@ -36,13 +36,16 @@ The validator fails closed on:
 - malformed local or root-external selectors;
 - target IDs, upstream names, or aliases owned by more than one target;
 - missing, self-referential, incompatible, or cyclic variant bases;
-- instrumentation chains that do not resolve directly to a physical or selector denominator;
+- instrumentation chains that do not resolve, through environment-variant lineage, to a physical or selector denominator;
 - missing, self-referential, or cyclic replacement lineage;
 - replacement lineage without a nonempty reviewed reason;
 - generated composites without an explicit overlap policy;
 - duplicate or unsorted target identities;
-- changes to ordered runner switches;
 - deletion or substitution of any pinned Perl 5.42.2 target or topology-source identity.
+
+Runner-switch order is part of target identity rather than a direct rejection rule.
+A reordered switch list changes the target digest and matrix fingerprint, so the
+ratcheted fingerprint assertion rejects the change.
 
 Each physical or selector target records two authorities separately. `authority` names the requested entry point, such as a Make target. `selection_authority` names the scheduler or reviewed selector that actually defines membership, such as `t/TEST` or `t/harness`. Environment variants inherit the underlying selection authority unless they explicitly change it.
 
@@ -51,7 +54,7 @@ Each physical or selector target records two authorities separately. `authority`
 - **Physical series** own immutable source membership, such as `t/base`, `t/mro`, `test_reonly`, or one MANIFEST population.
 - **Selector variants** change membership through upstream authority, such as the actual `t/TEST --core` selection. Its `core_root_lib` population is not ordinary root `lib`.
 - **Environment variants** inherit membership while changing source interpretation, terminal policy, switches, parameters, or environment.
-- **Generated composites** join independently identified targets. The historical repository core and full views require `reject_overlap` and are split by runner: `t/harness` admits direct `op/*.t` only, while `t/TEST` recursively reaches the separate nested `op/hook` member.
+- **Generated composites** join independently identified targets. The historical repository core and full views declare `reject_overlap`; the current offline validator records that policy and validates membership references but does not expand selector populations to compute overlap. They are split by runner: `t/harness` admits direct `op/*.t` only, while `t/TEST` recursively reaches the separate nested `op/hook` member.
 - **Preparation-only targets** describe build state without creating a compiler denominator.
 - **Instrumentation-only targets** add process instrumentation without raising compatibility.
 

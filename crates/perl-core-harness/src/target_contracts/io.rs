@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-pub(crate) fn read_matrix(path: &Path) -> Result<UpstreamTargetMatrix> {
+pub fn read_matrix(path: &Path) -> Result<UpstreamTargetMatrix> {
     if path.is_dir() {
         return read_matrix_bundle(path);
     }
@@ -19,7 +19,7 @@ pub(crate) fn read_matrix(path: &Path) -> Result<UpstreamTargetMatrix> {
     Ok(matrix)
 }
 
-pub(crate) fn read_drift(path: &Path) -> Result<TargetTopologyDrift> {
+pub fn read_drift(path: &Path) -> Result<TargetTopologyDrift> {
     let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("decoding {}", path.display()))
 }

@@ -158,17 +158,45 @@ impl TargetSelectionContract {
     }
 
     fn validate_preparation(&self) -> Result<(), String> {
-        if !self.selectors.is_empty()
-            || !self.script_forms.is_empty()
-            || self.preparation.make_target.is_none()
-            || self.selection_authority.is_some()
-            || self.variant_of.is_some()
-            || !self.composite_members.is_empty()
-            || self.composite_overlap_policy.is_some()
-            || !self.variant_parameters.is_empty()
-        {
+        if !self.selectors.is_empty() {
+            return Err(format!("preparation target {} cannot define selectors", self.target_id));
+        }
+        if !self.script_forms.is_empty() {
             return Err(format!(
-                "preparation target {} cannot define a source denominator or variant",
+                "preparation target {} cannot define script forms",
+                self.target_id
+            ));
+        }
+        if self.preparation.make_target.is_none() {
+            return Err(format!("preparation target {} requires a Make target", self.target_id));
+        }
+        if self.selection_authority.is_some() {
+            return Err(format!(
+                "preparation target {} cannot define a selection authority",
+                self.target_id
+            ));
+        }
+        if self.variant_of.is_some() {
+            return Err(format!(
+                "preparation target {} cannot define a variant base",
+                self.target_id
+            ));
+        }
+        if !self.composite_members.is_empty() {
+            return Err(format!(
+                "preparation target {} cannot define composite members",
+                self.target_id
+            ));
+        }
+        if self.composite_overlap_policy.is_some() {
+            return Err(format!(
+                "preparation target {} cannot define an overlap policy",
+                self.target_id
+            ));
+        }
+        if !self.variant_parameters.is_empty() {
+            return Err(format!(
+                "preparation target {} cannot define variant parameters",
                 self.target_id
             ));
         }
@@ -176,16 +204,42 @@ impl TargetSelectionContract {
     }
 
     fn validate_composite(&self) -> Result<(), String> {
-        if self.composite_members.is_empty()
-            || !self.selectors.is_empty()
-            || !self.script_forms.is_empty()
-            || self.variant_of.is_some()
-            || self.selection_authority.is_some()
-            || self.composite_overlap_policy.is_none()
-            || !self.variant_parameters.is_empty()
-        {
+        // The overlap policy is part of the contract declaration. Population
+        // expansion belongs to the later runner/selector stage and is not
+        // performed by this offline shape validator.
+        if self.composite_members.is_empty() {
             return Err(format!(
-                "composite target {} requires only members and an overlap policy",
+                "composite target {} requires at least one member",
+                self.target_id
+            ));
+        }
+        if !self.selectors.is_empty() {
+            return Err(format!("composite target {} cannot declare selectors", self.target_id));
+        }
+        if !self.script_forms.is_empty() {
+            return Err(format!("composite target {} cannot declare script forms", self.target_id));
+        }
+        if self.variant_of.is_some() {
+            return Err(format!(
+                "composite target {} cannot declare a variant base",
+                self.target_id
+            ));
+        }
+        if self.selection_authority.is_some() {
+            return Err(format!(
+                "composite target {} cannot declare a selection authority",
+                self.target_id
+            ));
+        }
+        if self.composite_overlap_policy.is_none() {
+            return Err(format!(
+                "composite target {} requires an explicit overlap policy",
+                self.target_id
+            ));
+        }
+        if !self.variant_parameters.is_empty() {
+            return Err(format!(
+                "composite target {} cannot declare variant parameters",
                 self.target_id
             ));
         }

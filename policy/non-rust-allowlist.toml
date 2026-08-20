@@ -2469,7 +2469,7 @@ language = "json"
 surface = "compiler"
 classification = "config"
 owner = "compiler"
-reason = "JSON Schema for the perl_core_harness_target_matrix.v1 upstream target authority (#6660); the checked-in matrix is validated and fingerprint-ratcheted by the target-contract test family."
+reason = "Published JSON Schema mirror for the perl_core_harness_target_matrix.v1 upstream target authority (#6660); the checked-in matrix is validated and fingerprint-ratcheted by the Rust serde/model contract test family."
 covered_by = [
   "cargo test -p perl-core-harness --locked checked_in_target_matrix_is_valid_and_stable",
 ]
@@ -2484,7 +2484,7 @@ language = "json"
 surface = "compiler"
 classification = "config"
 owner = "compiler"
-reason = "JSON Schema for the perl_core_harness_target_matrix_index.v1 part index (#6660); index/part decoding is exercised when the pinned matrix is loaded and validated."
+reason = "Published JSON Schema mirror for the perl_core_harness_target_matrix_index.v1 part index (#6660); index/part decoding is exercised when the pinned matrix is loaded and validated by the Rust serde/model contract."
 covered_by = [
   "cargo test -p perl-core-harness --locked checked_in_target_matrix_is_valid_and_stable",
 ]
@@ -2499,7 +2499,7 @@ language = "json"
 surface = "compiler"
 classification = "config"
 owner = "compiler"
-reason = "JSON Schema for the perl_core_harness_target_matrix_part.v1 target-matrix part files (#6660); each part is decoded and cross-validated when the pinned matrix is assembled."
+reason = "Published JSON Schema mirror for the perl_core_harness_target_matrix_part.v1 target-matrix part files (#6660); each part is decoded and cross-validated when the pinned matrix is assembled by the Rust serde/model contract."
 covered_by = [
   "cargo test -p perl-core-harness --locked checked_in_target_matrix_is_valid_and_stable",
 ]
@@ -2514,7 +2514,7 @@ language = "json"
 surface = "compiler"
 classification = "config"
 owner = "compiler"
-reason = "JSON Schema for the perl_core_harness_target_topology_drift.v1 receipt (#6660); the checked-in blead drift receipt is validated against the pinned matrix and its not-proven status is asserted."
+reason = "Published JSON Schema mirror for the perl_core_harness_target_topology_drift.v1 receipt (#6660); the checked-in blead drift receipt is validated against the pinned matrix and its not-proven status is asserted by the Rust serde/model contract."
 covered_by = [
   "cargo test -p perl-core-harness --locked checked_in_blead_drift_is_explicitly_not_proven",
 ]

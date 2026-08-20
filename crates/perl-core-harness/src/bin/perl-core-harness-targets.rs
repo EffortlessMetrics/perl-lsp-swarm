@@ -2,17 +2,8 @@
 
 //! Validate the versioned upstream Perl target matrix without executing Perl.
 
-#[path = "../target_contracts/contract.rs"]
-mod contract;
-#[path = "../target_contracts/io.rs"]
-mod io;
-#[path = "../target_contracts/matrix.rs"]
-mod matrix;
-#[path = "../target_contracts/model.rs"]
-mod model;
-
 use color_eyre::eyre::{ContextCompat, Result, bail};
-use io::{read_drift, read_matrix};
+use perl_core_harness::target_contracts::io::{read_drift, read_matrix};
 use std::env;
 use std::ffi::OsStr;
 use std::path::PathBuf;
@@ -50,7 +41,3 @@ fn main() -> Result<()> {
     println!("target matrix valid: {fingerprint}");
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "../target_contracts/tests.rs"]
-mod tests;

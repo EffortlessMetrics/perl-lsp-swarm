@@ -139,22 +139,15 @@ impl Serialize for TargetSelectionContract {
     where
         S: Serializer,
     {
-        // `target_topology_digest` uses this sentinel to compare executable
-        // topology across version rows. Presentation text is deliberately
-        // excluded from that projection while remaining in canonical matrix
-        // serialization and its pinned fingerprint.
-        let include_display_name = self.perl_version_row != "<version-row>";
-        let mut state = serializer.serialize_struct(
-            "TargetSelectionContract",
-            if include_display_name { 23 } else { 22 },
-        )?;
+        // Canonical serialization always contains every contract field. The
+        // topology digest uses a separate projection so presentation fields do
+        // not alter topology identity without weakening serde round trips.
+        let mut state = serializer.serialize_struct("TargetSelectionContract", 23)?;
         state.serialize_field("schema_version", &self.schema_version)?;
         state.serialize_field("target_id", &self.target_id)?;
         state.serialize_field("upstream_name", &self.upstream_name)?;
         state.serialize_field("aliases", &self.aliases)?;
-        if include_display_name {
-            state.serialize_field("display_name", &self.display_name)?;
-        }
+        state.serialize_field("display_name", &self.display_name)?;
         state.serialize_field("perl_version_row", &self.perl_version_row)?;
         state.serialize_field("target_kind", &self.target_kind)?;
         state.serialize_field("authority", &self.authority)?;
