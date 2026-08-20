@@ -506,6 +506,7 @@ fn evaluate_pir_reference_candidate(
     target_sigil: &str,
     target_name: &str,
     target_body_idx: usize,
+    legacy_ranges: &BTreeSet<(usize, usize)>,
     uri_mapper: &dyn Fn(usize, usize) -> lsp_types::Range,
     include_declaration: bool,
 ) -> Result<Vec<lsp_types::Range>, PirShadowRefusalReason> {
@@ -541,8 +542,14 @@ fn evaluate_pir_reference_candidate(
             declaration_skipped = true;
             continue;
         }
-        if let Some(r) = fact.source_anchor.range.as_ref() {
-            ranges.push(uri_mapper(r.start, r.end));
+        if let Some((start, end)) = lexical_fact_range(
+            fact.role,
+            &fact.name.sigil,
+            &fact.name.name,
+            fact.source_anchor.range.as_ref().map(|r| (r.start, r.end)),
+            legacy_ranges,
+        ) {
+            ranges.push(uri_mapper(start, end));
         }
     }
 
@@ -657,11 +664,13 @@ pub fn references_pir_promote(
         }
 
         PromotionMode::PromoteExact => {
+            let legacy_ranges: BTreeSet<(usize, usize)> = legacy_result.iter().copied().collect();
             match evaluate_pir_reference_candidate(
                 pir_receipt,
                 target_sigil,
                 target_name,
                 target_body_idx,
+                &legacy_ranges,
                 uri_mapper,
                 opts.include_declaration,
             ) {
@@ -683,6 +692,7 @@ pub fn references_pir_promote(
 
 #[cfg(test)]
 mod promote_tests {
+    use super::super::find_references_single_file;
     use super::{
         DEFAULT_PROMOTION_MODE, PirShadowRefusalReason, PromotionMode, ReferenceOptions,
         ReferencesPirPromoteOutcome, references_pir_promote,
@@ -1096,6 +1106,43 @@ mod promote_tests {
             );
         } else {
             return Err("expected Exact for $p".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promote_exact_uses_legacy_token_range_for_loop_declaration() -> Result<(), String> {
+        let source = "for my $i (1 .. 3) { print $i; }\n";
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        let hir = lower_ast(&output.ast);
+        let receipt = extract_lexical_facts(&hir);
+        let legacy = find_references_single_file(&output.ast, 8)
+            .ok_or_else(|| "legacy provider found no loop-local references".to_string())?;
+
+        let outcome = references_pir_promote(
+            PromotionMode::PromoteExact,
+            "$",
+            "i",
+            &receipt,
+            &legacy,
+            0,
+            &byte_mapper,
+            opts_all(),
+        );
+        let ReferencesPirPromoteOutcome::Exact(ranges) = outcome else {
+            return Err(format!("expected Exact, got {outcome:?}"));
+        };
+
+        let mapped = ranges
+            .iter()
+            .map(|range| (range.start.character as usize, range.end.character as usize))
+            .collect::<Vec<_>>();
+        if !mapped.contains(&(7, 9)) {
+            return Err(format!("promoted declaration was not token-normalized: {mapped:?}"));
+        }
+        if mapped.contains(&(4, 9)) {
+            return Err(format!("promoted declaration leaked widened anchor: {mapped:?}"));
         }
         Ok(())
     }
