@@ -494,7 +494,11 @@ fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
         })
         .find_map(
             |(offset, line)| {
-                if line.trim_start().starts_with("- name:") { Some(offset) } else { None }
+                if line.trim_start().starts_with("- name:") {
+                    Some(offset)
+                } else {
+                    None
+                }
             },
         )
         .unwrap_or(rest.len());
