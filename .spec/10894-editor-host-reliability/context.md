@@ -119,8 +119,12 @@ The platform-neutral cleanup law is:
 
 ```text
 cleanup = pass
-iff every exact run-owned host/candidate/descendant identity in the required
-denominator is independently observed terminal or absent after bounded settlement
+iff every exact run-owned host/candidate/descendant/replacement identity in the
+required denominator is independently observed terminal or absent after bounded
+settlement. Replacement is a first-class termination class, not merely a ledger
+annotation: a run-owned replacement that survives settlement makes cleanup fail
+or `not_proven` according to the platform evidence, just like any other owned
+identity.
 ```
 
 Status 0 and a client `shutdown_completed` event are product observations only;

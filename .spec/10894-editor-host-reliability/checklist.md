@@ -33,11 +33,12 @@ building or executing a host/editor process.
 The repository has no executable `.spec` graph validator. Do not invent a generated
 receipt or claim a missing tool passed. From the candidate worktree, run the following
 PowerShell 7 check twice after the files are complete. The command checks the exact
-three files, required canonical headings, required terms, and all fourteen numbered
-falsifiers in the `acceptance.md` `§Test-Grid` table. It enforces fixed order,
-uniqueness, table membership, and a non-empty required verdict for every row;
-presence of a marker elsewhere in the bundle is insufficient. Redirecting the
-output to a temporary file is local proof only; no temporary file belongs in the PR.
+three files, required canonical headings and contract terms in `context.md` and
+`acceptance.md` only, and all fourteen numbered falsifiers in the `acceptance.md`
+`§Test-Grid` table. It enforces fixed order, stable scenario/kind/verdict semantics,
+table membership, and a non-empty required verdict for every row; presence of a
+marker elsewhere in the bundle is insufficient. Redirecting the output to a
+temporary file is local proof only; no temporary file belongs in the PR.
 Its changed-path assertion is intentionally unscoped: it binds the committed
 candidate patch to the explicit `origin/main..HEAD` range, unions that patch with
 the unstaged worktree, staged index, and NUL-delimited porcelain paths, then
@@ -46,10 +47,11 @@ rename/copy without its second path, or an unresolvable base/HEAD fails closed.
 
 ```powershell
 function Get-SpecStatusPaths {
-  $root = '.spec/10894-editor-host-reliability'
   $statusFile = [IO.Path]::GetTempFileName()
   try {
-    & git status --porcelain=v1 -z --untracked-files=all -- $root > $statusFile 2>&1
+    # This scan is intentionally unscoped: an exact-scope proof must also see
+    # tracked and untracked paths outside the three-file projection.
+    & git status --porcelain=v1 -z --untracked-files=all > $statusFile 2>&1
     if ($LASTEXITCODE -ne 0) { throw 'git status porcelain failed' }
     $bytes = [IO.File]::ReadAllBytes($statusFile)
     if ($bytes.Length -ge 2 -and $bytes[$bytes.Length - 2] -eq 0x0D -and $bytes[$bytes.Length - 1] -eq 0x0A) {
@@ -90,10 +92,16 @@ $required = @(
 )
 $headings = @('§Behavior', '§Hazards', '§Contracts', '§API-Shape', '§Test-Grid', '§Blast-Radius')
 $cleanupDomains = @('direct-host', 'candidate', 'descendant', 'replacement', 'ambient')
-$text = $paths | ForEach-Object { Get-Content -Raw $_ }
+$text = @($paths | ForEach-Object { Get-Content -Raw $_ })
 if ($text.Count -ne 3) { throw 'expected exactly three spec files' }
-foreach ($term in $required) { if (-not ($text -match [regex]::Escape($term))) { throw "missing term: $term" } }
-foreach ($heading in $headings) { if (-not ($text -match [regex]::Escape($heading))) { throw "missing heading: $heading" } }
+# Contract assertions deliberately exclude checklist.md. Its checker source is
+# self-covered below, but it must not be able to supply missing contract laws.
+$contractText = @($paths[0..1] | ForEach-Object { Get-Content -Raw $_ })
+foreach ($term in $required) { if (-not ($contractText -match [regex]::Escape($term))) { throw "missing contract term: $term" } }
+foreach ($heading in $headings) { if (-not ($contractText -match [regex]::Escape($heading))) { throw "missing contract heading: $heading" } }
+foreach ($term in @('exact repository', 'current-generation', 'Adoption disposition', 'new driver', 'modified active driver', 'untouched legacy driver')) {
+  if (-not ($contractText -match [regex]::Escape($term))) { throw "missing contract identity/adoption term: $term" }
+}
 
 # Self-cover the checker literals and validation loops. This prevents a local
 # edit from silently deleting the very checks that claim to validate the spec.
@@ -102,7 +110,8 @@ $checkerLiterals = @(
   'foreach ($term in $required)', 'foreach ($heading in $headings)',
   '$cleanupDomains = @(', 'git status --porcelain=v1 -z',
   '$candidateBaseRef', '$candidateHeadRef', '$rows = [regex]::Matches',
-  'Compare-Object $changed $expected', 'SPEC_10894_STRUCTURAL_CHECK=PASS'
+  'Compare-Object $changed $expected', 'Get-SpecFingerprints',
+  'SPEC_10894_STRUCTURAL_CHECK=PASS'
 )
 foreach ($literal in $checkerLiterals) {
   if (-not ($checkerSource -match [regex]::Escape($literal))) { throw "checker self-cover missing: $literal" }
@@ -110,27 +119,52 @@ foreach ($literal in $checkerLiterals) {
 $fence = [string]::new([char]96, 3)
 $checkerFence = [regex]::Match($checkerSource, "(?ms)${fence}powershell\s*(?<body>.*?)\s*${fence}").Groups['body'].Value
 if (-not $checkerFence -or $checkerFence -notmatch [regex]::Escape('function Invoke-Spec10894Check')) { throw 'checker source fence is missing' }
-foreach ($literal in $required + $headings + $cleanupDomains) {
+foreach ($literal in $required + $headings + $cleanupDomains + @('exact repository', 'current-generation', 'Adoption disposition', 'new driver', 'modified active driver', 'untouched legacy driver')) {
   if (-not ($checkerFence -match [regex]::Escape($literal))) { throw "checker literal is not self-covered: $literal" }
 }
-$grid = [regex]::Match($text[1], '(?ms)^## §Test-Grid\s*(?<body>.*?)(?=^## |\z)').Groups['body'].Value
+$grid = [regex]::Match($contractText[1], '(?ms)^## §Test-Grid\s*(?<body>.*?)(?=^## |\z)').Groups['body'].Value
 $rows = [regex]::Matches($grid, '(?m)^\|\s*(?<id>\d+)\s*\|\s*(?<scenario>[^|]+?)\s*\|\s*(?<kind>[^|]+?)\s*\|\s*(?<verdict>[^|]+?)\s*\|')
 if ($rows.Count -ne 14) { throw "expected exactly fourteen falsifier rows, found $($rows.Count)" }
 $ids = @($rows | ForEach-Object { [int]$_.Groups['id'].Value })
 if (($ids | Sort-Object -Unique).Count -ne $ids.Count) { throw 'falsifier IDs are not unique' }
 if (($ids -join ',') -ne ((1..14) -join ',')) { throw 'falsifier IDs are not in fixed order' }
-foreach ($row in $rows) {
-  $kind = $row.Groups['kind'].Value.Trim()
-  $verdict = $row.Groups['verdict'].Value.Trim()
-  if (-not $verdict) { throw "falsifier $($row.Groups['id'].Value) has no required verdict" }
-  if ($kind -eq 'negative' -and $verdict -notmatch '(?i)\breject\b') { throw "falsifier $($row.Groups['id'].Value) is not rejectable" }
+$expectedRows = @(
+  @{ id = 1; scenario = 'Exit status 0 or client `shutdown_completed` is used as OS cleanup proof'; kind = 'negative'; verdict = 'reject; cleanup requires independent observation' }
+  @{ id = 2; scenario = 'Only direct editor PID is killed while known descendant survives'; kind = 'negative'; verdict = 'reject; surviving run-owned identity fails cleanup' }
+  @{ id = 3; scenario = 'A stale receipt lacks the current run ID, start marker, nonce/subject digest, or write-after-start proof'; kind = 'negative'; verdict = 'reject as stale/mismatched freshness' }
+  @{ id = 4; scenario = 'Missing host/capability is skipped or treated as pass in required lane'; kind = 'negative'; verdict = 'reject; emit `not_proven`' }
+  @{ id = 5; scenario = 'Timeout loses last completed barrier or failure artifacts'; kind = 'negative'; verdict = 'reject; preserve barrier/artifacts and distinguish forced settlement' }
+  @{ id = 6; scenario = 'Numeric PID sorting is compared as lexicographic strings'; kind = 'negative'; verdict = 'reject; ledger comparison is typed/canonical, not accidental string order' }
+  @{ id = 7; scenario = 'One platform ownership mechanism is generalized without proof'; kind = 'negative'; verdict = 'reject; unsupported capability is `not_proven`' }
+  @{ id = 8; scenario = 'Forced cleanup is reported as clean normal shutdown'; kind = 'negative'; verdict = 'reject; forced settlement remains distinct' }
+  @{ id = 9; scenario = 'Product, instrument, reporting, and cleanup collapse into one boolean'; kind = 'negative'; verdict = 'reject; four planes remain independent' }
+  @{ id = 10; scenario = 'Editor adapter reimplements shared freshness/process/cleanup policy'; kind = 'negative'; verdict = 'reject; adapter references #10894' }
+  @{ id = 11; scenario = '#10894 defines Eglot, lsp-mode, Coc, LSP4IJ, Lite XL, Vim, or DAP semantics'; kind = 'negative'; verdict = 'reject; named consumer owns client semantics' }
+  @{ id = 12; scenario = 'Consumer must copy generic receipt rules from #7777/#10527'; kind = 'negative'; verdict = 'reject; generic receipts remain one authority' }
+  @{ id = 13; scenario = 'Same unchanged spec tree is checked twice'; kind = 'determinism'; verdict = 'identical ordered output and byte-clean second run' }
+  @{ id = 14; scenario = 'Receipt names a different host/candidate executable path, hash, or version'; kind = 'negative'; verdict = 'reject as wrong-executable evidence' }
+)
+for ($i = 0; $i -lt $expectedRows.Count; $i++) {
+  $row = $rows[$i]
+  $expectedRow = $expectedRows[$i]
+  foreach ($field in @('scenario', 'kind', 'verdict')) {
+    $actual = $row.Groups[$field].Value.Trim()
+    if ($actual -ne $expectedRow[$field]) { throw "falsifier $($expectedRow.id) has unexpected $field" }
+  }
 }
-$cleanup = [regex]::Match($text[0], '(?ms)^### Cleanup denominator declaration\s*(?<body>.*?)(?=^### |\z)').Groups['body'].Value
+$cleanup = [regex]::Match($contractText[0], '(?ms)^### Cleanup denominator declaration\s*(?<body>.*?)(?=^### |\z)').Groups['body'].Value
 $domainRows = [regex]::Matches($cleanup, '(?m)^\|\s*`(?<domain>[^`]+)`\s*\|\s*(?<observation>[^|]+?)\s*\|\s*(?<rule>[^|]+?)\s*\|')
 if ($domainRows.Count -ne $cleanupDomains.Count) { throw "cleanup denominator declares $($domainRows.Count) domains, expected $($cleanupDomains.Count)" }
 $actualDomains = @($domainRows | ForEach-Object { $_.Groups['domain'].Value.Trim() })
 if (($actualDomains -join ',') -ne ($cleanupDomains -join ',')) { throw 'cleanup denominator domains are incomplete or reordered' }
-if (($cleanup -notmatch 'include every known member') -or ($cleanup -notmatch 'ambient.*excluded')) { throw 'cleanup denominator coverage is not fail-closed' }
+for ($i = 0; $i -lt $cleanupDomains.Count; $i++) {
+  $observation = $domainRows[$i].Groups['observation'].Value.Trim()
+  $rule = $domainRows[$i].Groups['rule'].Value.Trim()
+  if (-not $observation -or -not $rule -or $observation -notmatch '(?i)identity|observation|diagnostic' -or $rule -notmatch '(?i)include|excluded|denominator') {
+    throw "cleanup domain $($cleanupDomains[$i]) lacks observation/denominator rule"
+  }
+}
+if (($cleanup -notmatch 'include every known member') -or ($cleanup -notmatch 'ambient.*excluded') -or ($cleanup -notmatch '(?i)replacement.*(terminal|absent)')) { throw 'cleanup denominator coverage is not fail-closed' }
 
 # Bind the proof to the intended candidate range, rather than recomputing an
 # implicit merge-base that could silently change the patch under review.
@@ -164,17 +198,33 @@ if ($changed.Count -ne $expected.Count -or (Compare-Object $changed $expected)) 
 The proof must execute the checker twice. Do not create two copies of one output
 and hash those copies. Use this wrapper around the exact checker body above (the
 body is exposed as `Invoke-Spec10894Check` only to make the execution boundary
-explicit):
+explicit). The wrapper fingerprints every expected spec file before, between, and
+after the two executions, and compares those fingerprints with the three global
+tree snapshots and the two actual checker-output hashes:
 
 ```powershell
+function Get-SpecFingerprints {
+  $expected = @(
+    '.spec/10894-editor-host-reliability/acceptance.md'
+    '.spec/10894-editor-host-reliability/checklist.md'
+    '.spec/10894-editor-host-reliability/context.md'
+  )
+  return @($expected | ForEach-Object {
+    if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "missing spec file: $_" }
+    "$_=$((Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash)"
+  })
+}
 $tmp = Join-Path $env:TEMP 'spec-10894-check'
 Remove-Item -LiteralPath "$tmp.1","$tmp.2" -Force -ErrorAction SilentlyContinue
 $tree1 = @(Get-SpecStatusPaths) -join "`n"
+$fpBefore = @(Get-SpecFingerprints) -join "`n"
 Invoke-Spec10894Check | Set-Content -LiteralPath "$tmp.1" -Encoding utf8NoBOM
 $tree2 = @(Get-SpecStatusPaths) -join "`n"
+$fpBetween = @(Get-SpecFingerprints) -join "`n"
 Invoke-Spec10894Check | Set-Content -LiteralPath "$tmp.2" -Encoding utf8NoBOM
 $tree3 = @(Get-SpecStatusPaths) -join "`n"
-if ($tree1 -ne $tree2 -or $tree2 -ne $tree3) { throw 'checker changed the spec tree' }
+$fpAfter = @(Get-SpecFingerprints) -join "`n"
+if ($tree1 -ne $tree2 -or $tree2 -ne $tree3 -or $fpBefore -ne $fpBetween -or $fpBetween -ne $fpAfter) { throw 'checker changed the spec tree or file contents' }
 $h1 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$tmp.1").Hash
 $h2 = (Get-FileHash -Algorithm SHA256 -LiteralPath "$tmp.2").Hash
 if ($h1 -ne $h2) { throw 'second run is not deterministic' }
