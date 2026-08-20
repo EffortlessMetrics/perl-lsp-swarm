@@ -49,12 +49,30 @@ fn ignored_test_issue_reference_gate_is_required_on_prs() {
         smoke.contains("\"$CARGO_TARGET_DIR/debug/xtask\" gates --tier pr-fast"),
         "PR Smoke must invoke the warmed xtask from its selected cargo target"
     );
+    let scope_step = must_some(workflow_step(smoke, "Determine inline-completion warm-up scope"));
+    assert!(
+        scope_step.contains("id: inline-completion-scope")
+            && scope_step.contains(
+                "\"$CARGO_TARGET_DIR/debug/xtask\" ci-scope --base origin/main --format json"
+            )
+            && scope_step.contains("fail-closed"),
+        "PR Smoke must use the warmed xtask's ci-scope JSON with fail-closed warm-up fallback"
+    );
     let warm_targets_start = must_some(smoke.find("- name: Warm inline-completion test targets"));
+    let run_start = must_some(smoke.find("- name: Run PR-fast via shared xtask gate runner"));
     assert!(
         warm_start < warm_targets_start,
         "PR Smoke must warm inline-completion targets after warming xtask"
     );
+    assert!(
+        warm_targets_start < run_start,
+        "PR Smoke must warm inline-completion targets before the actual shared PR-fast gate step"
+    );
     let warm_targets = must_some(workflow_step(smoke, "Warm inline-completion test targets"));
+    assert!(
+        warm_targets.contains("if: steps.inline-completion-scope.outputs.warm_inline_completion == 'true'"),
+        "PR Smoke must condition inline-completion warm-up on the fail-closed scope decision"
+    );
     for command in [
         "cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run",
         "cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run",
