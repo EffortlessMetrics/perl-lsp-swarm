@@ -132,7 +132,7 @@ The PR was nearly merged in this state. The issue surfaced when the raw `gh pr v
 
 The operational fix: always verify mergeable state against the raw `statusCheckRollup` before merge, not against filtered output. The raw rollup is the only authoritative go/no-go evidence for merge.
 
-Issue #7127 was filed to track the filtered-check calibration problem.
+Issue #7127 was filed to track the retired wrapper's filter calibration problem.
 
 ### 8. Spec quality determines builder course-correction count
 
@@ -226,7 +226,7 @@ Seven BDD cluster PRs remain unmerged. The bundle-PR strategy from issue #7129 d
 
 Seven entries were added to project memory during or immediately after the session. Referenced by canonical name:
 
-- `feedback_filtered_gh_pr_checks_masks_failures` — filtered check output masks aggregator failures; always use raw statusCheckRollup for go/no-go
+- `feedback_rtk_gh_pr_checks_masks_failures` — retired wrapper filter masks aggregator failures; always use raw statusCheckRollup for go/no-go
 - `feedback_spec_pseudocode_prevents_course_corrections` — pseudo-code + worked examples in specs prevent mid-implementation discoveries; quantified at 2-3x cost multiplier
 - `feedback_cascade_conflict_dominant_cost` — doc waves into shared files produce O(N) conflicts; sequence same-file PRs
 - `feedback_haiku_bounded_mission_framing` — haiku is capable on bounded verification; the six-element mission frame unlocks it
@@ -261,7 +261,7 @@ Follow-up issues filed (selected):
 - `#7113` — receipt schema `review` variant bug
 - `#7120` — reconciler SKIPPED check handling
 - `#7126` — cascade conflict hotspot sequencing
-- `#7127` — filtered `gh pr checks` aggregator masking
+- `#7127` — retired wrapper `gh pr checks` aggregator masking
 - `#7128` — spec pseudo-code requirement for state-machine implementations
 - `#7129` — BDD cluster bundle-PR strategy
 - `#6847` — parser corpus ratchet parallelization (user-owned)
