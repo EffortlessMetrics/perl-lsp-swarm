@@ -235,8 +235,13 @@ fn reserve_fundamental_constructs(
     cap: usize,
 ) {
     use perl_lsp_rs_core::providers::completion::FUNDAMENTAL_CONSTRUCT_LABELS;
+    // `completionCap` is configurable and may be smaller than the reserve
+    // list — stop at zero tail slots instead of underflowing (#11863 review).
     let mut tail_slot = cap;
     for label in FUNDAMENTAL_CONSTRUCT_LABELS {
+        if tail_slot == 0 {
+            break;
+        }
         if completions[..cap].iter().any(|c| c.label.as_ref() == *label) {
             continue;
         }
@@ -2289,27 +2294,60 @@ mod tests {
             label_details: None,
         };
 
-        // 100 same-ranked items sort alphabetically; the keyword ("while")
-        // and snippet ("if …") sort far past a 100 cap without backfill.
-        let mut candidates: Vec<_> = ('a'..='z')
+        // 104 same-ranked a–g items fill a 100 page alphabetically; BOTH
+        // reserved constructs ("while", and the "if" snippet — labeled exactly
+        // as the real provider labels it) sort past the cut, so each must be
+        // swapped in by the reserve. The a–g function range deliberately
+        // excludes any label that could accidentally contain them.
+        let mut candidates: Vec<_> = ('a'..='g')
             .flat_map(|c| {
-                (0..4).map(move |n| item(&format!("{c}{n}"), CompletionItemKind::Function))
+                (0..15).map(move |n| item(&format!("{c}{n:02}"), CompletionItemKind::Function))
             })
             .collect();
         candidates.push(item("while", CompletionItemKind::Keyword));
-        candidates.push(item("if block", CompletionItemKind::Snippet));
+        candidates.push(item("if", CompletionItemKind::Snippet));
 
         let (page, is_incomplete) = sort_and_cap_completions(candidates, 100);
 
         assert!(is_incomplete);
         let labels: Vec<&str> = page.iter().map(|c| c.label.as_ref()).collect();
-        for construct in ["while"] {
-            assert!(labels.contains(&construct), "page must reserve '{construct}'");
-        }
-        // Bounded: exactly one slot per backfilled kind is swapped, so the
-        // page still holds 98 of the 100 alphabetically-first functions.
+        assert!(labels.contains(&"while"), "page must reserve the 'while' keyword");
+        assert!(labels.contains(&"if"), "page must reserve the 'if' snippet");
+        // Bounded: one tail slot per swapped construct.
         assert_eq!(page.len(), 100);
         assert_eq!(page.iter().filter(|c| c.kind == CompletionItemKind::Function).count(), 98);
+    }
+
+    /// `completionCap` is configurable; a cap smaller than the reserve list
+    /// must clamp the reserve instead of underflowing the tail slot (#11863
+    /// review).
+    #[test]
+    fn completion_cap_smaller_than_reserve_clamps() {
+        let item = |label: &str| crate::completion::CompletionItem {
+            label: label.to_string().into(),
+            kind: CompletionItemKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
+            filter_text: None,
+            additional_edits: Vec::new(),
+            text_edit_range: None,
+            commit_characters: None,
+            insert_text_format: InsertTextFormat::PlainText,
+            label_details: None,
+        };
+        let mut candidates: Vec<_> = ('a'..='z').map(|c| item(&c.to_string())).collect::<Vec<_>>();
+        for construct in ["if", "else", "elsif", "unless", "while", "until", "for", "foreach"] {
+            candidates.push(item(construct));
+        }
+
+        // cap 3 with 11 absent reserve labels: must not panic, must fill only
+        // 3 reserve slots, and the page must still be exactly the cap.
+        let (page, is_incomplete) = sort_and_cap_completions(std::mem::take(&mut candidates), 3);
+        assert!(is_incomplete);
+        assert_eq!(page.len(), 3);
+        assert!(page.iter().all(|c| c.label.as_ref() != "zzz"));
     }
 
     #[test]
