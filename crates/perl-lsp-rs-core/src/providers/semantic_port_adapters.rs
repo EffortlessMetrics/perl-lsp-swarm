@@ -1091,7 +1091,7 @@ fn query_records(
             request,
             records,
             snapshot,
-            &limitations,
+            limitations,
             producer,
             trace_source,
             denominator_scope,
@@ -1117,7 +1117,7 @@ fn query_records(
             producer,
             trace_source,
             records.len(),
-            &limitations,
+            limitations,
             "unqualified_entity_multi_file",
         ));
     }
