@@ -101,9 +101,17 @@ pub struct LspServer {
     _stdout_thread: std::thread::JoinHandle<()>,
     _stderr_thread: std::thread::JoinHandle<()>,
     pending: Mutex<VecDeque<Value>>,
+    /// Bounded tail of the server's stderr lines (#11848): the drain thread
+    /// records the last lines so a handshake stall can be diagnosed from the
+    /// failure output alone, without rerunning with LSP_TEST_ECHO_STDERR.
+    /// Shared with the drain thread, hence the Arc.
+    stderr_tail: std::sync::Arc<Mutex<VecDeque<String>>>,
     /// Flag to track if shutdown has been initiated (prevents double-shutdown)
     pub(crate) shutdown_initiated: std::sync::atomic::AtomicBool,
 }
+
+/// How many stderr lines the tail keeps.
+const STDERR_TAIL_LINES: usize = 40;
 
 impl LspServer {
     /// Check if the server process is still running
@@ -117,6 +125,23 @@ impl LspServer {
     /// Get mutable access to the stdin writer
     pub fn stdin_writer(&self) -> std::sync::MutexGuard<'_, BufWriter<ChildStdin>> {
         self.writer.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Render the captured stderr tail (#11848). Returns an empty string
+    /// when the server produced no stderr, so callers can interpolate it
+    /// into failure messages unconditionally.
+    pub fn stderr_tail(&self) -> String {
+        let tail = self.stderr_tail.lock().unwrap_or_else(|e| e.into_inner());
+        if tail.is_empty() {
+            return String::new();
+        }
+        let mut rendered = String::from("server stderr tail:\n");
+        for line in tail.iter() {
+            rendered.push_str("  | ");
+            rendered.push_str(line);
+            rendered.push('\n');
+        }
+        rendered
     }
 }
 
@@ -211,11 +236,21 @@ pub fn start_lsp_server() -> LspServer {
         )),
     };
     let echo = std::env::var_os("LSP_TEST_ECHO_STDERR").is_some();
+    // Shared tail the drain thread records into (see `LspServer::stderr_tail`).
+    let stderr_tail = std::sync::Arc::new(Mutex::new(VecDeque::<String>::new()));
+    let stderr_tail_for_thread = std::sync::Arc::clone(&stderr_tail);
     let _stderr_thread =
         match std::thread::Builder::new().name("lsp-stderr-drain".into()).spawn(move || {
             let mut r = BufReader::new(stderr);
             let mut line = String::new();
             while r.read_line(&mut line).unwrap_or(0) > 0 {
+                {
+                    let mut tail = stderr_tail_for_thread.lock().unwrap_or_else(|e| e.into_inner());
+                    if tail.len() >= STDERR_TAIL_LINES {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line.trim_end().to_string());
+                }
                 if echo {
                     eprintln!("[perl-lsp] {}", line.trim_end());
                 }
@@ -311,6 +346,7 @@ pub fn start_lsp_server() -> LspServer {
         _stdout_thread,
         _stderr_thread,
         pending: Mutex::new(VecDeque::new()),
+        stderr_tail,
         shutdown_initiated: std::sync::atomic::AtomicBool::new(false),
     };
 

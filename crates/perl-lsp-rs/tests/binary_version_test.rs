@@ -50,7 +50,21 @@ fn send_initialize_with_timeout(
         // server fails the test instead of hanging it forever.
         common::adaptive_timeout().max(Duration::from_secs(45)),
     )
-    .ok_or_else(|| "initialize request timed out before the server returned serverInfo".to_owned())
+    .ok_or_else(|| {
+        // Include the captured stderr tail (#11848): the stall has resisted
+        // floor raises AND fresh-server retries, and the discarded stderr is
+        // the one channel that would show what the server was doing when it
+        // stopped answering — with this, the next occurrence's receipt is
+        // diagnosable in a single run.
+        let tail = server.stderr_tail();
+        if tail.is_empty() {
+            "initialize request timed out before the server returned serverInfo \
+             (server produced no stderr)"
+                .to_owned()
+        } else {
+            format!("initialize request timed out before the server returned serverInfo\n{tail}")
+        }
+    })
 }
 
 #[test]
