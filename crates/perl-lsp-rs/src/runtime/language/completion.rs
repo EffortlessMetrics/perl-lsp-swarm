@@ -4720,7 +4720,7 @@ mod tests {
     // =========================================================================
 
     /// With two registered workspace folders, add_runtime_workspace_completions
-    /// computes doc_folder_filter = Some(folder-a) and rejects the sub from
+    /// computes doc_folder_filter = Some(folder-a) and rejects the variable from
     /// folder-b via the Strategy-B continue branch.
     ///
     /// Covered changed lines:
@@ -4730,7 +4730,7 @@ mod tests {
     ///   536-543  !workspace_folder_matches_doc_uri -> trace + continue
     #[cfg(feature = "workspace")]
     #[test]
-    fn strategy_b_multi_folder_filters_cross_folder_sub() {
+    fn strategy_b_multi_folder_filters_cross_folder_var() {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
         use perl_parser::workspace_index::IndexCoordinator;
@@ -4744,17 +4744,17 @@ mod tests {
         }
 
         let coordinator = Arc::new(IndexCoordinator::new());
-        // Add a non-module (Sub) symbol from folder-b — it should be filtered out.
+        // Add a preserved non-callable (Variable) symbol from folder-b — it should be filtered out.
         let _ = coordinator.index().index_file_str(
             "file:///project/folder-b/lib/B.pm",
             "package B;
-sub cross_folder_sub_b { 1 }
+our $cross_folder_var_b;
 1;
 ",
         );
         coordinator.transition_to_ready(1, 1);
 
-        let doc_text = "my $x = cr";
+        let doc_text = "my $x = $cross";
         let doc_uri = "file:///project/folder-a/script.pl";
         let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
@@ -4767,8 +4767,8 @@ sub cross_folder_sub_b { 1 }
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
-            !names.contains(&"cross_folder_sub_b"),
-            "Strategy-B must reject cross_folder_sub_b from folder-b when doc is in folder-a;              got completions: {names:?}"
+            !names.contains(&"$cross_folder_var_b"),
+            "Strategy-B must reject $cross_folder_var_b from folder-b when doc is in folder-a;              got completions: {names:?}"
         );
     }
 
