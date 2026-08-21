@@ -1,0 +1,71 @@
+name: Apply #10136 branch edit
+
+on:
+  push:
+    branches:
+      - agent/remove-client-test-runner-authority
+    paths:
+      - scripts/maintenance/apply_10136_test_runner_removal.py
+      - .github/workflows/apply-10136-branch-edit.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-10136-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/remove-client-test-runner-authority
+          fetch-depth: 0
+
+      - name: Apply count-checked source edit
+        run: python3 scripts/maintenance/apply_10136_test_runner_removal.py
+
+      - name: Format and validate focused contracts
+        run: |
+          cargo fmt --all
+          python3 -m json.tool schemas/perllsp-settings.schema.json >/dev/null
+          cargo test -p perl-lsp-rs-core --test test_runner_client_authority_removed --locked
+          cargo test -p perl-lsp-rs-core --test perllsp_settings_schema_tests --locked
+          cargo check -p perl-lsp-rs --tests --locked
+          git diff --check
+
+      - name: Publish implementation commit and remove one-shot machinery
+        env:
+          BRANCH: agent/remove-client-test-runner-authority
+        run: |
+          rm -- scripts/maintenance/apply_10136_test_runner_removal.py
+          rm -- .github/workflows/apply-10136-branch-edit.yml
+          git config user.name EffortlessSteven
+          git config user.email git@effortlesssteven.com
+          git add -- \
+            .spec/10136-test-runner-client-authority/context.md \
+            .changes/unreleased/product-11845-Security-024800.yaml \
+            crates/perl-lsp-rs-core/src/config/mod.rs \
+            crates/perl-lsp-rs-core/src/configuration_authority/catalog.rs \
+            crates/perl-lsp-rs-core/src/configuration_authority/mod.rs \
+            crates/perl-lsp-rs-core/tests/perllsp_settings_schema_tests.rs \
+            crates/perl-lsp-rs-core/tests/test_runner_client_authority_removed.rs \
+            crates/perl-lsp-rs-core/tests/wave_final_absorption_tests.rs \
+            crates/perl-lsp-rs/src/runtime/workspace.rs \
+            crates/perl-lsp-rs/tests/lsp_smoke_e2e.rs \
+            docs/how-to/PERFORMANCE_TUNING.md \
+            docs/reference/CONFIG.md \
+            docs/reference/CONFIGURATION.md \
+            docs/reference/CONFIGURATION_SCHEMA.md \
+            schemas/perllsp-settings.schema.json \
+            scripts/maintenance/apply_10136_test_runner_removal.py \
+            .github/workflows/apply-10136-branch-edit.yml
+          git diff --cached --check
+          git commit -m 'fix(testing-config): remove client test-runner authority (#10136)'
+          git push origin HEAD:"$BRANCH"
