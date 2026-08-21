@@ -76,7 +76,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -1330,26 +1330,21 @@ pub struct FileFactShard {
     pub edges: Vec<EdgeFact>,
 }
 
-/// Opaque, owner-supplied identity for one live source commit.
+/// Owner-supplied currentness token for one live source commit.
 ///
 /// The workspace index does not mint or interpret this value. The owning
-/// document/currentness authority must supply a non-zero identity and a
-/// non-zero generation after its own currentness check.
+/// document/currentness authority must supply a non-zero generation after its
+/// own currentness check. URI identity is already supplied by the `uri`
+/// argument; this API does not invent a competing per-URI source identity.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct SourceCommit {
-    identity: NonZeroU64,
     generation: NonZeroU32,
 }
 
 impl SourceCommit {
-    /// Construct a live source commit guard from an owner-supplied identity.
-    pub const fn new(identity: NonZeroU64, generation: NonZeroU32) -> Self {
-        Self { identity, generation }
-    }
-
-    /// Return the opaque owner identity.
-    pub const fn identity(self) -> NonZeroU64 {
-        self.identity
+    /// Construct a live source commit guard from an owner-supplied generation.
+    pub const fn new(generation: NonZeroU32) -> Self {
+        Self { generation }
     }
 
     /// Return the non-zero source generation represented by this commit.
@@ -2162,21 +2157,27 @@ impl WorkspaceIndex {
         commit: SourceCommit,
     ) -> SourceCommitOutcome {
         let key = DocumentStore::uri_key(uri.as_str());
-        let stale = self
-            .files
-            .read()
-            .get(&key)
-            .map(|file| file.generation > commit.generation.get())
-            .unwrap_or(false);
-        if stale {
-            return SourceCommitOutcome::RejectedStale;
-        }
-
         let mut hasher = DefaultHasher::new();
         text.hash(&mut hasher);
-        if self.files.read().get(&key).is_some_and(|file| file.content_hash == hasher.finish()) {
-            let _ = commit.identity();
-            return SourceCommitOutcome::NoOp;
+        let content_hash = hasher.finish();
+
+        // Serialize the freshness check and identical-content generation
+        // advance with all other writers of this URI. Otherwise a generation
+        // one NoOp can return without recording its high-water mark, allowing
+        // a later older live commit to be accepted.
+        {
+            let _lifecycle = self.lifecycle_guard(&key);
+            let mut files = self.files.write();
+            if let Some(file) = files.get_mut(&key) {
+                if file.generation > commit.generation.get() {
+                    return SourceCommitOutcome::RejectedStale;
+                }
+                if file.content_hash == content_hash {
+                    file.generation = commit.generation.get();
+                    file.pending_generation = file.pending_generation.max(file.generation);
+                    return SourceCommitOutcome::NoOp;
+                }
+            }
         }
 
         let result = self.index_file_with_generation(uri, text, commit.generation.get());
@@ -14266,12 +14267,11 @@ sub bar { return $greeting; }
         );
         assert!(initial.is_ok(), "initial import must remain fallible: {initial:?}");
 
-        let identity = NonZeroU64::new(41).expect("test identity is non-zero");
         let generation = NonZeroU32::new(1).expect("test generation is non-zero");
         let outcome = index.index_live_file(
             uri.clone(),
             "package ApiSourceCommit; sub live { 2 } 1;".to_string(),
-            SourceCommit::new(identity, generation),
+            SourceCommit::new(generation),
         );
         assert_eq!(outcome, SourceCommitOutcome::Accepted);
         assert!(index.file_symbols(uri.as_str()).iter().any(|symbol| symbol.name == "live"));
@@ -14281,28 +14281,47 @@ sub bar { return $greeting; }
     fn source_commit_api_preserves_stale_and_noop_outcomes() {
         let index = WorkspaceIndex::new();
         let uri = must(url::Url::parse("file:///api/source-commit-outcomes.pl"));
-        let identity = NonZeroU64::new(7).expect("test identity is non-zero");
         let generation_two = NonZeroU32::new(2).expect("test generation is non-zero");
         let generation_one = NonZeroU32::new(1).expect("test generation is non-zero");
         let text = "package Outcomes; sub stable { 1 } 1;".to_string();
 
         assert_eq!(
-            index.index_live_file(
-                uri.clone(),
-                text.clone(),
-                SourceCommit::new(identity, generation_two),
-            ),
+            index.index_live_file(uri.clone(), text.clone(), SourceCommit::new(generation_two),),
             SourceCommitOutcome::Accepted
         );
         assert_eq!(
-            index.index_live_file(uri.clone(), text, SourceCommit::new(identity, generation_two),),
+            index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two),),
             SourceCommitOutcome::NoOp
         );
         assert_eq!(
             index.index_live_file(
                 uri,
                 "package Outcomes; sub stale { 1 } 1;".to_string(),
-                SourceCommit::new(identity, generation_one),
+                SourceCommit::new(generation_one),
+            ),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn identical_live_generation_advances_before_older_live_commit() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-noop-generation.pl"));
+        let text = "package NoOpGeneration; sub stable { 1 } 1;".to_string();
+        let generation_one = NonZeroU32::new(1).expect("test generation is non-zero");
+        let generation_two = NonZeroU32::new(2).expect("test generation is non-zero");
+
+        must(index.index_initial_file(uri.clone(), text.clone()));
+        assert_eq!(
+            index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two)),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(2));
+        assert_eq!(
+            index.index_live_file(
+                uri,
+                "package NoOpGeneration; sub older { 2 } 1;".to_string(),
+                SourceCommit::new(generation_one),
             ),
             SourceCommitOutcome::RejectedStale
         );

@@ -4,6 +4,7 @@ canonical_initial_api = "index_initial_file"
 canonical_initial_batch_api = "index_initial_files_batch"
 canonical_live_api = "index_live_file"
 compatibility_apis = ["index_file", "index_file_str", "index_file_with_generation", "index_files_batch"]
+compatibility_baseline = 694
 
 # Exact source paths are the ledger identity. A new caller must be deliberately
 # added with an owner, role, successor, and removal condition; broad directory
@@ -74,6 +75,8 @@ caller_paths = [
   "crates/perl-workspace/tests/test_package_scoped_queries.rs",
   "crates/perl-workspace/tests/use_lib_fact_tests.rs",
   "crates/perl-workspace/tests/workspace_scorecard.rs",
+  "xtask/src/tasks/metrics/parser_accuracy.rs",
+  "xtask/src/tasks/semantic_scorecard.rs",
 ]
 
 [[owner]]
@@ -131,3 +134,10 @@ role = "semantic analyzer fixture"
 owner = "perl-semantic-analyzer"
 successor = "index_initial_file_str for fixture setup"
 removal_condition = "fixture-only setup is migrated with the next semantic test edit"
+
+[[owner]]
+prefix = "xtask"
+role = "repository validation and scorecard fixture"
+owner = "xtask task owner"
+successor = "index_initial_file_str for fixture setup"
+removal_condition = "task fixture is migrated when its validation contract is next revised"
