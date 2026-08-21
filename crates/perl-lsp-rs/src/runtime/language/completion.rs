@@ -4794,17 +4794,20 @@ sub cross_folder_sub_b { 1 }
         }
 
         let coordinator = Arc::new(IndexCoordinator::new());
-        // Symbol at a path outside folder-a — still included because filter is None.
+        // A non-callable symbol at a path outside folder-a — still included
+        // because filter is None.  Subroutine candidates are intentionally
+        // withdrawn by #11158 before Strategy-B, so use an `our` variable to
+        // keep this test focused on the single-folder no-filter branch.
         let _ = coordinator.index().index_file_str(
             "file:///project/folder-b/lib/B.pm",
             "package B;
-sub single_root_sub { 1 }
+our $single_root_var;
 1;
 ",
         );
         coordinator.transition_to_ready(1, 1);
 
-        let doc_text = "single";
+        let doc_text = "$single";
         let doc_uri = "file:///project/folder-a/script.pl";
         let inc_context = RequestIncContext::new(&server, doc_uri, doc_text, doc_text.len());
         let mut completions = Vec::new();
@@ -4817,7 +4820,7 @@ sub single_root_sub { 1 }
 
         let names: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
         assert!(
-            names.contains(&"single_root_sub"),
+            names.contains(&"$single_root_var"),
             "single-folder workspace must not filter by folder (doc_folder_filter = None);              got completions: {names:?}"
         );
     }
