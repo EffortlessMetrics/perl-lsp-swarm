@@ -757,7 +757,7 @@ fn parse_closing_relations(body: &str, current_repository: &str) -> Result<Vec<C
         bail!("PR body exceeds the bounded containment input");
     }
     let relation_re = Regex::new(
-        r"(?i)\b(close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?)\s+(?:https://github\.com/(?P<url_repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(?P<url_number>[0-9]+)\b|(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[0-9]+)\b)",
+        r"(?i)\b(close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?):?\s+(?:https://github\.com/(?P<url_repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(?P<url_number>[0-9]+)\b|(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[0-9]+)\b)",
     )
     .context("compiling closing-relation parser")?;
     let mut relations = Vec::new();
@@ -1385,6 +1385,42 @@ mod tests {
         assert_eq!(relations.len(), 1);
         assert_eq!(relations[0].key.repository, "otherorg/otherrepo");
         assert_eq!(relations[0].key.number, 42);
+        Ok(())
+    }
+
+    #[test]
+    fn optional_colon_forms_match_whitespace_forms() -> Result<()> {
+        let current_repository = "effortlessmetrics/perl-lsp-swarm";
+        let forms = [
+            ("Closes #123", "Closes: #123"),
+            ("Fixes OtherOrg/OtherRepo#124", "Fixes: OtherOrg/OtherRepo#124"),
+            (
+                "Resolves https://github.com/OtherOrg/OtherRepo/issues/125",
+                "Resolves: https://github.com/OtherOrg/OtherRepo/issues/125",
+            ),
+        ];
+
+        for (whitespace_form, colon_form) in forms {
+            let whitespace = parse_closing_relations(whitespace_form, current_repository)?;
+            let colon = parse_closing_relations(colon_form, current_repository)?;
+            assert_eq!(colon.len(), 1, "colon form was not parsed: {colon_form}");
+            assert_eq!(whitespace.len(), 1);
+            assert_eq!(
+                colon[0].key, whitespace[0].key,
+                "colon form changed relation key: {colon_form}"
+            );
+            assert_eq!(
+                colon[0].keyword, whitespace[0].keyword,
+                "colon form changed keyword: {colon_form}"
+            );
+        }
+
+        for malformed in ["Closes:#123", "Fixes:: #124", "Resolves:OtherOrg/OtherRepo#125"] {
+            assert!(
+                parse_closing_relations(malformed, current_repository)?.is_empty(),
+                "malformed closing relation was accepted: {malformed}"
+            );
+        }
         Ok(())
     }
 
