@@ -98,6 +98,10 @@ pub struct LspServer {
     pub process: Mutex<Child>,
     pub(crate) writer: Mutex<BufWriter<ChildStdin>>, // keep stdin pinned and flushed
     rx: Mutex<mpsc::Receiver<Value>>,
+    /// Protocol-level failures reported by the stdout reader thread
+    /// (unparsable frames); drained by the response readers so callers can
+    /// distinguish a broken payload from a slow one.
+    err_rx: Mutex<mpsc::Receiver<String>>,
     // Keep threads alive for the lifetime of the server
     _stdout_thread: std::thread::JoinHandle<()>,
     _stderr_thread: std::thread::JoinHandle<()>,
@@ -237,6 +241,7 @@ pub fn start_lsp_server() -> LspServer {
         )),
     };
     let (tx, rx) = mpsc::channel::<Value>();
+    let (err_tx, err_rx) = mpsc::channel::<String>();
     let debug_reader = std::env::var_os("LSP_TEST_DEBUG_READER").is_some();
     let _stdout_thread =
         match std::thread::Builder::new().name("lsp-stdout-reader".into()).spawn(move || {
@@ -279,7 +284,11 @@ pub fn start_lsp_server() -> LspServer {
                 }
                 let len = match content_len {
                     Some(n) => n,
-                    None => continue,
+                    None => {
+                        let _ = err_tx
+                            .send("frame without a parsable Content-Length header".to_owned());
+                        continue;
+                    }
                 };
                 // Read body
                 let mut buf = vec![0u8; len];
@@ -289,13 +298,22 @@ pub fn start_lsp_server() -> LspServer {
                     }
                     return;
                 }
-                if let Ok(val) = serde_json::from_slice::<Value>(&buf) {
-                    if debug_reader {
-                        let id = val.get("id").map(|v| v.to_string()).unwrap_or_default();
-                        let method = val.get("method").and_then(|v| v.as_str()).unwrap_or("");
-                        eprintln!("[reader] Received message id={id} method={method}");
+                match serde_json::from_slice::<Value>(&buf) {
+                    Ok(val) => {
+                        if debug_reader {
+                            let id = val.get("id").map(|v| v.to_string()).unwrap_or_default();
+                            let method = val.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                            eprintln!("[reader] Received message id={id} method={method}");
+                        }
+                        let _ = tx.send(val);
                     }
-                    let _ = tx.send(val);
+                    Err(e) => {
+                        let snippet = String::from_utf8_lossy(&buf);
+                        let _ = err_tx.send(format!(
+                            "invalid JSON in {len}-byte frame: {e}; body: {:.200}",
+                            snippet.trim()
+                        ));
+                    }
                 }
             }
         }) {
@@ -309,6 +327,7 @@ pub fn start_lsp_server() -> LspServer {
         process: Mutex::new(process),
         writer: Mutex::new(BufWriter::new(stdin)),
         rx: Mutex::new(rx),
+        err_rx: Mutex::new(err_rx),
         _stdout_thread,
         _stderr_thread,
         pending: Mutex::new(VecDeque::new()),

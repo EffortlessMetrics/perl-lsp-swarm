@@ -178,8 +178,8 @@ pub fn read_notification_timeout(server: &LspServer, dur: Duration) -> Option<Va
 }
 
 /// Outcome of a matched-response read: either the matched response, an elapsed
-/// budget on a still-connected transport, or a terminated transport (the server
-/// process exited or closed stdout).
+/// budget on a still-connected transport, a terminated transport (the server
+/// process exited or closed stdout), or an unparsable frame on a live transport.
 pub enum ReadResponseOutcome {
     /// Received the response matching the requested id.
     Response(Value),
@@ -187,6 +187,13 @@ pub enum ReadResponseOutcome {
     TimedOut,
     /// The reader thread hit EOF: the server exited or closed stdout.
     Disconnected,
+    /// A frame arrived but failed to parse; the transport stayed open.
+    Malformed(String),
+}
+
+/// Drain one protocol failure reported by the stdout reader thread, if any.
+fn take_protocol_error(server: &LspServer) -> Option<String> {
+    server.err_rx.lock().unwrap_or_else(|e| e.into_inner()).try_recv().ok()
 }
 
 /// Receive the response matching `id` (number or string), buffering other traffic,
@@ -216,6 +223,9 @@ pub fn read_response_matching_outcome(
     // then poll
     let deadline = Instant::now() + dur;
     loop {
+        if let Some(detail) = take_protocol_error(server) {
+            return ReadResponseOutcome::Malformed(detail);
+        }
         let now = Instant::now();
         if now >= deadline {
             return ReadResponseOutcome::TimedOut;
@@ -243,12 +253,14 @@ pub fn read_response_matching_outcome(
 
 /// Receive the response matching `id` (number or string), buffering other traffic.
 ///
-/// Legacy `Option` view of [`read_response_matching_outcome`]: both timeout and
-/// disconnect collapse to `None`.
+/// Legacy `Option` view of [`read_response_matching_outcome`]: timeout,
+/// disconnect, and malformed-frame outcomes all collapse to `None`.
 pub fn read_response_matching(server: &LspServer, id: &Value, dur: Duration) -> Option<Value> {
     match read_response_matching_outcome(server, id, dur) {
         ReadResponseOutcome::Response(msg) => Some(msg),
-        ReadResponseOutcome::TimedOut | ReadResponseOutcome::Disconnected => None,
+        ReadResponseOutcome::TimedOut
+        | ReadResponseOutcome::Disconnected
+        | ReadResponseOutcome::Malformed(_) => None,
     }
 }
 

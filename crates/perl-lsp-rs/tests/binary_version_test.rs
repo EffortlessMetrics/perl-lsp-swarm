@@ -58,6 +58,12 @@ fn initialize_with_retry(
                      not retrying a crashed server"
                 ));
             }
+            common::ReadResponseOutcome::Malformed(detail) => {
+                return Err(format!(
+                    "perl-lsp sent an unparsable initialize response; \
+                     not retrying a protocol failure ({detail})"
+                ));
+            }
         }
     }
     Err(last_err)
