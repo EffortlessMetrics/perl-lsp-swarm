@@ -93,13 +93,21 @@ fn no_production_route_references_the_withdrawn_organizer() -> Result<(), String
     let mut scanned = 0usize;
     let mut stack = vec![crates_dir.clone()];
     while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
+        let entries = std::fs::read_dir(&dir).map_err(|error| {
+            format!("failed to read source directory {}: {error}", dir.display())
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("failed to read an entry in source directory {}: {error}", dir.display())
+            })?;
             let path = entry.path();
-            if path.is_dir() {
+            if entry
+                .file_type()
+                .map_err(|error| {
+                    format!("failed to inspect source path {}: {error}", path.display())
+                })?
+                .is_dir()
+            {
                 stack.push(path);
                 continue;
             }
@@ -114,10 +122,9 @@ fn no_production_route_references_the_withdrawn_organizer() -> Result<(), String
             if !relative.contains("/src/") {
                 continue;
             }
-            let content = match std::fs::read_to_string(&path) {
-                Ok(content) => content,
-                Err(_) => continue,
-            };
+            let content = std::fs::read_to_string(&path).map_err(|error| {
+                format!("failed to read production source {}: {error}", path.display())
+            })?;
             scanned += 1;
             for (needle, explanation) in WITHDRAWN_ROUTE_PATTERNS {
                 if content.contains(needle) {
