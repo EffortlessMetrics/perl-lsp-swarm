@@ -24,11 +24,11 @@
 
 ## Negative controls
 
-- [x] Removing a phase contradiction changes the #5023 fixture result.
-- [x] Ignoring Remaining work changes the #6239 fixture result.
-- [x] Treating predecessor deletion as successor retirement changes the #5968 fixture result.
-- [x] Flattening packaged/presentation exclusion changes the #6282 fixture result.
-- [x] Treating controller child count or prose as a packet changes the controller fixture result.
+- [ ] Removing a phase contradiction changes the #5023 fixture result.
+- [ ] Ignoring Remaining work changes the #6239 fixture result.
+- [ ] Treating predecessor deletion as successor retirement changes the #5968 fixture result.
+- [ ] Flattening packaged/presentation exclusion changes the #6282 fixture result.
+- [ ] Treating controller child count or prose as a packet changes the controller fixture result.
 - [x] Scanning fenced or quoted examples would make the no-terminal fixture fail.
 - [x] Executing hostile metadata would create a marker file; the test proves none appears.
 - [x] Oversized input fails closed.
@@ -36,8 +36,8 @@
 
 ## Verification floor
 
-- [ ] `cargo test -p xtask --bin semantic-close-containment --locked`
-- [ ] `cargo clippy -p xtask --bin semantic-close-containment --locked -- -D warnings`
+- [x] `cargo test -p xtask --bin semantic-close-containment --locked`
+- [x] `cargo clippy -p xtask --bin semantic-close-containment --locked -- -D warnings`
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo xtask check-file-policy`
 - [ ] `cargo xtask workflow-trigger-lint`
