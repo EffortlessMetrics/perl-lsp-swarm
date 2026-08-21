@@ -154,6 +154,53 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
         )
         self.assertTrue(errors)
 
+    def test_section_scope_rejects_permissive_text_after_anchor(self) -> None:
+        source = (
+            "### Version Conflicts\n"
+            "Do not use Cargo's resolver to repair the conflict in place.\n"
+            "Try `cargo update` to make the conflict disappear.\n"
+        )
+        errors = validator.validate_semantics(
+            source,
+            1,
+            {
+                "scope": "section",
+                "required": ["Do not use Cargo's resolver"],
+                "forbidden_commands": ["cargo update"],
+            },
+        )
+        self.assertIn(
+            "forbidden command lacks an explicit refusal: 'cargo update'",
+            errors,
+        )
+
+    def test_section_scope_rejects_same_line_contradiction(self) -> None:
+        errors = validator.validate_semantics(
+            "### Version Conflicts\n"
+            "Do not use `cargo update`; then run `cargo update -p foo` here.\n",
+            1,
+            {
+                "scope": "section",
+                "required": ["Do not use"],
+                "forbidden_commands": ["cargo update"],
+            },
+        )
+        self.assertIn(
+            "forbidden command lacks an explicit refusal: 'cargo update'",
+            errors,
+        )
+
+    def test_section_scope_requires_heading_anchor(self) -> None:
+        errors = validator.validate_semantics(
+            "not a heading\n",
+            1,
+            {"scope": "section", "required": ["not a heading"]},
+        )
+        self.assertEqual(
+            ["section semantic scope requires a Markdown heading anchor"],
+            errors,
+        )
+
     def test_empty_semantic_assertion_strings_are_rejected(self) -> None:
         for semantics, message in (
             (
@@ -231,6 +278,54 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                     "escaping: source path escapes repository root: ../outside",
                 ],
             )
+
+    def test_windows_traversal_is_rejected_on_every_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / validator.FIXTURE
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text(
+                '{"schema_version": 1, "claim_boundary": "bounded", "cases": ['
+                '{"id": "windows-escaping", "path": "..\\\\outside", "needle": "x", '
+                '"context": "dynamic", "command": null, "expected": "not_proven", '
+                '"semantics": {"required": ["x"]}}]}',
+                encoding="utf-8",
+            )
+            errors = validator.validate(root)
+            self.assertEqual(
+                "windows-escaping: source path escapes repository root: ..\\outside",
+                errors[0],
+            )
+
+    def test_nul_source_path_is_reported_as_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / validator.FIXTURE
+            fixture.parent.mkdir(parents=True)
+            path = "bad\u0000path.txt"
+            fixture.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "claim_boundary": "bounded",
+                        "cases": [
+                            {
+                                "id": "nul-path",
+                                "path": path,
+                                "needle": "x",
+                                "context": "dynamic",
+                                "command": None,
+                                "expected": "not_proven",
+                                "semantics": {"required": ["x"]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            errors = validator.validate(root)
+            self.assertIn(f"nul-path: source unavailable: {path}:", errors[0])
+            self.assertIn("embedded null", errors[0])
 
     def test_invalid_utf8_anchored_source_returns_source_unavailable_error(
         self,

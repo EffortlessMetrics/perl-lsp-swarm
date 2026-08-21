@@ -12,9 +12,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from collections.abc import Mapping
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import TemporaryDirectory
 
 
@@ -38,17 +39,48 @@ class ValidationError(ValueError):
 def validate_semantics(
     source: str, line_number: int, semantics: dict[str, object]
 ) -> list[str]:
-    """Require source meaning on the identified anchor statement."""
+    """Require source meaning on the identified line or Markdown section."""
     lines = source.splitlines()
     if line_number < 1 or line_number > len(lines):
         return ["semantic anchor line is unavailable"]
-    semantic_source = lines[line_number - 1]
+    scope = semantics.get("scope", "line")
+    if scope == "line":
+        semantic_source = lines[line_number - 1]
+    elif scope == "section":
+        heading = re.match(r"^(#+)\s+", lines[line_number - 1])
+        if heading is None:
+            return ["section semantic scope requires a Markdown heading anchor"]
+        level = len(heading.group(1))
+        end = len(lines)
+        in_fence = False
+        for index in range(line_number, len(lines)):
+            if lines[index].lstrip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            next_heading = re.match(r"^(#+)\s+", lines[index])
+            if next_heading is not None and len(next_heading.group(1)) <= level:
+                end = index
+                break
+        semantic_source = "\n".join(lines[line_number - 1 : end])
+    else:
+        return ["semantic scope must be 'line' or 'section'"]
     required = semantics.get("required", [])
     forbidden = semantics.get("forbidden", [])
-    if not isinstance(required, list) or not isinstance(forbidden, list):
-        return ["semantic required/forbidden assertions must be lists"]
+    forbidden_commands = semantics.get("forbidden_commands", [])
+    if (
+        not isinstance(required, list)
+        or not isinstance(forbidden, list)
+        or not isinstance(forbidden_commands, list)
+    ):
+        return [
+            "semantic required, forbidden, and forbidden_commands assertions "
+            "must be lists"
+        ]
     if not required and not forbidden:
-        return ["semantic assertions must not both be empty"]
+        if not forbidden_commands:
+            return ["semantic assertions must not both be empty"]
     errors = []
     for phrase in required:
         if not isinstance(phrase, str):
@@ -64,6 +96,42 @@ def validate_semantics(
             errors.append("forbidden source semantics must not be empty")
         elif phrase in semantic_source:
             errors.append(f"forbidden source semantics present: {phrase!r}")
+    denial_markers = (
+        "must not",
+        "do not",
+        "don't",
+        "never",
+        "not authorize",
+        "refuse",
+        "prohibited",
+        "forbidden",
+    )
+    for command in forbidden_commands:
+        if not isinstance(command, str):
+            errors.append(f"forbidden source commands must be strings: {command!r}")
+            continue
+        if not command.strip():
+            errors.append("forbidden source commands must not be empty")
+            continue
+        command_error = False
+        for source_line in semantic_source.splitlines():
+            lowered_line = source_line.lower()
+            search_start = 0
+            while True:
+                occurrence = lowered_line.find(command.lower(), search_start)
+                if occurrence < 0:
+                    break
+                prefix = lowered_line[:occurrence]
+                refusal_span = re.split(r"[.;:]", prefix)[-1]
+                if not any(marker in refusal_span for marker in denial_markers):
+                    errors.append(
+                        f"forbidden command lacks an explicit refusal: {command!r}"
+                    )
+                    command_error = True
+                    break
+                search_start = occurrence + len(command)
+            if command_error:
+                break
     return errors
 
 
@@ -200,10 +268,22 @@ def validate(root: Path) -> list[str]:
         if not isinstance(command, (str, type(None))):
             errors.append(f"{case_id}: command must be a string or null")
         relative_path = Path(path)
-        if relative_path.is_absolute() or PureWindowsPath(path).is_absolute():
+        if (
+            relative_path.is_absolute()
+            or PurePosixPath(path).is_absolute()
+            or PureWindowsPath(path).is_absolute()
+        ):
             errors.append(f"{case_id}: source path must be relative: {path}")
             continue
-        source_path = (root / relative_path).resolve()
+        normalized_parts = path.replace("\\", "/").split("/")
+        if ".." in normalized_parts:
+            errors.append(f"{case_id}: source path escapes repository root: {path}")
+            continue
+        try:
+            source_path = (root / relative_path).resolve()
+        except (OSError, ValueError) as error:
+            errors.append(f"{case_id}: source unavailable: {path}: {error}")
+            continue
         try:
             source_path.relative_to(root.resolve())
         except ValueError:
@@ -211,7 +291,7 @@ def validate(root: Path) -> list[str]:
             continue
         try:
             source = source_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as error:
+        except (OSError, UnicodeDecodeError, ValueError) as error:
             errors.append(f"{case_id}: source unavailable: {path}: {error}")
             continue
         line_number = anchor_line(source, needle)
