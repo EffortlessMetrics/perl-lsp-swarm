@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -538,12 +539,41 @@ class GateShardTests(unittest.TestCase):
             commands["source_commit_api_check"],
         )
         self.assertTrue((REPO_ROOT / "scripts/ci/check_source_commit_api.py").is_file())
+        policy_text = policy.read_text(encoding="utf-8")
+        policy_row = re.search(
+            r"(?ms)^  - name: source_commit_api_check\n(?P<body>.*?)(?=^  - name:|\Z)",
+            policy_text,
+        )
+        self.assertIsNotNone(policy_row)
+        assert policy_row is not None
+        self.assertIn("    tier: pr_fast\n", policy_row.group("body"))
+        self.assertIn(
+            "    command: python3 scripts/ci/check_source_commit_api.py\n",
+            policy_row.group("body"),
+        )
         execution = json.loads(
             (REPO_ROOT / ".ci/gate-shard-execution.json").read_text(encoding="utf-8")
         )
-        self.assertIn("source_commit_api_check", execution["gates"])
+        self.assertEqual(
+            {"requires": [], "on_dependency_failure": "blocked_not_proven"},
+            execution["gates"]["source_commit_api_check"],
+        )
         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn("source_commit_api_check", workflow)
+        start = workflow.index("  merge-gate-shards:\n")
+        end = workflow.index("    permissions:\n", start)
+        lane: str | None = None
+        lanes: dict[str, set[str]] = {}
+        for line in workflow[start:end].splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- name: "):
+                lane = stripped.removeprefix("- name: ")
+            elif lane is not None and stripped.startswith("gates: "):
+                lanes[lane] = set(stripped.removeprefix("gates: ").split())
+        self.assertEqual(
+            ["meta"],
+            [name for name, gates in lanes.items() if "source_commit_api_check" in gates],
+        )
+        self.assertIn("--gate-policy .ci/gate-policy.yaml", workflow)
 
     def test_gate_policy_preflight_rejects_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -671,12 +701,20 @@ class GateShardTests(unittest.TestCase):
         commands = (
             "bash -c 'python3 ../outside.py'",
             "env -S 'python3 ../outside.py'",
+            "env -- scripts/ci/missing.py",
             "python3 -uscripts/ci/missing.py",
             "python3 scripts/ci/missing.py > ../outside.log",
+            "python3 scripts/ci/missing.py >../outside.log",
+            "python3 scripts/ci/missing.py >>../outside.log",
+            "python3 scripts/ci/missing.py `pwd`",
+            "python3 -m missing_module",
+            "python3.exe scripts/ci/missing.py",
             "cd ../outside && python3 scripts/ci/missing.py",
             "alias py=python3; py scripts/ci/missing.py",
             "pwsh -Command 'python3 ../outside.py'",
             "pwsh -File ../outside.ps1",
+            "powershell.exe -Command 'python3 ../outside.py'",
+            "powershell.exe -File ../outside.ps1",
         )
         for command in commands:
             with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
@@ -710,6 +748,23 @@ class GateShardTests(unittest.TestCase):
                 ["source_commit_api_check"],
                 root=root,
             )
+            self.assertEqual("python3 scripts/check.py", commands["source_commit_api_check"])
+
+    def test_gate_policy_block_scalar_header_comment_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            (root / "scripts/check.py").write_text("# check\n", encoding="utf-8")
+            policy = root / "gate-policy.yaml"
+            policy.write_text(
+                "schema_version: 1\n"
+                "gates:\n"
+                "  - name: source_commit_api_check\n"
+                "    command: >- # header comment\n"
+                "      python3 scripts/check.py\n",
+                encoding="utf-8",
+            )
+            commands = shard.load_gate_commands(policy, ["source_commit_api_check"], root=root)
             self.assertEqual("python3 scripts/check.py", commands["source_commit_api_check"])
 
     def test_canonical_receipt_schema_is_loadable(self) -> None:

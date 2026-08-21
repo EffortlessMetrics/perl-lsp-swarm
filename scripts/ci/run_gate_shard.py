@@ -103,7 +103,17 @@ INTERPRETER_SIMPLE_OPTIONS = {
     "pwsh": {"-NoLogo", "-NoProfile", "-NonInteractive"},
 }
 INTERPRETER_SCRIPT_OPTIONS = {"-File"}
-ATTACHED_INTERPRETER_PREFIXES = {"bash", "python", "python2", "python3", "pwsh", "sh"}
+INTERPRETER_ALIASES = {
+    **{name: name for name in COMMAND_INTERPRETERS},
+    **{f"{name}.exe": name for name in COMMAND_INTERPRETERS},
+    "powershell": "pwsh",
+    "powershell.exe": "pwsh",
+}
+ATTACHED_INTERPRETER_ALIASES = {
+    alias
+    for alias, canonical in INTERPRETER_ALIASES.items()
+    if canonical in {"bash", "python", "python2", "python3", "pwsh", "sh"}
+}
 UNSAFE_SHELL_COMMANDS = {"alias", "cd", "eval", "exec", "source"}
 REDIRECTION = re.compile(r"^(?P<fd>[0-9]*)(?P<operator><<|>>|<|>)(?P<target>.*)$")
 
@@ -202,6 +212,9 @@ def _read_gate_command_specs(path: Path) -> dict[str, str]:
             continue
 
         value = raw.split("command:", 1)[1].strip()
+        block_header = re.fullmatch(r"(?P<header>[>|][+-]?)(?:\s+#.*)?", value)
+        if block_header is not None:
+            value = block_header.group("header")
         if value in {">", ">-", ">+", "|", "|-", "|+"}:
             folded = value.startswith(">")
             continuation: list[str] = []
@@ -243,6 +256,11 @@ def _contains_shell_expansion(token: str) -> bool:
     return "$" in token or "`" in token or "*" in token or "?" in token
 
 
+def _interpreter_name(token: str) -> str | None:
+    token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return INTERPRETER_ALIASES.get(token_name)
+
+
 def _repository_relative_path(path: str, root: Path, *, subject: str) -> None:
     """Reject path syntax that can escape or dynamically leave the checkout."""
     path = path.rstrip(";")
@@ -269,7 +287,7 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
         token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
         if token in UNSAFE_SHELL_COMMANDS:
             raise ValueError(f"unsupported shell command in gate policy: {token}")
-        if "$ (" in token or "$(" in token or "<(" in token or ">(" in token:
+        if "$(" in token or "<(" in token or ">(" in token or "`" in token:
             raise ValueError(f"unsupported nested shell expression: {token}")
         if token_name == "env" and index + 1 < len(tokens):
             next_token = tokens[index + 1]
@@ -308,9 +326,11 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
     interpreter_pending = False
     interpreter_name: str | None = None
     env_pending = False
+    env_command_pending = False
     env_skip_option_value = False
     for index, token in enumerate(tokens):
         token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        interpreter_token_name = _interpreter_name(token)
         if skip_next_output:
             skip_next_output = False
             continue
@@ -345,8 +365,22 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
             skip_next_interpreter_option = False
             expect_interpreter_script = False
             env_pending = False
+            env_command_pending = False
             env_skip_option_value = False
             continue
+
+        if env_command_pending:
+            if token.startswith("-"):
+                raise ValueError(f"env -- command is missing or invalid: {token}")
+            env_command_pending = False
+            if interpreter_token_name is not None:
+                interpreter_pending = True
+                interpreter_name = interpreter_token_name
+                continue
+            if _looks_like_command_path(token):
+                references.append(token)
+                continue
+            raise ValueError(f"env -- command is not a supported executable path: {token}")
 
         if env_pending:
             if env_skip_option_value:
@@ -361,15 +395,16 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
                 continue
             if token == "--":
                 env_pending = False
+                env_command_pending = True
                 continue
             if token.startswith("-"):
                 raise ValueError(f"unsupported env option: {token}")
             if "=" in token and not _looks_like_command_path(token):
                 continue
             env_pending = False
-            if token_name in COMMAND_INTERPRETERS:
+            if interpreter_token_name is not None:
                 interpreter_pending = True
-                interpreter_name = token_name
+                interpreter_name = interpreter_token_name
                 continue
             if _looks_like_command_path(token):
                 references.append(token)
@@ -399,7 +434,7 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
                 expect_interpreter_script = True
                 continue
             if token in INTERPRETER_OPTIONS_WITH_ARGUMENT:
-                if token in {"-c", "--command", "-Command"}:
+                if token in {"-c", "--command", "-Command", "-m"}:
                     raise ValueError(f"unsupported nested interpreter command: {token}")
                 skip_next_interpreter_option = True
                 continue
@@ -416,13 +451,13 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
                 interpreter_name = None
             continue
 
-        if token_name in COMMAND_INTERPRETERS:
+        if interpreter_token_name is not None:
             interpreter_pending = True
-            interpreter_name = token_name
+            interpreter_name = interpreter_token_name
             continue
         if any(
             token_name.startswith(f"{interpreter}-")
-            for interpreter in ATTACHED_INTERPRETER_PREFIXES
+            for interpreter in ATTACHED_INTERPRETER_ALIASES
         ):
             raise ValueError(f"unsupported attached interpreter option: {token}")
         if index == 0 and _looks_like_command_path(token):
@@ -431,6 +466,8 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
         raise ValueError("input path option is missing its value")
     if expect_interpreter_script:
         raise ValueError("interpreter script option is missing its path")
+    if env_command_pending:
+        raise ValueError("env -- wrapper is missing its command")
     if env_pending:
         raise ValueError("env wrapper is missing its command")
     return references
@@ -458,6 +495,8 @@ def load_gate_commands(
         command = specs[gate].strip()
         if not command:
             raise ValueError(f"selected gate {gate!r} has no executable command")
+        if "`" in command:
+            raise ValueError(f"selected gate {gate!r} uses unsupported backtick substitution")
         try:
             tokens = shlex.split(command, comments=True, posix=True)
         except ValueError as error:
