@@ -8811,3 +8811,49 @@ sub inspect {
         "open Child source must win over unrelated indexed bare symbol, got {labels:?}"
     );
 }
+
+/// Proof seam for issue #11858: empty-prefix general context must emit visible
+/// document variables (`$var`) in addition to keywords and built-ins.
+///
+/// Confirms that `add_all_variables` correctly populates from the symbol table
+/// when the provider is built via `new_with_index_and_source` (the same path
+/// used by `handle_completion_cancellable` in the production binary). This is
+/// the provider-level seam the integration test probes at the binary level.
+#[test]
+fn test_empty_prefix_emits_document_variables() {
+    // Matches the fixture in lsp_completion_tests::test_empty_prefix_completion.
+    let source = "my $var = 42;\nsub test { }\n\n";
+    // Cursor at the very end (line 3 char 0 in LSP terms) — after all declarations.
+    let pos = source.len();
+
+    let mut parser = Parser::new(source);
+    let ast = must(parser.parse());
+
+    // Build the provider the same way the production completion handler does:
+    // new_with_index_and_source so the symbol table is extracted from the AST.
+    let provider = CompletionProvider::new_with_index_and_source(&ast, source, None);
+    let completions = provider.get_completions(source, pos);
+
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_ref()).collect();
+
+    // Variables declared before the cursor must appear for an empty prefix.
+    assert!(
+        labels.contains(&"$var"),
+        "empty-prefix completion must emit document variable $var (issue #11858); got ({} items): {labels:?}",
+        labels.len()
+    );
+
+    // Subroutines declared in the file must also appear.
+    assert!(
+        labels.contains(&"test"),
+        "empty-prefix completion must emit document subroutine test; got ({} items): {labels:?}",
+        labels.len()
+    );
+
+    // Control-flow keywords must appear (regression guard for #11863 reserve).
+    assert!(
+        labels.iter().any(|l| l.starts_with("if")),
+        "empty-prefix completion must include control-flow keyword 'if'; got ({} items): {labels:?}",
+        labels.len()
+    );
+}
