@@ -103,7 +103,7 @@ use crate::util::read_text_file_with_encoding;
 use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
 
 #[cfg(feature = "workspace")]
-fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
+pub(crate) fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
     uri_to_fs_path(uri).and_then(|path| match read_text_file_with_encoding(&path) {
         Ok(content) => Some(content),
         Err(e) => {
@@ -1562,16 +1562,39 @@ impl LspServer {
             coordinator.notify_change(uri);
         }
 
-        let mut loaded_content: Option<String> = None;
+        // Resolve source authority BEFORE any index/cache mutation (#8041).
+        // For an open document the editor buffer is the only authoritative
+        // input for its URI, so an external CHANGED/CREATED event must not
+        // re-index cross-file facts from disk bytes that contradict it.
+        #[cfg(feature = "workspace")]
+        let document_is_open = {
+            let documents = self.documents.lock();
+            self.get_document(&documents, uri).is_some()
+        };
 
-        // Re-index the file if it is a Perl source file.
+        // For open documents, do NOT overwrite doc.text or bump doc.version,
+        // and do not rebuild workspace facts from disk. The document map and
+        // the generation-bound index commits driven by didChange/didSave stay
+        // authoritative; only they may write this URI's facts. (#5112, #5040)
+        #[cfg(feature = "workspace")]
+        if document_is_open {
+            tracing::debug!(
+                "File watcher change for open document {} — open buffer is authoritative; skipping disk re-index (#8041)",
+                uri
+            );
+            if let Some(coordinator) = self.coordinator() {
+                coordinator.notify_parse_complete(uri);
+            }
+            return;
+        }
+
+        // Re-index the file if it is a Perl source file (closed-file
+        // authority: stable current disk source).
         #[cfg(feature = "workspace")]
         if let Some(coordinator) = self.coordinator()
             && is_perl_source_uri(uri)
         {
-            if loaded_content.is_none() {
-                loaded_content = read_watched_file_content(uri, "re-indexing");
-            }
+            let loaded_content = read_watched_file_content(uri, "re-indexing");
 
             let workspace_index = coordinator.index();
             if let Ok(url) = url::Url::parse(uri)
@@ -1585,29 +1608,6 @@ impl LspServer {
                         tracing::warn!("Failed to re-index file {}: {}", uri, e);
                     }
                 }
-            }
-        }
-
-        // For open documents, do NOT overwrite doc.text or bump doc.version.
-        // The document map is authoritative for open files — the editor's
-        // didChange notifications drive the content. Overwriting from disk
-        // clobbers unsaved user edits and the blind version+1 can cause
-        // subsequent didChange to be silently dropped as stale. (#5112, #5040)
-        //
-        // The workspace index above was already re-indexed from disk, which
-        // is sufficient for cross-file features. The document map stays as-is.
-        #[cfg(feature = "workspace")]
-        {
-            let document_is_open = {
-                let documents = self.documents.lock();
-                self.get_document(&documents, uri).is_some()
-            };
-
-            if document_is_open {
-                tracing::debug!(
-                    "File watcher change for open document {} — skipping in-memory overwrite (document map is authoritative)",
-                    uri
-                );
             }
         }
 
@@ -1850,6 +1850,17 @@ impl LspServer {
 
                 tracing::debug!("File renamed: {} -> {}", old_uri, new_uri);
 
+                // Resolve source authority BEFORE any index mutation (#8041).
+                // `didRenameFiles` is the client's explicit lifecycle authority
+                // for the path transition of an open document: the handoff moves
+                // the exact document instance (text, version, generation Arc)
+                // to the new URI and re-binds workspace facts to the buffer
+                // text — never to disk bytes read behind the buffer's back.
+                let old_doc_open = {
+                    let documents = self.documents.lock();
+                    self.get_document(&documents, &old_uri).is_some()
+                };
+
                 // Update the index for the renamed file
                 // Note: Mutation operation - use coordinator with lifecycle tracking
                 #[cfg(feature = "workspace")]
@@ -1857,34 +1868,66 @@ impl LspServer {
                     coordinator.notify_change(&old_uri);
                     coordinator.notify_change(&new_uri);
 
-                    // Remove old file from index
-                    coordinator.index().remove_file(&old_uri);
+                    if old_doc_open {
+                        // Open-buffer authority (#8041): drop old-path facts
+                        // and bind the authoritative buffer text to the new
+                        // URI generation-bound. Old and new identities never
+                        // coexist as current workspace facts.
+                        for key in self.uri_key_variants(&old_uri) {
+                            coordinator.index().remove_file(&key);
+                        }
+                        let doc_snapshot = {
+                            let documents = self.documents.lock();
+                            self.get_document(&documents, &old_uri)
+                                .map(|doc| (doc.current_generation(), doc.text_arc.to_string()))
+                        };
+                        if let Some((generation, text)) = doc_snapshot
+                            && is_perl_source_uri(&new_uri)
+                            && let Ok(url) = url::Url::parse(&new_uri)
+                        {
+                            match coordinator
+                                .index()
+                                .index_file_with_generation(url, text, generation)
+                            {
+                                Ok(()) => tracing::debug!(
+                                    generation,
+                                    "Re-bound renamed open document facts to {new_uri}"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    "Failed to re-bind renamed open document facts to {new_uri}: {e}"
+                                ),
+                            }
+                        }
+                    } else {
+                        // Remove old file from index
+                        coordinator.index().remove_file(&old_uri);
 
-                    // Index new file if it's a Perl file
-                    if is_perl_source_uri(&new_uri)
-                        && let Some(path) = uri_to_fs_path(&new_uri)
-                    {
-                        match read_text_file_with_encoding(&path) {
-                            Ok(content) => {
-                                if let Ok(url) = url::Url::parse(&new_uri) {
-                                    match coordinator.index().index_file(url, content) {
-                                        Ok(()) => {
-                                            tracing::debug!("Indexed renamed file: {}", new_uri)
+                        // Index new file if it's a Perl file
+                        if is_perl_source_uri(&new_uri)
+                            && let Some(path) = uri_to_fs_path(&new_uri)
+                        {
+                            match read_text_file_with_encoding(&path) {
+                                Ok(content) => {
+                                    if let Ok(url) = url::Url::parse(&new_uri) {
+                                        match coordinator.index().index_file(url, content) {
+                                            Ok(()) => {
+                                                tracing::debug!("Indexed renamed file: {}", new_uri)
+                                            }
+                                            Err(e) => tracing::warn!(
+                                                "Failed to index renamed file {}: {}",
+                                                new_uri,
+                                                e
+                                            ),
                                         }
-                                        Err(e) => tracing::warn!(
-                                            "Failed to index renamed file {}: {}",
-                                            new_uri,
-                                            e
-                                        ),
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                tracing::debug!(
-                                    "Failed to read renamed file for indexing ({}): {}",
-                                    path.display(),
-                                    e
-                                );
+                                Err(e) => {
+                                    tracing::debug!(
+                                        "Failed to read renamed file for indexing ({}): {}",
+                                        path.display(),
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
@@ -1893,7 +1936,10 @@ impl LspServer {
                     coordinator.notify_parse_complete(&new_uri);
                 }
 
-                // Update document store
+                // Update document store: the client's didRenameFiles is the
+                // explicit lifecycle authority for the path handoff, so the
+                // binding moves while preserving the exact document instance,
+                // source, and generation Arc (#8041).
                 {
                     let mut documents = self.documents.lock();
                     if let Some(doc) = documents.remove(&old_uri) {
@@ -3142,13 +3188,13 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn watched_file_deleted_clears_raw_and_normalized_uri_state()
+    fn watched_delete_preserves_open_buffer_until_close_completes_handoff()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("delete_variant.pm");
-        let source = "package Delete::Variant;\nsub gone { 1 }\n1;\n";
-        std::fs::write(&path, source)?;
+        let disk_v1 = "package Delete::Variant;\nsub gone { 1 }\n1;\n";
+        std::fs::write(&path, disk_v1)?;
         let normalized_uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?;
         let normalized_uri = normalized_uri.to_string();
         let file_path_part = normalized_uri.strip_prefix("file:///").ok_or("expected file URI")?;
@@ -3162,44 +3208,182 @@ mod tests {
                 "uri": normalized_uri,
                 "languageId": "perl",
                 "version": 1,
-                "text": source
+                "text": disk_v1
             }
         }))?;
+
+        // Unsaved buffer edit: v2 becomes the authoritative source.
+        let buffer_v2 = "package Delete::Variant;\nsub kept { 2 }\n1;\n";
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": normalized_uri, "version": 2 },
+            "contentChanges": [{ "text": buffer_v2 }]
+        })))?;
+        wait_for_pending_index_tasks(&server);
+
+        let generation_before = server.test_document_generation(&normalized_uri);
         let in_flight_token = server.new_parse_token(&normalized_uri);
         server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
             uri: normalized_uri.clone(),
-            document_version: 1,
+            document_version: 2,
             line: 0,
             character: 0,
         });
+
         if let Some(coordinator) = server.coordinator() {
-            coordinator
-                .index()
-                .index_file(url::Url::parse(&normalized_uri)?, source.to_string())?;
-            assert!(!coordinator.index().file_symbols(&normalized_uri).is_empty());
-            assert!(coordinator.index().document_store().get(&normalized_uri).is_some());
+            let names = index_symbol_names(coordinator.index(), &normalized_uri);
+            assert!(
+                names.iter().any(|name| name == "kept"),
+                "buffer facts indexed before delete: {names:?}"
+            );
+            assert!(
+                !names.iter().any(|name| name == "gone"),
+                "stale v1 facts replaced by v2: {names:?}"
+            );
         }
 
+        // Backing file deleted externally; watcher reports DELETED through
+        // the raw URI variant.
+        std::fs::remove_file(&path)?;
         server.handle_did_change_watched_files(Some(json!({
             "changes": [
                 { "uri": raw_uri, "type": 3 }
             ]
         })))?;
 
-        assert!(in_flight_token.load(std::sync::atomic::Ordering::Relaxed));
+        // Open-buffer authority (#8041): the deletion must not evict the open
+        // document, trip its parse token, or drop its session state.
+        assert!(
+            !in_flight_token.load(std::sync::atomic::Ordering::Relaxed),
+            "watched delete of a backing file must not terminate an open document generation"
+        );
+        assert_eq!(server.test_document_generation(&normalized_uri), generation_before);
+        let doc_key = server.normalize_uri_key(&normalized_uri);
+        let texts = server.documents_text_snapshot();
+        assert_eq!(texts, vec![(doc_key.clone(), buffer_v2.to_string())]);
         let after = server.memory_state_snapshot();
-        assert_eq!(after.documents, 0);
-        assert_eq!(after.open_text_bytes, 0);
-        assert_eq!(after.parse_cancel_flags, 0);
-        assert_eq!(after.stream_sessions, 0);
+        assert_eq!(after.documents, 1);
+        assert_eq!(after.parse_cancel_flags, 1);
+        assert_eq!(after.stream_sessions, 1);
+
         if let Some(coordinator) = server.coordinator() {
-            assert!(coordinator.index().file_symbols(&normalized_uri).is_empty());
-            assert!(coordinator.index().file_symbols(&raw_uri).is_empty());
-            assert!(coordinator.index().document_store().get(&normalized_uri).is_none());
-            assert!(coordinator.index().document_store().get(&raw_uri).is_none());
+            // Workspace facts still derive from the authoritative buffer.
+            let names = index_symbol_names(coordinator.index(), &normalized_uri);
+            assert!(
+                names.iter().any(|name| name == "kept"),
+                "buffer facts survive delete: {names:?}"
+            );
+            assert!(
+                !names.iter().any(|name| name == "gone"),
+                "no disk-fact resurrection: {names:?}"
+            );
+            assert!(coordinator.index().document_store().get(&normalized_uri).is_some());
+        }
+
+        // Save recreates the backing file from the buffer; didSave reconciles
+        // against it and the subsequent watched CHANGED echo is skipped
+        // because the open buffer stays authoritative.
+        std::fs::write(&path, buffer_v2)?;
+        server.handle_did_save(Some(json!({ "textDocument": { "uri": normalized_uri } })))?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [
+                { "uri": normalized_uri, "type": 2 }
+            ]
+        })))?;
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &normalized_uri);
+            assert!(
+                names.iter().any(|name| name == "kept"),
+                "save keeps coherent facts: {names:?}"
+            );
+        }
+
+        // Close while the recreated file exists: closed-file authority takes
+        // over with a stable disk reread (same bytes here).
+        server.handle_did_close(Some(json!({ "textDocument": { "uri": raw_uri } })))?;
+        let closed = server.memory_state_snapshot();
+        assert_eq!(closed.documents, 0);
+        assert_eq!(closed.open_text_bytes, 0);
+        assert_eq!(closed.parse_cancel_flags, 0);
+        assert_eq!(closed.stream_sessions, 0);
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &normalized_uri);
+            assert!(
+                names.iter().any(|name| name == "kept"),
+                "disk-backed facts reload on close: {names:?}"
+            );
         }
 
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn watched_delete_of_closed_file_still_clears_raw_and_normalized_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("delete_closed.pm");
+        let source = "package DeleteClosed::Variant;\nsub gone { 1 }\n1;\n";
+        std::fs::write(&path, source)?;
+        let normalized_uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?;
+        let normalized_uri = normalized_uri.to_string();
+        let file_path_part = normalized_uri.strip_prefix("file:///").ok_or("expected file URI")?;
+        let raw_uri = format!("file://localhost/{file_path_part}");
+
+        assert_ne!(raw_uri, normalized_uri);
+        assert_eq!(server.normalize_uri_key(&raw_uri), server.normalize_uri_key(&normalized_uri));
+
+        if let Some(coordinator) = server.coordinator() {
+            coordinator
+                .index()
+                .index_file(url::Url::parse(&normalized_uri)?, source.to_string())?;
+            assert!(!coordinator.index().file_symbols(&normalized_uri).is_empty());
+        }
+
+        // No open document: Closed::Missing removes all disk-backed state for
+        // both URI spellings.
+        std::fs::remove_file(&path)?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [
+                { "uri": raw_uri, "type": 3 }
+            ]
+        })))?;
+
+        let after = server.memory_state_snapshot();
+        assert_eq!(after.documents, 0);
+        if let Some(coordinator) = server.coordinator() {
+            assert!(coordinator.index().file_symbols(&normalized_uri).is_empty());
+            assert!(coordinator.index().file_symbols(&raw_uri).is_empty());
+        }
+
+        Ok(())
+    }
+
+    /// Drain the async post-parse index tasks so buffer-derived facts are
+    /// committed before assertions run.
+    #[cfg(feature = "workspace")]
+    fn wait_for_pending_index_tasks(server: &LspServer) {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if server.runtime_pressure_snapshot().pending_index_tasks == 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            server.runtime_pressure_snapshot().pending_index_tasks,
+            0,
+            "pending index tasks did not drain"
+        );
+    }
+
+    #[cfg(feature = "workspace")]
+    fn index_symbol_names(
+        index: &perl_workspace::workspace::workspace_index::WorkspaceIndex,
+        uri: &str,
+    ) -> Vec<String> {
+        index.file_symbols(uri).into_iter().map(|symbol| symbol.name).collect()
     }
 
     #[cfg(feature = "workspace")]
@@ -3295,12 +3479,41 @@ mod tests {
         let deletes = uris.iter().map(|uri| json!({ "uri": uri, "type": 3 })).collect::<Vec<_>>();
         server.handle_did_change_watched_files(Some(json!({ "changes": deletes })))?;
 
+        // Open-buffer authority (#8041): watched deletes of backing files do
+        // not evict the open documents; their session state and buffer-derived
+        // index facts stay current.
         for _ in 0..100 {
             let pressure = server.runtime_pressure_snapshot();
             if pressure.pending_index_tasks == 0 && pressure.file_watcher_pending_uris == 0 {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let memory_after_delete = server.memory_state_snapshot();
+        assert_eq!(memory_after_delete.documents, uris.len());
+        assert_eq!(memory_after_delete.parse_cancel_flags, uris.len());
+        assert_eq!(memory_after_delete.stream_sessions, uris.len());
+        assert_eq!(server.runtime_pressure_snapshot().file_watcher_pending_uris, 0);
+
+        {
+            let coordinator = server.coordinator().ok_or("expected workspace coordinator")?;
+            for uri in &uris {
+                assert!(
+                    !coordinator.index().file_symbols(uri).is_empty(),
+                    "buffer-derived facts survive watched delete for {uri}"
+                );
+                assert!(
+                    coordinator.index().document_store().get(uri).is_some(),
+                    "index document survives watched delete for {uri}"
+                );
+            }
+        }
+
+        // The client lifecycle completes cleanup: explicit didClose while the
+        // backing files are absent removes every remaining source subject.
+        for uri in &uris {
+            server.handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))?;
         }
 
         let memory = server.memory_state_snapshot();
@@ -3316,6 +3529,211 @@ mod tests {
                 assert!(coordinator.index().file_symbols(uri).is_empty());
                 assert!(coordinator.index().document_store().get(uri).is_none());
             }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn watched_change_never_indexes_disk_over_open_buffer_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("diverge.pm");
+        let disk_v1 = "package Diverge;\nsub v1_only { 1 }\n1;\n";
+        std::fs::write(&path, disk_v1)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": disk_v1 }
+        }))?;
+
+        // Unsaved buffer edit: v2 is authoritative.
+        let buffer_v2 = "package Diverge;\nsub v2_only { 2 }\n1;\n";
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": buffer_v2 }]
+        })))?;
+        wait_for_pending_index_tasks(&server);
+        let generation_before = server.test_document_generation(&uri);
+
+        // External rewrite to v3 followed by its watched CHANGED event.
+        let disk_v3 = "package Diverge;\nsub v3_only { 3 }\n1;\n";
+        std::fs::write(&path, disk_v3)?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [ { "uri": uri, "type": 2 } ]
+        })))?;
+
+        // Negative control: disk v3 must never become an exact fact while the
+        // unsaved buffer v2 is the authority; buffer facts stay bound.
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &uri);
+            assert!(
+                !names.iter().any(|name| name.contains("v3")),
+                "watched change must not index disk bytes over an open buffer: {names:?}"
+            );
+            assert!(
+                names.iter().any(|name| name == "v2_only"),
+                "buffer-derived workspace facts must stay current: {names:?}"
+            );
+        }
+        assert_eq!(server.test_document_generation(&uri), generation_before);
+        assert_eq!(
+            server.documents_text_snapshot(),
+            vec![(server.normalize_uri_key(&uri), buffer_v2.to_string())]
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn rename_moves_open_binding_generation_bound_and_never_duplicates_identities()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let old_path = dir.path().join("old_name.pm");
+        let new_path = dir.path().join("new_name.pm");
+        let disk_v1 = "package Renamed;\nsub v1_only { 1 }\n1;\n";
+        std::fs::write(&old_path, disk_v1)?;
+        let old_uri = url::Url::from_file_path(&old_path).map_err(|_| "invalid path")?.to_string();
+        let new_uri = url::Url::from_file_path(&new_path).map_err(|_| "invalid path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": { "uri": old_uri, "languageId": "perl", "version": 1, "text": disk_v1 }
+        }))?;
+        let buffer_v2 = "package Renamed;\nsub v2_only { 2 }\n1;\n";
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": old_uri, "version": 2 },
+            "contentChanges": [{ "text": buffer_v2 }]
+        })))?;
+        wait_for_pending_index_tasks(&server);
+        let generation_before = server.test_document_generation(&old_uri);
+
+        // The client renames the file but pre-seeds divergent disk bytes at
+        // the new path — exactly what must never win over the open buffer.
+        std::fs::write(&new_path, "package Renamed;\nsub disk_only { 9 }\n1;\n")?;
+
+        server.handle_did_rename_files(Some(json!({
+            "files": [ { "oldUri": old_uri, "newUri": new_uri } ]
+        })))?;
+
+        // Duplicate watcher observations of the same transition must be
+        // inert: DELETED(old) and CHANGED(new) with fresh divergent bytes.
+        std::fs::write(&new_path, "package Renamed;\nsub disk_late { 8 }\n1;\n")?;
+        server.handle_did_change_watched_files(Some(json!({
+            "changes": [
+                { "uri": old_uri, "type": 3 },
+                { "uri": new_uri, "type": 2 }
+            ]
+        })))?;
+
+        // Exact instance preserved: text, generation continuity, single
+        // binding at the client-declared new URI.
+        assert_eq!(server.test_document_generation(&new_uri), generation_before);
+        assert_eq!(
+            server.documents_text_snapshot(),
+            vec![(server.normalize_uri_key(&new_uri), buffer_v2.to_string())]
+        );
+
+        // Old/new identities never coexist as current workspace facts.
+        if let Some(coordinator) = server.coordinator() {
+            let old_names = index_symbol_names(coordinator.index(), &old_uri);
+            assert!(old_names.is_empty(), "old identity facts removed: {old_names:?}");
+            let new_names = index_symbol_names(coordinator.index(), &new_uri);
+            assert!(
+                new_names.iter().any(|name| name == "v2_only"),
+                "buffer facts rebound: {new_names:?}"
+            );
+            assert!(
+                !new_names.iter().any(|name| name.contains("disk")),
+                "disk bytes at the new path must not win over the buffer: {new_names:?}"
+            );
+        }
+
+        // Late disk work cannot resurrect the losing authority.
+        wait_for_pending_index_tasks(&server);
+        if let Some(coordinator) = server.coordinator() {
+            let new_names = index_symbol_names(coordinator.index(), &new_uri);
+            assert!(!new_names.iter().any(|name| name.contains("disk")));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_close_reloads_diverged_disk_under_closed_file_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("close_reload.pm");
+        let disk_v1 = "package CloseReload;\nsub v1_only { 1 }\n1;\n";
+        std::fs::write(&path, disk_v1)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": disk_v1 }
+        }))?;
+        let buffer_v2 = "package CloseReload;\nsub v2_only { 2 }\n1;\n";
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": buffer_v2 }]
+        })))?;
+        wait_for_pending_index_tasks(&server);
+
+        // Disk diverges while open; no watcher event is delivered before close.
+        let disk_v3 = "package CloseReload;\nsub v3_only { 3 }\n1;\n";
+        std::fs::write(&path, disk_v3)?;
+
+        server.handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))?;
+
+        // Closed-file authority is stable current disk source: the retained
+        // entry must reflect v3, not stale buffer-derived or older bytes.
+        if let Some(coordinator) = server.coordinator() {
+            let names = index_symbol_names(coordinator.index(), &uri);
+            assert!(
+                names.iter().any(|name| name == "v3_only"),
+                "closed file reloads from disk: {names:?}"
+            );
+            assert!(
+                !names.iter().any(|name| name == "v2_only"),
+                "open-buffer facts must not survive as closed-file authority: {names:?}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn did_close_with_absent_backing_file_removes_source_subject()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("close_absent.pm");
+        let disk_v1 = "package CloseAbsent;\nsub v1_only { 1 }\n1;\n";
+        std::fs::write(&path, disk_v1)?;
+        let uri = url::Url::from_file_path(&path).map_err(|_| "invalid file path")?.to_string();
+
+        server.did_open(json!({
+            "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": disk_v1 }
+        }))?;
+        let buffer_v2 = "package CloseAbsent;\nsub v2_only { 2 }\n1;\n";
+        server.handle_did_change(Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": buffer_v2 }]
+        })))?;
+        wait_for_pending_index_tasks(&server);
+
+        std::fs::remove_file(&path)?;
+        server.handle_did_close(Some(json!({ "textDocument": { "uri": uri } })))?;
+
+        assert!(server.memory_state_snapshot().documents == 0);
+        if let Some(coordinator) = server.coordinator() {
+            assert!(coordinator.index().file_symbols(&uri).is_empty());
+            assert!(coordinator.index().document_store().get(&uri).is_none());
         }
 
         Ok(())
