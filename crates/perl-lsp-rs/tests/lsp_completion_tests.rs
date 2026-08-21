@@ -696,8 +696,15 @@ fn test_empty_prefix_completion() -> Result<(), Box<dyn std::error::Error>> {
         .map(|item| item["label"].as_str().ok_or("Missing label field").map(|s| s.to_string()))
         .collect::<Result<_, _>>()?;
 
-    assert!(labels.iter().any(|l| l.starts_with("if")));
+    assert!(
+        labels.iter().any(|l| l.starts_with("if")),
+        "empty-prefix page must reserve control-flow constructs; got ({} items): {labels:?}",
+        labels.len()
+    );
     assert!(labels.iter().any(|l| l.starts_with("print")));
+    // #11858 remainder: document-variable emission at empty prefix — zero
+    // $-labels arrive in some launch shapes (the symbol table reaches the
+    // provider empty); tracked on the issue, not covered by the reserve.
     assert!(labels.contains(&"$var".to_string()));
     assert!(labels.contains(&"test".to_string()));
 
