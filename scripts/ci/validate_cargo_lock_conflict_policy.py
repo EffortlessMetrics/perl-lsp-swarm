@@ -30,6 +30,19 @@ OUTCOMES = {
 }
 
 FIXTURE = Path("scripts/ci/fixtures/cargo_lock_conflict_policy.json")
+INVENTORY_ROOTS = (Path(".ci"), Path(".github/workflows"), Path("docs"), Path("scripts/ci"))
+INVENTORY_EXCLUSIONS = {
+    FIXTURE.as_posix(),
+    "scripts/ci/test_validate_cargo_lock_conflict_policy.py",
+    "scripts/ci/validate_cargo_lock_conflict_policy.py",
+}
+INVENTORY_ARCHIVE_PREFIXES = ("docs/reference/archive/",)
+INVENTORY_TEXT_SUFFIXES = {".json", ".md", ".py", ".sh", ".toml", ".yaml", ".yml"}
+LOCK_COMMAND_RE = re.compile(
+    r"\bcargo\s+(?:generate-lockfile\b|update\b)|"
+    r"\bdelete\s*/\s*recreate\s+`?Cargo\.lock`?",
+    re.IGNORECASE,
+)
 
 
 class ValidationError(ValueError):
@@ -169,6 +182,15 @@ def classify(case: Mapping[str, object]) -> str:
         return "branch_admission_preserved"
     if context == "targeted_dependency" and command == "cargo update -p name":
         return "branch_admission_preserved"
+    if context == "release_refresh" and command in {
+        "cargo update",
+        "cargo update --workspace",
+    }:
+        return "branch_admission_preserved"
+    if context == "dependency_maintenance" and command == "cargo update":
+        return "branch_admission_preserved"
+    if context == "historical_archive" and command == "cargo update":
+        return "historical_text"
     if context == "historical_archive" and command == "just bump-version":
         return "historical_text"
     return "not_proven"
@@ -209,6 +231,7 @@ def load_fixture(root: Path) -> list[object]:
     except (
         FileNotFoundError,
         json.JSONDecodeError,
+        OSError,
         UnicodeDecodeError,
     ) as error:
         raise ValidationError("fixture is unavailable or invalid") from error
@@ -224,6 +247,36 @@ def load_fixture(root: Path) -> list[object]:
     if not isinstance(cases, list) or not cases:
         raise ValidationError("fixture cases must be a non-empty list")
     return cases
+
+
+def discover_command_surfaces(root: Path) -> set[str]:
+    """Find tracked-style source files containing lock-repair commands."""
+    surfaces: set[str] = set()
+    for relative_root in INVENTORY_ROOTS:
+        source_root = root / relative_root
+        if not source_root.is_dir():
+            continue
+        for path in source_root.rglob("*"):
+            if not path.is_file():
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            if path.name != "justfile" and path.suffix.lower() not in INVENTORY_TEXT_SUFFIXES:
+                continue
+            relative = path.relative_to(root).as_posix()
+            if relative in INVENTORY_EXCLUSIONS:
+                continue
+            if relative.startswith(INVENTORY_ARCHIVE_PREFIXES):
+                continue
+            try:
+                source = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as error:
+                raise ValidationError(
+                    f"command-surface inventory could not read {relative}: {error}"
+                ) from error
+            if LOCK_COMMAND_RE.search(source):
+                surfaces.add(relative)
+    return surfaces
 
 
 def needle_occurrences(source: str, needle: str) -> int:
@@ -248,6 +301,7 @@ def validate(root: Path) -> list[str]:
     cases = load_fixture(root)
     errors: list[str] = []
     seen: set[str] = set()
+    covered_paths: set[str] = set()
     for index, case in enumerate(cases):
         prefix = f"cases[{index}]"
         if not isinstance(case, Mapping):
@@ -266,6 +320,7 @@ def validate(root: Path) -> list[str]:
         if not isinstance(path, str):
             errors.append(f"{prefix}.path must be a string")
             continue
+        covered_paths.add(path.replace("\\", "/"))
         if not isinstance(needle, str) or not needle:
             errors.append(f"{prefix} must identify a non-empty source needle")
             continue
@@ -331,6 +386,12 @@ def validate(root: Path) -> list[str]:
     missing = sorted(expected_outcomes - observed)
     if missing:
         errors.append("fixture is missing outcomes: " + ", ".join(missing))
+    discovered_paths = discover_command_surfaces(root)
+    unregistered = sorted(discovered_paths - covered_paths)
+    if unregistered:
+        errors.append(
+            "fixture is missing command-surface cases: " + ", ".join(unregistered)
+        )
     return errors
 
 
@@ -338,7 +399,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     args = parser.parse_args()
-    errors = validate(args.repo_root.resolve())
+    try:
+        errors = validate(args.repo_root.resolve())
+    except ValidationError as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 2
     if errors:
         for error in errors:
             print(f"FAIL: {error}")

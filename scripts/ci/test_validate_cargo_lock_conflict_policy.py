@@ -8,6 +8,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stderr
+from io import StringIO
+import sys
 from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).with_name("validate_cargo_lock_conflict_policy.py")
@@ -31,7 +34,6 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
 
     def test_contexts_do_not_override_forbidden_or_unknown_commands(self) -> None:
         for context in (
-            "release_refresh",
             "targeted_dependency",
             "isolated_extracted_package",
         ):
@@ -43,6 +45,13 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                 validator.classify({"context": context, "command": "dynamic command"}),
                 "not_proven",
             )
+
+        self.assertEqual(
+            "branch_admission_preserved",
+            validator.classify(
+                {"context": "release_refresh", "command": "cargo update"}
+            ),
+        )
 
     def test_malformed_unhashable_context_or_command_is_not_proven(self) -> None:
         for case in (
@@ -99,6 +108,45 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                 r"\Afixture is unavailable or invalid\Z",
             ):
                 validator.load_fixture(root)
+
+    def test_directory_fixture_returns_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / validator.FIXTURE).mkdir(parents=True)
+            with self.assertRaisesRegex(
+                validator.ValidationError,
+                r"\Afixture is unavailable or invalid\Z",
+            ):
+                validator.load_fixture(root)
+
+    def test_cli_reports_fixture_failure_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / validator.FIXTURE).mkdir(parents=True)
+            stderr = StringIO()
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    ["validate_cargo_lock_conflict_policy", "--repo-root", str(root)],
+                ),
+                redirect_stderr(stderr),
+            ):
+                result = validator.main()
+            self.assertEqual(2, result)
+            self.assertIn("FAIL: fixture is unavailable or invalid", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_new_command_surface_requires_fixture_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "docs" / "new-guidance.md"
+            source.parent.mkdir(parents=True)
+            source.write_text("cargo generate-lockfile for conflicts\n", encoding="utf-8")
+            self.assertEqual(
+                {"docs/new-guidance.md"},
+                validator.discover_command_surfaces(root),
+            )
 
     def test_fixture_claim_boundary_must_be_non_empty(self) -> None:
         for claim_boundary in ("", " \t\n"):

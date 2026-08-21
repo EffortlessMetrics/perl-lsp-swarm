@@ -214,7 +214,16 @@ does not return a runtime result or validate actual Cargo metadata. Stop for exp
 dependency admission; do not use `cargo generate-lockfile`, bare `cargo update`, or
 delete/recreate `Cargo.lock` as conflict repair. Nested lock detection remains a gate,
 but cleanup must be scoped to an independently identified accidental artifact rather
-than a blind deletion.
+than a blind deletion. Inspect the reported path first, then remove only a confirmed
+accidental nested lock:
+
+```bash
+find . -type f -name Cargo.lock ! -path './Cargo.lock' -print
+rm -- ./path/to/confirmed-accidental/Cargo.lock
+```
+
+The `rm` path is a placeholder, not a command to run unchanged. Replace it only with
+the exact path confirmed by inspection; never delete every nested lock as cleanup.
 
 The merge gate includes `ci-check-no-nested-lock` to catch this automatically.
 
