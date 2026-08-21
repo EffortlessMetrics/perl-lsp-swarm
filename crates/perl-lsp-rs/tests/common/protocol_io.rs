@@ -177,8 +177,26 @@ pub fn read_notification_timeout(server: &LspServer, dur: Duration) -> Option<Va
     None
 }
 
-/// Receive the response matching `id` (number or string), buffering other traffic.
-pub fn read_response_matching(server: &LspServer, id: &Value, dur: Duration) -> Option<Value> {
+/// Outcome of a matched-response read: either the matched response, an elapsed
+/// budget on a still-connected transport, or a terminated transport (the server
+/// process exited or closed stdout).
+pub enum ReadResponseOutcome {
+    /// Received the response matching the requested id.
+    Response(Value),
+    /// The deadline elapsed while the channel was still connected.
+    TimedOut,
+    /// The reader thread hit EOF: the server exited or closed stdout.
+    Disconnected,
+}
+
+/// Receive the response matching `id` (number or string), buffering other traffic,
+/// distinguishing an elapsed budget from a terminated transport so callers can
+/// avoid conflating slowness with a crashed server.
+pub fn read_response_matching_outcome(
+    server: &LspServer,
+    id: &Value,
+    dur: Duration,
+) -> ReadResponseOutcome {
     // scan buffered
     {
         let mut pending = server.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -186,7 +204,7 @@ pub fn read_response_matching(server: &LspServer, id: &Value, dur: Duration) -> 
         for _ in 0..len {
             if let Some(msg) = pending.pop_front() {
                 if msg.get("id") == Some(id) {
-                    return Some(msg);
+                    return ReadResponseOutcome::Response(msg);
                 }
                 if pending.len() >= PENDING_CAP {
                     pending.pop_front();
@@ -200,7 +218,7 @@ pub fn read_response_matching(server: &LspServer, id: &Value, dur: Duration) -> 
     loop {
         let now = Instant::now();
         if now >= deadline {
-            return None;
+            return ReadResponseOutcome::TimedOut;
         }
         let recv_result = {
             let rx = server.rx.lock().unwrap_or_else(|e| e.into_inner());
@@ -209,7 +227,7 @@ pub fn read_response_matching(server: &LspServer, id: &Value, dur: Duration) -> 
         match recv_result {
             Ok(msg) => {
                 if msg.get("id") == Some(id) {
-                    return Some(msg);
+                    return ReadResponseOutcome::Response(msg);
                 }
                 let mut pending = server.pending.lock().unwrap_or_else(|e| e.into_inner());
                 if pending.len() >= PENDING_CAP {
@@ -217,8 +235,20 @@ pub fn read_response_matching(server: &LspServer, id: &Value, dur: Duration) -> 
                 }
                 pending.push_back(msg);
             }
-            Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => return None,
+            Err(RecvTimeoutError::Timeout) => return ReadResponseOutcome::TimedOut,
+            Err(RecvTimeoutError::Disconnected) => return ReadResponseOutcome::Disconnected,
         }
+    }
+}
+
+/// Receive the response matching `id` (number or string), buffering other traffic.
+///
+/// Legacy `Option` view of [`read_response_matching_outcome`]: both timeout and
+/// disconnect collapse to `None`.
+pub fn read_response_matching(server: &LspServer, id: &Value, dur: Duration) -> Option<Value> {
+    match read_response_matching_outcome(server, id, dur) {
+        ReadResponseOutcome::Response(msg) => Some(msg),
+        ReadResponseOutcome::TimedOut | ReadResponseOutcome::Disconnected => None,
     }
 }
 

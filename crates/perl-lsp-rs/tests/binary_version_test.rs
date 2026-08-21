@@ -37,12 +37,26 @@ fn initialize_with_retry(
     for attempt in 1..=2u8 {
         let server = common::start_lsp_server();
         match send_initialize_with_timeout(&server, params.clone()) {
-            Ok(response) => return Ok((server, response)),
-            Err(err) => {
-                eprintln!(
-                    "initialize attempt {attempt}/2 failed ({err}); retrying with a fresh server"
-                );
-                last_err = err;
+            common::ReadResponseOutcome::Response(response) => return Ok((server, response)),
+            common::ReadResponseOutcome::TimedOut => {
+                eprintln!("initialize attempt {attempt}/2 timed out; retrying with a fresh server");
+                last_err =
+                    "initialize request timed out before the server returned serverInfo".to_owned();
+            }
+            common::ReadResponseOutcome::Disconnected => {
+                let status = server
+                    .process
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .try_wait()
+                    .ok()
+                    .flatten()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "process alive but stdout closed".to_owned());
+                return Err(format!(
+                    "perl-lsp process terminated during initialization ({status}); \
+                     not retrying a crashed server"
+                ));
             }
         }
     }
@@ -52,7 +66,7 @@ fn initialize_with_retry(
 fn send_initialize_with_timeout(
     server: &common::LspServer,
     params: serde_json::Value,
-) -> Result<serde_json::Value, String> {
+) -> common::ReadResponseOutcome {
     let id = json!(1);
     common::send_request_no_wait(
         server,
@@ -64,7 +78,7 @@ fn send_initialize_with_timeout(
         }),
     );
 
-    common::read_response_matching(
+    common::read_response_matching_outcome(
         server,
         &id,
         // 45s floor: these are the suite's coldest server starts — the
@@ -75,7 +89,6 @@ fn send_initialize_with_timeout(
         // server fails the test instead of hanging it forever.
         common::adaptive_timeout().max(Duration::from_secs(45)),
     )
-    .ok_or_else(|| "initialize request timed out before the server returned serverInfo".to_owned())
 }
 
 #[test]
