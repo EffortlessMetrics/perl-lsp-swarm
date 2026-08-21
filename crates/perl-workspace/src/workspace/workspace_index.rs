@@ -43,7 +43,7 @@
 //! // Index a Perl file
 //! let uri = Url::parse("file:///example.pl")?;
 //! let code = "package MyPackage;\nsub example { return 42; }";
-//! index.index_file(uri, code.to_string())?;
+//! index.index_initial_file(uri, code.to_string())?;
 //!
 //! // Find symbol definitions
 //! let definition = index.find_definition("MyPackage::example");
@@ -76,6 +76,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -1329,6 +1330,49 @@ pub struct FileFactShard {
     pub edges: Vec<EdgeFact>,
 }
 
+/// Owner-supplied currentness token for one live source commit.
+///
+/// The workspace index does not mint or interpret this value. The owning
+/// document/currentness authority must supply a non-zero generation after its
+/// own currentness check. URI identity is already supplied by the `uri`
+/// argument; this API does not invent a competing per-URI source identity.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct SourceCommit {
+    generation: NonZeroU32,
+}
+
+impl SourceCommit {
+    /// Construct a live source commit guard from an owner-supplied generation.
+    pub const fn new(generation: NonZeroU32) -> Self {
+        Self { generation }
+    }
+
+    /// Return the non-zero source generation represented by this commit.
+    pub const fn generation(self) -> NonZeroU32 {
+        self.generation
+    }
+}
+
+/// Typed result of a source commit attempt.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum SourceCommitOutcome {
+    /// Candidate was parsed and published.
+    Accepted,
+    /// Candidate matched the accepted content and required no work.
+    NoOp,
+    /// Candidate was older than the accepted live generation.
+    RejectedStale,
+    /// Candidate failed before publication.
+    Failed(String),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum IndexFileWithGenerationOutcome {
+    Accepted,
+    NoOp,
+    RejectedStale,
+}
+
 /// Thread-safe workspace index
 pub struct WorkspaceIndex {
     /// Index data per file URI (normalized key -> data)
@@ -2092,23 +2136,96 @@ impl WorkspaceIndex {
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
     /// let uri = Url::parse("file:///example.pl")?;
-    /// index.index_file(uri, "sub hello { return 1; }".to_string())?;
+    /// index.index_initial_file(uri, "sub hello { return 1; }".to_string())?;
     /// # Ok(())
     /// # }
     /// ```
     ///
     /// Returns: `Ok(())` when indexing succeeds, otherwise an error string.
+    ///
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface retained for existing
+    /// initial-index callers. New code should use [`Self::index_initial_file`]
+    /// for discovery/import or [`Self::index_live_file`] for an owner-checked
+    /// live source commit.
     pub fn index_file(&self, uri: Url, text: String) -> Result<(), String> {
+        self.index_initial_file(uri, text)
+    }
+
+    /// Index one file during initial discovery/import with no live-document
+    /// generation semantics.
+    pub fn index_initial_file(&self, uri: Url, text: String) -> Result<(), String> {
         self.index_file_with_generation(uri, text, 0)
     }
 
+    /// Index one live source commit after the owner has checked currentness.
+    ///
+    /// A raw generation or the legacy [`Self::index_file`] surface cannot
+    /// represent this contract. The typed guard makes zero identity and
+    /// generation structurally unrepresentable at this boundary.
+    pub fn index_live_file(
+        &self,
+        uri: Url,
+        text: String,
+        commit: SourceCommit,
+    ) -> SourceCommitOutcome {
+        let key = DocumentStore::uri_key(uri.as_str());
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let content_hash = hasher.finish();
+
+        // Serialize the freshness check and identical-content generation
+        // advance with all other writers of this URI. Otherwise a generation
+        // one NoOp can return without recording its high-water mark, allowing
+        // a later older live commit to be accepted.
+        {
+            let _lifecycle = self.lifecycle_guard(&key);
+            let mut files = self.files.write();
+            if let Some(file) = files.get_mut(&key) {
+                let high_water = file.generation.max(file.pending_generation);
+                if high_water > commit.generation.get() {
+                    return SourceCommitOutcome::RejectedStale;
+                }
+                if file.content_hash == content_hash {
+                    file.generation = commit.generation.get();
+                    file.pending_generation = file.pending_generation.max(file.generation);
+                    return SourceCommitOutcome::NoOp;
+                }
+            }
+        }
+
+        match self.index_file_with_generation_outcome(uri, text, commit.generation.get()) {
+            Ok(IndexFileWithGenerationOutcome::Accepted) => SourceCommitOutcome::Accepted,
+            Ok(IndexFileWithGenerationOutcome::NoOp) => SourceCommitOutcome::NoOp,
+            Ok(IndexFileWithGenerationOutcome::RejectedStale) => SourceCommitOutcome::RejectedStale,
+            Err(error) => SourceCommitOutcome::Failed(error),
+        }
+    }
+
     /// Index a file from its URI, text content, and document generation.
+    ///
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface for callers that still pass
+    /// a raw generation. New initial-index code should use
+    /// [`Self::index_initial_file`], and live source commits should use
+    /// [`Self::index_live_file`] with [`SourceCommit`].
     pub fn index_file_with_generation(
         &self,
         uri: Url,
         text: String,
         generation: u32,
     ) -> Result<(), String> {
+        self.index_file_with_generation_outcome(uri, text, generation).map(|_| ())
+    }
+
+    fn index_file_with_generation_outcome(
+        &self,
+        uri: Url,
+        text: String,
+        generation: u32,
+    ) -> Result<IndexFileWithGenerationOutcome, String> {
         let _write_version = WriteVersionGuard::new(self);
         let uri_str = uri.to_string();
 
@@ -2150,7 +2267,7 @@ impl WorkspaceIndex {
                     // Content unchanged, skip re-indexing
                     #[cfg(test)]
                     reindex_metrics::record_content_hash_short_circuit();
-                    return Ok(());
+                    return Ok(IndexFileWithGenerationOutcome::NoOp);
                 }
                 // Same monotonic generation guard as the one under the later
                 // `files.write()` block below (see its doc comment for the
@@ -2167,7 +2284,7 @@ impl WorkspaceIndex {
                 if generation > 0 && high_water > 0 && high_water > generation {
                     #[cfg(test)]
                     reindex_metrics::record_stale_rejected_pre_parse();
-                    return Ok(());
+                    return Ok(IndexFileWithGenerationOutcome::RejectedStale);
                 }
                 // Reserve this generation NOW, before parsing -- not just at
                 // the later guard, which only runs AFTER
@@ -2350,7 +2467,7 @@ impl WorkspaceIndex {
                     if high_water > 0 && high_water > generation {
                         #[cfg(test)]
                         reindex_metrics::record_stale_rejected_post_parse();
-                        return Ok(());
+                        return Ok(IndexFileWithGenerationOutcome::RejectedStale);
                     }
                 }
             }
@@ -2478,7 +2595,7 @@ impl WorkspaceIndex {
             reindex_metrics::record_generation_accepted();
         }
 
-        Ok(())
+        Ok(IndexFileWithGenerationOutcome::Accepted)
     }
 
     /// Remove a file from the index
@@ -2725,10 +2842,16 @@ impl WorkspaceIndex {
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
-    /// index.index_file_str("file:///example.pl", "sub hello { }")?;
+    /// index.index_initial_file_str("file:///example.pl", "sub hello { }")?;
     /// # Ok(())
     /// # }
     /// ```
+    /// # Compatibility and migration
+    ///
+    /// This is a deprecated compatibility surface retained for existing
+    /// initial-index callers. New code should use [`Self::index_initial_file_str`]
+    /// for discovery/import or [`Self::index_live_file`] for an owner-checked
+    /// live source commit.
     pub fn index_file_str(&self, uri: &str, text: &str) -> Result<(), String> {
         let path = Path::new(uri);
         let url = if path.is_absolute() {
@@ -2742,7 +2865,23 @@ impl WorkspaceIndex {
                     .map_err(|_| format!("Invalid URI or file path: {}", uri))
             })?
         };
-        self.index_file(url, text.to_string())
+        self.index_initial_file(url, text.to_string())
+    }
+
+    /// String/path form of [`Self::index_initial_file`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn index_initial_file_str(&self, uri: &str, text: &str) -> Result<(), String> {
+        let path = Path::new(uri);
+        let url = if path.is_absolute() {
+            url::Url::from_file_path(path)
+                .map_err(|_| format!("Invalid URI or file path: {}", uri))?
+        } else {
+            url::Url::parse(uri).or_else(|_| {
+                url::Url::from_file_path(path)
+                    .map_err(|_| format!("Invalid URI or file path: {}", uri))
+            })?
+        };
+        self.index_initial_file(url, text.to_string())
     }
 
     /// Index multiple files in a single batch operation.
@@ -2899,6 +3038,11 @@ impl WorkspaceIndex {
         }
 
         errors
+    }
+
+    /// Initial-discovery name for [`Self::index_files_batch`].
+    pub fn index_initial_files_batch(&self, files_to_index: Vec<(Url, String)>) -> Vec<String> {
+        self.index_files_batch(files_to_index)
     }
 
     /// Find all references to a symbol using dual indexing strategy
@@ -14148,6 +14292,121 @@ sub bar { return $greeting; }
             "file:///edge/coverage_delta_indexed_assignment.pl",
             text,
             "compute_key",
+        );
+    }
+
+    #[test]
+    fn source_commit_api_separates_initial_and_live_contracts() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit.pl"));
+        let initial = index.index_initial_file(
+            uri.clone(),
+            "package ApiSourceCommit; sub initial { 1 } 1;".to_string(),
+        );
+        assert!(initial.is_ok(), "initial import must remain fallible: {initial:?}");
+
+        let generation = must_some(NonZeroU32::new(1));
+        let outcome = index.index_live_file(
+            uri.clone(),
+            "package ApiSourceCommit; sub live { 2 } 1;".to_string(),
+            SourceCommit::new(generation),
+        );
+        assert_eq!(outcome, SourceCommitOutcome::Accepted);
+        assert!(index.file_symbols(uri.as_str()).iter().any(|symbol| symbol.name == "live"));
+    }
+
+    #[test]
+    fn source_commit_api_preserves_stale_and_noop_outcomes() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-outcomes.pl"));
+        let generation_two = must_some(NonZeroU32::new(2));
+        let generation_one = must_some(NonZeroU32::new(1));
+        let text = "package Outcomes; sub stable { 1 } 1;".to_string();
+
+        assert_eq!(
+            index.index_live_file(uri.clone(), text.clone(), SourceCommit::new(generation_two),),
+            SourceCommitOutcome::Accepted
+        );
+        assert_eq!(
+            index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two),),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(
+            index.index_live_file(
+                uri,
+                "package Outcomes; sub stale { 1 } 1;".to_string(),
+                SourceCommit::new(generation_one),
+            ),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn identical_live_generation_advances_before_older_live_commit() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-noop-generation.pl"));
+        let text = "package NoOpGeneration; sub stable { 1 } 1;".to_string();
+        let generation_one = must_some(NonZeroU32::new(1));
+        let generation_two = must_some(NonZeroU32::new(2));
+
+        must(index.index_initial_file(uri.clone(), text.clone()));
+        assert_eq!(
+            index.index_live_file(uri.clone(), text.clone(), SourceCommit::new(generation_one)),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(1));
+        assert_eq!(
+            index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two)),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(2));
+        assert_eq!(
+            index.index_live_file(
+                uri,
+                "package NoOpGeneration; sub older { 2 } 1;".to_string(),
+                SourceCommit::new(generation_one),
+            ),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn live_noop_rejects_generation_below_pending_high_water() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-pending-noop.pl"));
+        let text = "package PendingNoOp; sub stable { 1 } 1;".to_string();
+        let generation_one = must_some(NonZeroU32::new(1));
+
+        must(index.index_initial_file(uri.clone(), text.clone()));
+        let key = DocumentStore::uri_key(uri.as_str());
+        {
+            // Model the ordered state after a newer live writer reserves its
+            // generation but before it publishes parsed content. The lower
+            // live commit has identical content, which used to bypass the
+            // pending high-water guard through the NoOp fast path.
+            let mut files = index.files.write();
+            let file = must_some(files.get_mut(&key));
+            file.pending_generation = 3;
+            assert_eq!(file.generation, 0);
+        }
+
+        assert_eq!(
+            index.index_live_file(uri, text, SourceCommit::new(generation_one)),
+            SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn stale_internal_live_candidate_is_not_accepted_by_legacy_mapping() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-stale-mapping.pl"));
+        let current = "package StaleMapping; sub current { 2 } 1;".to_string();
+        let stale = "package StaleMapping; sub stale { 1 } 1;".to_string();
+
+        must(index.index_file_with_generation(uri.clone(), current, 2));
+        assert_eq!(
+            index.index_file_with_generation_outcome(uri, stale, 1),
+            Ok(IndexFileWithGenerationOutcome::RejectedStale)
         );
     }
 }
