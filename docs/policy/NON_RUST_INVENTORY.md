@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11145 |
-| Rust-family files | 3400 |
-| Non-Rust files | 7745 |
-| Allowlisted | 5470 |
+| Total tracked files | 11161 |
+| Rust-family files | 3407 |
+| Non-Rust files | 7754 |
+| Allowlisted | 5479 |
 | Unclassified | 2275 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 343 |
-| documentation | 2548 |
+| documentation | 2555 |
 | generated | 2 |
 | production | 300 |
 | test | 1817 |
-| tooling | 460 |
+| tooling | 462 |
 | unclassified | 2275 |
 
 ## Unclassified files
@@ -2350,6 +2350,7 @@
 | `.changes/unreleased/product-11613-Fixed-181500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11739-Fixed-001500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11740-Fixed-200900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-11845-Security-034645.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2918,9 +2919,16 @@
 | `.receipts/20260129/gate-format-20260129-130332.yaml` | config | `non-rust-receipts-tree` | release/ci |
 | `.receipts/20260129/gate-format-20260129-130355.yaml` | config | `non-rust-receipts-tree` | release/ci |
 | `.roo/rules/perl-lsp.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10136-test-runner-client-authority/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10136-test-runner-client-authority/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10136-test-runner-client-authority/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/10894-editor-host-reliability/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11301-source-commit-api-and-caller-ledger/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11301-source-commit-api-and-caller-ledger/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11301-source-commit-api-and-caller-ledger/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5733,6 +5741,7 @@
 | `scripts/ci/check_publish_package_contents.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_release_settings_closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_security_reconciliation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/check_source_commit_api.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_common.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_docs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
