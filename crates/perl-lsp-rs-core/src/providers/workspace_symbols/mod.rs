@@ -1413,21 +1413,9 @@ sub get_log { 3 }
         results
     }
 
-    /// Production pipeline under #8262: the canonical full matcher always runs;
-    /// name-index output is measurement only and never restricts results.
-    fn optimized_search(
-        provider: &WorkspaceSymbolsProvider,
-        source_map: &HashMap<String, String>,
-        name_index: &SymbolIndex,
-        query: &str,
-        cap: usize,
-    ) -> Vec<WorkspaceSymbol> {
-        let _measurement = name_index.search_prefix(query);
-        let mut results = provider.search(query, source_map);
-        results.truncate(cap);
-        results
-    }
-
+    /// Production open-document answer under #8262: the canonical full matcher
+    /// always runs; name-index output is measurement only and never restricts
+    /// results. The runtime fallback exercises this same provider search.
     fn canonical_full_search(
         provider: &WorkspaceSymbolsProvider,
         source_map: &HashMap<String, String>,
@@ -1444,7 +1432,7 @@ sub get_log { 3 }
     }
 
     #[test]
-    fn optimized_pipeline_matches_canonical_full_search_across_matrix() {
+    fn historical_candidate_restriction_diverges_from_canonical_across_matrix() {
         let (provider, source_map, name_index) = differential_corpus();
         let queries = [
             "FooBar",  // exact, mixed case
@@ -1460,17 +1448,28 @@ sub get_log { 3 }
             "",        // empty query matches everything
             "   ",     // whitespace query trims to empty
         ];
+        let mut divergences = 0;
         for query in queries {
             for cap in [usize::MAX, 5, 3, 1] {
-                let optimized = optimized_search(&provider, &source_map, &name_index, query, cap);
-                let canonical = canonical_full_search(&provider, &source_map, query, cap);
-                assert_eq!(
-                    workspace_symbol_identity_vector(&optimized),
-                    workspace_symbol_identity_vector(&canonical),
-                    "optimized pipeline diverged from canonical full search for query {query:?} cap {cap}"
+                let historical = legacy_candidate_restricted_search(
+                    &provider,
+                    &source_map,
+                    &name_index,
+                    query,
+                    cap,
                 );
+                let canonical = canonical_full_search(&provider, &source_map, query, cap);
+                if workspace_symbol_identity_vector(&historical)
+                    != workspace_symbol_identity_vector(&canonical)
+                {
+                    divergences += 1;
+                }
             }
         }
+        assert!(
+            divergences > 0,
+            "historical candidate restriction must diverge from the canonical production answer"
+        );
     }
 
     #[test]
