@@ -66,7 +66,7 @@ use crate::ast::{Node, NodeKind};
 use crate::document_store::{Document, DocumentStore};
 use crate::position::{Position, Range};
 use crate::workspace::monitoring::IndexInstrumentation;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{ArcMutexGuard, Mutex, RawMutex, RwLock};
 use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EdgeFact, EntityFact, EntityId, EntityKind, FileId,
@@ -78,7 +78,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 use url::Url;
 
@@ -1354,6 +1354,36 @@ pub struct WorkspaceIndex {
     /// Monotonic write version — bumped on every index mutation so readers
     /// can detect torn reads across the multiple independent RwLocks. (#5116)
     write_version: Arc<AtomicU64>,
+    /// Per-file lifecycle serialization. Entries are reference-counted and
+    /// removed after the last holder releases one, so a long-running server
+    /// does not retain one lock forever for every URI it has ever seen.
+    lifecycle_guards: Arc<Mutex<HashMap<String, Arc<LifecycleGuardEntry>>>>,
+}
+
+struct LifecycleGuardEntry {
+    lock: Arc<Mutex<()>>,
+    holders: AtomicUsize,
+}
+
+struct LifecycleGuard {
+    key: String,
+    entry: Arc<LifecycleGuardEntry>,
+    registry: Arc<Mutex<HashMap<String, Arc<LifecycleGuardEntry>>>>,
+    lock: Option<ArcMutexGuard<RawMutex, ()>>,
+}
+
+impl Drop for LifecycleGuard {
+    fn drop(&mut self) {
+        // Unlock before touching the registry. The entry Arc held by this
+        // guard keeps the mutex alive even if the registry removes it.
+        drop(self.lock.take());
+        if self.entry.holders.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let mut guards = self.registry.lock();
+            if guards.get(&self.key).is_some_and(|current| Arc::ptr_eq(current, &self.entry)) {
+                guards.remove(&self.key);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1746,6 +1776,7 @@ impl WorkspaceIndex {
             limits,
             resource_limit_rejection: Mutex::new(None),
             write_version: Arc::new(AtomicU64::new(0)),
+            lifecycle_guards: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1806,6 +1837,7 @@ impl WorkspaceIndex {
             limits,
             resource_limit_rejection: Mutex::new(None),
             write_version: Arc::new(AtomicU64::new(0)),
+            lifecycle_guards: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1846,8 +1878,40 @@ impl WorkspaceIndex {
         }
     }
 
+    #[cfg(test)]
     fn restore_document(&self, uri: &str, rejected_text: &str, previous: Option<&Document>) {
         self.document_store.restore_if_current(uri, 1, rejected_text, previous);
+    }
+
+    /// Publish a document only after its candidate has passed parsing and
+    /// admission.  An existing document store entry must accept the version;
+    /// a rejected update is an explicit failed per-file commit.
+    fn commit_document(
+        &self,
+        uri: &str,
+        version: i32,
+        text: String,
+        enforce_version: bool,
+    ) -> bool {
+        self.document_store.accept_candidate(uri.to_string(), version, text, enforce_version)
+            == crate::document_store::DocumentCommitResult::Accepted
+    }
+
+    fn lifecycle_guard(&self, key: &str) -> LifecycleGuard {
+        let mut guards = self.lifecycle_guards.lock();
+        let entry = Arc::clone(guards.entry(key.to_string()).or_insert_with(|| {
+            Arc::new(LifecycleGuardEntry {
+                lock: Arc::new(Mutex::new(())),
+                holders: AtomicUsize::new(0),
+            })
+        }));
+        entry.holders.fetch_add(1, Ordering::Relaxed);
+        LifecycleGuard {
+            key: key.to_string(),
+            lock: Some(entry.lock.lock_arc()),
+            entry,
+            registry: Arc::clone(&self.lifecycle_guards),
+        }
     }
 
     fn admission_limit_for(
@@ -2041,7 +2105,7 @@ impl WorkspaceIndex {
         // task could still land in -- flagged again by factory-droid on
         // PR #3618 after that partial fix).
         let key = DocumentStore::uri_key(&uri_str);
-        let previous_document = self.document_store.get(&uri_str);
+        let _lifecycle = self.lifecycle_guard(&key);
         // Set below iff this task's generation genuinely advances the
         // claimed high-water mark (a genuine reservation, not a
         // same-or-older no-op). `ReservationGuard::drop` rolls the claim
@@ -2125,48 +2189,18 @@ impl WorkspaceIndex {
             }
         }
 
-        // Update document store AFTER releasing `files.write()` (#3722).
-        // The LineIndex::new(text) inside Document::new()/update() is O(text),
-        // so holding the global files lock during this call serialized all
-        // indexing. document_store has its own internal RwLock, and its
-        // version check handles concurrent writes independently.
-        {
-            // Use generation as the document version so the document_store's
-            // stale-write check becomes load-bearing. Ensure version >= 1 to
-            // avoid rejecting updates to batch-indexed files (which open with
-            // version 1) when generation is 0 (#3686).
-            let doc_version = (generation as i32).max(1);
-            if self.document_store.is_open(&uri_str) {
-                self.document_store.update(&uri_str, doc_version, text.clone());
-            } else {
-                self.document_store.open(uri_str.clone(), doc_version, text.clone());
-            }
-        }
+        // Keep the candidate private while parsing and extracting.  In
+        // particular, constructing its LineIndex here must not publish the
+        // candidate geometry to readers of the accepted DocumentStore.
+        let doc_version = (generation as i32).max(1);
+        let mut candidate_document = Document::new(uri_str.clone(), doc_version, text.clone());
         let mut parser = Parser::new(&text);
         let ast = match parser.parse() {
             Ok(ast) => ast,
             Err(e) => {
-                // `reservation`'s `Drop` (if it holds a claim) rolls
-                // `pending_generation` back to the last genuinely committed
-                // generation -- this task never reaches the late guard's
-                // commit below.
-                self.restore_document(&uri_str, &text, previous_document.as_ref());
+                // `reservation`'s `Drop` (if it holds a claim) rolls the
+                // pending generation back; no shared projection was touched.
                 return Err(format!("Parse error: {}", e));
-            }
-        };
-
-        // Get the document for line index. If the document was closed out
-        // from under a still-in-flight background index task (e.g. a rapid
-        // didClose racing this task's own reservation), `reservation`'s
-        // `Drop` rolls the claim back here too -- previously this early
-        // return left `self.files[key].generation`'s reservation
-        // permanently claimed with nothing that would ever commit it
-        // (#3618 review-3660 finding 3(c)).
-        let mut doc = match self.document_store.get(&uri_str) {
-            Some(document) => document,
-            None => {
-                self.restore_document(&uri_str, &text, previous_document.as_ref());
-                return Err("Document not found".to_string());
             }
         };
 
@@ -2186,8 +2220,13 @@ impl WorkspaceIndex {
         // the reference walk is unified (declarations are a separable
         // follow-up; see `FileExtractionBundle::build_unified`'s doc
         // comment).
-        let mut bundle =
-            FileExtractionBundle::build_unified(&ast, &uri_str, content_hash, &mut doc, folder_uri);
+        let mut bundle = FileExtractionBundle::build_unified(
+            &ast,
+            &uri_str,
+            content_hash,
+            &mut candidate_document,
+            folder_uri,
+        );
         // `build_unified` builds its own `FileIndex` (it has no notion of
         // this call's `generation` parameter) -- restore it here, exactly
         // as the pre-cutover `FileIndex { ..., generation, ... }` literal
@@ -2288,7 +2327,8 @@ impl WorkspaceIndex {
             // in-flight document -- without touching any untracked caller.
             if generation > 0 {
                 if let Some(existing) = files.get(&key) {
-                    if existing.generation > 0 && existing.generation > generation {
+                    let high_water = existing.generation.max(existing.pending_generation);
+                    if high_water > 0 && high_water > generation {
                         #[cfg(test)]
                         reindex_metrics::record_stale_rejected_post_parse();
                         return Ok(());
@@ -2297,10 +2337,19 @@ impl WorkspaceIndex {
             }
 
             if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
-                self.restore_document(&uri_str, &text, previous_document.as_ref());
                 drop(files);
                 self.record_resource_limit_rejection(kind.clone());
                 return Err(Self::resource_limit_error(kind, &self.limits));
+            }
+
+            // Generation zero is the existing untracked scan/reopen contract:
+            // this seam has no session/epoch identity with which to reject a
+            // stale refresh. Preserve that contract for file-watcher and
+            // reopen callers; only tracked generations get store-level stale
+            // rejection here. A future epoch-aware seam can tighten this
+            // without changing the LSP handlers in this issue.
+            if !self.commit_document(&uri_str, doc_version, text.clone(), generation > 0) {
+                return Err("Document store rejected candidate version".to_string());
             }
 
             // Remove stale global references from previous version of this file
@@ -2435,6 +2484,7 @@ impl WorkspaceIndex {
         self.bump_write_version();
         let uri_str = Self::normalize_uri(uri);
         let key = DocumentStore::uri_key(&uri_str);
+        let _lifecycle = self.lifecycle_guard(&key);
 
         // Remove from document store
         self.document_store.close(&uri_str);
@@ -2678,16 +2728,37 @@ impl WorkspaceIndex {
     pub fn index_files_batch(&self, files_to_index: Vec<(Url, String)>) -> Vec<String> {
         let mut errors = Vec::new();
 
+        // A duplicate normalized key is one logical batch item. Retain the
+        // last input deliberately, matching the historical sequential-batch
+        // behavior while making the winner independent of lock acquisition.
+        let mut deduplicated = Vec::with_capacity(files_to_index.len());
+        let mut positions = HashMap::new();
+        for item in files_to_index {
+            let key = DocumentStore::uri_key(item.0.as_str());
+            if let Some(position) = positions.insert(key, deduplicated.len()) {
+                deduplicated[position] = item;
+            } else {
+                deduplicated.push(item);
+            }
+        }
+
+        // Hold each URI's lifecycle guard across parsing and commit. This
+        // prevents remove_file from completing between those phases and then
+        // being undone by a late batch insertion. Sort the normalized keys so
+        // concurrent batches acquire multiple guards in one global order.
+        let mut lifecycle_keys: Vec<_> =
+            deduplicated.iter().map(|(uri, _)| DocumentStore::uri_key(uri.as_str())).collect();
+        lifecycle_keys.sort_unstable();
+        lifecycle_keys.dedup();
+        let mut lifecycle_guards = Vec::new();
+        for key in lifecycle_keys {
+            lifecycle_guards.push(self.lifecycle_guard(&key));
+        }
+
         // Phase 1: Parse all files without locks
-        let mut parsed: Vec<(
-            String,
-            String,
-            String,
-            FileIndex,
-            Vec<PackageEdge>,
-            Option<Document>,
-        )> = Vec::with_capacity(files_to_index.len());
-        for (uri, text) in &files_to_index {
+        let mut parsed: Vec<(String, String, String, FileIndex, Vec<PackageEdge>)> =
+            Vec::with_capacity(deduplicated.len());
+        for (uri, text) in &deduplicated {
             let uri_str = uri.to_string();
 
             // Content hash for early-exit
@@ -2696,7 +2767,6 @@ impl WorkspaceIndex {
             let content_hash = hasher.finish();
 
             let key = DocumentStore::uri_key(&uri_str);
-            let previous_document = self.document_store.get(&uri_str);
 
             // Check if content unchanged
             {
@@ -2708,32 +2778,17 @@ impl WorkspaceIndex {
                 }
             }
 
-            // Update document store
-            if self.document_store.is_open(&uri_str) {
-                self.document_store.update(&uri_str, 1, text.clone());
-            } else {
-                self.document_store.open(uri_str.clone(), 1, text.clone());
-            }
-
             // Parse
             let mut parser = Parser::new(text);
             let ast = match parser.parse() {
                 Ok(ast) => ast,
                 Err(e) => {
-                    self.restore_document(&uri_str, text, previous_document.as_ref());
                     errors.push(format!("Parse error in {}: {}", uri_str, e));
                     continue;
                 }
             };
 
-            let mut doc = match self.document_store.get(&uri_str) {
-                Some(d) => d,
-                None => {
-                    self.restore_document(&uri_str, text, previous_document.as_ref());
-                    errors.push(format!("Document not found: {}", uri_str));
-                    continue;
-                }
-            };
+            let mut candidate_document = Document::new(uri_str.clone(), 1, text.clone());
 
             // Determine workspace folder URI from the file URI
             let folder_uri = self.determine_folder_uri(&uri_str);
@@ -2744,11 +2799,12 @@ impl WorkspaceIndex {
                 folder_uri: folder_uri.clone(),
                 ..Default::default()
             };
-            let mut visitor = IndexVisitor::new(&mut doc, uri_str.clone(), folder_uri);
+            let mut visitor =
+                IndexVisitor::new(&mut candidate_document, uri_str.clone(), folder_uri);
             visitor.visit(&ast, &mut file_index);
 
             let package_edges = package_graph_edges_from_hir(&ast);
-            parsed.push((key, uri_str, text.clone(), file_index, package_edges, previous_document));
+            parsed.push((key, uri_str, text.clone(), file_index, package_edges));
         }
 
         // Phase 2: Bulk insert with single cache rebuild
@@ -2763,11 +2819,16 @@ impl WorkspaceIndex {
             files.reserve(parsed.len());
             symbols.reserve(parsed.len().saturating_mul(20).saturating_mul(2));
 
-            for (key, uri_str, text, file_index, package_edges, previous_document) in parsed {
+            for (key, uri_str, text, file_index, package_edges) in parsed {
                 if let Some(kind) = self.admission_limit_for(&files, &key, &file_index) {
-                    self.restore_document(&uri_str, &text, previous_document.as_ref());
                     self.record_resource_limit_rejection(kind.clone());
                     errors.push(Self::resource_limit_error(kind, &self.limits));
+                    continue;
+                }
+
+                if !self.commit_document(&uri_str, 1, text.clone(), true) {
+                    errors
+                        .push(format!("Document store rejected candidate version for {}", uri_str));
                     continue;
                 }
 
@@ -9337,6 +9398,78 @@ sub hello {
         Ok(())
     }
 
+    /// #11298 red proof: a rejected `DocumentStore` update must prevent the
+    /// candidate from being parsed/extracted against the predecessor's line
+    /// geometry and then published as accepted facts.
+    ///
+    /// A tracked candidate deliberately exercises a store version that is
+    /// newer than the candidate generation. The old path ignored the atomic
+    /// store rejection, so it could replace accepted file facts while the
+    /// store still contained A.
+    #[test]
+    fn rejected_document_store_version_cannot_publish_mixed_geometry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/MixedGeometry.pm"));
+        let accepted = "package MixedGeometry;\nsub accepted_a { 1 }\n1;\n";
+        let candidate = "package MixedGeometry;\n\n\n\nsub candidate_b { 1 }\n1;\n";
+
+        index.index_file_with_generation(uri.clone(), accepted.to_string(), 9)?;
+        // Simulate a newer accepted text-sync version without changing the
+        // already-indexed file facts. Generation 10 is valid for the index,
+        // but must be rejected by the store's version decision.
+        index.document_store().open(uri.to_string(), 100, accepted.to_string());
+        let accepted_document = must_some(index.document_store().get(uri.as_str()));
+        assert_eq!(accepted_document.version, 100);
+        assert_eq!(accepted_document.text(), accepted);
+        assert_eq!(
+            accepted_document
+                .line_index
+                .offset_to_position(accepted.find("sub accepted_a").unwrap()),
+            (1, 0),
+            "the accepted predecessor must have A's line geometry"
+        );
+
+        // Version 10 is rejected by the already-accepted version 100, but the
+        // candidate parser still has a valid, independently distinguishable B.
+        let result = index.index_file_with_generation(uri.clone(), candidate.to_string(), 10);
+        let stored = must_some(index.document_store().get(uri.as_str()));
+        assert_eq!(stored.version, 100, "the stale store update must be rejected");
+        assert_eq!(stored.text(), accepted, "accepted source must remain A");
+        assert_eq!(
+            stored.line_index.offset_to_position(stored.text().find("sub accepted_a").unwrap()),
+            (1, 0),
+            "accepted DocumentStore geometry must remain A"
+        );
+
+        // Capture the fact observations before asserting the rejection.  This
+        // keeps a current-main failure diagnostic if the candidate reaches
+        // extraction with mixed geometry, while the expected accepted facts
+        // remain the predecessor's A.
+        let symbols = index.file_symbols(uri.as_str());
+        let candidate_b_line = symbols
+            .iter()
+            .find(|symbol| symbol.name == "candidate_b")
+            .map(|symbol| symbol.range.start.line);
+        let candidate_b_present = candidate_b_line.is_some();
+        let accepted_a_present = symbols.iter().any(|symbol| symbol.name == "accepted_a");
+        assert!(
+            !candidate_b_present,
+            "rejected candidate_b must be absent; observed presence={candidate_b_present}, line={candidate_b_line:?}"
+        );
+        assert!(
+            accepted_a_present,
+            "accepted facts must retain accepted_a; observed candidate_b presence={candidate_b_present}, line={candidate_b_line:?}, accepted_a presence={accepted_a_present}"
+        );
+
+        assert!(
+            result.is_err(),
+            "a rejected DocumentStore version must stop candidate publication; got {result:?}; observed candidate_b presence={candidate_b_present}, line={candidate_b_line:?}, accepted_a presence={accepted_a_present}"
+        );
+
+        Ok(())
+    }
+
     /// #3618 review thread (factory-droid, PRRT_kwDOSid81M6QBZ1u): before the
     /// `generation`/`pending_generation` split added in this PR's fix-3
     /// round, the early guard's reservation wrote directly onto
@@ -9683,6 +9816,66 @@ Utils::process_data();
         assert_eq!(index.file_count(), 5);
         assert!(index.find_definition("Batch::Mod0::func_0").is_some());
         assert!(index.find_definition("Batch::Mod4::func_4").is_some());
+    }
+
+    #[test]
+    fn batch_stale_document_rejection_preserves_accepted_projections() {
+        let index = WorkspaceIndex::new();
+        let uri = must(Url::parse("file:///batch/stale.pm"));
+        let accepted = "package BatchStale;\nsub accepted { 1 }\n1;\n";
+        must(index.index_file_with_generation(uri.clone(), accepted.to_string(), 4));
+        index.document_store().open(uri.to_string(), 9, accepted.to_string());
+
+        let candidate = "package BatchStale;\nsub changed { 1 }\n1;\n";
+        let errors = index.index_files_batch(vec![(uri.clone(), candidate.to_string())]);
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(index.document_store().get_text(uri.as_str()).as_deref(), Some(accepted));
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "accepted"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "changed"));
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(4));
+    }
+
+    #[test]
+    fn batch_duplicate_uri_uses_last_input_deterministically() {
+        let index = WorkspaceIndex::new();
+        let uri = must(Url::parse("file:///batch/duplicate.pm"));
+        let errors = index.index_files_batch(vec![
+            (uri.clone(), "package Duplicate; sub first { 1 } 1;".to_string()),
+            (uri.clone(), "package Duplicate; sub last { 1 } 1;".to_string()),
+        ]);
+
+        assert!(errors.is_empty(), "duplicate batch indexing errors: {errors:?}");
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "last"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "first"));
+        assert_eq!(
+            index.document_store().get_text(uri.as_str()).as_deref(),
+            Some("package Duplicate; sub last { 1 } 1;")
+        );
+    }
+
+    #[test]
+    fn generation_zero_refresh_preserves_the_untracked_caller_contract() {
+        let index = WorkspaceIndex::new();
+        let uri = must(Url::parse("file:///generation-zero-refresh.pl"));
+        must(index.index_file_with_generation(
+            uri.clone(),
+            "package Refresh; sub old { 1 } 1;".to_string(),
+            7,
+        ));
+
+        // No session/epoch identity reaches this seam, so generation zero is
+        // intentionally accepted as a later untracked scan/reopen refresh.
+        must(index.index_file(uri.clone(), "package Refresh; sub new { 1 } 1;".to_string()));
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(symbols.iter().any(|symbol| symbol.name == "new"));
+        assert!(!symbols.iter().any(|symbol| symbol.name == "old"));
+        assert_eq!(
+            index.document_store().get_text(uri.as_str()).as_deref(),
+            Some("package Refresh; sub new { 1 } 1;")
+        );
     }
 
     #[test]
