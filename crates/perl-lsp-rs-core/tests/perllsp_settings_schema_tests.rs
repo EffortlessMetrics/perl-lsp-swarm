@@ -14,11 +14,11 @@ fn load_schema() -> Result<Value, Box<dyn Error>> {
 fn generic_settings_schema_is_server_native_and_namespaced() -> Result<(), Box<dyn Error>> {
     let schema = load_schema()?;
     let properties = &schema["properties"]["perl"]["properties"];
+    assert_eq!(properties.get("testRunner"), None);
 
     for section in [
         "workspace",
         "inlayHints",
-        "testRunner",
         "limits",
         "telemetry",
         "nextEdit",
@@ -59,12 +59,6 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
             "typeHints": false,
             "chainedHints": true,
             "maxLength": 48
-        },
-        "testRunner": {
-            "enabled": false,
-            "command": "prove",
-            "args": ["-lr", "t"],
-            "timeout": 90000
         },
         "limits": {
             "workspaceSymbolCap": 321,
@@ -136,10 +130,6 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     assert_eq!(server.inlay_hints_type_hints, false);
     assert_eq!(server.inlay_hints_chained_hints, true);
     assert_eq!(server.inlay_hints_max_length, 48);
-    assert_eq!(server.test_runner_enabled, false);
-    assert_eq!(server.test_runner_command, "prove");
-    assert_eq!(server.test_runner_args, ["-lr", "t"]);
-    assert_eq!(server.test_runner_timeout, 90000);
     assert_eq!(server.telemetry_enabled, true);
     assert_eq!(server.next_edit.enabled, true);
     assert_eq!(server.perlcritic_severity, 4);

@@ -53,8 +53,8 @@ pub enum CriticEngine {
 
 /// Server configuration
 ///
-/// Runtime configuration for the LSP server features including inlay hints
-/// and test runner integration. Updated dynamically via `didChangeConfiguration`.
+/// Runtime configuration for LSP server features. Updated dynamically via
+/// `didChangeConfiguration`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerConfig {
     /// Whether inlay hints are globally enabled.
@@ -67,15 +67,6 @@ pub struct ServerConfig {
     pub inlay_hints_chained_hints: bool,
     /// Maximum character length for hint labels before truncation.
     pub inlay_hints_max_length: usize,
-
-    /// Whether the integrated test runner is enabled.
-    pub test_runner_enabled: bool,
-    /// Command to execute tests (e.g., "perl", "prove").
-    pub test_runner_command: String,
-    /// Additional arguments passed to the test command.
-    pub test_runner_args: Vec<String>,
-    /// Test execution timeout in milliseconds.
-    pub test_runner_timeout: u64,
 
     /// Whether telemetry events are enabled.
     pub telemetry_enabled: bool,
@@ -347,10 +338,6 @@ impl Default for ServerConfig {
             inlay_hints_type_hints: true,
             inlay_hints_chained_hints: false,
             inlay_hints_max_length: 30,
-            test_runner_enabled: true,
-            test_runner_command: "perl".to_string(),
-            test_runner_args: vec![],
-            test_runner_timeout: 60000,
             telemetry_enabled: false,
             perlcritic_enabled: true,
             perlcritic_severity: 3,
@@ -401,22 +388,6 @@ impl ServerConfig {
             }
             if let Some(max_len) = inlay.get("maxLength").and_then(as_config_u64) {
                 self.inlay_hints_max_length = max_len as usize;
-            }
-        }
-
-        if let Some(test) = settings.get("testRunner") {
-            if let Some(enabled) = test.get("enabled").and_then(|v| v.as_bool()) {
-                self.test_runner_enabled = enabled;
-            }
-            if let Some(cmd) = test.get("command").and_then(|v| v.as_str()) {
-                self.test_runner_command = cmd.to_string();
-            }
-            if let Some(args) = test.get("args").and_then(|v| v.as_array()) {
-                self.test_runner_args =
-                    args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-            }
-            if let Some(timeout) = test.get("timeout").and_then(|v| v.as_u64()) {
-                self.test_runner_timeout = timeout;
             }
         }
 
@@ -656,7 +627,6 @@ impl ServerConfig {
         warn_on_type_mismatch(settings, "inlayHints", "enabled", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "parameterHints", "boolean");
         warn_on_type_mismatch(settings, "inlayHints", "typeHints", "boolean");
-        warn_on_type_mismatch(settings, "testRunner", "enabled", "boolean");
         warn_on_type_mismatch(settings, "diagnostics", "enabled", "boolean");
         warn_on_type_mismatch(settings, "critic", "enabled", "boolean");
         warn_on_type_mismatch(settings, "formatting", "enabled", "boolean");
@@ -3274,7 +3244,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_update_from_value_applies_lsp_settings() -> TestResult {
+    fn server_config_update_from_value_ignores_removed_test_runner_authority() -> TestResult {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -3287,8 +3257,10 @@ profile = "recommended"
             },
             "testRunner": {
                 "enabled": false,
-                "command": "prove",
-                "args": ["-lv", 42, "t/unit.t"],
+                "command": "CANARY-EXECUTABLE",
+                "args": ["CANARY-ARG"],
+                "cwd": "CANARY-CWD",
+                "env": {"CANARY": "CANARY-VALUE"},
                 "timeout": 12_345
             },
             "telemetry": {
@@ -3307,10 +3279,6 @@ profile = "recommended"
         assert!(!config.inlay_hints_type_hints);
         assert!(config.inlay_hints_chained_hints);
         assert_eq!(config.inlay_hints_max_length, 12);
-        assert!(!config.test_runner_enabled);
-        assert_eq!(config.test_runner_command, "prove");
-        assert_eq!(config.test_runner_args, vec!["-lv".to_string(), "t/unit.t".to_string()]);
-        assert_eq!(config.test_runner_timeout, 12_345);
         assert!(config.telemetry_enabled);
         assert!(!config.perlcritic_enabled);
         assert_eq!(config.perlcritic_severity, 5);
