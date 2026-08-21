@@ -62,7 +62,6 @@ import { registerTestCommandGroup } from './testCommandGroup';
 import { registerOnboardingCommandGroup } from './onboardingCommandGroup';
 import { registerNavigationCommandGroup } from './navigationCommandGroup';
 import {
-  organizeImportsCommand,
   showStatusMenuCommand,
   showWorkspaceStatusCommand,
   showVersionCommand,
@@ -705,7 +704,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const navigationCommandDisposables = registerNavigationCommandGroup({
     openDemoProject,
-    organizeImports: organizeImportsCommand,
     showVersion: async () => {
       // Reporting the server version needs a resolved binary, so this is a
       // server-dependent entry point and must honour its `on-first-use` ledger

@@ -503,7 +503,7 @@ my $y = 20;
     Ok(())
 }
 
-/// Test organize imports refactoring
+/// The legacy organize-imports action stays withdrawn (#8305)
 #[test]
 fn test_organize_imports() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
@@ -557,7 +557,14 @@ print "test\n";
     );
 
     let actions = response["result"].as_array().ok_or("Expected result to be an array")?;
-    assert!(actions.iter().any(|a| a["title"].as_str().unwrap_or("").contains("Organize imports")));
+    assert!(
+        actions.iter().all(|a| a["title"].as_str().unwrap_or("") != "Organize imports"),
+        "the withdrawn legacy organizer (#8305) must not be offered; got {actions:?}"
+    );
+    assert!(
+        actions.iter().all(|a| a["kind"].as_str().unwrap_or("") != "source.organizeImports"),
+        "no action may carry the withdrawn source.organizeImports kind; got {actions:?}"
+    );
     shutdown_and_exit(&server);
     Ok(())
 }
