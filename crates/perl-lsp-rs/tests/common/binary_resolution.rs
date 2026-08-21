@@ -77,12 +77,15 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
                 // below silently compiles inside the initialize deadline and
                 // resurfaces as an unexplained handshake stall (#11848 — the
                 // captured stderr of one such stall was nothing but rustc
-                // warnings from that inline compile).
+                // warnings from that inline compile). The message carries the
+                // build's own error lines because inherited stderr is not
+                // captured per-test by libtest.
                 None => {
                     must(Err::<Command, _>(
-                        "pre-building the perllsp binary failed (build errors above); refusing \
-                         the cargo-run fallback because it would compile inside the \
-                         initialize deadline and stall the handshake (#11848)",
+                        "pre-building the perllsp binary failed (error lines above, from the \
+                         build's captured output); refusing the cargo-run fallback because it \
+                         would compile inside the initialize deadline and stall the handshake \
+                         (#11848)",
                     ));
                 }
             }
@@ -139,19 +142,32 @@ fn ensure_perllsp_built(workspace_root: &std::path::Path) -> Option<std::path::P
             if profile == "release" {
                 args.push("--release");
             }
-            let status =
+            // Capture the build's output rather than inheriting it: inherited
+            // stderr is NOT captured per-test by libtest, so a failed build's
+            // diagnostics never reached the receipt (#11848) — the panic below
+            // must be self-contained. The tail is bounded; a full warning
+            // stream is noise, the error lines are signal.
+            let output =
                 Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()))
                     .args(&args)
                     .current_dir(workspace_root)
-                    .status();
-            match status {
-                Ok(s) if s.success() => {
+                    .output();
+            match output {
+                Ok(out) if out.status.success() => {
                     let path =
                         workspace_root.join("target").join(profile).join(perllsp_file_name());
                     path.exists().then_some(path)
                 }
-                Ok(s) => {
-                    eprintln!("perl-lsp-rs tests: `cargo build -p perllsp` failed with {s}");
+                Ok(out) => {
+                    let text = String::from_utf8_lossy(&out.stderr);
+                    let error_lines: Vec<&str> =
+                        text.lines().filter(|l| l.contains("error")).collect();
+                    let tail = if error_lines.is_empty() {
+                        text.lines().rev().take(10).collect::<Vec<_>>().join("\n")
+                    } else {
+                        error_lines.into_iter().take(10).collect::<Vec<_>>().join("\n")
+                    };
+                    eprintln!("perl-lsp-rs tests: `cargo build -p perllsp` failed:\n{tail}");
                     None
                 }
                 Err(e) => {
