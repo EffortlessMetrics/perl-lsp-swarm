@@ -67,7 +67,7 @@ def validate_semantics(
     return errors
 
 
-def classify(case: dict[str, object]) -> str:
+def classify(case: Mapping[str, object]) -> str:
     """Classify an explicitly scoped command-surface case."""
     context = case.get("context")
     command = case.get("command")
@@ -136,7 +136,8 @@ def load_fixture(root: Path) -> list[object]:
         raise ValidationError("fixture is unavailable or invalid") from error
     if not isinstance(data, dict):
         raise ValidationError("fixture must be a mapping")
-    if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
+    schema_version = data.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
         raise ValidationError("fixture schema_version must be exactly 1")
     claim_boundary = data.get("claim_boundary")
     if not isinstance(claim_boundary, str) or not claim_boundary.strip():
