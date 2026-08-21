@@ -285,7 +285,7 @@ fn workspace_symbol_visible_without_import(
     module.is_empty()
         || module == "main"
         || module == context.current_package
-        || (module_has_import_authority(module, import_map, used_modules)
+        || (used_modules.contains(module)
             && match import_map.get(module) {
                 None => true,
                 Some(symbols) => symbols.contains(&symbol.name),
@@ -374,22 +374,10 @@ fn visible_symbol_has_import_authority(
         return true;
     };
 
-    module_has_import_authority(module, import_map, used_modules)
-        && match import_map.get(module) {
-            None => true,
-            Some(symbols) => symbols.contains(&symbol.name),
-        }
-}
-
-/// `used_modules` covers `use` statements for the unknown-receiver fallback.
-/// An exact runtime `require Module; Module->import(...)` fact is also import
-/// authority, and is already represented by the symbol-specific `import_map`.
-fn module_has_import_authority(
-    module: &str,
-    import_map: &HashMap<String, HashSet<String>>,
-    used_modules: &HashSet<String>,
-) -> bool {
-    used_modules.contains(module) || import_map.contains_key(module)
+    used_modules.contains(module)
+        && import_map
+            .get(module)
+            .is_some_and(|symbols| symbols.contains(&symbol.name))
 }
 
 fn is_live_visible_completion_candidate(symbol: &VisibleSymbol) -> bool {

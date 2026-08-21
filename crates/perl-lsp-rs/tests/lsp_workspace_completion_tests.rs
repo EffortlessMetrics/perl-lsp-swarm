@@ -82,6 +82,16 @@ fn await_open_processing(server: &common::LspServer) {
     drain_until_quiet(server, Duration::from_millis(50), Duration::from_millis(500));
 }
 
+fn is_bare_completion_item(item: &serde_json::Value, bare_name: &str) -> bool {
+    item.get("label").and_then(|label| label.as_str()) == Some(bare_name)
+        || (item.get("label").is_none()
+            && item
+                .get("textEdit")
+                .and_then(|edit| edit.get("newText"))
+                .and_then(|text| text.as_str())
+                == Some(bare_name))
+}
+
 /// Wait for the workspace index to incorporate a freshly opened module.
 ///
 /// After `textDocument/didOpen` for a module file, the server dispatches a
@@ -555,10 +565,11 @@ fn test_completion_bare_function_withdraws_module_auto_import_edit()
     Ok(())
 }
 
-/// Runtime `require` plus an explicit `import` call is production visibility
-/// authority for the imported bare symbol, without synthesizing an edit.
+/// Runtime `require` plus an explicit `import` call is not a file-wide
+/// visibility authority for the legacy bare-candidate guard. In particular,
+/// a completion before the runtime import must not receive that authority.
 #[test]
-fn test_completion_runtime_import_returns_bare_symbol_without_edit()
+fn test_completion_runtime_import_does_not_grant_file_wide_bare_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
     initialize_lsp(&server);
@@ -582,7 +593,7 @@ fn test_completion_runtime_import_returns_bare_symbol_without_edit()
     await_open_processing(&server);
 
     let script_uri = "file:///workspace/runtime_import.pl";
-    let source = "require Foo; Foo->import(qw(bar));\nbar";
+    let source = "bar\nrequire Foo; Foo->import(qw(bar));\nbar";
     send_notification(
         &server,
         json!({
@@ -600,7 +611,62 @@ fn test_completion_runtime_import_returns_bare_symbol_without_edit()
     );
     await_open_processing(&server);
 
-    let response = send_request(
+    let before_response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": script_uri },
+                "position": { "line": 0, "character": 3 }
+            }
+        }),
+    );
+
+    let before_items = completion_items(&before_response);
+    assert!(
+        !before_items.iter().any(|item| is_bare_completion_item(item, "bar")),
+        "runtime import later in the file must not authorize an earlier bare `bar` completion: {before_items:?}"
+    );
+
+    let after_response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": script_uri },
+                "position": { "line": 2, "character": 3 }
+            }
+        }),
+    );
+
+    let after_items = completion_items(&after_response);
+    let qualified_item = after_items
+        .iter()
+        .find(|item| item.get("label").and_then(|label| label.as_str()) == Some("Foo::bar"))
+        .ok_or("later runtime import should preserve the qualified `Foo::bar` completion")?;
+    assert_eq!(qualified_item.get("insertText").and_then(|text| text.as_str()), Some("bar"));
+    assert!(
+        qualified_item.get("additionalTextEdits").is_none(),
+        "qualified runtime-import completion must not synthesize an import edit: {qualified_item:?}"
+    );
+
+    let explicit_use_source = "use Foo qw(bar);\nbar";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": script_uri, "version": 2 },
+                "contentChanges": [{ "text": explicit_use_source }]
+            }
+        }),
+    );
+    await_open_processing(&server);
+
+    let explicit_response = send_request(
         &server,
         json!({
             "jsonrpc": "2.0",
@@ -612,15 +678,15 @@ fn test_completion_runtime_import_returns_bare_symbol_without_edit()
         }),
     );
 
-    let items = completion_items(&response);
-    let item = items
+    let explicit_items = completion_items(&explicit_response);
+    let item = explicit_items
         .iter()
         .find(|item| item.get("label").and_then(|label| label.as_str()) == Some("bar"))
-        .ok_or("runtime import should return the bare `bar` completion")?;
+        .ok_or("explicit use should return the bare `bar` completion")?;
     assert_eq!(item.get("insertText").and_then(|text| text.as_str()), Some("bar"));
     assert!(
         item.get("additionalTextEdits").is_none(),
-        "runtime-import completion must not synthesize additional edits: {item:?}"
+        "explicit-use completion must not synthesize additional edits: {item:?}"
     );
 
     Ok(())

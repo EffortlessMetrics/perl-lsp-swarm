@@ -2,11 +2,9 @@ use super::ImportMap;
 use perl_parser_core::ast::{Node, NodeKind};
 use std::collections::{HashMap, HashSet};
 
-mod runtime_imports;
 mod symbols;
 mod used_modules;
 
-use runtime_imports::collect_runtime_imports;
 use symbols::collect_import_symbols;
 use used_modules::is_importable_module;
 
@@ -24,7 +22,6 @@ fn collect(node: &Node, map: &mut ImportMap) {
     match &node.kind {
         NodeKind::Use { module, args, .. } => collect_use_import(module, args, map),
         NodeKind::Program { statements } | NodeKind::Block { statements } => {
-            collect_runtime_imports(statements, map);
             for stmt in statements {
                 collect(stmt, map);
             }
@@ -165,14 +162,28 @@ mod tests {
     }
 
     #[test]
-    fn runtime_import_records_explicit_symbols() {
-        let code = "require Foo; Foo->import(qw(bar));\n";
+    fn explicit_use_import_records_explicit_symbols() {
+        let code = "use Foo qw(bar);\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
         let map = extract_import_map(&ast);
 
         let symbols = must_some(map.get("Foo"));
         assert_eq!(symbols, &HashSet::from(["bar".to_string()]));
+    }
+
+    #[test]
+    fn runtime_import_is_not_file_wide_import_map_authority() {
+        let code = "require Foo; Foo->import(qw(bar));\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        assert!(
+            !map.contains_key("Foo"),
+            "runtime imports must not enter the file-wide map: {map:?}"
+        );
+        assert!(!collect_used_module_names(&ast).contains("Foo"));
     }
 
     /// Multiple explicit symbols alongside an unresolved tag — all explicit symbols
