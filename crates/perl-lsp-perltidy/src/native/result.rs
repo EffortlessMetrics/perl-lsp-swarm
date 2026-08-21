@@ -60,7 +60,8 @@ impl TextRange {
                     character = 0;
                 }
                 other => {
-                    character = character.saturating_add(utf16_char_len(other) as u32);
+                    let width = if other as u32 >= 0x10000 { 2 } else { 1 };
+                    character = character.saturating_add(width);
                 }
             }
         }
@@ -187,11 +188,7 @@ impl FormatResult {
 }
 
 pub(super) fn utf16_len(s: &str) -> usize {
-    s.chars().map(utf16_char_len).sum()
-}
-
-pub(super) fn utf16_char_len(ch: char) -> usize {
-    if ch as u32 >= 0x10000 { 2 } else { 1 }
+    s.chars().map(|ch| if ch as u32 >= 0x10000 { 2 } else { 1 }).sum()
 }
 
 impl TextRange {
