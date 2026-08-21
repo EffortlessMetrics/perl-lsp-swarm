@@ -109,8 +109,9 @@ pub struct LspServer {
     /// Bounded tail of the server's stderr lines (#11848): the drain thread
     /// records the last lines so a handshake stall can be diagnosed from the
     /// failure output alone, without rerunning with LSP_TEST_ECHO_STDERR.
-    /// Shared with the drain thread, hence the Arc.
-    stderr_tail: std::sync::Arc<Mutex<VecDeque<String>>>,
+    /// Shared with the drain thread, hence the Arc; the tuple's second
+    /// element is the unterminated final line.
+    stderr_tail: std::sync::Arc<Mutex<(VecDeque<String>, String)>>,
     /// Flag to track if shutdown has been initiated (prevents double-shutdown)
     pub(crate) shutdown_initiated: std::sync::atomic::AtomicBool,
 }
@@ -137,14 +138,19 @@ impl LspServer {
     /// into failure messages unconditionally.
     pub fn stderr_tail(&self) -> String {
         let tail = self.stderr_tail.lock().unwrap_or_else(|e| e.into_inner());
-        if tail.is_empty() {
+        if tail.0.is_empty() && tail.1.is_empty() {
             return String::new();
         }
         let mut rendered = String::from("server stderr tail:\n");
-        for line in tail.iter() {
+        for line in tail.0.iter() {
             rendered.push_str("  | ");
             rendered.push_str(line);
             rendered.push('\n');
+        }
+        if !tail.1.is_empty() {
+            rendered.push_str("  | ");
+            rendered.push_str(tail.1.trim_end());
+            rendered.push_str("  (unterminated final line)\n");
         }
         rendered
     }
@@ -242,24 +248,43 @@ pub fn start_lsp_server() -> LspServer {
     };
     let echo = std::env::var_os("LSP_TEST_ECHO_STDERR").is_some();
     // Shared tail the drain thread records into (see `LspServer::stderr_tail`).
-    let stderr_tail = std::sync::Arc::new(Mutex::new(VecDeque::<String>::new()));
+    // `partial` holds the bytes of a not-yet-terminated final line: a stalled
+    // server's last partial diagnostic is often the most informative byte it
+    // produced, and a `read_line` drain would sit blocked on it forever while
+    // `stderr_tail` reported "no stderr" (#11853 review). Chunked reads keep
+    // the partial visible.
+    let stderr_tail = std::sync::Arc::new(Mutex::new((VecDeque::<String>::new(), String::new())));
     let stderr_tail_for_thread = std::sync::Arc::clone(&stderr_tail);
     let _stderr_thread =
         match std::thread::Builder::new().name("lsp-stderr-drain".into()).spawn(move || {
-            let mut r = BufReader::new(stderr);
-            let mut line = String::new();
-            while r.read_line(&mut line).unwrap_or(0) > 0 {
-                {
-                    let mut tail = stderr_tail_for_thread.lock().unwrap_or_else(|e| e.into_inner());
-                    if tail.len() >= STDERR_TAIL_LINES {
-                        tail.pop_front();
+            let mut stderr = stderr;
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = match stderr.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                let mut pending = String::from_utf8_lossy(&chunk[..n]).into_owned();
+                // Split into terminated lines; keep any trailing partial.
+                while let Some(pos) = pending.find('\n') {
+                    let line: String = pending.drain(..=pos).collect();
+                    let trimmed = line.trim_end().to_string();
+                    {
+                        let mut tail =
+                            stderr_tail_for_thread.lock().unwrap_or_else(|e| e.into_inner());
+                        if tail.0.len() >= STDERR_TAIL_LINES {
+                            tail.0.pop_front();
+                        }
+                        tail.0.push_back(trimmed.clone());
                     }
-                    tail.push_back(line.trim_end().to_string());
+                    if echo {
+                        eprintln!("[perl-lsp] {}", trimmed);
+                    }
                 }
-                if echo {
-                    eprintln!("[perl-lsp] {}", line.trim_end());
+                if !pending.is_empty() {
+                    let mut tail = stderr_tail_for_thread.lock().unwrap_or_else(|e| e.into_inner());
+                    tail.1.push_str(&pending);
                 }
-                line.clear();
             }
         }) {
             Ok(handle) => handle,
