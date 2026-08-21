@@ -117,12 +117,23 @@ def validate_semantics(
                 if occurrence < 0:
                     break
                 prefix = lowered_line[:occurrence]
-                refusal_span = re.split(r"[.;:,\u2013\u2014]", prefix)[-1]
+                refusal_span = re.split(r"[.;:\u2013\u2014]", prefix)[-1]
+                comma_tail = prefix.rsplit(",", 1)[-1]
+                if "," in prefix and re.search(
+                    r"\b(?:then|but|however|unless|run|use|try)\b", comma_tail
+                ):
+                    refusal_span = comma_tail
                 denial_pattern = (
                     r"\b(?:must\s+not|do\s+not|don't|never|not\s+authorize|"
                     r"refuse|prohibited|forbidden)\b"
                 )
-                if re.search(denial_pattern, refusal_span) is None:
+                suffix = lowered_line[occurrence + len(command) :]
+                suffix_clause = re.split(r"[.;:,\u2013\u2014]", suffix)[0]
+                contradiction_pattern = r"\b(?:allowed|permitted|run|use|try)\b"
+                if (
+                    re.search(denial_pattern, refusal_span) is None
+                    or re.search(contradiction_pattern, suffix_clause) is not None
+                ):
                     errors.append(
                         f"forbidden command lacks an explicit refusal: {command!r}"
                     )

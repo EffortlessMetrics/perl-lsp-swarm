@@ -206,6 +206,23 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
             errors,
         )
 
+    def test_section_scope_allows_a_denied_comma_list(self) -> None:
+        errors = validator.validate_semantics(
+            "### Version Conflicts\n"
+            "Do not use cargo generate-lockfile, bare cargo update, or "
+            "delete/recreate Cargo.lock.\n",
+            1,
+            {
+                "scope": "section",
+                "forbidden_commands": [
+                    "cargo generate-lockfile",
+                    "cargo update",
+                    "delete/recreate Cargo.lock",
+                ],
+            },
+        )
+        self.assertEqual([], errors)
+
     def test_section_scope_ignores_headings_inside_tilde_fences(self) -> None:
         source = (
             "### Version Conflicts\n"
