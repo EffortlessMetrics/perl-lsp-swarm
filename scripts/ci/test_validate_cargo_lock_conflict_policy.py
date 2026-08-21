@@ -46,6 +46,20 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
         )
         self.assertTrue(errors)
 
+    def test_empty_semantic_assertions_are_rejected(self) -> None:
+        errors = validator.validate_semantics("anchor\n", 1, {"required": [], "forbidden": []})
+        self.assertIn("must not both be empty", errors[0])
+
+    def test_non_string_forbidden_assertions_are_rejected(self) -> None:
+        errors = validator.validate_semantics("anchor\n", 1, {"required": ["anchor"], "forbidden": [7]})
+        self.assertIn("forbidden source semantics must be strings", errors[0])
+
+    def test_nearby_text_cannot_satisfy_anchor_semantics(self) -> None:
+        errors = validator.validate_semantics(
+            "required text on another line\nanchor\n", 2, {"required": ["required text"]}
+        )
+        self.assertTrue(errors)
+
     def test_compatible_accepted_lock_is_byte_identical(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             lock = Path(temp) / "Cargo.lock"

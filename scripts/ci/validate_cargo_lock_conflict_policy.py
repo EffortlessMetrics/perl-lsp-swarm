@@ -35,23 +35,27 @@ class ValidationError(ValueError):
 
 
 def validate_semantics(
-    source: str, line_number: int, semantics: dict[str, object], *, window: int = 30
+    source: str, line_number: int, semantics: dict[str, object]
 ) -> list[str]:
-    """Require source meaning near an anchor, rather than trusting its marker."""
+    """Require source meaning on the identified anchor statement."""
     lines = source.splitlines()
-    start = max(0, line_number - 1 - window)
-    end = min(len(lines), line_number + window)
-    semantic_source = "\n".join(lines[start:end])
+    if line_number < 1 or line_number > len(lines):
+        return ["semantic anchor line is unavailable"]
+    semantic_source = lines[line_number - 1]
     required = semantics.get("required", [])
     forbidden = semantics.get("forbidden", [])
     if not isinstance(required, list) or not isinstance(forbidden, list):
         return ["semantic required/forbidden assertions must be lists"]
+    if not required and not forbidden:
+        return ["semantic assertions must not both be empty"]
     errors = []
     for phrase in required:
         if not isinstance(phrase, str) or phrase not in semantic_source:
             errors.append(f"missing required source semantics: {phrase!r}")
     for phrase in forbidden:
-        if isinstance(phrase, str) and phrase in semantic_source:
+        if not isinstance(phrase, str):
+            errors.append(f"forbidden source semantics must be strings: {phrase!r}")
+        elif phrase in semantic_source:
             errors.append(f"forbidden source semantics present: {phrase!r}")
     return errors
 
@@ -166,7 +170,7 @@ def validate(root: Path) -> list[str]:
             errors.append(f"{case_id}: semantic assertions are required")
             continue
         for semantic_error in validate_semantics(
-            source, line_number, semantics, window=int(case.get("semantic_window", 30))
+            source, line_number, semantics
         ):
             errors.append(f"{case_id}: {semantic_error}")
 
