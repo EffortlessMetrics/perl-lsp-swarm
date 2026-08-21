@@ -78,6 +78,7 @@ _timed name cmd:
 pr-fast: _check-tools-basic
     #!/usr/bin/env bash
     set -euo pipefail
+    python3 scripts/ci/check_source_commit_api.py
     args=(--tier pr-fast --receipt)
     if [ -n "${CI_SCOPE_BASE:-}" ]; then
         args+=(--base "$CI_SCOPE_BASE")

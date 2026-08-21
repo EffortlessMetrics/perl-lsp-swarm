@@ -43,7 +43,7 @@
 //! // Index a Perl file
 //! let uri = Url::parse("file:///example.pl")?;
 //! let code = "package MyPackage;\nsub example { return 42; }";
-//! index.index_file(uri, code.to_string())?;
+//! index.index_initial_file(uri, code.to_string())?;
 //!
 //! // Find symbol definitions
 //! let definition = index.find_definition("MyPackage::example");
@@ -76,6 +76,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -1329,6 +1330,47 @@ pub struct FileFactShard {
     pub edges: Vec<EdgeFact>,
 }
 
+/// Opaque, owner-supplied identity for one live source commit.
+///
+/// The workspace index does not mint or interpret this value. The owning
+/// document/currentness authority must supply a non-zero identity and a
+/// non-zero generation after its own currentness check.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct SourceCommit {
+    identity: NonZeroU64,
+    generation: NonZeroU32,
+}
+
+impl SourceCommit {
+    /// Construct a live source commit guard from an owner-supplied identity.
+    pub const fn new(identity: NonZeroU64, generation: NonZeroU32) -> Self {
+        Self { identity, generation }
+    }
+
+    /// Return the opaque owner identity.
+    pub const fn identity(self) -> NonZeroU64 {
+        self.identity
+    }
+
+    /// Return the non-zero source generation represented by this commit.
+    pub const fn generation(self) -> NonZeroU32 {
+        self.generation
+    }
+}
+
+/// Typed result of a source commit attempt.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum SourceCommitOutcome {
+    /// Candidate was parsed and published.
+    Accepted,
+    /// Candidate matched the accepted content and required no work.
+    NoOp,
+    /// Candidate was older than the accepted live generation.
+    RejectedStale,
+    /// Candidate failed before publication.
+    Failed(String),
+}
+
 /// Thread-safe workspace index
 pub struct WorkspaceIndex {
     /// Index data per file URI (normalized key -> data)
@@ -2099,7 +2141,49 @@ impl WorkspaceIndex {
     ///
     /// Returns: `Ok(())` when indexing succeeds, otherwise an error string.
     pub fn index_file(&self, uri: Url, text: String) -> Result<(), String> {
+        self.index_initial_file(uri, text)
+    }
+
+    /// Index one file during initial discovery/import with no live-document
+    /// generation semantics.
+    pub fn index_initial_file(&self, uri: Url, text: String) -> Result<(), String> {
         self.index_file_with_generation(uri, text, 0)
+    }
+
+    /// Index one live source commit after the owner has checked currentness.
+    ///
+    /// A raw generation or the legacy [`Self::index_file`] surface cannot
+    /// represent this contract. The typed guard makes zero identity and
+    /// generation structurally unrepresentable at this boundary.
+    pub fn index_live_file(
+        &self,
+        uri: Url,
+        text: String,
+        commit: SourceCommit,
+    ) -> SourceCommitOutcome {
+        let key = DocumentStore::uri_key(uri.as_str());
+        let stale = self
+            .files
+            .read()
+            .get(&key)
+            .map(|file| file.generation > commit.generation.get())
+            .unwrap_or(false);
+        if stale {
+            return SourceCommitOutcome::RejectedStale;
+        }
+
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        if self.files.read().get(&key).is_some_and(|file| file.content_hash == hasher.finish()) {
+            let _ = commit.identity();
+            return SourceCommitOutcome::NoOp;
+        }
+
+        let result = self.index_file_with_generation(uri, text, commit.generation.get());
+        match result {
+            Ok(()) => SourceCommitOutcome::Accepted,
+            Err(error) => SourceCommitOutcome::Failed(error),
+        }
     }
 
     /// Index a file from its URI, text content, and document generation.
@@ -2742,7 +2826,23 @@ impl WorkspaceIndex {
                     .map_err(|_| format!("Invalid URI or file path: {}", uri))
             })?
         };
-        self.index_file(url, text.to_string())
+        self.index_initial_file(url, text.to_string())
+    }
+
+    /// String/path form of [`Self::index_initial_file`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn index_initial_file_str(&self, uri: &str, text: &str) -> Result<(), String> {
+        let path = Path::new(uri);
+        let url = if path.is_absolute() {
+            url::Url::from_file_path(path)
+                .map_err(|_| format!("Invalid URI or file path: {}", uri))?
+        } else {
+            url::Url::parse(uri).or_else(|_| {
+                url::Url::from_file_path(path)
+                    .map_err(|_| format!("Invalid URI or file path: {}", uri))
+            })?
+        };
+        self.index_initial_file(url, text.to_string())
     }
 
     /// Index multiple files in a single batch operation.
@@ -2899,6 +2999,11 @@ impl WorkspaceIndex {
         }
 
         errors
+    }
+
+    /// Initial-discovery name for [`Self::index_files_batch`].
+    pub fn index_initial_files_batch(&self, files_to_index: Vec<(Url, String)>) -> Vec<String> {
+        self.index_files_batch(files_to_index)
     }
 
     /// Find all references to a symbol using dual indexing strategy
@@ -14148,6 +14253,58 @@ sub bar { return $greeting; }
             "file:///edge/coverage_delta_indexed_assignment.pl",
             text,
             "compute_key",
+        );
+    }
+
+    #[test]
+    fn source_commit_api_separates_initial_and_live_contracts() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit.pl"));
+        let initial = index.index_initial_file(
+            uri.clone(),
+            "package ApiSourceCommit; sub initial { 1 } 1;".to_string(),
+        );
+        assert!(initial.is_ok(), "initial import must remain fallible: {initial:?}");
+
+        let identity = NonZeroU64::new(41).expect("test identity is non-zero");
+        let generation = NonZeroU32::new(1).expect("test generation is non-zero");
+        let outcome = index.index_live_file(
+            uri.clone(),
+            "package ApiSourceCommit; sub live { 2 } 1;".to_string(),
+            SourceCommit::new(identity, generation),
+        );
+        assert_eq!(outcome, SourceCommitOutcome::Accepted);
+        assert!(index.file_symbols(uri.as_str()).iter().any(|symbol| symbol.name == "live"));
+    }
+
+    #[test]
+    fn source_commit_api_preserves_stale_and_noop_outcomes() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-outcomes.pl"));
+        let identity = NonZeroU64::new(7).expect("test identity is non-zero");
+        let generation_two = NonZeroU32::new(2).expect("test generation is non-zero");
+        let generation_one = NonZeroU32::new(1).expect("test generation is non-zero");
+        let text = "package Outcomes; sub stable { 1 } 1;".to_string();
+
+        assert_eq!(
+            index.index_live_file(
+                uri.clone(),
+                text.clone(),
+                SourceCommit::new(identity, generation_two),
+            ),
+            SourceCommitOutcome::Accepted
+        );
+        assert_eq!(
+            index.index_live_file(uri.clone(), text, SourceCommit::new(identity, generation_two),),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(
+            index.index_live_file(
+                uri,
+                "package Outcomes; sub stale { 1 } 1;".to_string(),
+                SourceCommit::new(identity, generation_one),
+            ),
+            SourceCommitOutcome::RejectedStale
         );
     }
 }
