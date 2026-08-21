@@ -74,26 +74,32 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         // fallback to compile inside a per-request timeout it cannot possibly meet.
         if v.is_empty() {
             match ensure_perllsp_built(workspace_root) {
-                Some(built) => {
+                Ok(Some(built)) => {
                     let mut c = Command::new(built);
                     c.arg("--stdio");
                     v.push(c);
                 }
-                // A failed pre-build (e.g. the linker-crash family) must fail
-                // LOUDLY here: falling through to the `cargo run` candidate
-                // below silently compiles inside the initialize deadline and
-                // resurfaces as an unexplained handshake stall (#11848 — the
-                // captured stderr of one such stall was nothing but rustc
-                // warnings from that inline compile). The message carries the
-                // build's own error lines because inherited stderr is not
-                // captured per-test by libtest.
-                None => {
-                    must(Err::<Command, _>(
-                        "pre-building the perllsp binary failed (error lines above, from the \
-                         build's captured output); refusing the cargo-run fallback because it \
-                         would compile inside the initialize deadline and stall the handshake \
-                         (#11848)",
-                    ));
+                // A successful build whose binary is not at the probed default
+                // path (CI redirects CARGO_TARGET_DIR): fall through to the
+                // PATH/cargo-run candidates exactly as before — cargo run
+                // reuses the fresh artifacts, and the launch shape it
+                // produces is the one CI's completion tests have always
+                // passed under (#11858).
+                Ok(None) => {}
+                // A FAILED pre-build (e.g. the linker-crash family) must fail
+                // LOUDLY: falling through would silently compile inside the
+                // initialize deadline and resurface as an unexplained
+                // handshake stall (#11848 — the captured stderr of one such
+                // stall was nothing but rustc warnings from that inline
+                // compile). The message carries the build's own error lines
+                // because inherited stderr is not captured per-test by
+                // libtest.
+                Err(build_errors) => {
+                    must(Err::<Command, _>(format!(
+                        "pre-building the perllsp binary failed:\n{build_errors}\nrefusing the \
+                         cargo-run fallback because it would compile inside the initialize \
+                         deadline and stall the handshake (#11848)",
+                    )));
                 }
             }
         }
@@ -137,8 +143,11 @@ fn active_profile_order() -> [&'static str; 2] {
 /// `cargo test -p perl-lsp-rs` guarantees it exists. Building it here — before any
 /// request deadline starts — keeps the cost out of `initialize`, which previously
 /// timed out against an inline `cargo run` that needed roughly a minute to compile.
-fn ensure_perllsp_built(workspace_root: &std::path::Path) -> Option<std::path::PathBuf> {
-    static BUILT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+fn ensure_perllsp_built(
+    workspace_root: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, String> {
+    static BUILT: std::sync::OnceLock<Result<Option<std::path::PathBuf>, String>> =
+        std::sync::OnceLock::new();
     BUILT
         .get_or_init(|| {
             // Build the profile these tests were built with. Building debug from a
@@ -168,21 +177,26 @@ fn ensure_perllsp_built(workspace_root: &std::path::Path) -> Option<std::path::P
                         workspace_root.join("target").join(profile).join(perllsp_file_name());
                     if !path.exists() {
                         // A successful build whose binary is not where we
-                        // look (a custom CARGO_TARGET_DIR redirected it on
-                        // CI) previously returned None SILENTLY and fell to
-                        // cargo run — the exact shape of the #11848 stall.
-                        // Say where we looked so the next occurrence is
-                        // diagnosable in one run.
+                        // look (CI's custom CARGO_TARGET_DIR redirected it):
+                        // not an error — the caller falls through to the
+                        // cargo-run candidates, which reuse the fresh
+                        // artifacts. Say where we looked so the state stays
+                        // visible in receipts (#11848).
                         eprintln!(
                             "perl-lsp-rs tests: `cargo build -p perllsp` succeeded but {} is \
                              absent; CARGO_TARGET_DIR={:?}",
                             path.display(),
                             std::env::var_os("CARGO_TARGET_DIR")
                         );
+                        return Ok(None);
                     }
-                    path.exists().then_some(path)
+                    Ok(Some(path))
                 }
                 Ok(out) => {
+                    // Self-contained failure text: inherited stderr is not
+                    // per-test captured, so the caller's refusal message must
+                    // carry the build's own error lines. Error lines are
+                    // signal; a full warning stream is noise.
                     let text = String::from_utf8_lossy(&out.stderr);
                     let error_lines: Vec<&str> =
                         text.lines().filter(|l| l.contains("error")).collect();
@@ -191,13 +205,9 @@ fn ensure_perllsp_built(workspace_root: &std::path::Path) -> Option<std::path::P
                     } else {
                         error_lines.into_iter().take(10).collect::<Vec<_>>().join("\n")
                     };
-                    eprintln!("perl-lsp-rs tests: `cargo build -p perllsp` failed:\n{tail}");
-                    None
+                    Err(format!("cargo build -p perllsp failed:\n{tail}"))
                 }
-                Err(e) => {
-                    eprintln!("perl-lsp-rs tests: could not run `cargo build -p perllsp`: {e}");
-                    None
-                }
+                Err(e) => Err(format!("could not run `cargo build -p perllsp`: {e}")),
             }
         })
         .clone()
