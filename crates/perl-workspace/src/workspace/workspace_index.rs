@@ -1265,6 +1265,28 @@ impl Drop for ReservationGuard<'_> {
     }
 }
 
+/// Signals the beginning and completion of one multi-store index mutation.
+///
+/// Readers use the two version reads around their multi-store access to detect
+/// that a write overlapped the read. This is a torn-read signal, not a
+/// cross-store transaction or snapshot boundary.
+struct WriteVersionGuard<'a> {
+    index: &'a WorkspaceIndex,
+}
+
+impl WriteVersionGuard<'_> {
+    fn new(index: &WorkspaceIndex) -> WriteVersionGuard<'_> {
+        index.bump_write_version();
+        WriteVersionGuard { index }
+    }
+}
+
+impl Drop for WriteVersionGuard<'_> {
+    fn drop(&mut self) {
+        self.index.bump_write_version();
+    }
+}
+
 /// Write-through semantic fact storage for one indexed file.
 ///
 /// Derives `Serialize, Deserialize` (Campaign 31 PR 5, perl-lsp-swarm#2592)
@@ -2087,7 +2109,7 @@ impl WorkspaceIndex {
         text: String,
         generation: u32,
     ) -> Result<(), String> {
-        self.bump_write_version(); // Signal to readers that a mutation is in progress (#5116)
+        let _write_version = WriteVersionGuard::new(self);
         let uri_str = uri.to_string();
 
         // Compute content hash for early-exit optimization
@@ -2723,11 +2745,12 @@ impl WorkspaceIndex {
     /// Phase 1: Parse all files without holding locks.
     /// Phase 2: Bulk-insert file indices and rebuild the symbol cache once.
     pub fn index_files_batch(&self, files_to_index: Vec<(Url, String)>) -> Vec<String> {
+        let _write_version = WriteVersionGuard::new(self);
         let mut errors = Vec::new();
 
         // A duplicate normalized key is one logical batch item. Retain the
-        // last input deliberately, matching the historical sequential-batch
-        // behavior while making the winner independent of lock acquisition.
+        // last input deliberately and deterministically. This does not claim
+        // historical sequential equivalence under partial failure.
         let mut deduplicated = Vec::with_capacity(files_to_index.len());
         let mut positions = HashMap::new();
         for item in files_to_index {
