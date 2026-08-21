@@ -1154,7 +1154,7 @@ fn arb_module_selector_outcome() -> impl Strategy<Value = ModuleSelectorOutcome>
 
 fn arb_module_selector_evaluation() -> impl Strategy<Value = ModuleSelectorEvaluation> {
     (arb_module_selector(), arb_module_selector_outcome())
-        .prop_map(|(selector, outcome)| ModuleSelectorEvaluation { selector, outcome })
+        .prop_map(|(selector, outcome)| ModuleSelectorEvaluation::new(selector, outcome))
 }
 
 fn arb_module_observation_receipt() -> impl Strategy<Value = ModuleObservationReceipt> {
@@ -1199,13 +1199,15 @@ fn arb_detection_input_identity() -> impl Strategy<Value = DetectionInputIdentit
         "[a-z][a-z0-9_.:-]{2,20}",
     )
         .prop_map(|(descriptor, module_observation, configuration_observations, policy)| {
-            DetectionInputIdentity {
-                schema_version: 1,
+            AdapterDetectionInput::new(
                 descriptor,
                 module_observation,
-                configuration_observations,
-                detector_policy_identity: policy,
-            }
+                None,
+                AdapterCancellation::active(),
+            )
+            .with_configuration_observations(configuration_observations)
+            .with_detector_policy_identity(policy)
+            .identity()
         })
 }
 
@@ -1313,7 +1315,13 @@ fn arb_detection_authority_receipt() -> impl Strategy<Value = DetectionAuthority
         proptest::option::of(arb_detection_authority_error()),
     )
         .prop_map(|(input_identity, descriptor, outcome, authoritative, error)| {
-            DetectionAuthorityReceipt { input_identity, descriptor, outcome, authoritative, error }
+            DetectionAuthorityReceipt::new(
+                input_identity,
+                descriptor,
+                outcome,
+                authoritative,
+                error,
+            )
         })
 }
 

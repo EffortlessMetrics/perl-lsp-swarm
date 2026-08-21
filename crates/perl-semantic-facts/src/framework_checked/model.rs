@@ -66,6 +66,12 @@ pub struct ModuleSelectorEvaluation {
 }
 
 impl ModuleSelectorEvaluation {
+    /// Construct a selector evaluation from its exact observed outcome.
+    #[must_use]
+    pub fn new(selector: impl Into<String>, outcome: ModuleSelectorOutcome) -> Self {
+        Self { selector: selector.into(), outcome }
+    }
+
     /// Construct an exact matched selector row.
     #[must_use]
     pub fn matched(
@@ -447,6 +453,20 @@ pub struct DetectionAuthorityReceipt {
     pub outcome: DetectionOutcome,
     pub authoritative: bool,
     pub error: Option<DetectionAuthorityError>,
+}
+
+impl DetectionAuthorityReceipt {
+    /// Construct a serializable validation receipt from its recorded fields.
+    #[must_use]
+    pub fn new(
+        input_identity: DetectionInputIdentity,
+        descriptor: AdapterDescriptor,
+        outcome: DetectionOutcome,
+        authoritative: bool,
+        error: Option<DetectionAuthorityError>,
+    ) -> Self {
+        Self { input_identity, descriptor, outcome, authoritative, error }
+    }
 }
 
 /// Public detection result. Raw constructors remain non-authoritative until the
