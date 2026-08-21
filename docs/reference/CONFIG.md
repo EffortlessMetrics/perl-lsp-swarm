@@ -508,21 +508,6 @@ External formatter aliases are project-configuration values, not accepted
 through the generic LSP client-settings channel. Use the project `[formatting]`
 configuration above when legacy perltidy execution is explicitly required.
 
-#### `perl.formatting.profile`
-
-| Property | Value |
-|---|---|
-| Type | `string` |
-| Default | (none) |
-
-Path to a `.perltidyrc` profile. This is used by the external perltidy adapter
-and by native-tooling compatibility reports. Run
-`perllsp --perltidy-compat-report .perltidyrc` for an installed-binary
-migration check, or `cargo xtask native-format perltidy-compat --profile
-.perltidyrc` when you need a JSON/Markdown receipt in this repository. The
-Markdown report includes a suggested native `[formatting]` snippet for
-compatible options and lists external-only options separately.
-
 #### `perl.formatting.maximumLineLength`
 
 | Property | Value |
@@ -554,14 +539,15 @@ The server also accepts:
 - `perl.formatting.addTrailingCommas`
 - `perl.formatting.verticalAlignment`
 - `perl.formatting.blockCommentIndentation`
-- `perl.formatting.extraArgs`
 - `perl.formatting.timeoutSecs`
 
 These are native compatibility hints on the generic client-settings channel.
-External-only project options remain documented in the trusted project
-configuration section above. Use `perllsp --perltidy-compat-report .perltidyrc`
-or the receipt-backed native-tooling compatibility reports to classify a
-specific `.perltidyrc` before switching a project.
+External perltidy profile and argument settings are project-only: configure
+`perltidy_profile` and `perltidy_extra_args` in the trusted project
+`[formatting]` section above. They are not accepted as generic client settings.
+Use `perllsp --perltidy-compat-report .perltidyrc` or the receipt-backed
+native-tooling compatibility reports to classify a specific `.perltidyrc`
+before switching a project.
 
 ```json
 {
