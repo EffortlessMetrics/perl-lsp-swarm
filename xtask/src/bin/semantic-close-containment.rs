@@ -931,11 +931,14 @@ fn markdown_heading_level(line: &str) -> Option<usize> {
 struct Fence {
     character: char,
     length: usize,
+    suffix_is_whitespace: bool,
 }
 
 impl Fence {
     fn closes(self, opening: Self) -> bool {
-        self.character == opening.character && self.length >= opening.length
+        self.character == opening.character
+            && self.length >= opening.length
+            && self.suffix_is_whitespace
     }
 }
 
@@ -945,7 +948,8 @@ fn fence_marker(line: &str) -> Option<Fence> {
         return None;
     }
     let length = line.chars().take_while(|marker| *marker == character).count();
-    (length >= 3).then_some(Fence { character, length })
+    let suffix_is_whitespace = line.chars().skip(length).all(char::is_whitespace);
+    (length >= 3).then_some(Fence { character, length, suffix_is_whitespace })
 }
 
 fn section_text(sections: &BTreeMap<SectionKind, Section>, kinds: &[SectionKind]) -> String {
@@ -1352,6 +1356,14 @@ mod tests {
             let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
             assert!(relations.is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn closing_fence_with_trailing_text_does_not_expose_terminal_relation() -> Result<()> {
+        let body = "````text\n```` not-a-close\nCloses #123\n````\n";
+        let relations = parse_closing_relations(body, "effortlessmetrics/perl-lsp-swarm")?;
+        assert!(relations.is_empty());
         Ok(())
     }
 
