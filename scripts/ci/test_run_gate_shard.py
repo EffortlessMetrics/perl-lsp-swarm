@@ -884,6 +884,47 @@ class GateShardTests(unittest.TestCase):
                     root=Path(tmp),
                 )
 
+    def test_gate_policy_preflight_rejects_ambiguous_hash_and_windows_expansion(self) -> None:
+        commands = (
+            "python3 scripts/ci/check.py#comment; echo outside",
+            "python3 scripts/ci/check.py;#comment; echo outside",
+            "python3 %SCRIPT%",
+            "%ComSpec% /C python3 ../outside.py",
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaises(ValueError):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=root,
+                    )
+
+    def test_gate_policy_preflight_only_allows_structured_determinism_log(self) -> None:
+        for command in (
+            "python3 scripts/ci/check.py --output run_${i}.log",
+            "echo run_${i}.log",
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: dynamic_output\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "shell expansion"):
+                    shard.load_gate_commands(policy, ["dynamic_output"], root=root)
+
     def test_gate_policy_preflight_rejects_dynamic_separators_and_constructs(self) -> None:
         commands = (
             "${GATE_SCRIPT}",
@@ -985,6 +1026,9 @@ class GateShardTests(unittest.TestCase):
             "pwsh -File ../outside.ps1",
             "powershell.exe -Command 'python3 ../outside.py'",
             "powershell.exe -File ../outside.ps1",
+            "call python3 ../outside.py",
+            "start python3 ../outside.py",
+            "%ComSpec% /C python3 ../outside.py",
             "python3 scripts/ci/missing.py ;; echo ok",
             "python3 scripts/ci/missing.py ;& echo ok",
             "python3 scripts/ci/missing.py ;;& echo ok",

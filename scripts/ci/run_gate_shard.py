@@ -137,6 +137,7 @@ ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MALFORMED_SHELL_PUNCTUATION = {";;", ";&", ";;&", "&&&", "|||"}
 UNSUPPORTED_WRAPPER_COMMANDS = {
     "busybox",
+    "call",
     "cmd",
     "cmd.exe",
     "chroot",
@@ -145,6 +146,7 @@ UNSUPPORTED_WRAPPER_COMMANDS = {
     "parallel",
     "setsid",
     "stdbuf",
+    "start",
     "sudo",
     "taskset",
     "time",
@@ -338,7 +340,13 @@ def _looks_like_command_path(token: str) -> bool:
 
 
 def _contains_shell_expansion(token: str) -> bool:
-    return "$" in token or "`" in token or "*" in token or "?" in token
+    return (
+        "$" in token
+        or "`" in token
+        or "*" in token
+        or "?" in token
+        or re.search(r"%[^%\r\n]+%", token) is not None
+    )
 
 
 def _contains_dynamic_shell_expansion(token: str) -> bool:
@@ -348,6 +356,51 @@ def _contains_dynamic_shell_expansion(token: str) -> bool:
         or "<(" in token
         or ">(" in token
         or re.search(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|[?*@#0-9])", token)
+        or re.search(r"%[^%\r\n]+%", token) is not None
+    )
+
+
+def _reject_ambiguous_unquoted_hash(value: str) -> None:
+    """Reject plain YAML hashes that could hide shell syntax after parsing."""
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(value):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\" and quote == '"':
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {"'", '"'}:
+            quote = character
+        elif character == "#" and index > 0 and not value[index - 1].isspace():
+            raise ValueError("ambiguous unquoted YAML # in gate command")
+
+
+def _is_determinism_output_path(tokens: Sequence[str], index: int) -> bool:
+    """Allow only the checked-in determinism gate's loop-generated log path."""
+    suffix = (
+        ";",
+        "done",
+        ";",
+        "diff",
+        "-q",
+        "run_1.log",
+        "run_2.log",
+        "&&",
+        "diff",
+        "-q",
+        "run_1.log",
+        "run_3.log",
+    )
+    return (
+        index > 0
+        and tokens[index] == "run_${i}.log"
+        and tokens[index - 1] == ">"
+        and tuple(tokens[:8]) == ("for", "i", "in", "1", "2", "3", ";", "do")
+        and tuple(tokens[index + 1 :]) == suffix
     )
 
 
@@ -373,6 +426,7 @@ def _repository_relative_path(
     *,
     subject: str,
     require_file: bool = False,
+    allow_determinism_output: bool = False,
 ) -> None:
     """Reject path syntax that can escape or dynamically leave the checkout."""
     path = path.rstrip(";")
@@ -380,7 +434,9 @@ def _repository_relative_path(
         return
     if path.startswith("~"):
         raise ValueError(f"unsupported tilde expansion in {subject}: {path}")
-    if _contains_shell_expansion(path) and path != "run_${i}.log":
+    if _contains_shell_expansion(path) and not (
+        allow_determinism_output and path == "run_${i}.log"
+    ):
         raise ValueError(f"unsupported shell expansion in {subject}: {path}")
     candidate = Path(path)
     if candidate.is_absolute() or re.match(r"^[A-Za-z]:[\\/]", path):
@@ -417,7 +473,10 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             raise ValueError(f"malformed shell punctuation in gate policy: {token}")
         if token.startswith("~"):
             raise ValueError(f"unsupported tilde expansion in gate policy: {token}")
-        if token.rstrip(";") != "run_${i}.log" and _contains_dynamic_shell_expansion(token):
+        if (
+            not _is_determinism_output_path(tokens, index)
+            and _contains_dynamic_shell_expansion(token)
+        ):
             raise ValueError(f"unsupported dynamic shell expansion: {token}")
         if "$(" in token or "<(" in token or ">(" in token or "`" in token:
             raise ValueError(f"unsupported nested shell expression: {token}")
@@ -461,6 +520,9 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             root,
             subject="redirection",
             require_file=operator == "<",
+            allow_determinism_output=_is_determinism_output_path(tokens, index + 1)
+            if not match.group("target")
+            else _is_determinism_output_path(tokens, index),
         )
 
 
@@ -725,6 +787,7 @@ def load_gate_commands(
         command = specs[gate].strip()
         if not command:
             raise ValueError(f"selected gate {gate!r} has no executable command")
+        _reject_ambiguous_unquoted_hash(command)
         if "`" in command:
             raise ValueError(f"selected gate {gate!r} uses unsupported backtick substitution")
         try:
