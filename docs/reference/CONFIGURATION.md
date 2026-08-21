@@ -454,7 +454,6 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
     "formatting": {
       "enabled": true,
       "engine": "native",
-      "profile": "${workspaceFolder}/.perltidyrc",
       "maximumLineLength": 100,
       "indentColumns": 4
     },
