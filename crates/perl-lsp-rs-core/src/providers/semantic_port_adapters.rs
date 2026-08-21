@@ -1012,6 +1012,32 @@ impl Selection<'_> {
     }
 }
 
+/// Terminal draft for a live cancellation or deadline signal, if one fired.
+///
+/// The control is a signal for the whole query, not just admission: callers
+/// re-check it at each phase boundary so a cancelled or expired query never
+/// mints selection evidence, completeness grants, or value facts.
+fn live_terminal(
+    control: &dyn ProviderQueryControl,
+    request: &ProviderQueryRequest,
+) -> Option<ProviderQueryResultDraft> {
+    if control.is_cancelled()
+        || request.context.cancellation == ProviderCancellationState::Cancelled
+    {
+        return Some(terminal_draft(
+            ProviderQueryOutcome::Cancelled,
+            ProviderQueryTerminalState::Cancelled,
+        ));
+    }
+    if control.deadline_expired() || request.context.deadline == ProviderQueryDeadline::Expired {
+        return Some(terminal_draft(
+            ProviderQueryOutcome::DeadlineExceeded,
+            ProviderQueryTerminalState::DeadlineExceeded,
+        ));
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn query_records(
     request: &ProviderQueryRequest,
@@ -1027,19 +1053,8 @@ fn query_records(
     if !request.is_well_formed() {
         return Err(ProviderQueryContractError::MalformedRequest);
     }
-    if control.is_cancelled()
-        || request.context.cancellation == ProviderCancellationState::Cancelled
-    {
-        return Ok(terminal_draft(
-            ProviderQueryOutcome::Cancelled,
-            ProviderQueryTerminalState::Cancelled,
-        ));
-    }
-    if control.deadline_expired() || request.context.deadline == ProviderQueryDeadline::Expired {
-        return Ok(terminal_draft(
-            ProviderQueryOutcome::DeadlineExceeded,
-            ProviderQueryTerminalState::DeadlineExceeded,
-        ));
+    if let Some(draft) = live_terminal(control, request) {
+        return Ok(draft);
     }
 
     match request.context.readiness_state {
@@ -1089,6 +1104,7 @@ fn query_records(
     if capability == ProviderQueryCapability::Readiness {
         return Ok(readiness_draft(
             request,
+            control,
             records,
             snapshot,
             limitations,
@@ -1156,6 +1172,13 @@ fn query_records(
         ));
     }
 
+    // The live control is a signal for the whole query, not an admission
+    // gate: selection, completeness grants, and fact construction each
+    // re-check it so a cancelled or expired query never mints evidence.
+    if let Some(draft) = live_terminal(control, request) {
+        return Ok(draft);
+    }
+
     let selection = select_records(request, records);
     let any_stale = selection.all().chain(blockers.iter().copied()).any(|record| {
         record.envelope.status() == SemanticFactStatus::Stale || !record_is_current(record, request)
@@ -1206,6 +1229,9 @@ fn query_records(
                 traces,
                 limitations.to_vec(),
             ));
+        }
+        if let Some(draft) = live_terminal(control, request) {
+            return Ok(draft);
         }
         if let Some(grant) = issue_completeness_grant(
             request,
@@ -1288,6 +1314,10 @@ fn query_records(
         ));
     }
 
+    if let Some(draft) = live_terminal(control, request) {
+        return Ok(draft);
+    }
+
     let exact_grade =
         selection.all().all(|record| record.envelope.status() == SemanticFactStatus::Exact);
     let uniform_provenance =
@@ -1346,6 +1376,7 @@ fn query_records(
 #[allow(clippy::too_many_arguments)]
 fn readiness_draft(
     request: &ProviderQueryRequest,
+    control: &dyn ProviderQueryControl,
     records: &[AdapterFactRecord],
     snapshot: &ProviderAdapterSnapshot,
     limitations: &[String],
@@ -1354,6 +1385,9 @@ fn readiness_draft(
     denominator_scope: &str,
     snapshot_id: &str,
 ) -> ProviderQueryResultDraft {
+    if let Some(draft) = live_terminal(control, request) {
+        return draft;
+    }
     if generation_binding(request, snapshot) == GenerationBinding::Current
         && let Some(grant) = issue_completeness_grant(
             request,

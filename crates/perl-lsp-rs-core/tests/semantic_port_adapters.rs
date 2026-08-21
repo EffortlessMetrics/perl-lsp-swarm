@@ -207,6 +207,12 @@ fn complete_and_partial_empty_results_stay_distinct() -> Result<(), Box<dyn Erro
     assert_eq!(authority.producer(), SemanticProducer::Parser);
     assert_eq!(authority.capability(), ProviderQueryCapability::Declarations);
     assert!(authority.covered_unit_count() > 0);
+    // The grant binds the concrete denominator and snapshot identity, and the
+    // snapshot freshness flows into the result evidence: deleting any of these
+    // constructor inputs changes observable output.
+    assert_eq!(authority.denominator_id(), "Parser:Declarations:files:10");
+    assert_eq!(authority.snapshot_id(), "document-7:workspace-3:content:000000000000004d");
+    assert_eq!(complete_result.evidence().freshness(), SemanticFreshness::Fresh);
     complete_result.validate_against(&missing)?;
 
     let partial = parser_port(
@@ -638,28 +644,78 @@ fn live_controls_are_rechecked_after_adapter_query() -> Result<(), Box<dyn Error
     let query =
         request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
 
-    // The first admission check is clear; the second check, performed by the
-    // checked result boundary, observes cancellation after the adapter draft.
+    // The first admission check is clear; the adapter's pre-selection re-check
+    // observes cancellation and returns the terminal draft itself instead of
+    // minting value facts that the checked boundary would have to reject.
     let cancelled = ScriptedControl::new(1, usize::MAX);
-    let cancellation = execute_provider_query(&port, &query, &cancelled);
-    assert_eq!(
-        cancellation,
-        Err(perl_lsp_rs_core::providers::ProviderQueryContractError::InvalidOutcomeEvidence(
-            ProviderQueryOutcome::Exact,
-        ))
-    );
+    let cancellation = execute_provider_query(&port, &query, &cancelled)?;
+    assert_eq!(cancellation.outcome(), ProviderQueryOutcome::Cancelled);
+    assert_eq!(cancellation.value_facts().count(), 0);
     assert!(cancelled.cancellation_checks.load(Ordering::Relaxed) >= 2);
 
-    // Exercise the same post-query guard for a deadline independently.
+    // Exercise the same mid-query guard for a deadline independently.
     let deadline = ScriptedControl::new(usize::MAX, 1);
-    let expiry = execute_provider_query(&port, &query, &deadline);
-    assert_eq!(
-        expiry,
-        Err(perl_lsp_rs_core::providers::ProviderQueryContractError::InvalidOutcomeEvidence(
-            ProviderQueryOutcome::Exact,
-        ))
-    );
+    let expiry = execute_provider_query(&port, &query, &deadline)?;
+    assert_eq!(expiry.outcome(), ProviderQueryOutcome::DeadlineExceeded);
+    assert_eq!(expiry.value_facts().count(), 0);
     assert!(deadline.deadline_checks.load(Ordering::Relaxed) >= 2);
+    Ok(())
+}
+
+#[test]
+fn request_context_terminal_states_are_honored_without_live_signals() -> Result<(), Box<dyn Error>>
+{
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+
+    let mut cancelled_request =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
+    cancelled_request.context.cancellation = ProviderCancellationState::Cancelled;
+    let cancellation = execute(&port, &cancelled_request)?;
+    assert_eq!(cancellation.outcome(), ProviderQueryOutcome::Cancelled);
+    assert_eq!(cancellation.value_facts().count(), 0);
+
+    let mut expired_request =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
+    expired_request.context.deadline = ProviderQueryDeadline::Expired;
+    let expiry = execute(&port, &expired_request)?;
+    assert_eq!(expiry.outcome(), ProviderQueryOutcome::DeadlineExceeded);
+    assert_eq!(expiry.value_facts().count(), 0);
+    Ok(())
+}
+
+#[test]
+fn multi_shard_ports_never_claim_exact_authority() -> Result<(), Box<dyn Error>> {
+    // Two pristine exact-grade shards in different files. FileFactShard carries
+    // no per-shard generation, so one snapshot cannot prove cross-file
+    // currency: neither an Exact value nor an exact-empty grant may escape.
+    let port = parser_port(
+        &[
+            shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High),
+            shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High),
+        ],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+
+    let present =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
+    let value_result = execute(&port, &present)?;
+    assert_eq!(value_result.outcome(), ProviderQueryOutcome::Degraded);
+    assert!(
+        value_result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation == "multi_shard_single_snapshot_exactness")
+    );
+
+    let missing =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("missing".into()));
+    let empty_result = execute(&port, &missing)?;
+    assert!(!empty_result.is_exact_empty());
+    assert!(empty_result.evidence().completeness_authority().is_none());
     Ok(())
 }
 
@@ -859,7 +915,14 @@ fn position_queries_do_not_cross_file_entity_id_collisions() -> Result<(), Box<d
     let subject = ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 21 };
 
     let definition = execute(&port, &request(ProviderQueryKind::Declaration, subject.clone()))?;
-    assert_eq!(definition.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(definition.outcome(), ProviderQueryOutcome::Degraded);
+    assert!(
+        definition
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation == "multi_shard_single_snapshot_exactness")
+    );
     let definition_values: Vec<_> = definition.value_facts().collect();
     assert_eq!(definition_values.len(), 1);
     assert_eq!(definition_values[0].anchor.file_id, FileId(10));
@@ -868,7 +931,7 @@ fn position_queries_do_not_cross_file_entity_id_collisions() -> Result<(), Box<d
         &port,
         &request(ProviderQueryKind::References { include_declaration: false }, subject),
     )?;
-    assert_eq!(references.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(references.outcome(), ProviderQueryOutcome::Degraded);
     let reference_values: Vec<_> = references.value_facts().collect();
     assert_eq!(reference_values.len(), 1);
     assert_eq!(reference_values[0].anchor.file_id, FileId(10));
@@ -1150,13 +1213,18 @@ fn imperfect_shard_degrades_instead_of_hard_erroring_exact() -> Result<(), Box<d
             .any(|limitation| limitation.contains("conflicting_duplicate"))
     );
 
-    // Control: with no limitations anywhere, the same shapes stay exact.
-    let clean_first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
-    let clean_second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
-    let port = parser_port(&[clean_first, clean_second], ProviderSnapshotCompleteness::Complete)?;
+    // Control: with no limitations anywhere — one clean shard queried inside
+    // its own covered file — the same shapes stay exact. A multi-shard port
+    // keeps the cross-file limitation and degrades instead (see
+    // multi_shard_ports_never_claim_exact_authority), and an uncovered file
+    // cannot borrow another file's denominator at all.
+    let port = parser_port(
+        &[shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
     let result = execute(
         &port,
-        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::File(FileId(11))),
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::File(FileId(10))),
     )?;
     assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
     assert_eq!(result.value_facts().count(), 1);
