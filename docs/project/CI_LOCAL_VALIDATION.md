@@ -208,9 +208,9 @@ cd /path/to/perl-lsp
 just ci-gate
 ```
 
-If a manifest change genuinely requires a new lock, the validator reports the typed
-fixture/transition proof outcome `manifest_requires_lock_change`. This is not a
-runtime result and does not validate actual Cargo metadata. Stop for explicit
+The fixture/test transition cases include the typed outcome
+`manifest_requires_lock_change`. The CLI itself only reports validator success; it
+does not return a runtime result or validate actual Cargo metadata. Stop for explicit
 dependency admission; do not use `cargo generate-lockfile`, bare `cargo update`, or
 delete/recreate `Cargo.lock` as conflict repair. Nested lock detection remains a gate,
 but cleanup must be scoped to an independently identified accidental artifact rather

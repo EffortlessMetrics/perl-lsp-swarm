@@ -88,6 +88,18 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                 ):
                     validator.validate(root)
 
+    def test_invalid_utf8_fixture_returns_deterministic_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / validator.FIXTURE
+            fixture.parent.mkdir(parents=True)
+            fixture.write_bytes(b"\xff")
+            with self.assertRaisesRegex(
+                validator.ValidationError,
+                r"\Afixture is unavailable or invalid\Z",
+            ):
+                validator.load_fixture(root)
+
     def test_fixture_claim_boundary_must_be_non_empty(self) -> None:
         for claim_boundary in ("", " \t\n"):
             with (

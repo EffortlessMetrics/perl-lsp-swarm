@@ -128,8 +128,12 @@ def validate_transition(
 def load_fixture(root: Path) -> list[object]:
     try:
         data = json.loads((root / FIXTURE).read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as error:
-        raise ValidationError(f"fixture is unavailable or invalid: {error}") from error
+    except (
+        FileNotFoundError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ) as error:
+        raise ValidationError("fixture is unavailable or invalid") from error
     if not isinstance(data, dict):
         raise ValidationError("fixture must be a mapping")
     if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
