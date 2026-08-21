@@ -47,9 +47,10 @@ concern from these `sha256:`-prefixed durable IDs.
   `root:sha256:…`, `src:sha256:…` with exactly 64 lowercase hex digits;
   wrong prefixes and uppercase hex are rejected, not normalized, because
   equality and hashing are defined over the wire string.
-- Fail-closed deserialization everywhere: ill-formed IDs/digests and
-  unsupported envelope schema versions are serde errors, so an invalid value
-  can never exist as a typed value in memory.
+- Fail-closed deserialization at the serde boundary: ill-formed IDs/digests
+  and unsupported envelope schema versions are serde errors. Public
+  constructors can still create values that require caller checks, including
+  unsupported schema versions and semantically inconsistent envelope fields.
 - No host path, URI, traversal-order counter, or process-local value ever
   becomes stable identity.
 
@@ -87,11 +88,17 @@ and envelope schema-version rejection.
 - A new ID kind must take a unique domain tag and its own wire prefix;
   reusing a domain tag silently merges two identity namespaces.
 - Envelope changes must preserve `schema_version` semantics: compatible
-  additions without a bump, breaking changes bump so older builds reject.
+  additions without a bump; breaking changes require a bump so older builds
+  reject.
+- Envelope constructors make provenance fields explicit but do not validate
+  their semantic relationships. Producers must ensure that project, root,
+  logical-source, and optional revision values describe the same source before
+  consumers treat the envelope as coherent.
 
 ## Claim boundary
 
-This crate makes lying impossible at the type level; it does not decide when
+This crate makes representation and wire-shape errors explicit at the type
+level; it does not make provenance truthful by construction or decide when
 envelopes are minted or how unknown generations surface to users. Freshness
-honesty toward the editor lives with the producers and consumers above this
-crate, not here.
+honesty toward the editor, and semantic consistency among producer-supplied
+fields, live with the producers and consumers above this crate.
