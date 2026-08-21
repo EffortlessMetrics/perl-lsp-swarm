@@ -522,7 +522,7 @@ fn test_completion_bare_function_withdraws_module_auto_import_edit()
                     "uri": script_uri,
                     "languageId": "perl",
                     "version": 1,
-                    "text": "use strict;\ntrimm\n"
+                    "text": "use strict;\ntrimm\ntr"
                 }
             }
         }),
@@ -536,7 +536,7 @@ fn test_completion_bare_function_withdraws_module_auto_import_edit()
             "method": "textDocument/completion",
             "params": {
                 "textDocument": { "uri": script_uri },
-                "position": { "line": 1, "character": 5 }
+                "position": { "line": 2, "character": 2 }
             }
         }),
     );
@@ -546,6 +546,81 @@ fn test_completion_bare_function_withdraws_module_auto_import_edit()
     assert!(
         !labels.iter().any(|label| *label == "trimmer"),
         "must not return the exact bare `trimmer` candidate after stripping import edits; got: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| *label == "truncate"),
+        "unrelated built-in completion must remain available in the same request; got: {labels:?}"
+    );
+
+    Ok(())
+}
+
+/// Runtime `require` plus an explicit `import` call is production visibility
+/// authority for the imported bare symbol, without synthesizing an edit.
+#[test]
+fn test_completion_runtime_import_returns_bare_symbol_without_edit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+
+    let module_uri = "file:///workspace/Foo.pm";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": module_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "package Foo;\nour @EXPORT = qw(bar);\nsub bar { }\n1;\n"
+                }
+            }
+        }),
+    );
+    await_open_processing(&server);
+
+    let script_uri = "file:///workspace/runtime_import.pl";
+    let source = "require Foo; Foo->import(qw(bar));\nbar";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": script_uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+    await_open_processing(&server);
+
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": script_uri },
+                "position": { "line": 1, "character": 3 }
+            }
+        }),
+    );
+
+    let items = completion_items(&response);
+    let item = items
+        .iter()
+        .find(|item| item.get("label").and_then(|label| label.as_str()) == Some("bar"))
+        .ok_or("runtime import should return the bare `bar` completion")?;
+    assert_eq!(item.get("insertText").and_then(|text| text.as_str()), Some("bar"));
+    assert!(
+        item.get("additionalTextEdits").is_none(),
+        "runtime-import completion must not synthesize additional edits: {item:?}"
     );
 
     Ok(())
