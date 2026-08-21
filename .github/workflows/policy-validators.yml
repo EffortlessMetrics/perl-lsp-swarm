@@ -38,6 +38,7 @@ on:
       - 'scripts/ci/fixtures/cargo_lock_conflict_policy.json'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'docs/project/CI_LOCAL_VALIDATION.md'
+      - 'justfile'
       # The fact-read inventory anchors to provider SOURCES: editing a governed
       # provider source without touching the catalog is the primary drift class,
       # so these paths (the exact roots of every catalog-anchored source) must

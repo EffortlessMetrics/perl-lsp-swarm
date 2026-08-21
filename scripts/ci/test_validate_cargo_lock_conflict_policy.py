@@ -47,6 +47,18 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual(validator.classify(case), "not_proven")
 
+    def test_malformed_fixture_entries_return_deterministic_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / validator.FIXTURE
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text('{"cases": [null, ["not a mapping"]]}', encoding="utf-8")
+            errors = validator.validate(root)
+            self.assertEqual(
+                errors[:2],
+                ["cases[0] must be a mapping", "cases[1] must be a mapping"],
+            )
+
     def test_weakened_policy_text_is_rejected(self) -> None:
         errors = validator.validate_semantics(
             "Active conflict repair may use `cargo generate-lockfile`.\n",
@@ -81,6 +93,11 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
             "required text on another line\nanchor\n", 2, {"required": ["required text"]}
         )
         self.assertTrue(errors)
+
+    def test_anchor_line_is_derived_from_unique_needle(self) -> None:
+        source = "intro\nanchor statement\ntrailing\n"
+        self.assertEqual(validator.anchor_line(source, "anchor statement"), 2)
+        self.assertIsNone(validator.anchor_line(source, "missing"))
 
     def test_compatible_accepted_lock_is_byte_identical(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

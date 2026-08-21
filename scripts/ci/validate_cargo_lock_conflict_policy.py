@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -124,7 +125,7 @@ def validate_transition(
     return result if unchanged else "not_proven"
 
 
-def load_fixture(root: Path) -> list[dict[str, object]]:
+def load_fixture(root: Path) -> list[object]:
     try:
         data = json.loads((root / FIXTURE).read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError) as error:
@@ -135,12 +136,25 @@ def load_fixture(root: Path) -> list[dict[str, object]]:
     return cases
 
 
+def anchor_line(source: str, needle: str) -> int | None:
+    """Return the one-based line containing the unique source needle."""
+    if source.count(needle) != 1:
+        return None
+    offset = source.index(needle)
+    line_number = source.count("\n", 0, offset) + 1
+    line = source.splitlines()[line_number - 1]
+    return line_number if needle in line else None
+
+
 def validate(root: Path) -> list[str]:
     cases = load_fixture(root)
     errors: list[str] = []
     seen: set[str] = set()
     for index, case in enumerate(cases):
         prefix = f"cases[{index}]"
+        if not isinstance(case, Mapping):
+            errors.append(f"{prefix} must be a mapping")
+            continue
         case_id = case.get("id")
         if not isinstance(case_id, str) or not case_id:
             errors.append(f"{prefix}.id must be non-empty")
@@ -149,15 +163,15 @@ def validate(root: Path) -> list[str]:
             errors.append(f"duplicate case id: {case_id}")
         seen.add(case_id)
         path = case.get("path")
-        line_number = case.get("line")
         needle = case.get("needle")
         expected = case.get("expected")
-        if not isinstance(path, str) or not isinstance(line_number, int) or line_number < 1:
-            errors.append(f"{prefix} must identify a positive source line")
+        if not isinstance(path, str):
+            errors.append(f"{prefix}.path must be a string")
+            continue
         if not isinstance(needle, str) or not needle:
             errors.append(f"{prefix} must identify a non-empty source needle")
             continue
-        if expected not in OUTCOMES:
+        if not isinstance(expected, str) or expected not in OUTCOMES:
             errors.append(f"{case_id}: unsupported expected outcome {expected!r}")
         source_path = root / path
         try:
@@ -165,11 +179,11 @@ def validate(root: Path) -> list[str]:
         except OSError as error:
             errors.append(f"{case_id}: source unavailable: {path}: {error}")
             continue
+        line_number = anchor_line(source, needle)
         if source.count(needle) != 1:
             errors.append(f"{case_id}: source needle must occur exactly once: {path}")
-        lines = source.splitlines()
-        if line_number > len(lines) or needle not in lines[line_number - 1]:
-            errors.append(f"{case_id}: source line {line_number} does not contain its needle")
+        elif line_number is None:
+            errors.append(f"{case_id}: source needle must occur on one line: {path}")
         actual = classify(case)
         if actual != expected:
             errors.append(f"{case_id}: classified {actual}, expected {expected}")
@@ -177,13 +191,17 @@ def validate(root: Path) -> list[str]:
         if not isinstance(semantics, dict):
             errors.append(f"{case_id}: semantic assertions are required")
             continue
-        for semantic_error in validate_semantics(
-            source, line_number, semantics
-        ):
-            errors.append(f"{case_id}: {semantic_error}")
+        if line_number is not None:
+            for semantic_error in validate_semantics(source, line_number, semantics):
+                errors.append(f"{case_id}: {semantic_error}")
 
     expected_outcomes = OUTCOMES - {"not_proven"}
-    missing = sorted(expected_outcomes - {case.get("expected") for case in cases})
+    observed = {
+        case.get("expected")
+        for case in cases
+        if isinstance(case, Mapping) and isinstance(case.get("expected"), str)
+    }
+    missing = sorted(expected_outcomes - observed)
     if missing:
         errors.append("fixture is missing outcomes: " + ", ".join(missing))
     return errors
