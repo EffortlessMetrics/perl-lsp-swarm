@@ -58,6 +58,12 @@ def write_policy(
     return path
 
 
+def write_gate_policy(root: Path, rows: str) -> Path:
+    path = root / "gate-policy.yaml"
+    path.write_text(f"schema_version: 1\ngates:\n{rows}", encoding="utf-8")
+    return path
+
+
 def write_receipt_schema(root: Path) -> Path:
     path = root / "receipt.schema.json"
     path.write_text(
@@ -519,6 +525,62 @@ class GateShardTests(unittest.TestCase):
         self.assertEqual(matrix_gates, set(payload["gates"]))
         self.assertEqual(8073, payload["owner_issue"])
         self.assertEqual(4787, payload["migration_owner_issue"])
+
+    def test_current_tree_source_commit_api_gate_has_executable_policy_command(self) -> None:
+        policy = REPO_ROOT / ".ci/gate-policy.yaml"
+        commands = shard.load_gate_commands(
+            policy,
+            ["source_commit_api_check"],
+            root=REPO_ROOT,
+        )
+        self.assertEqual(
+            "python3 scripts/ci/check_source_commit_api.py",
+            commands["source_commit_api_check"],
+        )
+        self.assertTrue((REPO_ROOT / "scripts/ci/check_source_commit_api.py").is_file())
+        execution = json.loads(
+            (REPO_ROOT / ".ci/gate-shard-execution.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("source_commit_api_check", execution["gates"])
+        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("source_commit_api_check", workflow)
+
+    def test_gate_policy_preflight_rejects_missing_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write_gate_policy(
+                Path(tmp),
+                "  - name: other\n    command: true\n",
+            )
+            with self.assertRaisesRegex(ValueError, "no gate-policy row"):
+                shard.load_gate_commands(policy, ["source_commit_api_check"], root=Path(tmp))
+
+    def test_gate_policy_preflight_rejects_missing_command(self) -> None:
+        for rows in (
+            "  - name: source_commit_api_check\n",
+            "  - name: source_commit_api_check\n    command:\n",
+        ):
+            with self.subTest(rows=rows), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(Path(tmp), rows)
+                with self.assertRaisesRegex(ValueError, "no executable command"):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
+    def test_gate_policy_preflight_rejects_missing_referenced_command_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write_gate_policy(
+                Path(tmp),
+                "  - name: source_commit_api_check\n"
+                "    command: python3 scripts/ci/missing.py\n",
+            )
+            with self.assertRaisesRegex(ValueError, "missing command path"):
+                shard.load_gate_commands(
+                    policy,
+                    ["source_commit_api_check"],
+                    root=Path(tmp),
+                )
 
     def test_canonical_receipt_schema_is_loadable(self) -> None:
         contract = shard.load_receipt_contract(

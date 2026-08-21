@@ -11,9 +11,11 @@ the full selected set has been classified.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -32,6 +34,43 @@ SKIPPED_STATUSES = {"skip"}
 TIMEOUT_STATUSES = {"timeout"}
 NOT_PROVEN_STATUSES = {"error"}
 DEPENDENCY_FAILURE_POLICIES = {"blocked_not_proven"}
+COMMAND_INTERPRETERS = {
+    "bash",
+    "node",
+    "perl",
+    "python",
+    "python2",
+    "python3",
+    "pwsh",
+    "ruby",
+    "sh",
+}
+COMMAND_PATH_SUFFIXES = {
+    ".js",
+    ".json",
+    ".lock",
+    ".md",
+    ".pl",
+    ".py",
+    ".ps1",
+    ".rs",
+    ".sh",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+OUTPUT_PATH_FLAGS = {
+    "--artifact-dir",
+    "--json-out",
+    "--log-path",
+    "--output",
+    "--receipt",
+    "--receipt-dir",
+    "--receipt-path",
+    "--report",
+    "--summary",
+}
 
 
 @dataclass(frozen=True)
@@ -63,6 +102,167 @@ class GateObservation:
     duration_ms: int
     blocked_by: list[str]
     message: str | None = None
+
+
+def _yaml_scalar(value: str) -> str:
+    """Decode the small scalar subset used by gate command declarations."""
+    value = value.strip()
+    if not value:
+        return ""
+    if value[0] in {"'", '"'}:
+        try:
+            decoded = ast.literal_eval(value)
+        except (SyntaxError, ValueError) as error:
+            raise ValueError(f"gate command has invalid quoted scalar {value!r}") from error
+        if not isinstance(decoded, str):
+            raise ValueError("gate command scalar must be a string")
+        return decoded
+    return value
+
+
+def _read_gate_command_specs(path: Path) -> dict[str, str]:
+    """Read gate names and commands without requiring a third-party YAML module.
+
+    The repository policy uses a deliberately small shape for these fields:
+    ``gates:`` contains ``- name:`` records and each record has a scalar or
+    folded ``command:`` value. Keeping this parser local makes the shard
+    preflight runnable in the clean Python environment used by CI.
+    """
+    if not path.exists() or path.is_symlink() or not path.is_file():
+        raise ValueError(f"gate policy is missing or not a regular file: {path}")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise ValueError(f"gate policy is unreadable: {error}") from error
+
+    in_gates = False
+    current: str | None = None
+    specs: dict[str, str] = {}
+    line_number = 0
+    while line_number < len(lines):
+        raw = lines[line_number]
+        stripped = raw.strip()
+        if not in_gates:
+            if raw == "gates:":
+                in_gates = True
+            line_number += 1
+            continue
+        if stripped and not raw.startswith(" "):
+            break
+        if raw.startswith("  - name:"):
+            name = _yaml_scalar(raw.split("name:", 1)[1])
+            if not name:
+                raise ValueError(f"gate policy has an empty gate name at line {line_number + 1}")
+            if name in specs:
+                raise ValueError(f"gate policy repeats gate {name!r}")
+            current = name
+            specs[current] = ""
+            line_number += 1
+            continue
+        if current is None or not raw.startswith("    command:"):
+            line_number += 1
+            continue
+
+        value = raw.split("command:", 1)[1].strip()
+        if value in {">", ">-", ">+", "|", "|-", "|+"}:
+            folded = value.startswith(">")
+            continuation: list[str] = []
+            cursor = line_number + 1
+            while cursor < len(lines):
+                next_raw = lines[cursor]
+                if next_raw.strip() and not next_raw.startswith("      "):
+                    break
+                continuation.append(next_raw.strip())
+                cursor += 1
+            if folded:
+                command = " ".join(part for part in continuation if part)
+            else:
+                command = "\n".join(continuation)
+            if value.endswith("-"):
+                command = command.rstrip(" \n")
+            specs[current] = command
+            line_number = cursor
+            continue
+
+        specs[current] = _yaml_scalar(value)
+        line_number += 1
+    if not in_gates:
+        raise ValueError(f"gate policy has no gates sequence: {path}")
+    return specs
+
+
+def _looks_like_command_path(token: str) -> bool:
+    if not token or token.startswith("-") or token.startswith("{"):
+        return False
+    return (
+        "/" in token
+        or "\\" in token
+        or Path(token).suffix.lower() in COMMAND_PATH_SUFFIXES
+    )
+
+
+def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
+    """Return input script paths, excluding output/receipt destinations."""
+    references: list[str] = []
+    skip_next = False
+    for index, token in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+        if token in OUTPUT_PATH_FLAGS:
+            skip_next = True
+            continue
+        if any(token.startswith(f"{flag}=") for flag in OUTPUT_PATH_FLAGS):
+            continue
+        if index == 0 and _looks_like_command_path(token):
+            references.append(token)
+            continue
+        if index > 0 and _looks_like_command_path(token):
+            previous = tokens[index - 1]
+            previous_name = previous.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            if previous in {"-m", "-c"} or previous_name in COMMAND_INTERPRETERS:
+                references.append(token)
+    return references
+
+
+def load_gate_commands(
+    path: Path,
+    selected_gates: Sequence[str],
+    *,
+    root: Path | None = None,
+) -> dict[str, str]:
+    """Validate selected gates against the exact checked-out policy.
+
+    This is intentionally a pre-execution boundary: no selected gate may be
+    spawned until its policy row, command string, and any referenced input
+    script path are present in the checked-out tree.
+    """
+    specs = _read_gate_command_specs(path)
+    policy_root = path.parent.parent if path.parent.name == ".ci" else path.parent
+    repository_root = (root or policy_root).resolve()
+    commands: dict[str, str] = {}
+    for gate in selected_gates:
+        if gate not in specs:
+            raise ValueError(f"selected gate {gate!r} has no gate-policy row")
+        command = specs[gate].strip()
+        if not command:
+            raise ValueError(f"selected gate {gate!r} has no executable command")
+        try:
+            tokens = shlex.split(command, posix=True)
+        except ValueError as error:
+            raise ValueError(f"selected gate {gate!r} has an invalid command: {error}") from error
+        if not tokens or not any(token.strip() for token in tokens):
+            raise ValueError(f"selected gate {gate!r} has no executable command")
+        for reference in _referenced_command_paths(tokens):
+            referenced = Path(reference)
+            if not referenced.is_absolute():
+                referenced = repository_root / referenced
+            if not referenced.exists() or referenced.is_symlink() or not referenced.is_file():
+                raise ValueError(
+                    f"selected gate {gate!r} references missing command path: {reference}"
+                )
+        commands[gate] = command
+    return commands
 
 
 def _regular_json_object(path: Path, *, subject: str) -> dict[str, Any]:
@@ -709,6 +909,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path(".ci/receipt.schema.json"),
     )
     parser.add_argument(
+        "--gate-policy",
+        type=Path,
+        default=Path(".ci/gate-policy.yaml"),
+    )
+    parser.add_argument(
         "--subject-sha", default=os.environ.get("GITHUB_SHA", "")
     )
     parser.add_argument("gates", nargs="+")
@@ -720,6 +925,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         validate_args(args)
+        load_gate_commands(args.gate_policy, args.gates, root=Path.cwd())
         dependency_rules = load_execution_policy(args.execution_policy, args.gates)
         receipt_contract = load_receipt_contract(args.receipt_schema)
     except ValueError as error:
