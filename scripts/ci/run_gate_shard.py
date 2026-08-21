@@ -130,6 +130,7 @@ ATTACHED_INTERPRETER_ALIASES = {
 }
 UNSAFE_SHELL_COMMANDS = {"alias", "cd", "eval", "exec", "source"}
 REDIRECTION = re.compile(r"^(?P<fd>[0-9]*)(?P<operator><<|>>|>&|<&|<|>)(?P<target>.*)$")
+ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 @dataclass(frozen=True)
@@ -209,14 +210,15 @@ def _yaml_command_scalar(value: str) -> str:
     if candidate.lower() in {"false", "null", "no", "off", "on", "true", "yes", "~"}:
         raise ValueError("gate command must be a YAML string")
     if re.fullmatch(
-        r"(?:[-+]?(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+)|"
-        r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?|"
-        r"[-+]?\.(?:inf|nan)|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt].*)?)",
+        r"(?:[-+]?(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+)|"
+        r"[-+]?(?:[0-9][0-9_]*(?:\.[0-9_]*)?|\.[0-9][0-9_]*)(?:[eE][-+]?[0-9_]+)?|"
+        r"[-+]?\.(?:inf|nan)|[0-9]+(?::[0-9]+){1,2}|"
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt ].*)?)",
         candidate,
         flags=re.IGNORECASE,
     ):
         raise ValueError("gate command must be a YAML string")
-    if candidate.startswith(("[", "{")):
+    if candidate.startswith(("&", "*", "[", "{")):
         raise ValueError("gate command must be a YAML string")
     return stripped
 
@@ -332,6 +334,10 @@ def _split_gate_command(command: str) -> list[str]:
 def _interpreter_name(token: str) -> str | None:
     token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
     return INTERPRETER_ALIASES.get(token_name)
+
+
+def _is_env_assignment(token: str) -> bool:
+    return ENV_ASSIGNMENT.match(token) is not None
 
 
 def _repository_relative_path(
@@ -484,6 +490,8 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
             continue
 
         if env_command_pending:
+            if _is_env_assignment(token):
+                continue
             if token.startswith("-"):
                 raise ValueError(f"env -- command is missing or invalid: {token}")
             env_command_pending = False
@@ -515,10 +523,10 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
                 env_pending = False
                 env_command_pending = True
                 continue
+            if _is_env_assignment(token):
+                continue
             if token.startswith("-"):
                 raise ValueError(f"unsupported env option: {token}")
-            if "=" in token and not _looks_like_command_path(token):
-                continue
             env_pending = False
             if interpreter_token_name is not None:
                 interpreter_pending = True

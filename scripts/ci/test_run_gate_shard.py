@@ -610,8 +610,16 @@ class GateShardTests(unittest.TestCase):
             "null",
             "42",
             "0x10",
+            "0x10_00",
+            "1_000",
             ".inf",
             "2026-08-21",
+            "2026-08-21T12:34:56Z",
+            "2026-08-21 12:34:56+00:00",
+            "1:20",
+            "1:20:30",
+            "&command_anchor python3 scripts/check.py",
+            "*command_anchor",
             "true # inline comment",
             "0x10 # inline comment",
             "[]",
@@ -811,17 +819,23 @@ class GateShardTests(unittest.TestCase):
             (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
             policy = write_gate_policy(
                 root,
-                "  - name: source_commit_api_check\n"
-                "    command: env NAME=value python3 scripts/ci/check.py\n",
+                "  - name: normal\n"
+                "    command: env NAME=foo.py python3 scripts/ci/check.py\n"
+                "  - name: after_options\n"
+                "    command: env -- NAME=foo.py python3 scripts/ci/check.py\n",
             )
             commands = shard.load_gate_commands(
                 policy,
-                ["source_commit_api_check"],
+                ["normal", "after_options"],
                 root=root,
             )
             self.assertEqual(
-                "env NAME=value python3 scripts/ci/check.py",
-                commands["source_commit_api_check"],
+                "env NAME=foo.py python3 scripts/ci/check.py",
+                commands["normal"],
+            )
+            self.assertEqual(
+                "env -- NAME=foo.py python3 scripts/ci/check.py",
+                commands["after_options"],
             )
 
     def test_gate_policy_preflight_rejects_nested_shell_and_unsafe_wrappers(self) -> None:
@@ -829,6 +843,7 @@ class GateShardTests(unittest.TestCase):
             "bash -c 'python3 ../outside.py'",
             "env -S 'python3 ../outside.py'",
             "env -- scripts/ci/missing.py",
+            "env NAME=foo.py python3 ../outside.py",
             "python3 -uscripts/ci/missing.py",
             "python3 scripts/ci/missing.py > ../outside.log",
             "python3 scripts/ci/missing.py >../outside.log",
