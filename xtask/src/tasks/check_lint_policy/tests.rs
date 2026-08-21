@@ -8,6 +8,7 @@ use super::model::{
 };
 use chrono::NaiveDate;
 use color_eyre::eyre::{Result, eyre};
+use std::path::Path;
 use toml::Value;
 
 pub(super) fn test_date() -> Result<NaiveDate> {
@@ -89,4 +90,16 @@ pub(super) fn debt_entry(lint: &str) -> DebtEntry {
         reason: "test reason".to_owned(),
         review_after: "2026-10-15".to_owned(),
     }
+}
+
+#[test]
+fn repository_catalog_and_workspace_inputs_validate() -> Result<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| eyre!("xtask manifest should have the workspace root as its parent"))?;
+    let cargo = super::read::read_toml(root.join(super::ROOT_MANIFEST))?;
+    let lint_ledger = super::read::load_lint_ledger(root)?;
+    let debt_ledger: DebtLedger = super::read::read_toml_as(root.join(super::DEBT_LEDGER))?;
+
+    super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, test_date()?)
 }
