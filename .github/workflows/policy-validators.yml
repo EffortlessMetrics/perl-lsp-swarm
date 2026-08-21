@@ -38,6 +38,9 @@ on:
       - 'scripts/ci/fixtures/cargo_lock_conflict_policy.json'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'docs/project/CI_LOCAL_VALIDATION.md'
+      - 'scripts/ci/check_perl_lsp_rs_core_package.py'
+      - 'docs/release/RUNBOOK.md'
+      - 'docs/project/RELEASE_RUNBOOK_0_12_3.md'
       - 'justfile'
       # The fact-read inventory anchors to provider SOURCES: editing a governed
       # provider source without touching the catalog is the primary drift class,

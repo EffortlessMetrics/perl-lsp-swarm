@@ -238,15 +238,17 @@ return `SALVAGE_REQUIRED`; publish nothing until state is understood.
 
 ### Cargo.lock conflict repair
 
-Conflict repair preserves the accepted `Cargo.lock` and first validates locked metadata
-without mutation. The accepted lock remains byte-identical unless an explicit branch
+This candidate validates the lockfile conflict policy and its fixture oracle; it does
+not validate actual Cargo metadata or provide a production conflict-repair helper.
+The fixture oracle models the accepted `Cargo.lock` preservation policy without
+mutation. The accepted lock remains byte-identical unless an explicit branch
 admission is made for a manifest-required lock change. The typed routing is:
 
 | Result | Meaning |
 | --- | --- |
-| `accepted_lock_preserved` | Locked metadata is compatible; keep the accepted lock. |
-| `lock_conflict_requires_admission` | A conflict exists; stop and obtain dependency admission. |
-| `manifest_requires_lock_change` | The manifest requires a lock change; refuse conflict repair until admitted. |
+| `accepted_lock_preserved` | The fixture oracle reports a compatible lock; keep the accepted lock. |
+| `lock_conflict_requires_admission` | The fixture oracle reports a conflict; stop and obtain dependency admission. |
+| `manifest_requires_lock_change` | The fixture oracle reports a manifest-required lock change; refuse conflict repair until admitted. |
 | `branch_admission_preserved` | A separately admitted branch operation remains outside conflict repair. |
 | `historical_text` | Archive or historical guidance is not an active command surface. |
 | `controlled_isolated_generation` | Extracted-package smoke may generate a lock only in its isolated temporary package. |
@@ -261,9 +263,10 @@ it does not invent a dependency-admission service.
 
 The validator's fixture anchors include the negative active examples, the positive
 isolated smoke and release controls, and a dynamically constructed command. The latter
-is explicitly `not_proven`, not accepted by token matching. A compatible accepted lock
-is checked byte-for-byte, while a manifest-required lock change is refused without
-mutating the accepted worktree.
+is explicitly `not_proven`, not accepted by token matching. The fixture oracle checks
+that a compatible accepted lock remains byte-for-byte identical, while a
+manifest-required lock change is refused without mutating the accepted worktree; it
+does not execute Cargo metadata resolution or establish production-helper reachability.
 
 The following are not active conflict-repair instructions: `cargo generate-lockfile`
 in `scripts/ci/check_perl_lsp_rs_core_package.py` operates on an extracted package,
