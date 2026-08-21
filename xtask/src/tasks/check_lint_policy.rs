@@ -8,7 +8,7 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
-use chrono::Local;
+use chrono::Utc;
 use color_eyre::eyre::Result;
 use model::DebtLedger;
 use std::path::Path;
@@ -26,7 +26,7 @@ pub fn run() -> Result<()> {
     let cargo = read::read_toml(root.join(ROOT_MANIFEST))?;
     let lint_ledger = read::load_lint_ledger(root)?;
     let debt_ledger: DebtLedger = read::read_toml_as(root.join(DEBT_LEDGER))?;
-    let today = Local::now().date_naive();
+    let today = Utc::now().date_naive();
 
     validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, today)?;
 
