@@ -30,7 +30,11 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
         )
 
     def test_contexts_do_not_override_forbidden_or_unknown_commands(self) -> None:
-        for context in ("release_refresh", "targeted_dependency", "isolated_extracted_package"):
+        for context in (
+            "release_refresh",
+            "targeted_dependency",
+            "isolated_extracted_package",
+        ):
             self.assertEqual(
                 validator.classify({"context": context, "command": "cargo update"}),
                 "not_proven",
@@ -66,30 +70,42 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
 
     def test_fixture_schema_version_must_be_exactly_one(self) -> None:
         for schema_version in (0, 2, "1", True):
-            with self.subTest(schema_version=schema_version), tempfile.TemporaryDirectory() as temp:
+            with (
+                self.subTest(schema_version=schema_version),
+                tempfile.TemporaryDirectory() as temp,
+            ):
                 root = Path(temp)
                 fixture = root / validator.FIXTURE
                 fixture.parent.mkdir(parents=True)
                 fixture.write_text(
-                    '{"schema_version": ' + json.dumps(schema_version) +
-                    ', "claim_boundary": "bounded", "cases": [{"id": "x"}]}',
+                    '{"schema_version": '
+                    + json.dumps(schema_version)
+                    + ', "claim_boundary": "bounded", "cases": [{"id": "x"}]}',
                     encoding="utf-8",
                 )
-                with self.assertRaisesRegex(ValueError, "schema_version must be exactly 1"):
+                with self.assertRaisesRegex(
+                    ValueError, "schema_version must be exactly 1"
+                ):
                     validator.validate(root)
 
     def test_fixture_claim_boundary_must_be_non_empty(self) -> None:
         for claim_boundary in ("", " \t\n"):
-            with self.subTest(claim_boundary=claim_boundary), tempfile.TemporaryDirectory() as temp:
+            with (
+                self.subTest(claim_boundary=claim_boundary),
+                tempfile.TemporaryDirectory() as temp,
+            ):
                 root = Path(temp)
                 fixture = root / validator.FIXTURE
                 fixture.parent.mkdir(parents=True)
                 fixture.write_text(
-                    '{"schema_version": 1, "claim_boundary": ' +
-                    json.dumps(claim_boundary) + ', "cases": [{"id": "x"}]}',
+                    '{"schema_version": 1, "claim_boundary": '
+                    + json.dumps(claim_boundary)
+                    + ', "cases": [{"id": "x"}]}',
                     encoding="utf-8",
                 )
-                with self.assertRaisesRegex(ValueError, "claim_boundary must be non-empty"):
+                with self.assertRaisesRegex(
+                    ValueError, "claim_boundary must be non-empty"
+                ):
                     validator.validate(root)
 
     def test_not_proven_cases_reject_malformed_context_and_command_types(self) -> None:
@@ -128,28 +144,42 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
 
     def test_empty_semantic_assertion_strings_are_rejected(self) -> None:
         for semantics, message in (
-            ({"required": [" \t\n"], "forbidden": []}, "required source semantics must not be empty"),
-            ({"required": [], "forbidden": [" \t\n"]}, "forbidden source semantics must not be empty"),
+            (
+                {"required": [" \t\n"], "forbidden": []},
+                "required source semantics must not be empty",
+            ),
+            (
+                {"required": [], "forbidden": [" \t\n"]},
+                "forbidden source semantics must not be empty",
+            ),
         ):
             with self.subTest(semantics=semantics):
                 errors = validator.validate_semantics("anchor\n", 1, semantics)
                 self.assertIn(message, errors)
 
     def test_empty_semantic_assertions_are_rejected(self) -> None:
-        errors = validator.validate_semantics("anchor\n", 1, {"required": [], "forbidden": []})
+        errors = validator.validate_semantics(
+            "anchor\n", 1, {"required": [], "forbidden": []}
+        )
         self.assertIn("must not both be empty", errors[0])
 
     def test_non_string_forbidden_assertions_are_rejected(self) -> None:
-        errors = validator.validate_semantics("anchor\n", 1, {"required": ["anchor"], "forbidden": [7]})
+        errors = validator.validate_semantics(
+            "anchor\n", 1, {"required": ["anchor"], "forbidden": [7]}
+        )
         self.assertIn("forbidden source semantics must be strings", errors[0])
 
     def test_non_string_required_assertions_are_rejected(self) -> None:
-        errors = validator.validate_semantics("anchor\n", 1, {"required": [7], "forbidden": []})
+        errors = validator.validate_semantics(
+            "anchor\n", 1, {"required": [7], "forbidden": []}
+        )
         self.assertIn("required source semantics must be strings", errors[0])
 
     def test_nearby_text_cannot_satisfy_anchor_semantics(self) -> None:
         errors = validator.validate_semantics(
-            "required text on another line\nanchor\n", 2, {"required": ["required text"]}
+            "required text on another line\nanchor\n",
+            2,
+            {"required": ["required text"]},
         )
         self.assertTrue(errors)
 
@@ -164,7 +194,9 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
     def test_overlapping_source_needles_are_rejected_by_anchor_line(self) -> None:
         self.assertIsNone(validator.anchor_line("aaa", "aa"))
 
-    def test_absolute_and_escaping_source_paths_are_rejected_before_reading(self) -> None:
+    def test_absolute_and_escaping_source_paths_are_rejected_before_reading(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             fixture = root / validator.FIXTURE

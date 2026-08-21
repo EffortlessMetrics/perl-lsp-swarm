@@ -143,13 +143,17 @@ def load_fixture(root: Path) -> list[object]:
     return cases
 
 
-def anchor_line(source: str, needle: str) -> int | None:
-    """Return the one-based line containing the unique source needle."""
-    occurrences = sum(
+def needle_occurrences(source: str, needle: str) -> int:
+    """Count source needles, including overlapping occurrences."""
+    return sum(
         source.startswith(needle, offset)
         for offset in range(len(source) - len(needle) + 1)
     )
-    if occurrences != 1:
+
+
+def anchor_line(source: str, needle: str) -> int | None:
+    """Return the one-based line containing the unique source needle."""
+    if needle_occurrences(source, needle) != 1:
         return None
     offset = source.index(needle)
     line_number = source.count("\n", 0, offset) + 1
@@ -206,10 +210,7 @@ def validate(root: Path) -> list[str]:
             errors.append(f"{case_id}: source unavailable: {path}: {error}")
             continue
         line_number = anchor_line(source, needle)
-        if sum(
-            source.startswith(needle, offset)
-            for offset in range(len(source) - len(needle) + 1)
-        ) != 1:
+        if needle_occurrences(source, needle) != 1:
             errors.append(f"{case_id}: source needle must occur exactly once: {path}")
         elif line_number is None:
             errors.append(f"{case_id}: source needle must occur on one line: {path}")
@@ -249,31 +250,43 @@ def main() -> int:
         accepted = Path(temp) / "Cargo.lock"
         original = b"# accepted lock\n"
         accepted.write_bytes(original)
-        if validate_transition(
-            original,
-            original,
-            manifest_requires_lock=False,
-            temporary_lock_path=accepted,
-        ) != "accepted_lock_preserved":
+        if (
+            validate_transition(
+                original,
+                original,
+                manifest_requires_lock=False,
+                temporary_lock_path=accepted,
+            )
+            != "accepted_lock_preserved"
+        ):
             print("FAIL: compatible lock transition was not accepted")
             return 1
         if accepted.read_bytes() != original:
             print("FAIL: compatible transition mutated accepted lock")
             return 1
-        if validate_transition(
-            original,
-            b"# different lock\n",
-            manifest_requires_lock=True,
-            temporary_lock_path=accepted,
-        ) != "manifest_requires_lock_change":
+        if (
+            validate_transition(
+                original,
+                b"# different lock\n",
+                manifest_requires_lock=True,
+                temporary_lock_path=accepted,
+            )
+            != "manifest_requires_lock_change"
+        ):
             print("FAIL: manifest-required transition was not refused")
             return 1
         if accepted.read_bytes() != original:
             print("FAIL: manifest-required transition mutated accepted lock")
             return 1
-    digest = hashlib.sha256((args.repo_root.resolve() / FIXTURE).read_bytes()).hexdigest()
-    print(f"OK: cargo-lock-conflict-policy cases={len(load_fixture(args.repo_root.resolve()))} fixture_sha256={digest}")
-    print("OK: accepted lock remains byte-identical; manifest-required change is refused")
+    digest = hashlib.sha256(
+        (args.repo_root.resolve() / FIXTURE).read_bytes()
+    ).hexdigest()
+    print(
+        f"OK: cargo-lock-conflict-policy cases={len(load_fixture(args.repo_root.resolve()))} fixture_sha256={digest}"
+    )
+    print(
+        "OK: accepted lock remains byte-identical; manifest-required change is refused"
+    )
     return 0
 
 
