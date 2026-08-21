@@ -1858,6 +1858,15 @@ impl Drop for Node {
         self.detach_children(&mut stack);
         while let Some(mut node) = stack.pop() {
             node.detach_children(&mut stack);
+
+            // Consume the detached payload explicitly.  If `node` were left
+            // to the loop-scope drop, its `Node::drop` would run again for
+            // every item and allocate another work stack per item.  After
+            // detachment, `into_parts` leaves only the childless placeholder
+            // in the shell, so its normal drop is constant-time and cannot
+            // recurse into the original tree.
+            let (kind, _) = node.into_parts();
+            drop(kind);
         }
     }
 }
@@ -4355,14 +4364,16 @@ mod deep_tree_destruction_tests {
     }
 
     #[test]
-    fn panic_before_drop_leaves_deep_tree_safely_droppable() -> Result<(), String> {
+    fn unwind_before_drop_leaves_deep_tree_safely_droppable() -> Result<(), String> {
         run_on_small_stack(|| {
             let deep = chain_of(DEEP_DEPTH, wrap_boxed);
             let touched = std::panic::catch_unwind(|| deep.count_nodes() >= 1);
             assert!(touched.is_ok(), "tree must remain readable before the panic");
             let injected =
                 std::panic::catch_unwind(|| std::panic::resume_unwind(Box::new("injected")));
-            assert!(injected.is_err(), "the injected panic must be caught before drop");
+            assert!(injected.is_err(), "the injected unwind must be caught before drop");
+            // This covers ordinary unwind-before-owner-drop behavior. It does
+            // not claim recovery from a panic injected inside `Node::drop`.
             drop(deep);
         })
     }
@@ -4409,5 +4420,23 @@ mod deep_tree_destruction_tests {
             },
             loc(),
         )
+    }
+
+    #[test]
+    fn mutable_traversal_covers_broad_fixture_children() -> Result<(), String> {
+        fn count_mutable_tree(node: &mut Node) -> usize {
+            let mut count = 1;
+            node.for_each_child_mut(|child| count += count_mutable_tree(child));
+            count
+        }
+
+        let mut tree = broad_multi_family_tree(7);
+        let expected = tree.count_nodes();
+        let observed = count_mutable_tree(&mut tree);
+        assert_eq!(
+            observed, expected,
+            "mutable child traversal must reach every child in the broad control fixture"
+        );
+        Ok(())
     }
 }
