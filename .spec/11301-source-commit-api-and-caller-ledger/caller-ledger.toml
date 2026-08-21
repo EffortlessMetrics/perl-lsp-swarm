@@ -6,7 +6,9 @@ canonical_live_api = "index_live_file"
 compatibility_apis = ["index_file", "index_file_str", "index_file_with_generation", "index_files_batch"]
 compatibility_baseline = 694
 
-# Exact source paths are the ledger identity. A new caller must be deliberately
+# Live identity is the URI argument plus an owner-supplied non-zero NonZeroU32
+# generation; #11305 owns didOpen/didSave migration. Exact source paths are the
+# ledger identity. A new caller must be deliberately
 # added with an owner, role, successor, and removal condition; broad directory
 # globs are intentionally not accepted by the validator.
 caller_paths = [

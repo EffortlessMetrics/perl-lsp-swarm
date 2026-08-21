@@ -9,10 +9,13 @@ late live candidate.
 This candidate separates the names and contracts without taking ownership of
 didOpen/didSave or other lifecycle authorities. Initial discovery/import uses
 `index_initial_file`, `index_initial_file_str`, and `index_initial_files_batch`.
-Live callers use `SourceCommit`, which requires owner-supplied non-zero opaque
-identity and generation values, and receive typed accepted/no-op/stale/failure
-outcomes. The old surfaces remain only as ledgered compatibility bridges while
+Live callers use `SourceCommit`, which requires an owner-supplied non-zero
+`NonZeroU32` generation; URI identity remains the explicit `uri` argument. They
+receive typed accepted/no-op/stale/failure outcomes. The old surfaces remain only as ledgered compatibility bridges while
 their callers migrate in later bounded claims.
+
+The didOpen/didSave live currentness migration remains explicitly deferred to
+#11305; this claim does not migrate those callers.
 
 `index_files_batch` is load-bearing: the initial batch API delegates to the
 landed private-candidate batch implementation so parsing remains private and the

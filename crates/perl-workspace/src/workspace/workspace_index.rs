@@ -1366,6 +1366,13 @@ pub enum SourceCommitOutcome {
     Failed(String),
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum IndexFileWithGenerationOutcome {
+    Accepted,
+    NoOp,
+    RejectedStale,
+}
+
 /// Thread-safe workspace index
 pub struct WorkspaceIndex {
     /// Index data per file URI (normalized key -> data)
@@ -2180,9 +2187,10 @@ impl WorkspaceIndex {
             }
         }
 
-        let result = self.index_file_with_generation(uri, text, commit.generation.get());
-        match result {
-            Ok(()) => SourceCommitOutcome::Accepted,
+        match self.index_file_with_generation_outcome(uri, text, commit.generation.get()) {
+            Ok(IndexFileWithGenerationOutcome::Accepted) => SourceCommitOutcome::Accepted,
+            Ok(IndexFileWithGenerationOutcome::NoOp) => SourceCommitOutcome::NoOp,
+            Ok(IndexFileWithGenerationOutcome::RejectedStale) => SourceCommitOutcome::RejectedStale,
             Err(error) => SourceCommitOutcome::Failed(error),
         }
     }
@@ -2194,6 +2202,15 @@ impl WorkspaceIndex {
         text: String,
         generation: u32,
     ) -> Result<(), String> {
+        self.index_file_with_generation_outcome(uri, text, generation).map(|_| ())
+    }
+
+    fn index_file_with_generation_outcome(
+        &self,
+        uri: Url,
+        text: String,
+        generation: u32,
+    ) -> Result<IndexFileWithGenerationOutcome, String> {
         let _write_version = WriteVersionGuard::new(self);
         let uri_str = uri.to_string();
 
@@ -2235,7 +2252,7 @@ impl WorkspaceIndex {
                     // Content unchanged, skip re-indexing
                     #[cfg(test)]
                     reindex_metrics::record_content_hash_short_circuit();
-                    return Ok(());
+                    return Ok(IndexFileWithGenerationOutcome::NoOp);
                 }
                 // Same monotonic generation guard as the one under the later
                 // `files.write()` block below (see its doc comment for the
@@ -2252,7 +2269,7 @@ impl WorkspaceIndex {
                 if generation > 0 && high_water > 0 && high_water > generation {
                     #[cfg(test)]
                     reindex_metrics::record_stale_rejected_pre_parse();
-                    return Ok(());
+                    return Ok(IndexFileWithGenerationOutcome::RejectedStale);
                 }
                 // Reserve this generation NOW, before parsing -- not just at
                 // the later guard, which only runs AFTER
@@ -2435,7 +2452,7 @@ impl WorkspaceIndex {
                     if high_water > 0 && high_water > generation {
                         #[cfg(test)]
                         reindex_metrics::record_stale_rejected_post_parse();
-                        return Ok(());
+                        return Ok(IndexFileWithGenerationOutcome::RejectedStale);
                     }
                 }
             }
@@ -2563,7 +2580,7 @@ impl WorkspaceIndex {
             reindex_metrics::record_generation_accepted();
         }
 
-        Ok(())
+        Ok(IndexFileWithGenerationOutcome::Accepted)
     }
 
     /// Remove a file from the index
@@ -14313,6 +14330,11 @@ sub bar { return $greeting; }
 
         must(index.index_initial_file(uri.clone(), text.clone()));
         assert_eq!(
+            index.index_live_file(uri.clone(), text.clone(), SourceCommit::new(generation_one)),
+            SourceCommitOutcome::NoOp
+        );
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(1));
+        assert_eq!(
             index.index_live_file(uri.clone(), text, SourceCommit::new(generation_two)),
             SourceCommitOutcome::NoOp
         );
@@ -14324,6 +14346,20 @@ sub bar { return $greeting; }
                 SourceCommit::new(generation_one),
             ),
             SourceCommitOutcome::RejectedStale
+        );
+    }
+
+    #[test]
+    fn stale_internal_live_candidate_is_not_accepted_by_legacy_mapping() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///api/source-commit-stale-mapping.pl"));
+        let current = "package StaleMapping; sub current { 2 } 1;".to_string();
+        let stale = "package StaleMapping; sub stale { 1 } 1;".to_string();
+
+        must(index.index_file_with_generation(uri.clone(), current, 2));
+        assert_eq!(
+            index.index_file_with_generation_outcome(uri, stale, 1),
+            Ok(IndexFileWithGenerationOutcome::RejectedStale)
         );
     }
 }
