@@ -118,6 +118,29 @@ pub struct LspServer {
 
 /// How many stderr lines the tail keeps.
 const STDERR_TAIL_LINES: usize = 40;
+const STDERR_PARTIAL_MAX_BYTES: usize = 8 * 1024;
+
+fn record_stderr_chunk(tail: &mut (VecDeque<String>, String), chunk: &[u8]) -> Vec<String> {
+    let mut completed = Vec::new();
+    tail.1.push_str(&String::from_utf8_lossy(chunk));
+    while let Some(pos) = tail.1.find('\n') {
+        let line = tail.1[..pos].trim_end().to_owned();
+        tail.1.drain(..=pos);
+        if tail.0.len() >= STDERR_TAIL_LINES {
+            tail.0.pop_front();
+        }
+        completed.push(line.clone());
+        tail.0.push_back(line);
+    }
+    if tail.1.len() > STDERR_PARTIAL_MAX_BYTES {
+        let mut start = tail.1.len() - STDERR_PARTIAL_MAX_BYTES;
+        while !tail.1.is_char_boundary(start) {
+            start += 1;
+        }
+        tail.1.drain(..start);
+    }
+    completed
+}
 
 impl LspServer {
     /// Check if the server process is still running
@@ -264,26 +287,12 @@ pub fn start_lsp_server() -> LspServer {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                let mut pending = String::from_utf8_lossy(&chunk[..n]).into_owned();
-                // Split into terminated lines; keep any trailing partial.
-                while let Some(pos) = pending.find('\n') {
-                    let line: String = pending.drain(..=pos).collect();
-                    let trimmed = line.trim_end().to_string();
-                    {
-                        let mut tail =
-                            stderr_tail_for_thread.lock().unwrap_or_else(|e| e.into_inner());
-                        if tail.0.len() >= STDERR_TAIL_LINES {
-                            tail.0.pop_front();
-                        }
-                        tail.0.push_back(trimmed.clone());
+                let mut tail = stderr_tail_for_thread.lock().unwrap_or_else(|e| e.into_inner());
+                let completed = record_stderr_chunk(&mut tail, &chunk[..n]);
+                if echo {
+                    for line in completed {
+                        eprintln!("[perl-lsp] {line}");
                     }
-                    if echo {
-                        eprintln!("[perl-lsp] {}", trimmed);
-                    }
-                }
-                if !pending.is_empty() {
-                    let mut tail = stderr_tail_for_thread.lock().unwrap_or_else(|e| e.into_inner());
-                    tail.1.push_str(&pending);
                 }
             }
         }) {
@@ -399,6 +408,53 @@ pub fn start_lsp_server() -> LspServer {
     std::thread::sleep(Duration::from_millis(100));
 
     server
+}
+
+#[cfg(test)]
+mod stderr_tests {
+    use super::{STDERR_PARTIAL_MAX_BYTES, STDERR_TAIL_LINES, record_stderr_chunk};
+    use std::collections::VecDeque;
+
+    #[test]
+    fn stderr_fragments_reconstruct_across_reads() {
+        let mut tail = (VecDeque::new(), String::new());
+        assert!(record_stderr_chunk(&mut tail, b"warning: split ").is_empty());
+        assert_eq!(
+            record_stderr_chunk(&mut tail, b"across reads\nnext"),
+            vec!["warning: split across reads"]
+        );
+
+        assert_eq!(tail.0.iter().collect::<Vec<_>>(), vec!["warning: split across reads"]);
+        assert_eq!(tail.1, "next");
+    }
+
+    #[test]
+    fn unterminated_stderr_keeps_newest_bounded_bytes() {
+        let mut tail = (VecDeque::new(), String::new());
+        record_stderr_chunk(
+            &mut tail,
+            format!("old{}new", "x".repeat(STDERR_PARTIAL_MAX_BYTES)).as_bytes(),
+        );
+
+        assert!(tail.1.len() <= STDERR_PARTIAL_MAX_BYTES);
+        assert!(tail.1.ends_with("new"));
+        assert!(tail.0.len() <= STDERR_TAIL_LINES);
+    }
+
+    #[test]
+    fn stderr_echo_lines_survive_tail_eviction() {
+        let mut tail = (VecDeque::new(), String::new());
+        for index in 0..STDERR_TAIL_LINES {
+            record_stderr_chunk(&mut tail, format!("line {index}\n").as_bytes());
+        }
+
+        let completed = record_stderr_chunk(&mut tail, b"new line\n");
+
+        assert_eq!(completed, vec!["new line"]);
+        assert_eq!(tail.0.len(), STDERR_TAIL_LINES);
+        assert_eq!(tail.0.front().map(String::as_str), Some("line 1"));
+        assert_eq!(tail.0.back().map(String::as_str), Some("new line"));
+    }
 }
 
 pub fn send_request(server: &LspServer, request: Value) -> Value {

@@ -8,7 +8,10 @@
 //! 5. `cargo run -p perllsp` fallback
 
 use perl_tdd_support::must;
+use std::path::Path;
 use std::process::Command;
+
+const BUILD_STDERR_MAX_BYTES: usize = 8 * 1024;
 
 pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
     // Resolution order (fixed for test reliability):
@@ -53,15 +56,8 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         // Prefer the profile these tests were themselves built with, so a `cargo test
         // --release` run does not silently drive a debug server (or vice versa).
         for profile in active_profile_order() {
-            // Deliberately the DEFAULT target dir, not env-aware: a directly
-            // executed binary is the configuration #11858 shows dropping the
-            // keyword/snippet completion set (cargo-run-shaped launches carry
-            // CARGO_* env; a bare binary does not) — until that product bug
-            // is fixed, the harness keeps resolving the way CI has always
-            // run. The #11848 stall's resolver half stays mitigated by the
-            // fail-loud pre-build refusal below instead.
-            let binary = workspace_root.join("target").join(profile).join(perllsp_file_name());
-            if binary.exists() {
+            let binary = target_directory(workspace_root).join(profile).join(perllsp_file_name());
+            if is_executable_file(&binary) {
                 let mut c = Command::new(&binary);
                 c.arg("--stdio");
                 v.push(c);
@@ -74,18 +70,11 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         // fallback to compile inside a per-request timeout it cannot possibly meet.
         if v.is_empty() {
             match ensure_perllsp_built(workspace_root) {
-                Ok(Some(built)) => {
+                Ok(built) => {
                     let mut c = Command::new(built);
                     c.arg("--stdio");
                     v.push(c);
                 }
-                // A successful build whose binary is not at the probed default
-                // path (CI redirects CARGO_TARGET_DIR): fall through to the
-                // PATH/cargo-run candidates exactly as before — cargo run
-                // reuses the fresh artifacts, and the launch shape it
-                // produces is the one CI's completion tests have always
-                // passed under (#11858).
-                Ok(None) => {}
                 // A FAILED pre-build (e.g. the linker-crash family) must fail
                 // LOUDLY: falling through would silently compile inside the
                 // initialize deadline and resurface as an unexplained
@@ -127,6 +116,23 @@ fn perllsp_file_name() -> String {
     format!("perllsp{}", std::env::consts::EXE_SUFFIX)
 }
 
+fn target_directory(workspace_root: &std::path::Path) -> std::path::PathBuf {
+    target_directory_from(std::env::var_os("CARGO_TARGET_DIR"), workspace_root)
+}
+
+fn target_directory_from(
+    configured: Option<std::ffi::OsString>,
+    workspace_root: &std::path::Path,
+) -> std::path::PathBuf {
+    match configured {
+        Some(path) => {
+            let path = std::path::PathBuf::from(path);
+            if path.is_absolute() { path } else { workspace_root.join(path) }
+        }
+        None => workspace_root.join("target"),
+    }
+}
+
 /// Cargo profile directory these tests were compiled into.
 fn active_profile() -> &'static str {
     if cfg!(debug_assertions) { "debug" } else { "release" }
@@ -143,10 +149,8 @@ fn active_profile_order() -> [&'static str; 2] {
 /// `cargo test -p perl-lsp-rs` guarantees it exists. Building it here — before any
 /// request deadline starts — keeps the cost out of `initialize`, which previously
 /// timed out against an inline `cargo run` that needed roughly a minute to compile.
-fn ensure_perllsp_built(
-    workspace_root: &std::path::Path,
-) -> Result<Option<std::path::PathBuf>, String> {
-    static BUILT: std::sync::OnceLock<Result<Option<std::path::PathBuf>, String>> =
+fn ensure_perllsp_built(workspace_root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    static BUILT: std::sync::OnceLock<Result<std::path::PathBuf, String>> =
         std::sync::OnceLock::new();
     BUILT
         .get_or_init(|| {
@@ -170,27 +174,9 @@ fn ensure_perllsp_built(
                     .output();
             match output {
                 Ok(out) if out.status.success() => {
-                    // Default target dir, matching the probe above (see the
-                    // probe's comment for why this is deliberately NOT
-                    // env-aware until #11858 lands).
                     let path =
-                        workspace_root.join("target").join(profile).join(perllsp_file_name());
-                    if !path.exists() {
-                        // A successful build whose binary is not where we
-                        // look (CI's custom CARGO_TARGET_DIR redirected it):
-                        // not an error — the caller falls through to the
-                        // cargo-run candidates, which reuse the fresh
-                        // artifacts. Say where we looked so the state stays
-                        // visible in receipts (#11848).
-                        eprintln!(
-                            "perl-lsp-rs tests: `cargo build -p perllsp` succeeded but {} is \
-                             absent; CARGO_TARGET_DIR={:?}",
-                            path.display(),
-                            std::env::var_os("CARGO_TARGET_DIR")
-                        );
-                        return Ok(None);
-                    }
-                    Ok(Some(path))
+                        target_directory(workspace_root).join(profile).join(perllsp_file_name());
+                    built_binary_or_refuse(path)
                 }
                 Ok(out) => {
                     // Self-contained failure text: inherited stderr is not
@@ -205,10 +191,105 @@ fn ensure_perllsp_built(
                     } else {
                         error_lines.into_iter().take(10).collect::<Vec<_>>().join("\n")
                     };
-                    Err(format!("cargo build -p perllsp failed:\n{tail}"))
+                    Err(format!(
+                        "cargo build -p perllsp failed:\n{}",
+                        bounded_newest_bytes(tail, BUILD_STDERR_MAX_BYTES)
+                    ))
                 }
                 Err(e) => Err(format!("could not run `cargo build -p perllsp`: {e}")),
             }
         })
         .clone()
+}
+
+fn bounded_newest_bytes(mut text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut start = text.len() - max_bytes;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text.drain(..start);
+    text
+}
+
+fn built_binary_or_refuse(path: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
+    if is_executable_file(&path) {
+        Ok(path)
+    } else {
+        Err(format!(
+            "cargo build -p perllsp succeeded but candidate binary is not a regular executable: \
+             {}; refusing the cargo-run fallback",
+            path.display()
+        ))
+    }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return false,
+    };
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{built_binary_or_refuse, target_directory_from};
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    #[test]
+    fn target_directory_resolves_relative_and_absolute_values() {
+        let root = Path::new("/workspace");
+        assert_eq!(
+            target_directory_from(Some(OsString::from(".ci-target")), root),
+            root.join(".ci-target")
+        );
+        assert_eq!(
+            target_directory_from(Some(OsString::from("/tmp/target")), root),
+            Path::new("/tmp/target")
+        );
+        assert_eq!(target_directory_from(None, root), root.join("target"));
+    }
+
+    #[test]
+    fn missing_prebuilt_binary_refuses_cargo_run_fallback() {
+        let result = built_binary_or_refuse(Path::new("/definitely/missing/perllsp").to_owned());
+        assert!(matches!(result, Err(message) if message.contains("not a regular executable")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_regular_and_non_executable_paths_refuse_cargo_run_fallback() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir()
+            .join(format!("perl-lsp-rs-binary-resolution-{}", std::process::id()));
+        fs::create_dir_all(&root).expect("create binary-resolution test directory");
+        let directory = root.join("directory");
+        let file = root.join("file");
+        fs::create_dir(&directory).expect("create directory candidate");
+        fs::write(&file, b"not executable").expect("create file candidate");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644))
+            .expect("set non-executable permissions");
+
+        assert!(built_binary_or_refuse(directory).is_err());
+        assert!(built_binary_or_refuse(file).is_err());
+
+        fs::remove_dir_all(root).expect("remove binary-resolution test directory");
+    }
 }
