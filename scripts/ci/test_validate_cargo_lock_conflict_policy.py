@@ -232,6 +232,29 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                 ],
             )
 
+    def test_invalid_utf8_anchored_source_returns_source_unavailable_error(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / validator.FIXTURE
+            source = root / "source.txt"
+            fixture.parent.mkdir(parents=True)
+            source.write_bytes(b"anchor\n\xff")
+            fixture.write_text(
+                '{"schema_version": 1, "claim_boundary": "bounded", "cases": ['
+                '{"id": "invalid-source", "path": "source.txt", "needle": "anchor", '
+                '"context": "dynamic", "command": null, "expected": "not_proven", '
+                '"semantics": {"required": ["anchor"]}}]}',
+                encoding="utf-8",
+            )
+            errors = validator.validate(root)
+            self.assertEqual(
+                errors[0],
+                "invalid-source: source unavailable: source.txt: "
+                "'utf-8' codec can't decode byte 0xff in position 7: invalid start byte",
+            )
+
     def test_compatible_accepted_lock_is_byte_identical(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             lock = Path(temp) / "Cargo.lock"

@@ -210,7 +210,7 @@ def validate(root: Path) -> list[str]:
             continue
         try:
             source = source_path.read_text(encoding="utf-8")
-        except OSError as error:
+        except (OSError, UnicodeDecodeError) as error:
             errors.append(f"{case_id}: source unavailable: {path}: {error}")
             continue
         line_number = anchor_line(source, needle)
