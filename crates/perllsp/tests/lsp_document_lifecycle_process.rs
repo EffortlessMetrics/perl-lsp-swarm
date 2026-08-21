@@ -172,7 +172,6 @@ fn wait_for_current_parse_tokens(
 ) -> Result<Vec<u64>> {
     let deadline = Instant::now() + timeout();
     let mut attempt = 0u32;
-    let mut last_result = Value::Null;
 
     loop {
         let id = format!("{id_prefix}-{attempt}");
@@ -198,10 +197,9 @@ fn wait_for_current_parse_tokens(
                 .collect();
         }
 
-        last_result = result;
         if Instant::now() >= deadline {
             bail!(
-                "current-generation parsed snapshot was not published before timeout; last semantic-token result={last_result}"
+                "current-generation parsed snapshot was not published before timeout; last semantic-token result={result}"
             );
         }
         attempt = attempt.saturating_add(1);

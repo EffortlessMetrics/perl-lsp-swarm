@@ -205,7 +205,7 @@ mod tests {
     fn unterminated_g_operand_reports_invalid_rather_than_a_guessed_target() {
         // Failing closed matters here: a truncated operand must not resolve to
         // whatever digits happen to precede the end of the pattern.
-        let control = parse_escape_control(r"\g{2", 0).expect("invalid reference fact");
+        let control = perl_test_must::must_some(parse_escape_control(r"\g{2", 0));
         assert!(matches!(control.kind, PatternControlKind::Unsupported { .. }));
         assert_eq!(control.diagnostic, Some(PatternControlDiagnosticCode::InvalidReference));
         assert!(matches!(control.request, ResolutionRequest::None));
@@ -222,7 +222,8 @@ mod tests {
         }
         // `\k` has no numeric spelling, so digits must not be promoted to a numeric
         // capture read; they fail closed as an invalid reference instead.
-        let control = parse_escape_control(r"\k<1>", 0).expect("k reference fact");
+        let control =
+            perl_test_must::must_some_with(parse_escape_control(r"\k<1>", 0), "k reference fact");
         assert!(matches!(control.kind, PatternControlKind::Unsupported { .. }));
         assert_eq!(control.diagnostic, Some(PatternControlDiagnosticCode::InvalidReference));
     }
@@ -230,7 +231,8 @@ mod tests {
     #[test]
     fn escape_controls_are_found_at_a_non_zero_start() {
         // Ranges are absolute in the pattern, not relative to `start`.
-        let control = parse_escape_control(r"ab\K", 2).expect("keep anchor fact");
+        let control =
+            perl_test_must::must_some_with(parse_escape_control(r"ab\K", 2), "keep anchor fact");
         assert_eq!((control.range.start, control.range.end), (2, 4));
     }
 }

@@ -275,7 +275,7 @@ mod tests {
     }
 
     fn at(pattern: &str, needle: &str) -> RegexRange {
-        let start = pattern.find(needle).expect("needle present in pattern");
+        let start = perl_test_must::must_some(pattern.find(needle));
         RegexRange { start, end: start + needle.len() }
     }
 

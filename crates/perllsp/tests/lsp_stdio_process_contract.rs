@@ -245,8 +245,10 @@ fn exit_without_shutdown_returns_status_one() -> Result<()> {
 #[test]
 fn strict_stdout_parser_rejects_stray_logs_and_lf_only_frames() -> Result<()> {
     let stray_log = b"starting perllsp on stdout\n";
-    let stray_error = RealProcessClient::parse_stdout_frame_for_test(stray_log)
-        .expect_err("stray stdout log must fail strict framing");
+    let stray_error = perl_test_must::must_err_with(
+        RealProcessClient::parse_stdout_frame_for_test(stray_log),
+        "stray stdout log must fail strict framing",
+    );
     ensure!(
         stray_error.to_string().contains("CRLF")
             || stray_error.to_string().contains("header")
@@ -257,8 +259,10 @@ fn strict_stdout_parser_rejects_stray_logs_and_lf_only_frames() -> Result<()> {
     let body = br#"{"jsonrpc":"2.0","method":"window/logMessage"}"#;
     let mut lf_only = format!("Content-Length: {}\n\n", body.len()).into_bytes();
     lf_only.extend_from_slice(body);
-    let lf_error = RealProcessClient::parse_stdout_frame_for_test(&lf_only)
-        .expect_err("LF-only framing must fail");
+    let lf_error = perl_test_must::must_err_with(
+        RealProcessClient::parse_stdout_frame_for_test(&lf_only),
+        "LF-only framing must fail",
+    );
     ensure!(
         lf_error.to_string().contains("CRLF"),
         "LF-only framing failed for the wrong reason: {lf_error:#}"

@@ -95,14 +95,15 @@ proptest! {
     /// `$0` is the program name in Perl; `$1`..$9` are capture groups.
     #[test]
     fn numeric_variables_have_digit_body(v in variable()) {
-        if let Some(body) = v.strip_prefix('$') {
-            if body.len() == 1 && body.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                let digit: u8 = body.chars().next().map_or(0, |c| c as u8 - b'0');
-                prop_assert!(
-                    digit <= 9,
-                    "numeric variable out of range 0-9: {v:?}"
-                );
-            }
+        if let Some(body) = v.strip_prefix('$')
+            && body.len() == 1
+            && body.chars().next().is_some_and(|c| c.is_ascii_digit())
+        {
+            let digit: u8 = body.chars().next().map_or(0, |c| c as u8 - b'0');
+            prop_assert!(
+                digit <= 9,
+                "numeric variable out of range 0-9: {v:?}"
+            );
         }
     }
 

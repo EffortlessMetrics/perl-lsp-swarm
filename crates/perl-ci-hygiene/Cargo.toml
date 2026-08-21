@@ -19,5 +19,8 @@ serde_json.workspace = true
 walkdir.workspace = true
 toml = "1.1.2"
 
+[dev-dependencies]
+perl-test-must.workspace = true
+
 [lints]
 workspace = true

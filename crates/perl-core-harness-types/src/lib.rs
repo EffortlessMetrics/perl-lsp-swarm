@@ -1167,7 +1167,7 @@ mod tests {
             "failures": [],
             "unexpected_authority_field": true
         }"#;
-        let err = serde_json::from_str::<RunReport>(json).expect_err("unknown field must fail");
+        let err = perl_test_must::must_err(serde_json::from_str::<RunReport>(json));
         assert!(err.to_string().contains("unexpected_authority_field"));
     }
 

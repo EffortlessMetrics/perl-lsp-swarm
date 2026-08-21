@@ -515,8 +515,7 @@ mod tests {
     #[test]
     fn check_doc_links_exact_error_variant() -> TestResult {
         let root = unique_temp_dir("exact-error-variant")?;
-        let err = check_doc_links(&root, Some("docs/does-not-exist"))
-            .expect_err("expected docs directory missing error");
+        let err = perl_test_must::must_err(check_doc_links(&root, Some("docs/does-not-exist")));
         let message = err.to_string();
         if !message.contains("Docs directory not found") || !message.contains("does-not-exist") {
             return Err(format!("unexpected missing-directory error: {message}").into());

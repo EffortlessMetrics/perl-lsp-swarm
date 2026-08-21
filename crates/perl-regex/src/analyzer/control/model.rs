@@ -503,12 +503,12 @@ mod tests {
 
     #[test]
     fn source_mapping_offsets_a_body_relative_range() {
-        let mapped = map_source_range(RegexRange { start: 2, end: 5 }, 10)
-            .expect("range within usize bounds");
+        let mapped =
+            perl_test_must::must_some(map_source_range(RegexRange { start: 2, end: 5 }, 10));
         assert_eq!((mapped.start, mapped.end), (12, 15));
         // A zero offset is the identity, not a special case.
         let identity =
-            map_source_range(RegexRange { start: 2, end: 5 }, 0).expect("identity mapping");
+            perl_test_must::must_some(map_source_range(RegexRange { start: 2, end: 5 }, 0));
         assert_eq!((identity.start, identity.end), (2, 5));
     }
 

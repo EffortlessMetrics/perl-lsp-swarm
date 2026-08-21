@@ -436,14 +436,14 @@ fn token_start_less_than_token_end_for_all_valid_parses() -> Result<(), String> 
 fn token_end_within_line_bounds() -> Result<(), String> {
     let cases = ["use Foo;", "use Foo::Bar", "  require Baz", "use parent"];
     for line in &cases {
-        if let Some(head) = parse_module_import_head(line) {
-            if head.token_end > line.len() {
-                return Err(format!(
-                    "token_end ({}) > line.len() ({}) for {line:?}",
-                    head.token_end,
-                    line.len(),
-                ));
-            }
+        if let Some(head) = parse_module_import_head(line)
+            && head.token_end > line.len()
+        {
+            return Err(format!(
+                "token_end ({}) > line.len() ({}) for {line:?}",
+                head.token_end,
+                line.len(),
+            ));
         }
     }
     Ok(())

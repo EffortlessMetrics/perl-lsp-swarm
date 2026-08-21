@@ -319,9 +319,10 @@ mod tests {
 
         for module in ["Fake::Empty", "Fake::Missing"] {
             let uri = format!("perldoc://{module}");
-            let error = server
-                .handle_text_document_content(Some(json!({ "uri": uri })))
-                .expect_err("unavailable perldoc output must not become a document response");
+            let error = perl_test_must::must_err_with(
+                server.handle_text_document_content(Some(json!({ "uri": uri }))),
+                "unavailable perldoc output must not become a document response",
+            );
             assert!(
                 error.message.contains("content not found"),
                 "unexpected unavailable response for {module}: {}",
@@ -402,9 +403,10 @@ mod tests {
 
     #[test]
     fn text_document_content_invalid_params_name_method_and_field() {
-        let err = LspServer::new()
-            .handle_text_document_content(None)
-            .expect_err("missing virtual document params must be rejected");
+        let err = perl_test_must::must_err_with(
+            LspServer::new().handle_text_document_content(None),
+            "missing virtual document params must be rejected",
+        );
 
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
         assert_eq!(

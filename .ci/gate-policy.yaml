@@ -783,20 +783,39 @@ gates:
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
     # never apply to `tests/`, `benches/`, `examples/`, or `#[cfg(test)]` modules.
     #
-    # This gate covers a kernel cohort of crates confirmed clean under `--all-targets`
-    # after addressing the concrete findings documented in #11736. The cohort is
-    # additive: add crates here only after they pass the command below locally.
-    # This is a scoped cohort assertion, not an exhaustive workspace clean/dirty census.
-    # Other crates and the current measured census are tracked on #11736.
+    # This gate covers a kernel cohort of crates confirmed clean under
+    # `cargo clippy -p <crate> --all-targets --locked -- -D warnings -A missing_docs`.
+    # The cohort is additive: add crates here only after they pass that exact
+    # command locally. This is a scoped cohort assertion, not an exhaustive
+    # workspace census.
+    #
+    # Cohort confirmed on 2026-08-21 against origin/main 16fef8db1 by one
+    # workspace-wide `--all-targets` classification pass on Windows
+    # (`cargo clippy --workspace --all-targets --locked --keep-going
+    # --message-format=short -- -D warnings -A missing_docs`):
+    #   - 27 of 46 workspace packages had zero findings under this basis;
+    #   - 10 more were admitted after small real fixes landed with this cohort
+    #     growth (#11736): perl-module, perl-pod, perl-pragma, perl-regex,
+    #     perl-ci-hygiene, perl-core-harness-types, perl-test-generators,
+    #     perl-lsp-rs, perllsp, perl-lexer;
+    #   - 9 heavy offenders remain outside with finding counts under this basis:
+    #     perl-parser 1315, perl-dap 453, perl-lsp-ux-tests 304,
+    #     perl-core-harness 235, perl-lsp-rs-core 233, perl-parser-core 178,
+    #     perl-ripr-facts 139, xtask 77, perl-corpus 52.
+    # Cleanliness evidence is same-platform as this runner; cfg(unix)-only test
+    # code is not covered by local proof and remains observable via the advisory
+    # PR Smoke lane.
     #
     # This gate is executed by the advisory PR Smoke job, like the other pr_fast
     # gates. `required: true` makes the pr_fast runner fail on a violation; it
     # is not itself a branch-protection context.
     #
-    # Cohort confirmed clean on 2026-08-19 (post-fix):
-    #   perl-token, perl-position-tracking, perl-uri, perl-tdd-support,
-    #   perl-test-must, perl-ast-v2 (1 clone-on-copy batch fixed),
-    #   perl-symbol (1 expect_used fixed)
+    # Budget: the original seven-crate kernel used 60s/45s. Growing the cohort
+    # to 37 crates adds the lsp/perllsp dependency surface plus test-target
+    # compilation, so the budget scales to roughly four times `clippy_full`
+    # (300s/240s for the whole workspace `--lib`). The first hosted run is the
+    # real calibration point; until then an overrun degrades to an advisory
+    # PR Smoke failure, not a false green.
     command: >-
       cargo clippy
       -p perl-token
@@ -806,12 +825,42 @@ gates:
       -p perl-test-must
       -p perl-ast-v2
       -p perl-symbol
+      -p perl-ast
+      -p perl-core-test-runner
+      -p perl-diagnostics
+      -p perl-incremental-parsing
+      -p perl-kwalitee
+      -p perl-line-index
+      -p perl-lsp-perltidy
+      -p perl-parser-bench
+      -p perl-parser-comparison
+      -p perl-parser-pest
+      -p perl-semantic-analyzer
+      -p perl-semantic-facts
+      -p perl-source-identity
+      -p perl-subprocess-runtime
+      -p perl-test-facts
+      -p perl-tree-sitter-compat
+      -p perl-workspace
+      -p perl-workspace-core
+      -p tree-sitter-perl-c
+      -p tree-sitter-perl-rs
+      -p perl-module
+      -p perl-pod
+      -p perl-pragma
+      -p perl-regex
+      -p perl-ci-hygiene
+      -p perl-core-harness-types
+      -p perl-test-generators
+      -p perl-lsp-rs
+      -p perllsp
+      -p perl-lexer
       --all-targets --locked
       -- -D warnings -A missing_docs
-    timeout_seconds: 60
+    timeout_seconds: 1200
     retry_count: 0
     budgets:
-      max_duration_ms: 45000
+      max_duration_ms: 960000
       max_warnings: 0
     quarantine: false
     tags:

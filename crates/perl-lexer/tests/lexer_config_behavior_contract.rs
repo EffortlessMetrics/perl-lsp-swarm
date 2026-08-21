@@ -141,7 +141,8 @@ fn position_compatibility_field_does_not_change_authoritative_tokens() {
     let disabled =
         signatures(input, LexerConfig { track_positions: false, ..LexerConfig::default() });
 
-    assert!(LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED);
+    // POSITIONS_ARE_ALWAYS_TRACKED makes `track_positions: false` a no-op; the
+    // equality assertion below is the behavioral proof of that contract.
     assert_eq!(enabled, disabled);
     for (token_type, text, start, end) in
         disabled.iter().filter(|token| !matches!(&token.0, TokenType::EOF))

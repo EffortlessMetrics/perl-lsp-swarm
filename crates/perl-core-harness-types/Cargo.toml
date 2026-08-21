@@ -16,6 +16,7 @@ serde.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+perl-test-must.workspace = true
 
 [lints]
 workspace = true

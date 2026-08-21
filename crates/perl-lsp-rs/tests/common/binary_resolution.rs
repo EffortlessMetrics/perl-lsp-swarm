@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn current_executable_is_accepted_as_a_real_binary() {
-        let path = std::env::current_exe().expect("resolve the current test executable");
+        let path = perl_test_must::must(std::env::current_exe());
         assert_eq!(built_binary_or_refuse(path.clone()), Ok(path));
     }
 

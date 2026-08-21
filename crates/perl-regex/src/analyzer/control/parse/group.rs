@@ -335,7 +335,7 @@ mod tests {
     use super::*;
 
     fn control(pattern: &str) -> RawControl {
-        parse_special_group_control(pattern, 0).expect("special group control")
+        perl_test_must::must_some(parse_special_group_control(pattern, 0))
     }
 
     #[test]
@@ -431,7 +431,7 @@ mod tests {
         // Perl accepts these; they are unmodelled input, and the two must stay
         // distinguishable so a reader is not told their pattern is misspelled.
         for pattern in ["(?(?=x)y|n)", "(?(?!x)y|n)", "(?(?<=x)y|n)", "(?(?<!x)y|n)"] {
-            let fact = parse_special_group_control(pattern, 0).expect("conditional fact");
+            let fact = perl_test_must::must_some(parse_special_group_control(pattern, 0));
             assert_eq!(
                 fact.diagnostic,
                 Some(PatternControlDiagnosticCode::UnsupportedControl),

@@ -4,6 +4,10 @@
 //! #8285/#10245. It must remain the same operation as `perl.runFile`: the same
 //! arguments, validation, result, failures, and advertised command identity.
 
+// The environment-conditional skip note is intended diagnostic output for test
+// logs; there is no other sanctioned channel from a skipped #[test].
+#![allow(clippy::print_stderr)]
+
 use perl_lsp::execute_command::{ExecuteCommandProvider, command_exists, get_supported_commands};
 use perl_lsp_rs_core::config::WorkspaceConfig;
 use serde_json::Value;

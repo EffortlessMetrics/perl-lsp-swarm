@@ -4016,10 +4016,10 @@ mod tests {
 
     #[test]
     fn adjacent_safety_comment_matches_directly_above() {
-        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
-        let attr_re = Regex::new(r"^\s*#\[").unwrap();
-        let comment_re = Regex::new(r"^\s*//").unwrap();
-        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+        let safety_re = perl_test_must::must(Regex::new(r"^\s*//\s*SAFETY:"));
+        let attr_re = perl_test_must::must(Regex::new(r"^\s*#\["));
+        let comment_re = perl_test_must::must(Regex::new(r"^\s*//"));
+        let unsafe_impl_re = perl_test_must::must(Regex::new(r"unsafe[[:space:]]+impl"));
         let lines = vec!["// SAFETY: Win32 API".to_string(), "unsafe { api(); }".to_string()];
         assert!(has_adjacent_safety_comment(
             &lines,
@@ -4033,10 +4033,10 @@ mod tests {
 
     #[test]
     fn adjacent_safety_comment_does_not_cross_intervening_code() {
-        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
-        let attr_re = Regex::new(r"^\s*#\[").unwrap();
-        let comment_re = Regex::new(r"^\s*//").unwrap();
-        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+        let safety_re = perl_test_must::must(Regex::new(r"^\s*//\s*SAFETY:"));
+        let attr_re = perl_test_must::must(Regex::new(r"^\s*#\["));
+        let comment_re = perl_test_must::must(Regex::new(r"^\s*//"));
+        let unsafe_impl_re = perl_test_must::must(Regex::new(r"unsafe[[:space:]]+impl"));
         let lines = vec![
             "// SAFETY: first block".to_string(),
             "unsafe { first(); }".to_string(),
@@ -4055,10 +4055,10 @@ mod tests {
 
     #[test]
     fn adjacent_safety_comment_covers_back_to_back_unsafe_impls() {
-        let safety_re = Regex::new(r"^\s*//\s*SAFETY:").unwrap();
-        let attr_re = Regex::new(r"^\s*#\[").unwrap();
-        let comment_re = Regex::new(r"^\s*//").unwrap();
-        let unsafe_impl_re = Regex::new(r"unsafe[[:space:]]+impl").unwrap();
+        let safety_re = perl_test_must::must(Regex::new(r"^\s*//\s*SAFETY:"));
+        let attr_re = perl_test_must::must(Regex::new(r"^\s*#\["));
+        let comment_re = perl_test_must::must(Regex::new(r"^\s*//"));
+        let unsafe_impl_re = perl_test_must::must(Regex::new(r"unsafe[[:space:]]+impl"));
         let lines = vec![
             "// SAFETY: shared Send/Sync justification".to_string(),
             "#[allow(unsafe_code)]".to_string(),

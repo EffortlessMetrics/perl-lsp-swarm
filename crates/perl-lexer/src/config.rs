@@ -111,7 +111,6 @@ mod tests {
 
         assert!(config.interpolation_enabled());
         assert!(config.track_positions);
-        assert!(LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED);
     }
 
     #[test]
@@ -154,6 +153,5 @@ mod tests {
         assert!(!cloned.track_positions);
         assert_eq!(cloned.lookahead_limit(), 256);
         assert!(!cloned.has_symbol_table());
-        assert!(LexerConfig::POSITIONS_ARE_ALWAYS_TRACKED);
     }
 }

@@ -18,6 +18,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest = { workspace = true }
+perl-test-must.workspace = true
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
