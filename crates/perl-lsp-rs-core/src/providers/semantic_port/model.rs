@@ -755,3 +755,139 @@ pub(crate) fn facts_are_related(left: &ProviderQueryFact, right: &ProviderQueryF
         || right.envelope.boundary.as_ref().and_then(|boundary| boundary.boundary_id)
             == Some(left.envelope.fact_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exact_ready_request() -> ProviderQueryRequest {
+        ProviderQueryRequest::new(
+            ProviderSurface::Hover,
+            "textDocument/hover",
+            ProviderQueryKind::Declaration,
+            ProviderQuerySubject::Entity(EntityId(1)),
+            ProviderQueryContext::new(
+                ProviderIdentity::known("test-project"),
+                ProviderIdentity::known("test-root"),
+                SourceGeneration::Known("gen-1".into()),
+                SourceGeneration::Known("wgen-1".into()),
+                ProviderReadinessRequirement::ActiveDocument,
+                ProviderReadinessState::Ready,
+                ProviderQueryDeadline::None,
+                ProviderCancellationState::Active,
+            ),
+        )
+    }
+
+    fn valid_snapshot_args() -> (
+        SemanticProducer,
+        String,
+        String,
+        u64,
+        SemanticProvenance,
+        SemanticConfidence,
+        SemanticFreshness,
+    ) {
+        (
+            SemanticProducer::Parser,
+            "denominator-1".into(),
+            "snapshot-1".into(),
+            42,
+            SemanticProvenance::Known(Provenance::ExactAst),
+            SemanticConfidence::Known(Confidence::High),
+            SemanticFreshness::Fresh,
+        )
+    }
+
+    // RIPR: exercises the freshness field construction at the snapshot
+    // validation boundary (model.rs:636).
+    #[test]
+    fn snapshot_try_new_accepts_fresh_and_rejects_stale() {
+        let request = exact_ready_request();
+        let (producer, denom, snap, count, prov, conf, fresh) = valid_snapshot_args();
+
+        let ok = VerifiedProviderCompletenessSnapshot::try_new(
+            &request,
+            ProviderQueryCapability::Declarations,
+            producer,
+            &denom,
+            &snap,
+            count,
+            prov,
+            conf,
+            fresh,
+        );
+        assert!(ok.is_ok());
+
+        let stale = VerifiedProviderCompletenessSnapshot::try_new(
+            &request,
+            ProviderQueryCapability::Declarations,
+            producer,
+            &denom,
+            &snap,
+            count,
+            prov,
+            conf,
+            SemanticFreshness::Stale,
+        );
+        assert!(stale.is_err());
+    }
+
+    // RIPR: exercises denominator_id and snapshot_id call sites in
+    // issue_for_request (model.rs:642-643).
+    #[test]
+    fn issue_for_request_validates_denominator_and_snapshot_ids() {
+        let request = exact_ready_request();
+        let (producer, _denom, _snap, count, prov, conf, fresh) = valid_snapshot_args();
+
+        let ok = ProviderCompletenessGrant::issue_for_request(
+            &request,
+            producer,
+            "denominator-a",
+            "snapshot-b",
+            count,
+            prov,
+            conf,
+            fresh,
+        );
+        assert!(ok.is_ok());
+
+        let empty_denom = ProviderCompletenessGrant::issue_for_request(
+            &request,
+            producer,
+            "",
+            "snapshot-b",
+            count,
+            prov,
+            conf,
+            fresh,
+        );
+        assert!(empty_denom.is_err());
+
+        let empty_snap = ProviderCompletenessGrant::issue_for_request(
+            &request,
+            producer,
+            "denominator-a",
+            "",
+            count,
+            prov,
+            conf,
+            fresh,
+        );
+        assert!(empty_snap.is_err());
+    }
+
+    // RIPR: proves the grant matches only its originating request.
+    #[test]
+    fn issued_grant_matches_originating_request() {
+        let request = exact_ready_request();
+        let (producer, denom, snap, count, prov, conf, fresh) = valid_snapshot_args();
+
+        let grant = ProviderCompletenessGrant::issue_for_request(
+            &request, producer, denom, snap, count, prov, conf, fresh,
+        )
+        .expect("valid args must succeed");
+
+        assert!(grant.matches(&request));
+    }
+}
