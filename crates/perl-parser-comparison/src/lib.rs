@@ -92,6 +92,7 @@ pub mod corpus_walker;
 #[cfg(feature = "current-upstream")]
 pub mod current_upstream;
 pub mod evidence;
+pub mod evidence_payload;
 #[cfg(feature = "historical")]
 pub mod harness;
 #[cfg(feature = "historical")]
@@ -114,6 +115,13 @@ pub use evidence::{
     MismatchDetail, NonDecisiveOutcome, ObservationDisposition, ObservationPlane, ObserverId,
     ReviewedExpectationId, ScoredComparison, SemanticFingerprint, StableId, SubjectDisposition,
     SubjectExecution, SubjectRole,
+};
+pub use evidence_payload::{
+    AttachmentPrivacy, BoundedAttachment, EvidenceKind, EvidencePayloadError, EvidenceRef,
+    ObligationRef, ObserverManifestRef, SUBJECT_CONFORMANCE_EVIDENCE_SCHEMA_VERSION,
+    SUBJECT_EXECUTION_EVIDENCE_SCHEMA_VERSION, SUBJECT_OBSERVATION_EVIDENCE_SCHEMA_VERSION,
+    SemanticDigest, SourceCaseRef, SubjectConformanceEvidence, SubjectExecutionEvidence,
+    SubjectManifestRef, SubjectObservationEvidence, parser_comparison_evidence_schema_json,
 };
 #[cfg(feature = "historical")]
 pub use harness::{ParseResult, ParserLabel, execute_v1, execute_v3, parse_v1, parse_v2, parse_v3};
