@@ -1,7 +1,30 @@
-use super::super::validate::validate_workspace_lints;
+use super::super::validate::{validate_required_dispositions, validate_workspace_lints};
 use super::{deferred_lint, empty_cargo, ledger_with, lint_entry, planned_lint, test_date};
 use color_eyre::eyre::{Result, bail};
 use toml::Value;
+
+const REQUIRED: [&str; 7] = [
+    "rust::const_item_interior_mutations",
+    "rust::function_casts_as_integer",
+    "clippy::same_length_and_capacity",
+    "clippy::disallowed_fields",
+    "clippy::manual_checked_ops",
+    "clippy::manual_take",
+    "clippy::manual_pop_if",
+];
+
+fn required_ledger() -> super::super::model::LintLedger {
+    let mut ledger = ledger_with(vec![
+        lint_entry(REQUIRED[0], "active"),
+        lint_entry(REQUIRED[1], "debt"),
+        lint_entry(REQUIRED[2], "tracked"),
+    ]);
+    ledger.planned.push(planned_lint(REQUIRED[3], "1.96"));
+    ledger.planned.push(planned_lint(REQUIRED[4], "1.96"));
+    ledger.deferred_due.push(deferred_lint(REQUIRED[5], "1.95"));
+    ledger.deferred_due.push(deferred_lint(REQUIRED[6], "1.95"));
+    ledger
+}
 
 #[test]
 fn lint_entry_accepts_tracked_status() -> Result<()> {
@@ -104,5 +127,19 @@ fn expired_deferred_lint_fails() -> Result<()> {
         bail!("expired deferral should fail");
     };
     assert!(error.to_string().contains("review date expired"));
+    Ok(())
+}
+
+#[test]
+fn required_lint_identity_cannot_be_deleted_from_the_merged_model() -> Result<()> {
+    let mut ledger = required_ledger();
+    ledger.planned.retain(|lint| lint.name != REQUIRED[4]);
+
+    let result = validate_required_dispositions(&ledger);
+    let Err(error) = result else {
+        bail!("missing required lint identity should fail closed");
+    };
+    assert!(error.to_string().contains(REQUIRED[4]));
+    assert!(error.to_string().contains("exactly once"));
     Ok(())
 }

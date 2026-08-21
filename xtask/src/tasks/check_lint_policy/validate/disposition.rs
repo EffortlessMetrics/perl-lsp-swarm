@@ -6,6 +6,16 @@ use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
 use toml::Value;
 
+const REQUIRED_DISPOSITIONS: &[&str] = &[
+    "rust::const_item_interior_mutations",
+    "rust::function_casts_as_integer",
+    "clippy::same_length_and_capacity",
+    "clippy::disallowed_fields",
+    "clippy::manual_checked_ops",
+    "clippy::manual_take",
+    "clippy::manual_pop_if",
+];
+
 pub(crate) fn validate_workspace_lints(
     cargo: &Value,
     ledger: &LintLedger,
@@ -84,6 +94,28 @@ pub(crate) fn validate_workspace_lints(
         }
     }
 
+    Ok(())
+}
+
+pub(crate) fn validate_required_dispositions(ledger: &LintLedger) -> Result<()> {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for name in ledger
+        .lint
+        .iter()
+        .map(|lint| lint.name.as_str())
+        .chain(ledger.planned.iter().map(|lint| lint.name.as_str()))
+        .chain(ledger.deferred_due.iter().map(|lint| lint.name.as_str()))
+    {
+        *counts.entry(name).or_default() += 1;
+    }
+
+    for required in REQUIRED_DISPOSITIONS {
+        if counts.get(required).copied().unwrap_or_default() != 1 {
+            bail!(
+                "required lint identity {required} must appear exactly once across the merged disposition model"
+            );
+        }
+    }
     Ok(())
 }
 
