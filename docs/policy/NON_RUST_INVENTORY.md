@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11180 |
+| Total tracked files | 11181 |
 | Rust-family files | 3408 |
-| Non-Rust files | 7772 |
-| Allowlisted | 5497 |
+| Non-Rust files | 7773 |
+| Allowlisted | 5498 |
 | Unclassified | 2275 |
 
 ## Non-Rust files by category
@@ -17,7 +17,7 @@
 | Category | Count |
 |---|---|
 | config | 355 |
-| documentation | 2558 |
+| documentation | 2559 |
 | generated | 2 |
 | production | 300 |
 | test | 1817 |
@@ -3735,6 +3735,7 @@
 | `crates/perl-semantic-analyzer/docs/dependency-boundary-audit.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-semantic-facts/README.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `crates/perl-source-identity/CLAUDE.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-source-identity/README.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `crates/perl-subprocess-runtime/LICENSE-APACHE` | documentation | `non-rust-license-files` | release/legal |
 | `crates/perl-subprocess-runtime/LICENSE-MIT` | documentation | `non-rust-license-files` | release/legal |
