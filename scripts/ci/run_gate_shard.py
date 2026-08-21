@@ -179,18 +179,44 @@ def _yaml_scalar(value: str) -> str:
     return value
 
 
+def _yaml_inline_comment(value: str) -> str:
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(value):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\" and quote == '"':
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {"'", '"'}:
+            quote = character
+        elif character == "#" and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value.strip()
+
+
 def _yaml_command_scalar(value: str) -> str:
     """Accept only YAML strings for scalar command declarations."""
     stripped = value.strip()
     if not stripped:
         return ""
-    if stripped[0] in {"'", '"'}:
-        return _yaml_scalar(stripped)
-    if stripped.lower() in {"false", "null", "no", "off", "on", "true", "yes", "~"}:
+    candidate = _yaml_inline_comment(stripped)
+    if candidate and candidate[0] in {"'", '"'}:
+        return _yaml_scalar(candidate)
+    if candidate.lower() in {"false", "null", "no", "off", "on", "true", "yes", "~"}:
         raise ValueError("gate command must be a YAML string")
-    if re.fullmatch(r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", stripped):
+    if re.fullmatch(
+        r"(?:[-+]?(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+)|"
+        r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?|"
+        r"[-+]?\.(?:inf|nan)|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt].*)?)",
+        candidate,
+        flags=re.IGNORECASE,
+    ):
         raise ValueError("gate command must be a YAML string")
-    if stripped.startswith(("[", "{")):
+    if candidate.startswith(("[", "{")):
         raise ValueError("gate command must be a YAML string")
     return stripped
 
@@ -319,6 +345,8 @@ def _repository_relative_path(
     path = path.rstrip(";")
     if path in {"&0", "&1", "&2"} or path == "/dev/null":
         return
+    if path.startswith("~"):
+        raise ValueError(f"unsupported tilde expansion in {subject}: {path}")
     if _contains_shell_expansion(path) and path != "run_${i}.log":
         raise ValueError(f"unsupported shell expansion in {subject}: {path}")
     candidate = Path(path)
@@ -344,6 +372,8 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             raise ValueError(f"unsupported shell command in gate policy: {token}")
         if token in UNSUPPORTED_SHELL_CONSTRUCTS:
             raise ValueError(f"unsupported shell construct in gate policy: {token}")
+        if token.startswith("~"):
+            raise ValueError(f"unsupported tilde expansion in gate policy: {token}")
         if token.rstrip(";") != "run_${i}.log" and _contains_dynamic_shell_expansion(token):
             raise ValueError(f"unsupported dynamic shell expansion: {token}")
         if "$(" in token or "<(" in token or ">(" in token or "`" in token:
@@ -396,6 +426,7 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
     env_skip_option_value = False
     command_position = True
     redirection_target_pending = False
+    separator_requires_command = False
     for index, token in enumerate(tokens):
         token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
         interpreter_token_name = _interpreter_name(token)
@@ -442,6 +473,7 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
 
         if token in SHELL_OPERATORS:
             command_position = True
+            separator_requires_command = token in {"&&", "||", "|", "&"}
             interpreter_pending = False
             interpreter_name = None
             skip_next_interpreter_option = False
@@ -459,10 +491,12 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
                 interpreter_pending = True
                 interpreter_name = interpreter_token_name
                 command_position = False
+                separator_requires_command = False
                 continue
             if _looks_like_command_path(token):
                 references.append(token)
                 command_position = False
+                separator_requires_command = False
                 continue
             raise ValueError(f"env -- command is not a supported executable path: {token}")
 
@@ -490,15 +524,18 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
                 interpreter_pending = True
                 interpreter_name = interpreter_token_name
                 command_position = False
+                separator_requires_command = False
                 continue
             if _looks_like_command_path(token):
                 references.append(token)
                 command_position = False
+                separator_requires_command = False
             continue
 
         if command_position and token_name == "env":
             env_pending = True
             command_position = False
+            separator_requires_command = False
             continue
 
         if skip_next_interpreter_option:
@@ -517,6 +554,7 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
                 interpreter_pending = False
                 interpreter_name = None
                 command_position = False
+                separator_requires_command = False
                 continue
             if token in INTERPRETER_SCRIPT_OPTIONS:
                 if interpreter_name != "pwsh":
@@ -544,8 +582,10 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
             continue
 
         if command_position and token in SUPPORTED_SHELL_KEYWORDS:
+            separator_requires_command = False
             continue
         if command_position and interpreter_token_name is not None:
+            separator_requires_command = False
             interpreter_pending = True
             interpreter_name = interpreter_token_name
             command_position = False
@@ -559,6 +599,7 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
             references.append(token)
         if command_position:
             command_position = False
+            separator_requires_command = False
     if expect_input_path:
         raise ValueError("input path option is missing its value")
     if expect_interpreter_script:
@@ -575,6 +616,8 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
         raise ValueError("env wrapper is missing its command")
     if redirection_target_pending:
         raise ValueError("redirection is missing its target")
+    if separator_requires_command:
+        raise ValueError("shell separator is missing its command")
     return references
 
 

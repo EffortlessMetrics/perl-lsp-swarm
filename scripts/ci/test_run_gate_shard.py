@@ -605,7 +605,18 @@ class GateShardTests(unittest.TestCase):
                     )
 
     def test_gate_policy_preflight_rejects_non_string_command_types(self) -> None:
-        for scalar in ("true", "null", "42", "[]", "{}"):
+        for scalar in (
+            "true",
+            "null",
+            "42",
+            "0x10",
+            ".inf",
+            "2026-08-21",
+            "true # inline comment",
+            "0x10 # inline comment",
+            "[]",
+            "{}",
+        ):
             with self.subTest(scalar=scalar), tempfile.TemporaryDirectory() as tmp:
                 policy = write_gate_policy(
                     Path(tmp),
@@ -746,6 +757,9 @@ class GateShardTests(unittest.TestCase):
             "echo ; scripts/ci/missing.py",
             "echo; scripts/ci/missing.py",
             "python3 scripts/ci/missing.py ; ${GATE_SCRIPT}",
+            "echo &&",
+            "echo ||",
+            "echo |",
             "while true; do python3 scripts/ci/missing.py; done",
             "python3 scripts/ci/missing.py [[ -f scripts/ci/missing.py ]]",
         )
@@ -768,6 +782,8 @@ class GateShardTests(unittest.TestCase):
             ("python3 scripts/ci/check.py < scripts/ci/missing.txt", "missing input path"),
             ("python3 scripts/ci/check.py <../outside.txt", "checked-out tree"),
             ("python3 scripts/ci/check.py <", "missing its target"),
+            ("python3 scripts/ci/check.py <~/outside.txt", "tilde expansion"),
+            ("python3 scripts/ci/check.py >~/outside.log", "tilde expansion"),
         ):
             with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
                 parent = Path(tmp)
@@ -787,6 +803,26 @@ class GateShardTests(unittest.TestCase):
                         ["source_commit_api_check"],
                         root=root,
                     )
+
+    def test_gate_policy_preflight_tracks_env_assignment_wrappers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+            policy = write_gate_policy(
+                root,
+                "  - name: source_commit_api_check\n"
+                "    command: env NAME=value python3 scripts/ci/check.py\n",
+            )
+            commands = shard.load_gate_commands(
+                policy,
+                ["source_commit_api_check"],
+                root=root,
+            )
+            self.assertEqual(
+                "env NAME=value python3 scripts/ci/check.py",
+                commands["source_commit_api_check"],
+            )
 
     def test_gate_policy_preflight_rejects_nested_shell_and_unsafe_wrappers(self) -> None:
         commands = (
