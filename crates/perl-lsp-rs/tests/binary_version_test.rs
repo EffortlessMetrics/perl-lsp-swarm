@@ -24,6 +24,31 @@ use std::time::Duration;
 /// The expected version from the crate being tested
 const EXPECTED_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Initialize a freshly started server, retrying ONCE with a new server
+/// when the handshake stalls. The assertion stays strict on every attempt:
+/// a server that answers with wrong serverInfo fails all attempts — only
+/// the loaded-runner stall (#11848: initialize can exceed a 45s deadline
+/// with the handler itself trivial, transport-level) is retried, mirroring
+/// the system-inc probe retry in module_resolution.
+fn initialize_with_retry(
+    params: serde_json::Value,
+) -> Result<(common::LspServer, serde_json::Value), String> {
+    let mut last_err = String::new();
+    for attempt in 1..=2u8 {
+        let server = common::start_lsp_server();
+        match send_initialize_with_timeout(&server, params.clone()) {
+            Ok(response) => return Ok((server, response)),
+            Err(err) => {
+                eprintln!(
+                    "initialize attempt {attempt}/2 failed ({err}); retrying with a fresh server"
+                );
+                last_err = err;
+            }
+        }
+    }
+    Err(last_err)
+}
+
 fn send_initialize_with_timeout(
     server: &common::LspServer,
     params: serde_json::Value,
@@ -55,19 +80,13 @@ fn send_initialize_with_timeout(
 
 #[test]
 fn lsp_server_version_matches_crate_version() -> Result<(), String> {
-    // Start the server using the same resolution logic as other tests
-    let server = common::start_lsp_server();
-
-    // Send initialize request
-    let response = send_initialize_with_timeout(
-        &server,
-        json!({
-            "capabilities": {},
-            "clientInfo": {"name": "version-test", "version": "0"},
-            "rootUri": null,
-            "workspaceFolders": null
-        }),
-    )?;
+    // Start the server and initialize (one fresh-server retry on stall)
+    let (server, response) = initialize_with_retry(json!({
+        "capabilities": {},
+        "clientInfo": {"name": "version-test", "version": "0"},
+        "rootUri": null,
+        "workspaceFolders": null
+    }))?;
 
     // Extract serverInfo.version from the response
     let server_version = response
@@ -110,17 +129,11 @@ fn lsp_server_version_matches_crate_version() -> Result<(), String> {
 
 #[test]
 fn lsp_server_identifier_is_perl_lsp() -> Result<(), String> {
-    // Start the server
-    let server = common::start_lsp_server();
-
-    // Send initialize request
-    let response = send_initialize_with_timeout(
-        &server,
-        json!({
-            "capabilities": {},
-            "rootUri": null
-        }),
-    )?;
+    // Start the server and initialize (one fresh-server retry on stall)
+    let (server, response) = initialize_with_retry(json!({
+        "capabilities": {},
+        "rootUri": null
+    }))?;
 
     // Extract serverInfo.name from the response
     let server_name = response
