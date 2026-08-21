@@ -1,5 +1,7 @@
 use super::*;
 use crate::protocol::{JsonRpcId, JsonRpcRequest};
+use perl_subprocess_runtime::mock::MockSubprocessRuntime;
+use std::sync::Arc;
 
 fn advertise(server: &LspServer, surface: Surface) {
     server.advertised_feature_ids.lock().push(surface.feature_id());
@@ -56,6 +58,38 @@ fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(receipt["actual_engine"], "disabled");
     assert_eq!(receipt["requested_mode"], "native");
     assert_eq!(receipt["effective_mode"], "off");
+    Ok(())
+}
+
+#[test]
+fn generic_external_formatter_alias_is_contained_before_formatting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Document);
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    server.test_install_formatter_runtime(runtime.clone());
+    server.test_handle_did_change_configuration(Some(json!({
+        "settings": { "perl": { "formatting": { "engine": "external-legacy" } } }
+    })));
+    assert_eq!(server.config.lock().formatting_engine, FormatterMode::Native);
+
+    let uri = "file:///generic-external-alias.pl";
+    server.test_apply_did_open(uri, "my$x=1;\n", 1)?;
+    let result = server.handle_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+    assert!(result.is_some(), "native formatting should return a response");
+    assert!(
+        runtime.invocations().is_empty(),
+        "native formatting must not invoke the external runtime"
+    );
+    let receipt = receipt(&server)?;
+    assert_eq!(receipt["actual_engine"], "native");
+    assert_eq!(receipt["effective_mode"], "native");
     Ok(())
 }
 

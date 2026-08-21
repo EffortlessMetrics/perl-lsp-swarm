@@ -85,7 +85,7 @@
     },
     "perl.formatting.engine": {
       "type": "string",
-      "enum": ["native", "compat", "external-legacy", "off"],
+      "enum": ["native", "compat", "off"],
       "default": "native",
       "description": "Select the server formatting engine. External profile paths/arguments remain outside the workspace LSP settings channel."
     },

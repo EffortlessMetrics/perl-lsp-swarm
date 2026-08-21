@@ -430,7 +430,7 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
 | `[critic] engine = "native"` | `"critic": {"engine": "native"}` | Use `"legacy"` or `"external"` for Perl::Critic shell-out compatibility |
 | `[critic] profile = "recommended"` | `"critic": {"profile": "recommended"}` | Lower-noise native rule bundle |
 | `[formatting] enabled = true` | `"formatting": {"enabled": true}` | |
-| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Use `"external-perltidy"` for legacy shell-out compatibility |
+| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native, compat, or off; legacy shell-out remains project-configured |
 | `[formatting] perltidy_profile = ".perltidyrc"` | `"formatting": {"profile": ".perltidyrc"}` | LSP key is `profile` |
 | `[features] inlay_hints = true` | `"inlayHints": {"enabled": true}` | TOML is global toggle; LSP has finer-grained control |
 

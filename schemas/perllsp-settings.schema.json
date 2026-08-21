@@ -163,7 +163,7 @@
             "formatOnSave": { "type": "boolean", "default": true },
             "engine": {
               "type": "string",
-              "enum": ["native", "compat", "external-legacy", "off"],
+              "enum": ["native", "compat", "off"],
               "default": "native"
             },
             "maximumLineLength": { "type": "integer", "minimum": 0, "default": 80 },

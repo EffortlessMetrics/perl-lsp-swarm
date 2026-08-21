@@ -29,6 +29,17 @@ const PROVIDER: &str = "formatting";
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
+impl LspServer {
+    fn formatter_for(&self, config: PerlTidyConfig, mode: FormatterMode) -> CodeFormatter {
+        #[cfg(any(test, feature = "expose_lsp_test_api"))]
+        if let Some(runtime) = self.formatter_runtime_override.lock().clone() {
+            return CodeFormatter::with_runtime_and_config_and_mode(runtime, config, mode);
+        }
+
+        CodeFormatter::with_config_and_mode(config, mode)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Surface {
     Document,

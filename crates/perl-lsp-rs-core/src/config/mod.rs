@@ -507,13 +507,13 @@ impl ServerConfig {
                 self.format_on_save = format_on_save;
             }
             if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str()) {
-                match parse_formatter_mode(engine) {
+                match parse_client_formatter_mode(engine) {
                     Some(mode) => self.formatting_engine = mode,
                     None => tracing::warn!(
                         target: "perl_lsp::config",
                         setting = "formatting.engine",
                         value = %engine,
-                        valid = FORMATTER_MODE_VALID_OPTIONS,
+                        valid = CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                         "unrecognized formatting.engine value; keeping current setting",
                     ),
                 }
@@ -677,14 +677,16 @@ impl ServerConfig {
         if let Some(formatting) = settings.get("formatting")
             && let Some(engine) = formatting.get("engine")
         {
-            let invalid_engine =
-                engine.as_str().map(|value| parse_formatter_mode(value).is_none()).unwrap_or(true);
+            let invalid_engine = engine
+                .as_str()
+                .map(|value| parse_client_formatter_mode(value).is_none())
+                .unwrap_or(true);
             if invalid_engine {
                 invalid.push(InvalidClientSetting {
                     setting: "formatting.engine",
                     value: client_setting_display_value(engine),
                     value_type: client_setting_value_type(engine),
-                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                 });
             }
         }
@@ -759,6 +761,15 @@ fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
     }
 }
 
+fn parse_client_formatter_mode(value: &str) -> Option<FormatterMode> {
+    match normalize_formatter_mode_value(value).as_str() {
+        "native" => Some(FormatterMode::Native),
+        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
+        "off" | "disabled" | "none" => Some(FormatterMode::Off),
+        _ => None,
+    }
+}
+
 fn parse_critic_engine(value: &str) -> Option<CriticEngine> {
     match value.trim().to_ascii_lowercase().as_str() {
         "legacy" | "external" | "perlcritic" => Some(CriticEngine::Legacy),
@@ -779,6 +790,11 @@ fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
 /// Kept in sync with [`parse_formatter_mode`].
 const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), external-legacy (external-perltidy, perltidy), \
      off (disabled, none)";
+
+/// Human-readable values accepted for `formatting.engine` on the LSP
+/// client-settings channel. External process selection remains project-owned.
+const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str =
+    "native, compat (perltidy-compat), off (disabled, none)";
 
 /// Human-readable list of accepted `critic.engine` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
@@ -3954,7 +3970,7 @@ profile = "recommended"
                     setting: "formatting.engine",
                     value: "perltide".to_string(),
                     value_type: "string",
-                    valid_options: FORMATTER_MODE_VALID_OPTIONS,
+                    valid_options: CLIENT_FORMATTER_MODE_VALID_OPTIONS,
                 },
             ]
         );
@@ -3963,9 +3979,40 @@ profile = "recommended"
             "critic": { "engine": " LEGACY ", "profile": "STRICT" },
             "formatting": { "engine": "external_perltidy" }
         }));
-        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy.len(), 2);
         assert_eq!(legacy[0].setting, "critic.engine");
         assert_eq!(legacy[0].valid_options, CLIENT_CRITIC_ENGINE_VALID_OPTIONS);
+        assert_eq!(legacy[1].setting, "formatting.engine");
+        assert_eq!(legacy[1].valid_options, CLIENT_FORMATTER_MODE_VALID_OPTIONS);
+    }
+
+    #[test]
+    fn client_formatter_external_aliases_are_rejected_but_project_alias_remains_supported() {
+        for value in ["external-legacy", "external_perltidy", "perltidy"] {
+            let mut config = ServerConfig::default();
+            config.update_from_value(&serde_json::json!({
+                "formatting": { "engine": value }
+            }));
+            assert_eq!(config.formatting_engine, FormatterMode::Native, "client value {value}");
+            assert_eq!(
+                ServerConfig::invalid_client_setting_values(&serde_json::json!({
+                    "formatting": { "engine": value }
+                }))[0]
+                    .valid_options,
+                CLIENT_FORMATTER_MODE_VALID_OPTIONS
+            );
+        }
+
+        let mut config = ServerConfig::default();
+        let project = ProjectConfig {
+            formatting: ProjectFormattingConfig {
+                engine: Some("external-legacy".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        project.apply_to_server_config(&mut config);
+        assert_eq!(config.formatting_engine, FormatterMode::ExternalLegacy);
     }
 
     #[test]
