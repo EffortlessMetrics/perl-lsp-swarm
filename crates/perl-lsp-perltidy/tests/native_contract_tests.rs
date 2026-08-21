@@ -57,6 +57,10 @@ fn whole_document_range_reaches_true_eof_past_terminal_separator() -> TestResult
     assert_eq!(TextRange::whole_document("my $x = 1;\r").end, TextPosition::new(1, 0));
     assert_eq!(TextRange::whole_document("a\n\n").end, TextPosition::new(2, 0));
     assert_eq!(TextRange::whole_document("a\r\nb\r\n").end, TextPosition::new(2, 0));
+    assert_eq!(TextRange::whole_document("").end, TextPosition::new(0, 0));
+    assert_eq!(TextRange::whole_document("\n").end, TextPosition::new(1, 0));
+    assert_eq!(TextRange::whole_document("\r\n").end, TextPosition::new(1, 0));
+    assert_eq!(TextRange::whole_document("\r").end, TextPosition::new(1, 0));
 
     Ok(())
 }
@@ -66,6 +70,9 @@ fn whole_document_range_counts_utf16_at_eof_with_multibyte_content() {
     assert_eq!(TextRange::whole_document("ab😀\n").end, TextPosition::new(1, 0));
     assert_eq!(TextRange::whole_document("\n😀\n").end, TextPosition::new(2, 0));
     assert_eq!(TextRange::whole_document("line\ntrailing").end, TextPosition::new(1, 8));
+    assert_eq!(TextRange::whole_document("ab😀").end, TextPosition::new(0, 4));
+    assert_eq!(TextRange::whole_document("x\n😀").end, TextPosition::new(1, 2));
+    assert_eq!(TextRange::whole_document("a\r\nb\nc\r").end, TextPosition::new(3, 0));
 }
 
 /// Independent UTF-16 position-to-byte-offset oracle for edit application.
@@ -132,6 +139,7 @@ fn replace_document_edit_applies_byte_exact_through_true_eof() -> TestResult {
         ("my $x=1;\r", "my $x = 1;\n"),
         ("$x=1;   \n\n\n", "$x=1;\n"),
         ("my $face=\"😀\";\n", "my $face = \"😀\";\n"),
+        ("my $face=\"😀\"", "my $face = \"😀\""),
     ] {
         let result = FormatResult::replace_document(source, formatted);
         assert!(result.changed);
