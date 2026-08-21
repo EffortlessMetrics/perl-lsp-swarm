@@ -3,7 +3,7 @@
 ## Construction
 
 - [x] Trusted-base standalone validator exists under `xtask`.
-- [x] Candidate code is not checked out or executed by the workflow.
+- [x] The standalone validator is safe for trusted-base invocation; it does not check out or execute candidate code.
 - [x] Terminal relation parsing ignores fenced examples and blockquotes.
 - [x] Stable PR sections are parsed separately from arbitrary prose.
 - [x] Event, body, section, relation, source-line, and API-output bounds are explicit.
@@ -43,7 +43,7 @@
 - [ ] `cargo xtask workflow-trigger-lint`
 - [ ] `cargo xtask workflow-policy-lint`
 - [ ] `git diff --check`
-- [ ] Hosted trusted-base workflow proves the exact candidate head.
+- [ ] Follow-up adds and verifies the base-owned `pull_request_target` workflow, including exact-base execution and exact candidate-head proof.
 
 ## Review
 
@@ -58,4 +58,5 @@
 
 - [ ] CP03/CP04 replay every immutable fixture with equal-or-stronger invalid-close rejection and valid-close acceptance.
 - [ ] Required semantic preflight is current.
-- [ ] CP00 independent workflow is removed; fixtures remain in the canonical corpus.
+- [x] The CP00 workflow is absent from this evaluator/fixture prerequisite; fixtures remain in the canonical corpus.
+- [ ] The separate trusted `pull_request_target` enforcement follow-up lands and is verified before live enforcement is claimed.

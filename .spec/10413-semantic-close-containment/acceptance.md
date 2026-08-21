@@ -1,5 +1,9 @@
 # #10413 — Semantic close containment acceptance
 
+## Candidate boundary
+
+This PR accepts the CP00 evaluator/fixtures prerequisite: a trusted-base-safe standalone validator with deterministic offline proof. It does not claim live trusted enforcement. A separate follow-up must add and verify the base-owned `pull_request_target` workflow, including exact-base execution and exact candidate-head proof, before live enforcement is accepted.
+
 ## Stable acceptance rows
 
 ### CP00-001 — no terminal relation
@@ -82,3 +86,5 @@ INSTRUMENT_FAILURE
 ```
 
 A containment pass is never a semantic-close receipt.
+
+The CP00 rows and fixtures remain subject to the CP03 retirement mappings above. The follow-up workflow does not replace or weaken those mappings; it only supplies the live enforcement path after this prerequisite lands.

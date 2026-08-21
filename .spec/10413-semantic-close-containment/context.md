@@ -23,7 +23,7 @@ CP00 joins terminal GitHub relations to those sections and exact issue classific
 
 ## Trusted execution boundary
 
-The workflow executes the validator from the exact base SHA under `pull_request_target`. Candidate code is never checked out or executed. PR and issue bodies are untrusted data.
+This PR provides the trusted-base-safe standalone validator and its offline proof. It does not add a live workflow. A separate follow-up must add and verify the base-owned `pull_request_target` workflow, which must execute the validator from the exact base SHA. Candidate code must never be checked out or executed. PR and issue bodies are untrusted data.
 
 Controls:
 
@@ -34,6 +34,8 @@ Controls:
 - no PR, issue, label, review, branch, ruleset, or body mutation;
 - GitHub/API/parse failure on a terminal relation is not proven, never pass;
 - no-closing-keyword input exits before issue lookup.
+
+The follow-up workflow must preserve these controls and prove the exact candidate head through the trusted base-owned execution path. That live enforcement is outside this PR's acceptance boundary.
 
 ## Closed contradiction set
 
@@ -66,6 +68,7 @@ Fixtures are offline and deterministic. Live GitHub availability is not required
 
 ## Non-goals
 
+- No live `pull_request_target` workflow; that is a separate follow-up prerequisite to be added and verified after this evaluator/fixture PR lands.
 - No semantic issue-close evaluator.
 - No typed issue contract or evidence-admission registry.
 - No natural-language completion inference.
