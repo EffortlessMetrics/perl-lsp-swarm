@@ -52,12 +52,17 @@ def validate_semantics(
             return ["section semantic scope requires a Markdown heading anchor"]
         level = len(heading.group(1))
         end = len(lines)
-        in_fence = False
+        fence_character: str | None = None
         for index in range(line_number, len(lines)):
-            if lines[index].lstrip().startswith("```"):
-                in_fence = not in_fence
+            fence = re.match(r"^\s*(`{3,}|~{3,})", lines[index])
+            if fence is not None:
+                character = fence.group(1)[0]
+                if fence_character is None:
+                    fence_character = character
+                elif character == fence_character:
+                    fence_character = None
                 continue
-            if in_fence:
+            if fence_character is not None:
                 continue
             next_heading = re.match(r"^(#+)\s+", lines[index])
             if next_heading is not None and len(next_heading.group(1)) <= level:
@@ -122,8 +127,12 @@ def validate_semantics(
                 if occurrence < 0:
                     break
                 prefix = lowered_line[:occurrence]
-                refusal_span = re.split(r"[.;:]", prefix)[-1]
-                if not any(marker in refusal_span for marker in denial_markers):
+                refusal_span = re.split(r"[.;:,\u2013\u2014]", prefix)[-1]
+                denial_pattern = (
+                    r"\b(?:must\s+not|do\s+not|don't|never|not\s+authorize|"
+                    r"refuse|prohibited|forbidden)\b"
+                )
+                if re.search(denial_pattern, refusal_span) is None:
                     errors.append(
                         f"forbidden command lacks an explicit refusal: {command!r}"
                     )
@@ -268,10 +277,12 @@ def validate(root: Path) -> list[str]:
         if not isinstance(command, (str, type(None))):
             errors.append(f"{case_id}: command must be a string or null")
         relative_path = Path(path)
+        windows_path = PureWindowsPath(path)
         if (
             relative_path.is_absolute()
             or PurePosixPath(path).is_absolute()
-            or PureWindowsPath(path).is_absolute()
+            or windows_path.is_absolute()
+            or bool(windows_path.drive or windows_path.root)
         ):
             errors.append(f"{case_id}: source path must be relative: {path}")
             continue

@@ -177,11 +177,48 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
     def test_section_scope_rejects_same_line_contradiction(self) -> None:
         errors = validator.validate_semantics(
             "### Version Conflicts\n"
-            "Do not use `cargo update`; then run `cargo update -p foo` here.\n",
+            "Do not use `cargo update` — then run `cargo update -p foo` here.\n",
             1,
             {
                 "scope": "section",
                 "required": ["Do not use"],
+                "forbidden_commands": ["cargo update"],
+            },
+        )
+        self.assertIn(
+            "forbidden command lacks an explicit refusal: 'cargo update'",
+            errors,
+        )
+
+    def test_section_scope_uses_whole_word_refusal_markers_and_commas(self) -> None:
+        errors = validator.validate_semantics(
+            "### Version Conflicts\n"
+            "Do not use cargo update, then cargo update is allowed here.\n",
+            1,
+            {
+                "scope": "section",
+                "required": ["Do not use"],
+                "forbidden_commands": ["cargo update"],
+            },
+        )
+        self.assertIn(
+            "forbidden command lacks an explicit refusal: 'cargo update'",
+            errors,
+        )
+
+    def test_section_scope_ignores_headings_inside_tilde_fences(self) -> None:
+        source = (
+            "### Version Conflicts\n"
+            "~~~markdown\n"
+            "### Example heading\n"
+            "~~~\n"
+            "Try `cargo update` after the example.\n"
+        )
+        errors = validator.validate_semantics(
+            source,
+            1,
+            {
+                "scope": "section",
                 "forbidden_commands": ["cargo update"],
             },
         )
@@ -294,6 +331,24 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
             errors = validator.validate(root)
             self.assertEqual(
                 "windows-escaping: source path escapes repository root: ..\\outside",
+                errors[0],
+            )
+
+    def test_windows_root_relative_path_is_rejected_on_every_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / validator.FIXTURE
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text(
+                '{"schema_version": 1, "claim_boundary": "bounded", "cases": ['
+                '{"id": "windows-root", "path": "\\\\outside", "needle": "x", '
+                '"context": "dynamic", "command": null, "expected": "not_proven", '
+                '"semantics": {"required": ["x"]}}]}',
+                encoding="utf-8",
+            )
+            errors = validator.validate(root)
+            self.assertEqual(
+                "windows-root: source path must be relative: \\outside",
                 errors[0],
             )
 
