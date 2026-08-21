@@ -560,6 +560,31 @@ fn two_file_shards_never_collide_fact_ids() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn unqualified_single_shard_match_retains_multi_shard_limitation() -> Result<(), Box<dyn Error>> {
+    let first = shard_in_file(FileId(10), Provenance::ExactAst, Confidence::High);
+    let mut second = shard_in_file(FileId(11), Provenance::ExactAst, Confidence::High);
+    second.entities[0].canonical_name = "Other::different".to_string();
+    let port = parser_port(&[first, second], ProviderSnapshotCompleteness::Complete)?;
+
+    // Only file 10 currently matches, but an unqualified symbol query still
+    // needs cross-shard generation ownership before it can claim exactness.
+    let result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into())),
+    )?;
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Degraded);
+    assert_eq!(result.value_facts().count(), 1);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation == "multi_shard_single_snapshot_exactness")
+    );
+    Ok(())
+}
+
+#[test]
 fn cross_generation_snapshot_cannot_answer_exact() -> Result<(), Box<dyn Error>> {
     let port = parser_port(
         &[shard(Provenance::ExactAst, Confidence::High)],

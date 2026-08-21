@@ -1164,7 +1164,7 @@ fn query_records(
     // but it cannot claim that an answer assembled across shards is exact:
     // FileFactShard has no per-shard generation owner. Keep that limitation
     // attached only to the query scopes it actually affects.
-    let limitations = scoped_limitations(request, records, limitations);
+    let limitations = scoped_limitations(request, limitations);
     let selection = select_records(request, records);
     let any_stale = selection.all().chain(blockers.iter().copied()).any(|record| {
         record.envelope.status() == SemanticFactStatus::Stale || !record_is_current(record, request)
@@ -1383,28 +1383,15 @@ fn live_control_terminal(control: &dyn ProviderQueryControl) -> Option<ProviderQ
     None
 }
 
-fn scoped_limitations(
-    request: &ProviderQueryRequest,
-    records: &[AdapterFactRecord],
-    limitations: &[String],
-) -> Vec<String> {
-    let single_file_scope = match request.subject {
-        ProviderQuerySubject::File(file_id) | ProviderQuerySubject::Position { file_id, .. } => {
-            Some(file_id)
-        }
-        ProviderQuerySubject::Workspace => None,
-        _ => {
-            let files: BTreeSet<_> = select_records(request, records)
-                .all()
-                .map(|record| record.envelope.anchor.file_id)
-                .collect();
-            (files.len() == 1).then(|| files.into_iter().next()).flatten()
-        }
-    };
+fn scoped_limitations(request: &ProviderQueryRequest, limitations: &[String]) -> Vec<String> {
+    let explicitly_file_qualified = matches!(
+        request.subject,
+        ProviderQuerySubject::File(_) | ProviderQuerySubject::Position { .. }
+    );
     limitations
         .iter()
         .filter(|limitation| {
-            *limitation != "multi_shard_single_snapshot_exactness" || single_file_scope.is_none()
+            *limitation != "multi_shard_single_snapshot_exactness" || !explicitly_file_qualified
         })
         .cloned()
         .collect()
