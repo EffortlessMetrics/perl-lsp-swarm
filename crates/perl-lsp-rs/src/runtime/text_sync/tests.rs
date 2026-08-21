@@ -1558,6 +1558,58 @@ fn test_did_save_text_cancels_same_version_streams() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+/// The ordinary synchronous `didOpen` route must retain the complete parse
+/// outcome when the same recovery-bearing source is opened again. Before
+/// #11215, the AST-only cache returned an AST with an empty error list on the
+/// second open, upgrading the document to a false-clean result.
+#[test]
+fn repeated_did_open_of_recovery_bearing_source_preserves_parse_outcome()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let uri = "file:///did_open_recovery_repeat.pl";
+    let malformed = "my $x = ;\n";
+    let mut first_outcome = None;
+
+    for version in [1, 2] {
+        server.did_open(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": version,
+                "text": malformed
+            }
+        }))?;
+
+        let normalized_uri = server.normalize_uri_key(uri);
+        let documents = server.documents.lock();
+        let document = documents.get(&normalized_uri).ok_or("didOpen must store the document")?;
+        let snapshot = document
+            .current_parsed()
+            .ok_or("didOpen must synchronously publish a parse snapshot")?;
+        let outcome = (
+            snapshot.parse_errors().iter().map(|error| format!("{error:?}")).collect::<Vec<_>>(),
+            snapshot.degradation_tier(),
+            snapshot.ast().is_some(),
+        );
+        assert!(
+            !outcome.0.is_empty(),
+            "recovery-bearing source must retain parse diagnostics on didOpen version {version}"
+        );
+
+        if let Some(expected) = first_outcome.as_ref() {
+            assert_eq!(
+                expected, &outcome,
+                "reopening identical recovery-bearing source must preserve diagnostic \
+                 identity/order, degradation tier, and AST/result class"
+            );
+        } else {
+            first_outcome = Some(outcome);
+        }
+    }
+
+    Ok(())
+}
+
 /// A parse cancelled via a pre-set flag must return Ok(()) and not store
 /// a document, so the caller behaves as if the parse simply didn't happen.
 #[test]

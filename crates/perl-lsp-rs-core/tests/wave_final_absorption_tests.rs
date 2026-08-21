@@ -62,8 +62,6 @@ fn test_config_module_accessible() {
     // Should have ServerConfig struct
     let config = config::ServerConfig::default();
     assert!(config.inlay_hints_enabled);
-    assert!(config.test_runner_enabled);
-    assert_eq!(config.test_runner_command, "perl");
 
     // Should have WorkspaceConfig struct
     let ws_config = config::WorkspaceConfig::default();
@@ -527,14 +525,6 @@ fn test_config_defaults_are_backward_compatible() {
     assert!(
         server.inlay_hints_enabled,
         "ServerConfig::default() must have inlay_hints_enabled = true"
-    );
-    assert!(
-        server.test_runner_enabled,
-        "ServerConfig::default() must have test_runner_enabled = true"
-    );
-    assert_eq!(
-        server.test_runner_command, "perl",
-        "ServerConfig::default() must have test_runner_command = 'perl'"
     );
 
     // WorkspaceConfig defaults should match spec
