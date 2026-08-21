@@ -101,16 +101,6 @@ def validate_semantics(
             errors.append("forbidden source semantics must not be empty")
         elif phrase in semantic_source:
             errors.append(f"forbidden source semantics present: {phrase!r}")
-    denial_markers = (
-        "must not",
-        "do not",
-        "don't",
-        "never",
-        "not authorize",
-        "refuse",
-        "prohibited",
-        "forbidden",
-    )
     for command in forbidden_commands:
         if not isinstance(command, str):
             errors.append(f"forbidden source commands must be strings: {command!r}")
