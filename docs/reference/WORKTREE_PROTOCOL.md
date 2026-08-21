@@ -236,6 +236,59 @@ git rebase --abort
 Require abort to restore the pinned old head. If it does not, preserve the worktree and
 return `SALVAGE_REQUIRED`; publish nothing until state is understood.
 
+### Cargo.lock conflict repair
+
+Conflict repair preserves the accepted `Cargo.lock` and first validates locked metadata
+without mutation. The accepted lock remains byte-identical unless an explicit branch
+admission is made for a manifest-required lock change. The typed routing is:
+
+| Result | Meaning |
+| --- | --- |
+| `accepted_lock_preserved` | Locked metadata is compatible; keep the accepted lock. |
+| `lock_conflict_requires_admission` | A conflict exists; stop and obtain dependency admission. |
+| `manifest_requires_lock_change` | The manifest requires a lock change; refuse conflict repair until admitted. |
+| `branch_admission_preserved` | A separately admitted branch operation remains outside conflict repair. |
+| `historical_text` | Archive or historical guidance is not an active command surface. |
+| `controlled_isolated_generation` | Extracted-package smoke may generate a lock only in its isolated temporary package. |
+| `not_proven` | Dynamic or unowned construction has no proven production reachability. |
+
+Active conflict repair must not use `cargo generate-lockfile`, bare cargo update, or
+delete/recreate Cargo.lock. Targeted dependency guidance and release/version refresh
+remain separate branch-admission operations; they do not authorize conflict repair.
+There is currently no owned git/Cargo lock-conflict helper seam. This contract therefore
+stops at the validator and fixture oracle and is an adoption case for depguard #22;
+it does not invent a dependency-admission service.
+
+The validator's fixture anchors include the negative active examples, the positive
+isolated smoke and release controls, and a dynamically constructed command. The latter
+is explicitly `not_proven`, not accepted by token matching. A compatible accepted lock
+is checked byte-for-byte, while a manifest-required lock change is refused without
+mutating the accepted worktree.
+
+The following are not active conflict-repair instructions: `cargo generate-lockfile`
+in `scripts/ci/check_perl_lsp_rs_core_package.py` operates on an extracted package,
+and `just bump-version` belongs to the release/version-refresh scope.
+
+The deterministic fixture anchors are deliberately explicit source locations:
+
+```text
+active conflict repair: accepted Cargo.lock remains byte-identical
+active conflict repair: cargo generate-lockfile
+active conflict repair: bare cargo update
+active conflict repair: delete/recreate Cargo.lock
+active conflict repair: manifest-required lock change
+active conflict repair: branch admission
+active conflict repair: targeted dependency guidance
+active conflict repair: dynamically constructed command
+```
+
+The validator emits deterministic output with:
+
+```text
+python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
+python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
+```
+
 On Windows, interactive rebase/editor flows can be unreliable in linked worktrees. Use
 non-interactive commands with an explicit plan, or reconstruct the bounded delta on a
 fresh branch when that is safer. The choice is driven by the candidate and conflict, not
