@@ -259,6 +259,7 @@ def run_direct(
     contract = shard.load_receipt_contract(receipt_schema)
     runner = shard.ShardRunner(
         xtask=Path("target/debug/xtask"),
+        gate_policy=policy,
         receipt_dir=root / "receipts",
         summary_path=root / "summary.json",
         subject_sha=SUBJECT,
@@ -457,6 +458,7 @@ class GateShardTests(unittest.TestCase):
             contract = shard.load_receipt_contract(receipt_schema)
             runner = shard.ShardRunner(
                 xtask=Path("target/debug/xtask"),
+                gate_policy=policy,
                 receipt_dir=root / "receipts",
                 summary_path=root / "summary.json",
                 subject_sha=SUBJECT,
@@ -526,6 +528,39 @@ class GateShardTests(unittest.TestCase):
         self.assertEqual(matrix_gates, set(payload["gates"]))
         self.assertEqual(8073, payload["owner_issue"])
         self.assertEqual(4787, payload["migration_owner_issue"])
+
+    def test_every_current_workflow_gate_preflights_against_exact_policy(self) -> None:
+        workflow = REPO_ROOT / ".github/workflows/ci.yml"
+        policy = REPO_ROOT / ".ci/gate-policy.yaml"
+        text = workflow.read_text(encoding="utf-8")
+        start = text.index("  merge-gate-shards:\n")
+        end = text.index("    permissions:\n", start)
+        selected: set[str] = set()
+        for line in text[start:end].splitlines():
+            stripped = line.strip()
+            if stripped.startswith("gates: "):
+                selected.update(stripped.removeprefix("gates: ").split())
+        commands = shard.load_gate_commands(policy, sorted(selected), root=REPO_ROOT)
+        self.assertEqual(selected, set(commands))
+        self.assertTrue(all(commands.values()))
+
+    def test_shard_command_propagates_exact_gate_policy_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = write_policy(root, {"alpha": []})
+            receipt_schema = write_receipt_schema(root)
+            runner = shard.ShardRunner(
+                xtask=Path("target/debug/xtask"),
+                gate_policy=policy,
+                receipt_dir=root / "receipts",
+                summary_path=root / "summary.json",
+                subject_sha=SUBJECT,
+                gates=["alpha"],
+                dependency_rules=shard.load_execution_policy(policy, ["alpha"]),
+                receipt_contract=shard.load_receipt_contract(receipt_schema),
+            )
+            command = runner._command("alpha")
+        self.assertEqual(str(policy), command[command.index("--gate-policy") + 1])
 
     def test_current_tree_source_commit_api_gate_has_executable_policy_command(self) -> None:
         policy = REPO_ROOT / ".ci/gate-policy.yaml"
@@ -638,6 +673,21 @@ class GateShardTests(unittest.TestCase):
                         root=Path(tmp),
                     )
 
+    def test_gate_policy_preflight_rejects_yaml_block_scalar_indicators(self) -> None:
+        for indicator in ("|2", ">-2", ">+4"):
+            with self.subTest(indicator=indicator), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(
+                    Path(tmp),
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {indicator}\n",
+                )
+                with self.assertRaisesRegex(ValueError, "YAML block scalar"):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
     def test_gate_policy_preflight_rejects_missing_referenced_command_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             policy = write_gate_policy(
@@ -726,6 +776,17 @@ class GateShardTests(unittest.TestCase):
                 commands["first"],
             )
             self.assertEqual("sh ./scripts/ci/second.sh", commands["second"])
+
+    def test_gate_policy_preflight_decodes_yaml_single_quote_escaping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = write_gate_policy(
+                root,
+                "  - name: quoted\n"
+                "    command: 'echo ''ok'''\n",
+            )
+            commands = shard.load_gate_commands(policy, ["quoted"], root=root)
+            self.assertEqual("echo 'ok'", commands["quoted"])
 
     def test_gate_policy_preflight_rejects_path_outside_checked_out_tree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -865,7 +926,22 @@ class GateShardTests(unittest.TestCase):
             "python3 scripts/ci/missing.py ;;& echo ok",
             "python3 scripts/ci/missing.py &&& echo ok",
             "python3 scripts/ci/missing.py ||| echo ok",
+            "python3 scripts/ci/missing.py ;;;; echo ok",
+            "python3 scripts/ci/missing.py &&&& echo ok",
+            "python3 scripts/ci/missing.py |||| echo ok",
+            "python3 scripts/ci/missing.py |& echo ok",
+            "python3 scripts/ci/missing.py <>",
             "xargs bash -c 'python3 ../outside.py'",
+            "nice python3 ../outside.py",
+            "nohup python3 ../outside.py",
+            "setsid python3 ../outside.py",
+            "parallel python3 ../outside.py",
+            "busybox sh ../outside.sh",
+            "sudo python3 ../outside.py",
+            "chroot ../outside python3 scripts/ci/missing.py",
+            "taskset -c 0 python3 ../outside.py",
+            "stdbuf -oL python3 ../outside.py",
+            "time python3 ../outside.py",
             "find . -exec bash -c 'python3 ../outside.py' {} +",
             "command bash -c 'python3 ../outside.py'",
             "timeout 10s bash -c 'python3 ../outside.py'",

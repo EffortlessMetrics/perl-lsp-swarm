@@ -134,7 +134,21 @@ REDIRECTION = re.compile(
 )
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 MALFORMED_SHELL_PUNCTUATION = {";;", ";&", ";;&", "&&&", "|||"}
-UNSUPPORTED_WRAPPER_COMMANDS = {"xargs"}
+UNSUPPORTED_WRAPPER_COMMANDS = {
+    "busybox",
+    "chroot",
+    "nice",
+    "nohup",
+    "parallel",
+    "setsid",
+    "stdbuf",
+    "sudo",
+    "taskset",
+    "time",
+    "xargs",
+}
+SHELL_PUNCTUATION = set(";|&<>")
+SUPPORTED_SHELL_PUNCTUATION = SHELL_OPERATORS | {"<", ">", "<<", ">>", ">&", "<&"}
 
 
 @dataclass(frozen=True)
@@ -173,7 +187,11 @@ def _yaml_scalar(value: str) -> str:
     value = value.strip()
     if not value:
         return ""
-    if value[0] in {"'", '"'}:
+    if value[0] == "'":
+        if len(value) < 2 or value[-1] != "'":
+            raise ValueError(f"gate command has invalid quoted scalar {value!r}")
+        return value[1:-1].replace("''", "'")
+    if value[0] == '"':
         try:
             decoded = ast.literal_eval(value)
         except (SyntaxError, ValueError) as error:
@@ -224,6 +242,8 @@ def _yaml_command_scalar(value: str) -> str:
         raise ValueError("gate command must be a YAML string")
     if candidate.startswith(("&", "*", "[", "{")):
         raise ValueError("gate command must be a YAML string")
+    if candidate.startswith((">", "|")):
+        raise ValueError("unsupported YAML block scalar indicator")
     return stripped
 
 
@@ -386,6 +406,12 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             raise ValueError(f"malformed shell punctuation in gate policy: {token}")
         if token in {"&>", "&>>", ">|"}:
             raise ValueError(f"unsupported Bash redirection in gate policy: {token}")
+        if (
+            token
+            and set(token) <= SHELL_PUNCTUATION
+            and token not in SUPPORTED_SHELL_PUNCTUATION
+        ):
+            raise ValueError(f"malformed shell punctuation in gate policy: {token}")
         if token.startswith("~"):
             raise ValueError(f"unsupported tilde expansion in gate policy: {token}")
         if token.rstrip(";") != "run_${i}.log" and _contains_dynamic_shell_expansion(token):
@@ -440,6 +466,8 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
 
     The shard accepts only paths that can be resolved against the checked-out
     tree. Shell expansions and globbed paths are rejected rather than guessed.
+    Output destinations are intentionally outside this proof boundary: they
+    are consumed only to reject missing values, not required to pre-exist.
     """
     references: list[str] = []
     skip_next_output = False
@@ -1038,6 +1066,7 @@ class ShardRunner:
         self,
         *,
         xtask: Path,
+        gate_policy: Path,
         receipt_dir: Path,
         summary_path: Path,
         subject_sha: str,
@@ -1046,6 +1075,7 @@ class ShardRunner:
         receipt_contract: ReceiptContract,
     ) -> None:
         self.xtask = xtask
+        self.gate_policy = gate_policy
         self.receipt_dir = receipt_dir
         self.summary_path = summary_path
         self.subject_sha = subject_sha
@@ -1063,6 +1093,8 @@ class ShardRunner:
             "gates",
             "--gate",
             gate,
+            "--gate-policy",
+            str(self.gate_policy),
             "--receipt",
             "--receipt-path",
             str(self._receipt_path(gate)),
@@ -1366,6 +1398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(error))
     runner = ShardRunner(
         xtask=args.xtask,
+        gate_policy=args.gate_policy,
         receipt_dir=args.receipt_dir,
         summary_path=args.summary_path,
         subject_sha=args.subject_sha,
