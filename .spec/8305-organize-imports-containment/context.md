@@ -20,7 +20,7 @@ trivia ownership, and no guarantee that bytes between the first and last
 import-looking lines are unrelated to the replacement. Any executable statement
 between two import-looking lines is destroyed by the replacement.
 
-## Route inventory (re-verified on this branch at main@331397cf9)
+## Route inventory (re-verified on this branch at main@0fa96eedbc312ea2e01d7202827144efeda13237)
 
 Live production routes:
 
