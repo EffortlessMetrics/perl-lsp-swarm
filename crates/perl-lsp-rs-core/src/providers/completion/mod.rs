@@ -25,6 +25,7 @@ pub mod completion_shadow;
 pub mod module_scan_cache;
 
 pub use crate::providers::completion_item::{render_snippet_plaintext, snippet_body_defects};
+pub use completion::FUNDAMENTAL_CONSTRUCT_LABELS;
 pub use completion::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionProvider, InsertTextFormat,
     add_xs_api_completions_for_prefix, collect_module_names_from_roots_with_cache,
