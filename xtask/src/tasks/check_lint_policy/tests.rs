@@ -85,11 +85,15 @@ pub(super) fn debt_entry(lint: &str) -> DebtEntry {
     DebtEntry {
         lint: lint.to_owned(),
         level: "deny".to_owned(),
-        path: "crates/example/src/lib.rs".to_owned(),
+        path: "Cargo.toml".to_owned(),
         owner: "#1".to_owned(),
         reason: "test reason".to_owned(),
         review_after: "2026-10-15".to_owned(),
     }
+}
+
+pub(super) fn test_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or_else(|| Path::new("."))
 }
 
 #[test]

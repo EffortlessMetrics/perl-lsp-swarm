@@ -30,6 +30,6 @@ pub(super) fn validate_all(
     disposition::validate_workspace_lints(cargo, lint_ledger, today)?;
     config::validate_workspace_members_inherit_lints(root, cargo)?;
     config::validate_clippy_config(root, lint_ledger)?;
-    debt::validate_debt_ledger(lint_ledger, debt_ledger, today)?;
+    debt::validate_debt_ledger(root, lint_ledger, debt_ledger, today)?;
     Ok(())
 }

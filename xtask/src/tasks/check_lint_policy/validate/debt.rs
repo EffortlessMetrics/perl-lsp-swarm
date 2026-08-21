@@ -4,8 +4,10 @@ use super::disposition::validate_unique_dispositions;
 use chrono::NaiveDate;
 use color_eyre::eyre::{Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 pub(crate) fn validate_debt_ledger(
+    root: &Path,
     lint_ledger: &LintLedger,
     debt_ledger: &DebtLedger,
     today: NaiveDate,
@@ -27,7 +29,7 @@ pub(crate) fn validate_debt_ledger(
     let mut identities = BTreeSet::new();
 
     for entry in &debt_ledger.debt {
-        validate_debt_entry(entry, today)?;
+        validate_debt_entry(root, entry, today)?;
         let Some(lint) = lint_by_name.get(entry.lint.as_str()) else {
             bail!("debt entry names ungoverned lint {}", entry.lint);
         };
@@ -61,10 +63,35 @@ pub(crate) fn validate_debt_ledger(
     Ok(())
 }
 
-fn validate_debt_entry(entry: &DebtEntry, today: NaiveDate) -> Result<()> {
+fn validate_debt_entry(root: &Path, entry: &DebtEntry, today: NaiveDate) -> Result<()> {
     validate_lint_name(&entry.lint)?;
-    validate_level(&entry.lint, &entry.level, true)?;
+    validate_level(&entry.lint, &entry.level, false)?;
     validate_nonempty(&entry.lint, "path", &entry.path)?;
+    let relative_path = Path::new(&entry.path);
+    if relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("debt entry for {} path must be repository-relative: {}", entry.lint, entry.path);
+    }
+    let repository_root = root.canonicalize().map_err(|error| {
+        color_eyre::eyre::eyre!("cannot resolve repository root {}: {error}", root.display())
+    })?;
+    let current_path = root.join(relative_path).canonicalize().map_err(|error| {
+        color_eyre::eyre::eyre!(
+            "debt entry for {} path is not a current repository file {}: {error}",
+            entry.lint,
+            entry.path
+        )
+    })?;
+    if !current_path.starts_with(&repository_root) || !current_path.is_file() {
+        bail!(
+            "debt entry for {} path is not a current repository file: {}",
+            entry.lint,
+            entry.path
+        );
+    }
     validate_nonempty(&entry.lint, "owner", &entry.owner)?;
     validate_nonempty(&entry.lint, "reason", &entry.reason)?;
     let review_after = parse_review_date(&entry.lint, &entry.review_after)?;
