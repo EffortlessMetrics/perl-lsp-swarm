@@ -2136,7 +2136,7 @@ impl WorkspaceIndex {
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
     /// let uri = Url::parse("file:///example.pl")?;
-    /// index.index_file(uri, "sub hello { return 1; }".to_string())?;
+    /// index.index_initial_file(uri, "sub hello { return 1; }".to_string())?;
     /// # Ok(())
     /// # }
     /// ```
@@ -2842,7 +2842,7 @@ impl WorkspaceIndex {
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let index = WorkspaceIndex::new();
-    /// index.index_file_str("file:///example.pl", "sub hello { }")?;
+    /// index.index_initial_file_str("file:///example.pl", "sub hello { }")?;
     /// # Ok(())
     /// # }
     /// ```
