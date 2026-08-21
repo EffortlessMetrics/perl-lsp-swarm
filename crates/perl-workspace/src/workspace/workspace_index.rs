@@ -14305,7 +14305,7 @@ sub bar { return $greeting; }
         );
         assert!(initial.is_ok(), "initial import must remain fallible: {initial:?}");
 
-        let generation = NonZeroU32::new(1).expect("test generation is non-zero");
+        let generation = must_some(NonZeroU32::new(1));
         let outcome = index.index_live_file(
             uri.clone(),
             "package ApiSourceCommit; sub live { 2 } 1;".to_string(),
@@ -14319,8 +14319,8 @@ sub bar { return $greeting; }
     fn source_commit_api_preserves_stale_and_noop_outcomes() {
         let index = WorkspaceIndex::new();
         let uri = must(url::Url::parse("file:///api/source-commit-outcomes.pl"));
-        let generation_two = NonZeroU32::new(2).expect("test generation is non-zero");
-        let generation_one = NonZeroU32::new(1).expect("test generation is non-zero");
+        let generation_two = must_some(NonZeroU32::new(2));
+        let generation_one = must_some(NonZeroU32::new(1));
         let text = "package Outcomes; sub stable { 1 } 1;".to_string();
 
         assert_eq!(
@@ -14346,8 +14346,8 @@ sub bar { return $greeting; }
         let index = WorkspaceIndex::new();
         let uri = must(url::Url::parse("file:///api/source-commit-noop-generation.pl"));
         let text = "package NoOpGeneration; sub stable { 1 } 1;".to_string();
-        let generation_one = NonZeroU32::new(1).expect("test generation is non-zero");
-        let generation_two = NonZeroU32::new(2).expect("test generation is non-zero");
+        let generation_one = must_some(NonZeroU32::new(1));
+        let generation_two = must_some(NonZeroU32::new(2));
 
         must(index.index_initial_file(uri.clone(), text.clone()));
         assert_eq!(
@@ -14375,7 +14375,7 @@ sub bar { return $greeting; }
         let index = WorkspaceIndex::new();
         let uri = must(url::Url::parse("file:///api/source-commit-pending-noop.pl"));
         let text = "package PendingNoOp; sub stable { 1 } 1;".to_string();
-        let generation_one = NonZeroU32::new(1).expect("test generation is non-zero");
+        let generation_one = must_some(NonZeroU32::new(1));
 
         must(index.index_initial_file(uri.clone(), text.clone()));
         let key = DocumentStore::uri_key(uri.as_str());
@@ -14385,7 +14385,7 @@ sub bar { return $greeting; }
             // live commit has identical content, which used to bypass the
             // pending high-water guard through the NoOp fast path.
             let mut files = index.files.write();
-            let file = files.get_mut(&key).expect("initial file is present");
+            let file = must_some(files.get_mut(&key));
             file.pending_generation = 3;
             assert_eq!(file.generation, 0);
         }

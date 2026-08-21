@@ -13,8 +13,15 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / ".spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml"
@@ -58,6 +65,8 @@ def declared_apis(ledger: dict[str, object]) -> tuple[set[str], set[str], re.Pat
 
 
 def main() -> int:
+    if tomllib is None:
+        raise SystemExit("Python 3.11+ or the 'tomli' package is required to parse TOML")
     ledger = tomllib.loads(LEDGER.read_text(encoding="utf-8"))
     canonical, compatible, call_re = declared_apis(ledger)
     expected = set(ledger["caller_paths"])
