@@ -3289,6 +3289,7 @@ impl WorkspaceIndex {
 
     /// Clear all indexed files and symbols from the workspace.
     pub fn clear(&self) {
+        let _write_version = WriteVersionGuard::new(self);
         self.files.write().clear();
         self.symbols.write().clear();
         self.search_index.write().clear();
