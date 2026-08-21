@@ -4247,6 +4247,17 @@ mod deep_tree_destruction_tests {
         )
     }
 
+    fn wrap_try(inner: Node) -> Node {
+        Node::new(
+            NodeKind::Try {
+                body: Box::new(number_leaf("body")),
+                catch_blocks: vec![(Some(("error".to_string(), loc())), Box::new(inner))],
+                finally_block: Some(Box::new(number_leaf("finally"))),
+            },
+            loc(),
+        )
+    }
+
     fn wrap_recovery(inner: Node) -> Node {
         Node::new(
             NodeKind::Error {
@@ -4266,6 +4277,7 @@ mod deep_tree_destruction_tests {
             ("repeated", wrap_repeated),
             ("pair_record", wrap_pair_record),
             ("clause_pair", wrap_clause_pair),
+            ("try_catch_pair_and_finally", wrap_try),
             ("recovery", wrap_recovery),
         ]
     }
@@ -4343,14 +4355,14 @@ mod deep_tree_destruction_tests {
     }
 
     #[test]
-    fn unwind_during_surrounding_work_leaves_deep_tree_safely_droppable() -> Result<(), String> {
+    fn panic_before_drop_leaves_deep_tree_safely_droppable() -> Result<(), String> {
         run_on_small_stack(|| {
             let deep = chain_of(DEEP_DEPTH, wrap_boxed);
             let touched = std::panic::catch_unwind(|| deep.count_nodes() >= 1);
-            assert!(touched.is_ok(), "tree must remain readable while work unwinds");
+            assert!(touched.is_ok(), "tree must remain readable before the panic");
             let injected =
                 std::panic::catch_unwind(|| std::panic::resume_unwind(Box::new("injected")));
-            assert!(injected.is_err(), "injected unwinding must be caught");
+            assert!(injected.is_err(), "the injected panic must be caught before drop");
             drop(deep);
         })
     }
