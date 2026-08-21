@@ -24,10 +24,88 @@ use std::time::Duration;
 /// The expected version from the crate being tested
 const EXPECTED_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Failure message for a handshake whose time budget elapsed.
+const HANDSHAKE_TIMEOUT_MESSAGE: &str =
+    "initialize request timed out before the server returned serverInfo";
+
+/// Per-attempt verdict of the handshake retry contract: exactly one
+/// fresh-server retry, granted only to an elapsed timeout.
+enum RetryDecision {
+    /// Start one fresh server and try again.
+    RetryOnce,
+    /// Stop retrying and fail the test with this message.
+    GiveUp(String),
+}
+
+/// Exit status of the server process, for crash diagnostics.
+fn disconnected_status(server: &common::LspServer) -> String {
+    server
+        .process
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .try_wait()
+        .ok()
+        .flatten()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "process alive but stdout closed".to_owned())
+}
+
+/// Apply the retry contract to one handshake attempt: only a first-attempt
+/// timeout earns the fresh-server retry; disconnects, malformed responses,
+/// successes, and exhausted attempts all give up.
+fn classify_attempt(
+    attempt: u8,
+    outcome: &common::ReadResponseOutcome,
+    disconnect_status: &str,
+) -> RetryDecision {
+    match outcome {
+        common::ReadResponseOutcome::TimedOut if attempt < 2 => RetryDecision::RetryOnce,
+        common::ReadResponseOutcome::TimedOut => {
+            RetryDecision::GiveUp(HANDSHAKE_TIMEOUT_MESSAGE.to_owned())
+        }
+        common::ReadResponseOutcome::Disconnected => RetryDecision::GiveUp(format!(
+            "perl-lsp process terminated during initialization ({disconnect_status}); \
+             not retrying a crashed server"
+        )),
+        common::ReadResponseOutcome::Malformed(detail) => RetryDecision::GiveUp(format!(
+            "perl-lsp sent an unparsable initialize response; \
+             not retrying a protocol failure ({detail})"
+        )),
+        common::ReadResponseOutcome::Response(_) => {
+            RetryDecision::GiveUp("initialize succeeded; success is not retried".to_owned())
+        }
+    }
+}
+
+/// Initialize a freshly started server, retrying ONCE with a new server
+/// when the handshake stalls. The assertion stays strict on every attempt:
+/// a server that answers with wrong serverInfo fails all attempts — only
+/// the loaded-runner stall (#11848: initialize can exceed a 45s deadline
+/// with the handler itself trivial, transport-level) is retried, mirroring
+/// the system-inc probe retry in module_resolution.
+fn initialize_with_retry(
+    params: serde_json::Value,
+) -> Result<(common::LspServer, serde_json::Value), String> {
+    for attempt in 1..=2u8 {
+        let server = common::start_lsp_server();
+        match send_initialize_with_timeout(&server, params.clone()) {
+            common::ReadResponseOutcome::Response(response) => return Ok((server, response)),
+            outcome => match classify_attempt(attempt, &outcome, &disconnected_status(&server)) {
+                RetryDecision::RetryOnce => eprintln!(
+                    "initialize attempt {attempt}/2 timed out; retrying with a fresh server"
+                ),
+                RetryDecision::GiveUp(err) => return Err(err),
+            },
+        }
+    }
+    // Only two consecutive timeouts fall out of the loop.
+    Err(HANDSHAKE_TIMEOUT_MESSAGE.to_owned())
+}
+
 fn send_initialize_with_timeout(
     server: &common::LspServer,
     params: serde_json::Value,
-) -> Result<serde_json::Value, String> {
+) -> common::ReadResponseOutcome {
     let id = json!(1);
     common::send_request_no_wait(
         server,
@@ -39,7 +117,7 @@ fn send_initialize_with_timeout(
         }),
     );
 
-    common::read_response_matching(
+    common::read_response_matching_outcome(
         server,
         &id,
         // 45s floor: these are the suite's coldest server starts — the
@@ -50,24 +128,17 @@ fn send_initialize_with_timeout(
         // server fails the test instead of hanging it forever.
         common::adaptive_timeout().max(Duration::from_secs(45)),
     )
-    .ok_or_else(|| "initialize request timed out before the server returned serverInfo".to_owned())
 }
 
 #[test]
 fn lsp_server_version_matches_crate_version() -> Result<(), String> {
-    // Start the server using the same resolution logic as other tests
-    let server = common::start_lsp_server();
-
-    // Send initialize request
-    let response = send_initialize_with_timeout(
-        &server,
-        json!({
-            "capabilities": {},
-            "clientInfo": {"name": "version-test", "version": "0"},
-            "rootUri": null,
-            "workspaceFolders": null
-        }),
-    )?;
+    // Start the server and initialize (one fresh-server retry on stall)
+    let (server, response) = initialize_with_retry(json!({
+        "capabilities": {},
+        "clientInfo": {"name": "version-test", "version": "0"},
+        "rootUri": null,
+        "workspaceFolders": null
+    }))?;
 
     // Extract serverInfo.version from the response
     let server_version = response
@@ -110,17 +181,11 @@ fn lsp_server_version_matches_crate_version() -> Result<(), String> {
 
 #[test]
 fn lsp_server_identifier_is_perl_lsp() -> Result<(), String> {
-    // Start the server
-    let server = common::start_lsp_server();
-
-    // Send initialize request
-    let response = send_initialize_with_timeout(
-        &server,
-        json!({
-            "capabilities": {},
-            "rootUri": null
-        }),
-    )?;
+    // Start the server and initialize (one fresh-server retry on stall)
+    let (server, response) = initialize_with_retry(json!({
+        "capabilities": {},
+        "rootUri": null
+    }))?;
 
     // Extract serverInfo.name from the response
     let server_name = response
@@ -140,4 +205,62 @@ fn lsp_server_identifier_is_perl_lsp() -> Result<(), String> {
     common::shutdown_and_exit(&server);
 
     Ok(())
+}
+
+#[test]
+fn retry_contract_retries_first_timeout_once() {
+    assert!(matches!(
+        classify_attempt(1, &common::ReadResponseOutcome::TimedOut, ""),
+        RetryDecision::RetryOnce
+    ));
+}
+
+#[test]
+fn retry_contract_gives_up_on_second_timeout() {
+    let decision = classify_attempt(2, &common::ReadResponseOutcome::TimedOut, "");
+    assert!(
+        matches!(decision, RetryDecision::GiveUp(ref m) if m == HANDSHAKE_TIMEOUT_MESSAGE),
+        "a second timeout must exhaust the single retry"
+    );
+}
+
+#[test]
+fn retry_contract_never_retries_success() {
+    let response = common::ReadResponseOutcome::Response(json!({"result": {"serverInfo": {}}}));
+    assert!(
+        matches!(classify_attempt(1, &response, ""), RetryDecision::GiveUp(_)),
+        "a successful handshake must not be retried"
+    );
+}
+
+#[test]
+fn retry_contract_fails_disconnected_without_retry() {
+    let decision =
+        classify_attempt(1, &common::ReadResponseOutcome::Disconnected, "exit code: 101");
+    assert!(
+        matches!(
+            decision,
+            RetryDecision::GiveUp(ref message)
+                if message.contains("terminated during initialization")
+                    && message.contains("exit code: 101")
+                    && message.contains("not retrying a crashed server")
+        ),
+        "a crashed server must fail without a fresh-server retry"
+    );
+}
+
+#[test]
+fn retry_contract_fails_malformed_without_retry() {
+    let detail = "invalid JSON in 12-byte frame: expected value".to_owned();
+    let decision = classify_attempt(1, &common::ReadResponseOutcome::Malformed(detail), "");
+    assert!(
+        matches!(
+            decision,
+            RetryDecision::GiveUp(ref message)
+                if message.contains("unparsable initialize response")
+                    && message.contains("invalid JSON in 12-byte frame")
+                    && message.contains("not retrying a protocol failure")
+        ),
+        "a malformed response must fail without a fresh-server retry"
+    );
 }
