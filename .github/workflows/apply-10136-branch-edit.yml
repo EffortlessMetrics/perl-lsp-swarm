@@ -44,22 +44,39 @@ jobs:
           assert text.count(old_pattern) == 2, text.count(old_pattern)
           text = text.replace(old_pattern, new_pattern)
 
-          marker = '''sub_exact(
+          config_marker = '''sub_exact(
               CONFIG_DOC,
               r'\\n### perl\\.testRunner\\n.*?(?=\\n### perl\\.formatting\\n)',
               "",
               flags=re.DOTALL,
           )
           '''
-          insertion = marker + '''sub_exact(
+          config_insertion = config_marker + '''sub_exact(
               CONFIG_DOC,
               r'\\n### CI / testing environment\\n.*?(?=\\n### Editor-specific snippets\\n)',
               "\\n### CI / testing environment\\n\\n```json\\n{\\n  \\\"perl\\\": {\\n    \\\"workspace\\\": { \\\"useSystemInc\\\": false },\\n    \\\"perlcritic\\\": { \\\"enabled\\\": true }\\n  }\\n}\\n```\\n",
               flags=re.DOTALL,
           )
           '''
-          assert text.count(marker) == 1, text.count(marker)
-          path.write_text(text.replace(marker, insertion), encoding="utf-8")
+          assert text.count(config_marker) == 1, text.count(config_marker)
+          text = text.replace(config_marker, config_insertion)
+
+          schema_marker = '''sub_exact(
+              SCHEMA_DOC,
+              r'\\n### Test Runner\\n.*?(?=\\n### Resource Limits\\n)',
+              "",
+              flags=re.DOTALL,
+          )
+          '''
+          schema_insertion = schema_marker + '''sub_exact(
+              SCHEMA_DOC,
+              r'^    \\\"testRunner\\\": \\{\\n(?:      .*\\n)+?    \\},\\n',
+              "",
+              flags=re.MULTILINE,
+          )
+          '''
+          assert text.count(schema_marker) == 1, text.count(schema_marker)
+          path.write_text(text.replace(schema_marker, schema_insertion), encoding="utf-8")
           PY
 
       - name: Apply count-checked source edit
