@@ -65,7 +65,6 @@ OUTPUT_PATH_FLAGS = {
     "--json-out",
     "--log-path",
     "--output",
-    "--receipt",
     "--receipt-dir",
     "--receipt-path",
     "--report",
@@ -94,6 +93,21 @@ INTERPRETER_OPTIONS_WITH_ARGUMENT = {
     "-m",
 }
 SHELL_OPERATORS = {"&&", ";", "||", "|", "&"}
+SUPPORTED_SHELL_KEYWORDS = {"do", "done", "elif", "else", "fi", "for", "if", "in", "then"}
+UNSUPPORTED_SHELL_CONSTRUCTS = {
+    "!",
+    "[[",
+    "]]",
+    "case",
+    "coproc",
+    "esac",
+    "function",
+    "select",
+    "until",
+    "while",
+    "{",
+    "}",
+}
 INTERPRETER_SIMPLE_OPTIONS = {
     "bash": {"-e", "-f", "-u", "-v", "-x", "--noprofile", "--norc"},
     "sh": {"-e", "-f", "-u", "-v", "-x"},
@@ -115,7 +129,7 @@ ATTACHED_INTERPRETER_ALIASES = {
     if canonical in {"bash", "python", "python2", "python3", "pwsh", "sh"}
 }
 UNSAFE_SHELL_COMMANDS = {"alias", "cd", "eval", "exec", "source"}
-REDIRECTION = re.compile(r"^(?P<fd>[0-9]*)(?P<operator><<|>>|<|>)(?P<target>.*)$")
+REDIRECTION = re.compile(r"^(?P<fd>[0-9]*)(?P<operator><<|>>|>&|<&|<|>)(?P<target>.*)$")
 
 
 @dataclass(frozen=True)
@@ -163,6 +177,22 @@ def _yaml_scalar(value: str) -> str:
             raise ValueError("gate command scalar must be a string")
         return decoded
     return value
+
+
+def _yaml_command_scalar(value: str) -> str:
+    """Accept only YAML strings for scalar command declarations."""
+    stripped = value.strip()
+    if not stripped:
+        return ""
+    if stripped[0] in {"'", '"'}:
+        return _yaml_scalar(stripped)
+    if stripped.lower() in {"false", "null", "no", "off", "on", "true", "yes", "~"}:
+        raise ValueError("gate command must be a YAML string")
+    if re.fullmatch(r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", stripped):
+        raise ValueError("gate command must be a YAML string")
+    if stripped.startswith(("[", "{")):
+        raise ValueError("gate command must be a YAML string")
+    return stripped
 
 
 def _read_gate_command_specs(path: Path) -> dict[str, str]:
@@ -235,7 +265,7 @@ def _read_gate_command_specs(path: Path) -> dict[str, str]:
             line_number = cursor
             continue
 
-        specs[current] = _yaml_scalar(value)
+        specs[current] = _yaml_command_scalar(value)
         line_number += 1
     if not in_gates:
         raise ValueError(f"gate policy has no gates sequence: {path}")
@@ -256,12 +286,35 @@ def _contains_shell_expansion(token: str) -> bool:
     return "$" in token or "`" in token or "*" in token or "?" in token
 
 
+def _contains_dynamic_shell_expansion(token: str) -> bool:
+    return bool(
+        "`" in token
+        or "$(" in token
+        or "<(" in token
+        or ">(" in token
+        or re.search(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|[?*@#0-9])", token)
+    )
+
+
+def _split_gate_command(command: str) -> list[str]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    return list(lexer)
+
+
 def _interpreter_name(token: str) -> str | None:
     token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
     return INTERPRETER_ALIASES.get(token_name)
 
 
-def _repository_relative_path(path: str, root: Path, *, subject: str) -> None:
+def _repository_relative_path(
+    path: str,
+    root: Path,
+    *,
+    subject: str,
+    require_file: bool = False,
+) -> None:
     """Reject path syntax that can escape or dynamically leave the checkout."""
     path = path.rstrip(";")
     if path in {"&0", "&1", "&2"} or path == "/dev/null":
@@ -279,6 +332,8 @@ def _repository_relative_path(path: str, root: Path, *, subject: str) -> None:
         resolved.relative_to(root.resolve())
     except ValueError as error:
         raise ValueError(f"path escapes checked-out tree in {subject}: {path}") from error
+    if require_file and (not resolved.exists() or resolved.is_symlink() or not resolved.is_file()):
+        raise ValueError(f"missing input path in {subject}: {path}")
 
 
 def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
@@ -287,6 +342,10 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
         token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
         if token in UNSAFE_SHELL_COMMANDS:
             raise ValueError(f"unsupported shell command in gate policy: {token}")
+        if token in UNSUPPORTED_SHELL_CONSTRUCTS:
+            raise ValueError(f"unsupported shell construct in gate policy: {token}")
+        if token.rstrip(";") != "run_${i}.log" and _contains_dynamic_shell_expansion(token):
+            raise ValueError(f"unsupported dynamic shell expansion: {token}")
         if "$(" in token or "<(" in token or ">(" in token or "`" in token:
             raise ValueError(f"unsupported nested shell expression: {token}")
         if token_name == "env" and index + 1 < len(tokens):
@@ -305,11 +364,18 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             if index + 1 >= len(tokens):
                 raise ValueError("redirection is missing its target")
             target = tokens[index + 1]
-        if target.startswith("&"):
-            if target not in {"&0", "&1", "&2"}:
+        if target.startswith("&") or operator in {">&", "<&"}:
+            if target not in {"&0", "&1", "&2", "0", "1", "2"}:
                 raise ValueError(f"unsupported file-descriptor redirection: {target}")
             continue
-        _repository_relative_path(target, root, subject="redirection")
+        if operator in {">&", "<&"} and target in {"0", "1", "2"}:
+            continue
+        _repository_relative_path(
+            target,
+            root,
+            subject="redirection",
+            require_file=operator == "<",
+        )
 
 
 def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
@@ -328,16 +394,31 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
     env_pending = False
     env_command_pending = False
     env_skip_option_value = False
+    command_position = True
+    redirection_target_pending = False
     for index, token in enumerate(tokens):
         token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
         interpreter_token_name = _interpreter_name(token)
         if skip_next_output:
             skip_next_output = False
+            if token.startswith("-") or token in SHELL_OPERATORS or REDIRECTION.match(token):
+                raise ValueError(f"output path option is missing its value: {token}")
             continue
         if token in OUTPUT_PATH_FLAGS:
             skip_next_output = True
             continue
         if any(token.startswith(f"{flag}=") for flag in OUTPUT_PATH_FLAGS):
+            if not token.split("=", 1)[1]:
+                raise ValueError(f"output path option is missing its value: {token}")
+            continue
+
+        if redirection_target_pending:
+            redirection_target_pending = False
+            continue
+        redirection = REDIRECTION.match(token)
+        if redirection is not None:
+            if not redirection.group("target"):
+                redirection_target_pending = True
             continue
 
         if expect_input_path:
@@ -360,6 +441,7 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
             continue
 
         if token in SHELL_OPERATORS:
+            command_position = True
             interpreter_pending = False
             interpreter_name = None
             skip_next_interpreter_option = False
@@ -376,9 +458,11 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
             if interpreter_token_name is not None:
                 interpreter_pending = True
                 interpreter_name = interpreter_token_name
+                command_position = False
                 continue
             if _looks_like_command_path(token):
                 references.append(token)
+                command_position = False
                 continue
             raise ValueError(f"env -- command is not a supported executable path: {token}")
 
@@ -405,17 +489,22 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
             if interpreter_token_name is not None:
                 interpreter_pending = True
                 interpreter_name = interpreter_token_name
+                command_position = False
                 continue
             if _looks_like_command_path(token):
                 references.append(token)
+                command_position = False
             continue
 
-        if token_name == "env":
+        if command_position and token_name == "env":
             env_pending = True
+            command_position = False
             continue
 
         if skip_next_interpreter_option:
             skip_next_interpreter_option = False
+            if token.startswith("-") or token in SHELL_OPERATORS or REDIRECTION.match(token):
+                raise ValueError(f"interpreter option is missing its value: {token}")
             continue
         if interpreter_pending:
             if expect_interpreter_script:
@@ -427,6 +516,7 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
                 expect_interpreter_script = False
                 interpreter_pending = False
                 interpreter_name = None
+                command_position = False
                 continue
             if token in INTERPRETER_SCRIPT_OPTIONS:
                 if interpreter_name != "pwsh":
@@ -445,31 +535,46 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
                 continue
             if _contains_shell_expansion(token):
                 raise ValueError(f"unsupported shell expansion in command path: {token}")
-            if _looks_like_command_path(token):
-                references.append(token)
-                interpreter_pending = False
-                interpreter_name = None
+            if token in SUPPORTED_SHELL_KEYWORDS:
+                raise ValueError(f"interpreter script path is missing before shell keyword: {token}")
+            references.append(token)
+            interpreter_pending = False
+            interpreter_name = None
+            command_position = False
             continue
 
-        if interpreter_token_name is not None:
+        if command_position and token in SUPPORTED_SHELL_KEYWORDS:
+            continue
+        if command_position and interpreter_token_name is not None:
             interpreter_pending = True
             interpreter_name = interpreter_token_name
+            command_position = False
             continue
         if any(
             token_name.startswith(f"{interpreter}-")
             for interpreter in ATTACHED_INTERPRETER_ALIASES
         ):
             raise ValueError(f"unsupported attached interpreter option: {token}")
-        if index == 0 and _looks_like_command_path(token):
+        if command_position and _looks_like_command_path(token):
             references.append(token)
+        if command_position:
+            command_position = False
     if expect_input_path:
         raise ValueError("input path option is missing its value")
     if expect_interpreter_script:
         raise ValueError("interpreter script option is missing its path")
+    if skip_next_output:
+        raise ValueError("output path option is missing its value")
+    if skip_next_interpreter_option:
+        raise ValueError("interpreter option is missing its value")
+    if interpreter_pending:
+        raise ValueError("interpreter command is missing its script path")
     if env_command_pending:
         raise ValueError("env -- wrapper is missing its command")
     if env_pending:
         raise ValueError("env wrapper is missing its command")
+    if redirection_target_pending:
+        raise ValueError("redirection is missing its target")
     return references
 
 
@@ -498,7 +603,7 @@ def load_gate_commands(
         if "`" in command:
             raise ValueError(f"selected gate {gate!r} uses unsupported backtick substitution")
         try:
-            tokens = shlex.split(command, comments=True, posix=True)
+            tokens = _split_gate_command(command)
         except ValueError as error:
             raise ValueError(f"selected gate {gate!r} has an invalid command: {error}") from error
         if not tokens or not any(token.strip() for token in tokens):
