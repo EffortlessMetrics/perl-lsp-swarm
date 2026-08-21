@@ -856,6 +856,7 @@ impl LspServer {
                 let index = coordinator.index();
 
                 let text_before = &doc_text[..offset.min(doc_text.len())];
+                let is_method_completion = text_before.trim_end().ends_with("->");
                 let prefix = text_before
                     .chars()
                     .rev()
@@ -925,13 +926,15 @@ impl LspServer {
                     // The core provider owns import-aware, current-file, and
                     // qualified completions for these kinds; retain only the
                     // module-name kinds here (issue #11158).
-                    if matches!(
-                        symbol.kind,
-                        crate::workspace_index::SymbolKind::Subroutine
-                            | crate::workspace_index::SymbolKind::Method
-                            | crate::workspace_index::SymbolKind::Constant
-                            | crate::workspace_index::SymbolKind::Export
-                    ) {
+                    if !is_method_completion
+                        && matches!(
+                            symbol.kind,
+                            crate::workspace_index::SymbolKind::Subroutine
+                                | crate::workspace_index::SymbolKind::Method
+                                | crate::workspace_index::SymbolKind::Constant
+                                | crate::workspace_index::SymbolKind::Export
+                        )
+                    {
                         continue;
                     }
 
