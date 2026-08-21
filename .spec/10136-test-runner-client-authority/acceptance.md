@@ -149,7 +149,7 @@ The focused proof must become red when a mutation:
 
 ## Completion condition
 
-#10136 is complete only when every current accepted-state, parser, reflection,
+Issue #10136 is complete only when every current accepted-state, parser, reflection,
 catalog, schema and current-documentation row is removed or explicitly historical,
 the hostile-input and recurrence controls are discriminating, and no current
 behavior-bearing consumer requires the deleted state.

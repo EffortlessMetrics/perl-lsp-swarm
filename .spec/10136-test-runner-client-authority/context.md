@@ -85,7 +85,7 @@ consumer is not retained as future authority.
 
 ### Schema and documentation surface
 
-`s​​chemas/perllsp-settings.schema.json` and generated/reference documentation
+`schemas/perllsp-settings.schema.json` and generated/reference documentation
 currently advertise `testRunner` as supported configuration.
 
 Disposition: remove the object and regenerate or update every current projection.
@@ -183,7 +183,7 @@ server has a complete testing service.
 
 ## Rollback and stop conditions
 
-Rollback may restore no generic command or argv authority. If a current-main
+Rollback must not restore generic command or argv authority. If a current-main
 rebase reveals a real production consumer, stop and classify it by exact executable
 and plan owner before editing. Retain only server-owned constants or a canonical
 plan seam; do not preserve raw client strings.
