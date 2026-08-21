@@ -272,6 +272,12 @@ impl FileFactShardPort {
         let mut incomplete = BTreeSet::new();
         let mut file_ids = BTreeSet::new();
         let mut content_hashes = BTreeSet::new();
+        if shards.len() > 1 {
+            // FileFactShard does not carry a per-shard document generation.
+            // Until that producer contract exists, adapting multiple shards
+            // under one snapshot cannot support an exact answer.
+            limitations.push("multi_shard_single_snapshot_exactness".to_string());
+        }
         for shard in shards {
             file_ids.insert(shard.file_id);
             content_hashes.insert(shard.content_hash);
@@ -416,11 +422,13 @@ impl CanonicalEnvelopePort {
                 snapshot.fallback_state,
                 snapshot.model_version,
             );
-            let mut names: Vec<String> = envelope.package.iter().cloned().collect();
-            names.retain(|name| !name.trim().is_empty());
             records.push(AdapterFactRecord {
                 envelope: envelope.clone(),
-                names,
+                // Canonical envelopes expose package/module identity through
+                // `envelope.package`; they do not supply source-level symbol
+                // aliases. Treating the package as a symbol would make
+                // Symbol("Example") match a package-only fact.
+                names: Vec::new(),
                 occurrence_kind: None,
                 trace,
             });
@@ -1091,7 +1099,31 @@ fn query_records(
         ));
     }
 
+    if matches!(request.subject, ProviderQuerySubject::Entity(_))
+        && records
+            .iter()
+            .map(|record| record.envelope.anchor.file_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1
+    {
+        return Ok(unavailable_draft(
+            request,
+            snapshot,
+            producer,
+            trace_source,
+            records.len(),
+            limitations,
+            "unqualified_entity_multi_file",
+        ));
+    }
+
     let binding = generation_binding(request, snapshot);
+    let blockers = if capability == ProviderQueryCapability::Boundaries {
+        Vec::new()
+    } else {
+        select_boundary_records(&request.subject, records)
+    };
     if binding != GenerationBinding::Current {
         let mut notes = limitations.to_vec();
         notes.push(match binding {
@@ -1101,11 +1133,16 @@ fn query_records(
         });
         notes.retain(|note| !note.is_empty());
         let selection = select_records(request, records);
-        if binding == GenerationBinding::Mismatched && !selection.is_empty() {
+        if binding == GenerationBinding::Mismatched
+            && (!selection.is_empty() || !blockers.is_empty())
+        {
             // Facts exist but belong to another generation, so they are stale
             // for this request. Freshness is request-relative; the supporting
             // copies carry the staleness explicitly.
-            let facts = selection_as_supporting(&selection, request, true)?;
+            let mut facts = selection_as_supporting(&selection, request, true)?;
+            let mut present: BTreeSet<FactId> =
+                facts.iter().map(|fact| fact.envelope().fact_id).collect();
+            facts.extend(blocker_facts(request, &blockers, &mut present, true)?);
             return Ok(no_value_draft(ProviderQueryOutcome::Stale, facts, None, Vec::new(), notes));
         }
         return Ok(unavailable_draft(
@@ -1120,19 +1157,14 @@ fn query_records(
     }
 
     let selection = select_records(request, records);
-    let blockers = if capability == ProviderQueryCapability::Boundaries {
-        Vec::new()
-    } else {
-        select_boundary_records(&request.subject, records)
-    };
-
-    let any_stale = selection
-        .all()
-        .chain(blockers.iter().copied())
-        .any(|record| record.envelope.status() == SemanticFactStatus::Stale);
-    let any_out_of_generation = selection.all().any(|record| !record_is_current(record, request));
-    if any_stale || any_out_of_generation {
-        let facts = selection_as_supporting(&selection, request, true)?;
+    let any_stale = selection.all().chain(blockers.iter().copied()).any(|record| {
+        record.envelope.status() == SemanticFactStatus::Stale || !record_is_current(record, request)
+    });
+    if any_stale {
+        let mut facts = selection_as_supporting(&selection, request, true)?;
+        let mut present: BTreeSet<FactId> =
+            facts.iter().map(|fact| fact.envelope().fact_id).collect();
+        facts.extend(blocker_facts(request, &blockers, &mut present, true)?);
         return Ok(no_value_draft(
             ProviderQueryOutcome::Stale,
             facts,
@@ -1146,7 +1178,10 @@ fn query_records(
         .chain(blockers.iter().copied())
         .any(|record| record.envelope.status() == SemanticFactStatus::Refused)
     {
-        let facts = selection_as_supporting(&selection, request, false)?;
+        let mut facts = selection_as_supporting(&selection, request, false)?;
+        let mut present: BTreeSet<FactId> =
+            facts.iter().map(|fact| fact.envelope().fact_id).collect();
+        facts.extend(blocker_facts(request, &blockers, &mut present, false)?);
         return Ok(no_value_draft(
             ProviderQueryOutcome::Refused,
             facts,
@@ -1161,7 +1196,7 @@ fn query_records(
             let mut facts = selection_as_supporting(&selection, request, false)?;
             let mut present: BTreeSet<FactId> =
                 facts.iter().map(|fact| fact.envelope().fact_id).collect();
-            facts.extend(blocker_facts(request, &blockers, &mut present)?);
+            facts.extend(blocker_facts(request, &blockers, &mut present, false)?);
             let boundary = blockers.iter().find_map(|record| record.envelope.boundary.clone());
             let traces = traces_for(request, &facts, records);
             return Ok(no_value_draft(
@@ -1180,6 +1215,7 @@ fn query_records(
             producer,
             denominator_scope,
             snapshot_id,
+            limitations,
         ) {
             return Ok(ProviderQueryResultDraft::new(
                 ProviderQueryOutcome::Exact,
@@ -1218,7 +1254,7 @@ fn query_records(
         let mut facts = selection_facts(&selection)?;
         let mut present: BTreeSet<FactId> =
             facts.iter().map(|fact| fact.envelope().fact_id).collect();
-        facts.extend(blocker_facts(request, &blockers, &mut present)?);
+        facts.extend(blocker_facts(request, &blockers, &mut present, false)?);
         let boundary = blockers.iter().find_map(|record| record.envelope.boundary.clone());
         let traces = traces_for(request, &facts, records);
         return Ok(value_draft(
@@ -1327,6 +1363,7 @@ fn readiness_draft(
             producer,
             denominator_scope,
             snapshot_id,
+            limitations,
         )
     {
         return ProviderQueryResultDraft::new(
@@ -1357,12 +1394,19 @@ fn issue_completeness_grant(
     producer: SemanticProducer,
     denominator_scope: &str,
     snapshot_id: &str,
+    limitations: &[String],
 ) -> Option<ProviderCompletenessGrant> {
     if producer == SemanticProducer::Unknown
         || !snapshot.can_claim_exact(capability)
         || !request.context.is_exact_ready()
         || generation_binding(request, snapshot) != GenerationBinding::Current
+        || !limitations.is_empty()
     {
+        return None;
+    }
+    let units: Vec<_> =
+        records.iter().filter(|record| capability_covers(capability, record)).collect();
+    if units.is_empty() {
         return None;
     }
     let requested_file = match &request.subject {
@@ -1372,13 +1416,8 @@ fn issue_completeness_grant(
         _ => None,
     };
     if requested_file.is_some_and(|file_id| {
-        !records.iter().any(|record| record.envelope.anchor.file_id == file_id)
+        !units.iter().any(|record| record.envelope.anchor.file_id == file_id)
     }) {
-        return None;
-    }
-    let units: Vec<_> =
-        records.iter().filter(|record| capability_covers(capability, record)).collect();
-    if units.is_empty() {
         return None;
     }
     // Every denominator unit must itself be exact-grade and current for this
@@ -1716,6 +1755,7 @@ fn blocker_facts(
     request: &ProviderQueryRequest,
     blockers: &[&AdapterFactRecord],
     present: &mut BTreeSet<FactId>,
+    mark_stale: bool,
 ) -> Result<Vec<ProviderQueryFact>, ProviderQueryContractError> {
     let mut facts = Vec::new();
     for record in blockers {
@@ -1727,7 +1767,20 @@ fn blocker_facts(
         } else {
             ProviderQueryFactRole::Supporting
         };
-        facts.push(record_fact(record, role)?);
+        let envelope = if mark_stale {
+            let mut envelope = record.envelope.clone();
+            envelope.freshness = SemanticFreshness::Stale;
+            envelope.reason_code = SemanticReasonCode::StaleDependency;
+            envelope
+        } else {
+            record.envelope.clone()
+        };
+        facts.push(ProviderQueryFact::try_new(
+            role,
+            ProviderFactGenerationScope::Document,
+            envelope,
+            record.names.clone(),
+        )?);
     }
     Ok(facts)
 }

@@ -1,20 +1,21 @@
 use perl_lsp_rs_core::providers::{
     CanonicalEnvelopePort, FileFactShardPort, NoopProviderQueryControl, ProviderAdapterError,
     ProviderAdapterSnapshot, ProviderCancellationState, ProviderIdentity, ProviderQueryCapability,
-    ProviderQueryContext, ProviderQueryDeadline, ProviderQueryKind, ProviderQueryOutcome,
-    ProviderQueryRequest, ProviderQueryResult, ProviderQuerySubject, ProviderReadinessRequirement,
-    ProviderReadinessState, ProviderSemanticPort, ProviderSnapshotCompleteness,
-    execute_provider_query,
+    ProviderQueryContext, ProviderQueryControl, ProviderQueryDeadline, ProviderQueryKind,
+    ProviderQueryOutcome, ProviderQueryRequest, ProviderQueryResult, ProviderQuerySubject,
+    ProviderReadinessRequirement, ProviderReadinessState, ProviderSemanticPort,
+    ProviderSnapshotCompleteness, execute_provider_query,
 };
 use perl_semantic_facts::{
-    AnchorFact, AnchorId, Confidence, EntityFact, EntityId, EntityKind, FactId, FileId,
-    LifecyclePhase, OccurrenceFact, OccurrenceId, OccurrenceKind, Provenance,
-    ProviderFactSourceKind, ProviderFallbackState, ProviderSurface, ScopeId, SemanticConfidence,
-    SemanticFactEnvelope, SemanticFactKind, SemanticFreshness, SemanticProducer,
-    SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
+    AnchorFact, AnchorId, BoundaryDisposition, BoundaryKind, BoundaryLink, Confidence, EntityFact,
+    EntityId, EntityKind, FactId, FileId, LifecyclePhase, OccurrenceFact, OccurrenceId,
+    OccurrenceKind, Provenance, ProviderFactSourceKind, ProviderFallbackState, ProviderSurface,
+    ScopeId, SemanticConfidence, SemanticFactEnvelope, SemanticFactKind, SemanticFreshness,
+    SemanticProducer, SemanticProvenance, SemanticReasonCode, SourceAnchor, SourceGeneration,
 };
 use perl_workspace::workspace::workspace_index::FileFactShard;
 use std::error::Error;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn snapshot(completeness: ProviderSnapshotCompleteness) -> ProviderAdapterSnapshot {
     ProviderAdapterSnapshot::new(
@@ -57,6 +58,34 @@ fn execute(
     request: &ProviderQueryRequest,
 ) -> Result<ProviderQueryResult, perl_lsp_rs_core::providers::ProviderQueryContractError> {
     execute_provider_query(port, request, &NoopProviderQueryControl)
+}
+
+struct ScriptedControl {
+    cancelled_after: usize,
+    deadline_after: usize,
+    cancellation_checks: AtomicUsize,
+    deadline_checks: AtomicUsize,
+}
+
+impl ScriptedControl {
+    fn new(cancelled_after: usize, deadline_after: usize) -> Self {
+        Self {
+            cancelled_after,
+            deadline_after,
+            cancellation_checks: AtomicUsize::new(0),
+            deadline_checks: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ProviderQueryControl for ScriptedControl {
+    fn is_cancelled(&self) -> bool {
+        self.cancellation_checks.fetch_add(1, Ordering::Relaxed) >= self.cancelled_after
+    }
+
+    fn deadline_expired(&self) -> bool {
+        self.deadline_checks.fetch_add(1, Ordering::Relaxed) >= self.deadline_after
+    }
 }
 
 fn shard(provenance: Provenance, confidence: Confidence) -> FileFactShard {
@@ -314,6 +343,22 @@ fn compiler_envelope(freshness: SemanticFreshness, generation: &str) -> Semantic
     )
 }
 
+fn boundary_envelope(freshness: SemanticFreshness, generation: &str) -> SemanticFactEnvelope {
+    let mut envelope = compiler_envelope(freshness, generation);
+    envelope.entity_id = None;
+    envelope.kind = SemanticFactKind::Boundary;
+    envelope.package = None;
+    envelope.provenance = SemanticProvenance::Known(Provenance::DynamicBoundary);
+    envelope.reason_code = SemanticReasonCode::DynamicValue;
+    envelope.boundary = Some(BoundaryLink::new(
+        Some(envelope.fact_id),
+        BoundaryKind::DynamicValue,
+        BoundaryDisposition::Degrade,
+        SemanticReasonCode::DynamicValue,
+    ));
+    envelope
+}
+
 #[test]
 fn canonical_envelopes_preserve_real_compiler_producer_and_staleness() -> Result<(), Box<dyn Error>>
 {
@@ -338,6 +383,28 @@ fn canonical_envelopes_preserve_real_compiler_producer_and_staleness() -> Result
     )?;
     assert_eq!(stale_result.outcome(), ProviderQueryOutcome::Stale);
     assert_eq!(stale_result.value_facts().count(), 0);
+    Ok(())
+}
+
+#[test]
+fn canonical_package_is_not_a_symbol_alias() -> Result<(), Box<dyn Error>> {
+    let port = CanonicalEnvelopePort::new(
+        &[compiler_envelope(SemanticFreshness::Fresh, "document-7")],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+
+    let symbol = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("Example".into())),
+    )?;
+    assert!(symbol.is_exact_empty(), "package identity must not answer a Symbol query");
+
+    let package = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Package("Example".into())),
+    )?;
+    assert_eq!(package.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(package.value_facts().count(), 1);
     Ok(())
 }
 
@@ -431,6 +498,23 @@ fn file_scoped_exact_empty_requires_requested_file_coverage() -> Result<(), Box<
         ),
     )?;
     assert!(covered_position.is_exact_empty());
+
+    // File 11 is represented only by reference records. A declaration query
+    // must not borrow file 10's declaration denominator to mint exact-empty.
+    let mut references_only = compiler_envelope(SemanticFreshness::Fresh, "document-7");
+    references_only.fact_id = FactId(901);
+    references_only.kind = SemanticFactKind::Occurrence;
+    references_only.anchor.file_id = FileId(11);
+    let port = CanonicalEnvelopePort::new(
+        &[compiler_envelope(SemanticFreshness::Fresh, "document-7"), references_only],
+        snapshot(ProviderSnapshotCompleteness::Complete),
+    )?;
+    let file_result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::File(FileId(11))),
+    )?;
+    assert_eq!(file_result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert!(!file_result.is_exact_empty());
     Ok(())
 }
 
@@ -441,13 +525,37 @@ fn two_file_shards_never_collide_fact_ids() -> Result<(), Box<dyn Error>> {
     let port = parser_port(&[first, second], ProviderSnapshotCompleteness::Complete)?;
     let result =
         execute(&port, &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Workspace))?;
-    assert_eq!(result.outcome(), ProviderQueryOutcome::Exact);
+    assert_eq!(result.outcome(), ProviderQueryOutcome::Degraded);
     let values: Vec<_> = result.value_facts().collect();
     assert_eq!(values.len(), 2, "both file shards keep their entity facts");
     assert_ne!(values[0].fact_id, values[1].fact_id);
     let mut files: Vec<_> = values.iter().map(|value| value.anchor.file_id).collect();
     files.sort();
     assert_eq!(files, vec![FileId(10), FileId(11)]);
+    assert!(
+        result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation == "multi_shard_single_snapshot_exactness")
+    );
+
+    // EntityId is local to a shard. A multi-file port must not answer an
+    // unqualified local ID by combining both files' same-numbered entities.
+    let entity_result = execute(
+        &port,
+        &request(ProviderQueryKind::Declaration, ProviderQuerySubject::Entity(EntityId(30))),
+    )?;
+    assert_eq!(entity_result.outcome(), ProviderQueryOutcome::Unavailable);
+    assert_eq!(entity_result.value_facts().count(), 0);
+    assert!(!entity_result.is_exact_empty());
+    assert!(
+        entity_result
+            .evidence()
+            .limitations()
+            .iter()
+            .any(|limitation| limitation == "unqualified_entity_multi_file")
+    );
     Ok(())
 }
 
@@ -492,6 +600,66 @@ fn cross_generation_snapshot_cannot_answer_exact() -> Result<(), Box<dyn Error>>
     let stale_result = execute(&port, &stale_context)?;
     assert_eq!(stale_result.outcome(), ProviderQueryOutcome::Stale);
     assert_eq!(stale_result.value_facts().count(), 0);
+    Ok(())
+}
+
+#[test]
+fn stale_boundary_blockers_are_retained_as_stale_evidence() -> Result<(), Box<dyn Error>> {
+    for (freshness, generation) in
+        [(SemanticFreshness::Stale, "document-7"), (SemanticFreshness::Fresh, "old-document")]
+    {
+        let port = CanonicalEnvelopePort::new(
+            &[boundary_envelope(freshness, generation)],
+            snapshot(ProviderSnapshotCompleteness::Complete),
+        )?;
+        let result = execute(
+            &port,
+            &request(
+                ProviderQueryKind::Declaration,
+                ProviderQuerySubject::Position { file_id: FileId(10), byte_offset: 5 },
+            ),
+        )?;
+        assert_eq!(result.outcome(), ProviderQueryOutcome::Stale);
+        assert_eq!(result.value_facts().count(), 0);
+        assert!(result.facts().iter().any(|fact| {
+            fact.envelope().kind == SemanticFactKind::Boundary
+                && fact.envelope().freshness == SemanticFreshness::Stale
+        }));
+    }
+    Ok(())
+}
+
+#[test]
+fn live_controls_are_rechecked_after_adapter_query() -> Result<(), Box<dyn Error>> {
+    let port = parser_port(
+        &[shard(Provenance::ExactAst, Confidence::High)],
+        ProviderSnapshotCompleteness::Complete,
+    )?;
+    let query =
+        request(ProviderQueryKind::Declaration, ProviderQuerySubject::Symbol("work".into()));
+
+    // The first admission check is clear; the second check, performed by the
+    // checked result boundary, observes cancellation after the adapter draft.
+    let cancelled = ScriptedControl::new(1, usize::MAX);
+    let cancellation = execute_provider_query(&port, &query, &cancelled);
+    assert_eq!(
+        cancellation,
+        Err(perl_lsp_rs_core::providers::ProviderQueryContractError::InvalidOutcomeEvidence(
+            ProviderQueryOutcome::Exact,
+        ))
+    );
+    assert!(cancelled.cancellation_checks.load(Ordering::Relaxed) >= 2);
+
+    // Exercise the same post-query guard for a deadline independently.
+    let deadline = ScriptedControl::new(usize::MAX, 1);
+    let expiry = execute_provider_query(&port, &query, &deadline);
+    assert_eq!(
+        expiry,
+        Err(perl_lsp_rs_core::providers::ProviderQueryContractError::InvalidOutcomeEvidence(
+            ProviderQueryOutcome::Exact,
+        ))
+    );
+    assert!(deadline.deadline_checks.load(Ordering::Relaxed) >= 2);
     Ok(())
 }
 
