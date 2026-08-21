@@ -457,6 +457,97 @@ fn schema_rejects_realistic_constraint_violations() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn schema_rejects_cross_field_false_greens_and_wrong_nested_reference_kinds()
+-> Result<(), Box<dyn Error>> {
+    let complete = generic_execution(InstrumentState::Complete)?;
+    let execution = execution_evidence(&complete, Vec::new())?;
+    let observer = observer_manifest("observer.structure.v1", ObservationPlane::Structure)?;
+    let observation =
+        exact_observation(&execution, observer.clone(), "assignment(variable,integer)")?;
+    let comparison = ScoredComparison::matches_expected(
+        &complete,
+        ObserverId::new("observer.structure.v1")?,
+        ReviewedExpectationId::new("obligation.assignment.shape.v1")?,
+        ObservationPlane::Structure,
+        SemanticFingerprint::new("assignment(variable,integer)")?,
+        SemanticFingerprint::new("assignment(variable,integer)")?,
+    )?;
+    let conformance = SubjectConformanceEvidence::scored(
+        &observation,
+        obligation(observer)?,
+        &comparison,
+        Vec::new(),
+    )?;
+    let schema: Value = serde_json::from_str(&parser_comparison_evidence_schema_json()?)?;
+    let execution_payload: Value = serde_json::from_str(&execution.canonical_payload_json()?)?;
+    let observation_payload: Value = serde_json::from_str(&observation.canonical_payload_json()?)?;
+    let conformance_payload: Value = serde_json::from_str(&conformance.canonical_payload_json()?)?;
+
+    let mut failed_accepted_clean = execution_payload.clone();
+    failed_accepted_clean["harness"] = Value::String("failed:timed_out".to_owned());
+    failed_accepted_clean["subject_disposition"] = Value::String("accepted_clean".to_owned());
+    failed_accepted_clean["instrument_state"] = Value::String("complete".to_owned());
+    assert!(validate_value(&failed_accepted_clean, &schema, &schema).is_err());
+
+    let mut observed_without_fingerprint = observation_payload.clone();
+    observed_without_fingerprint["fingerprint"] = Value::Null;
+    assert!(validate_value(&observed_without_fingerprint, &schema, &schema).is_err());
+
+    let mut observed_with_limitation_reason = observation_payload.clone();
+    observed_with_limitation_reason["limitation_reason"] =
+        Value::String("should_not_be_present".to_owned());
+    assert!(validate_value(&observed_with_limitation_reason, &schema, &schema).is_err());
+
+    let mut matching_with_mismatch = conformance_payload.clone();
+    matching_with_mismatch["mismatch"] = serde_json::json!({
+        "class": "wrong_kind",
+        "first_divergence": "children[0]"
+    });
+    assert!(validate_value(&matching_with_mismatch, &schema, &schema).is_err());
+
+    let mut mismatch_without_detail = conformance_payload.clone();
+    mismatch_without_detail["outcome"] = Value::String("mismatch".to_owned());
+    mismatch_without_detail["mismatch"] = Value::Null;
+    assert!(validate_value(&mismatch_without_detail, &schema, &schema).is_err());
+
+    let mut wrong_source_case_kind = execution_payload.clone();
+    wrong_source_case_kind["source_case"]["authority"]["kind"] =
+        Value::String("observer_manifest".to_owned());
+    assert!(validate_value(&wrong_source_case_kind, &schema, &schema).is_err());
+
+    let mut wrong_subject_manifest_kind = execution_payload.clone();
+    wrong_subject_manifest_kind["subject_manifest"]["authority"]["kind"] =
+        Value::String("source_case".to_owned());
+    assert!(validate_value(&wrong_subject_manifest_kind, &schema, &schema).is_err());
+
+    let mut wrong_observation_execution_kind = observation_payload.clone();
+    wrong_observation_execution_kind["execution"]["kind"] =
+        Value::String("subject_observation".to_owned());
+    assert!(validate_value(&wrong_observation_execution_kind, &schema, &schema).is_err());
+
+    let mut wrong_observer_manifest_kind = observation_payload.clone();
+    wrong_observer_manifest_kind["observer_manifest"]["authority"]["kind"] =
+        Value::String("source_case".to_owned());
+    assert!(validate_value(&wrong_observer_manifest_kind, &schema, &schema).is_err());
+
+    let mut wrong_conformance_observation_kind = conformance_payload.clone();
+    wrong_conformance_observation_kind["observation"]["kind"] =
+        Value::String("subject_conformance".to_owned());
+    assert!(validate_value(&wrong_conformance_observation_kind, &schema, &schema).is_err());
+
+    let mut wrong_obligation_kind = conformance_payload.clone();
+    wrong_obligation_kind["obligation"]["authority"]["kind"] =
+        Value::String("observer_manifest".to_owned());
+    assert!(validate_value(&wrong_obligation_kind, &schema, &schema).is_err());
+
+    let mut wrong_obligation_observer_kind = conformance_payload;
+    wrong_obligation_observer_kind["obligation"]["observer"]["authority"]["kind"] =
+        Value::String("source_case".to_owned());
+    assert!(validate_value(&wrong_obligation_observer_kind, &schema, &schema).is_err());
+    Ok(())
+}
+
+#[test]
 fn schema_rejects_arbitrary_modeled_values() -> Result<(), Box<dyn Error>> {
     let generic = generic_execution(InstrumentState::Complete)?;
     let execution = execution_evidence(&generic, Vec::new())?;
