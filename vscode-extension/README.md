@@ -41,7 +41,6 @@ for support-tier boundaries, explanations, previews, and copyable receipts.
 - **Preview Package Rename** -- Preview package/compiler-backed rename evidence without authorizing broad edits
 - **Extract Variable** -- Pull out expressions into named variables
 - **Extract Subroutine** -- Create functions from selected code blocks
-- **Organize Imports** -- Sort and clean `use` statements (`Shift+Alt+O`)
 
 ### Diagnostics and Quality
 
@@ -214,7 +213,6 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 
 | Action           | Shortcut              |
 | ---------------- | --------------------- |
-| Organize Imports | `Shift+Alt+O`         |
 | Run Tests        | `Shift+Alt+T`         |
 | Restart Server   | `Shift+Alt+R`         |
 | Format Document  | `Shift+Alt+F`         |
@@ -268,7 +266,6 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | Command                            | Description                                 |
 | ---------------------------------- | ------------------------------------------- |
 | **Perl: Format Document**          | Format the active document                  |
-| **Perl: Organize Use Statements**  | Sort and clean `use` statements             |
 | **Perl: Extract Variable**         | Extract the selection into a new variable   |
 | **Perl: Extract Method**           | Extract the selection into a new subroutine |
 | **Perl: Show Refactoring Options** | List refactorings available at the cursor   |
