@@ -276,10 +276,9 @@ fn workspace_symbol_visible_without_import(
         .container_name
         .as_deref()
         .or_else(|| {
-            symbol
-                .qualified_name
-                .as_deref()
-                .and_then(|qualified| qualified.strip_suffix(&format!("::{}", symbol.name)))
+            symbol.qualified_name.as_deref().and_then(|qualified| {
+                qualified.strip_suffix(&symbol.name).and_then(|prefix| prefix.strip_suffix("::"))
+            })
         })
         .unwrap_or("");
     module.is_empty()
