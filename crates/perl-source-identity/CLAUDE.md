@@ -51,9 +51,9 @@ concern from these `sha256:`-prefixed durable IDs.
   and unsupported envelope schema versions are serde errors. Public
   constructors can still create values that require caller checks, including
   unsupported schema versions and semantically inconsistent envelope fields.
-- Canonical callers must exclude host paths, URIs, traversal-order counters,
-  and process-local values from stable identity inputs; constructors do not
-  normalize or reject those inputs.
+- Canonical callers must exclude host paths, host-specific URIs,
+  traversal-order counters, and process-local values from stable identity
+  inputs; constructors do not normalize or reject those inputs.
 
 ## Neighbors
 
