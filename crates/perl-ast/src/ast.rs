@@ -1023,9 +1023,27 @@ impl Node {
     ///
     /// This enables depth-first traversal for operations like heredoc content attachment.
     /// The closure receives a mutable reference to each child node.
+    ///
+    /// Child enumeration is owned by [`NodeKind::for_each_child_mut_inner`], the
+    /// single structural authority shared with destructor detachment; do not add
+    /// a second mutable child table.
     #[inline]
-    pub fn for_each_child_mut<F: FnMut(&mut Node)>(&mut self, mut f: F) {
-        match &mut self.kind {
+    pub fn for_each_child_mut<F: FnMut(&mut Node)>(&mut self, f: F) {
+        self.kind.for_each_child_mut_inner(f);
+    }
+}
+
+impl NodeKind {
+    /// Enumerate every direct child of this kind, in canonical field order.
+    ///
+    /// Extracted verbatim from `Node::for_each_child_mut` so the public mutable
+    /// traversal and destructor detachment consume one authority instead of
+    /// drifting apart. Exhaustive over every [`NodeKind`] variant: adding a
+    /// variant or child field without registering it here fails compilation.
+    /// #8424 will replace this implementation in place from the structural
+    /// registry; [`Node`]'s destructor must not need rewriting when that lands.
+    fn for_each_child_mut_inner<F: FnMut(&mut Node)>(&mut self, mut f: F) {
+        match self {
             NodeKind::Tie { variable, package, args } => {
                 f(variable);
                 f(package);
@@ -1289,10 +1307,12 @@ impl Node {
             | NodeKind::MissingStatement
             | NodeKind::MissingIdentifier
             | NodeKind::MissingBlock
-            | NodeKind::UnknownRest => {}
+             | NodeKind::UnknownRest => {}
         }
     }
+}
 
+impl Node {
     /// Visit direct children with short-circuiting and preserve their structural fields.
     ///
     /// `None` identifies an intentionally unnamed child. Repeated children in
@@ -4084,5 +4104,65 @@ mod depth_guard_tests {
         assert_eq!(pulls, 1, "the source must not pull later wide-node children after break");
         assert_eq!(visits, 1, "the consumer must receive only the first child");
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Traversal authority parity (#8836)
+// ---------------------------------------------------------------------------
+//
+// The mutable child enumeration extracted into `NodeKind::
+// for_each_child_mut_inner` is the one structural authority shared with
+// destructor detachment. These tests reconcile it, per variant and per
+// element order, against the canonical immutable field-aware traversal over
+// the compile-exhaustive fully populated fixture bank. A mutation that omits,
+// duplicates, reorders, or adds a child projection in either traversal turns
+// red here instead of silently escaping into destruction behavior.
+#[cfg(test)]
+mod traversal_authority_tests {
+    use super::*;
+    use crate::invariant_policy::node_kind_fixtures;
+    use std::ops::ControlFlow;
+
+    /// Observe direct-child visit order as raw addresses so both traversals
+    /// can be compared without requiring any public identity on `Node`.
+    fn mutable_child_addresses(node: &mut Node) -> Vec<usize> {
+        let mut addresses = Vec::new();
+        node.for_each_child_mut(|child| {
+            addresses.push(std::ptr::from_ref(child) as usize);
+        });
+        addresses
+    }
+
+    fn immutable_child_addresses(node: &Node) -> Vec<usize> {
+        let mut addresses = Vec::new();
+        let _ = node.try_for_each_child_with_field(|_field, child| {
+            addresses.push(std::ptr::from_ref(child) as usize);
+            ControlFlow::<()>::Continue(())
+        });
+        addresses
+    }
+
+    #[test]
+    fn mutable_traversal_matches_canonical_field_order_for_every_fixture() {
+        let fixtures = node_kind_fixtures();
+        assert!(
+            fixtures.len() >= NodeKind::ALL_KIND_NAMES.len(),
+            "fixture bank must cover every NodeKind variant"
+        );
+
+        for mut fixture in fixtures {
+            let kind_name = fixture.sample.kind.kind_name();
+            // Both traversals observe the same owned sample: the immutable
+            // pass borrows it, then the mutable pass takes it by value.
+            let expected = immutable_child_addresses(&fixture.sample);
+            let observed = mutable_child_addresses(&mut fixture.sample);
+
+            assert_eq!(
+                observed, expected,
+                "{kind_name}: mutable child enumeration diverged from the canonical \
+                 field-aware traversal (omitted, duplicated, or reordered child)"
+            );
+        }
     }
 }
