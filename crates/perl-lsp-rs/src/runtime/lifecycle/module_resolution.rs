@@ -437,7 +437,14 @@ fn append_system_inc_paths_from(system_paths: &[PathBuf], include_paths: &mut Ve
 
 fn normalized_inc_key(path: &std::path::Path) -> String {
     let normalized = path.to_string_lossy().replace('\\', "/");
-    if normalized == "/" { normalized } else { normalized.trim_end_matches('/').to_string() }
+    // Preserve the trailing separator on root forms: POSIX "/" and Windows
+    // drive roots ("C:/") keep theirs, so a drive root never collapses into
+    // the drive-RELATIVE path ("C:" — the drive's current directory, a
+    // different location entirely). Trimming it made the two dedupe as one
+    // include path (#11840 review).
+    let is_root_form = normalized == "/"
+        || (normalized.len() == 3 && normalized.as_bytes()[1] == b':' && normalized.ends_with('/'));
+    if is_root_form { normalized } else { normalized.trim_end_matches('/').to_string() }
 }
 
 impl LspServer {
@@ -739,6 +746,23 @@ mod tests {
         assert_eq!(roots[0].source, "use-lib-lexical");
         assert_eq!(roots[1].source, "workspace-include-paths");
         assert_eq!(roots[2].source, "interpreter-startup-inc");
+    }
+
+    /// A Windows drive root ("C:\\") and its drive-relative form ("C:") are
+    /// DIFFERENT directories; the dedupe key must keep them distinct instead
+    /// of collapsing both to "C:" (#11840 review).
+    #[test]
+    fn normalized_inc_key_keeps_drive_roots_distinct_from_drive_relative() {
+        assert_ne!(
+            normalized_inc_key(std::path::Path::new("C:\\")),
+            normalized_inc_key(std::path::Path::new("C:")),
+            "drive root must not collapse into the drive-relative path"
+        );
+        assert_eq!(
+            normalized_inc_key(std::path::Path::new(r"C:\site\lib")),
+            normalized_inc_key(std::path::Path::new("C:/site/lib")),
+            "ordinary paths still normalize to one key"
+        );
     }
 
     #[test]

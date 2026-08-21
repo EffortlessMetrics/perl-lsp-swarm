@@ -4809,8 +4809,9 @@ profile = "recommended"
 
     /// `get_system_inc` must respect `SYSTEM_INC_PROBE_TIMEOUT` so a hung
     /// interpreter cannot block the LSP request thread. Verifies the full
-    /// path: `use_system_inc=true`, slow `perl_path`, lazy probe times out,
-    /// returned slice is empty, and the typed cache holds `TimedOut`.
+    /// path: `use_system_inc=true`, slow `perl_path`, the lazy probe lands
+    /// in a bounded failure outcome, the returned slice is empty, and the
+    /// typed cache holds that outcome for reuse.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_does_not_stall_on_slow_interpreter() -> TestResult {
