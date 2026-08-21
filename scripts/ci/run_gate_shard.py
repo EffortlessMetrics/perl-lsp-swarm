@@ -297,6 +297,8 @@ def _referenced_command_paths(tokens: Sequence[str]) -> list[str]:
             continue
         if index == 0 and _looks_like_command_path(token):
             references.append(token)
+    if expect_input_path:
+        raise ValueError("input path option is missing its value")
     return references
 
 

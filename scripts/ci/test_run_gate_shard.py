@@ -597,18 +597,22 @@ class GateShardTests(unittest.TestCase):
                 )
 
     def test_gate_policy_preflight_rejects_missing_explicit_input_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            policy = write_gate_policy(
-                Path(tmp),
-                "  - name: source_commit_api_check\n"
-                "    command: cargo run --manifest .ci/missing-manifest.txt\n",
-            )
-            with self.assertRaisesRegex(ValueError, "missing command path"):
-                shard.load_gate_commands(
-                    policy,
-                    ["source_commit_api_check"],
-                    root=Path(tmp),
+        for command, message in (
+            ("cargo run --manifest .ci/missing-manifest.txt", "missing command path"),
+            ("cargo run --manifest", "missing its value"),
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(
+                    Path(tmp),
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
                 )
+                with self.assertRaisesRegex(ValueError, message):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
 
     def test_gate_policy_preflight_supports_shell_wrappers_and_comments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
