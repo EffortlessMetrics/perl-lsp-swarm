@@ -33,17 +33,39 @@ impl TextRange {
         Self { start, end }
     }
 
-    /// Create a range that covers a complete source document.
+    /// Create a range that covers a complete source document through its true
+    /// end of file.
+    ///
+    /// A terminal line separator creates a final empty line, so the end of
+    /// `"text\n"`, `"text\r\n"`, and supported bare-CR `"text\r"` is `(1, 0)`,
+    /// not the end of the last content line. CRLF counts as one separator and
+    /// non-BMP characters count as two UTF-16 code units (#8048).
     #[must_use]
     pub fn whole_document(source: &str) -> Self {
-        let lines: Vec<&str> = source.lines().collect();
-        let last_line = lines.len().saturating_sub(1);
-        let last_character = lines.get(last_line).map_or(0, |line| utf16_len(line) as u32);
+        let mut line = 0_u32;
+        let mut character = 0_u32;
+        let mut chars = source.chars().peekable();
 
-        Self {
-            start: TextPosition::new(0, 0),
-            end: TextPosition::new(last_line as u32, last_character),
+        while let Some(ch) = chars.next() {
+            match ch {
+                '\r' => {
+                    if chars.peek() == Some(&'\n') {
+                        let _ = chars.next();
+                    }
+                    line = line.saturating_add(1);
+                    character = 0;
+                }
+                '\n' => {
+                    line = line.saturating_add(1);
+                    character = 0;
+                }
+                other => {
+                    character = character.saturating_add(utf16_char_len(other) as u32);
+                }
+            }
         }
+
+        Self { start: TextPosition::new(0, 0), end: TextPosition::new(line, character) }
     }
 }
 
@@ -165,7 +187,11 @@ impl FormatResult {
 }
 
 pub(super) fn utf16_len(s: &str) -> usize {
-    s.chars().map(|ch| if ch as u32 >= 0x10000 { 2 } else { 1 }).sum()
+    s.chars().map(utf16_char_len).sum()
+}
+
+pub(super) fn utf16_char_len(ch: char) -> usize {
+    if ch as u32 >= 0x10000 { 2 } else { 1 }
 }
 
 impl TextRange {
