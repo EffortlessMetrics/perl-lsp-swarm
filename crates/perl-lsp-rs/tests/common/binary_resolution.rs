@@ -7,6 +7,7 @@
 //! 4. PATH lookup
 //! 5. `cargo run -p perllsp` fallback
 
+use perl_tdd_support::must;
 use std::process::Command;
 
 pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
@@ -64,12 +65,27 @@ pub(crate) fn resolve_perl_lsp_cmds() -> impl Iterator<Item = Command> {
         // these tests live, so `cargo test -p perl-lsp-rs` never builds it. If nothing
         // above resolved, build it ONCE here rather than leaving the `cargo run`
         // fallback to compile inside a per-request timeout it cannot possibly meet.
-        if v.is_empty()
-            && let Some(built) = ensure_perllsp_built(workspace_root)
-        {
-            let mut c = Command::new(built);
-            c.arg("--stdio");
-            v.push(c);
+        if v.is_empty() {
+            match ensure_perllsp_built(workspace_root) {
+                Some(built) => {
+                    let mut c = Command::new(built);
+                    c.arg("--stdio");
+                    v.push(c);
+                }
+                // A failed pre-build (e.g. the linker-crash family) must fail
+                // LOUDLY here: falling through to the `cargo run` candidate
+                // below silently compiles inside the initialize deadline and
+                // resurfaces as an unexplained handshake stall (#11848 — the
+                // captured stderr of one such stall was nothing but rustc
+                // warnings from that inline compile).
+                None => {
+                    must(Err::<Command, _>(
+                        "pre-building the perllsp binary failed (build errors above); refusing \
+                         the cargo-run fallback because it would compile inside the \
+                         initialize deadline and stall the handshake (#11848)",
+                    ));
+                }
+            }
         }
     }
 
