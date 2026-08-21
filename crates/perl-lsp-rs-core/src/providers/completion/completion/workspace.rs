@@ -286,10 +286,7 @@ fn workspace_symbol_visible_without_import(
         || module == "main"
         || module == context.current_package
         || (used_modules.contains(module)
-            && match import_map.get(module) {
-                None => true,
-                Some(symbols) => symbols.contains(&symbol.name),
-            })
+            && import_map.get(module).is_some_and(|symbols| symbols.contains(&symbol.name)))
 }
 
 /// Add live compiler visible-symbol completions for imported/exported symbols.
@@ -375,9 +372,7 @@ fn visible_symbol_has_import_authority(
     };
 
     used_modules.contains(module)
-        && import_map
-            .get(module)
-            .is_some_and(|symbols| symbols.contains(&symbol.name))
+        && import_map.get(module).is_some_and(|symbols| symbols.contains(&symbol.name))
 }
 
 fn is_live_visible_completion_candidate(symbol: &VisibleSymbol) -> bool {

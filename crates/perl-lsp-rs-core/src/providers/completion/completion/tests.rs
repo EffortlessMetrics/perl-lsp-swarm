@@ -3033,6 +3033,77 @@ al"#;
     Ok(())
 }
 
+#[test]
+fn runtime_import_visible_symbol_is_position_gated_and_has_no_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/lib/Tools.pm")?,
+        r#"package Tools;
+use Exporter 'import';
+our @EXPORT_OK = qw(alpha);
+sub alpha { }
+1;
+"#
+        .to_string(),
+    )?;
+
+    let importer_uri = Url::parse("file:///workspace/runtime.pl")?;
+    let before = r#"package App;
+require Tools;
+al
+Tools->import(qw(alpha));
+"#;
+    index.index_file(importer_uri.clone(), before.to_string())?;
+    let mut parser = Parser::new(before);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, before, Some(index.clone()));
+    let before_completions = provider.get_completions_with_path(
+        before,
+        before.find("al\n").unwrap() + 2,
+        Some(importer_uri.as_str()),
+    );
+    assert!(
+        !before_completions.iter().any(|item| item.label == "alpha"),
+        "runtime import must not authorize a bare symbol before the import call"
+    );
+
+    let after = r#"package App;
+require Tools;
+Tools->import(qw(alpha));
+al
+"#;
+    index.index_file(importer_uri.clone(), after.to_string())?;
+    let mut parser = Parser::new(after);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, after, Some(index));
+    let completions =
+        provider.get_completions_with_path(after, after.len() - 1, Some(importer_uri.as_str()));
+    let alpha = must_some(completions.iter().find(|item| item.label == "alpha"));
+    assert!(alpha.additional_edits.is_empty());
+    Ok(())
+}
+
+#[test]
+fn require_only_does_not_authorize_bare_visible_symbol() -> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/lib/Tools.pm")?,
+        "package Tools;\nsub alpha { }\n1;\n".to_string(),
+    )?;
+    let importer_uri = Url::parse("file:///workspace/require_only.pl")?;
+    let code = "package App;\nrequire Tools;\nal\n";
+    index.index_file(importer_uri.clone(), code.to_string())?;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, Some(index));
+    let completions =
+        provider.get_completions_with_path(code, code.len() - 1, Some(importer_uri.as_str()));
+
+    assert!(!completions.iter().any(|item| item.label == "alpha"));
+    Ok(())
+}
+
 // -------------------------------------------------------------------------
 // Unknown-receiver bounded fallback (issue #7929, outcome A)
 //
@@ -4071,8 +4142,8 @@ fn workspace_completion_suppresses_auto_import_when_already_imported()
         Url::parse("file:///lib/Foo.pm")?,
         "package Foo;\nsub barker { }\n1;\n".to_string(),
     )?;
-    // An explicit import makes the bare insertion valid, but never adds an edit.
-    let code = "use strict;\nuse Foo;\nbark";
+    // An exact explicit import makes the bare insertion valid, but never adds an edit.
+    let code = "use strict;\nuse Foo qw(barker);\nbark";
     let mut parser = Parser::new(code);
     let ast = must(parser.parse());
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
