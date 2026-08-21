@@ -326,7 +326,20 @@ impl Node {
     /// assert_eq!(node.location.start, 0);
     /// ```
     pub fn new(kind: NodeKind, location: SourceLocation) -> Self {
+        #[cfg(test)]
+        drop_audit::record_construct();
         Node { kind, location }
+    }
+
+    /// Decompose this node into its kind and source location.
+    ///
+    /// Pattern matching cannot move fields out of a type implementing
+    /// [`Drop`], so consumers that previously destructured an owned `Node`
+    /// call this instead. The returned kind is the original payload; the
+    /// dropped shell retains only a childless placeholder.
+    pub fn into_parts(mut self) -> (NodeKind, SourceLocation) {
+        let kind = std::mem::replace(&mut self.kind, NodeKind::MissingExpression);
+        (kind, self.location)
     }
 
     /// Convert the AST to a tree-sitter compatible S-expression.
@@ -1806,6 +1819,68 @@ impl Node {
             result = Some(child);
         });
         result
+    }
+
+    /// Move every owned child node onto `stack`, leaving structural
+    /// placeholders in their fields.
+    ///
+    /// Detachment runs through [`Self::for_each_child_mut`], the canonical
+    /// mutable child traversal, so every registered child relationship is
+    /// drained exactly once and new variants inherit destruction safety from
+    /// that exhaustive match instead of a second hand-maintained table.
+    fn detach_children(&mut self, stack: &mut Vec<Node>) {
+        self.for_each_child_mut(|child| {
+            stack.push(std::mem::replace(child, Self::detached_placeholder()));
+        });
+    }
+
+    /// Leaf placeholder written into child slots during detachment.
+    ///
+    /// Only observable between detachment and field destruction; carries no
+    /// heap payload and no children of its own.
+    fn detached_placeholder() -> Self {
+        Node::new(NodeKind::Ellipsis, SourceLocation { start: 0, end: 0 })
+    }
+}
+
+/// Destroy an owned [`Node`] tree without unbounded stack growth.
+///
+/// Children are detached into an explicit work stack before each node's own
+/// fields are dropped, so destructor depth is constant regardless of tree
+/// depth. Payload destructors for non-node fields still run exactly once per
+/// value; only the relative order of child destruction changes.
+impl Drop for Node {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        drop_audit::record_destroy();
+
+        let mut stack = Vec::new();
+        self.detach_children(&mut stack);
+        while let Some(mut node) = stack.pop() {
+            node.detach_children(&mut stack);
+        }
+    }
+}
+
+#[cfg(test)]
+mod drop_audit {
+    use std::cell::Cell;
+
+    thread_local! {
+        static CONSTRUCTED: Cell<u64> = const { Cell::new(0) };
+        static DESTROYED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn record_construct() {
+        CONSTRUCTED.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn record_destroy() {
+        DESTROYED.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn take_counts() -> (u64, u64) {
+        (CONSTRUCTED.take(), DESTROYED.take())
     }
 }
 
@@ -3924,10 +3999,7 @@ mod depth_guard_tests {
         // 50 000 levels deep: without the depth guard this stack-overflows.
         let deep = deep_chain(50_000);
         let count = deep.count_nodes();
-        // Prevent the recursive Box<Node> drop-glue from overflowing the stack
-        // (50 000 drop frames would also exceed the default 2 MB test stack).
-        // Memory leaks in tests are intentional and accepted.
-        std::mem::forget(deep);
+        drop(deep);
         // The guard fires at MAX_AST_DEPTH, so we count at most MAX_AST_DEPTH + 1
         // nodes (root + one per guarded level).
         assert!(count >= 1, "must count at least the root node");
@@ -3958,8 +4030,7 @@ mod depth_guard_tests {
         let deep = deep_chain(50_000);
         // Must return without panicking.
         let sexp = deep.to_sexp();
-        // Prevent the recursive Box<Node> drop-glue from overflowing the stack.
-        std::mem::forget(deep);
+        drop(deep);
         assert!(!sexp.is_empty(), "must produce non-empty output");
         // The truncation marker must appear somewhere in the output.
         assert!(
@@ -3975,8 +4046,7 @@ mod depth_guard_tests {
         // counter, so a second independent call returns a fresh result.
         let deep = deep_chain(50_000);
         let _ = deep.to_sexp();
-        // Prevent the recursive drop from overflowing the stack.
-        std::mem::forget(deep);
+        drop(deep);
 
         // Second call: shallow tree, must NOT see the depth_limit_exceeded marker.
         let shallow = Node::new(NodeKind::Number { value: "7".to_string() }, loc());
@@ -4010,13 +4080,11 @@ mod depth_guard_tests {
         // 50 000 levels deep: without the depth guard this stack-overflows.
         let deep = deep_chain(50_000);
         // Must return without panicking; result must be Some (offset 0 is inside the root).
-        // Assert before mem::forget because the result borrows from `deep`.
         assert!(
             deep.find_deepest_containing_offset(0).is_some(),
             "must return Some(&Node) for an in-range offset"
         );
-        // Prevent the recursive Box<Node> drop-glue from overflowing the stack.
-        std::mem::forget(deep);
+        drop(deep);
         Ok(())
     }
 
@@ -4024,13 +4092,12 @@ mod depth_guard_tests {
     fn find_deepest_containing_offset_returns_none_for_out_of_range() -> TestResult {
         // Offset 100 is outside the span (start: 0, end: 1) of every node in the chain.
         let deep = deep_chain(50_000);
-        // Assert before mem::forget because the result borrows from `deep`.
+        // Assert while `deep` is still borrowed.
         assert!(
             deep.find_deepest_containing_offset(100).is_none(),
             "offset outside root span must return None"
         );
-        // Prevent the recursive drop from overflowing the stack.
-        std::mem::forget(deep);
+        drop(deep);
         Ok(())
     }
 
@@ -4084,5 +4151,251 @@ mod depth_guard_tests {
         assert_eq!(pulls, 1, "the source must not pull later wide-node children after break");
         assert_eq!(visits, 1, "the consumer must receive only the first child");
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iterative deep-tree destruction regression tests (#8836)
+// ---------------------------------------------------------------------------
+//
+// `Node` owns its descendants through boxed, optional, repeated, pair-record,
+// clause-pair, and recovery fields. Destruction is iterative: a custom `Drop`
+// detaches every child into an explicit work stack before each node's own
+// fields are dropped, so destructor stack depth no longer grows with tree
+// depth.
+//
+// The small-stack harness (256 KiB worker threads) discriminates the naive
+// recursive drop glue from the iterative drain: destroying a 50 000-node chain
+// recursively needs multiple megabytes of frames and aborts the process, while
+// the iterative drain runs in constant stack space. A mutation that omits one
+// registered child field from `for_each_child_mut`, or that drops a detached
+// child recursively, overflows these same tests.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod deep_tree_destruction_tests {
+    use super::*;
+
+    const SMALL_STACK_BYTES: usize = 256 * 1024;
+    const DEEP_DEPTH: usize = 50_000;
+    const FAMILY_DEPTH: usize = 20_000;
+    const MIXED_DEPTH: usize = 24_000;
+    const DEEP_CYCLE_DEPTH: usize = 10_000;
+
+    fn loc() -> SourceLocation {
+        SourceLocation { start: 0, end: 1 }
+    }
+
+    fn number_leaf(value: &str) -> Node {
+        Node::new(NodeKind::Number { value: value.to_string() }, loc())
+    }
+
+    /// Run `body` on a thread whose stack is far smaller than the recursive
+    /// drop glue for [`DEEP_DEPTH`] nodes would require.
+    fn run_on_small_stack<F>(body: F) -> Result<(), String>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let handle = std::thread::Builder::new()
+            .stack_size(SMALL_STACK_BYTES)
+            .spawn(body)
+            .map_err(|error| format!("failed to spawn small-stack worker: {error}"))?;
+        handle.join().map_err(|_| "small-stack worker aborted (likely stack overflow)".to_string())
+    }
+
+    fn chain_of(depth: usize, wrap: fn(Node) -> Node) -> Node {
+        let mut node = number_leaf("1");
+        for _ in 0..depth {
+            node = wrap(node);
+        }
+        node
+    }
+
+    fn wrap_boxed(inner: Node) -> Node {
+        Node::new(NodeKind::ExpressionStatement { expression: Box::new(inner) }, loc())
+    }
+
+    fn wrap_optional_boxed(inner: Node) -> Node {
+        Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "my".to_string(),
+                variable: Box::new(number_leaf("v")),
+                attributes: Vec::new(),
+                initializer: Some(Box::new(inner)),
+            },
+            loc(),
+        )
+    }
+
+    fn wrap_repeated(inner: Node) -> Node {
+        Node::new(NodeKind::Program { statements: vec![inner] }, loc())
+    }
+
+    fn wrap_pair_record(inner: Node) -> Node {
+        Node::new(NodeKind::HashLiteral { pairs: vec![(number_leaf("k"), inner)] }, loc())
+    }
+
+    fn wrap_clause_pair(inner: Node) -> Node {
+        Node::new(
+            NodeKind::If {
+                condition: Box::new(number_leaf("c")),
+                then_branch: Box::new(number_leaf("t")),
+                elsif_branches: vec![(Box::new(number_leaf("e")), Box::new(inner))],
+                else_branch: None,
+                keyword: None,
+            },
+            loc(),
+        )
+    }
+
+    fn wrap_recovery(inner: Node) -> Node {
+        Node::new(
+            NodeKind::Error {
+                message: "recovery".to_string(),
+                expected: Vec::new(),
+                found: None,
+                partial: Some(Box::new(inner)),
+            },
+            loc(),
+        )
+    }
+
+    fn all_family_wrappers() -> Vec<(&'static str, fn(Node) -> Node)> {
+        vec![
+            ("boxed", wrap_boxed),
+            ("optional_boxed", wrap_optional_boxed),
+            ("repeated", wrap_repeated),
+            ("pair_record", wrap_pair_record),
+            ("clause_pair", wrap_clause_pair),
+            ("recovery", wrap_recovery),
+        ]
+    }
+
+    #[test]
+    fn deep_boxed_chain_destroys_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            drop(chain_of(DEEP_DEPTH, wrap_boxed));
+        })
+    }
+
+    #[test]
+    fn deep_chains_through_every_child_family_destroy_on_small_stack() -> Result<(), String> {
+        for (name, wrap) in all_family_wrappers() {
+            run_on_small_stack(move || {
+                drop(chain_of(FAMILY_DEPTH, wrap));
+            })
+            .map_err(|error| format!("family {name}: {error}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deep_mixed_family_chain_destroys_on_small_stack() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let wraps = all_family_wrappers();
+            let mut node = number_leaf("1");
+            for depth in 0..MIXED_DEPTH {
+                let (_, wrap) = wraps[depth % wraps.len()];
+                node = wrap(node);
+            }
+            drop(node);
+        })
+    }
+
+    #[test]
+    fn repeated_deep_cycles_release_every_node_exactly_once() -> Result<(), String> {
+        let _ = drop_audit::take_counts();
+        for cycle in 0..16u64 {
+            let deep = chain_of(DEEP_CYCLE_DEPTH, wrap_boxed);
+            drop(deep);
+            let (constructed, destroyed) = drop_audit::take_counts();
+            assert_eq!(
+                constructed, destroyed,
+                "cycle {cycle}: constructed {constructed} nodes but destroyed {destroyed}"
+            );
+            assert!(
+                destroyed >= (DEEP_CYCLE_DEPTH + 1) as u64,
+                "cycle {cycle}: destroyed only {destroyed} of at least {} nodes",
+                DEEP_CYCLE_DEPTH + 1
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_broad_cycles_release_every_node_exactly_once() -> Result<(), String> {
+        let _ = drop_audit::take_counts();
+        for cycle in 0..32u64 {
+            let tree = broad_multi_family_tree(cycle);
+            let expected = tree.count_nodes();
+            assert!(expected > 10, "fixture must be non-trivial");
+            drop(tree);
+            let (constructed, destroyed) = drop_audit::take_counts();
+            assert_eq!(
+                constructed, destroyed,
+                "cycle {cycle}: constructed {constructed} nodes but destroyed {destroyed}"
+            );
+            assert!(
+                destroyed >= expected as u64,
+                "cycle {cycle}: destroyed {destroyed}, fixture held {expected}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unwind_during_surrounding_work_leaves_deep_tree_safely_droppable() -> Result<(), String> {
+        run_on_small_stack(|| {
+            let deep = chain_of(DEEP_DEPTH, wrap_boxed);
+            let touched = std::panic::catch_unwind(|| deep.count_nodes() >= 1);
+            assert!(touched.is_ok(), "tree must remain readable while work unwinds");
+            let injected =
+                std::panic::catch_unwind(|| std::panic::resume_unwind(Box::new("injected")));
+            assert!(injected.is_err(), "injected unwinding must be caught");
+            drop(deep);
+        })
+    }
+
+    /// Broad shallow tree touching every child-field family used above.
+    fn broad_multi_family_tree(seed: u64) -> Node {
+        let leaf = |n: u64| number_leaf(&(seed * 1000 + n).to_string());
+        let try_node = Node::new(
+            NodeKind::Try {
+                body: Box::new(Node::new(NodeKind::Block { statements: vec![leaf(1)] }, loc())),
+                catch_blocks: vec![(
+                    Some(("err".to_string(), loc())),
+                    Box::new(Node::new(NodeKind::Block { statements: vec![leaf(2)] }, loc())),
+                )],
+                finally_block: Some(Box::new(leaf(3))),
+            },
+            loc(),
+        );
+        let declaration = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "my".to_string(),
+                variable: Box::new(Node::new(
+                    NodeKind::Variable { sigil: "$".to_string(), name: seed.to_string() },
+                    loc(),
+                )),
+                attributes: vec![":shared".to_string()],
+                initializer: Some(Box::new(leaf(4))),
+            },
+            loc(),
+        );
+        Node::new(
+            NodeKind::Program {
+                statements: vec![
+                    try_node,
+                    declaration,
+                    wrap_clause_pair(leaf(5)),
+                    wrap_pair_record(leaf(6)),
+                    wrap_recovery(leaf(7)),
+                    Node::new(
+                        NodeKind::ArrayLiteral { elements: vec![leaf(8), leaf(9), leaf(10)] },
+                        loc(),
+                    ),
+                ],
+            },
+            loc(),
+        )
     }
 }
