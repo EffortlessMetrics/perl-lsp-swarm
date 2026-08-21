@@ -2508,7 +2508,7 @@ mod visible_symbol_completion_tests {
     }
 
     #[test]
-    fn explicit_runtime_import_is_authority_without_use_module_entry() {
+    fn explicit_runtime_import_without_use_module_entry_is_not_authority() {
         let symbol = VisibleSymbol {
             name: "bar".to_string(),
             entity_id: Some(EntityId(1)),
@@ -2518,7 +2518,7 @@ mod visible_symbol_completion_tests {
         };
         let import_map = HashMap::from([("Foo".to_string(), HashSet::from(["bar".to_string()]))]);
 
-        assert!(visible_symbol_has_import_authority(&symbol, &import_map, &HashSet::new()));
+        assert!(!visible_symbol_has_import_authority(&symbol, &import_map, &HashSet::new()));
     }
 }
 
