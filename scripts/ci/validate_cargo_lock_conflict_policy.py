@@ -14,7 +14,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 
 
@@ -130,7 +130,14 @@ def load_fixture(root: Path) -> list[object]:
         data = json.loads((root / FIXTURE).read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError) as error:
         raise ValidationError(f"fixture is unavailable or invalid: {error}") from error
-    cases = data.get("cases") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        raise ValidationError("fixture must be a mapping")
+    if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
+        raise ValidationError("fixture schema_version must be exactly 1")
+    claim_boundary = data.get("claim_boundary")
+    if not isinstance(claim_boundary, str) or not claim_boundary.strip():
+        raise ValidationError("fixture claim_boundary must be non-empty")
+    cases = data.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValidationError("fixture cases must be a non-empty list")
     return cases
@@ -138,7 +145,11 @@ def load_fixture(root: Path) -> list[object]:
 
 def anchor_line(source: str, needle: str) -> int | None:
     """Return the one-based line containing the unique source needle."""
-    if source.count(needle) != 1:
+    occurrences = sum(
+        source.startswith(needle, offset)
+        for offset in range(len(source) - len(needle) + 1)
+    )
+    if occurrences != 1:
         return None
     offset = source.index(needle)
     line_number = source.count("\n", 0, offset) + 1
@@ -179,14 +190,26 @@ def validate(root: Path) -> list[str]:
             errors.append(f"{case_id}: context must be a string")
         if not isinstance(command, (str, type(None))):
             errors.append(f"{case_id}: command must be a string or null")
-        source_path = root / path
+        relative_path = Path(path)
+        if relative_path.is_absolute() or PureWindowsPath(path).is_absolute():
+            errors.append(f"{case_id}: source path must be relative: {path}")
+            continue
+        source_path = (root / relative_path).resolve()
+        try:
+            source_path.relative_to(root.resolve())
+        except ValueError:
+            errors.append(f"{case_id}: source path escapes repository root: {path}")
+            continue
         try:
             source = source_path.read_text(encoding="utf-8")
         except OSError as error:
             errors.append(f"{case_id}: source unavailable: {path}: {error}")
             continue
         line_number = anchor_line(source, needle)
-        if source.count(needle) != 1:
+        if sum(
+            source.startswith(needle, offset)
+            for offset in range(len(source) - len(needle) + 1)
+        ) != 1:
             errors.append(f"{case_id}: source needle must occur exactly once: {path}")
         elif line_number is None:
             errors.append(f"{case_id}: source needle must occur on one line: {path}")

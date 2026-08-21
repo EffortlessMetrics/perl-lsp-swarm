@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,12 +53,44 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
             root = Path(temp)
             fixture = root / validator.FIXTURE
             fixture.parent.mkdir(parents=True)
-            fixture.write_text('{"cases": [null, ["not a mapping"]]}', encoding="utf-8")
+            fixture.write_text(
+                '{"schema_version": 1, "claim_boundary": "bounded", '
+                '"cases": [null, ["not a mapping"]]}',
+                encoding="utf-8",
+            )
             errors = validator.validate(root)
             self.assertEqual(
                 errors[:2],
                 ["cases[0] must be a mapping", "cases[1] must be a mapping"],
             )
+
+    def test_fixture_schema_version_must_be_exactly_one(self) -> None:
+        for schema_version in (0, 2, "1", True):
+            with self.subTest(schema_version=schema_version), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                fixture = root / validator.FIXTURE
+                fixture.parent.mkdir(parents=True)
+                fixture.write_text(
+                    '{"schema_version": ' + json.dumps(schema_version) +
+                    ', "claim_boundary": "bounded", "cases": [{"id": "x"}]}',
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "schema_version must be exactly 1"):
+                    validator.validate(root)
+
+    def test_fixture_claim_boundary_must_be_non_empty(self) -> None:
+        for claim_boundary in ("", " \t\n"):
+            with self.subTest(claim_boundary=claim_boundary), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                fixture = root / validator.FIXTURE
+                fixture.parent.mkdir(parents=True)
+                fixture.write_text(
+                    '{"schema_version": 1, "claim_boundary": ' +
+                    json.dumps(claim_boundary) + ', "cases": [{"id": "x"}]}',
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "claim_boundary must be non-empty"):
+                    validator.validate(root)
 
     def test_not_proven_cases_reject_malformed_context_and_command_types(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -67,7 +100,8 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
             fixture.parent.mkdir(parents=True)
             source.write_text("anchor\n", encoding="utf-8")
             fixture.write_text(
-                '{"cases": [{"id": "bad-context", "path": "source.txt", '
+                '{"schema_version": 1, "claim_boundary": "bounded", "cases": '
+                '[{"id": "bad-context", "path": "source.txt", '
                 '"needle": "anchor", "context": [], "command": "x", '
                 '"expected": "not_proven", "semantics": {"required": ["anchor"]}}, '
                 '{"id": "bad-command", "path": "source.txt", "needle": "anchor", '
@@ -126,6 +160,33 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
 
     def test_duplicate_source_needles_are_rejected_by_anchor_line(self) -> None:
         self.assertIsNone(validator.anchor_line("duplicate\nduplicate\n", "duplicate"))
+
+    def test_overlapping_source_needles_are_rejected_by_anchor_line(self) -> None:
+        self.assertIsNone(validator.anchor_line("aaa", "aa"))
+
+    def test_absolute_and_escaping_source_paths_are_rejected_before_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / validator.FIXTURE
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text(
+                '{"schema_version": 1, "claim_boundary": "bounded", "cases": ['
+                '{"id": "absolute", "path": "/outside", "needle": "x", '
+                '"context": "dynamic", "command": null, "expected": "not_proven", '
+                '"semantics": {"required": ["x"]}}, '
+                '{"id": "escaping", "path": "../outside", "needle": "x", '
+                '"context": "dynamic", "command": null, "expected": "not_proven", '
+                '"semantics": {"required": ["x"]}}]}',
+                encoding="utf-8",
+            )
+            errors = validator.validate(root)
+            self.assertEqual(
+                errors[:2],
+                [
+                    "absolute: source path must be relative: /outside",
+                    "escaping: source path escapes repository root: ../outside",
+                ],
+            )
 
     def test_compatible_accepted_lock_is_byte_identical(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
