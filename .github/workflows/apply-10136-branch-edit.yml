@@ -1,9 +1,9 @@
 name: Apply #10136 branch edit
 
 on:
-  push:
-    branches:
-      - agent/remove-client-test-runner-authority
+  pull_request:
+    branches: [main]
+    types: [synchronize]
     paths:
       - scripts/maintenance/apply_10136_test_runner_removal.py
       - .github/workflows/apply-10136-branch-edit.yml
@@ -12,12 +12,15 @@ permissions:
   contents: write
 
 concurrency:
-  group: apply-10136-${{ github.ref }}
+  group: apply-10136-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   apply:
-    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    if: >-
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'agent/remove-client-test-runner-authority'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
