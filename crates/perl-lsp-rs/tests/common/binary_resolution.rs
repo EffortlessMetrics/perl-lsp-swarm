@@ -275,7 +275,7 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{built_binary_or_refuse, must, target_directory_from};
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::path::Path;
 
     #[test]
@@ -298,20 +298,49 @@ mod tests {
         assert!(matches!(result, Err(message) if message.contains("not a regular executable")));
     }
 
+    /// True when the command program names cargo itself, whatever spelling or
+    /// absolute location — classified by executable basename/file-stem so an
+    /// absolute cargo path cannot slip past a string-prefix check (#11848).
+    fn is_cargo_invocation(program: &std::ffi::OsStr) -> bool {
+        Path::new(program).file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("cargo"))
+    }
+
+    #[test]
+    fn cargo_classifier_uses_the_executable_stem_not_a_string_prefix() {
+        for cargo_spelling in
+            ["cargo", "cargo.exe", "CARGO.EXE", "./cargo", "../bin/cargo", "/usr/local/bin/cargo"]
+        {
+            assert!(
+                is_cargo_invocation(OsStr::new(cargo_spelling)),
+                "`{cargo_spelling}` must classify as cargo"
+            );
+        }
+        for other_program in ["perllsp", "perllsp.exe", "cargocult", "/usr/local/bin/perllsp"] {
+            assert!(
+                !is_cargo_invocation(OsStr::new(other_program)),
+                "`{other_program}` must not classify as cargo"
+            );
+        }
+        #[cfg(windows)]
+        assert!(is_cargo_invocation(OsStr::new(r"C:\Users\x\.cargo\bin\cargo.exe")));
+    }
+
     /// The #11848 stall family was a `cargo run` candidate compiling inside
     /// the initialize deadline; its refusal contract only holds if no spawn
     /// path can ever reach cargo. This guards the structural invariant: every
     /// yielded candidate is a concrete perllsp executable, never a cargo
     /// invocation that would take the build-directory lock or compile under
-    /// the handshake timeout.
+    /// the handshake timeout. Classification is by executable stem so absolute
+    /// cargo installations are caught too.
     #[test]
     fn resolution_never_offers_a_cargo_candidate() {
         for cmd in super::resolve_perl_lsp_cmds() {
-            let program = cmd.get_program().to_string_lossy();
+            let program = cmd.get_program();
             assert!(
-                !program.starts_with("cargo"),
-                "candidate `{program}` would compile or block on the build lock inside the \
-                 initialize deadline (#11848)"
+                !is_cargo_invocation(program),
+                "candidate `{}` would compile or block on the build lock inside the \
+                 initialize deadline (#11848)",
+                program.to_string_lossy()
             );
         }
     }
