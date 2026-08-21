@@ -371,8 +371,24 @@ fn visible_symbol_has_import_authority(
         return true;
     };
 
-    used_modules.contains(module)
-        && import_map.get(module).is_some_and(|symbols| symbols.contains(&symbol.name))
+    if !used_modules.contains(module) {
+        return false;
+    }
+
+    // `visible_symbols_at` emits `DefaultExport` facts only when the request
+    // document's import of this module is a bare `use module;` form and the
+    // symbol is a member of that module's `@EXPORT`, position-gated to the
+    // query point (perl-workspace semantic visibility + ExportSet facts).
+    // That compiler fact already proves default-import visibility, and the
+    // buffer import map deliberately records no row for a bare `use`. An
+    // explicit list (`use module qw(...)`, including `qw()`) replaces those
+    // defaults, so only exact membership from an explicit row can still
+    // authorize.
+    if matches!(symbol.source, VisibleSymbolSource::DefaultExport) {
+        return import_map.get(module).is_none_or(|imported| imported.contains(&symbol.name));
+    }
+
+    import_map.get(module).is_some_and(|symbols| symbols.contains(&symbol.name))
 }
 
 fn is_live_visible_completion_candidate(symbol: &VisibleSymbol) -> bool {
@@ -2514,6 +2530,103 @@ mod visible_symbol_completion_tests {
         let import_map = HashMap::from([("Foo".to_string(), HashSet::from(["bar".to_string()]))]);
 
         assert!(!visible_symbol_has_import_authority(&symbol, &import_map, &HashSet::new()));
+    }
+
+    fn default_export_symbol(name: &str) -> VisibleSymbol {
+        VisibleSymbol {
+            name: name.to_string(),
+            entity_id: Some(EntityId(1)),
+            source: VisibleSymbolSource::DefaultExport,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("Foo".to_string()), None, None)),
+        }
+    }
+
+    /// A bare `use Foo;` records no import-map row; the compiler's
+    /// `DefaultExport` fact is the authority for default-import visibility
+    /// (#11158 preservation row).
+    #[test]
+    fn default_export_with_bare_use_is_authorized() {
+        assert!(visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &HashMap::new(),
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// `use Foo ();` records an explicit empty-set row that replaces default
+    /// imports; a `DefaultExport` fact must not survive it.
+    #[test]
+    fn default_export_with_explicit_empty_list_is_denied() {
+        let import_map = HashMap::from([("Foo".to_string(), HashSet::new())]);
+
+        assert!(!visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// An explicit list without this symbol replaces default imports.
+    #[test]
+    fn default_export_with_explicit_list_excluding_symbol_is_denied() {
+        let import_map = HashMap::from([("Foo".to_string(), HashSet::from(["other".to_string()]))]);
+
+        assert!(!visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// An explicit list naming this symbol still authorizes it.
+    #[test]
+    fn default_export_with_exact_membership_is_authorized() {
+        let import_map =
+            HashMap::from([("Foo".to_string(), HashSet::from(["defaulted".to_string()]))]);
+
+        assert!(visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
+    }
+
+    /// The document must reference the module at all: export facts from an
+    /// indexed but unimported module stay non-authoritative (#11158).
+    #[test]
+    fn default_export_without_module_reference_is_denied() {
+        assert!(!visible_symbol_has_import_authority(
+            &default_export_symbol("defaulted"),
+            &HashMap::new(),
+            &HashSet::new(),
+        ));
+    }
+
+    /// Non-default sources keep exact-row membership as their authority;
+    /// module presence alone never authorizes an arbitrary member (#11158).
+    #[test]
+    fn explicit_import_still_requires_exact_row_membership() {
+        let symbol = VisibleSymbol {
+            name: "imported_fn".to_string(),
+            entity_id: Some(EntityId(2)),
+            source: VisibleSymbolSource::ExplicitImport,
+            confidence: Confidence::High,
+            context: Some(VisibleSymbolContext::new(Some("Foo".to_string()), None, None)),
+        };
+
+        assert!(!visible_symbol_has_import_authority(
+            &symbol,
+            &HashMap::new(),
+            &HashSet::from(["Foo".to_string()]),
+        ));
+        let import_map =
+            HashMap::from([("Foo".to_string(), HashSet::from(["imported_fn".to_string()]))]);
+        assert!(visible_symbol_has_import_authority(
+            &symbol,
+            &import_map,
+            &HashSet::from(["Foo".to_string()]),
+        ));
     }
 }
 
