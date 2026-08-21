@@ -24,6 +24,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+try:
+    import yaml
+except ModuleNotFoundError:  # pragma: no cover - clean CI has the strict fallback
+    yaml = None
+
 SCHEMA_VERSION = "ci_gate_shard.v1"
 EXECUTION_POLICY_SCHEMA_VERSION = 1
 EXECUTION_POLICY_SOURCE = "gate-shard-execution"
@@ -97,6 +102,7 @@ SHELL_OPERATORS = {"&&", ";", "||", "|", "&"}
 SUPPORTED_SHELL_KEYWORDS = {"do", "done", "elif", "else", "fi", "for", "if", "in", "then"}
 UNSUPPORTED_SHELL_CONSTRUCTS = {
     "!",
+    "(",
     "[[",
     "]]",
     "case",
@@ -108,6 +114,7 @@ UNSUPPORTED_SHELL_CONSTRUCTS = {
     "while",
     "{",
     "}",
+    ")",
 }
 INTERPRETER_SIMPLE_OPTIONS = {
     "bash": {"-e", "-f", "-u", "-v", "-x", "--noprofile", "--norc"},
@@ -263,10 +270,55 @@ def _read_gate_command_specs(path: Path) -> dict[str, str]:
     if not path.exists() or path.is_symlink() or not path.is_file():
         raise ValueError(f"gate policy is missing or not a regular file: {path}")
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         raise ValueError(f"gate policy is unreadable: {error}") from error
+    if yaml is not None:
+        return _read_gate_command_specs_with_yaml(text, path)
+    return _read_gate_command_specs_fallback(text, path)
 
+
+def _read_gate_command_specs_with_yaml(text: str, path: Path) -> dict[str, str]:
+    """Read commands with the same folded/literal scalar semantics as YAML."""
+    if yaml is None:
+        raise AssertionError("YAML parser is unavailable")
+    for raw in text.splitlines():
+        if raw.startswith("    command:"):
+            value = raw.split("command:", 1)[1].strip()
+            candidate = _yaml_inline_comment(value)
+            if candidate.startswith(("&", "*", "!")):
+                raise ValueError("gate command must be a YAML string (unsupported anchor or tag)")
+            if candidate.startswith((">", "|")) and not re.fullmatch(
+                r"[>|][+-]?", candidate
+            ):
+                raise ValueError("unsupported YAML block scalar indicator")
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError as error:
+        raise ValueError(f"gate policy has invalid YAML: {error}") from error
+    if not isinstance(document, dict) or not isinstance(document.get("gates"), list):
+        raise ValueError(f"gate policy has no gates sequence: {path}")
+    specs: dict[str, str] = {}
+    for index, row in enumerate(document["gates"]):
+        if not isinstance(row, dict):
+            raise ValueError(f"gate policy has invalid gate row at index {index}")
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"gate policy has an empty gate name at index {index}")
+        if name in specs:
+            raise ValueError(f"gate policy repeats gate {name!r}")
+        command = row.get("command", "")
+        if "command" in row and command is None:
+            raise ValueError(f"gate {name!r} command must be a YAML string")
+        if not isinstance(command, str):
+            raise ValueError(f"gate {name!r} command must be a YAML string")
+        specs[name] = command
+    return specs
+
+
+def _read_gate_command_specs_fallback(text: str, path: Path) -> dict[str, str]:
+    """Strict fallback for environments without the repository YAML module."""
+    lines = text.splitlines()
     in_gates = False
     current: str | None = None
     specs: dict[str, str] = {}
@@ -360,6 +412,17 @@ def _contains_dynamic_shell_expansion(token: str) -> bool:
     )
 
 
+def _contains_windows_path_syntax(command: str) -> bool:
+    return bool(
+        re.search(r"(?:^|[\s=\"'(])[A-Za-z]:[\\/]", command)
+        or re.search(
+            r"(?:^|[\s=])(?:[A-Za-z0-9_.-]+\\)+[A-Za-z0-9_.-]+",
+            command,
+        )
+        or "\\\\" in command
+    )
+
+
 def _reject_ambiguous_unquoted_hash(value: str) -> None:
     """Reject plain YAML hashes that could hide shell syntax after parsing."""
     quote: str | None = None
@@ -404,6 +467,34 @@ def _is_determinism_output_path(tokens: Sequence[str], index: int) -> bool:
     )
 
 
+def _is_determinism_filter(tokens: Sequence[str], index: int) -> bool:
+    return (
+        index + 2 < len(tokens)
+        and tokens[index] == r"s/^Finished in .*//; s/^\s*Time:\s.*$//"
+        and tokens[index + 1] == ">"
+        and _is_determinism_output_path(tokens, index + 2)
+    )
+
+
+def _is_nested_lock_grouping(tokens: Sequence[str], index: int) -> bool:
+    return (
+        tokens[index] in {"(", ")"}
+        and list(tokens[:2]) == ["if", "find"]
+        and (
+            (
+                tokens[index] == "("
+                and index >= 2
+                and tuple(tokens[index - 2 : index + 1]) == ("find", ".", "(")
+            )
+            or (
+                tokens[index] == ")"
+                and index + 1 < len(tokens)
+                and tokens[index + 1] == "-prune"
+            )
+        )
+    )
+
+
 def _split_gate_command(command: str) -> list[str]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
     lexer.whitespace_split = True
@@ -432,6 +523,8 @@ def _repository_relative_path(
     path = path.rstrip(";")
     if path in {"&0", "&1", "&2"} or path == "/dev/null":
         return
+    if "\\" in path or re.match(r"^[A-Za-z]:", path):
+        raise ValueError(f"unsupported Windows path spelling in {subject}: {path}")
     if path.startswith("~"):
         raise ValueError(f"unsupported tilde expansion in {subject}: {path}")
     if _contains_shell_expansion(path) and not (
@@ -457,9 +550,26 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
     """Reject shell forms whose nested paths cannot be proven statically."""
     for index, token in enumerate(tokens):
         token_name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if _is_env_assignment(token) and (
+            index == 0 or tokens[index - 1] in SHELL_OPERATORS
+        ):
+            raise ValueError(f"unsupported shell prefix assignment in gate policy: {token}")
+        if (
+            ("{" in token or "}" in token)
+            and token != "{package_args}"
+            and not _is_determinism_output_path(tokens, index)
+        ):
+            raise ValueError(f"unsupported shell brace expansion in gate policy: {token}")
+        if (
+            ("*" in token or "?" in token)
+            and not _is_determinism_filter(tokens, index)
+        ):
+            raise ValueError(f"unsupported shell glob expansion in gate policy: {token}")
         if token in UNSAFE_SHELL_COMMANDS:
             raise ValueError(f"unsupported shell command in gate policy: {token}")
-        if token in UNSUPPORTED_SHELL_CONSTRUCTS:
+        if token in UNSUPPORTED_SHELL_CONSTRUCTS and not _is_nested_lock_grouping(
+            tokens, index
+        ):
             raise ValueError(f"unsupported shell construct in gate policy: {token}")
         if token in MALFORMED_SHELL_PUNCTUATION:
             raise ValueError(f"malformed shell punctuation in gate policy: {token}")
@@ -790,6 +900,8 @@ def load_gate_commands(
         _reject_ambiguous_unquoted_hash(command)
         if "`" in command:
             raise ValueError(f"selected gate {gate!r} uses unsupported backtick substitution")
+        if _contains_windows_path_syntax(command):
+            raise ValueError(f"selected gate {gate!r} uses unsupported Windows path spelling")
         try:
             tokens = _split_gate_command(command)
         except ValueError as error:

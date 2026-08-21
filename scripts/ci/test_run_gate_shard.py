@@ -616,6 +616,22 @@ class GateShardTests(unittest.TestCase):
         runner_invocation = runner_step[invocation_start:invocation_end]
         self.assertIn("--gate-policy .ci/gate-policy.yaml", runner_invocation)
 
+    def test_multiline_commands_match_actual_yaml_loader(self) -> None:
+        yaml_spec = importlib.util.find_spec("yaml")
+        if yaml_spec is None:
+            self.skipTest("PyYAML is unavailable for the parser recurrence oracle")
+        import yaml
+
+        policy = REPO_ROOT / ".ci/gate-policy.yaml"
+        document = yaml.safe_load(policy.read_text(encoding="utf-8"))
+        expected = {
+            row["name"]: row["command"]
+            for row in document["gates"]
+            if row["name"] in {"nested_lock_check", "determinism_check"}
+        }
+        actual = shard._read_gate_command_specs(policy)
+        self.assertEqual(expected, {name: actual[name] for name in expected})
+
     def test_gate_policy_preflight_rejects_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             policy = write_gate_policy(
@@ -626,13 +642,13 @@ class GateShardTests(unittest.TestCase):
                 shard.load_gate_commands(policy, ["source_commit_api_check"], root=Path(tmp))
 
     def test_gate_policy_preflight_rejects_missing_command(self) -> None:
-        for rows in (
-            "  - name: source_commit_api_check\n",
-            "  - name: source_commit_api_check\n    command:\n",
+        for rows, message in (
+            ("  - name: source_commit_api_check\n", "no executable command"),
+            ("  - name: source_commit_api_check\n    command:\n", "YAML string"),
         ):
             with self.subTest(rows=rows), tempfile.TemporaryDirectory() as tmp:
                 policy = write_gate_policy(Path(tmp), rows)
-                with self.assertRaisesRegex(ValueError, "no executable command"):
+                with self.assertRaisesRegex(ValueError, message):
                     shard.load_gate_commands(
                         policy,
                         ["source_commit_api_check"],
@@ -836,7 +852,7 @@ class GateShardTests(unittest.TestCase):
             )
             commands = shard.load_gate_commands(policy, ["first", "second"], root=root)
             self.assertEqual(
-                "bash -u scripts/ci/first.sh # inline comment",
+                "bash -u scripts/ci/first.sh",
                 commands["first"],
             )
             self.assertEqual("sh ./scripts/ci/second.sh", commands["second"])
@@ -922,7 +938,7 @@ class GateShardTests(unittest.TestCase):
                     "  - name: dynamic_output\n"
                     f"    command: {command}\n",
                 )
-                with self.assertRaisesRegex(ValueError, "shell expansion"):
+                with self.assertRaisesRegex(ValueError, "expansion"):
                     shard.load_gate_commands(policy, ["dynamic_output"], root=root)
 
     def test_gate_policy_preflight_rejects_dynamic_separators_and_constructs(self) -> None:
@@ -950,6 +966,30 @@ class GateShardTests(unittest.TestCase):
                         ["source_commit_api_check"],
                         root=Path(tmp),
                     )
+
+    def test_gate_policy_preflight_rejects_assignments_grouping_globs_and_windows_paths(self) -> None:
+        commands = (
+            "FOO=bar python3 scripts/ci/check.py",
+            "echo ( python3 scripts/ci/check.py )",
+            "python3 scripts/{missing,other}.py",
+            "python3 scripts/*.py",
+            "python3 scripts\\ci\\check.py",
+            "python3 C:\\outside.py",
+            "python3 scripts/ci/check.py --output-path ..\\outside.log",
+            "!!str python3 scripts/ci/check.py",
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "scripts/ci").mkdir(parents=True)
+                (root / "scripts/ci/check.py").write_text("# check\n", encoding="utf-8")
+                policy = write_gate_policy(
+                    root,
+                    "  - name: unsafe\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaises(ValueError):
+                    shard.load_gate_commands(policy, ["unsafe"], root=root)
 
     def test_gate_policy_preflight_rejects_missing_input_redirect_targets(self) -> None:
         for command, message in (
