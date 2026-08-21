@@ -8859,7 +8859,7 @@ fn test_empty_prefix_emits_document_variables() {
 
     // Control-flow keywords must appear (regression guard for #11863 reserve).
     assert!(
-        labels.iter().any(|l| l.starts_with("if")),
+        labels.contains(&"if"),
         "empty-prefix completion must include control-flow keyword 'if'; got ({} items): {labels:?}",
         labels.len()
     );
