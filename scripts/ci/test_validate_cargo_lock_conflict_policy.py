@@ -148,6 +148,50 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                 validator.discover_command_surfaces(root),
             )
 
+    def test_new_command_in_registered_file_requires_a_new_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "docs" / "guidance.md"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "### Existing guidance\n"
+                "Do not use `cargo update` for conflicts.\n"
+                "### New guidance\n"
+                "Try `cargo generate-lockfile` for conflicts.\n",
+                encoding="utf-8",
+            )
+            fixture = root / validator.FIXTURE
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "claim_boundary": "bounded",
+                        "cases": [
+                            {
+                                "id": "existing",
+                                "path": "docs/guidance.md",
+                                "needle": "### Existing guidance",
+                                "context": "conflict_repair",
+                                "command": "cargo update",
+                                "expected": "lock_conflict_requires_admission",
+                                "semantics": {
+                                    "scope": "section",
+                                    "required": ["Do not use"],
+                                    "forbidden_commands": ["cargo update"],
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            errors = validator.validate(root)
+            self.assertIn(
+                "fixture is missing command anchors: docs/guidance.md:4",
+                errors,
+            )
+
     def test_fixture_claim_boundary_must_be_non_empty(self) -> None:
         for claim_boundary in ("", " \t\n"):
             with (

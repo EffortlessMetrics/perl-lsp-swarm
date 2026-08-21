@@ -39,8 +39,8 @@ INVENTORY_EXCLUSIONS = {
 INVENTORY_ARCHIVE_PREFIXES = ("docs/reference/archive/",)
 INVENTORY_TEXT_SUFFIXES = {".json", ".md", ".py", ".sh", ".toml", ".yaml", ".yml"}
 LOCK_COMMAND_RE = re.compile(
-    r"\bcargo\s+(?:generate-lockfile\b|update\b)|"
-    r"\bdelete\s*/\s*recreate\s+`?Cargo\.lock`?",
+    r"(?P<cargo>\bcargo\s+(?:generate-lockfile\b|update\b))|"
+    r"(?P<delete>\bdelete\s*/\s*recreate\s+`?Cargo\.lock`?)",
     re.IGNORECASE,
 )
 
@@ -54,36 +54,12 @@ def validate_semantics(
 ) -> list[str]:
     """Require source meaning on the identified line or Markdown section."""
     lines = source.splitlines()
-    if line_number < 1 or line_number > len(lines):
-        return ["semantic anchor line is unavailable"]
     scope = semantics.get("scope", "line")
-    if scope == "line":
-        semantic_source = lines[line_number - 1]
-    elif scope == "section":
-        heading = re.match(r"^(#+)\s+", lines[line_number - 1])
-        if heading is None:
-            return ["section semantic scope requires a Markdown heading anchor"]
-        level = len(heading.group(1))
-        end = len(lines)
-        fence_character: str | None = None
-        for index in range(line_number, len(lines)):
-            fence = re.match(r"^\s*(`{3,}|~{3,})", lines[index])
-            if fence is not None:
-                character = fence.group(1)[0]
-                if fence_character is None:
-                    fence_character = character
-                elif character == fence_character:
-                    fence_character = None
-                continue
-            if fence_character is not None:
-                continue
-            next_heading = re.match(r"^(#+)\s+", lines[index])
-            if next_heading is not None and len(next_heading.group(1)) <= level:
-                end = index
-                break
-        semantic_source = "\n".join(lines[line_number - 1 : end])
-    else:
-        return ["semantic scope must be 'line' or 'section'"]
+    semantic_range, range_error = semantic_line_range(source, line_number, scope)
+    if semantic_range is None:
+        return [range_error]
+    start, end = semantic_range
+    semantic_source = "\n".join(lines[start - 1 : end])
     required = semantics.get("required", [])
     forbidden = semantics.get("forbidden", [])
     forbidden_commands = semantics.get("forbidden_commands", [])
@@ -158,6 +134,41 @@ def validate_semantics(
     return errors
 
 
+def semantic_line_range(
+    source: str, line_number: int, scope: object
+) -> tuple[tuple[int, int] | None, str]:
+    """Return the one-based source range covered by one fixture case."""
+    lines = source.splitlines()
+    if not isinstance(line_number, int) or line_number < 1 or line_number > len(lines):
+        return None, "semantic anchor line is unavailable"
+    if scope == "line":
+        return (line_number, line_number), ""
+    if scope != "section":
+        return None, "semantic scope must be 'line' or 'section'"
+    heading = re.match(r"^(#+)\s+", lines[line_number - 1])
+    if heading is None:
+        return None, "section semantic scope requires a Markdown heading anchor"
+    level = len(heading.group(1))
+    end = len(lines)
+    fence_character: str | None = None
+    for index in range(line_number, len(lines)):
+        fence = re.match(r"^\s*(`{3,}|~{3,})", lines[index])
+        if fence is not None:
+            character = fence.group(1)[0]
+            if fence_character is None:
+                fence_character = character
+            elif character == fence_character:
+                fence_character = None
+            continue
+        if fence_character is not None:
+            continue
+        next_heading = re.match(r"^(#+)\s+", lines[index])
+        if next_heading is not None and len(next_heading.group(1)) <= level:
+            end = index
+            break
+    return (line_number, end), ""
+
+
 def classify(case: Mapping[str, object]) -> str:
     """Classify an explicitly scoped command-surface case."""
     context = case.get("context")
@@ -180,7 +191,9 @@ def classify(case: Mapping[str, object]) -> str:
         return "controlled_isolated_generation"
     if context == "release_refresh" and command == "just bump-version":
         return "branch_admission_preserved"
-    if context == "targeted_dependency" and command == "cargo update -p name":
+    if context == "targeted_dependency" and (
+        command == "cargo update -p name" or command.startswith("cargo update -p ")
+    ):
         return "branch_admission_preserved"
     if context == "release_refresh" and command in {
         "cargo update",
@@ -249,9 +262,9 @@ def load_fixture(root: Path) -> list[object]:
     return cases
 
 
-def discover_command_surfaces(root: Path) -> set[str]:
-    """Find tracked-style source files containing lock-repair commands."""
-    surfaces: set[str] = set()
+def discover_command_occurrences(root: Path) -> dict[str, set[int]]:
+    """Find lock-repair command lines in tracked-style source files."""
+    occurrences: dict[str, set[int]] = {}
     for relative_root in INVENTORY_ROOTS:
         source_root = root / relative_root
         if not source_root.is_dir():
@@ -274,9 +287,19 @@ def discover_command_surfaces(root: Path) -> set[str]:
                 raise ValidationError(
                     f"command-surface inventory could not read {relative}: {error}"
                 ) from error
-            if LOCK_COMMAND_RE.search(source):
-                surfaces.add(relative)
-    return surfaces
+            lines = {
+                line_number
+                for line_number, line in enumerate(source.splitlines(), start=1)
+                if LOCK_COMMAND_RE.search(line)
+            }
+            if lines:
+                occurrences[relative] = lines
+    return occurrences
+
+
+def discover_command_surfaces(root: Path) -> set[str]:
+    """Find tracked-style source files containing lock-repair commands."""
+    return set(discover_command_occurrences(root))
 
 
 def needle_occurrences(source: str, needle: str) -> int:
@@ -302,6 +325,7 @@ def validate(root: Path) -> list[str]:
     errors: list[str] = []
     seen: set[str] = set()
     covered_paths: set[str] = set()
+    covered_ranges: dict[str, list[tuple[int, int]]] = {}
     for index, case in enumerate(cases):
         prefix = f"cases[{index}]"
         if not isinstance(case, Mapping):
@@ -374,6 +398,13 @@ def validate(root: Path) -> list[str]:
             errors.append(f"{case_id}: semantic assertions are required")
             continue
         if line_number is not None:
+            semantic_range, _ = semantic_line_range(
+                source, line_number, semantics.get("scope", "line")
+            )
+            if semantic_range is not None:
+                covered_ranges.setdefault(path.replace("\\", "/"), []).append(
+                    semantic_range
+                )
             for semantic_error in validate_semantics(source, line_number, semantics):
                 errors.append(f"{case_id}: {semantic_error}")
 
@@ -392,6 +423,16 @@ def validate(root: Path) -> list[str]:
         errors.append(
             "fixture is missing command-surface cases: " + ", ".join(unregistered)
         )
+    for path, lines in discover_command_occurrences(root).items():
+        ranges = covered_ranges.get(path, [])
+        uncovered = sorted(
+            line for line in lines if not any(start <= line <= end for start, end in ranges)
+        )
+        if uncovered:
+            errors.append(
+                f"fixture is missing command anchors: {path}:"
+                + ",".join(str(line) for line in uncovered)
+            )
     return errors
 
 
