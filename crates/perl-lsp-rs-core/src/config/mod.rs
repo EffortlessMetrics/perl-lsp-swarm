@@ -3496,7 +3496,7 @@ profile = "recommended"
     }
 
     #[test]
-    fn server_config_accepts_formatter_engine_aliases() {
+    fn server_config_rejects_external_formatter_engine_from_client_settings() {
         let mut config = ServerConfig::default();
 
         config.update_from_value(&serde_json::json!({
@@ -3504,7 +3504,7 @@ profile = "recommended"
                 "engine": "external-perltidy"
             }
         }));
-        assert_eq!(config.formatting_engine, FormatterMode::ExternalLegacy);
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
 
         config.update_from_value(&serde_json::json!({
             "formatting": {
