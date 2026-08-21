@@ -7,6 +7,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).with_name("validate_cargo_lock_conflict_policy.py")
 SPEC = importlib.util.spec_from_file_location("cargo_lock_policy", MODULE_PATH)
@@ -38,13 +39,22 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                 "not_proven",
             )
 
-    def test_marker_without_source_prohibition_is_rejected(self) -> None:
+    def test_weakened_policy_text_is_rejected(self) -> None:
         errors = validator.validate_semantics(
-            "marker\nactive conflict repair: cargo generate-lockfile\nweakened text\n",
-            2,
+            "Active conflict repair may use `cargo generate-lockfile`.\n",
+            1,
             {"required": ["must not use `cargo generate-lockfile`"], "forbidden": []},
         )
         self.assertTrue(errors)
+
+    def test_empty_semantic_assertion_strings_are_rejected(self) -> None:
+        for semantics, message in (
+            ({"required": [""], "forbidden": []}, "required source semantics must not be empty"),
+            ({"required": [], "forbidden": [""]}, "forbidden source semantics must not be empty"),
+        ):
+            with self.subTest(semantics=semantics):
+                errors = validator.validate_semantics("anchor\n", 1, semantics)
+                self.assertIn(message, errors)
 
     def test_empty_semantic_assertions_are_rejected(self) -> None:
         errors = validator.validate_semantics("anchor\n", 1, {"required": [], "forbidden": []})
@@ -106,6 +116,34 @@ class CargoLockConflictPolicyTests(unittest.TestCase):
                 "lock_conflict_requires_admission",
             )
             self.assertEqual(lock.read_bytes(), original)
+
+    def test_temporary_lock_mutation_between_reads_is_not_proven(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            lock = Path(temp) / "Cargo.lock"
+            original = b"accepted\n"
+            mutated = b"mutated\n"
+            lock.write_bytes(original)
+            real_read_bytes = Path.read_bytes
+            reads = 0
+
+            def read_with_temporary_mutation(path: Path) -> bytes:
+                nonlocal reads
+                reads += 1
+                contents = real_read_bytes(path)
+                if reads == 1:
+                    path.write_bytes(mutated)
+                return contents
+
+            with patch.object(Path, "read_bytes", read_with_temporary_mutation):
+                result = validator.validate_transition(
+                    original,
+                    original,
+                    manifest_requires_lock=False,
+                    temporary_lock_path=lock,
+                )
+            self.assertEqual(result, "not_proven")
+            self.assertEqual(reads, 2)
+            self.assertEqual(lock.read_bytes(), mutated)
 
     def test_manifest_required_change_refuses_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

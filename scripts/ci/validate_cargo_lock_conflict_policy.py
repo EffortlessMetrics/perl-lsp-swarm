@@ -50,11 +50,17 @@ def validate_semantics(
         return ["semantic assertions must not both be empty"]
     errors = []
     for phrase in required:
-        if not isinstance(phrase, str) or phrase not in semantic_source:
+        if not isinstance(phrase, str):
+            errors.append(f"required source semantics must be strings: {phrase!r}")
+        elif not phrase:
+            errors.append("required source semantics must not be empty")
+        elif phrase not in semantic_source:
             errors.append(f"missing required source semantics: {phrase!r}")
     for phrase in forbidden:
         if not isinstance(phrase, str):
             errors.append(f"forbidden source semantics must be strings: {phrase!r}")
+        elif not phrase:
+            errors.append("forbidden source semantics must not be empty")
         elif phrase in semantic_source:
             errors.append(f"forbidden source semantics present: {phrase!r}")
     return errors
