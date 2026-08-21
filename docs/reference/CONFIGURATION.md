@@ -204,20 +204,6 @@ The LSP server itself uses whichever `perl` is on your `PATH`. To use a custom P
 }
 ```
 
-**Test runner** — tell perl-lsp which binary to use for running tests:
-
-```json
-{
-  "perl": {
-    "testRunner": {
-      "command": "/home/you/.perlbrew/perls/perl-5.38.0/bin/perl",
-      "args": [],
-      "timeout": 60000
-    }
-  }
-}
-```
-
 **Shell approach** (recommended for the LSP server itself):
 
 ```bash
@@ -409,7 +395,7 @@ perllsp --check-project . && echo "All files parse clean"
 ```
 
 For a project that also uses critic checks in CI, use the `perl.perlcritic`
-settings together with the test runner. Add `perl.critic.engine = "native"` when
+settings. Add `perl.critic.engine = "native"` when
 the project is ready for native critic diagnostics:
 
 ```json
@@ -417,12 +403,6 @@ the project is ready for native critic diagnostics:
   "perl": {
     "workspace": {
       "useSystemInc": false
-    },
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l", "-r", "--timer"],
-      "timeout": 300000
     },
     "perlcritic": {
       "enabled": true,
@@ -470,12 +450,6 @@ Every `.perl-lsp.toml` setting has a VSCode `settings.json` counterpart. The tab
       "typeHints": true,
       "chainedHints": false,
       "maxLength": 30
-    },
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l"],
-      "timeout": 60000
     },
     "formatting": {
       "enabled": true,

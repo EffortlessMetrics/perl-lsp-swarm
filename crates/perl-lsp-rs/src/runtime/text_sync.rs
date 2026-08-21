@@ -203,12 +203,11 @@ impl LspServer {
                 coordinator.notify_change(uri);
             }
 
-            // Check cache first
-            let (ast, errors) = if let Some(cached_ast) = self.ast_cache.get(uri, text) {
-                tracing::debug!("Using cached AST for {}", uri);
-                (Some((*cached_ast).clone()), vec![])
-            } else {
-                // Parse the document up to __DATA__ or __END__ marker
+            // Parse the document up to __DATA__ or __END__ marker.
+            // No AST-only cache lookup: the retired AstCache stored only the
+            // AST without parse errors, so a hit synthesised Vec::new() --
+            // live semantic corruption for recovery-bearing source (#11215).
+            let (ast, errors) = {
                 let code_text = crate::util::code_slice(text);
                 let mut parser = match cancellation_token {
                     Some(token) => Parser::new_with_cancellation(code_text, token),
@@ -218,7 +217,6 @@ impl LspServer {
                     Ok(ast) => {
                         let errors = parser.errors().to_vec();
                         let arc_ast = Arc::new(ast);
-                        self.ast_cache.put(uri.to_string(), text, Arc::clone(&arc_ast));
                         (Some((*arc_ast).clone()), errors)
                     }
                     Err(crate::error::ParseError::Cancelled) => {
@@ -786,13 +784,13 @@ impl LspServer {
                     coordinator.notify_change(uri);
                 }
 
-                // Check cache first
+                // Parse the document up to __DATA__ or __END__ marker.
+                // No AST-only cache lookup: the retired AstCache stored only
+                // the AST without parse errors, so a hit synthesised Vec::new()
+                // -- live semantic corruption for recovery-bearing source
+                // (#11215).
                 let t_parse_start = std::time::Instant::now();
-                let (ast, errors) = if let Some(cached_ast) = self.ast_cache.get(uri, &text) {
-                    tracing::debug!("Using cached AST for {}", uri);
-                    (Some((*cached_ast).clone()), vec![])
-                } else {
-                    // Parse the document up to __DATA__ or __END__ marker
+                let (ast, errors) = {
                     let code_text = crate::util::code_slice(&text);
                     let mut parser = match cancellation_token {
                         Some(token) => Parser::new_with_cancellation(code_text, token),
@@ -802,7 +800,6 @@ impl LspServer {
                         Ok(ast) => {
                             let errors = parser.errors().to_vec();
                             let arc_ast = Arc::new(ast);
-                            self.ast_cache.put(uri.to_string(), &text, Arc::clone(&arc_ast));
                             (Some((*arc_ast).clone()), errors)
                         }
                         Err(crate::error::ParseError::Cancelled) => {

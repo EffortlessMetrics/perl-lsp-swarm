@@ -4,8 +4,8 @@
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
 use super::{
-    Arc, AstCache, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap,
-    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
+    Arc, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap, HashSet,
+    IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
     WorkspaceConfig, Write, io, notebook, outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
@@ -56,8 +56,6 @@ impl LspServer {
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
-            // Cache up to 100 ASTs with 5 minute TTL
-            ast_cache: Arc::new(AstCache::new(100, 300)),
             symbol_index: Arc::new(Mutex::new(SymbolIndex::new())),
             config: Arc::new(Mutex::new(ServerConfig::default())),
             reader: Arc::new(Mutex::new(Box::new(BufReader::new(io::stdin())))),
@@ -238,7 +236,6 @@ impl LspServer {
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
-            ast_cache: Arc::new(AstCache::new(100, 300)),
             symbol_index: Arc::new(Mutex::new(SymbolIndex::new())),
             config: Arc::new(Mutex::new(ServerConfig::default())),
             reader: Arc::new(Mutex::new(Box::new(BufReader::new(reader)))),
@@ -360,7 +357,6 @@ impl LspServer {
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             index_coordinator,
-            ast_cache: Arc::new(AstCache::new(100, 300)),
             symbol_index: Arc::new(Mutex::new(SymbolIndex::new())),
             config: Arc::new(Mutex::new(ServerConfig::default())),
             reader: Arc::new(Mutex::new(Box::new(BufReader::new(io::stdin())))),

@@ -1,16 +1,24 @@
 # Tree-Sitter Incremental Crossover Evidence
 
-This document records the first broader measurement pass for the token-replay
-contract exposed by `tree-sitter-perl-rs`. It is evidence for routing design,
-not a universal performance promise and not evidence for AST-subtree reuse.
+> **Status: historical/non-routing evidence (archived).** This document
+> preserves an earlier exploratory measurement pass for a token-replay path
+> associated with `tree-sitter-perl-rs`. It does not describe the current
+> parser implementation, an active crossover decision, or current routing
+> policy. Keep the receipts for provenance only; do not use them to enable or
+> route production behavior.
 
-## Receipt identity
+The measurements below are historical evidence, not a universal performance
+promise and not evidence for AST-subtree reuse.
+
+## Historical receipt identity
 
 The historical receipts for all three profiles were produced from commit
 `085c09bb8c8b9950264d9e8322ca263228860daf` with `rustc 1.95.0
-(59807616e 2026-04-14)` through the repository's now-retired command wrapper.
-The commands below are direct reproduction/current-rerun equivalents; they are
-not a claim that the historical receipts were produced by these exact commands:
+(59807616e 2026-04-14)` through the repository's proof command. The command
+remains a supported proof workflow; the receipts and the replay/AST routing
+conclusions below are historical and do not establish current routing policy.
+The direct commands below preserve that workflow's provenance and are not a
+claim that the historical receipts were produced by these exact commands:
 
 ```text
 cargo xtask tree-sitter-incremental-proof --profile pr
@@ -34,11 +42,12 @@ release 3086329efa38a0a94e160590e320e34a295f47a226223727d33de2afbc7e7052
 | Nightly | 72 | 1,080 | 29.7% | 0 | 14 (19.4%) |
 | Release | 90 | 2,250 | 29.9% | 0 | 14 (15.6%) |
 
-The measurements establish mechanical fresh-equivalence for this matrix. They
+The historical measurements establish mechanical fresh-equivalence for this
+matrix. They
 do not establish that replay is faster in general; p95 results are from one
 machine and vary between runs.
 
-## Release-profile crossover map
+## Historical release-profile comparison
 
 The release profile groups rows by document size. `Ratio` is the median of
 `replay_p95 / fresh_p95`; values below 100% favor replay. Work columns are
@@ -51,25 +60,28 @@ averages over the rows in each band.
 | Large (10-50 KB) | 18 | 5 | 28% | 108% | 14% | 5,183 | 2,944 | 479 |
 | Very large (>50 KB) | 4 | 3 | 75% | 80% | 12% | 41,918 | 6,512 | 1,149 |
 
-The current evidence suggests a provisional shape:
+At the time of this measurement, the data suggested the following provisional
+shape:
 
-- small and medium documents should remain on the ordinary fresh path;
-- large documents are mixed and need repeated measurements by edit class;
-- very-large documents show the clearest replay benefit, but the sample is only
-  four rows;
+- the measured small and medium bands did not justify a replay preference;
+- the measured large band was mixed and needed repeated measurements by edit
+  class;
+- the measured very-large band showed the clearest replay benefit, but the
+  sample was only four rows;
 - recovery, incomplete, quote-like, heredoc, and other context-sensitive edits
-  retain substantial fallback behavior and must remain fail-closed.
+  retained substantial fallback behavior and would require fail-closed
+  handling in any future experiment.
 
-The data is not sufficient to hard-code a byte threshold or enable replay
-globally. The next measurement pass must repeat each matrix cell and report
-confidence or run dispersion, then add phase timing for edit validation,
-checkpoint selection, re-lexing, token assembly, parser execution, AST
-reconstruction, and cache rebuilding.
+That historical data was not sufficient to hard-code a byte threshold or enable
+replay globally. Any future reactivation would need to repeat each matrix cell
+and report confidence or run dispersion, then add phase timing for edit
+validation, checkpoint selection, re-lexing, token assembly, parser execution,
+AST reconstruction, and cache rebuilding.
 
 ## AST-reuse decision
 
-AST-subtree reuse remains deferred. Token replay is fresh-equivalent and shows
-benefit in the largest measured band, but the current receipt does not measure
-phase costs or prove that AST reconstruction is the dominant remaining cost.
-Nonzero token reuse is therefore evidence to continue measurement, not a reason
-to retain AST subtrees or change replay routing yet.
+In this historical snapshot, AST-subtree reuse remained deferred. The receipts
+show fresh-equivalence and benefit in the largest measured band, but they do not
+measure phase costs or prove that AST reconstruction is the dominant remaining
+cost. No current AST-reuse or replay-routing decision follows from these
+receipts.

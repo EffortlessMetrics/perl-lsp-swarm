@@ -92,9 +92,10 @@
 //! rejected regardless of what generation number the new instance happens
 //! to be at.
 
+#[cfg(test)]
+use crate::state::DegradationTier;
 use crate::state::{DocumentState, ParsedSnapshot};
 use parking_lot::{Condvar, Mutex};
-use perl_lsp_rs_core::tooling::performance::AstCache;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -734,12 +735,10 @@ impl ParseWorker {
     #[cfg(test)]
     pub(crate) fn spawn(
         documents: Arc<Mutex<HashMap<String, DocumentState>>>,
-        ast_cache: Arc<AstCache>,
         on_published: Arc<dyn Fn(PublishedParseTicket) + Send + Sync>,
     ) -> Self {
         Self::spawn_with_pending_count_hooks(
             documents,
-            ast_cache,
             on_published,
             Arc::new(|_uri: &str| {}),
             Arc::new(|_uri: &str| {}),
@@ -783,7 +782,6 @@ impl ParseWorker {
     /// increment/decrement ordering race this revision closes).
     pub(crate) fn spawn_with_pending_count_hooks(
         documents: Arc<Mutex<HashMap<String, DocumentState>>>,
-        ast_cache: Arc<AstCache>,
         on_published: Arc<dyn Fn(PublishedParseTicket) + Send + Sync>,
         on_activated: Arc<dyn Fn(&str) + Send + Sync>,
         on_settled: Arc<dyn Fn(&str) + Send + Sync>,
@@ -802,7 +800,6 @@ impl ParseWorker {
         for idx in 0..PARSE_WORKERS {
             let coord = Arc::clone(&coordinator);
             let documents = documents.clone();
-            let ast_cache = Arc::clone(&ast_cache);
             let on_published = Arc::clone(&on_published);
             let on_settled = Arc::clone(&on_settled);
             let metrics = Arc::clone(&metrics);
@@ -859,7 +856,6 @@ impl ParseWorker {
                                     process_job(
                                         &job,
                                         &documents,
-                                        &ast_cache,
                                         &on_published,
                                         &metrics,
                                         #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -1071,7 +1067,6 @@ impl Drop for ParseWorker {
 fn process_job(
     job: &ParseJob,
     documents: &DocumentsHandle,
-    ast_cache: &Arc<AstCache>,
     on_published: &Arc<dyn Fn(PublishedParseTicket) + Send + Sync>,
     metrics: &Arc<ParseWorkerMetrics>,
     #[cfg(any(test, feature = "expose_lsp_test_api"))] test_barrier: &Arc<ParseWorkerTestBarrier>,
@@ -1096,19 +1091,18 @@ fn process_job(
         panic!("parse_worker test panic injection for {}:{}", job.normalized_uri, job.generation);
     }
 
-    // Parse into PRIVATE locals, off the documents lock. Cache lookup /
-    // populate mirrors the synchronous fallback path in
-    // `runtime/text_sync.rs`.
-    let (ast, errors) = if let Some(cached_ast) = ast_cache.get(&job.uri, &job.text) {
-        (Some(cached_ast), Vec::new())
-    } else {
+    // Parse into PRIVATE locals, off the documents lock. No AST-only cache
+    // lookup here: the retired AstCache stored only the AST without parse
+    // errors, so a cache hit was forced to synthesize an empty error list --
+    // live semantic corruption for recovery-bearing source (#11215). Every
+    // live parse path now runs the full parser unconditionally.
+    let (ast, errors) = {
         let code_text = crate::util::code_slice(&job.text);
         let mut parser = perl_parser::Parser::new(code_text);
         match parser.parse() {
             Ok(ast) => {
                 let errors = parser.errors().to_vec();
                 let arc_ast = Arc::new(ast);
-                ast_cache.put(job.uri.clone(), &job.text, Arc::clone(&arc_ast));
                 (Some(arc_ast), errors)
             }
             // A parse failure still produces a snapshot -- `ast: None` maps
@@ -1230,10 +1224,6 @@ mod tests {
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-    fn ast_cache() -> Arc<AstCache> {
-        Arc::new(AstCache::new(10, 60))
-    }
-
     /// Build a one-document `documents` map plus that document's
     /// `Arc<AtomicU32>` generation handle and normalized URI.
     fn one_doc(
@@ -1311,7 +1301,7 @@ mod tests {
         let uri = "file:///drop_while_parked.pl";
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, _calls) = counting_callback();
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let barrier = worker.test_barrier();
 
         generation_handle.fetch_add(1, Ordering::SeqCst);
@@ -1357,7 +1347,7 @@ mod tests {
         let uri = "file:///barrier.pl";
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, calls) = counting_callback();
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let barrier = worker.test_barrier();
 
         // Simulate a real edit: bump the generation (as `didChange` does)
@@ -1418,7 +1408,7 @@ mod tests {
         let uri = "file:///latest_wins.pl";
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, calls) = counting_callback();
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let barrier = worker.test_barrier();
 
         // Job N: generation 1, paused right before publish.
@@ -1488,7 +1478,7 @@ mod tests {
         let uri = "file:///burst.pl";
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, _calls) = counting_callback();
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let barrier = worker.test_barrier();
 
         const EDITS: u32 = 20;
@@ -1562,7 +1552,7 @@ mod tests {
         let documents = Arc::new(Mutex::new(map));
 
         let (cb, calls) = counting_callback();
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let barrier = worker.test_barrier();
 
         // Pause document A at generation 1 -- it will not be released
@@ -1638,7 +1628,7 @@ mod tests {
             Arc::new(move |_p: PublishedParseTicket| {
                 recorded_count.fetch_add(1, Ordering::SeqCst);
             });
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let barrier = worker.test_barrier();
 
         generation_handle.fetch_add(1, Ordering::SeqCst);
@@ -1679,7 +1669,7 @@ mod tests {
         let documents = Arc::new(Mutex::new(map));
 
         let (cb, calls) = counting_callback();
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let barrier = worker.test_barrier();
 
         // Start a parse for instance A at generation 1, pause before publish.
@@ -1739,7 +1729,7 @@ mod tests {
         let uri = "file:///panic_recovery.pl";
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, _calls) = counting_callback();
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let injector = worker.panic_injector();
 
         // Generation 1: armed to panic instead of parsing.
@@ -1799,7 +1789,7 @@ mod tests {
         let uri = "file:///side_effect_barrier.pl";
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, calls) = counting_callback();
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let side_effect_barrier = worker.side_effect_barrier();
 
         generation_handle.fetch_add(1, Ordering::SeqCst);
@@ -1898,7 +1888,6 @@ mod tests {
         let log_for_settled = Arc::clone(&log);
         let worker = ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&documents),
-            ast_cache(),
             cb,
             Arc::new(move |_uri: &str| log_for_activated.lock().push(Event::Activated)),
             Arc::new(move |_uri: &str| log_for_settled.lock().push(Event::Settled)),
@@ -1990,7 +1979,6 @@ mod tests {
 
         let worker = ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&documents),
-            ast_cache(),
             cb,
             Arc::new(move |_uri: &str| {
                 if let Some(coord) =
@@ -2057,7 +2045,6 @@ mod tests {
         // CALLER of `ParseWorker::enqueue`, not inside `enqueue` itself.
         let worker = ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&documents),
-            ast_cache(),
             cb,
             Arc::new(|_uri: &str| {}),
             Arc::new(|_uri: &str| {}),
@@ -2146,7 +2133,6 @@ mod tests {
         #[allow(clippy::panic)]
         let worker = ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&documents),
-            ast_cache(),
             cb,
             Arc::new(|_uri: &str| {}),
             Arc::new(|_uri: &str| panic!("injected on_settled panic for pool-exhaustion proof")),
@@ -2217,7 +2203,7 @@ mod tests {
         let uri = "file:///operability.pl";
         let (documents, _generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, _calls) = counting_callback();
-        let worker = ParseWorker::spawn(documents, ast_cache(), cb);
+        let worker = ParseWorker::spawn(documents, cb);
         assert!(
             worker.is_operational(),
             "a freshly spawned pool must report at least one live worker thread"
@@ -2248,7 +2234,7 @@ mod tests {
         let uri = "file:///dead-worker.pl";
         let (documents, _generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, _calls) = counting_callback();
-        let worker = ParseWorker::spawn(documents, ast_cache(), cb);
+        let worker = ParseWorker::spawn(documents, cb);
         assert!(worker.is_operational(), "freshly spawned pool must be operational");
 
         // Simulate worker death: replace live handles with a handle to a
@@ -2402,7 +2388,7 @@ mod tests {
         let uri = "file:///shutdown_drain.pl";
         let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
         let (cb, calls) = counting_callback();
-        let worker = ParseWorker::spawn(Arc::clone(&documents), ast_cache(), cb);
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
         let barrier = worker.test_barrier();
 
         // Job N (generation 1): dequeued and paused right before publish --
@@ -2575,8 +2561,7 @@ mod tests {
                 shutdown_returned_for_cb.store(true, Ordering::SeqCst);
             });
 
-        let worker =
-            Arc::new(ParseWorker::spawn(Arc::clone(&documents), ast_cache(), on_published));
+        let worker = Arc::new(ParseWorker::spawn(Arc::clone(&documents), on_published));
         *self_ref.lock() = Some(Arc::downgrade(&worker));
 
         generation_handle.fetch_add(1, Ordering::SeqCst);
@@ -2610,5 +2595,192 @@ mod tests {
              worker thread inside its own `handle.join()` forever, and this flag would \
              never be set"
         );
+    }
+
+    // ---- AST-only cache retirement (#11215) ---------------------------------
+
+    /// The stable outcome surface for repeated parses. Debug formatting is
+    /// intentional here: `ParseError` is the parser-owned diagnostic type and
+    /// its debug representation includes every identity-bearing field and
+    /// preserves the vector's order, unlike a count-only assertion.
+    #[derive(Debug, PartialEq, Eq)]
+    struct ParseOutcome {
+        diagnostics: Vec<String>,
+        degradation_tier: DegradationTier,
+        has_ast: bool,
+    }
+
+    fn parse_outcome(snapshot: &ParsedSnapshot) -> ParseOutcome {
+        ParseOutcome {
+            diagnostics: snapshot.parse_errors().iter().map(|error| format!("{error:?}")).collect(),
+            degradation_tier: snapshot.degradation_tier(),
+            has_ast: snapshot.ast().is_some(),
+        }
+    }
+
+    /// **Falsifier** (fails on pre-fix main): recovery-bearing source parsed
+    /// twice through the async worker route must carry its parse errors on
+    /// BOTH publications.
+    ///
+    /// Before the fix, `process_job` checked the AstCache before parsing. An
+    /// AstCache hit returned `(Some(cached_ast), Vec::new())` -- the cached
+    /// AST paired with a fabricated empty error list. A document parsed with
+    /// recovery evidence on the first open would therefore appear clean on
+    /// every subsequent same-bytes edit or close+reopen, because the second
+    /// worker job hit the cache and synthesised `Vec::new()`. The snapshot's
+    /// `degradation_tier` was computed from the empty list and upgraded to
+    /// `Full` even though the source still had syntax errors -- live semantic
+    /// corruption, not a performance limitation.
+    ///
+    /// The fix removes the AST-only cache lookup from the live parse path.
+    /// Every job now runs the full parser unconditionally, so the error list
+    /// is always derived from the actual parse result, never synthesised.
+    #[test]
+    fn repeated_worker_parse_of_recovery_bearing_source_preserves_parse_errors() {
+        // A fragment that the Perl parser recovers from but still flags:
+        // an assignment with a missing right-hand side.
+        let malformed = "my $x = ;\n";
+        let uri = "file:///ast_cache_retired_falsifier.pl";
+        let (documents, generation_handle) = one_doc(uri, malformed);
+        let (cb, calls) = counting_callback();
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
+
+        // First parse: generation 1 — no cached result, always runs the full
+        // parser, should observe parse errors.
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from(malformed),
+        );
+        assert!(
+            wait_for(|| !calls.lock().is_empty(), TEST_TIMEOUT),
+            "first job must publish within timeout"
+        );
+        let first_outcome = {
+            let docs = documents.lock();
+            let doc = must_some(docs.get(uri));
+            let snapshot = must_some(doc.current_parsed());
+            assert_eq!(snapshot.generation(), 1, "first publication must be for generation 1");
+            parse_outcome(&snapshot)
+        };
+        assert!(
+            !first_outcome.diagnostics.is_empty(),
+            "recovery-bearing source must produce parse errors on the first worker parse; \
+             got zero errors -- the source may have changed or the parser may have improved"
+        );
+
+        // Second parse: generation 2, IDENTICAL source bytes.
+        //
+        // Pre-fix: the AstCache would return a hit for the same (uri, text),
+        // synthesise Vec::new() for errors, and publish a snapshot with
+        // degradation_tier=Full despite the source still being malformed.
+        //
+        // Post-fix: no cache lookup; the full parser runs again and the error
+        // list is preserved.
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            2,
+            Arc::clone(&generation_handle),
+            Arc::from(malformed),
+        );
+        assert!(
+            wait_for(|| calls.lock().len() >= 2, TEST_TIMEOUT),
+            "second job must publish within timeout"
+        );
+        let second_outcome = {
+            let docs = documents.lock();
+            let doc = must_some(docs.get(uri));
+            let snapshot = must_some(doc.current_parsed());
+            assert_eq!(snapshot.generation(), 2, "second publication must be for generation 2");
+            parse_outcome(&snapshot)
+        };
+        assert_eq!(
+            second_outcome, first_outcome,
+            "repeat parse of identical recovery-bearing source must preserve the complete \
+             diagnostic sequence, degradation tier, and AST/result class — a cache hit that \
+             synthesises Vec::new() would fail this assertion"
+        );
+    }
+
+    /// Control: clean source produces no parse errors on repeated parses.
+    ///
+    /// Validates that the fix does not regress the no-error case: a well-formed
+    /// document parsed twice must still yield zero errors both times.
+    #[test]
+    fn repeated_worker_parse_of_clean_source_produces_no_errors() {
+        let clean = "my $x = 1;\n";
+        let uri = "file:///clean_repeat_control.pl";
+        let (documents, generation_handle) = one_doc(uri, clean);
+        let (cb, calls) = counting_callback();
+        let worker = ParseWorker::spawn(Arc::clone(&documents), cb);
+
+        for generation in [1u32, 2] {
+            generation_handle.fetch_add(1, Ordering::SeqCst);
+            worker.enqueue(
+                uri.to_string(),
+                uri.to_string(),
+                generation,
+                Arc::clone(&generation_handle),
+                Arc::from(clean),
+            );
+            assert!(
+                wait_for(|| calls.lock().len() >= generation as usize, TEST_TIMEOUT),
+                "generation {generation} must publish"
+            );
+            let errors: Vec<_> = {
+                let docs = documents.lock();
+                let doc = must_some(docs.get(uri));
+                let snapshot = must_some(doc.current_parsed());
+                assert_eq!(snapshot.generation(), generation);
+                snapshot.parse_errors().to_vec()
+            };
+            assert!(
+                errors.is_empty(),
+                "clean source must produce zero parse errors on generation {generation}; got {errors:?}"
+            );
+        }
+    }
+
+    /// Architecture control (#11215): no production worker or synchronous live
+    /// parse path calls `ast_cache.get/put` -- the AST-only cache lookup is
+    /// fully retired from both runtime routes. This catches any future
+    /// regression that re-introduces the cache hit without also storing parse
+    /// errors.
+    #[test]
+    fn process_job_source_contains_no_ast_cache_lookup() {
+        fn production_section(source: &str) -> &str {
+            // `parse_worker.rs` has a test-only `spawn` helper before
+            // `process_job`; use the final test-module boundary, not the
+            // first `#[cfg(test)]` marker. The same rule applies to
+            // `text_sync.rs`, whose tests live in a sibling module.
+            source
+                .rfind("\n#[cfg(test)]")
+                .map_or(source, |test_module_start| &source[..test_module_start])
+        }
+
+        for (path, source) in [
+            ("parse_worker.rs", include_str!("parse_worker.rs")),
+            ("text_sync.rs", include_str!("text_sync.rs")),
+        ] {
+            let production = production_section(source);
+            assert!(
+                !production.contains("ast_cache.get("),
+                "production {path} must not call ast_cache.get() -- AST-only cache lookup was \
+                 retired by #11215 because it synthesised Vec::new() for parse errors on a \
+                 cache hit, corrupting recovery-bearing results. Re-introducing it requires \
+                 also caching the complete parse errors."
+            );
+            assert!(
+                !production.contains("ast_cache.put("),
+                "production {path} must not call ast_cache.put() -- if the lookup is removed \
+                 there is nothing to populate. A future complete parse-artifact cache (#7371) \
+                 will own this seam."
+            );
+        }
     }
 }

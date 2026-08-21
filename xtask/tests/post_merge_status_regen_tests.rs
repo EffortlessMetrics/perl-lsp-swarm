@@ -12,10 +12,144 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Output};
 
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
+
+fn required_workflows(policy: &TomlValue) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+    let mut workflows = BTreeSet::new();
+    for check in ["check", "checks"]
+        .into_iter()
+        .filter_map(|table| policy.get(table).and_then(TomlValue::as_array))
+        .flatten()
+        .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+    {
+        let name =
+            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
+        let workflow = check
+            .get("workflow")
+            .and_then(TomlValue::as_str)
+            .ok_or_else(|| format!("required check `{name}` must declare a workflow path"))?;
+        let workflow_name = workflow
+            .rsplit('/')
+            .next()
+            .filter(|workflow_name| !workflow_name.is_empty())
+            .ok_or_else(|| format!("required check `{name}` has an empty workflow path"))?;
+        workflows.insert(workflow_name.to_owned());
+    }
+    Ok(workflows)
+}
+
+fn workflow_on(workflow: &Value) -> Option<&Value> {
+    workflow.as_mapping()?.iter().find_map(|(key, value)| match key {
+        Value::String(key) if key == "on" => Some(value),
+        Value::Bool(true) => Some(value),
+        _ => None,
+    })
+}
+
+fn workflow_dispatch_trigger(workflow: &Value) -> bool {
+    let Some(triggers) = workflow_on(workflow) else {
+        return false;
+    };
+
+    match triggers {
+        Value::Mapping(mapping) => {
+            mapping.keys().any(|key| key.as_str() == Some("workflow_dispatch"))
+        }
+        Value::Sequence(events) => {
+            events.iter().any(|event| event.as_str() == Some("workflow_dispatch"))
+        }
+        Value::String(event) => event == "workflow_dispatch",
+        _ => false,
+    }
+}
+
+#[cfg(unix)]
+fn assert_dispatch_loop_behavior(
+    dispatch_run: &str,
+    dispatch_order: &[String],
+    branch: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::{Command, Output};
+
+    let temp_dir = tempfile::tempdir()?;
+    let stub_dir = temp_dir.path().join("bin");
+    fs::create_dir(&stub_dir)?;
+    let stub_gh = stub_dir.join("gh");
+    fs::write(
+        &stub_gh,
+        "#!/usr/bin/env bash\n\
+         printf '%s|%s|%s|%s|%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" >> \"$GH_LOG\"\n\
+         if [ \"$#\" -ne 5 ]; then exit 2; fi\n\
+         if [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
+    )?;
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(&stub_gh)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&stub_gh, permissions)?;
+    let simulation_run =
+        dispatch_run.replacen("gh workflow run", &format!("{} workflow run", stub_gh.display()), 1);
+    assert_ne!(simulation_run, dispatch_run, "dispatch step must invoke gh workflow run");
+
+    let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
+        let log_path = temp_dir.path().join(log_name);
+        let existing_path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            std::iter::once(stub_dir.clone()).chain(std::env::split_paths(&existing_path)),
+        )?;
+        let mut command = Command::new("/bin/bash");
+        command
+            .arg("-c")
+            .arg(&simulation_run)
+            .env("PATH", path)
+            .env("BRANCH", branch)
+            .env("GH_LOG", &log_path);
+        if let Some(fail_workflow) = fail_workflow {
+            command.env("FAIL_WORKFLOW", fail_workflow);
+        } else {
+            command.env_remove("FAIL_WORKFLOW");
+        }
+        let output: Output = command.output().map_err(|error| {
+            format!("failed to execute dispatch shell for {}: {error}", log_path.display())
+        })?;
+        let calls = fs::read_to_string(&log_path)
+            .map_err(|error| {
+                format!(
+                    "failed to read {}: {error}; stdout={}; stderr={}",
+                    log_path.display(),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+            })?
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        Ok::<_, Box<dyn std::error::Error>>((output, calls))
+    };
+
+    let (success_output, success_calls) = run_dispatch(None, "all-success.log")?;
+    assert!(
+        success_output.status.success(),
+        "all-success dispatch run failed: {}",
+        String::from_utf8_lossy(&success_output.stderr)
+    );
+    let expected_calls = dispatch_order
+        .iter()
+        .map(|workflow| format!("workflow|run|{workflow}|--ref|{branch}"))
+        .collect::<Vec<_>>();
+    assert_eq!(success_calls, expected_calls, "all required dispatches must run in workflow order");
+
+    let first_workflow = dispatch_order.first().ok_or("required workflow set must not be empty")?;
+    let (failure_output, failure_calls) = run_dispatch(Some(first_workflow), "first-failure.log")?;
+    assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
+    assert_eq!(
+        failure_calls, expected_calls,
+        "a failed dispatch must not skip later required workflows"
+    );
+
+    Ok(())
+}
 
 fn project_root() -> PathBuf {
     // Walk up from the manifest directory to the workspace root.
@@ -143,11 +277,12 @@ fn test_required_checks_record_workflow_dispatch_route() -> Result<(), Box<dyn s
         .and_then(TomlValue::as_array)
         .ok_or("required-checks.toml must declare a checks array")?;
 
-    for required_name in ["Perl LSP Rust Small Result", "ripr+ New Gap Gate", "validate-title"] {
-        let check = checks
-            .iter()
-            .find(|check| check.get("name").and_then(TomlValue::as_str) == Some(required_name))
-            .ok_or_else(|| format!("required-checks.toml is missing `{required_name}`"))?;
+    for check in checks
+        .iter()
+        .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
+    {
+        let required_name =
+            check.get("name").and_then(TomlValue::as_str).unwrap_or("<unnamed required check>");
         let events = check
             .get("events")
             .and_then(TomlValue::as_array)
@@ -175,30 +310,41 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
         .get("jobs")
         .and_then(Value::as_mapping)
         .ok_or("post-merge-status.yml must declare jobs")?;
-    let dispatch_run = jobs
+    let dispatch_step = jobs
         .values()
         .filter_map(|job| job.get("steps").and_then(Value::as_sequence))
         .flat_map(|steps| steps.iter())
         .find(|step| {
             step.get("name").and_then(Value::as_str) == Some("Raise CI on the generated PR")
         })
-        .and_then(|step| step.get("run").and_then(Value::as_str))
         .ok_or("post-merge-status.yml must define the generated-PR dispatch step")?;
+    let dispatch_run = dispatch_step
+        .get("run")
+        .and_then(Value::as_str)
+        .ok_or("generated-PR dispatch step must define a shell body")?;
+    let dispatch_branch = dispatch_step
+        .get("env")
+        .and_then(Value::as_mapping)
+        .and_then(|env| {
+            env.iter().find_map(|(key, value)| match key {
+                Value::String(key) if key == "BRANCH" => value.as_str(),
+                _ => None,
+            })
+        })
+        .ok_or("generated-PR dispatch step must define BRANCH")?;
+    assert_eq!(
+        dispatch_branch, "automation/post-merge-status",
+        "generated-PR dispatch must target its automation branch"
+    );
 
     let policy_path = root.join(".ci/policies/required-checks.toml");
     let policy_text = fs::read_to_string(policy_path)?;
     let policy: TomlValue = toml::from_str(&policy_text)?;
-    let checks = policy
-        .get("checks")
-        .and_then(TomlValue::as_array)
-        .ok_or("required-checks.toml must declare a checks array")?;
-    let required_workflows: BTreeSet<String> = checks
-        .iter()
-        .filter(|check| check.get("required").and_then(TomlValue::as_bool) == Some(true))
-        .filter_map(|check| check.get("workflow").and_then(TomlValue::as_str))
-        .filter_map(|workflow| workflow.rsplit('/').next())
-        .map(str::to_owned)
-        .collect();
+    let required_workflows = required_workflows(&policy)?;
+    assert!(
+        !required_workflows.is_empty(),
+        "required-checks.toml must declare at least one required workflow"
+    );
 
     let dispatch_start = dispatch_run
         .split_once("for workflow in")
@@ -207,72 +353,31 @@ fn test_post_merge_workflow_dispatches_all_required_checks()
     let (dispatch_names, _) = dispatch_start
         .split_once("; do")
         .ok_or("dispatch workflow loop must use a shell `; do` delimiter")?;
-    let dispatched_workflows: BTreeSet<String> =
+    let dispatch_order: Vec<String> =
         dispatch_names.split_whitespace().map(str::to_owned).collect();
+    let dispatched_workflows: BTreeSet<String> = dispatch_order.iter().cloned().collect();
     assert_eq!(
         dispatched_workflows, required_workflows,
         "generated-PR dispatch set must equal the unique workflow paths for required checks"
     );
-
-    let temp_dir = tempfile::tempdir()?;
-    let stub_dir = temp_dir.path().join("bin");
-    fs::create_dir(&stub_dir)?;
-    let stub_gh = stub_dir.join("gh");
-    fs::write(
-        &stub_gh,
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$3\" >> \"$GH_LOG\"\nif [ \"${FAIL_WORKFLOW:-}\" = \"$3\" ]; then exit 1; fi\n",
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut permissions = fs::metadata(&stub_gh)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&stub_gh, permissions)?;
+    for workflow_name in &required_workflows {
+        let workflow_path = root.join(".github/workflows").join(workflow_name);
+        let workflow_text = fs::read_to_string(&workflow_path)?;
+        let workflow: Value = serde_yaml_ng::from_str(&workflow_text)?;
+        assert!(
+            workflow_dispatch_trigger(&workflow),
+            "{workflow_name} must declare an on.workflow_dispatch trigger"
+        );
     }
-
-    let run_dispatch = |fail_workflow: Option<&str>, log_name: &str| {
-        let log_path = temp_dir.path().join(log_name);
-        let existing_path = std::env::var_os("PATH").unwrap_or_default();
-        let path = std::env::join_paths(
-            std::iter::once(stub_dir.clone()).chain(std::env::split_paths(&existing_path)),
-        )?;
-        let mut command = Command::new("bash");
-        command
-            .arg("-c")
-            .arg(dispatch_run)
-            .current_dir(&root)
-            .env("PATH", path)
-            .env("GH_LOG", &log_path);
-        if let Some(fail_workflow) = fail_workflow {
-            command.env("FAIL_WORKFLOW", fail_workflow);
-        } else {
-            command.env_remove("FAIL_WORKFLOW");
-        }
-        let output: Output = command.output()?;
-        let calls = fs::read_to_string(log_path)?.lines().map(str::to_owned).collect::<Vec<_>>();
-        Ok::<_, Box<dyn std::error::Error>>((output, calls))
-    };
-
-    let (success_output, success_calls) = run_dispatch(None, "all-success.log")?;
     assert!(
-        success_output.status.success(),
-        "all-success dispatch run failed: {}",
-        String::from_utf8_lossy(&success_output.stderr)
-    );
-    assert_eq!(
-        success_calls,
-        ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml", "pr-title-check.yml"],
-        "all required dispatches must run in workflow order"
+        dispatch_run.contains("set +e")
+            && dispatch_run.contains("failed=1")
+            && dispatch_run.contains("exit \"$failed\""),
+        "generated-PR dispatch step must continue after an individual failure and fail overall"
     );
 
-    let (failure_output, failure_calls) = run_dispatch(Some("ripr.yml"), "middle-failure.log")?;
-    assert!(!failure_output.status.success(), "a failed dispatch must fail the step");
-    assert_eq!(
-        failure_calls,
-        ["ci.yml", "em-ci-routed-rust.yml", "ripr.yml", "pr-title-check.yml"],
-        "a middle dispatch failure must not skip later required workflows"
-    );
+    #[cfg(unix)]
+    assert_dispatch_loop_behavior(dispatch_run, &dispatch_order, dispatch_branch)?;
 
     Ok(())
 }

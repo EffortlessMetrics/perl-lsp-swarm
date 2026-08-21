@@ -15,7 +15,6 @@ configuration.
 - [Workspace Settings (LSP)](#workspace-settings-lsp)
   - [perl.workspace](#perlworkspace)
   - [perl.inlayHints](#perlinlayhints)
-  - [perl.testRunner](#perltestrunner)
   - [perl.formatting](#perlformatting)
   - [perl.perlcritic](#perlperlcritic)
   - [perl.critic](#perlcritic)
@@ -48,7 +47,6 @@ All LSP workspace settings live under the `perl` namespace:
   "perl": {
     "workspace": { "includePaths": ["lib"] },
     "inlayHints": { "enabled": true },
-    "testRunner": { "command": "prove" },
     "formatting": { "engine": "native" },
     "perlcritic": { "enabled": false },
     "critic": { "engine": "legacy" },
@@ -470,62 +468,6 @@ Maximum character length for a single hint label before it is truncated.
       "typeHints": true,
       "chainedHints": false,
       "maxLength": 30
-    }
-  }
-}
-```
-
----
-
-### perl.testRunner
-
-Configuration for the integrated test runner (Test::More, Test2, prove).
-
-#### `perl.testRunner.enabled`
-
-| Property | Value |
-|---|---|
-| Type | `boolean` |
-| Default | `true` |
-
-Enable the integrated test runner. When `false`, test-related code lenses and
-commands are suppressed.
-
-#### `perl.testRunner.command`
-
-| Property | Value |
-|---|---|
-| Type | `string` |
-| Default | `"perl"` |
-
-Executable used to run tests. Common values: `"perl"`, `"prove"`.
-
-#### `perl.testRunner.args`
-
-| Property | Value |
-|---|---|
-| Type | `string[]` |
-| Default | `[]` |
-
-Additional arguments passed to the test command.
-
-#### `perl.testRunner.timeout`
-
-| Property | Value |
-|---|---|
-| Type | `number` (milliseconds) |
-| Default | `60000` |
-
-Maximum time to wait for a test run before the server considers it timed out.
-
-```json
-{
-  "perl": {
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l", "-v"],
-      "timeout": 120000
     }
   }
 }
@@ -1302,12 +1244,6 @@ perllsp --features-json --feature-profile production
 {
   "perl": {
     "workspace": { "useSystemInc": false },
-    "testRunner": {
-      "enabled": true,
-      "command": "prove",
-      "args": ["-l", "-v", "--timer"],
-      "timeout": 300000
-    },
     "perlcritic": { "enabled": true }
   }
 }

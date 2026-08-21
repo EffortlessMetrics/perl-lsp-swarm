@@ -83,16 +83,6 @@
             "maxLength": { "type": "integer", "minimum": 0, "default": 30 }
           }
         },
-        "testRunner": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean", "default": true },
-            "command": { "type": "string", "default": "perl" },
-            "args": { "type": "array", "items": { "type": "string" }, "default": [] },
-            "timeout": { "type": "integer", "minimum": 0, "default": 60000 }
-          }
-        },
         "limits": {
           "type": "object",
           "additionalProperties": false,

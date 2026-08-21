@@ -6,10 +6,10 @@
 
 | Metric | Count |
 |---|---|
-| Total tracked files | 11133 |
-| Rust-family files | 3396 |
-| Non-Rust files | 7737 |
-| Allowlisted | 5462 |
+| Total tracked files | 11161 |
+| Rust-family files | 3407 |
+| Non-Rust files | 7754 |
+| Allowlisted | 5479 |
 | Unclassified | 2275 |
 
 ## Non-Rust files by category
@@ -17,11 +17,11 @@
 | Category | Count |
 |---|---|
 | config | 343 |
-| documentation | 2542 |
+| documentation | 2555 |
 | generated | 2 |
-| production | 298 |
+| production | 300 |
 | test | 1817 |
-| tooling | 460 |
+| tooling | 462 |
 | unclassified | 2275 |
 
 ## Unclassified files
@@ -2349,6 +2349,8 @@
 | `.changes/unreleased/product-10533-Fixed-121500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11613-Fixed-181500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-11739-Fixed-001500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-11740-Fixed-200900.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-11845-Security-034645.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3445-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3765-Changed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-3885-Added-120000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2429,6 +2431,7 @@
 | `.changes/unreleased/product-6755-Fixed-091500.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-6756-Added-100903.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-6767-Added-130000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/product-6842-Added-035700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-6843-Added-202844.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-6844-Added-204043.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/product-6886-Added-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2500,6 +2503,7 @@
 | `.changes/unreleased/vscode-10001-Added-234000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-10003-Added-234700.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-10149-Fixed-000000.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
+| `.changes/unreleased/vscode-11780-Changed-233600.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-3904-Changed-232653.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-4712-Fixed-002852.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
 | `.changes/unreleased/vscode-4732-Fixed-091746.yaml` | documentation | `non-rust-changelog-fragments` | release/ci |
@@ -2915,6 +2919,16 @@
 | `.receipts/20260129/gate-format-20260129-130332.yaml` | config | `non-rust-receipts-tree` | release/ci |
 | `.receipts/20260129/gate-format-20260129-130355.yaml` | config | `non-rust-receipts-tree` | release/ci |
 | `.roo/rules/perl-lsp.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10136-test-runner-client-authority/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10136-test-runner-client-authority/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10136-test-runner-client-authority/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10894-editor-host-reliability/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10894-editor-host-reliability/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/10894-editor-host-reliability/context.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11301-source-commit-api-and-caller-ledger/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11301-source-commit-api-and-caller-ledger/caller-ledger.toml` | tooling | `non-rust-spec-tree` | developer-experience |
+| `.spec/11301-source-commit-api-and-caller-ledger/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
+| `.spec/11301-source-commit-api-and-caller-ledger/context.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/acceptance.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/checklist.md` | documentation | `non-rust-root-governance-docs` | docs |
 | `.spec/1297-nodekind-breakpoint-flag-ratification/context.md` | documentation | `non-rust-root-governance-docs` | docs |
@@ -5727,6 +5741,7 @@
 | `scripts/ci/check_publish_package_contents.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_release_settings_closeout.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/check_security_reconciliation.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
+| `scripts/ci/check_source_commit_api.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/ci_classify.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_common.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
 | `scripts/ci/dap_authority_docs.py` | tooling | `non-rust-ci-scripts-tree` | release/ci |
@@ -7574,6 +7589,7 @@
 | `vscode-extension/src/languageClientStartupMetrics.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/languageServerHealth.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedCacheProtocol.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/managedCandidateSelection.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedHostTarget.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedReleaseAdapter.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/managedReleaseSelector.ts` | production | `non-rust-vscode-extension` | editor/vscode |
@@ -7652,6 +7668,7 @@
 | `vscode-extension/src/test/languageClientStartupMetrics.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/languageServerHealth.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedCacheProtocol.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
+| `vscode-extension/src/test/managedCandidateSelection.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedHostTarget.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedNamespaceIsolation.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |
 | `vscode-extension/src/test/managedReleaseAdapter.test.ts` | production | `non-rust-vscode-extension` | editor/vscode |

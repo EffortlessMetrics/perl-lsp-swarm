@@ -293,12 +293,15 @@ jobs:
 
       - name: Select PR Smoke Cargo target
         shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           if [ -d /mnt ] && sudo mkdir -p /mnt/perl-lsp-swarm && sudo chown "$USER" /mnt/perl-lsp-swarm; then
-            target_dir="/mnt/perl-lsp-swarm/pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            target_dir="/mnt/perl-lsp-swarm/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
           else
-            target_dir="${RUNNER_TEMP:-$PWD/target}/cargo-target/pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+            target_dir="${RUNNER_TEMP:-$PWD/target}/cargo-target/pr-smoke-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}"
           fi
           mkdir -p "$target_dir"
           echo "CARGO_TARGET_DIR=$target_dir" >> "$GITHUB_ENV"
@@ -307,6 +310,74 @@ jobs:
 
       - name: Warm xtask
         run: cargo build -p xtask --locked
+
+      - name: Determine inline-completion warm-up scope
+        id: inline-completion-scope
+        shell: bash
+        env:
+          PR_SMOKE_RUN_ID: ${{ github.run_id }}
+          PR_SMOKE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          scope_json="${RUNNER_TEMP}/pr-smoke-ci-scope-${PR_SMOKE_RUN_ID}-${PR_SMOKE_RUN_ATTEMPT}.json"
+          warm_inline_completion=true
+
+          if ! "$CARGO_TARGET_DIR/debug/xtask" ci-scope --base origin/main --format json > "$scope_json"; then
+            echo "::warning::ci-scope failed; retaining inline-completion warm-up (fail-closed)"
+          elif ! diff_class="$(jq -er '
+            if type != "object" or (.diff_class | type) != "string" or
+               (.direct_crates | type) != "array" or
+               (any(.direct_crates[]?; type != "object" or (.name | type) != "string")) or
+               (.reverse_dep_closure | type) != "array" or
+               (any(.reverse_dep_closure[]?; type != "object" or (.name | type) != "string")) or
+               (.architecture_wideners | type) != "array" or
+               (any(.architecture_wideners[]?; type != "object" or (.name | type) != "string")) or
+               (.selected_lanes | type) != "array" or
+               (any(.selected_lanes[]?; type != "object" or (.scope | type) != "array" or any(.scope[]?; type != "string")))
+            then error("invalid ci-scope JSON")
+            else .diff_class
+            end
+          ' "$scope_json")"; then
+            echo "::warning::ci-scope returned invalid JSON; retaining inline-completion warm-up (fail-closed)"
+          else
+            case "$diff_class" in
+              prose_only|docs_as_code|ci_config)
+                warm_inline_completion=false
+                ;;
+              code|mixed)
+                if ! relevant="$(jq -r '
+                  [
+                    .direct_crates[]?.name,
+                    .reverse_dep_closure[]?.name,
+                    .architecture_wideners[]?.name,
+                    .selected_lanes[]?.scope[]?
+                  ]
+                  | any(. == "perl-lsp-rs" or . == "perl-lsp-rs-core")
+                ' "$scope_json")"; then
+                  echo "::warning::ci-scope package analysis failed; retaining inline-completion warm-up (fail-closed)"
+                elif [ "$relevant" = "false" ]; then
+                  warm_inline_completion=false
+                fi
+                ;;
+              *)
+                echo "::warning::ci-scope returned unknown diff_class '$diff_class'; retaining inline-completion warm-up (fail-closed)"
+                ;;
+            esac
+          fi
+
+          echo "diff_class=${diff_class:-unknown}"
+          echo "warm_inline_completion=$warm_inline_completion"
+          echo "warm_inline_completion=$warm_inline_completion" >> "$GITHUB_OUTPUT"
+
+      # Build the two cold inline-completion test targets before the independent
+      # pr-fast gates start when ci-scope identifies a relevant package change.
+      # The gates retain their separate 150s budgets and still execute the tests;
+      # scope failure intentionally keeps this warm-up enabled.
+      - name: Warm inline-completion test targets
+        if: steps.inline-completion-scope.outputs.warm_inline_completion == 'true'
+        run: |
+          cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_registration_tests --no-run
+          cargo test -p perl-lsp-rs-core --locked --lib inline_completion --no-run
 
       - name: Run PR-fast via shared xtask gate runner
         run: |
@@ -371,7 +442,10 @@ jobs:
     # lsp 18.6 min, meta 16.4 min. At 20 the busiest shards had 1.4 and 3.6 min
     # of headroom, so a ~10% slower runner would kill the job outright — the
     # same merge-blocking symptom the gate split fixes, one level up.
-    timeout-minutes: 30
+    # Raised 30 -> 40 with #10023's watchdog-retry support: a retried
+    # unit_lsp_full consumes 2x its 420s budget (+7 min), which at lsp's
+    # measured wall time left under 2.5 min of slow-runner headroom.
+    timeout-minutes: 40
     # No functional dependency on pr-smoke output; run in parallel after preflight
     # + conflict guard to reduce end-to-end merge-gate wall time.
     needs: [draft-pr-check, conflict-markers, preflight-latest-check]
@@ -381,7 +455,7 @@ jobs:
       matrix:
         include:
           - name: meta
-            gates: fmt ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check perl_token_leaf_contract compile_all_targets clippy_full
+            gates: fmt ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
@@ -996,6 +1070,11 @@ jobs:
       # contract merely compiles. Keep the oracle on Compile All Targets.
       - name: Emacs docs contract (required merge surface)
         run: cargo test -p xtask --test emacs_docs_contract --locked -- --nocapture
+
+      # Keep the direct-command guidance guard load-bearing on the required
+      # merge surface, including the tracked root AGENTS.md instructions.
+      - name: Direct command guidance contract (required merge surface)
+        run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture
 
       # Same reasoning as the Emacs contract above: the merge gate runs
       # `cargo test --workspace --lib`, so this integration test would otherwise
