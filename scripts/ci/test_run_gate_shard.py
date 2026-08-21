@@ -848,6 +848,9 @@ class GateShardTests(unittest.TestCase):
             "python3 scripts/ci/missing.py > ../outside.log",
             "python3 scripts/ci/missing.py >../outside.log",
             "python3 scripts/ci/missing.py >>../outside.log",
+            "python3 scripts/ci/missing.py &> ../outside.log",
+            "python3 scripts/ci/missing.py &>> ../outside.log",
+            "python3 scripts/ci/missing.py >| ../outside.log",
             "python3 scripts/ci/missing.py `pwd`",
             "python3 -m missing_module",
             "python3.exe scripts/ci/missing.py",
@@ -857,6 +860,15 @@ class GateShardTests(unittest.TestCase):
             "pwsh -File ../outside.ps1",
             "powershell.exe -Command 'python3 ../outside.py'",
             "powershell.exe -File ../outside.ps1",
+            "python3 scripts/ci/missing.py ;; echo ok",
+            "python3 scripts/ci/missing.py ;& echo ok",
+            "python3 scripts/ci/missing.py ;;& echo ok",
+            "python3 scripts/ci/missing.py &&& echo ok",
+            "python3 scripts/ci/missing.py ||| echo ok",
+            "xargs bash -c 'python3 ../outside.py'",
+            "find . -exec bash -c 'python3 ../outside.py' {} +",
+            "command bash -c 'python3 ../outside.py'",
+            "timeout 10s bash -c 'python3 ../outside.py'",
         )
         for command in commands:
             with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:

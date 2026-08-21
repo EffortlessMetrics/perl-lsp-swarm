@@ -129,8 +129,12 @@ ATTACHED_INTERPRETER_ALIASES = {
     if canonical in {"bash", "python", "python2", "python3", "pwsh", "sh"}
 }
 UNSAFE_SHELL_COMMANDS = {"alias", "cd", "eval", "exec", "source"}
-REDIRECTION = re.compile(r"^(?P<fd>[0-9]*)(?P<operator><<|>>|>&|<&|<|>)(?P<target>.*)$")
+REDIRECTION = re.compile(
+    r"^(?P<fd>[0-9]*)(?P<operator>&>>|&>|>>|\|>|>&|<&|<<|>|<)(?P<target>.*)$"
+)
 ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+MALFORMED_SHELL_PUNCTUATION = {";;", ";&", ";;&", "&&&", "|||"}
+UNSUPPORTED_WRAPPER_COMMANDS = {"xargs"}
 
 
 @dataclass(frozen=True)
@@ -378,6 +382,10 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             raise ValueError(f"unsupported shell command in gate policy: {token}")
         if token in UNSUPPORTED_SHELL_CONSTRUCTS:
             raise ValueError(f"unsupported shell construct in gate policy: {token}")
+        if token in MALFORMED_SHELL_PUNCTUATION:
+            raise ValueError(f"malformed shell punctuation in gate policy: {token}")
+        if token in {"&>", "&>>", ">|"}:
+            raise ValueError(f"unsupported Bash redirection in gate policy: {token}")
         if token.startswith("~"):
             raise ValueError(f"unsupported tilde expansion in gate policy: {token}")
         if token.rstrip(";") != "run_${i}.log" and _contains_dynamic_shell_expansion(token):
@@ -388,6 +396,19 @@ def _validate_shell_constructs(tokens: Sequence[str], root: Path) -> None:
             next_token = tokens[index + 1]
             if next_token == "-S" or next_token.startswith("-S"):
                 raise ValueError("unsupported env -S shell-string execution")
+        if token_name in UNSUPPORTED_WRAPPER_COMMANDS:
+            raise ValueError(f"unsupported nested-shell wrapper in gate policy: {token}")
+        if token_name == "find" and any(
+            candidate in {"-exec", "-execdir"} for candidate in tokens[index + 1 :]
+        ):
+            raise ValueError("unsupported find -exec nested-shell wrapper in gate policy")
+        if token_name == "command" and index + 1 < len(tokens):
+            if _interpreter_name(tokens[index + 1]) is not None:
+                raise ValueError("unsupported command nested-shell wrapper in gate policy")
+        if token_name == "timeout" and any(
+            _interpreter_name(candidate) is not None for candidate in tokens[index + 1 :]
+        ):
+            raise ValueError("unsupported timeout nested-shell wrapper in gate policy")
 
         match = REDIRECTION.match(token)
         if match is None:
