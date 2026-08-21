@@ -1307,22 +1307,8 @@ fn arb_detection_authority_error() -> impl Strategy<Value = DetectionAuthorityEr
 }
 
 fn arb_detection_authority_receipt() -> impl Strategy<Value = DetectionAuthorityReceipt> {
-    (
-        arb_detection_input_identity(),
-        arb_adapter_descriptor(),
-        arb_detection_outcome(),
-        any::<bool>(),
-        proptest::option::of(arb_detection_authority_error()),
-    )
-        .prop_map(|(input_identity, descriptor, outcome, authoritative, error)| {
-            DetectionAuthorityReceipt::new(
-                input_identity,
-                descriptor,
-                outcome,
-                authoritative,
-                error,
-            )
-        })
+    (arb_adapter_detection_input(), arb_adapter_detection_result())
+        .prop_map(|(input, result)| result.authority_receipt_against(&input))
 }
 
 fn arb_fact_class() -> impl Strategy<Value = FactClass> {

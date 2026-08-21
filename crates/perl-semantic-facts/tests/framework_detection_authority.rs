@@ -2,7 +2,8 @@ use perl_semantic_facts::framework::{
     AdapterCancellation, AdapterDescriptor, AdapterDetectionInput, AdapterDetectionResult,
     AdapterDisposition, AdapterId, DetectionAbsenceReason, DetectionAuthorityError,
     DetectionConfigurationEvidence, DetectionConfigurationObservation, DetectionConfigurationValue,
-    DetectionEvidenceClass, DetectionOutcome, ModuleActivationIdentity, ModuleObservationReceipt,
+    DetectionEvidenceClass, DetectionOutcome, FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION,
+    FRAMEWORK_ADAPTER_SDK_VERSION, ModuleActivationIdentity, ModuleObservationReceipt,
     ModuleSelectorEvaluation, ModuleVersionEvidence,
 };
 use perl_semantic_facts::{Confidence, FileId, SourceGeneration};
@@ -122,7 +123,7 @@ const CURRENT_ADAPTER_DETECTION_INPUT_JSON: &str = r#"
     ]
   },
   "configuration_observations": [],
-  "detector_policy_identity": "framework_adapter_sdk.v1",
+  "detector_policy_identity": "framework_adapter_sdk.v2",
   "budget": null,
   "cancellation": {"is_cancelled": false}
 }
@@ -133,7 +134,7 @@ fn current_sdk_json_fixture_loads_as_authority_input() -> Result<(), serde_json:
     let input: AdapterDetectionInput = serde_json::from_str(CURRENT_ADAPTER_DETECTION_INPUT_JSON)?;
 
     assert_eq!(input.module_observation.schema_version, 1);
-    assert_eq!(input.detector_policy_identity, "framework_adapter_sdk.v1");
+    assert_eq!(input.detector_policy_identity, FRAMEWORK_ADAPTER_SDK_VERSION);
     assert_eq!(input.descriptor.required_module_selectors, vec!["Moo".to_string()]);
     assert_eq!(input.module_observation.evaluations.len(), 1);
     Ok(())
@@ -147,6 +148,10 @@ fn legacy_sdk_json_fixture_loads_but_cannot_claim_current_authority()
     assert_eq!(input.project_generation(), &SourceGeneration::known("project-1"));
     assert_eq!(input.descriptor.required_module_selectors, vec!["Moo".to_string()]);
     assert_eq!(input.module_observation.evaluations.len(), 1);
+    assert_eq!(
+        input.detector_policy_identity,
+        format!("legacy:{FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION}")
+    );
 
     let result = AdapterDetectionResult::for_input(
         &input,

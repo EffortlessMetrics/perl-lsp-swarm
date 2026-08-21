@@ -23,7 +23,8 @@ pub use raw::{
     AdapterAuthorityError, AdapterBudget, AdapterCancellation, AdapterCancellationControl,
     AdapterDescriptor, AdapterDisposition, AdapterId, AdapterInput, AdapterOutcome, AdapterResult,
     AdapterSourceScope, DetectionAbsenceReason, DetectionOutcome, EmittedFact,
-    FRAMEWORK_ADAPTER_SCHEMA_VERSION, FRAMEWORK_ADAPTER_SDK_VERSION, FactClass, FactLimitation,
-    FactSink, FactSinkId, ModuleActivationIdentity, ModuleVersionEvidence,
-    NoopAdapterCancellationControl, UnavailableReason,
+    FRAMEWORK_ADAPTER_SCHEMA_VERSION, FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION,
+    FRAMEWORK_ADAPTER_SDK_VERSION, FactClass, FactLimitation, FactSink, FactSinkId,
+    ModuleActivationIdentity, ModuleVersionEvidence, NoopAdapterCancellationControl,
+    UnavailableReason,
 };

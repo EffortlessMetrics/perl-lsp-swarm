@@ -1,6 +1,7 @@
 use super::{
     AdapterBudget, AdapterCancellation, AdapterDescriptor, DetectionOutcome,
-    FRAMEWORK_ADAPTER_SDK_VERSION, ModuleActivationIdentity, ModuleVersionEvidence,
+    FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION, FRAMEWORK_ADAPTER_SDK_VERSION, ModuleActivationIdentity,
+    ModuleVersionEvidence,
 };
 use crate::{Confidence, SourceGeneration};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -339,15 +340,15 @@ impl AdapterDetectionInput {
                 // current authority validator. Keep them loadable, but fail
                 // closed before they can be treated as current evidence.
                 schema_version: 0,
-                resolver_identity: "legacy:framework_adapter_sdk.v1".to_string(),
-                scope_identity: "legacy:framework_adapter_sdk.v1".to_string(),
-                environment_identity: "legacy:framework_adapter_sdk.v1".to_string(),
+                resolver_identity: format!("legacy:{FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION}"),
+                scope_identity: format!("legacy:{FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION}"),
+                environment_identity: format!("legacy:{FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION}"),
                 generation: input.project_generation,
                 content_digest: input.content_digest.unwrap_or_default(),
                 evaluations,
             },
             configuration_observations: Vec::new(),
-            detector_policy_identity: "legacy:framework_adapter_sdk.v1".to_string(),
+            detector_policy_identity: format!("legacy:{FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION}"),
             budget: input.budget,
             cancellation: input.cancellation,
         }
@@ -453,20 +454,6 @@ pub struct DetectionAuthorityReceipt {
     pub outcome: DetectionOutcome,
     pub authoritative: bool,
     pub error: Option<DetectionAuthorityError>,
-}
-
-impl DetectionAuthorityReceipt {
-    /// Construct a serializable validation receipt from its recorded fields.
-    #[must_use]
-    pub fn new(
-        input_identity: DetectionInputIdentity,
-        descriptor: AdapterDescriptor,
-        outcome: DetectionOutcome,
-        authoritative: bool,
-        error: Option<DetectionAuthorityError>,
-    ) -> Self {
-        Self { input_identity, descriptor, outcome, authoritative, error }
-    }
 }
 
 /// Public detection result. Raw constructors remain non-authoritative until the

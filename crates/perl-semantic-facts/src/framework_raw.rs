@@ -21,7 +21,12 @@ use crate::{
 use super::model::DetectionConfigurationValue;
 
 /// Current framework-adapter SDK wire version.
-pub const FRAMEWORK_ADAPTER_SDK_VERSION: &str = "framework_adapter_sdk.v1";
+pub const FRAMEWORK_ADAPTER_SDK_VERSION: &str = "framework_adapter_sdk.v2";
+
+/// Legacy framework-adapter SDK wire version accepted by the compatibility
+/// decoder. Legacy payloads remain loadable, but cannot establish current
+/// authority because they do not carry the checked input contract.
+pub const FRAMEWORK_ADAPTER_SDK_LEGACY_VERSION: &str = "framework_adapter_sdk.v1";
 
 /// Current numeric schema version for descriptor/result records.
 pub const FRAMEWORK_ADAPTER_SCHEMA_VERSION: u32 = 1;
