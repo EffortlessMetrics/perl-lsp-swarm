@@ -19,6 +19,18 @@ const CLIENT_GLOBAL: &[Source] = &[
 /// tightening that provenance is the remaining #4997 server-side slice.
 const AI_USER_CHANNEL: &[Source] =
     &[Source::CompiledDefault, Source::InitializationOptions, Source::GlobalClientSettings];
+/// Sources of the DERIVED `ai.effective_enabled` value: the user channel plus
+/// `ProjectFile`, because `.perl-lsp.toml enabled = false` feeds
+/// `project_opt_out` and recomputes
+/// `enabled = user_enabled && !project_opt_out`. The project file contributes
+/// here only as a reducer into that derivation; it still has no arm/select
+/// authority over any direct AI activation row (issues #4955, #4997).
+const AI_EFFECTIVE_ENABLED_SOURCES: &[Source] = &[
+    Source::CompiledDefault,
+    Source::InitializationOptions,
+    Source::ProjectFile,
+    Source::GlobalClientSettings,
+];
 const CLIENT_FOLDER: &[Source] = &[
     Source::CompiledDefault,
     Source::InitializationOptions,
@@ -135,7 +147,7 @@ pub(crate) static CONFIGURATION_AUTHORITY: &[FieldAuthority] = &[
         AiCompletion.enabled,
         DerivedGlobal,
         Boolean,
-        AI_USER_CHANNEL,
+        AI_EFFECTIVE_ENABLED_SOURCES,
         Validation::Derived,
         RecomputeDerived,
         Ordinary,
