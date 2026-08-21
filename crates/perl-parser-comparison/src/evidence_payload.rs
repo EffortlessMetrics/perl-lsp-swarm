@@ -953,15 +953,20 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
                 }),
                 json!([
-                    {},
-                    {"properties": {
+                    {"required": ["harness", "subject_disposition"], "properties": {
+                        "harness": {"const": "completed"},
+                        "subject_disposition": {"type": "string"}
+                    }},
+                    {"required": ["harness", "subject_disposition", "instrument_state"], "properties": {
                         "harness": {"enum": [
                             "failed:not_run", "failed:setup_failed", "failed:cancelled",
                             "failed:timed_out", "failed:crashed_or_signalled", "failed:output_limited",
                             "failed:worker_protocol_failed", "failed:supervisor_failed"
                         ]},
-                        "subject_disposition": {"const": "accepted_clean"},
-                        "instrument_state": {"const": "complete"}
+                        "subject_disposition": {"const": null},
+                        "instrument_state": {"enum": [
+                            "partial", "unavailable", "failed", "truncated", "schema_mismatch"
+                        ]}
                     }}
                 ]),
             ),
@@ -985,13 +990,21 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
                 }),
                 json!([
-                    {},
-                    {"properties": {
+                    {"required": ["disposition", "fingerprint", "limitation_reason"], "properties": {
                         "disposition": {"const": "observed"},
-                        "fingerprint": {"type": "null"}
+                        "fingerprint": {"type": "string"},
+                        "limitation_reason": {"type": "null"}
                     }},
-                    {"properties": {
-                        "disposition": {"const": "observed"},
+                    {"required": ["disposition", "fingerprint", "limitation_reason"], "properties": {
+                        "disposition": {"const": "observed_with_limitations"},
+                        "fingerprint": {"type": "string"},
+                        "limitation_reason": {"type": "string"}
+                    }},
+                    {"required": ["disposition", "fingerprint", "limitation_reason"], "properties": {
+                        "disposition": {"enum": [
+                            "unsupported", "not_applicable", "not_observable", "not_proven"
+                        ]},
+                        "fingerprint": {"type": "null"},
                         "limitation_reason": {"type": "string"}
                     }}
                 ]),
@@ -1020,14 +1033,30 @@ pub fn parser_comparison_evidence_schema_json() -> Result<String, EvidencePayloa
                     "semantic_digest": {"$ref": "#/$defs/semantic_digest"}
                 }),
                 json!([
-                    {},
-                    {"properties": {
+                    {"required": [
+                        "outcome", "expected_fingerprint", "actual_fingerprint", "mismatch", "reason"
+                    ], "properties": {
                         "outcome": {"const": "matches_expected"},
-                        "mismatch": {"type": "object"}
+                        "expected_fingerprint": {"type": "string"},
+                        "actual_fingerprint": {"type": "string"},
+                        "mismatch": {"type": "null"},
+                        "reason": {"type": "null"}
                     }},
-                    {"properties": {
+                    {"required": [
+                        "outcome", "expected_fingerprint", "actual_fingerprint", "mismatch", "reason"
+                    ], "properties": {
                         "outcome": {"const": "mismatch"},
-                        "mismatch": {"type": "null"}
+                        "expected_fingerprint": {"type": "string"},
+                        "actual_fingerprint": {"type": "string"},
+                        "mismatch": {"$ref": "#/$defs/mismatch_detail"},
+                        "reason": {"type": "null"}
+                    }},
+                    {"required": ["outcome", "expected_fingerprint", "actual_fingerprint", "mismatch", "reason"], "properties": {
+                        "outcome": {"enum": ["unknown", "not_proven"]},
+                        "expected_fingerprint": {"type": "null"},
+                        "actual_fingerprint": {"type": "null"},
+                        "mismatch": {"type": "null"},
+                        "reason": {"type": "string"}
                     }}
                 ]),
             )

@@ -4,12 +4,12 @@ use std::io;
 
 use perl_parser_comparison::{
     AttachmentPrivacy, BoundedAttachment, BoundedText, ConformanceOutcome, DiagnosticSummary,
-    DivergencePath, EvidenceKind, EvidencePayloadError, EvidenceRef, InstrumentState,
-    MismatchClass, MismatchDetail, ObligationRef, ObservationDisposition, ObservationPlane,
-    ObserverId, ObserverManifestRef, ReviewedExpectationId, ScoredComparison, SemanticDigest,
-    SemanticFingerprint, SourceCaseRef, StableId, SubjectConformanceEvidence, SubjectDisposition,
-    SubjectExecution, SubjectExecutionEvidence, SubjectManifestRef, SubjectObservationEvidence,
-    SubjectRole, parser_comparison_evidence_schema_json,
+    DivergencePath, EvidenceKind, EvidencePayloadError, EvidenceRef, HarnessFailure,
+    InstrumentState, MismatchClass, MismatchDetail, ObligationRef, ObservationDisposition,
+    ObservationPlane, ObserverId, ObserverManifestRef, ReviewedExpectationId, ScoredComparison,
+    SemanticDigest, SemanticFingerprint, SourceCaseRef, StableId, SubjectConformanceEvidence,
+    SubjectDisposition, SubjectExecution, SubjectExecutionEvidence, SubjectManifestRef,
+    SubjectObservationEvidence, SubjectRole, parser_comparison_evidence_schema_json,
 };
 use serde_json::Value;
 
@@ -409,6 +409,96 @@ fn machine_schema_matches_all_serialized_payload_field_sets() -> Result<(), Box<
 }
 
 #[test]
+fn machine_schema_accepts_every_constructor_payload_variant() -> Result<(), Box<dyn Error>> {
+    let schema: Value = serde_json::from_str(&parser_comparison_evidence_schema_json()?)?;
+
+    let completed = generic_execution(InstrumentState::Complete)?;
+    let completed_evidence = execution_evidence(&completed, Vec::new())?;
+    validate_schema(&completed_evidence.canonical_payload_json()?, &schema)?;
+
+    let failed = SubjectExecution::failed(
+        SubjectRole::NativeRecursiveDescent,
+        HarnessFailure::TimedOut,
+        DiagnosticSummary::default(),
+        BTreeMap::new(),
+        None,
+        InstrumentState::Unavailable,
+        None,
+    )?;
+    let failed_evidence = execution_evidence(&failed, Vec::new())?;
+    validate_schema(&failed_evidence.canonical_payload_json()?, &schema)?;
+
+    let observer = observer_manifest("observer.structure.v1", ObservationPlane::Structure)?;
+    let observation_cases = [
+        (ObservationDisposition::Observed, Some(SemanticFingerprint::new("observed")?), None),
+        (
+            ObservationDisposition::ObservedWithLimitations,
+            Some(SemanticFingerprint::new("limited")?),
+            Some(stable("instrument.partial")?),
+        ),
+        (ObservationDisposition::Unsupported, None, Some(stable("unsupported")?)),
+        (ObservationDisposition::NotApplicable, None, Some(stable("not_applicable")?)),
+        (ObservationDisposition::NotObservable, None, Some(stable("not_observable")?)),
+        (ObservationDisposition::NotProven, None, Some(stable("not_proven")?)),
+    ];
+    for (disposition, fingerprint, reason) in observation_cases {
+        let observation = SubjectObservationEvidence::new(
+            &completed_evidence,
+            observer.clone(),
+            stable("exact.fresh.v1")?,
+            disposition,
+            fingerprint,
+            reason,
+            Vec::new(),
+        )?;
+        validate_schema(&observation.canonical_payload_json()?, &schema)?;
+    }
+
+    let exact = exact_observation(&completed_evidence, observer.clone(), "actual")?;
+    let obligation = obligation(observer.clone())?;
+    let matching = ScoredComparison::matches_expected(
+        &completed,
+        ObserverId::new("observer.structure.v1")?,
+        ReviewedExpectationId::new("obligation.assignment.shape.v1")?,
+        ObservationPlane::Structure,
+        SemanticFingerprint::new("actual")?,
+        SemanticFingerprint::new("actual")?,
+    )?;
+    validate_schema(
+        &SubjectConformanceEvidence::scored(&exact, obligation.clone(), &matching, Vec::new())?
+            .canonical_payload_json()?,
+        &schema,
+    )?;
+
+    let mismatch = ScoredComparison::mismatch(
+        &completed,
+        ObserverId::new("observer.structure.v1")?,
+        ReviewedExpectationId::new("obligation.assignment.shape.v1")?,
+        ObservationPlane::Structure,
+        SemanticFingerprint::new("expected")?,
+        SemanticFingerprint::new("actual")?,
+        MismatchDetail::new(MismatchClass::WrongKind, DivergencePath::new("root")?),
+    )?;
+    validate_schema(
+        &SubjectConformanceEvidence::scored(&exact, obligation.clone(), &mismatch, Vec::new())?
+            .canonical_payload_json()?,
+        &schema,
+    )?;
+
+    for outcome in [ConformanceOutcome::Unknown, ConformanceOutcome::NotProven] {
+        let non_decisive = SubjectConformanceEvidence::non_decisive(
+            &exact,
+            obligation.clone(),
+            outcome,
+            stable("evidence.unavailable")?,
+            Vec::new(),
+        )?;
+        validate_schema(&non_decisive.canonical_payload_json()?, &schema)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn schema_rejects_realistic_constraint_violations() -> Result<(), Box<dyn Error>> {
     let generic = generic_execution(InstrumentState::Complete)?;
     let with_attachment = execution_evidence(
@@ -498,6 +588,17 @@ fn schema_rejects_cross_field_false_greens_and_wrong_nested_reference_kinds()
         Value::String("should_not_be_present".to_owned());
     assert!(validate_value(&observed_with_limitation_reason, &schema, &schema).is_err());
 
+    let mut unavailable_with_fingerprint = observation_payload.clone();
+    unavailable_with_fingerprint["disposition"] = Value::String("not_observable".to_owned());
+    unavailable_with_fingerprint["limitation_reason"] = Value::String("unavailable".to_owned());
+    assert!(validate_value(&unavailable_with_fingerprint, &schema, &schema).is_err());
+
+    let mut observed_without_limitation = observation_payload.clone();
+    observed_without_limitation["disposition"] =
+        Value::String("observed_with_limitations".to_owned());
+    observed_without_limitation["limitation_reason"] = Value::Null;
+    assert!(validate_value(&observed_without_limitation, &schema, &schema).is_err());
+
     let mut matching_with_mismatch = conformance_payload.clone();
     matching_with_mismatch["mismatch"] = serde_json::json!({
         "class": "wrong_kind",
@@ -509,6 +610,17 @@ fn schema_rejects_cross_field_false_greens_and_wrong_nested_reference_kinds()
     mismatch_without_detail["outcome"] = Value::String("mismatch".to_owned());
     mismatch_without_detail["mismatch"] = Value::Null;
     assert!(validate_value(&mismatch_without_detail, &schema, &schema).is_err());
+
+    let mut non_decisive_without_reason = conformance_payload.clone();
+    non_decisive_without_reason["outcome"] = Value::String("not_proven".to_owned());
+    non_decisive_without_reason["expected_fingerprint"] = Value::Null;
+    non_decisive_without_reason["actual_fingerprint"] = Value::Null;
+    assert!(validate_value(&non_decisive_without_reason, &schema, &schema).is_err());
+
+    let mut non_decisive_with_fingerprints = conformance_payload.clone();
+    non_decisive_with_fingerprints["outcome"] = Value::String("unknown".to_owned());
+    non_decisive_with_fingerprints["reason"] = Value::String("not_decisive".to_owned());
+    assert!(validate_value(&non_decisive_with_fingerprints, &schema, &schema).is_err());
 
     let mut wrong_source_case_kind = execution_payload.clone();
     wrong_source_case_kind["source_case"]["authority"]["kind"] =
