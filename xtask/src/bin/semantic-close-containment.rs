@@ -6,7 +6,7 @@
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use clap::{Parser, ValueEnum};
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -86,18 +86,12 @@ impl ResultCode {
     fn as_str(self) -> &'static str {
         match self {
             Self::PassNotApplicable => "PASS_NOT_APPLICABLE",
-            Self::PassNoHighConfidenceContradiction => {
-                "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION"
-            }
+            Self::PassNoHighConfidenceContradiction => "PASS_NO_HIGH_CONFIDENCE_CONTRADICTION",
             Self::FailPhaseTerminalRelation => "FAIL_PHASE_TERMINAL_RELATION",
-            Self::FailExplicitUnprovenRequiredWork => {
-                "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK"
-            }
+            Self::FailExplicitUnprovenRequiredWork => "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK",
             Self::FailRemainingWorkSameIssue => "FAIL_REMAINING_WORK_SAME_ISSUE",
             Self::FailControllerPacketMissing => "FAIL_CONTROLLER_PACKET_MISSING",
-            Self::FailPredecessorSuccessorCollapse => {
-                "FAIL_PREDECESSOR_SUCCESSOR_COLLAPSE"
-            }
+            Self::FailPredecessorSuccessorCollapse => "FAIL_PREDECESSOR_SUCCESSOR_COLLAPSE",
             Self::FailProofLevelContradiction => "FAIL_PROOF_LEVEL_CONTRADICTION",
             Self::NotProvenGithub => "NOT_PROVEN_GITHUB",
             Self::InstrumentFailure => "INSTRUMENT_FAILURE",
@@ -402,10 +396,7 @@ fn load_fixture(path: &Path) -> Result<Fixture> {
 
 fn validate_fixture(fixture: &Fixture) -> Result<()> {
     if fixture.schema_version != FIXTURE_SCHEMA {
-        bail!(
-            "unsupported fixture schema {:?}; expected {FIXTURE_SCHEMA}",
-            fixture.schema_version
-        );
+        bail!("unsupported fixture schema {:?}; expected {FIXTURE_SCHEMA}", fixture.schema_version);
     }
     canonical_repository(&fixture.repository)?;
     if fixture.provenance.captured_at.trim().is_empty()
@@ -414,20 +405,10 @@ fn validate_fixture(fixture: &Fixture) -> Result<()> {
     {
         bail!("fixture provenance must retain capture date, sources, and boundary");
     }
-    if fixture
-        .provenance
-        .sources
-        .iter()
-        .any(|source| !source.starts_with("https://github.com/"))
-    {
+    if fixture.provenance.sources.iter().any(|source| !source.starts_with("https://github.com/")) {
         bail!("fixture provenance sources must be canonical GitHub URLs");
     }
-    if fixture
-        .provenance
-        .subject_shas
-        .iter()
-        .any(|sha| !sha.is_empty() && !is_full_sha(sha))
-    {
+    if fixture.provenance.subject_shas.iter().any(|sha| !sha.is_empty() && !is_full_sha(sha)) {
         bail!("fixture provenance subject SHAs must be empty or full lowercase hex");
     }
     if fixture.pull_request.title.trim().is_empty() {
@@ -435,10 +416,8 @@ fn validate_fixture(fixture: &Fixture) -> Result<()> {
     }
     let mut seen = BTreeMap::new();
     for issue in &fixture.issues {
-        let key = IssueKey {
-            repository: canonical_repository(&issue.repository)?,
-            number: issue.number,
-        };
+        let key =
+            IssueKey { repository: canonical_repository(&issue.repository)?, number: issue.number };
         if seen.insert(key, ()).is_some() {
             bail!("duplicate issue subject in fixture");
         }
@@ -455,10 +434,8 @@ fn evaluate_fixture(fixture: &Fixture) -> Result<Report> {
     };
     let mut issues = BTreeMap::new();
     for issue in &fixture.issues {
-        let key = IssueKey {
-            repository: canonical_repository(&issue.repository)?,
-            number: issue.number,
-        };
+        let key =
+            IssueKey { repository: canonical_repository(&issue.repository)?, number: issue.number };
         issues.insert(
             key,
             IssueEvidence::Available(IssueSubject {
@@ -532,24 +509,14 @@ where
     let mut rows = Vec::with_capacity(relation_count);
     for relation in relations {
         let evidence = issue_lookup(&relation.key);
-        rows.push(evaluate_relation(
-            pull,
-            &sections,
-            relation_count,
-            relation,
-            evidence,
-        ));
+        rows.push(evaluate_relation(pull, &sections, relation_count, relation, evidence));
     }
 
     let aggregate_code = rows
         .iter()
         .find(|row| row.code.is_failure())
         .map(|row| row.code)
-        .or_else(|| {
-            rows.iter()
-                .find(|row| row.code.is_not_proven())
-                .map(|row| row.code)
-        })
+        .or_else(|| rows.iter().find(|row| row.code.is_not_proven()).map(|row| row.code))
         .unwrap_or(ResultCode::PassNoHighConfidenceContradiction);
 
     Ok(Report {
@@ -623,12 +590,8 @@ fn evaluate_relation(
     };
 
     let controlling = section_text(sections, &[SectionKind::ControllingIssue]);
-    let scoped_to_issue = relation_count == 1
-        || references_issue(
-            &controlling,
-            &relation.key,
-            &pull.repository,
-        );
+    let scoped_to_issue =
+        relation_count == 1 || references_issue(&controlling, &relation.key, &pull.repository);
 
     if issue_is_controller(&issue)
         && !has_semantic_close_packet(sections, &relation.key, &pull.repository)
@@ -741,20 +704,14 @@ fn fetch_issue_live(key: &IssueKey) -> IssueEvidence {
         return IssueEvidence::Unavailable(error.to_string());
     }
     let endpoint = format!("repos/{}/issues/{}", key.repository, key.number);
-    let output = match Command::new("gh")
-        .args(["api", "--method", "GET", &endpoint])
-        .output()
-    {
+    let output = match Command::new("gh").args(["api", "--method", "GET", &endpoint]).output() {
         Ok(output) => output,
         Err(error) => {
             return IssueEvidence::Unavailable(format!("failed to start gh api: {error}"));
         }
     };
     if !output.status.success() {
-        return IssueEvidence::Unavailable(format!(
-            "gh api exited with status {}",
-            output.status
-        ));
+        return IssueEvidence::Unavailable(format!("gh api exited with status {}", output.status));
     }
     if output.stdout.len() > MAX_GITHUB_OUTPUT_BYTES {
         return IssueEvidence::Unavailable("GitHub issue response exceeded the input bound".into());
@@ -979,8 +936,7 @@ fn has_semantic_close_packet(
 fn issue_names_pull_as_historical_predecessor(issue_body: &str, pull_number: u64) -> bool {
     issue_body.lines().any(|line| {
         let lower = line.trim().to_ascii_lowercase();
-        (lower.starts_with("historical deletion:")
-            || lower.starts_with("historical predecessor:"))
+        (lower.starts_with("historical deletion:") || lower.starts_with("historical predecessor:"))
             && references_number(line, pull_number)
     })
 }
@@ -991,42 +947,23 @@ fn proof_level_is_explicitly_excluded(
 ) -> bool {
     let issue_requirements = section_text(
         issue_sections,
-        &[
-            SectionKind::Acceptance,
-            SectionKind::Objective,
-            SectionKind::Outcome,
-        ],
+        &[SectionKind::Acceptance, SectionKind::Objective, SectionKind::Outcome],
     )
     .to_ascii_lowercase();
-    let exclusions = section_text(
-        pr_sections,
-        &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
-    )
-    .to_ascii_lowercase();
+    let exclusions =
+        section_text(pr_sections, &[SectionKind::ClaimBoundary, SectionKind::NonGoals])
+            .to_ascii_lowercase();
     if !contains_explicit_exclusion(&exclusions) {
         return false;
     }
-    const TERMS: [&str; 6] = [
-        "installed",
-        "public",
-        "packaged",
-        "presentation",
-        "release",
-        "actual host",
-    ];
-    TERMS
-        .iter()
-        .any(|term| issue_requirements.contains(term) && exclusions.contains(term))
+    const TERMS: [&str; 6] =
+        ["installed", "public", "packaged", "presentation", "release", "actual host"];
+    TERMS.iter().any(|term| issue_requirements.contains(term) && exclusions.contains(term))
 }
 
-fn explicitly_not_proven_required_work(
-    sections: &BTreeMap<SectionKind, Section>,
-) -> bool {
-    let text = section_text(
-        sections,
-        &[SectionKind::ClaimBoundary, SectionKind::NonGoals],
-    )
-    .to_ascii_lowercase();
+fn explicitly_not_proven_required_work(sections: &BTreeMap<SectionKind, Section>) -> bool {
+    let text = section_text(sections, &[SectionKind::ClaimBoundary, SectionKind::NonGoals])
+        .to_ascii_lowercase();
     contains_explicit_exclusion(&text)
         && [
             "full",
@@ -1129,9 +1066,8 @@ fn canonical_repository(repository: &str) -> Result<String> {
     if trimmed.len() > 200 {
         bail!("repository identity exceeds 200 bytes");
     }
-    let (owner, name) = trimmed
-        .split_once('/')
-        .context("repository identity must be owner/name")?;
+    let (owner, name) =
+        trimmed.split_once('/').context("repository identity must be owner/name")?;
     if owner.is_empty()
         || name.is_empty()
         || name.contains('/')
@@ -1140,11 +1076,7 @@ fn canonical_repository(repository: &str) -> Result<String> {
     {
         bail!("invalid repository identity {trimmed:?}");
     }
-    Ok(format!(
-        "{}/{}",
-        owner.to_ascii_lowercase(),
-        name.to_ascii_lowercase()
-    ))
+    Ok(format!("{}/{}", owner.to_ascii_lowercase(), name.to_ascii_lowercase()))
 }
 
 fn valid_repo_character(character: char) -> bool {
@@ -1174,11 +1106,7 @@ fn read_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<Vec<u8>> {
 fn sanitize_for_output(value: &str, max_bytes: usize) -> String {
     let mut output = String::new();
     for character in value.chars() {
-        let rendered = if character.is_control() && character != '\t' {
-            '�'
-        } else {
-            character
-        };
+        let rendered = if character.is_control() && character != '\t' { '�' } else { character };
         if output.len() + rendered.len_utf8() > max_bytes {
             output.push('…');
             break;
@@ -1380,10 +1308,7 @@ mod tests {
             body: "## Acceptance\nOne bounded defect is fixed.".into(),
         });
         let report = evaluate(&pull, |_| issue.clone())?;
-        assert_eq!(
-            report.aggregate_code,
-            ResultCode::PassNoHighConfidenceContradiction
-        );
+        assert_eq!(report.aggregate_code, ResultCode::PassNoHighConfidenceContradiction);
         assert!(!marker.exists());
         Ok(())
     }
