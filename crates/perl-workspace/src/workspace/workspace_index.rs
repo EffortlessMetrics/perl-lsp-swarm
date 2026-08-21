@@ -2500,80 +2500,89 @@ impl WorkspaceIndex {
     /// index.remove_file("file:///example.pl");
     /// ```
     pub fn remove_file(&self, uri: &str) {
-        self.bump_write_version();
+        let _write_version = WriteVersionGuard::new(self);
         let uri_str = Self::normalize_uri(uri);
         let key = DocumentStore::uri_key(&uri_str);
         let _lifecycle = self.lifecycle_guard(&key);
 
-        // Remove from document store
-        self.document_store.close(&uri_str);
+        // Remove file/projection state before closing the document. Indexing
+        // and batch publication acquire `files` before touching the
+        // DocumentStore, so keeping that order here avoids a cross-URI lock
+        // inversion.
+        {
+            let mut files = self.files.write();
+            if let Some(file_index) = files.remove(&key) {
+                self.fact_shards.write().remove(&key);
 
-        // Remove file index
-        let mut files = self.files.write();
-        if let Some(file_index) = files.remove(&key) {
-            self.fact_shards.write().remove(&key);
-
-            // Clean up semantic cross-file indexes for this file.
-            self.semantic_reference_index.write().remove_file(&uri_str);
-            {
-                let mut ie_idx = self.semantic_import_export_index.write();
-                ie_idx.remove_file_imports(&uri_str);
-                ie_idx.remove_module_exports(&uri_str);
-                ie_idx.remove_file_use_lib(&uri_str);
-            }
-            self.semantic_package_graph_index.write().remove_edges_for_file(&uri_str);
-
-            // Incrementally remove symbols and re-insert any shadowed names.
-            let mut symbols = self.symbols.write();
-            let mut search_idx = self.search_index.write();
-            Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
-            Self::incremental_remove_search(&files, &mut search_idx, &file_index);
-
-            // Defensive sweep: purge any remaining cache entries whose value
-            // points to this file's URI.  incremental_remove_symbols already
-            // handles known symbol names; this sweep guarantees no stale
-            // candidates survive even when:
-            //   * the file had zero symbols (nothing for incremental_remove
-            //     to walk), or
-            //   * a symbol's stored uri differs from the canonical normalize_uri
-            //     output (URI normalization edge cases).
-            // Match against every URI spelling observed in this file index plus
-            // the canonical uri_str so raw/normalized variants are all caught.
-            let mut removed_uris = vec![uri_str.as_str()];
-            for observed_uri in file_index.symbols.iter().map(|s| s.uri.as_str()).chain(
-                file_index.references.values().flat_map(|refs| refs.iter().map(|r| r.uri.as_str())),
-            ) {
-                if !removed_uris.contains(&observed_uri) {
-                    removed_uris.push(observed_uri);
+                // Clean up semantic cross-file indexes for this file.
+                self.semantic_reference_index.write().remove_file(&uri_str);
+                {
+                    let mut ie_idx = self.semantic_import_export_index.write();
+                    ie_idx.remove_file_imports(&uri_str);
+                    ie_idx.remove_module_exports(&uri_str);
+                    ie_idx.remove_file_use_lib(&uri_str);
                 }
-            }
-            symbols.retain(|_, candidates| {
-                candidates.retain(|candidate| {
-                    let cand_uri = candidate.location.uri.as_str();
-                    !removed_uris.contains(&cand_uri)
-                });
-                !candidates.is_empty()
-            });
-            // Defensive sweep for search_index: remove any remaining entries
-            // pointing to the removed URI (mirrors the symbols sweep above).
-            search_idx.retain(|_, syms| {
-                syms.retain(|sym| !removed_uris.contains(&sym.uri.as_str()));
-                !syms.is_empty()
-            });
+                self.semantic_package_graph_index.write().remove_edges_for_file(&uri_str);
 
-            // Remove from global reference index. Two-phase cleanup: first
-            // remove names this file was known to reference (cheap path), then
-            // a defensive sweep over all remaining entries to catch any that
-            // were inserted under names not present in this file's
-            // FileIndex::references map (e.g. via aggregated/global insertion
-            // paths). Empty buckets are dropped.
-            let mut global_refs = self.global_references.write();
-            Self::remove_file_global_refs(&mut global_refs, &file_index, &uri_str);
-            global_refs.retain(|_, locs| {
-                locs.retain(|loc| !removed_uris.contains(&loc.uri.as_str()));
-                !locs.is_empty()
-            });
+                // Incrementally remove symbols and re-insert any shadowed names.
+                let mut symbols = self.symbols.write();
+                let mut search_idx = self.search_index.write();
+                Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
+                Self::incremental_remove_search(&files, &mut search_idx, &file_index);
+
+                // Defensive sweep: purge any remaining cache entries whose value
+                // points to this file's URI.  incremental_remove_symbols already
+                // handles known symbol names; this sweep guarantees no stale
+                // candidates survive even when:
+                //   * the file had zero symbols (nothing for incremental_remove
+                //     to walk), or
+                //   * a symbol's stored uri differs from the canonical normalize_uri
+                //     output (URI normalization edge cases).
+                // Match against every URI spelling observed in this file index plus
+                // the canonical uri_str so raw/normalized variants are all caught.
+                let mut removed_uris = vec![uri_str.as_str()];
+                for observed_uri in file_index.symbols.iter().map(|s| s.uri.as_str()).chain(
+                    file_index
+                        .references
+                        .values()
+                        .flat_map(|refs| refs.iter().map(|r| r.uri.as_str())),
+                ) {
+                    if !removed_uris.contains(&observed_uri) {
+                        removed_uris.push(observed_uri);
+                    }
+                }
+                symbols.retain(|_, candidates| {
+                    candidates.retain(|candidate| {
+                        let cand_uri = candidate.location.uri.as_str();
+                        !removed_uris.contains(&cand_uri)
+                    });
+                    !candidates.is_empty()
+                });
+                // Defensive sweep for search_index: remove any remaining entries
+                // pointing to the removed URI (mirrors the symbols sweep above).
+                search_idx.retain(|_, syms| {
+                    syms.retain(|sym| !removed_uris.contains(&sym.uri.as_str()));
+                    !syms.is_empty()
+                });
+
+                // Remove from global reference index. Two-phase cleanup: first
+                // remove names this file was known to reference (cheap path), then
+                // a defensive sweep over all remaining entries to catch any that
+                // were inserted under names not present in this file's
+                // FileIndex::references map (e.g. via aggregated/global insertion
+                // paths). Empty buckets are dropped.
+                let mut global_refs = self.global_references.write();
+                Self::remove_file_global_refs(&mut global_refs, &file_index, &uri_str);
+                global_refs.retain(|_, locs| {
+                    locs.retain(|loc| !removed_uris.contains(&loc.uri.as_str()));
+                    !locs.is_empty()
+                });
+            }
         }
+
+        // Close only after all file/projection locks have been released. This
+        // preserves the files-then-DocumentStore ordering used by indexers.
+        self.document_store.close(&uri_str);
     }
 
     /// Remove a file from the index (URL variant for compatibility)
