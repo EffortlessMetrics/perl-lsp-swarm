@@ -667,6 +667,51 @@ class GateShardTests(unittest.TestCase):
                     root=Path(tmp),
                 )
 
+    def test_gate_policy_preflight_rejects_nested_shell_and_unsafe_wrappers(self) -> None:
+        commands = (
+            "bash -c 'python3 ../outside.py'",
+            "env -S 'python3 ../outside.py'",
+            "python3 -uscripts/ci/missing.py",
+            "python3 scripts/ci/missing.py > ../outside.log",
+            "cd ../outside && python3 scripts/ci/missing.py",
+            "alias py=python3; py scripts/ci/missing.py",
+            "pwsh -Command 'python3 ../outside.py'",
+            "pwsh -File ../outside.ps1",
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                policy = write_gate_policy(
+                    Path(tmp),
+                    "  - name: source_commit_api_check\n"
+                    f"    command: {command}\n",
+                )
+                with self.assertRaises(ValueError):
+                    shard.load_gate_commands(
+                        policy,
+                        ["source_commit_api_check"],
+                        root=Path(tmp),
+                    )
+
+    def test_gate_policy_header_allows_trailing_whitespace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            (root / "scripts/check.py").write_text("# check\n", encoding="utf-8")
+            policy = root / "gate-policy.yaml"
+            policy.write_text(
+                "schema_version: 1\n"
+                "gates:   \n"
+                "  - name: source_commit_api_check\n"
+                "    command: python3 scripts/check.py\n",
+                encoding="utf-8",
+            )
+            commands = shard.load_gate_commands(
+                policy,
+                ["source_commit_api_check"],
+                root=root,
+            )
+            self.assertEqual("python3 scripts/check.py", commands["source_commit_api_check"])
+
     def test_canonical_receipt_schema_is_loadable(self) -> None:
         contract = shard.load_receipt_contract(
             REPO_ROOT / ".ci/receipt.schema.json"
