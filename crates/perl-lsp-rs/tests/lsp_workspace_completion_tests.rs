@@ -482,10 +482,11 @@ tri
 }
 
 /// Test that completing an unimported workspace subroutine attaches an
-/// `additionalTextEdits` entry inserting the required `use Module;` statement
-/// (issue #1694 — next-edit auto-import closure).
+/// Workspace completion must not serialize an import edit derived from the
+/// indexed symbol's containing module (issue #11158 containment boundary).
 #[test]
-fn test_completion_bare_function_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+fn test_completion_bare_function_withdraws_module_auto_import_edit()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
     initialize_lsp(&server);
 
@@ -507,7 +508,9 @@ fn test_completion_bare_function_auto_imports_module() -> Result<(), Box<dyn std
     );
     await_open_processing(&server);
 
-    // Script does NOT import StringUtils — accepting the completion should add it.
+    // Script does NOT import StringUtils. A bare `trimmer` candidate would be
+    // unsafe because accepting it leaves a broken primary after any import
+    // edit is stripped.
     let script_uri = "file:///workspace/needs_import.pl";
     send_notification(
         &server,
@@ -539,22 +542,10 @@ fn test_completion_bare_function_auto_imports_module() -> Result<(), Box<dyn std
     );
 
     let items = completion_items(&response);
-    let trimmer = items
-        .iter()
-        .find(|item| item["label"].as_str().is_some_and(|l| l.contains("trimmer")))
-        .ok_or_else(|| {
-            format!(
-                "expected a `trimmer` workspace completion; got: {:?}",
-                items.iter().filter_map(|i| i["label"].as_str()).collect::<Vec<_>>()
-            )
-        })?;
-
-    let edits = trimmer["additionalTextEdits"]
-        .as_array()
-        .ok_or("trimmer completion should carry a serialized additionalTextEdits array")?;
+    let labels: Vec<&str> = items.iter().filter_map(|item| item["label"].as_str()).collect();
     assert!(
-        edits.iter().any(|e| e["newText"].as_str() == Some("use StringUtils;\n")),
-        "completion should auto-insert `use StringUtils;`; got additionalTextEdits: {edits:?}"
+        !labels.iter().any(|label| *label == "trimmer"),
+        "must not return the exact bare `trimmer` candidate after stripping import edits; got: {labels:?}"
     );
 
     Ok(())

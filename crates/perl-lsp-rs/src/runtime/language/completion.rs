@@ -918,6 +918,23 @@ impl LspServer {
                         continue;
                     }
 
+                    // The runtime workspace pass is a name-only fallback. It
+                    // has no import/reachability facts for callable and value
+                    // symbols, so emitting these as bare insertions can leave
+                    // an unimported cross-file reference in the document.
+                    // The core provider owns import-aware, current-file, and
+                    // qualified completions for these kinds; retain only the
+                    // module-name kinds here (issue #11158).
+                    if matches!(
+                        symbol.kind,
+                        crate::workspace_index::SymbolKind::Subroutine
+                            | crate::workspace_index::SymbolKind::Method
+                            | crate::workspace_index::SymbolKind::Constant
+                            | crate::workspace_index::SymbolKind::Export
+                    ) {
+                        continue;
+                    }
+
                     // Strategy A: module-kind symbols in `use Module` / `require Module`
                     // context — filter by position-aware @INC reachability so that
                     // `no lib` cancellations are honoured (fixes #8537).

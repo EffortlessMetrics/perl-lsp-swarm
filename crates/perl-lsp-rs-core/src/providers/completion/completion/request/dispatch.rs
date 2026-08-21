@@ -39,8 +39,7 @@ pub(super) fn complete_dispatch(
         return CompletionFlow::SortAndReturn;
     }
 
-    if let Some(flow) = complete_sigil_context(provider, completions, context, source, is_cancelled)
-    {
+    if let Some(flow) = complete_sigil_context(provider, completions, context, is_cancelled) {
         // If we were in a string and sigil completion matched, we're done.
         // Otherwise fall through to file-path for string context.
         if context.in_string {
@@ -49,7 +48,7 @@ pub(super) fn complete_dispatch(
         return flow;
     }
 
-    if complete_symbol_namespace_context(provider, completions, context, source) {
+    if complete_symbol_namespace_context(provider, completions, context) {
         return CompletionFlow::SortAndReturn;
     }
 
@@ -387,7 +386,6 @@ fn complete_sigil_context(
     provider: &CompletionProvider,
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
-    source: &str,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Option<CompletionFlow> {
     let (sigil, kind) = sigil_kind(context)?;
@@ -396,7 +394,6 @@ fn complete_sigil_context(
         packages::add_package_completions(
             completions,
             context,
-            source,
             &provider.symbol_table,
             &provider.workspace_index,
         );
@@ -429,7 +426,6 @@ fn complete_symbol_namespace_context(
     provider: &CompletionProvider,
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
-    source: &str,
 ) -> bool {
     if context.prefix.starts_with('&') {
         functions::add_function_completions(completions, context, &provider.symbol_table);
@@ -440,7 +436,6 @@ fn complete_symbol_namespace_context(
         packages::add_package_completions(
             completions,
             context,
-            source,
             &provider.symbol_table,
             &provider.workspace_index,
         );
@@ -539,6 +534,8 @@ fn complete_general_context(
         context,
         &provider.workspace_index,
         filepath,
+        &provider.import_map,
+        &provider.used_modules,
     );
     if is_cancelled() {
         return CompletionFlow::Cancelled;
@@ -547,9 +544,9 @@ fn complete_general_context(
     workspace::add_workspace_symbol_completions(
         completions,
         context,
-        source,
         &provider.workspace_index,
         &provider.import_map,
+        &provider.used_modules,
     );
     if is_cancelled() {
         return CompletionFlow::Cancelled;

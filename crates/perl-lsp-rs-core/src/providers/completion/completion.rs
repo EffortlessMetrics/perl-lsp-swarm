@@ -88,7 +88,6 @@
 //! - **Cancellation aware**: Respects LSP cancellation for responsiveness
 //! - **Memory efficient**: Uses streaming iteration without loading all results
 
-pub(crate) mod auto_import;
 mod builtins;
 mod context;
 mod file_path;
