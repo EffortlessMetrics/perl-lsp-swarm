@@ -60,8 +60,7 @@ impl TextRange {
                     character = 0;
                 }
                 other => {
-                    let width = if other as u32 >= 0x10000 { 2 } else { 1 };
-                    character = character.saturating_add(width);
+                    character = character.saturating_add(other.len_utf16() as u32);
                 }
             }
         }

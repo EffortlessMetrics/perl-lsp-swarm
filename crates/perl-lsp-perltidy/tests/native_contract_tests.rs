@@ -107,7 +107,7 @@ fn position_to_byte(source: &str, target_line: u32, target_character: u32) -> Op
             }
             other => {
                 offset += other.len_utf8();
-                character += u32::from(other as u32 >= 0x10000) + 1;
+                character += other.len_utf16() as u32;
             }
         }
     }
