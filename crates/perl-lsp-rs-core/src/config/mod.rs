@@ -1016,8 +1016,11 @@ pub enum SystemIncProbeOutcome {
     Unavailable,
     /// The Perl probe timed out before producing a result.
     TimedOut,
-    /// The Perl process could not be spawned.
-    SpawnFailed,
+    /// The probe process failed at the I/O level — the spawn itself or a
+    /// later `try_wait`/pipe error. The underlying helper reports these
+    /// identically, so the stage is deliberately NOT distinguished here;
+    /// callers must not read this as "spawn-only" (#11840 review).
+    IoFailed,
     /// The Perl process exited unsuccessfully.
     NonZeroExit,
     /// The Perl process succeeded but produced no usable `@INC` paths.
@@ -1653,7 +1656,7 @@ impl WorkspaceConfig {
             Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
                 SystemIncProbeOutcome::TimedOut
             }
-            Err(_) => SystemIncProbeOutcome::SpawnFailed,
+            Err(_) => SystemIncProbeOutcome::IoFailed,
         }
     }
 
@@ -4843,7 +4846,7 @@ profile = "recommended"
                 outcome,
                 SystemIncProbeOutcome::TimedOut
                     | SystemIncProbeOutcome::NonZeroExit
-                    | SystemIncProbeOutcome::SpawnFailed
+                    | SystemIncProbeOutcome::IoFailed
                     | SystemIncProbeOutcome::Unavailable
             ),
             "expected a bounded failure outcome, got {outcome:?}"
@@ -4869,7 +4872,7 @@ profile = "recommended"
 
     /// A second lookup must reuse the first probe result rather than launch a
     /// new interpreter. The missing path makes a reprobe observably fail with
-    /// `SpawnFailed`, so a fast second process cannot satisfy this oracle.
+    /// `IoFailed`, so a fast second process cannot satisfy this oracle.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn get_system_inc_reuses_cached_probe_without_relaunching() -> TestResult {
@@ -4966,9 +4969,9 @@ profile = "recommended"
         assert_eq!(
             WorkspaceConfig::classify_perl_inc_output(Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "synthetic spawn failure",
+                "synthetic spawn-or-io failure",
             ))),
-            SystemIncProbeOutcome::SpawnFailed,
+            SystemIncProbeOutcome::IoFailed,
         );
 
         let disabled = WorkspaceConfig::default().get_system_inc_probe_outcome();
