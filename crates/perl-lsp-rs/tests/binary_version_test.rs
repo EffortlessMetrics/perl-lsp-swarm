@@ -94,12 +94,30 @@ fn initialize_with_retry(
                 RetryDecision::RetryOnce => eprintln!(
                     "initialize attempt {attempt}/2 timed out; retrying with a fresh server"
                 ),
-                RetryDecision::GiveUp(err) => return Err(err),
+                RetryDecision::GiveUp(mut err) => {
+                    append_stderr_tail(&mut err, &server);
+                    return Err(err);
+                }
             },
         }
     }
     // Only two consecutive timeouts fall out of the loop.
     Err(HANDSHAKE_TIMEOUT_MESSAGE.to_owned())
+}
+
+/// Attach the server's captured stderr tail to a failure message (#11848):
+/// the stall family resisted floor raises and retries, and the discarded
+/// stderr was the one channel showing what the "server" was doing (an
+/// inline cargo compile, as it turned out). A silent server is itself a
+/// discriminating fact, so both cases are stated.
+fn append_stderr_tail(err: &mut String, server: &common::LspServer) {
+    let tail = server.stderr_tail();
+    if tail.is_empty() {
+        err.push_str("\n(server produced no stderr)");
+    } else {
+        err.push('\n');
+        err.push_str(&tail);
+    }
 }
 
 fn send_initialize_with_timeout(
